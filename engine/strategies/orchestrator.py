@@ -148,16 +148,28 @@ class Orchestrator:
             on_trade=self._on_binance_trade,
             on_liquidation=self._aggregator.on_liquidation,
         )
-        self._coinglass_feed = CoinGlassAPIFeed(
-            api_key=settings.coinglass_api_key,
-            symbol="BTC",
-            on_oi=self._on_oi_update,
-            on_liq=self._aggregator.on_liquidation_volume,
-        )
-        self._chainlink_feed = ChainlinkRPCFeed(
-            rpc_url=settings.polygon_rpc_url,
-            on_price=self._aggregator.on_chainlink_price,
-        )
+        # Optional feeds — only create if API keys are configured
+        self._coinglass_feed = None
+        if settings.coinglass_api_key:
+            self._coinglass_feed = CoinGlassAPIFeed(
+                api_key=settings.coinglass_api_key,
+                symbol="BTC",
+                on_oi=self._on_oi_update,
+                on_liq=self._aggregator.on_liquidation_volume,
+            )
+            log.info("orchestrator.coinglass_enabled")
+        else:
+            log.info("orchestrator.coinglass_disabled", reason="no API key set")
+
+        self._chainlink_feed = None
+        if settings.polygon_rpc_url:
+            self._chainlink_feed = ChainlinkRPCFeed(
+                rpc_url=settings.polygon_rpc_url,
+                on_price=self._aggregator.on_chainlink_price,
+            )
+            log.info("orchestrator.chainlink_enabled")
+        else:
+            log.info("orchestrator.chainlink_disabled", reason="no RPC URL set")
 
         # Polymarket token IDs from settings
         token_ids = [
@@ -213,12 +225,14 @@ class Orchestrator:
         self._tasks.append(
             asyncio.create_task(self._binance_feed.start(), name="feed:binance")
         )
-        self._tasks.append(
-            asyncio.create_task(self._coinglass_feed.start(), name="feed:coinglass")
-        )
-        self._tasks.append(
-            asyncio.create_task(self._chainlink_feed.start(), name="feed:chainlink")
-        )
+        if self._coinglass_feed:
+            self._tasks.append(
+                asyncio.create_task(self._coinglass_feed.start(), name="feed:coinglass")
+            )
+        if self._chainlink_feed:
+            self._tasks.append(
+                asyncio.create_task(self._chainlink_feed.start(), name="feed:chainlink")
+            )
         self._tasks.append(
             asyncio.create_task(self._polymarket_feed.start(), name="feed:polymarket")
         )
@@ -266,8 +280,10 @@ class Orchestrator:
 
         # Stop feeds
         await self._binance_feed.stop()
-        await self._coinglass_feed.stop()
-        await self._chainlink_feed.stop()
+        if self._coinglass_feed:
+            await self._coinglass_feed.stop()
+        if self._chainlink_feed:
+            await self._chainlink_feed.stop()
         await self._polymarket_feed.stop()
 
         # Cancel all tasks
@@ -455,8 +471,8 @@ class Orchestrator:
 
                 await self._db.update_feed_status(
                     binance=self._binance_feed.connected,
-                    coinglass=self._coinglass_feed.connected,
-                    chainlink=self._chainlink_feed.connected,
+                    coinglass=self._coinglass_feed.connected if self._coinglass_feed else False,
+                    chainlink=self._chainlink_feed.connected if self._chainlink_feed else False,
                     polymarket=self._polymarket_feed.connected,
                     opinion=self._opinion_client.connected,
                 )
