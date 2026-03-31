@@ -1,0 +1,1429 @@
+{
+  "period_hours": 24,
+  "generated_at": "2026-03-31T22:42:11.820245+00:00",
+  "analysis": {
+    "summary": {
+      "total_trades": 154,
+      "total_pnl": 28.44,
+      "starting_bankroll": 100.0,
+      "ending_bankroll": 128.44,
+      "win_rate": 57.8,
+      "wins": 89,
+      "losses": 65,
+      "avg_win": 6.85,
+      "avg_loss": -8.94,
+      "profit_factor": 1.05
+    },
+    "by_strategy": {
+      "vpin_cascade": {
+        "trades": 73,
+        "pnl": 6.24,
+        "win_rate": 54.8
+      },
+      "vpin_informed": {
+        "trades": 67,
+        "pnl": 31.54,
+        "win_rate": 58.2
+      },
+      "sub_dollar_arb": {
+        "trades": 14,
+        "pnl": -9.34,
+        "win_rate": 71.4
+      }
+    },
+    "thresholds_used": {
+      "vpin_informed": 0.45,
+      "vpin_cascade": 0.55,
+      "arb_min_spread": 0.005,
+      "bet_fraction": 0.1
+    }
+  },
+  "trades": [
+    {
+      "timestamp": "2026-03-30T22:45:00+00:00",
+      "strategy": "sub_dollar_arb",
+      "outcome": "WIN",
+      "pnl_usd": 0.04,
+      "stake_usd": 72.29,
+      "vpin": 0.45,
+      "market_slug": "BTC-ARB-1774910700.0"
+    },
+    {
+      "timestamp": "2026-03-30T22:50:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 8.5,
+      "stake_usd": 10.0,
+      "vpin": 0.56,
+      "market_slug": "BTC-CASCADE-1774911000.0"
+    },
+    {
+      "timestamp": "2026-03-30T23:05:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -5.16,
+      "stake_usd": 5.43,
+      "vpin": 0.49,
+      "market_slug": "BTC-INFORMED-1774911900.0"
+    },
+    {
+      "timestamp": "2026-03-30T23:10:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 8.79,
+      "stake_usd": 10.34,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774912200.0"
+    },
+    {
+      "timestamp": "2026-03-30T23:25:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 9.53,
+      "stake_usd": 11.22,
+      "vpin": 0.58,
+      "market_slug": "BTC-CASCADE-1774913100.0"
+    },
+    {
+      "timestamp": "2026-03-30T23:25:00+00:00",
+      "strategy": "sub_dollar_arb",
+      "outcome": "WIN",
+      "pnl_usd": 0.05,
+      "stake_usd": 47.21,
+      "vpin": 0.58,
+      "market_slug": "BTC-ARB-1774913100.0"
+    },
+    {
+      "timestamp": "2026-03-30T23:40:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 10.35,
+      "stake_usd": 12.18,
+      "vpin": 0.56,
+      "market_slug": "BTC-CASCADE-1774914000.0"
+    },
+    {
+      "timestamp": "2026-03-30T23:55:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -12.55,
+      "stake_usd": 13.21,
+      "vpin": 0.59,
+      "market_slug": "BTC-CASCADE-1774914900.0"
+    },
+    {
+      "timestamp": "2026-03-31T00:10:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -5.68,
+      "stake_usd": 5.98,
+      "vpin": 0.47,
+      "market_slug": "BTC-INFORMED-1774915800.0"
+    },
+    {
+      "timestamp": "2026-03-31T00:15:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -5.41,
+      "stake_usd": 5.69,
+      "vpin": 0.48,
+      "market_slug": "BTC-INFORMED-1774916100.0"
+    },
+    {
+      "timestamp": "2026-03-31T00:20:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 9.22,
+      "stake_usd": 10.85,
+      "vpin": 0.59,
+      "market_slug": "BTC-CASCADE-1774916400.0"
+    },
+    {
+      "timestamp": "2026-03-31T00:35:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -11.18,
+      "stake_usd": 11.77,
+      "vpin": 0.57,
+      "market_slug": "BTC-CASCADE-1774917300.0"
+    },
+    {
+      "timestamp": "2026-03-31T00:50:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -5.06,
+      "stake_usd": 5.33,
+      "vpin": 0.45,
+      "market_slug": "BTC-INFORMED-1774918200.0"
+    },
+    {
+      "timestamp": "2026-03-31T00:55:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -9.64,
+      "stake_usd": 10.15,
+      "vpin": 0.56,
+      "market_slug": "BTC-CASCADE-1774918500.0"
+    },
+    {
+      "timestamp": "2026-03-31T01:10:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -8.72,
+      "stake_usd": 9.18,
+      "vpin": 0.59,
+      "market_slug": "BTC-CASCADE-1774919400.0"
+    },
+    {
+      "timestamp": "2026-03-31T01:25:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -3.95,
+      "stake_usd": 4.15,
+      "vpin": 0.47,
+      "market_slug": "BTC-INFORMED-1774920300.0"
+    },
+    {
+      "timestamp": "2026-03-31T01:25:00+00:00",
+      "strategy": "sub_dollar_arb",
+      "outcome": "LOSS",
+      "pnl_usd": -0.98,
+      "stake_usd": 54.43,
+      "vpin": 0.47,
+      "market_slug": "BTC-ARB-1774920300.0"
+    },
+    {
+      "timestamp": "2026-03-31T01:30:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 6.64,
+      "stake_usd": 7.82,
+      "vpin": 0.58,
+      "market_slug": "BTC-CASCADE-1774920600.0"
+    },
+    {
+      "timestamp": "2026-03-31T01:45:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 3.82,
+      "stake_usd": 4.24,
+      "vpin": 0.46,
+      "market_slug": "BTC-INFORMED-1774921500.0"
+    },
+    {
+      "timestamp": "2026-03-31T01:50:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 7.53,
+      "stake_usd": 8.86,
+      "vpin": 0.57,
+      "market_slug": "BTC-CASCADE-1774921800.0"
+    },
+    {
+      "timestamp": "2026-03-31T02:05:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 8.17,
+      "stake_usd": 9.62,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774922700.0"
+    },
+    {
+      "timestamp": "2026-03-31T02:05:00+00:00",
+      "strategy": "sub_dollar_arb",
+      "outcome": "WIN",
+      "pnl_usd": -0.31,
+      "stake_usd": 58.32,
+      "vpin": 0.55,
+      "market_slug": "BTC-ARB-1774922700.0"
+    },
+    {
+      "timestamp": "2026-03-31T02:20:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -9.88,
+      "stake_usd": 10.4,
+      "vpin": 0.58,
+      "market_slug": "BTC-CASCADE-1774923600.0"
+    },
+    {
+      "timestamp": "2026-03-31T02:35:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.24,
+      "stake_usd": 4.71,
+      "vpin": 0.46,
+      "market_slug": "BTC-INFORMED-1774924500.0"
+    },
+    {
+      "timestamp": "2026-03-31T02:40:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 8.36,
+      "stake_usd": 9.84,
+      "vpin": 0.57,
+      "market_slug": "BTC-CASCADE-1774924800.0"
+    },
+    {
+      "timestamp": "2026-03-31T03:00:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.8,
+      "stake_usd": 5.34,
+      "vpin": 0.46,
+      "market_slug": "BTC-INFORMED-1774926000.0"
+    },
+    {
+      "timestamp": "2026-03-31T03:05:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 9.48,
+      "stake_usd": 11.15,
+      "vpin": 0.57,
+      "market_slug": "BTC-CASCADE-1774926300.0"
+    },
+    {
+      "timestamp": "2026-03-31T03:20:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 5.45,
+      "stake_usd": 6.05,
+      "vpin": 0.45,
+      "market_slug": "BTC-INFORMED-1774927200.0"
+    },
+    {
+      "timestamp": "2026-03-31T03:25:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 10.75,
+      "stake_usd": 12.65,
+      "vpin": 0.56,
+      "market_slug": "BTC-CASCADE-1774927500.0"
+    },
+    {
+      "timestamp": "2026-03-31T03:25:00+00:00",
+      "strategy": "sub_dollar_arb",
+      "outcome": "WIN",
+      "pnl_usd": -0.69,
+      "stake_usd": 92.39,
+      "vpin": 0.56,
+      "market_slug": "BTC-ARB-1774927500.0"
+    },
+    {
+      "timestamp": "2026-03-31T03:40:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 11.6,
+      "stake_usd": 13.65,
+      "vpin": 0.59,
+      "market_slug": "BTC-CASCADE-1774928400.0"
+    },
+    {
+      "timestamp": "2026-03-31T03:55:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 6.67,
+      "stake_usd": 7.41,
+      "vpin": 0.47,
+      "market_slug": "BTC-INFORMED-1774929300.0"
+    },
+    {
+      "timestamp": "2026-03-31T04:00:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 6.97,
+      "stake_usd": 7.74,
+      "vpin": 0.48,
+      "market_slug": "BTC-INFORMED-1774929600.0"
+    },
+    {
+      "timestamp": "2026-03-31T04:05:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -15.37,
+      "stake_usd": 16.18,
+      "vpin": 0.59,
+      "market_slug": "BTC-CASCADE-1774929900.0"
+    },
+    {
+      "timestamp": "2026-03-31T04:05:00+00:00",
+      "strategy": "sub_dollar_arb",
+      "outcome": "LOSS",
+      "pnl_usd": -1.68,
+      "stake_usd": 93.44,
+      "vpin": 0.59,
+      "market_slug": "BTC-ARB-1774929900.0"
+    },
+    {
+      "timestamp": "2026-03-31T04:20:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 12.3,
+      "stake_usd": 14.47,
+      "vpin": 0.57,
+      "market_slug": "BTC-CASCADE-1774930800.0"
+    },
+    {
+      "timestamp": "2026-03-31T04:35:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 13.35,
+      "stake_usd": 15.7,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774931700.0"
+    },
+    {
+      "timestamp": "2026-03-31T04:50:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 7.67,
+      "stake_usd": 8.52,
+      "vpin": 0.48,
+      "market_slug": "BTC-INFORMED-1774932600.0"
+    },
+    {
+      "timestamp": "2026-03-31T04:55:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -8.46,
+      "stake_usd": 8.9,
+      "vpin": 0.49,
+      "market_slug": "BTC-INFORMED-1774932900.0"
+    },
+    {
+      "timestamp": "2026-03-31T05:00:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 14.41,
+      "stake_usd": 16.96,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774933200.0"
+    },
+    {
+      "timestamp": "2026-03-31T05:15:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -17.48,
+      "stake_usd": 18.4,
+      "vpin": 0.58,
+      "market_slug": "BTC-CASCADE-1774934100.0"
+    },
+    {
+      "timestamp": "2026-03-31T05:30:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -15.82,
+      "stake_usd": 16.65,
+      "vpin": 0.56,
+      "market_slug": "BTC-CASCADE-1774935000.0"
+    },
+    {
+      "timestamp": "2026-03-31T05:45:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 12.81,
+      "stake_usd": 15.07,
+      "vpin": 0.59,
+      "market_slug": "BTC-CASCADE-1774935900.0"
+    },
+    {
+      "timestamp": "2026-03-31T06:00:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 13.9,
+      "stake_usd": 16.35,
+      "vpin": 0.57,
+      "market_slug": "BTC-CASCADE-1774936800.0"
+    },
+    {
+      "timestamp": "2026-03-31T06:15:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 7.98,
+      "stake_usd": 8.87,
+      "vpin": 0.45,
+      "market_slug": "BTC-INFORMED-1774937700.0"
+    },
+    {
+      "timestamp": "2026-03-31T06:20:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -8.81,
+      "stake_usd": 9.27,
+      "vpin": 0.46,
+      "market_slug": "BTC-INFORMED-1774938000.0"
+    },
+    {
+      "timestamp": "2026-03-31T06:25:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 7.95,
+      "stake_usd": 8.83,
+      "vpin": 0.47,
+      "market_slug": "BTC-INFORMED-1774938300.0"
+    },
+    {
+      "timestamp": "2026-03-31T06:30:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -8.76,
+      "stake_usd": 9.23,
+      "vpin": 0.48,
+      "market_slug": "BTC-INFORMED-1774938600.0"
+    },
+    {
+      "timestamp": "2026-03-31T06:35:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 14.94,
+      "stake_usd": 17.57,
+      "vpin": 0.59,
+      "market_slug": "BTC-CASCADE-1774938900.0"
+    },
+    {
+      "timestamp": "2026-03-31T06:50:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -18.12,
+      "stake_usd": 19.07,
+      "vpin": 0.57,
+      "market_slug": "BTC-CASCADE-1774939800.0"
+    },
+    {
+      "timestamp": "2026-03-31T07:05:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -8.2,
+      "stake_usd": 8.63,
+      "vpin": 0.45,
+      "market_slug": "BTC-INFORMED-1774940700.0"
+    },
+    {
+      "timestamp": "2026-03-31T07:10:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -7.81,
+      "stake_usd": 8.22,
+      "vpin": 0.46,
+      "market_slug": "BTC-INFORMED-1774941000.0"
+    },
+    {
+      "timestamp": "2026-03-31T07:15:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -7.44,
+      "stake_usd": 7.83,
+      "vpin": 0.47,
+      "market_slug": "BTC-INFORMED-1774941300.0"
+    },
+    {
+      "timestamp": "2026-03-31T07:20:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 6.71,
+      "stake_usd": 7.46,
+      "vpin": 0.48,
+      "market_slug": "BTC-INFORMED-1774941600.0"
+    },
+    {
+      "timestamp": "2026-03-31T07:25:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 13.25,
+      "stake_usd": 15.58,
+      "vpin": 0.59,
+      "market_slug": "BTC-CASCADE-1774941900.0"
+    },
+    {
+      "timestamp": "2026-03-31T07:25:00+00:00",
+      "strategy": "sub_dollar_arb",
+      "outcome": "LOSS",
+      "pnl_usd": -1.72,
+      "stake_usd": 95.65,
+      "vpin": 0.59,
+      "market_slug": "BTC-ARB-1774941900.0"
+    },
+    {
+      "timestamp": "2026-03-31T07:40:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 7.53,
+      "stake_usd": 8.37,
+      "vpin": 0.47,
+      "market_slug": "BTC-INFORMED-1774942800.0"
+    },
+    {
+      "timestamp": "2026-03-31T07:45:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -16.62,
+      "stake_usd": 17.49,
+      "vpin": 0.58,
+      "market_slug": "BTC-CASCADE-1774943100.0"
+    },
+    {
+      "timestamp": "2026-03-31T08:00:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 13.45,
+      "stake_usd": 15.83,
+      "vpin": 0.56,
+      "market_slug": "BTC-CASCADE-1774944000.0"
+    },
+    {
+      "timestamp": "2026-03-31T08:15:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -16.31,
+      "stake_usd": 17.17,
+      "vpin": 0.59,
+      "market_slug": "BTC-CASCADE-1774944900.0"
+    },
+    {
+      "timestamp": "2026-03-31T08:30:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -7.38,
+      "stake_usd": 7.77,
+      "vpin": 0.47,
+      "market_slug": "BTC-INFORMED-1774945800.0"
+    },
+    {
+      "timestamp": "2026-03-31T08:35:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 6.66,
+      "stake_usd": 7.4,
+      "vpin": 0.48,
+      "market_slug": "BTC-INFORMED-1774946100.0"
+    },
+    {
+      "timestamp": "2026-03-31T08:40:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -7.35,
+      "stake_usd": 7.74,
+      "vpin": 0.49,
+      "market_slug": "BTC-INFORMED-1774946400.0"
+    },
+    {
+      "timestamp": "2026-03-31T08:45:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -14.0,
+      "stake_usd": 14.74,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774946700.0"
+    },
+    {
+      "timestamp": "2026-03-31T08:45:00+00:00",
+      "strategy": "sub_dollar_arb",
+      "outcome": "WIN",
+      "pnl_usd": -0.86,
+      "stake_usd": 67.31,
+      "vpin": 0.55,
+      "market_slug": "BTC-ARB-1774946700.0"
+    },
+    {
+      "timestamp": "2026-03-31T09:00:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 11.26,
+      "stake_usd": 13.25,
+      "vpin": 0.58,
+      "market_slug": "BTC-CASCADE-1774947600.0"
+    },
+    {
+      "timestamp": "2026-03-31T09:15:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -6.83,
+      "stake_usd": 7.19,
+      "vpin": 0.46,
+      "market_slug": "BTC-INFORMED-1774948500.0"
+    },
+    {
+      "timestamp": "2026-03-31T09:20:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -13.01,
+      "stake_usd": 13.69,
+      "vpin": 0.57,
+      "market_slug": "BTC-CASCADE-1774948800.0"
+    },
+    {
+      "timestamp": "2026-03-31T09:35:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 10.53,
+      "stake_usd": 12.39,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774949700.0"
+    },
+    {
+      "timestamp": "2026-03-31T09:50:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -6.39,
+      "stake_usd": 6.72,
+      "vpin": 0.48,
+      "market_slug": "BTC-INFORMED-1774950600.0"
+    },
+    {
+      "timestamp": "2026-03-31T09:55:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -6.08,
+      "stake_usd": 6.4,
+      "vpin": 0.49,
+      "market_slug": "BTC-INFORMED-1774950900.0"
+    },
+    {
+      "timestamp": "2026-03-31T10:00:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 10.37,
+      "stake_usd": 12.2,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774951200.0"
+    },
+    {
+      "timestamp": "2026-03-31T10:15:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 5.96,
+      "stake_usd": 6.62,
+      "vpin": 0.48,
+      "market_slug": "BTC-INFORMED-1774952100.0"
+    },
+    {
+      "timestamp": "2026-03-31T10:20:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -13.14,
+      "stake_usd": 13.83,
+      "vpin": 0.59,
+      "market_slug": "BTC-CASCADE-1774952400.0"
+    },
+    {
+      "timestamp": "2026-03-31T10:35:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 5.63,
+      "stake_usd": 6.26,
+      "vpin": 0.47,
+      "market_slug": "BTC-INFORMED-1774953300.0"
+    },
+    {
+      "timestamp": "2026-03-31T10:40:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -12.43,
+      "stake_usd": 13.08,
+      "vpin": 0.58,
+      "market_slug": "BTC-CASCADE-1774953600.0"
+    },
+    {
+      "timestamp": "2026-03-31T10:55:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -5.62,
+      "stake_usd": 5.92,
+      "vpin": 0.46,
+      "market_slug": "BTC-INFORMED-1774954500.0"
+    },
+    {
+      "timestamp": "2026-03-31T11:00:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -10.71,
+      "stake_usd": 11.28,
+      "vpin": 0.57,
+      "market_slug": "BTC-CASCADE-1774954800.0"
+    },
+    {
+      "timestamp": "2026-03-31T11:15:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 8.67,
+      "stake_usd": 10.2,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774955700.0"
+    },
+    {
+      "timestamp": "2026-03-31T11:30:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -10.52,
+      "stake_usd": 11.07,
+      "vpin": 0.58,
+      "market_slug": "BTC-CASCADE-1774956600.0"
+    },
+    {
+      "timestamp": "2026-03-31T11:45:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.51,
+      "stake_usd": 5.01,
+      "vpin": 0.46,
+      "market_slug": "BTC-INFORMED-1774957500.0"
+    },
+    {
+      "timestamp": "2026-03-31T11:50:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.71,
+      "stake_usd": 5.24,
+      "vpin": 0.47,
+      "market_slug": "BTC-INFORMED-1774957800.0"
+    },
+    {
+      "timestamp": "2026-03-31T11:55:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 9.3,
+      "stake_usd": 10.94,
+      "vpin": 0.58,
+      "market_slug": "BTC-CASCADE-1774958100.0"
+    },
+    {
+      "timestamp": "2026-03-31T12:10:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -5.64,
+      "stake_usd": 5.94,
+      "vpin": 0.46,
+      "market_slug": "BTC-INFORMED-1774959000.0"
+    },
+    {
+      "timestamp": "2026-03-31T12:15:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 9.61,
+      "stake_usd": 11.31,
+      "vpin": 0.57,
+      "market_slug": "BTC-CASCADE-1774959300.0"
+    },
+    {
+      "timestamp": "2026-03-31T12:30:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -5.83,
+      "stake_usd": 6.13,
+      "vpin": 0.45,
+      "market_slug": "BTC-INFORMED-1774960200.0"
+    },
+    {
+      "timestamp": "2026-03-31T12:35:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -11.1,
+      "stake_usd": 11.69,
+      "vpin": 0.56,
+      "market_slug": "BTC-CASCADE-1774960500.0"
+    },
+    {
+      "timestamp": "2026-03-31T12:50:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.76,
+      "stake_usd": 5.29,
+      "vpin": 0.49,
+      "market_slug": "BTC-INFORMED-1774961400.0"
+    },
+    {
+      "timestamp": "2026-03-31T12:55:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.97,
+      "stake_usd": 5.53,
+      "vpin": 0.45,
+      "market_slug": "BTC-INFORMED-1774961700.0"
+    },
+    {
+      "timestamp": "2026-03-31T13:00:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -10.97,
+      "stake_usd": 11.55,
+      "vpin": 0.56,
+      "market_slug": "BTC-CASCADE-1774962000.0"
+    },
+    {
+      "timestamp": "2026-03-31T13:15:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.7,
+      "stake_usd": 5.23,
+      "vpin": 0.49,
+      "market_slug": "BTC-INFORMED-1774962900.0"
+    },
+    {
+      "timestamp": "2026-03-31T13:20:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 9.28,
+      "stake_usd": 10.92,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774963200.0"
+    },
+    {
+      "timestamp": "2026-03-31T13:35:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 10.07,
+      "stake_usd": 11.85,
+      "vpin": 0.58,
+      "market_slug": "BTC-CASCADE-1774964100.0"
+    },
+    {
+      "timestamp": "2026-03-31T13:50:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 10.93,
+      "stake_usd": 12.86,
+      "vpin": 0.56,
+      "market_slug": "BTC-CASCADE-1774965000.0"
+    },
+    {
+      "timestamp": "2026-03-31T14:05:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 6.28,
+      "stake_usd": 6.98,
+      "vpin": 0.49,
+      "market_slug": "BTC-INFORMED-1774965900.0"
+    },
+    {
+      "timestamp": "2026-03-31T14:05:00+00:00",
+      "strategy": "sub_dollar_arb",
+      "outcome": "WIN",
+      "pnl_usd": -1.09,
+      "stake_usd": 87.35,
+      "vpin": 0.49,
+      "market_slug": "BTC-ARB-1774965900.0"
+    },
+    {
+      "timestamp": "2026-03-31T14:10:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -13.75,
+      "stake_usd": 14.47,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774966200.0"
+    },
+    {
+      "timestamp": "2026-03-31T14:25:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 11.13,
+      "stake_usd": 13.1,
+      "vpin": 0.58,
+      "market_slug": "BTC-CASCADE-1774967100.0"
+    },
+    {
+      "timestamp": "2026-03-31T14:40:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 6.39,
+      "stake_usd": 7.1,
+      "vpin": 0.46,
+      "market_slug": "BTC-INFORMED-1774968000.0"
+    },
+    {
+      "timestamp": "2026-03-31T14:45:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 6.68,
+      "stake_usd": 7.42,
+      "vpin": 0.47,
+      "market_slug": "BTC-INFORMED-1774968300.0"
+    },
+    {
+      "timestamp": "2026-03-31T14:45:00+00:00",
+      "strategy": "sub_dollar_arb",
+      "outcome": "WIN",
+      "pnl_usd": -0.71,
+      "stake_usd": 89.45,
+      "vpin": 0.47,
+      "market_slug": "BTC-ARB-1774968300.0"
+    },
+    {
+      "timestamp": "2026-03-31T14:50:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -7.34,
+      "stake_usd": 7.72,
+      "vpin": 0.48,
+      "market_slug": "BTC-INFORMED-1774968600.0"
+    },
+    {
+      "timestamp": "2026-03-31T14:55:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 6.62,
+      "stake_usd": 7.36,
+      "vpin": 0.49,
+      "market_slug": "BTC-INFORMED-1774968900.0"
+    },
+    {
+      "timestamp": "2026-03-31T15:00:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -14.6,
+      "stake_usd": 15.37,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774969200.0"
+    },
+    {
+      "timestamp": "2026-03-31T15:15:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -6.61,
+      "stake_usd": 6.96,
+      "vpin": 0.48,
+      "market_slug": "BTC-INFORMED-1774970100.0"
+    },
+    {
+      "timestamp": "2026-03-31T15:20:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -12.59,
+      "stake_usd": 13.25,
+      "vpin": 0.59,
+      "market_slug": "BTC-CASCADE-1774970400.0"
+    },
+    {
+      "timestamp": "2026-03-31T15:35:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -11.39,
+      "stake_usd": 11.99,
+      "vpin": 0.57,
+      "market_slug": "BTC-CASCADE-1774971300.0"
+    },
+    {
+      "timestamp": "2026-03-31T15:50:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -10.31,
+      "stake_usd": 10.85,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774972200.0"
+    },
+    {
+      "timestamp": "2026-03-31T16:05:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 8.35,
+      "stake_usd": 9.82,
+      "vpin": 0.58,
+      "market_slug": "BTC-CASCADE-1774973100.0"
+    },
+    {
+      "timestamp": "2026-03-31T16:05:00+00:00",
+      "strategy": "sub_dollar_arb",
+      "outcome": "LOSS",
+      "pnl_usd": -1.67,
+      "stake_usd": 92.88,
+      "vpin": 0.58,
+      "market_slug": "BTC-ARB-1774973100.0"
+    },
+    {
+      "timestamp": "2026-03-31T16:20:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 8.92,
+      "stake_usd": 10.49,
+      "vpin": 0.56,
+      "market_slug": "BTC-CASCADE-1774974000.0"
+    },
+    {
+      "timestamp": "2026-03-31T16:35:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -10.81,
+      "stake_usd": 11.38,
+      "vpin": 0.59,
+      "market_slug": "BTC-CASCADE-1774974900.0"
+    },
+    {
+      "timestamp": "2026-03-31T16:50:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.64,
+      "stake_usd": 5.15,
+      "vpin": 0.47,
+      "market_slug": "BTC-INFORMED-1774975800.0"
+    },
+    {
+      "timestamp": "2026-03-31T16:55:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.84,
+      "stake_usd": 5.38,
+      "vpin": 0.48,
+      "market_slug": "BTC-INFORMED-1774976100.0"
+    },
+    {
+      "timestamp": "2026-03-31T17:00:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 9.56,
+      "stake_usd": 11.25,
+      "vpin": 0.59,
+      "market_slug": "BTC-CASCADE-1774976400.0"
+    },
+    {
+      "timestamp": "2026-03-31T17:15:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -5.8,
+      "stake_usd": 6.1,
+      "vpin": 0.47,
+      "market_slug": "BTC-INFORMED-1774977300.0"
+    },
+    {
+      "timestamp": "2026-03-31T17:20:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -11.04,
+      "stake_usd": 11.63,
+      "vpin": 0.58,
+      "market_slug": "BTC-CASCADE-1774977600.0"
+    },
+    {
+      "timestamp": "2026-03-31T17:35:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -5.0,
+      "stake_usd": 5.26,
+      "vpin": 0.46,
+      "market_slug": "BTC-INFORMED-1774978500.0"
+    },
+    {
+      "timestamp": "2026-03-31T17:40:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.51,
+      "stake_usd": 5.01,
+      "vpin": 0.47,
+      "market_slug": "BTC-INFORMED-1774978800.0"
+    },
+    {
+      "timestamp": "2026-03-31T17:45:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -4.97,
+      "stake_usd": 5.24,
+      "vpin": 0.48,
+      "market_slug": "BTC-INFORMED-1774979100.0"
+    },
+    {
+      "timestamp": "2026-03-31T17:50:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -4.74,
+      "stake_usd": 4.99,
+      "vpin": 0.49,
+      "market_slug": "BTC-INFORMED-1774979400.0"
+    },
+    {
+      "timestamp": "2026-03-31T18:00:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 8.08,
+      "stake_usd": 9.5,
+      "vpin": 0.56,
+      "market_slug": "BTC-CASCADE-1774980000.0"
+    },
+    {
+      "timestamp": "2026-03-31T18:15:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.64,
+      "stake_usd": 5.15,
+      "vpin": 0.49,
+      "market_slug": "BTC-INFORMED-1774980900.0"
+    },
+    {
+      "timestamp": "2026-03-31T18:20:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -5.12,
+      "stake_usd": 5.39,
+      "vpin": 0.45,
+      "market_slug": "BTC-INFORMED-1774981200.0"
+    },
+    {
+      "timestamp": "2026-03-31T18:25:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 8.72,
+      "stake_usd": 10.26,
+      "vpin": 0.56,
+      "market_slug": "BTC-CASCADE-1774981500.0"
+    },
+    {
+      "timestamp": "2026-03-31T18:40:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 5.01,
+      "stake_usd": 5.57,
+      "vpin": 0.49,
+      "market_slug": "BTC-INFORMED-1774982400.0"
+    },
+    {
+      "timestamp": "2026-03-31T18:45:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -11.05,
+      "stake_usd": 11.63,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774982700.0"
+    },
+    {
+      "timestamp": "2026-03-31T18:45:00+00:00",
+      "strategy": "sub_dollar_arb",
+      "outcome": "WIN",
+      "pnl_usd": 0.1,
+      "stake_usd": 44.24,
+      "vpin": 0.55,
+      "market_slug": "BTC-ARB-1774982700.0"
+    },
+    {
+      "timestamp": "2026-03-31T19:00:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -10.01,
+      "stake_usd": 10.54,
+      "vpin": 0.58,
+      "market_slug": "BTC-CASCADE-1774983600.0"
+    },
+    {
+      "timestamp": "2026-03-31T19:15:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.29,
+      "stake_usd": 4.77,
+      "vpin": 0.46,
+      "market_slug": "BTC-INFORMED-1774984500.0"
+    },
+    {
+      "timestamp": "2026-03-31T19:20:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -9.47,
+      "stake_usd": 9.97,
+      "vpin": 0.57,
+      "market_slug": "BTC-CASCADE-1774984800.0"
+    },
+    {
+      "timestamp": "2026-03-31T19:35:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.06,
+      "stake_usd": 4.51,
+      "vpin": 0.45,
+      "market_slug": "BTC-INFORMED-1774985700.0"
+    },
+    {
+      "timestamp": "2026-03-31T19:40:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -8.95,
+      "stake_usd": 9.43,
+      "vpin": 0.56,
+      "market_slug": "BTC-CASCADE-1774986000.0"
+    },
+    {
+      "timestamp": "2026-03-31T19:55:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 3.84,
+      "stake_usd": 4.27,
+      "vpin": 0.49,
+      "market_slug": "BTC-INFORMED-1774986900.0"
+    },
+    {
+      "timestamp": "2026-03-31T20:00:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -8.47,
+      "stake_usd": 8.91,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774987200.0"
+    },
+    {
+      "timestamp": "2026-03-31T20:15:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 3.63,
+      "stake_usd": 4.03,
+      "vpin": 0.48,
+      "market_slug": "BTC-INFORMED-1774988100.0"
+    },
+    {
+      "timestamp": "2026-03-31T20:20:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 3.79,
+      "stake_usd": 4.22,
+      "vpin": 0.49,
+      "market_slug": "BTC-INFORMED-1774988400.0"
+    },
+    {
+      "timestamp": "2026-03-31T20:25:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 3.96,
+      "stake_usd": 4.4,
+      "vpin": 0.45,
+      "market_slug": "BTC-INFORMED-1774988700.0"
+    },
+    {
+      "timestamp": "2026-03-31T20:30:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.14,
+      "stake_usd": 4.6,
+      "vpin": 0.46,
+      "market_slug": "BTC-INFORMED-1774989000.0"
+    },
+    {
+      "timestamp": "2026-03-31T20:35:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -9.14,
+      "stake_usd": 9.62,
+      "vpin": 0.57,
+      "market_slug": "BTC-CASCADE-1774989300.0"
+    },
+    {
+      "timestamp": "2026-03-31T20:50:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 7.4,
+      "stake_usd": 8.71,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774990200.0"
+    },
+    {
+      "timestamp": "2026-03-31T21:05:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.25,
+      "stake_usd": 4.72,
+      "vpin": 0.48,
+      "market_slug": "BTC-INFORMED-1774991100.0"
+    },
+    {
+      "timestamp": "2026-03-31T21:10:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "LOSS",
+      "pnl_usd": -9.38,
+      "stake_usd": 9.87,
+      "vpin": 0.59,
+      "market_slug": "BTC-CASCADE-1774991400.0"
+    },
+    {
+      "timestamp": "2026-03-31T21:25:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 7.59,
+      "stake_usd": 8.93,
+      "vpin": 0.57,
+      "market_slug": "BTC-CASCADE-1774992300.0"
+    },
+    {
+      "timestamp": "2026-03-31T21:25:00+00:00",
+      "strategy": "sub_dollar_arb",
+      "outcome": "WIN",
+      "pnl_usd": 0.3,
+      "stake_usd": 68.8,
+      "vpin": 0.57,
+      "market_slug": "BTC-ARB-1774992300.0"
+    },
+    {
+      "timestamp": "2026-03-31T21:40:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 8.26,
+      "stake_usd": 9.72,
+      "vpin": 0.55,
+      "market_slug": "BTC-CASCADE-1774993200.0"
+    },
+    {
+      "timestamp": "2026-03-31T21:55:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.75,
+      "stake_usd": 5.27,
+      "vpin": 0.48,
+      "market_slug": "BTC-INFORMED-1774994100.0"
+    },
+    {
+      "timestamp": "2026-03-31T22:00:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 4.96,
+      "stake_usd": 5.51,
+      "vpin": 0.49,
+      "market_slug": "BTC-INFORMED-1774994400.0"
+    },
+    {
+      "timestamp": "2026-03-31T22:05:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -5.47,
+      "stake_usd": 5.76,
+      "vpin": 0.45,
+      "market_slug": "BTC-INFORMED-1774994700.0"
+    },
+    {
+      "timestamp": "2026-03-31T22:05:00+00:00",
+      "strategy": "sub_dollar_arb",
+      "outcome": "WIN",
+      "pnl_usd": -0.12,
+      "stake_usd": 94.32,
+      "vpin": 0.45,
+      "market_slug": "BTC-ARB-1774994700.0"
+    },
+    {
+      "timestamp": "2026-03-31T22:10:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 9.32,
+      "stake_usd": 10.96,
+      "vpin": 0.56,
+      "market_slug": "BTC-CASCADE-1774995000.0"
+    },
+    {
+      "timestamp": "2026-03-31T22:25:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "LOSS",
+      "pnl_usd": -5.65,
+      "stake_usd": 5.95,
+      "vpin": 0.49,
+      "market_slug": "BTC-INFORMED-1774995900.0"
+    },
+    {
+      "timestamp": "2026-03-31T22:30:00+00:00",
+      "strategy": "vpin_informed",
+      "outcome": "WIN",
+      "pnl_usd": 5.1,
+      "stake_usd": 5.66,
+      "vpin": 0.45,
+      "market_slug": "BTC-INFORMED-1774996200.0"
+    },
+    {
+      "timestamp": "2026-03-31T22:35:00+00:00",
+      "strategy": "vpin_cascade",
+      "outcome": "WIN",
+      "pnl_usd": 10.06,
+      "stake_usd": 11.84,
+      "vpin": 0.56,
+      "market_slug": "BTC-CASCADE-1774996500.0"
+    }
+  ]
+}
