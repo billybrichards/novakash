@@ -2,36 +2,45 @@
 Engine Constants
 
 All numerical parameters for signals, execution, and risk management.
-These are defaults; runtime config in DB can override them.
+Reads from environment variables with sensible defaults.
+Runtime config in DB can further override them.
 """
 
+import os
+
+def _env_float(key: str, default: float) -> float:
+    return float(os.environ.get(key, default))
+
+def _env_int(key: str, default: int) -> int:
+    return int(os.environ.get(key, default))
+
 # ── Polymarket / Window ──
-POLY_WINDOW_SECONDS: int = 300  # Look-back window for arb price validity
+POLY_WINDOW_SECONDS: int = _env_int("POLY_WINDOW_SECONDS", 300)
 
 # ── Fee Multipliers ──
-POLYMARKET_CRYPTO_FEE_MULT: float = 0.072   # 7.2% effective fee on crypto markets
-OPINION_CRYPTO_FEE_MULT: float = 0.04       # 4.0% effective fee on Opinion
+POLYMARKET_CRYPTO_FEE_MULT: float = _env_float("POLYMARKET_FEE_MULT", 0.072)
+OPINION_CRYPTO_FEE_MULT: float = _env_float("OPINION_FEE_MULT", 0.04)
 
 # ── VPIN (Volume-Synchronized PIN) ──
-VPIN_BUCKET_SIZE_USD: float = 50_000        # Each volume bucket = $50k traded notional
-VPIN_LOOKBACK_BUCKETS: int = 50             # Rolling window of 50 buckets
-VPIN_INFORMED_THRESHOLD: float = 0.55      # VPIN > 0.55 → elevated informed flow
-VPIN_CASCADE_THRESHOLD: float = 0.70       # VPIN > 0.70 → cascade-level informed flow
+VPIN_BUCKET_SIZE_USD: float = _env_float("VPIN_BUCKET_SIZE_USD", 50_000)
+VPIN_LOOKBACK_BUCKETS: int = _env_int("VPIN_LOOKBACK_BUCKETS", 50)
+VPIN_INFORMED_THRESHOLD: float = _env_float("VPIN_INFORMED_THRESHOLD", 0.55)
+VPIN_CASCADE_THRESHOLD: float = _env_float("VPIN_CASCADE_THRESHOLD", 0.70)
 
 # ── Cascade Detector ──
-CASCADE_OI_DROP_THRESHOLD: float = 0.02     # OI must drop ≥ 2% for cascade signal
-CASCADE_LIQ_VOLUME_THRESHOLD: float = 5e6   # Liquidation volume must exceed $5M
+CASCADE_OI_DROP_THRESHOLD: float = _env_float("CASCADE_OI_DROP_THRESHOLD", 0.02)
+CASCADE_LIQ_VOLUME_THRESHOLD: float = _env_float("CASCADE_LIQ_VOLUME_THRESHOLD", 5e6)
 
 # ── Risk Management ──
-MAX_DRAWDOWN_KILL: float = 0.45             # Kill switch at 45% drawdown from peak
-BET_FRACTION: float = 0.025                 # Kelly fraction: 2.5% of bankroll per bet
-MIN_BET_USD: float = 2.0                    # Minimum bet size (Polymarket minimum)
-MAX_OPEN_EXPOSURE_PCT: float = 0.30         # Max 30% of bankroll in open positions
-DAILY_LOSS_LIMIT_PCT: float = 0.10         # Stop trading after 10% daily loss
-CONSECUTIVE_LOSS_COOLDOWN: int = 3          # Cool down after N consecutive losses
-COOLDOWN_SECONDS: int = 900                 # 15-minute cooldown duration
+MAX_DRAWDOWN_KILL: float = _env_float("MAX_DRAWDOWN_KILL", 0.45)
+BET_FRACTION: float = _env_float("BET_FRACTION", 0.025)
+MIN_BET_USD: float = _env_float("MIN_BET_USD", 2.0)
+MAX_OPEN_EXPOSURE_PCT: float = _env_float("MAX_OPEN_EXPOSURE_PCT", 0.30)
+DAILY_LOSS_LIMIT_PCT: float = _env_float("DAILY_LOSS_LIMIT_PCT", 0.10)
+CONSECUTIVE_LOSS_COOLDOWN: int = _env_int("CONSECUTIVE_LOSS_COOLDOWN", 3)
+COOLDOWN_SECONDS: int = _env_int("COOLDOWN_SECONDS", 900)
 
 # ── Sub-$1 Arbitrage ──
-ARB_MIN_SPREAD: float = 0.015              # Minimum net spread after fees to trade
-ARB_MAX_POSITION: float = 50.0             # Max USD per arb position
-ARB_MAX_EXECUTION_MS: int = 500            # Max time to execute both legs (ms)
+ARB_MIN_SPREAD: float = _env_float("ARB_MIN_SPREAD", 0.015)
+ARB_MAX_POSITION: float = _env_float("ARB_MAX_POSITION", 50.0)
+ARB_MAX_EXECUTION_MS: int = _env_int("ARB_MAX_EXECUTION_MS", 500)
