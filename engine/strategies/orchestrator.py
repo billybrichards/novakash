@@ -1,273 +1,528 @@
 """
-Strategy Orchestrator
+Orchestrator — Engine Central Coordinator
 
-Runs all active strategies concurrently, manages data feed lifecycles,
-emits a heartbeat every 10 seconds, and handles graceful shutdown on SIGINT/SIGTERM.
+The Orchestrator owns the full lifecycle of every component in the engine.
+It wires all feeds, signals, and strategies together and manages:
+  - Component creation from Settings
+  - Feed task management
+  - Signal callback wiring (feeds → aggregator → signals → strategies)
+  - Heartbeat (every 10s)
+  - Resolution polling (every 5s)
+  - Market state fan-out loop
+  - Graceful shutdown
 
-Architecture:
-  - One asyncio task per feed (Binance WS, CoinGlass, Chainlink, Polymarket WS).
-  - MarketAggregator stream() yields snapshots; orchestrator fans them out to strategies.
-  - Heartbeat task writes liveness to DB and logs risk state every 10s.
-  - Feed monitor task checks staleness and updates DB feed_status flags.
-  - On shutdown: cancel all tasks, drain feeds, flush DB writes.
+All components are created internally; the caller simply does:
+    orch = Orchestrator(settings=settings)
+    await orch.run()
 """
 
 from __future__ import annotations
 
 import asyncio
-import signal
+import signal as _signal
 from typing import Optional
+
 import structlog
 
 from alerts.telegram import TelegramAlerter
+from config.settings import Settings
 from data.aggregator import MarketAggregator
 from data.feeds.binance_ws import BinanceWebSocketFeed
-from data.feeds.coinglass_api import CoinGlassAPIFeed
 from data.feeds.chainlink_rpc import ChainlinkRPCFeed
+from data.feeds.coinglass_api import CoinGlassAPIFeed
 from data.feeds.polymarket_ws import PolymarketWebSocketFeed
-from data.models import MarketState
+from data.models import (
+    AggTrade,
+    ArbOpportunity,
+    CascadeSignal,
+    LiquidationVolume,
+    OpenInterestSnapshot,
+    PolymarketOrderBook,
+    VPINSignal,
+)
+from execution.opinion_client import OpinionClient
 from execution.order_manager import OrderManager
+from execution.polymarket_client import PolymarketClient
 from execution.risk_manager import RiskManager
 from persistence.db_client import DBClient
-from strategies.base import BaseStrategy
+from signals.arb_scanner import ArbScanner
+from signals.cascade_detector import CascadeDetector
+from signals.regime_classifier import RegimeClassifier
+from signals.vpin import VPINCalculator
+from strategies.sub_dollar_arb import SubDollarArbStrategy
+from strategies.vpin_cascade import VPINCascadeStrategy
 
 log = structlog.get_logger(__name__)
-
-HEARTBEAT_INTERVAL_S = 10
-FEED_MONITOR_INTERVAL_S = 15
 
 
 class Orchestrator:
     """
-    Top-level coordinator for the trading engine.
+    Central coordinator for the Novakash trading engine.
 
-    Usage:
-        orch = Orchestrator(...)
-        await orch.start()   # connects DB, starts feeds
-        await orch.run()     # blocks until shutdown signal
-        await orch.stop()    # graceful teardown
+    Owns all component creation, wiring, task management, and shutdown.
     """
 
-    def __init__(
-        self,
-        strategies: list[BaseStrategy],
-        aggregator: MarketAggregator,
-        binance_feed: BinanceWebSocketFeed,
-        coinglass_feed: CoinGlassAPIFeed,
-        chainlink_feed: ChainlinkRPCFeed,
-        polymarket_feed: PolymarketWebSocketFeed,
-        order_manager: OrderManager,
-        risk_manager: RiskManager,
-        db_client: DBClient,
-        alerter: TelegramAlerter,
-    ) -> None:
-        self._strategies = strategies
-        self._aggregator = aggregator
-        self._binance = binance_feed
-        self._coinglass = coinglass_feed
-        self._chainlink = chainlink_feed
-        self._polymarket = polymarket_feed
-        self._om = order_manager
-        self._rm = risk_manager
-        self._db = db_client
-        self._alerter = alerter
-
-        self._running = False
-        self._tasks: list[asyncio.Task] = []
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
         self._shutdown_event = asyncio.Event()
+        self._tasks: list[asyncio.Task] = []
 
-    # ─── Public Lifecycle ─────────────────────────────────────────────────────
+        log.info("orchestrator.init", paper_mode=settings.paper_mode)
+
+        # ── Persistence ────────────────────────────────────────────────────────
+        self._db = DBClient(settings=settings)
+
+        # ── Aggregator ─────────────────────────────────────────────────────────
+        self._aggregator = MarketAggregator()
+
+        # ── Alerts ─────────────────────────────────────────────────────────────
+        self._alerter = TelegramAlerter(
+            bot_token=settings.telegram_bot_token,
+            chat_id=settings.telegram_chat_id,
+        )
+
+        # ── Signal Processors ──────────────────────────────────────────────────
+        # VPIN (wired to on_vpin_signal after creation)
+        self._vpin_calc = VPINCalculator(
+            on_signal=self._on_vpin_signal,
+        )
+
+        # Cascade Detector (wired to on_cascade_signal)
+        self._cascade = CascadeDetector(
+            on_signal=self._on_cascade_signal,
+        )
+
+        # Arb Scanner
+        self._arb_scanner = ArbScanner(
+            fee_mult=0.072,  # POLYMARKET_CRYPTO_FEE_MULT
+            on_opportunities=self._on_arb_opportunities,
+        )
+
+        # Regime Classifier (stateless utility, no callbacks needed)
+        self._regime = RegimeClassifier()
+
+        # ── Execution Clients ──────────────────────────────────────────────────
+        self._poly_client = PolymarketClient(
+            private_key=settings.poly_private_key,
+            api_key=settings.poly_api_key,
+            api_secret=settings.poly_api_secret,
+            api_passphrase=settings.poly_api_passphrase,
+            funder_address=settings.poly_funder_address,
+            paper_mode=settings.paper_mode,
+        )
+        self._opinion_client = OpinionClient(
+            api_key=settings.opinion_api_key,
+            wallet_key=settings.opinion_wallet_key,
+            paper_mode=settings.paper_mode,
+        )
+
+        # ── Order & Risk Management ────────────────────────────────────────────
+        self._order_manager = OrderManager(
+            db=self._db,
+            bankroll=settings.starting_bankroll,
+            paper_mode=settings.paper_mode,
+            on_resolution=self._on_order_resolution,
+        )
+        self._risk_manager = RiskManager(
+            order_manager=self._order_manager,
+            starting_bankroll=settings.starting_bankroll,
+            paper_mode=settings.paper_mode,
+        )
+
+        # ── Strategies ─────────────────────────────────────────────────────────
+        self._arb_strategy = SubDollarArbStrategy(
+            order_manager=self._order_manager,
+            risk_manager=self._risk_manager,
+            poly_client=self._poly_client,
+        )
+        self._cascade_strategy = VPINCascadeStrategy(
+            order_manager=self._order_manager,
+            risk_manager=self._risk_manager,
+            poly_client=self._poly_client,
+            opinion_client=self._opinion_client,
+        )
+
+        # ── Feeds (wired after all components exist) ────────────────────────────
+        self._binance_feed = BinanceWebSocketFeed(
+            symbol="btcusdt",
+            on_trade=self._on_binance_trade,
+            on_liquidation=self._aggregator.on_liquidation,
+        )
+        self._coinglass_feed = CoinGlassAPIFeed(
+            api_key=settings.coinglass_api_key,
+            symbol="BTC",
+            on_oi=self._on_oi_update,
+            on_liq=self._aggregator.on_liquidation_volume,
+        )
+        self._chainlink_feed = ChainlinkRPCFeed(
+            rpc_url=settings.polygon_rpc_url,
+            on_price=self._aggregator.on_chainlink_price,
+        )
+
+        # Polymarket token IDs from settings
+        token_ids = [
+            tid.strip()
+            for tid in settings.poly_btc_token_ids.split(",")
+            if tid.strip()
+        ]
+        self._polymarket_feed = PolymarketWebSocketFeed(
+            token_ids=token_ids,
+            on_book=self._on_polymarket_book,
+        )
+
+    # ─── Lifecycle ────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
         """
-        Connect DB, start alerter session, start strategies.
+        Initialise all components, wire callbacks, and start all tasks.
 
-        Called by main.py before run().
+        Order:
+        1. Connect DB
+        2. Connect exchange clients
+        3. Start strategies
+        4. Start feed tasks
+        5. Start heartbeat task
+        6. Start resolution polling task
+        7. Start market state fan-out loop
         """
-        log.info("orchestrator.starting", strategies=[s.name for s in self._strategies])
+        log.info("orchestrator.starting")
 
-        # Connect DB
-        await self._db.connect()
+        # 1. Connect DB
+        try:
+            await self._db.connect()
+        except Exception as exc:
+            log.error("orchestrator.db_connect_failed", error=str(exc))
+            raise
 
-        # Start alerter session
-        await self._alerter.start()
-
-        # Initialise system_state row
-        await self._db.update_system_state(engine_status="starting")
-
-        # Start all strategies
-        for strategy in self._strategies:
-            await strategy.start()
-
-        self._running = True
-        self._install_signal_handlers()
-
-        log.info("orchestrator.started")
-
-    async def run(self) -> None:
-        """Start all feeds and block until shutdown signal."""
-        if not self._running:
-            await self.start()
-
-        # Launch all feed tasks
-        feed_tasks = [
-            asyncio.create_task(self._binance.start(), name="feed_binance"),
-            asyncio.create_task(self._coinglass.start(), name="feed_coinglass"),
-            asyncio.create_task(self._chainlink.start(), name="feed_chainlink"),
-            asyncio.create_task(self._polymarket.start(), name="feed_polymarket"),
-        ]
-
-        # Launch orchestration tasks
-        orch_tasks = [
-            asyncio.create_task(self._market_state_loop(), name="market_state_loop"),
-            asyncio.create_task(self._heartbeat_loop(), name="heartbeat"),
-            asyncio.create_task(self._feed_monitor_loop(), name="feed_monitor"),
-        ]
-
-        self._tasks = feed_tasks + orch_tasks
-
-        await self._alerter.send_system_alert("🟢 Engine started", level="info")
-        await self._db.update_system_state(engine_status="running")
+        # 2. Connect exchange clients
+        try:
+            await self._poly_client.connect()
+        except Exception as exc:
+            log.warning("orchestrator.poly_connect_failed", error=str(exc))
 
         try:
-            await self._shutdown_event.wait()
-        finally:
-            await self._shutdown()
+            await self._opinion_client.connect()
+        except Exception as exc:
+            log.warning("orchestrator.opinion_connect_failed", error=str(exc))
+
+        # 3. Start strategies
+        await self._arb_strategy.start()
+        await self._cascade_strategy.start()
+
+        # 4. Start feed tasks
+        self._tasks.append(
+            asyncio.create_task(self._binance_feed.start(), name="feed:binance")
+        )
+        self._tasks.append(
+            asyncio.create_task(self._coinglass_feed.start(), name="feed:coinglass")
+        )
+        self._tasks.append(
+            asyncio.create_task(self._chainlink_feed.start(), name="feed:chainlink")
+        )
+        self._tasks.append(
+            asyncio.create_task(self._polymarket_feed.start(), name="feed:polymarket")
+        )
+
+        # 5. Heartbeat task (every 10s)
+        self._tasks.append(
+            asyncio.create_task(self._heartbeat_loop(), name="heartbeat")
+        )
+
+        # 6. Resolution polling task (every 5s)
+        self._tasks.append(
+            asyncio.create_task(self._resolution_loop(), name="resolution_poller")
+        )
+
+        # 7. Market state fan-out loop
+        self._tasks.append(
+            asyncio.create_task(self._market_state_loop(), name="market_state_loop")
+        )
+
+        # Register OS signal handlers
+        loop = asyncio.get_running_loop()
+        for sig in (_signal.SIGINT, _signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, self._handle_os_signal)
+            except NotImplementedError:
+                # Windows doesn't support add_signal_handler
+                pass
+
+        await self._alerter.send_system_alert("Engine started", level="info")
+        log.info("orchestrator.started", tasks=len(self._tasks))
+
+    async def run(self) -> None:
+        """Start the engine and wait for shutdown."""
+        await self.start()
+        await self._shutdown_event.wait()
+        await self.stop()
 
     async def stop(self) -> None:
-        """Request graceful shutdown from outside (e.g. main.py signal handler)."""
-        log.info("orchestrator.stop_requested")
-        self.request_shutdown()
-
-    # ─── Internal Loops ───────────────────────────────────────────────────────
-
-    async def _market_state_loop(self) -> None:
-        """
-        Consume the aggregator stream and fan out MarketState to all strategies.
-        """
-        async for state in self._aggregator.stream():
-            if not self._running:
-                break
-
-            await asyncio.gather(
-                *[strategy.on_market_state(state) for strategy in self._strategies],
-                return_exceptions=True,
-            )
-
-    async def _heartbeat_loop(self) -> None:
-        """
-        Write liveness heartbeat to DB and log risk state every HEARTBEAT_INTERVAL_S.
-        """
-        while self._running:
-            try:
-                await self._db.update_heartbeat()
-
-                risk_status = self._rm.get_status()
-                open_orders = await self._om.get_open_orders()
-
-                # Persist risk snapshot
-                await self._db.update_system_state(
-                    engine_status="running",
-                    current_balance=risk_status.get("current_bankroll"),
-                    peak_balance=risk_status.get("peak_bankroll"),
-                    current_drawdown_pct=risk_status.get("drawdown_pct"),
-                    active_positions=len(open_orders),
-                )
-
-                log.info(
-                    "heartbeat",
-                    bankroll=risk_status.get("current_bankroll"),
-                    drawdown=f"{risk_status.get('drawdown_pct', 0):.2%}",
-                    daily_pnl=risk_status.get("daily_pnl"),
-                    open_orders=len(open_orders),
-                    kill_switch=risk_status.get("kill_switch_active"),
-                )
-            except Exception as exc:
-                log.error("heartbeat.error", error=str(exc))
-
-            await asyncio.sleep(HEARTBEAT_INTERVAL_S)
-
-    async def _feed_monitor_loop(self) -> None:
-        """
-        Periodically update feed connection status flags in the DB.
-        """
-        while self._running:
-            try:
-                await self._db.update_feed_status(
-                    binance=self._binance.connected,
-                    coinglass=self._coinglass.connected,
-                    chainlink=self._chainlink.connected,
-                    polymarket=self._polymarket.connected,
-                )
-
-                log.debug(
-                    "feed_monitor",
-                    binance=self._binance.connected,
-                    coinglass=self._coinglass.connected,
-                    chainlink=self._chainlink.connected,
-                    polymarket=self._polymarket.connected,
-                )
-            except Exception as exc:
-                log.error("feed_monitor.error", error=str(exc))
-
-            await asyncio.sleep(FEED_MONITOR_INTERVAL_S)
-
-    # ─── Shutdown ─────────────────────────────────────────────────────────────
-
-    async def _shutdown(self) -> None:
-        """Gracefully stop all strategies, feeds, and cancel background tasks."""
-        log.info("orchestrator.shutting_down")
-        self._running = False
-
-        # Stop feeds
-        await self._binance.stop()
-        await self._coinglass.stop()
-        await self._chainlink.stop()
-        await self._polymarket.stop()
+        """Graceful shutdown of all components."""
+        log.info("orchestrator.stopping")
 
         # Stop strategies
-        for strategy in self._strategies:
-            try:
-                await strategy.stop()
-            except Exception as exc:
-                log.error("orchestrator.strategy_stop_error", strategy=strategy.name, error=str(exc))
+        await self._arb_strategy.stop()
+        await self._cascade_strategy.stop()
 
-        # Cancel all background tasks
+        # Stop feeds
+        await self._binance_feed.stop()
+        await self._coinglass_feed.stop()
+        await self._chainlink_feed.stop()
+        await self._polymarket_feed.stop()
+
+        # Cancel all tasks
         for task in self._tasks:
             if not task.done():
                 task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
 
-        # Mark engine stopped in DB
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+
+        # Disconnect clients
         try:
-            await self._db.update_system_state(engine_status="stopped")
-        except Exception:
-            pass
+            await self._opinion_client.disconnect()
+        except Exception as exc:
+            log.warning("orchestrator.opinion_disconnect_error", error=str(exc))
 
+        # Close DB
         try:
-            await self._alerter.send_system_alert("🔴 Engine stopped", level="warning")
-            await self._alerter.close()
-        except Exception:
-            pass
+            await self._db.close()
+        except Exception as exc:
+            log.warning("orchestrator.db_close_error", error=str(exc))
 
-        await self._db.close()
+        await self._alerter.send_system_alert("Engine stopped", level="warning")
         log.info("orchestrator.stopped")
 
-    def request_shutdown(self) -> None:
-        """Signal the orchestrator to begin graceful shutdown."""
-        log.warning("orchestrator.shutdown_requested")
+    # ─── OS Signal Handler ────────────────────────────────────────────────────
+
+    def _handle_os_signal(self) -> None:
+        """Trigger graceful shutdown on SIGINT/SIGTERM."""
+        log.info("orchestrator.shutdown_signal_received")
         self._shutdown_event.set()
 
-    def _install_signal_handlers(self) -> None:
-        """Register SIGINT/SIGTERM handlers for graceful shutdown."""
-        loop = asyncio.get_running_loop()
+    # ─── Feed Callback Wiring ─────────────────────────────────────────────────
 
-        def _handle_signal(sig: int) -> None:
-            log.warning("orchestrator.signal_received", signal=signal.Signals(sig).name)
-            self.request_shutdown()
+    async def _on_binance_trade(self, trade: AggTrade) -> None:
+        """Binance aggTrade → aggregator + VPIN calculator + regime classifier."""
+        # Update aggregator (BTC price, price history)
+        await self._aggregator.on_agg_trade(trade)
 
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, _handle_signal, sig)
+        # Update order manager BTC price for paper resolution
+        self._order_manager.update_btc_price(trade.price)
+
+        # Feed VPIN calculator (triggers on_vpin_signal when bucket fills)
+        await self._vpin_calc.on_trade(trade)
+
+        # Update regime classifier
+        self._regime.on_price(float(trade.price))
+
+    async def _on_oi_update(self, oi: OpenInterestSnapshot) -> None:
+        """CoinGlass OI → aggregator + cascade detector update."""
+        await self._aggregator.on_open_interest(oi)
+
+        # Get current state to drive cascade detector
+        state = await self._aggregator.get_state()
+        vpin_value = state.vpin.value if state.vpin else 0.0
+        liq_5m = float(state.liq_volume_5m_usd or 0)
+
+        if state.btc_price and state.btc_price_5m_ago:
+            try:
+                await self._cascade.update(
+                    vpin=vpin_value,
+                    oi_delta_pct=oi.open_interest_delta_pct,
+                    liq_volume_5m=liq_5m,
+                    btc_price=float(state.btc_price),
+                    btc_price_5m_ago=float(state.btc_price_5m_ago),
+                )
+            except Exception as exc:
+                log.error("orchestrator.cascade_update_failed", error=str(exc))
+
+    async def _on_polymarket_book(self, book: PolymarketOrderBook) -> None:
+        """Polymarket order book → aggregator + arb scanner."""
+        await self._aggregator.on_polymarket_book(book)
+
+        # Feed arb scanner (both YES and NO sides from the single book snapshot)
+        try:
+            await self._arb_scanner.on_book(book, side="YES")
+        except Exception as exc:
+            log.error("orchestrator.arb_scanner_failed", error=str(exc))
+
+    # ─── Signal Callbacks ─────────────────────────────────────────────────────
+
+    async def _on_vpin_signal(self, signal: VPINSignal) -> None:
+        """VPIN signal → aggregator + DB persistence + cascade detector update."""
+        # Update aggregator
+        await self._aggregator.on_vpin_signal(signal)
+
+        # Persist to DB
+        try:
+            await self._db.write_signal(
+                signal_type="vpin",
+                value=signal.value,
+                metadata=signal.model_dump(mode="json"),
+            )
+        except Exception as exc:
+            log.error("orchestrator.db_vpin_write_failed", error=str(exc))
+
+        # Drive cascade detector with latest state
+        state = await self._aggregator.get_state()
+        if state.btc_price and state.btc_price_5m_ago:
+            try:
+                await self._cascade.update(
+                    vpin=signal.value,
+                    oi_delta_pct=state.oi_delta_pct or 0.0,
+                    liq_volume_5m=float(state.liq_volume_5m_usd or 0),
+                    btc_price=float(state.btc_price),
+                    btc_price_5m_ago=float(state.btc_price_5m_ago),
+                )
+            except Exception as exc:
+                log.error("orchestrator.cascade_update_from_vpin_failed", error=str(exc))
+
+    async def _on_cascade_signal(self, signal: CascadeSignal) -> None:
+        """Cascade FSM signal → aggregator + DB persistence + alert."""
+        # Update aggregator
+        await self._aggregator.on_cascade_signal(signal)
+
+        # Persist to DB
+        try:
+            await self._db.write_signal(
+                signal_type="cascade",
+                value=1.0,
+                metadata=signal.model_dump(mode="json"),
+            )
+        except Exception as exc:
+            log.error("orchestrator.db_cascade_write_failed", error=str(exc))
+
+        # Send Telegram alert
+        await self._alerter.send_cascade_alert(signal)
+
+    async def _on_arb_opportunities(self, opps: list[ArbOpportunity]) -> None:
+        """Arb opportunities → aggregator + DB persistence."""
+        await self._aggregator.on_arb_opportunities(opps)
+
+        # Persist best opportunity if present
+        if opps:
+            best = max(opps, key=lambda o: float(o.net_spread))
+            try:
+                await self._db.write_signal(
+                    signal_type="arb",
+                    value=float(best.net_spread),
+                    metadata={
+                        "market_slug": best.market_slug,
+                        "yes_price": str(best.yes_price),
+                        "no_price": str(best.no_price),
+                        "combined_price": str(best.combined_price),
+                        "net_spread": str(best.net_spread),
+                    },
+                )
+            except Exception as exc:
+                log.error("orchestrator.db_arb_write_failed", error=str(exc))
+
+    # ─── Order Resolution Callback ────────────────────────────────────────────
+
+    def _on_order_resolution(self, order) -> None:
+        """Called by OrderManager when an order resolves. Notify risk manager."""
+        if order.pnl_usd is not None:
+            # Schedule async record_outcome (can't await in sync callback)
+            asyncio.create_task(
+                self._risk_manager.record_outcome(order.pnl_usd),
+                # name=f"risk_record_{order.order_id}",  # Python 3.11+
+            )
+
+            # Send trade alert
+            asyncio.create_task(self._alerter.send_trade_alert(order))
+
+    # ─── Background Tasks ─────────────────────────────────────────────────────
+
+    async def _heartbeat_loop(self) -> None:
+        """Every 10s: update system state and feed connection flags in DB."""
+        while not self._shutdown_event.is_set():
+            try:
+                risk_status = self._risk_manager.get_status()
+                state = await self._aggregator.get_state()
+
+                open_orders = await self._order_manager.get_open_orders()
+
+                await self._db.update_system_state(
+                    engine_status="running",
+                    current_balance=risk_status["current_bankroll"],
+                    peak_balance=risk_status["peak_bankroll"],
+                    current_drawdown_pct=risk_status["drawdown_pct"],
+                    last_vpin=state.vpin.value if state.vpin else None,
+                    last_cascade_state=state.cascade.state if state.cascade else None,
+                    active_positions=len(open_orders),
+                )
+
+                await self._db.update_feed_status(
+                    binance=self._binance_feed.connected,
+                    coinglass=self._coinglass_feed.connected,
+                    chainlink=self._chainlink_feed.connected,
+                    polymarket=self._polymarket_feed.connected,
+                    opinion=self._opinion_client.connected,
+                )
+
+                # Update venue connectivity in risk manager
+                await self._risk_manager.update_venue_status(
+                    polymarket=self._polymarket_feed.connected,
+                    opinion=self._opinion_client.connected,
+                )
+
+            except Exception as exc:
+                log.error("orchestrator.heartbeat_error", error=str(exc))
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=10.0,
+                )
+                break  # Shutdown event set
+            except asyncio.TimeoutError:
+                pass  # Normal — continue heartbeat
+
+    async def _resolution_loop(self) -> None:
+        """Every 5s: poll order resolutions (paper mode simulation)."""
+        while not self._shutdown_event.is_set():
+            try:
+                await self._order_manager.poll_resolutions()
+            except Exception as exc:
+                log.error("orchestrator.resolution_poll_error", error=str(exc))
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=5.0,
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    async def _market_state_loop(self) -> None:
+        """
+        Consume aggregator.stream() and fan out each MarketState to all strategies.
+
+        Strategies run concurrently per state update.
+        """
+        strategies = [self._arb_strategy, self._cascade_strategy]
+
+        try:
+            async for state in self._aggregator.stream():
+                if self._shutdown_event.is_set():
+                    break
+
+                # Fan out to all strategies concurrently
+                results = await asyncio.gather(
+                    *[strategy.on_market_state(state) for strategy in strategies],
+                    return_exceptions=True,
+                )
+
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        log.error(
+                            "orchestrator.strategy_error",
+                            strategy=strategies[i].name,
+                            error=str(result),
+                        )
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            log.error("orchestrator.market_state_loop_error", error=str(exc))

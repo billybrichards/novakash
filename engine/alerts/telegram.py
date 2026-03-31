@@ -1,137 +1,188 @@
 """
 Telegram Alerter
 
-Sends trading notifications to a configured Telegram chat via the Bot API.
+Sends trading alerts to a Telegram chat via the Bot API (aiohttp, no library deps).
 
 Alert types:
-  - Trade alerts: order filled, resolved, PnL
-  - Cascade alerts: state transitions in the CascadeDetector FSM
-  - System alerts: engine start/stop, kill-switch triggered, connectivity issues
+  - Trade alert: order placed/resolved
+  - Cascade alert: liquidation cascade signal
+  - System alert: engine status / errors
+  - Kill switch alert: emergency stop
+
+All exceptions are caught internally — alerts must never crash the engine.
+Uses simple HTTP POST to the Telegram Bot API sendMessage endpoint.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Literal, Optional
+from typing import TYPE_CHECKING
 import aiohttp
 import structlog
 
-from config.settings import Settings
-from execution.order_manager import Order
+if TYPE_CHECKING:
+    from data.models import CascadeSignal
+    from execution.order_manager import Order
 
 log = structlog.get_logger(__name__)
 
-AlertLevel = Literal["info", "warning", "critical"]
+TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/sendMessage"
 
+# Level → emoji mapping
 _LEVEL_EMOJI = {
-    "info": "ℹ️",
-    "warning": "⚠️",
-    "critical": "🚨",
+    "info": "🟢",
+    "warning": "🟡",
+    "error": "🔴",
+    "critical": "🔴",
+}
+
+# Direction → emoji
+_DIRECTION_EMOJI = {
+    "YES": "📈",
+    "NO": "📉",
+    "ARB": "⚖️",
+    "down": "📉",
+    "up": "📈",
 }
 
 
 class TelegramAlerter:
     """
-    Async Telegram notification client.
+    Sends Telegram messages via the Bot API using aiohttp.
 
-    Messages are sent as Markdown via the sendMessage Bot API endpoint.
-    Failures are logged but never raised (alerts must not crash the engine).
+    All public methods catch all exceptions to ensure alert failures
+    never crash or block the engine.
     """
 
-    def __init__(self, settings: Settings) -> None:
-        self._token = settings.telegram_bot_token
-        self._chat_id = settings.telegram_chat_id
-        self._base_url = f"https://api.telegram.org/bot{self._token}"
-        self._session: Optional[aiohttp.ClientSession] = None
+    def __init__(self, bot_token: str, chat_id: str) -> None:
+        self._bot_token = bot_token
+        self._chat_id = chat_id
+        self._url = TELEGRAM_API_BASE.format(token=bot_token)
+        self._log = log.bind(component="TelegramAlerter")
 
-    async def start(self) -> None:
-        """Create the aiohttp session."""
-        self._session = aiohttp.ClientSession()
-
-    async def close(self) -> None:
-        """Close the aiohttp session."""
-        if self._session:
-            await self._session.close()
+        if not bot_token or not chat_id:
+            self._log.warning("telegram.not_configured", reason="missing bot_token or chat_id")
 
     # ─── Public Alert Methods ─────────────────────────────────────────────────
 
-    async def send_trade_alert(self, order: Order) -> None:
+    async def send_trade_alert(self, order: "Order") -> None:
         """
-        Send a trade notification with order details and PnL.
+        Send a trade execution / resolution alert.
 
-        Args:
-            order: The resolved (or newly opened) order.
+        Format:
+            🟢 [strategy] order
+            Direction: YES/NO/ARB
+            Stake: $X.XX
+            Venue: polymarket/opinion
+            Status: OPEN/RESOLVED_WIN/RESOLVED_LOSS
+            [PnL: $X.XX]
         """
-        emoji = "✅" if order.pnl_usd and order.pnl_usd >= 0 else "❌"
-        pnl_str = f"${order.pnl_usd:+.2f}" if order.pnl_usd is not None else "pending"
+        try:
+            direction_emoji = _DIRECTION_EMOJI.get(order.direction.upper(), "🎯")
+            outcome_emoji = ""
+            if hasattr(order, "outcome") and order.outcome:
+                outcome_emoji = "✅ " if order.outcome == "WIN" else "❌ "
 
-        message = (
-            f"{emoji} *Trade Alert*\n"
-            f"Strategy: `{order.strategy}`\n"
-            f"Market: `{order.market_slug}`\n"
-            f"Direction: `{order.direction}`\n"
-            f"Stake: `${order.stake_usd:.2f}`\n"
-            f"Status: `{order.status.value}`\n"
-            f"PnL: `{pnl_str}`\n"
-            f"_at {datetime.utcnow().strftime('%H:%M:%S UTC')}_"
-        )
+            lines = [
+                f"{direction_emoji} *Trade Alert — {order.strategy}*",
+                f"Direction: `{order.direction}`",
+                f"Stake: `${order.stake_usd:.2f}`",
+                f"Venue: `{order.venue}`",
+                f"Market: `{order.market_slug}`",
+                f"Status: `{order.status.value}`",
+            ]
 
-        await self._send(message)
+            if order.pnl_usd is not None:
+                pnl_sign = "+" if order.pnl_usd >= 0 else ""
+                lines.append(f"{outcome_emoji}PnL: `{pnl_sign}${order.pnl_usd:.2f}`")
 
-    async def send_cascade_alert(
-        self,
-        state: str,
-        direction: Optional[str],
-        vpin: float,
-        oi_delta_pct: float,
-        liq_volume_usd: float,
-    ) -> None:
+            await self._send("\n".join(lines))
+
+        except Exception as exc:
+            self._log.warning("telegram.send_trade_alert_failed", error=str(exc))
+
+    async def send_cascade_alert(self, signal: "CascadeSignal") -> None:
         """
-        Send a cascade state-machine transition alert.
+        Send a liquidation cascade FSM state alert.
 
-        Args:
-            state:          New FSM state (CASCADE_DETECTED, BET_SIGNAL, etc.)
-            direction:      CASCADE direction (UP/DOWN/None)
-            vpin:           Current VPIN value.
-            oi_delta_pct:   OI change percentage.
-            liq_volume_usd: Liquidation volume in USD.
+        Format:
+            🌊 CASCADE DETECTED / EXHAUSTING / BET SIGNAL
+            Direction: down/up
+            VPIN: 0.XX
+            OI Delta: ±X.XX%
+            Liq Volume: $X.XXM
         """
-        level: AlertLevel = "warning" if state in ("CASCADE_DETECTED", "EXHAUSTING") else "critical"
-        emoji = _LEVEL_EMOJI[level]
-        dir_str = direction or "N/A"
+        try:
+            state_labels = {
+                "CASCADE_DETECTED": "🌊 CASCADE DETECTED",
+                "EXHAUSTING": "🌊 CASCADE EXHAUSTING",
+                "BET_SIGNAL": "🎯 CASCADE BET SIGNAL",
+                "COOLDOWN": "⏳ CASCADE COOLDOWN",
+                "IDLE": "💤 CASCADE IDLE",
+            }
+            label = state_labels.get(signal.state, f"🌊 {signal.state}")
+            direction_str = (
+                f"{_DIRECTION_EMOJI.get(signal.direction or '', '')} `{signal.direction}`"
+                if signal.direction
+                else "`none`"
+            )
 
-        message = (
-            f"{emoji} *Cascade Alert — {state}*\n"
-            f"Direction: `{dir_str}`\n"
-            f"VPIN: `{vpin:.4f}`\n"
-            f"OI Δ: `{oi_delta_pct:+.2%}`\n"
-            f"Liq Vol: `${liq_volume_usd:,.0f}`\n"
-            f"_at {datetime.utcnow().strftime('%H:%M:%S UTC')}_"
-        )
+            liq_m = signal.liq_volume_usd / 1_000_000
+            oi_pct = signal.oi_delta_pct * 100
 
-        await self._send(message)
+            lines = [
+                f"*{label}*",
+                f"Direction: {direction_str}",
+                f"VPIN: `{signal.vpin:.4f}`",
+                f"OI Delta: `{oi_pct:+.2f}%`",
+                f"Liq Volume (5m): `${liq_m:.2f}M`",
+            ]
 
-    async def send_system_alert(self, text: str, level: AlertLevel = "info") -> None:
+            await self._send("\n".join(lines))
+
+        except Exception as exc:
+            self._log.warning("telegram.send_cascade_alert_failed", error=str(exc))
+
+    async def send_system_alert(self, message: str, level: str = "info") -> None:
         """
-        Send a generic system alert.
+        Send a system status alert.
 
-        Args:
-            text:  Alert message text.
-            level: Severity — "info" | "warning" | "critical"
+        Level determines emoji:
+          - info    → 🟢
+          - warning → 🟡
+          - error   → 🔴
         """
-        emoji = _LEVEL_EMOJI[level]
-        message = f"{emoji} *System Alert*\n{text}\n_at {datetime.utcnow().strftime('%H:%M:%S UTC')}_"
-        await self._send(message)
+        try:
+            emoji = _LEVEL_EMOJI.get(level.lower(), "🟢")
+            text = f"{emoji} *System Alert*\n`{message}`"
+            await self._send(text)
+        except Exception as exc:
+            self._log.warning("telegram.send_system_alert_failed", error=str(exc))
+
+    async def send_kill_switch_alert(self) -> None:
+        """Send an emergency kill switch activation alert."""
+        try:
+            text = (
+                "🛑 *KILL SWITCH ACTIVATED*\n"
+                "All trading has been halted.\n"
+                "Manual intervention required to resume."
+            )
+            await self._send(text)
+        except Exception as exc:
+            self._log.warning("telegram.send_kill_switch_alert_failed", error=str(exc))
 
     # ─── Internal ─────────────────────────────────────────────────────────────
 
     async def _send(self, text: str) -> None:
-        """Send a raw Markdown message. Errors are swallowed to protect the engine."""
-        if not self._session:
-            log.warning("telegram.no_session", hint="Call start() first")
+        """
+        POST a message to Telegram Bot API.
+
+        Uses parse_mode=MarkdownV2 for formatting.
+        Silently logs on failure — never raises.
+        """
+        if not self._bot_token or not self._chat_id:
+            self._log.debug("telegram.skipped", reason="not_configured")
             return
 
-        url = f"{self._base_url}/sendMessage"
         payload = {
             "chat_id": self._chat_id,
             "text": text,
@@ -140,11 +191,23 @@ class TelegramAlerter:
         }
 
         try:
-            async with self._session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    log.warning("telegram.send_failed", status=resp.status, body=body[:200])
-                else:
-                    log.debug("telegram.sent", length=len(text))
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self._url,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        self._log.warning(
+                            "telegram.api_error",
+                            status=resp.status,
+                            body=body[:200],
+                        )
+                    else:
+                        self._log.debug("telegram.sent", chars=len(text))
+
+        except aiohttp.ClientError as exc:
+            self._log.warning("telegram.network_error", error=str(exc))
         except Exception as exc:
-            log.error("telegram.send_error", error=str(exc))
+            self._log.warning("telegram.unexpected_error", error=str(exc))

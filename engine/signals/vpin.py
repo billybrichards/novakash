@@ -1,34 +1,18 @@
 """
-VPIN (Volume-Synchronized Probability of Informed Trading) Calculator
+VPIN (Volume-synchronized Probability of Informed Trading) Calculator.
 
-VPIN is a real-time estimate of informed trading activity based on order
-flow imbalance, computed over volume-synchronized time buckets rather than
-calendar-time buckets.
-
-Algorithm:
-  1. Accumulate aggTrades into buckets of fixed USD notional (VPIN_BUCKET_SIZE_USD).
-  2. For each trade, classify buy-initiated vs sell-initiated volume using the
-     tick rule (if price ↑ vs previous → buy; if ↓ → sell; if same → previous).
-  3. When a bucket fills: bucket_imbalance = |buy_vol - sell_vol| / total_vol
-  4. VPIN = mean(bucket_imbalance) over the last VPIN_LOOKBACK_BUCKETS buckets.
-
-Thresholds (from config/constants.py):
-  VPIN > 0.55 → elevated informed flow (warn)
-  VPIN > 0.70 → cascade-level informed flow (signal)
-
-References:
-  - Easley, López de Prado, O'Hara (2012) "Flow Toxicity and Liquidity in a
-    High-Frequency World". The Review of Financial Studies.
-  - Adapted for crypto perpetuals where volume is in USD notional.
+Uses Easley et al. bulk-volume classification with fixed-USD-volume buckets.
+Buy/sell classification is taken directly from AggTrade.is_buyer_maker:
+  - is_buyer_maker=True  → the aggressor is the SELLER (taker sold)
+  - is_buyer_maker=False → the aggressor is the BUYER  (taker bought)
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections import deque
-from datetime import datetime
-from decimal import Decimal
-from typing import Callable, Awaitable
+from datetime import datetime, timezone
+from typing import Callable, Awaitable, Optional
+
 import structlog
 
 from config.constants import (
@@ -44,113 +28,165 @@ log = structlog.get_logger(__name__)
 
 class VPINCalculator:
     """
-    Computes VPIN metric from streaming Binance aggTrade events.
+    Computes VPIN using fixed-USD-volume buckets.
 
-    Usage:
-        calc = VPINCalculator(on_signal=my_handler)
-        # Feed trades as they arrive:
-        await calc.on_trade(trade)
+    Each bucket accumulates trades until the total notional value reaches
+    bucket_size_usd.  When a bucket is complete, the imbalance ratio
+    |buy_vol - sell_vol| / total_vol is stored and VPIN is recalculated as
+    the mean imbalance over the last lookback_buckets buckets.
+
+    Parameters
+    ----------
+    bucket_size_usd:
+        USD notional per bucket. Defaults to VPIN_BUCKET_SIZE_USD constant.
+    lookback_buckets:
+        Rolling window size. Defaults to VPIN_LOOKBACK_BUCKETS constant.
+    on_signal:
+        Optional async callback invoked with a :class:`VPINSignal` each time
+        a bucket completes.
     """
 
     def __init__(
         self,
         bucket_size_usd: float = VPIN_BUCKET_SIZE_USD,
         lookback_buckets: int = VPIN_LOOKBACK_BUCKETS,
-        on_signal: Callable[[VPINSignal], Awaitable[None]] | None = None,
+        on_signal: Optional[Callable[[VPINSignal], Awaitable[None]]] = None,
     ) -> None:
-        self.bucket_size_usd = bucket_size_usd
-        self.lookback_buckets = lookback_buckets
+        self._bucket_size_usd = bucket_size_usd
+        self._lookback_buckets = lookback_buckets
         self._on_signal = on_signal
 
-        # Current bucket accumulators
-        self._bucket_buy_vol: float = 0.0
-        self._bucket_sell_vol: float = 0.0
-        self._bucket_total_vol: float = 0.0
+        # Completed bucket imbalances: deque of floats in [0, 1]
+        self._bucket_imbalances: deque[float] = deque(maxlen=lookback_buckets)
 
-        # Completed bucket imbalances (rolling window)
-        self._buckets: deque[float] = deque(maxlen=lookback_buckets)
+        # Current (in-progress) bucket accumulators
+        self._bucket_buy_usd: float = 0.0
+        self._bucket_sell_usd: float = 0.0
+        self._bucket_total_usd: float = 0.0
 
-        # Tick rule state
-        self._prev_price: Decimal | None = None
-
+        # Running VPIN value
         self._current_vpin: float = 0.0
+
+        self._log = log.bind(component="VPINCalculator")
+        self._log.info(
+            "initialised",
+            bucket_size_usd=bucket_size_usd,
+            lookback_buckets=lookback_buckets,
+            informed_threshold=VPIN_INFORMED_THRESHOLD,
+            cascade_threshold=VPIN_CASCADE_THRESHOLD,
+        )
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
 
     async def on_trade(self, trade: AggTrade) -> None:
         """
-        Ingest one aggTrade and update VPIN.
+        Ingest a single aggregated trade.
 
-        Classifies volume as buy or sell using the tick rule:
-          - price > prev_price  → buy-initiated
-          - price < prev_price  → sell-initiated
-          - price == prev_price → same as previous classification
+        Parameters
+        ----------
+        trade:
+            An :class:`AggTrade` with price, quantity, and is_buyer_maker.
         """
-        notional_usd = float(trade.price * trade.quantity)
-        direction = self._classify(trade.price)
+        notional = float(trade.price * trade.quantity)
 
-        if direction == "buy":
-            self._bucket_buy_vol += notional_usd
+        # Classify aggressor side
+        # is_buyer_maker=True  → market sell (maker is buyer → taker is seller)
+        # is_buyer_maker=False → market buy  (maker is seller → taker is buyer)
+        if trade.is_buyer_maker:
+            self._bucket_sell_usd += notional
         else:
-            self._bucket_sell_vol += notional_usd
+            self._bucket_buy_usd += notional
 
-        self._bucket_total_vol += notional_usd
-        self._prev_price = trade.price
+        self._bucket_total_usd += notional
 
-        # Check if bucket is full
-        if self._bucket_total_vol >= self.bucket_size_usd:
-            await self._close_bucket(trade.trade_time)
-
-    def _classify(self, price: Decimal) -> str:
-        """Classify trade direction using the tick rule."""
-        if self._prev_price is None:
-            return "buy"
-        if price > self._prev_price:
-            return "buy"
-        elif price < self._prev_price:
-            return "sell"
-        else:
-            # No price change — use bulk volume classification (split 50/50 or inherit)
-            return "buy"  # Conservative: treat ties as buy
-
-    async def _close_bucket(self, timestamp: datetime) -> None:
-        """Finalise current bucket, compute imbalance, update VPIN."""
-        if self._bucket_total_vol > 0:
-            imbalance = abs(self._bucket_buy_vol - self._bucket_sell_vol) / self._bucket_total_vol
-            self._buckets.append(imbalance)
-
-        # Reset bucket accumulators
-        self._bucket_buy_vol = 0.0
-        self._bucket_sell_vol = 0.0
-        self._bucket_total_vol = 0.0
-
-        if not self._buckets:
-            return
-
-        self._current_vpin = sum(self._buckets) / len(self._buckets)
-
-        signal = VPINSignal(
-            value=self._current_vpin,
-            buckets_filled=len(self._buckets),
-            informed_threshold_crossed=self._current_vpin >= VPIN_INFORMED_THRESHOLD,
-            cascade_threshold_crossed=self._current_vpin >= VPIN_CASCADE_THRESHOLD,
-            timestamp=timestamp,
-        )
-
-        log.debug(
-            "vpin.bucket_closed",
-            vpin=f"{self._current_vpin:.4f}",
-            buckets=len(self._buckets),
-            cascade=signal.cascade_threshold_crossed,
-        )
-
-        if self._on_signal:
-            await self._on_signal(signal)
+        # Check if bucket is complete (may span multiple completions for large trades)
+        while self._bucket_total_usd >= self._bucket_size_usd:
+            await self._close_bucket()
 
     @property
     def current_vpin(self) -> float:
-        """Return the latest VPIN value (0–1)."""
+        """Current VPIN estimate in [0, 1].  0.0 until first bucket completes."""
         return self._current_vpin
 
     @property
+    def current_bucket_fill_pct(self) -> float:
+        """Fraction of the current (open) bucket that has been filled, in [0, 1]."""
+        if self._bucket_size_usd <= 0:
+            return 0.0
+        return min(self._bucket_total_usd / self._bucket_size_usd, 1.0)
+
+    @property
     def buckets_filled(self) -> int:
-        """Return how many historical buckets are in the rolling window."""
-        return len(self._buckets)
+        """Total number of completed buckets (capped at lookback_buckets)."""
+        return len(self._bucket_imbalances)
+
+    def get_history(self, n: int) -> list[float]:
+        """
+        Return the last *n* completed VPIN bucket imbalance readings.
+
+        Parameters
+        ----------
+        n:
+            Number of historical readings to return.  Clamped to available data.
+
+        Returns
+        -------
+        list[float]:
+            Most-recent readings, oldest first.
+        """
+        data = list(self._bucket_imbalances)
+        return data[-n:] if n < len(data) else data
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _close_bucket(self) -> None:
+        """Finalise the current bucket, compute VPIN, and emit a signal."""
+        total = self._bucket_total_usd
+        buy = self._bucket_buy_usd
+        sell = self._bucket_sell_usd
+
+        # Imbalance ratio for this bucket
+        imbalance = abs(buy - sell) / total if total > 0 else 0.0
+        self._bucket_imbalances.append(imbalance)
+
+        # Recompute VPIN as rolling mean of imbalances
+        self._current_vpin = sum(self._bucket_imbalances) / len(self._bucket_imbalances)
+
+        self._log.debug(
+            "bucket_closed",
+            bucket_buy_usd=round(buy, 2),
+            bucket_sell_usd=round(sell, 2),
+            imbalance=round(imbalance, 4),
+            vpin=round(self._current_vpin, 4),
+            buckets_filled=self.buckets_filled,
+        )
+
+        # Reset bucket — carry over any excess notional proportionally
+        excess = total - self._bucket_size_usd
+        if excess > 0 and total > 0:
+            buy_ratio = buy / total
+            self._bucket_buy_usd = excess * buy_ratio
+            self._bucket_sell_usd = excess * (1.0 - buy_ratio)
+            self._bucket_total_usd = excess
+        else:
+            self._bucket_buy_usd = 0.0
+            self._bucket_sell_usd = 0.0
+            self._bucket_total_usd = 0.0
+
+        # Emit signal with correct VPINSignal field names
+        if self._on_signal is not None:
+            signal = VPINSignal(
+                value=self._current_vpin,
+                buckets_filled=self.buckets_filled,
+                informed_threshold_crossed=self._current_vpin >= VPIN_INFORMED_THRESHOLD,
+                cascade_threshold_crossed=self._current_vpin >= VPIN_CASCADE_THRESHOLD,
+                timestamp=datetime.now(tz=timezone.utc),
+            )
+            try:
+                await self._on_signal(signal)
+            except Exception:
+                self._log.exception("on_signal callback raised", vpin=self._current_vpin)

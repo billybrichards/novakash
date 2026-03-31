@@ -1,37 +1,43 @@
 """
-Opinion Exchange Execution Client
+Opinion Markets client — paper mode + live mode stub.
 
-Opinion (opinion.finance) is a prediction market with lower fees (4%)
-compared to Polymarket (7.2%), making it preferred for VPIN cascade
-directional bets where we want maximum net payout.
+Opinion is a crypto prediction market. Fee model:
+    fee = OPINION_CRYPTO_FEE_MULT * price * (1 - price)
 
-This client handles:
-  - Placing directional YES/NO bets via Opinion API
-  - Polling bet resolution
-  - Paper trading simulation
+Paper mode simulates all bets locally with realistic fill behaviour.
 """
 
 from __future__ import annotations
 
-import asyncio
+import random
+import time
+import uuid
 from decimal import Decimal
 from typing import Optional
+
 import aiohttp
 import structlog
 
-from config.constants import OPINION_CRYPTO_FEE_MULT
+logger = structlog.get_logger(__name__)
 
-log = structlog.get_logger(__name__)
+# Opinion fee multiplier applied to quadratic price term
+OPINION_CRYPTO_FEE_MULT: float = 0.02
 
-OPINION_BASE_URL = "https://api.opinion.finance/v1"
+# Simulated paper balance
+_PAPER_BALANCE_USD = 10_000.0
+
+# Opinion REST base URL (placeholder — update when API is live)
+OPINION_API_BASE = "https://api.opinion.markets/v1"
 
 
 class OpinionClient:
     """
-    Async HTTP client for the Opinion prediction market exchange.
+    Client for placing bets on Opinion prediction markets.
 
-    Opinion offers lower fees (4%) vs Polymarket (7.2%) for crypto markets,
-    making it the preferred venue for directional cascade bets.
+    Args:
+        api_key: Opinion API key.
+        wallet_key: Private key / wallet secret for signing transactions.
+        paper_mode: If True (default), simulate all trades locally.
     """
 
     def __init__(
@@ -40,107 +46,239 @@ class OpinionClient:
         wallet_key: str,
         paper_mode: bool = True,
     ) -> None:
-        self.paper_mode = paper_mode
         self._api_key = api_key
         self._wallet_key = wallet_key
+        self.paper_mode = paper_mode
+
+        self._connected: bool = False
         self._session: Optional[aiohttp.ClientSession] = None
 
+        # Paper-mode state
+        self._paper_balance: float = _PAPER_BALANCE_USD
+        self._paper_bets: dict[str, dict] = {}
+
+        self._log = logger.bind(component="opinion_client", paper_mode=paper_mode)
+
+    # ------------------------------------------------------------------
+    # Connection property
+    # ------------------------------------------------------------------
+
+    @property
+    def connected(self) -> bool:
+        """True when the client is connected and ready to place orders."""
+        return self._connected
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     async def connect(self) -> None:
-        """Initialise HTTP session and verify API credentials."""
-        log.info("opinion.connecting", paper_mode=self.paper_mode)
+        """Initialise HTTP session and authenticate.
+
+        Paper mode marks as connected and logs.
+        Live mode would validate API credentials.
+        """
+        if self.paper_mode:
+            self._connected = True
+            self._log.info("opinion_client.connected", mode="paper")
+            return
+
+        # Create shared aiohttp session for live calls
         self._session = aiohttp.ClientSession(
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
             }
         )
-        if not self.paper_mode:
-            await self._verify_credentials()
-        log.info("opinion.connected")
+
+        # TODO: Validate credentials with a ping / auth endpoint
+        # async with self._session.get(f"{OPINION_API_BASE}/me") as resp:
+        #     resp.raise_for_status()
+        #     data = await resp.json()
+        #     self._log.info("opinion_client.connected", user=data.get("username"))
+        self._connected = True
+        self._log.info("opinion_client.connected", mode="live")
 
     async def disconnect(self) -> None:
-        """Close HTTP session."""
-        if self._session:
+        """Close HTTP session and mark as disconnected."""
+        self._connected = False
+        if self._session and not self._session.closed:
             await self._session.close()
+            self._session = None
+        self._log.info("opinion_client.disconnected")
 
-    async def _verify_credentials(self) -> None:
-        """Check that API key is valid."""
-        async with self._session.get(f"{OPINION_BASE_URL}/account") as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-            log.info("opinion.authenticated", wallet=data.get("wallet_address", "?")[:12])
+    # ------------------------------------------------------------------
+    # High-level convenience — called by strategies
+    # ------------------------------------------------------------------
+
+    async def place_order(
+        self,
+        market_id: str,
+        direction: str,
+        price: Decimal,
+        stake_usd: float,
+    ) -> str:
+        """Convenience method called directly by strategies.
+
+        Computes the platform fee and delegates to place_bet().
+
+        Fee model:
+            fee = OPINION_CRYPTO_FEE_MULT * price * (1 - price)
+
+        Args:
+            market_id: Opinion market identifier.
+            direction: "YES" or "NO".
+            price: Expected fill price in (0, 1).
+            stake_usd: Notional USD to risk (before fee deduction).
+
+        Returns:
+            Bet ID string.
+        """
+        direction = direction.upper()
+        if direction not in {"YES", "NO"}:
+            raise ValueError(f"direction must be YES or NO, got {direction!r}")
+
+        fee = float(OPINION_CRYPTO_FEE_MULT) * float(price) * (1.0 - float(price))
+        effective_stake = stake_usd * (1.0 - fee)
+
+        self._log.info(
+            "place_order.requested",
+            market_id=market_id,
+            direction=direction,
+            price=str(price),
+            stake_usd=stake_usd,
+            fee_pct=f"{fee*100:.3f}%",
+            effective_stake=effective_stake,
+        )
+
+        return await self.place_bet(
+            market_id=market_id,
+            direction=direction,
+            stake_usd=effective_stake,
+            expected_price=price,
+        )
+
+    # ------------------------------------------------------------------
+    # Core bet placement
+    # ------------------------------------------------------------------
 
     async def place_bet(
         self,
         market_id: str,
-        direction: str,  # "YES" | "NO"
+        direction: str,
         stake_usd: float,
         expected_price: Decimal,
         slippage_pct: float = 0.02,
-    ) -> Optional[str]:
-        """
-        Place a directional bet on Opinion.
+    ) -> str:
+        """Place a bet with slippage protection.
 
         Args:
             market_id: Opinion market identifier.
-            direction: "YES" to bet price goes up, "NO" for down.
-            stake_usd: Dollar amount to stake.
-            expected_price: Expected fill price (with slippage protection).
-            slippage_pct: Maximum acceptable slippage (default 2%).
+            direction: "YES" or "NO".
+            stake_usd: USD stake after fee deduction.
+            expected_price: Price at time of signal.
+            slippage_pct: Maximum tolerated slippage (default 2 %).
 
         Returns:
-            Bet ID string if successful, None on failure.
+            Bet ID string.
         """
-        min_fill = float(expected_price) * (1 - slippage_pct)
-        log.info(
-            "opinion.bet",
-            market=market_id,
-            direction=direction,
-            stake=stake_usd,
-            price=str(expected_price),
-            paper=self.paper_mode,
-        )
-
         if self.paper_mode:
-            return f"paper-opinion-{market_id[:8]}-{direction.lower()}"
+            return await self._paper_place_bet(
+                market_id, direction, stake_usd, expected_price, slippage_pct
+            )
 
-        # TODO: Implement live Opinion API call
-        payload = {
+        # TODO: Live bet via Opinion API
+        # payload = {
+        #     "market_id": market_id,
+        #     "direction": direction.lower(),
+        #     "stake_usd": stake_usd,
+        #     "max_price": str(expected_price * Decimal(str(1 + slippage_pct))),
+        # }
+        # async with self._session.post(f"{OPINION_API_BASE}/bets", json=payload) as resp:
+        #     resp.raise_for_status()
+        #     data = await resp.json()
+        #     bet_id = data["bet_id"]
+        #     self._log.info("place_bet.filled", bet_id=bet_id, fill_price=data.get("fill_price"))
+        #     return bet_id
+        raise NotImplementedError("Live Opinion bet placement not yet implemented")
+
+    async def _paper_place_bet(
+        self,
+        market_id: str,
+        direction: str,
+        stake_usd: float,
+        expected_price: Decimal,
+        slippage_pct: float,
+    ) -> str:
+        """Simulate a paper-mode bet with realistic slippage."""
+        # Random slippage within ±slippage_pct
+        slippage = Decimal(str(random.uniform(-slippage_pct, slippage_pct)))
+        fill_price = max(Decimal("0.01"), min(Decimal("0.99"), expected_price + slippage))
+
+        shares = stake_usd / float(fill_price)
+        bet_id = f"paper-opinion-{uuid.uuid4().hex[:12]}"
+        ts = time.time()
+
+        self._paper_bets[bet_id] = {
+            "bet_id": bet_id,
             "market_id": market_id,
             "direction": direction,
+            "requested_price": str(expected_price),
+            "fill_price": str(fill_price),
             "stake_usd": stake_usd,
-            "min_fill_price": min_fill,
+            "shares": shares,
+            "status": "OPEN",
+            "outcome": None,
+            "payout_usd": None,
+            "created_at": ts,
         }
-        async with self._session.post(f"{OPINION_BASE_URL}/bets", json=payload) as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-            return data.get("bet_id")
+        self._paper_balance -= stake_usd
+
+        self._log.info(
+            "place_bet.paper_filled",
+            bet_id=bet_id,
+            fill_price=str(fill_price),
+            slippage=f"{float(slippage)*100:.3f}%",
+            shares=f"{shares:.4f}",
+        )
+        return bet_id
+
+    # ------------------------------------------------------------------
+    # Status & balance
+    # ------------------------------------------------------------------
 
     async def get_bet_status(self, bet_id: str) -> dict:
-        """Fetch status and resolution of a placed bet."""
+        """Return status dict for a bet.
+
+        Args:
+            bet_id: The bet ID returned from place_bet/place_order.
+
+        Returns:
+            Dict with keys: bet_id, status, fill_price, stake_usd, outcome, payout_usd.
+        """
         if self.paper_mode:
-            return {"status": "OPEN", "resolved": False, "payout_usd": 0.0}
+            if bet_id not in self._paper_bets:
+                return {"bet_id": bet_id, "status": "NOT_FOUND"}
+            return dict(self._paper_bets[bet_id])
 
-        async with self._session.get(f"{OPINION_BASE_URL}/bets/{bet_id}") as resp:
-            resp.raise_for_status()
-            return await resp.json()
-
-    async def get_open_bets(self) -> list[dict]:
-        """Return all currently open bets."""
-        if self.paper_mode:
-            return []
-
-        async with self._session.get(f"{OPINION_BASE_URL}/bets?status=open") as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-            return data.get("bets", [])
+        # TODO: Live bet status
+        # async with self._session.get(f"{OPINION_API_BASE}/bets/{bet_id}") as resp:
+        #     resp.raise_for_status()
+        #     return await resp.json()
+        raise NotImplementedError("Live get_bet_status not yet implemented")
 
     async def get_balance(self) -> float:
-        """Return current USDC balance on Opinion."""
-        if self.paper_mode:
-            return 0.0
+        """Return current USD balance.
 
-        async with self._session.get(f"{OPINION_BASE_URL}/account/balance") as resp:
-            resp.raise_for_status()
-            data = await resp.json()
-            return float(data.get("balance_usd", 0))
+        Paper mode returns simulated tracked balance.
+        """
+        if self.paper_mode:
+            self._log.debug("get_balance.paper", balance=self._paper_balance)
+            return self._paper_balance
+
+        # TODO: Live balance fetch
+        # async with self._session.get(f"{OPINION_API_BASE}/account/balance") as resp:
+        #     resp.raise_for_status()
+        #     data = await resp.json()
+        #     return float(data["balance_usd"])
+        raise NotImplementedError("Live get_balance not yet implemented")

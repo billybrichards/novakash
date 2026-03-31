@@ -1,20 +1,14 @@
 """
 Sub-Dollar Arbitrage Strategy
 
-Scans Polymarket binary markets for mispricing where the combined cost of
-buying one YES share + one NO share is less than $0.985 (i.e., a guaranteed
-≥$0.015 profit per $1 resolved).
+Detects and executes simultaneous YES+NO purchases when the combined price
+is below $1.00 minus fees, guaranteeing a risk-free profit on resolution.
 
-Theory:
-  In a binary prediction market, YES + NO = $1 at resolution.
-  If best_ask(YES) + best_ask(NO) < $0.985, buying both legs locks in
-  an arbitrage profit after fees (net ≥ 1.5 cents per dollar at risk).
+Fee model (per leg):
+    fee_leg = POLYMARKET_CRYPTO_FEE_MULT * price * (1 - price)
 
-Execution:
-  - Both legs must be filled within ARB_MAX_EXECUTION_MS (500ms).
-  - If the second leg fill times out, the first leg is cancelled/hedged.
-  - Max position size: ARB_MAX_POSITION ($50 default).
-  - Fee model: POLYMARKET_CRYPTO_FEE_MULT applied per leg.
+Stake: min(ARB_MAX_POSITION, bankroll * BET_FRACTION)
+Both legs must be executed within ARB_MAX_EXECUTION_MS (500ms).
 """
 
 from __future__ import annotations
@@ -24,12 +18,14 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
+
 import structlog
 
 from config.constants import (
-    ARB_MIN_SPREAD,
-    ARB_MAX_POSITION,
     ARB_MAX_EXECUTION_MS,
+    ARB_MAX_POSITION,
+    ARB_MIN_SPREAD,
+    BET_FRACTION,
     POLYMARKET_CRYPTO_FEE_MULT,
 )
 from data.models import ArbOpportunity, MarketState
@@ -43,17 +39,10 @@ log = structlog.get_logger(__name__)
 
 class SubDollarArbStrategy(BaseStrategy):
     """
-    Buys YES + NO when combined price < $0.985, executing both legs within 500ms.
+    Sub-dollar arbitrage: buy both YES and NO when combined price < $1 after fees.
 
-    Signal dict schema:
-        {
-            "market_slug": str,
-            "yes_price": Decimal,
-            "no_price": Decimal,
-            "combined_price": Decimal,
-            "net_spread": Decimal,  # after fees
-            "stake_usd": float,
-        }
+    Since YES + NO = $1 at resolution, buying both legs below $1 (net of fees)
+    locks in a guaranteed profit regardless of outcome.
     """
 
     def __init__(
@@ -61,9 +50,6 @@ class SubDollarArbStrategy(BaseStrategy):
         order_manager: OrderManager,
         risk_manager: RiskManager,
         poly_client: PolymarketClient,
-        max_position_usd: float = ARB_MAX_POSITION,
-        min_spread: float = ARB_MIN_SPREAD,
-        max_exec_ms: int = ARB_MAX_EXECUTION_MS,
     ) -> None:
         super().__init__(
             name="sub_dollar_arb",
@@ -71,129 +57,142 @@ class SubDollarArbStrategy(BaseStrategy):
             risk_manager=risk_manager,
         )
         self._poly = poly_client
-        self._max_position_usd = max_position_usd
-        self._min_spread = min_spread
-        self._max_exec_ms = max_exec_ms
+        self._log = log.bind(strategy="sub_dollar_arb")
 
-        # Track markets we've recently arbed to avoid re-entry
-        self._recently_arbed: set[str] = set()
+    # ─── Evaluate ─────────────────────────────────────────────────────────────
 
     async def evaluate(self, state: MarketState) -> Optional[dict]:
         """
-        Scan current arb opportunities from the market state.
+        Scan arb opportunities from state and return the best one above ARB_MIN_SPREAD.
 
-        Returns the best opportunity above the minimum net spread, or None.
+        Returns a signal dict with the selected ArbOpportunity if one qualifies,
+        or None if no opportunity meets the minimum spread threshold.
         """
         if not state.arb_opportunities:
             return None
 
-        # Find the best (lowest combined price) opportunity
-        best: Optional[ArbOpportunity] = None
-        for opp in state.arb_opportunities:
-            if opp.market_slug in self._recently_arbed:
-                continue
-            if float(opp.net_spread) >= self._min_spread:
-                if best is None or opp.combined_price < best.combined_price:
-                    best = opp
+        # Filter opportunities above minimum net spread
+        qualified = [
+            opp for opp in state.arb_opportunities
+            if float(opp.net_spread) >= ARB_MIN_SPREAD
+        ]
 
-        if best is None:
+        if not qualified:
             return None
 
-        # Compute stake: risk-adjusted, capped at max position
-        stake_usd = min(self._max_position_usd, float(best.max_position_usd))
+        # Select best opportunity by net spread
+        best = max(qualified, key=lambda o: float(o.net_spread))
 
-        log.info(
+        self._log.info(
             "arb.signal_detected",
             market=best.market_slug,
-            combined=float(best.combined_price),
-            spread=float(best.net_spread),
-            stake=stake_usd,
+            yes_price=str(best.yes_price),
+            no_price=str(best.no_price),
+            combined=str(best.combined_price),
+            net_spread=str(best.net_spread),
         )
 
-        return {
-            "market_slug": best.market_slug,
-            "yes_price": best.yes_price,
-            "no_price": best.no_price,
-            "combined_price": best.combined_price,
-            "net_spread": best.net_spread,
-            "stake_usd": stake_usd,
-        }
+        return {"opportunity": best}
+
+    # ─── Execute ──────────────────────────────────────────────────────────────
 
     async def execute(self, state: MarketState, signal: dict) -> Optional[Order]:
         """
-        Submit YES and NO legs simultaneously. Cancel/hedge if second leg fails
-        within ARB_MAX_EXECUTION_MS.
+        Execute both legs of the arb within 500ms.
+
+        1. Compute stake from risk manager bankroll.
+        2. Call risk gate.
+        3. Place YES and NO legs via poly_client with asyncio.timeout.
+        4. Register a single consolidated Order with direction="ARB".
         """
-        stake_usd = signal["stake_usd"]
-        market_slug = signal["market_slug"]
+        opp: ArbOpportunity = signal["opportunity"]
+
+        # Determine stake
+        status = self._rm.get_status()
+        bankroll = status["current_bankroll"]
+        stake = min(ARB_MAX_POSITION, bankroll * BET_FRACTION)
+
+        # Each leg is stake/2 (total exposure = stake)
+        leg_stake = stake / 2.0
+
+        # Compute fees per leg
+        yes_fee = POLYMARKET_CRYPTO_FEE_MULT * float(opp.yes_price) * (1.0 - float(opp.yes_price))
+        no_fee = POLYMARKET_CRYPTO_FEE_MULT * float(opp.no_price) * (1.0 - float(opp.no_price))
+        total_fee = (yes_fee + no_fee) * leg_stake
 
         # Risk gate
-        approved, reason = await self._check_risk(stake_usd)
+        approved, reason = await self._check_risk(stake)
         if not approved:
-            log.warning("arb.blocked_by_risk", market=market_slug, reason=reason)
+            self._log.info("arb.risk_blocked", reason=reason, market=opp.market_slug)
             return None
 
-        yes_order = Order(
-            order_id=str(uuid.uuid4()),
-            strategy=self.name,
-            venue="polymarket",
-            market_slug=market_slug,
-            direction="YES",
-            entry_price=signal["yes_price"],
-            stake_usd=stake_usd / 2,
-            fee_usd=stake_usd / 2 * POLYMARKET_CRYPTO_FEE_MULT,
-            status=OrderStatus.PENDING,
-            created_at=datetime.utcnow(),
-        )
-        no_order = Order(
-            order_id=str(uuid.uuid4()),
-            strategy=self.name,
-            venue="polymarket",
-            market_slug=market_slug,
-            direction="NO",
-            entry_price=signal["no_price"],
-            stake_usd=stake_usd / 2,
-            fee_usd=stake_usd / 2 * POLYMARKET_CRYPTO_FEE_MULT,
-            status=OrderStatus.PENDING,
-            created_at=datetime.utcnow(),
-        )
-
+        # Execute both legs within 500ms timeout
         try:
-            # Submit both legs concurrently with timeout
-            timeout_s = self._max_exec_ms / 1000
-            async with asyncio.timeout(timeout_s):
+            async with asyncio.timeout(ARB_MAX_EXECUTION_MS / 1000):
                 yes_task = asyncio.create_task(
-                    self._poly.place_order(market_slug, "YES", signal["yes_price"], stake_usd / 2)
+                    self._poly.place_order(
+                        market_slug=opp.market_slug,
+                        direction="YES",
+                        price=opp.yes_price,
+                        stake_usd=leg_stake,
+                    )
                 )
                 no_task = asyncio.create_task(
-                    self._poly.place_order(market_slug, "NO", signal["no_price"], stake_usd / 2)
+                    self._poly.place_order(
+                        market_slug=opp.market_slug,
+                        direction="NO",
+                        price=opp.no_price,
+                        stake_usd=leg_stake,
+                    )
                 )
-                yes_result, no_result = await asyncio.gather(yes_task, no_task)
+                yes_order_id, no_order_id = await asyncio.gather(yes_task, no_task)
 
-        except TimeoutError:
-            log.error("arb.execution_timeout", market=market_slug, ms=self._max_exec_ms)
+        except asyncio.TimeoutError:
+            self._log.error(
+                "arb.execution_timeout",
+                market=opp.market_slug,
+                timeout_ms=ARB_MAX_EXECUTION_MS,
+            )
+            return None
+        except Exception as exc:
+            self._log.error("arb.execution_failed", market=opp.market_slug, error=str(exc))
             return None
 
-        yes_order.status = OrderStatus.OPEN
-        no_order.status = OrderStatus.OPEN
-
-        await self._om.register_order(yes_order)
-        await self._om.register_order(no_order)
-
-        # Mark market as recently arbed (avoid re-entry this cycle)
-        self._recently_arbed.add(market_slug)
-
-        log.info(
-            "arb.executed",
-            market=market_slug,
-            yes_id=yes_order.order_id,
-            no_id=no_order.order_id,
-            combined_cost=float(signal["combined_price"]),
-            net_spread=float(signal["net_spread"]),
+        # Build consolidated ARB order
+        combined = float(opp.yes_price + opp.no_price) / 2
+        btc_price = float(state.btc_price) if state.btc_price else None
+        order = Order(
+            order_id=f"arb-{uuid.uuid4().hex[:12]}",
+            strategy=self.name,
+            venue="polymarket",
+            direction="ARB",
+            price=str(combined),
+            stake_usd=stake,
+            fee_usd=total_fee,
+            status=OrderStatus.OPEN,
+            btc_entry_price=btc_price,
+            market_id=opp.market_slug,
+            metadata={
+                "yes_order_id": yes_order_id,
+                "no_order_id": no_order_id,
+                "yes_price": str(opp.yes_price),
+                "no_price": str(opp.no_price),
+                "combined_price": str(opp.combined_price),
+                "net_spread": str(opp.net_spread),
+                "net_spread_usd": float(opp.net_spread) * stake,
+            },
         )
 
-        return yes_order  # Return primary leg
+        await self._om.register_order(order)
 
-    def clear_recently_arbed(self, market_slug: str) -> None:
-        """Allow re-entry for a market (called externally when position resolves)."""
-        self._recently_arbed.discard(market_slug)
+        self._log.info(
+            "arb.executed",
+            order_id=order.order_id,
+            market=opp.market_slug,
+            yes_order_id=yes_order_id,
+            no_order_id=no_order_id,
+            stake=stake,
+            net_spread=str(opp.net_spread),
+        )
+
+        return order

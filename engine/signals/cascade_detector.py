@@ -1,180 +1,289 @@
 """
-Cascade Detector — Finite State Machine
+Cascade Detector — Finite State Machine.
 
-Detects forced liquidation cascades in BTC perpetuals and generates
-directional betting signals for the prediction market strategies.
+Detects liquidation cascades in BTC perpetual futures and signals when the
+cascade is exhausting (i.e. the optimal moment to enter a mean-reversion bet).
 
-State Machine:
-  IDLE
-    → on VPIN > CASCADE_THRESHOLD + OI drop > 2% + liq vol > $5M
-    → CASCADE_DETECTED
+State transitions
+-----------------
+IDLE
+  → CASCADE_DETECTED  when VPIN ≥ 0.70 AND |oi_delta_pct| ≥ 2% AND liq_5m ≥ $5 M
 
-  CASCADE_DETECTED
-    → monitor direction of cascade (which side is liquidating)
-    → EXHAUSTING (when liq volume starts declining or OI stabilises)
+CASCADE_DETECTED
+  → EXHAUSTING        when liq volume declining (< 85% of previous reading)
+                      OR VPIN drops below 0.70
 
-  EXHAUSTING
-    → wait for cascade to exhaust (price reverting, liq vol dropping)
-    → BET_SIGNAL (emit directional signal: fade the cascade)
+EXHAUSTING
+  → BET_SIGNAL        when VPIN < 0.55 AND liq_volume < $2.5 M
 
-  BET_SIGNAL
-    → signal emitted; wait for strategies to act
-    → COOLDOWN (immediately after emission)
+BET_SIGNAL
+  → COOLDOWN          immediately after signal is emitted
 
-  COOLDOWN (COOLDOWN_SECONDS = 900)
-    → wait for cooldown to expire
-    → IDLE
-
-Rationale:
-  Forced liquidation cascades are predictably mean-reverting events.
-  After a cascade exhausts, the overshot price tends to recover toward
-  pre-cascade levels. This creates a time-limited edge on prediction
-  markets that price the next BTC price range.
+COOLDOWN
+  → IDLE              after COOLDOWN_SECONDS (900 s)
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
-from enum import Enum
+import time
 from typing import Callable, Awaitable, Optional
+
 import structlog
 
-from config.constants import (
-    VPIN_CASCADE_THRESHOLD,
-    CASCADE_OI_DROP_THRESHOLD,
-    CASCADE_LIQ_VOLUME_THRESHOLD,
-    COOLDOWN_SECONDS,
-)
-from data.models import VPINSignal, OpenInterestSnapshot, CascadeSignal
+from data.models import CascadeSignal
 
 log = structlog.get_logger(__name__)
 
+# Thresholds
+_VPIN_CASCADE_ENTRY: float = 0.70
+_VPIN_EXHAUSTION: float = 0.55
+_OI_DELTA_MIN: float = 0.02          # 2 %
+_LIQ_VOLUME_CASCADE: float = 5_000_000.0
+_LIQ_VOLUME_EXHAUSTION: float = 2_500_000.0
+_LIQ_DECLINE_RATIO: float = 0.85
+COOLDOWN_SECONDS: int = 900
 
-class CascadeState(str, Enum):
+
+class CascadeDetector:
+    """
+    FSM that monitors VPIN, open-interest delta, and liquidation volume to
+    detect and time liquidation cascades.
+
+    Parameters
+    ----------
+    on_signal:
+        Optional async callback invoked with a :class:`CascadeSignal` on each
+        state transition that produces a public signal.
+    """
+
+    # Valid states
     IDLE = "IDLE"
     CASCADE_DETECTED = "CASCADE_DETECTED"
     EXHAUSTING = "EXHAUSTING"
     BET_SIGNAL = "BET_SIGNAL"
     COOLDOWN = "COOLDOWN"
 
-
-class CascadeDetector:
-    """
-    FSM that tracks liquidation cascade lifecycle and emits
-    directional CascadeSignal when a fade opportunity is detected.
-    """
-
     def __init__(
         self,
-        on_signal: Callable[[CascadeSignal], Awaitable[None]] | None = None,
+        on_signal: Optional[Callable[[CascadeSignal], Awaitable[None]]] = None,
     ) -> None:
         self._on_signal = on_signal
-        self._state = CascadeState.IDLE
-        self._direction: Optional[str] = None  # YES (price up) | NO (price down)
-        self._cascade_start: Optional[datetime] = None
-        self._cooldown_until: Optional[datetime] = None
+        self._state: str = self.IDLE
+        self._direction: Optional[str] = None
 
-        # Latest inputs
-        self._vpin: float = 0.0
-        self._oi_delta_pct: float = 0.0
-        self._liq_volume_usd: float = 0.0
-        self._prev_liq_volume: float = 0.0
+        # Timing for COOLDOWN
+        self._cooldown_start: Optional[float] = None
 
-    async def on_vpin(self, signal: VPINSignal) -> None:
-        """Update VPIN value and evaluate state transition."""
-        self._vpin = signal.value
-        await self._evaluate()
+        # Previous liq volume reading (for decline detection)
+        self._prev_liq_volume: Optional[float] = None
 
-    async def on_open_interest(self, oi: OpenInterestSnapshot) -> None:
-        """Update OI delta and evaluate state transition."""
-        self._oi_delta_pct = oi.open_interest_delta_pct
-        await self._evaluate()
+        self._log = log.bind(component="CascadeDetector")
+        self._log.info("initialised", state=self._state)
 
-    def update_liquidation_volume(self, liq_volume_usd: float) -> None:
-        """Update latest liquidation volume (called by aggregator)."""
-        self._prev_liq_volume = self._liq_volume_usd
-        self._liq_volume_usd = liq_volume_usd
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
 
     @property
-    def state(self) -> CascadeState:
+    def state(self) -> str:
+        """Current FSM state string."""
         return self._state
 
-    async def _evaluate(self) -> None:
-        """Main FSM transition logic."""
-        now = datetime.utcnow()
+    @property
+    def direction(self) -> Optional[str]:
+        """
+        Direction of the detected cascade: ``"down"`` (longs liquidated,
+        price fell) or ``"up"`` (shorts liquidated, price rose).
+        ``None`` when no cascade is active.
+        """
+        return self._direction
 
-        if self._state == CascadeState.IDLE:
-            await self._check_idle(now)
+    async def update(
+        self,
+        vpin: float,
+        oi_delta_pct: float,
+        liq_volume_5m: float,
+        btc_price: float,
+        btc_price_5m_ago: float,
+    ) -> None:
+        """
+        Drive the FSM with the latest market readings.
 
-        elif self._state == CascadeState.CASCADE_DETECTED:
-            await self._check_cascade_detected(now)
+        Parameters
+        ----------
+        vpin:
+            Current VPIN value in [0, 1].
+        oi_delta_pct:
+            Fractional change in open interest over the recent window
+            (e.g. -0.03 = −3 %).
+        liq_volume_5m:
+            Total liquidation volume (USD) in the last 5 minutes.
+        btc_price:
+            Current BTC price.
+        btc_price_5m_ago:
+            BTC price 5 minutes ago (used to determine cascade direction).
+        """
+        # Determine direction from price movement
+        direction = "down" if btc_price < btc_price_5m_ago else "up"
 
-        elif self._state == CascadeState.EXHAUSTING:
-            await self._check_exhausting(now)
-
-        elif self._state == CascadeState.BET_SIGNAL:
-            # Immediately transition to cooldown after signal is emitted
-            await self._transition(CascadeState.COOLDOWN, now)
-
-        elif self._state == CascadeState.COOLDOWN:
-            await self._check_cooldown(now)
-
-    async def _check_idle(self, now: datetime) -> None:
-        """IDLE → CASCADE_DETECTED when all cascade conditions met."""
-        cascade_conditions = (
-            self._vpin >= VPIN_CASCADE_THRESHOLD
-            and abs(self._oi_delta_pct) >= CASCADE_OI_DROP_THRESHOLD
-            and self._liq_volume_usd >= CASCADE_LIQ_VOLUME_THRESHOLD
+        self._log.debug(
+            "update",
+            state=self._state,
+            vpin=round(vpin, 4),
+            oi_delta_pct=round(oi_delta_pct, 4),
+            liq_volume_5m=liq_volume_5m,
+            direction=direction,
         )
-        if cascade_conditions:
-            # Determine direction: OI drop with price selling → NO; buying → YES
-            self._direction = "NO" if self._oi_delta_pct < 0 else "YES"
-            self._cascade_start = now
-            log.info("cascade.detected", direction=self._direction, vpin=self._vpin)
-            await self._transition(CascadeState.CASCADE_DETECTED, now)
 
-    async def _check_cascade_detected(self, now: datetime) -> None:
-        """CASCADE_DETECTED → EXHAUSTING when liq volume peaks and starts declining."""
-        liq_declining = self._liq_volume_usd < self._prev_liq_volume * 0.85
-        if liq_declining or self._vpin < VPIN_CASCADE_THRESHOLD:
-            log.info("cascade.exhausting", vpin=self._vpin, liq=self._liq_volume_usd)
-            await self._transition(CascadeState.EXHAUSTING, now)
+        if self._state == self.IDLE:
+            await self._handle_idle(vpin, oi_delta_pct, liq_volume_5m, direction)
 
-    async def _check_exhausting(self, now: datetime) -> None:
-        """EXHAUSTING → BET_SIGNAL when cascade is clearly exhausted."""
-        fully_exhausted = (
-            self._vpin < 0.55  # Flow normalising
-            and self._liq_volume_usd < CASCADE_LIQ_VOLUME_THRESHOLD * 0.5
+        elif self._state == self.CASCADE_DETECTED:
+            await self._handle_cascade_detected(
+                vpin, oi_delta_pct, liq_volume_5m, direction
+            )
+
+        elif self._state == self.EXHAUSTING:
+            await self._handle_exhausting(vpin, oi_delta_pct, liq_volume_5m, direction)
+
+        elif self._state == self.BET_SIGNAL:
+            # Immediately transition to COOLDOWN after signal was emitted
+            await self._transition(
+                self.COOLDOWN, vpin, oi_delta_pct, liq_volume_5m, emit=False
+            )
+            self._cooldown_start = time.monotonic()
+
+        elif self._state == self.COOLDOWN:
+            await self._handle_cooldown(vpin, oi_delta_pct, liq_volume_5m)
+
+        # Track previous liq volume for decline detection
+        self._prev_liq_volume = liq_volume_5m
+
+    # ------------------------------------------------------------------
+    # State handlers
+    # ------------------------------------------------------------------
+
+    async def _handle_idle(
+        self,
+        vpin: float,
+        oi_delta_pct: float,
+        liq_volume_5m: float,
+        direction: str,
+    ) -> None:
+        if (
+            vpin >= _VPIN_CASCADE_ENTRY
+            and abs(oi_delta_pct) >= _OI_DELTA_MIN
+            and liq_volume_5m >= _LIQ_VOLUME_CASCADE
+        ):
+            self._direction = direction
+            await self._transition(
+                self.CASCADE_DETECTED, vpin, oi_delta_pct, liq_volume_5m, emit=True
+            )
+
+    async def _handle_cascade_detected(
+        self,
+        vpin: float,
+        oi_delta_pct: float,
+        liq_volume_5m: float,
+        direction: str,
+    ) -> None:
+        # Update direction continuously while cascade is active
+        self._direction = direction
+
+        liq_declining = (
+            self._prev_liq_volume is not None
+            and liq_volume_5m < self._prev_liq_volume * _LIQ_DECLINE_RATIO
         )
-        if fully_exhausted:
-            log.info("cascade.bet_signal", direction=self._direction)
-            await self._transition(CascadeState.BET_SIGNAL, now)
-            await self._emit_signal(now)
+        vpin_falling = vpin < _VPIN_CASCADE_ENTRY
 
-    async def _check_cooldown(self, now: datetime) -> None:
-        """COOLDOWN → IDLE when cooldown period expires."""
-        if self._cooldown_until and now >= self._cooldown_until:
-            log.info("cascade.cooldown_expired")
+        if liq_declining or vpin_falling:
+            await self._transition(
+                self.EXHAUSTING, vpin, oi_delta_pct, liq_volume_5m, emit=True
+            )
+
+    async def _handle_exhausting(
+        self,
+        vpin: float,
+        oi_delta_pct: float,
+        liq_volume_5m: float,
+        direction: str,
+    ) -> None:
+        # Still update direction
+        self._direction = direction
+
+        if vpin < _VPIN_EXHAUSTION and liq_volume_5m < _LIQ_VOLUME_EXHAUSTION:
+            await self._transition(
+                self.BET_SIGNAL, vpin, oi_delta_pct, liq_volume_5m, emit=True
+            )
+            # Immediately move to COOLDOWN
+            await self._transition(
+                self.COOLDOWN, vpin, oi_delta_pct, liq_volume_5m, emit=False
+            )
+            self._cooldown_start = time.monotonic()
+
+    async def _handle_cooldown(
+        self,
+        vpin: float,
+        oi_delta_pct: float,
+        liq_volume_5m: float,
+    ) -> None:
+        if self._cooldown_start is None:
+            self._cooldown_start = time.monotonic()
+
+        elapsed = time.monotonic() - self._cooldown_start
+        if elapsed >= COOLDOWN_SECONDS:
+            self._log.info(
+                "cooldown_expired",
+                elapsed_s=round(elapsed, 1),
+                cooldown_s=COOLDOWN_SECONDS,
+            )
             self._direction = None
-            await self._transition(CascadeState.IDLE, now)
+            self._cooldown_start = None
+            self._prev_liq_volume = None
+            await self._transition(
+                self.IDLE, vpin, oi_delta_pct, liq_volume_5m, emit=False
+            )
 
-    async def _transition(self, new_state: CascadeState, now: datetime) -> None:
-        """Apply state transition."""
-        log.debug("cascade.transition", from_=self._state, to=new_state)
+    # ------------------------------------------------------------------
+    # Transition helper
+    # ------------------------------------------------------------------
+
+    async def _transition(
+        self,
+        new_state: str,
+        vpin: float,
+        oi_delta_pct: float,
+        liq_volume_5m: float,
+        emit: bool,
+    ) -> None:
+        old_state = self._state
         self._state = new_state
-        if new_state == CascadeState.COOLDOWN:
-            self._cooldown_until = now + timedelta(seconds=COOLDOWN_SECONDS)
 
-    async def _emit_signal(self, now: datetime) -> None:
-        """Emit CascadeSignal to registered handler."""
-        signal = CascadeSignal(
-            state=CascadeState.BET_SIGNAL,
+        self._log.info(
+            "state_transition",
+            from_state=old_state,
+            to_state=new_state,
             direction=self._direction,
-            vpin=self._vpin,
-            oi_delta_pct=self._oi_delta_pct,
-            liq_volume_usd=self._liq_volume_usd,
-            timestamp=now,
+            vpin=round(vpin, 4),
+            oi_delta_pct=round(oi_delta_pct, 4),
+            liq_volume_5m=liq_volume_5m,
         )
-        if self._on_signal:
-            await self._on_signal(signal)
+
+        if emit and self._on_signal is not None:
+            from datetime import datetime, timezone
+
+            signal = CascadeSignal(
+                state=new_state,
+                direction=self._direction,
+                vpin=vpin,
+                oi_delta_pct=oi_delta_pct,
+                liq_volume_usd=liq_volume_5m,
+                timestamp=datetime.now(tz=timezone.utc),
+            )
+            try:
+                await self._on_signal(signal)
+            except Exception:
+                self._log.exception(
+                    "on_signal callback raised", state=new_state
+                )
