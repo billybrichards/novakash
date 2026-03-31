@@ -11,6 +11,7 @@ import PnL from './pages/PnL.jsx';
 import System from './pages/System.jsx';
 import Config from './pages/Config.jsx';
 import Setup from './pages/Setup.jsx';
+import PaperTrading from './pages/PaperTrading.jsx';
 
 export default function App() {
   return (
@@ -31,6 +32,7 @@ export default function App() {
           >
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<Dashboard />} />
+            <Route path="paper" element={<PaperTrading />} />
             <Route path="trades" element={<Trades />} />
             <Route path="signals" element={<Signals />} />
             <Route path="pnl" element={<PnL />} />

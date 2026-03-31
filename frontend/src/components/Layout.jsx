@@ -13,8 +13,9 @@ export default function Layout() {
   const location = useLocation();
 
   const navItems = [
-    { path: '/dashboard', label: 'Dashboard',  icon: '📊' },
-    { path: '/trades',    label: 'Trades',      icon: '📋' },
+    { path: '/dashboard', label: 'Dashboard',    icon: '📊' },
+    { path: '/paper',     label: 'Paper Trading', icon: '📄' },
+    { path: '/trades',    label: 'Trades',        icon: '📋' },
     { path: '/signals',   label: 'Signals',     icon: '📡' },
     { path: '/pnl',       label: 'P&L',         icon: '💰' },
     { path: '/system',    label: 'System',       icon: '🖥️' },
