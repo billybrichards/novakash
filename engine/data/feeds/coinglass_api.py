@@ -24,7 +24,7 @@ from data.models import OpenInterestSnapshot, LiquidationVolume
 
 log = structlog.get_logger(__name__)
 
-COINGLASS_BASE = "https://open-api.coinglass.com/public/v2"
+COINGLASS_BASE = "https://open-api-v4.coinglass.com/api"
 POLL_INTERVAL = 30  # seconds
 LIQ_WINDOW_SECONDS = 300  # 5 minutes
 
@@ -79,7 +79,7 @@ class CoinGlassAPIFeed:
         """Start polling loop."""
         self._running = True
         headers = {
-            "coinglassSecret": self.api_key,
+            "secret_key": self.api_key,
             "Content-Type": "application/json",
         }
         async with aiohttp.ClientSession(headers=headers) as session:
@@ -116,8 +116,8 @@ class CoinGlassAPIFeed:
 
     async def _fetch_oi(self, session: aiohttp.ClientSession) -> None:
         """Fetch open interest for the symbol."""
-        url = f"{COINGLASS_BASE}/indicator/open_interest"
-        params = {"symbol": self.symbol, "interval": "0"}
+        url = f"{COINGLASS_BASE}/futures/open-interest/history"
+        params = {"symbol": self.symbol}
 
         async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             resp.raise_for_status()
@@ -162,8 +162,8 @@ class CoinGlassAPIFeed:
 
     async def _fetch_liquidations(self, session: aiohttp.ClientSession) -> None:
         """Fetch liquidation volume and update the 5-minute rolling window."""
-        url = f"{COINGLASS_BASE}/indicator/liquidation_history"
-        params = {"symbol": self.symbol, "interval": "5m"}
+        url = f"{COINGLASS_BASE}/futures/liquidation/history"
+        params = {"symbol": self.symbol}
 
         async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             resp.raise_for_status()

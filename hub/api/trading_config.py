@@ -81,7 +81,7 @@ CONFIG_DEFAULTS: list[dict] = [
         "label": "Starting Bankroll",
         "description": "Initial paper/live balance in USD. This is the base from which all position sizes are calculated.",
         "type": "number",
-        "default": 25.0,
+        "default": 100.0,  # Increased for paper mode to see more activity
         "min": 5.0,
         "max": 100000.0,
         "step": 5.0,
@@ -95,7 +95,7 @@ CONFIG_DEFAULTS: list[dict] = [
         "label": "Bet Fraction (Kelly %)",
         "description": "Fraction of bankroll to stake per trade. 0.05 = 5% Kelly. Higher = more aggressive compounding but larger drawdowns.",
         "type": "number",
-        "default": 0.05,
+        "default": 0.10,  # Increased for paper mode (was 0.05)
         "min": 0.01,
         "max": 0.20,
         "step": 0.005,
@@ -152,7 +152,7 @@ CONFIG_DEFAULTS: list[dict] = [
         "label": "VPIN Informed Trader Threshold",
         "description": "When VPIN crosses this level, informed trading is detected. The engine enters signal-ready state for directional bets.",
         "type": "number",
-        "default": 0.55,
+        "default": 0.45,  # Lowered for paper mode to generate more signals
         "min": 0.30,
         "max": 0.90,
         "step": 0.01,
@@ -166,7 +166,7 @@ CONFIG_DEFAULTS: list[dict] = [
         "label": "VPIN Cascade Threshold",
         "description": "Higher VPIN level that signals a potential cascade liquidation event. Must be above the informed threshold.",
         "type": "number",
-        "default": 0.70,
+        "default": 0.55,  # Lowered for paper mode to generate more cascade signals
         "min": 0.40,
         "max": 0.95,
         "step": 0.01,
@@ -209,7 +209,7 @@ CONFIG_DEFAULTS: list[dict] = [
         "label": "Arb Minimum Spread",
         "description": "Minimum price spread between venues to trigger an arbitrage trade. Must exceed combined fees to be profitable.",
         "type": "number",
-        "default": 0.015,
+        "default": 0.005,  # Lowered for paper mode (was 0.015) - more arb trades
         "min": 0.005,
         "max": 0.050,
         "step": 0.001,
