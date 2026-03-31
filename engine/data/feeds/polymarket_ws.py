@@ -15,7 +15,7 @@ import asyncio
 import json
 from datetime import datetime
 from decimal import Decimal
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Optional
 import websockets
 import structlog
 
@@ -33,6 +33,10 @@ class PolymarketWebSocketFeed:
 
     Subscribes to a list of market token IDs (YES tokens; NO inferred
     from the market complement).
+
+    Attributes:
+        connected: True while the WebSocket connection is open.
+        last_message_at: Timestamp of the most recently processed message.
     """
 
     def __init__(
@@ -43,13 +47,29 @@ class PolymarketWebSocketFeed:
         self.token_ids = token_ids
         self._on_book = on_book
         self._running = False
+        self._connected = False
+        self._last_message_at: Optional[datetime] = None
         self._reconnect_delay = 1.0
         # Map token_id -> market_slug for context
         self._token_to_slug: dict[str, str] = {}
 
+    # ─── Public Status Properties ──────────────────────────────────────────────
+
+    @property
+    def connected(self) -> bool:
+        """True if the WebSocket connection is currently open."""
+        return self._connected
+
+    @property
+    def last_message_at(self) -> Optional[datetime]:
+        """Timestamp of the last successfully processed message."""
+        return self._last_message_at
+
     def set_market_map(self, token_to_slug: dict[str, str]) -> None:
         """Provide token → market slug mapping."""
         self._token_to_slug = token_to_slug
+
+    # ─── Lifecycle ────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
         """Start WebSocket feed with automatic reconnect."""
@@ -59,12 +79,21 @@ class PolymarketWebSocketFeed:
                 await self._connect()
                 self._reconnect_delay = 1.0
             except Exception as exc:
-                log.warning("polymarket_ws.disconnected", error=str(exc), retry_in=self._reconnect_delay)
+                self._connected = False
+                log.warning(
+                    "polymarket_ws.disconnected",
+                    error=str(exc),
+                    retry_in=self._reconnect_delay,
+                )
                 await asyncio.sleep(self._reconnect_delay)
                 self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_DELAY_MAX)
 
     async def stop(self) -> None:
         self._running = False
+        self._connected = False
+        log.info("polymarket_ws.stopped")
+
+    # ─── Internal ─────────────────────────────────────────────────────────────
 
     async def _connect(self) -> None:
         """Open connection and handle subscription + message loop."""
@@ -77,6 +106,7 @@ class PolymarketWebSocketFeed:
                 "markets": self.token_ids,
             }
             await ws.send(json.dumps(sub_msg))
+            self._connected = True
             log.info("polymarket_ws.subscribed", markets=len(self.token_ids))
 
             async for raw in ws:
@@ -85,8 +115,12 @@ class PolymarketWebSocketFeed:
                 try:
                     msg = json.loads(raw)
                     await self._handle(msg)
+                    self._last_message_at = datetime.utcnow()
                 except Exception as exc:
                     log.error("polymarket_ws.parse_error", error=str(exc))
+
+        self._connected = False
+        log.info("polymarket_ws.connection_closed")
 
     async def _handle(self, msg: dict) -> None:
         """Parse order book message and emit PolymarketOrderBook."""

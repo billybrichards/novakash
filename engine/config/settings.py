@@ -43,5 +43,8 @@ class Settings(BaseSettings):
     starting_bankroll: float = Field(default=500.0, description="Starting bankroll in USD")
     paper_mode: bool = Field(default=True, description="Paper trading mode (no real orders)")
 
+    # Polymarket token IDs for BTC markets (comma-separated)
+    poly_btc_token_ids: str = Field(default="", description="Comma-separated Polymarket token IDs to watch")
+
 
 settings = Settings()

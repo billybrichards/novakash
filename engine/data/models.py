@@ -109,6 +109,8 @@ class MarketState(BaseModel):
     open_interest_usd: Optional[Decimal] = None
     oi_delta_pct: Optional[float] = None
     liq_volume_usd: Optional[Decimal] = None
+    liq_volume_5m_usd: Optional[Decimal] = None       # 5-minute rolling liquidation volume
+    btc_price_5m_ago: Optional[Decimal] = None         # BTC price 5 minutes ago (for cascade)
     vpin: Optional[VPINSignal] = None
     cascade: Optional[CascadeSignal] = None
     arb_opportunities: list[ArbOpportunity] = Field(default_factory=list)

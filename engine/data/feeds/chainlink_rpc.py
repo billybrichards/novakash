@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from decimal import Decimal
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Optional
 import structlog
 from web3 import AsyncWeb3
 from web3.providers.async_rpc import AsyncHTTPProvider
@@ -50,6 +50,10 @@ class ChainlinkRPCFeed:
 
     Provides a trustless price reference to sanity-check
     Binance prices and detect manipulation.
+
+    Attributes:
+        connected: True while polling is active and last call succeeded.
+        last_message_at: Timestamp of the most recent successful RPC call.
     """
 
     def __init__(
@@ -64,8 +68,24 @@ class ChainlinkRPCFeed:
         self.poll_interval = poll_interval
         self._on_price = on_price
         self._running = False
-        self._w3: AsyncWeb3 | None = None
+        self._connected = False
+        self._last_message_at: Optional[datetime] = None
+        self._w3: Optional[AsyncWeb3] = None
         self._contract = None
+
+    # ─── Public Status Properties ──────────────────────────────────────────────
+
+    @property
+    def connected(self) -> bool:
+        """True if RPC polling is active and last call succeeded."""
+        return self._connected
+
+    @property
+    def last_message_at(self) -> Optional[datetime]:
+        """Timestamp of the last successful RPC poll."""
+        return self._last_message_at
+
+    # ─── Lifecycle ────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
         """Connect to RPC and start polling."""
@@ -80,13 +100,20 @@ class ChainlinkRPCFeed:
         while self._running:
             try:
                 await self._poll()
+                self._connected = True
+                self._last_message_at = datetime.utcnow()
             except Exception as exc:
                 log.error("chainlink.poll_error", error=str(exc))
+                self._connected = False
             await asyncio.sleep(self.poll_interval)
 
     async def stop(self) -> None:
         """Stop the polling loop."""
         self._running = False
+        self._connected = False
+        log.info("chainlink.stopped")
+
+    # ─── Internal ─────────────────────────────────────────────────────────────
 
     async def _poll(self) -> None:
         """Fetch latest round data from the Chainlink contract."""

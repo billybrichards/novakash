@@ -39,8 +39,8 @@ class TelegramAlerter:
     """
 
     def __init__(self, settings: Settings) -> None:
-        self._token = settings.TELEGRAM_BOT_TOKEN
-        self._chat_id = settings.TELEGRAM_CHAT_ID
+        self._token = settings.telegram_bot_token
+        self._chat_id = settings.telegram_chat_id
         self._base_url = f"https://api.telegram.org/bot{self._token}"
         self._session: Optional[aiohttp.ClientSession] = None
 

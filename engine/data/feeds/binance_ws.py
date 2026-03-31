@@ -15,7 +15,7 @@ import asyncio
 import json
 from datetime import datetime
 from decimal import Decimal
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Optional
 import websockets
 import structlog
 
@@ -31,6 +31,10 @@ class BinanceWebSocketFeed:
     """
     Connects to Binance Futures combined stream and dispatches
     typed events to registered handlers.
+
+    Attributes:
+        connected: True while the WebSocket is open and receiving messages.
+        last_message_at: Timestamp of the most recently processed message.
     """
 
     def __init__(
@@ -46,6 +50,20 @@ class BinanceWebSocketFeed:
         self._on_liquidation = on_liquidation
         self._running = False
         self._reconnect_delay = 1.0
+        self._connected = False
+        self._last_message_at: Optional[datetime] = None
+
+    # ─── Public Status Properties ──────────────────────────────────────────────
+
+    @property
+    def connected(self) -> bool:
+        """True if the WebSocket connection is currently open."""
+        return self._connected
+
+    @property
+    def last_message_at(self) -> Optional[datetime]:
+        """Timestamp of the last successfully processed message."""
+        return self._last_message_at
 
     @property
     def _stream_url(self) -> str:
@@ -56,6 +74,8 @@ class BinanceWebSocketFeed:
         ]
         return f"{BINANCE_WSS_BASE}?streams={'/'.join(streams)}"
 
+    # ─── Lifecycle ────────────────────────────────────────────────────────────
+
     async def start(self) -> None:
         """Start the WebSocket feed with automatic reconnection."""
         self._running = True
@@ -64,6 +84,7 @@ class BinanceWebSocketFeed:
                 await self._connect()
                 self._reconnect_delay = 1.0  # reset on successful connection
             except Exception as exc:
+                self._connected = False
                 log.warning(
                     "binance_ws.disconnected",
                     error=str(exc),
@@ -75,12 +96,17 @@ class BinanceWebSocketFeed:
     async def stop(self) -> None:
         """Signal the feed to stop reconnecting."""
         self._running = False
+        self._connected = False
+        log.info("binance_ws.stopped")
+
+    # ─── Internal ─────────────────────────────────────────────────────────────
 
     async def _connect(self) -> None:
         """Open WebSocket connection and dispatch messages."""
         log.info("binance_ws.connecting", url=self._stream_url)
         async with websockets.connect(self._stream_url) as ws:
-            log.info("binance_ws.connected")
+            self._connected = True
+            log.info("binance_ws.connected", symbol=self.symbol)
             async for raw in ws:
                 if not self._running:
                     break
@@ -89,8 +115,11 @@ class BinanceWebSocketFeed:
                     stream: str = envelope.get("stream", "")
                     data: dict = envelope.get("data", {})
                     await self._dispatch(stream, data)
+                    self._last_message_at = datetime.utcnow()
                 except Exception as exc:
                     log.error("binance_ws.parse_error", error=str(exc))
+        self._connected = False
+        log.info("binance_ws.connection_closed", symbol=self.symbol)
 
     async def _dispatch(self, stream: str, data: dict) -> None:
         """Route raw message to the correct typed handler."""
