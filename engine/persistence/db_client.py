@@ -32,7 +32,11 @@ class DBClient:
 
     def __init__(self, settings: Settings) -> None:
         # Use lowercase field from settings (pydantic model)
-        self._dsn = settings.database_url
+                # Strip SQLAlchemy dialect prefix if present (asyncpg needs plain postgresql://)
+        dsn = settings.database_url
+        if dsn.startswith("postgresql+asyncpg://"):
+            dsn = dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
+        self._dsn = dsn
         self._pool: Optional[asyncpg.Pool] = None
 
     async def connect(self) -> None:
