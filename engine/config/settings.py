@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     database_url: str = Field(..., description="Async PostgreSQL connection string")
 
     # Polymarket
-    poly_private_key: str = Field(..., description="Ethereum private key for Polymarket")
+    poly_private_key: str = Field(default="", description="Ethereum private key for Polymarket")
     poly_api_key: str = Field(default="", description="Polymarket CLOB API key")
     poly_api_secret: str = Field(default="", description="Polymarket CLOB API secret")
     poly_api_passphrase: str = Field(default="", description="Polymarket CLOB API passphrase")
