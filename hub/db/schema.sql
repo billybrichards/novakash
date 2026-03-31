@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS trades (
     payout_usd   NUMERIC(12, 4),
     pnl_usd      NUMERIC(12, 4),
     metadata     JSONB DEFAULT '{}',
+    mode         VARCHAR(16) DEFAULT 'paper',
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     resolved_at  TIMESTAMPTZ
 );
@@ -76,12 +77,37 @@ CREATE TABLE IF NOT EXISTS system_state (
     id         INTEGER PRIMARY KEY DEFAULT 1,
     state      JSONB,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    paper_enabled BOOLEAN DEFAULT TRUE,
+    live_enabled BOOLEAN DEFAULT FALSE,
+    active_paper_config_id INTEGER,
+    active_live_config_id INTEGER,
     CONSTRAINT single_row CHECK (id = 1)
 );
 
 INSERT INTO system_state (id, state)
 VALUES (1, '{}')
 ON CONFLICT (id) DO NOTHING;
+
+
+-- Trading Configs
+CREATE TABLE IF NOT EXISTS trading_configs (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    description TEXT,
+    config JSONB NOT NULL,
+    mode VARCHAR(16) NOT NULL DEFAULT 'paper',
+    is_active BOOLEAN DEFAULT FALSE,
+    is_approved BOOLEAN DEFAULT FALSE,
+    approved_at TIMESTAMPTZ,
+    approved_by VARCHAR(64),
+    parent_id INTEGER REFERENCES trading_configs(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_trading_configs_active ON trading_configs(is_active, mode);
+CREATE INDEX IF NOT EXISTS idx_trading_configs_name ON trading_configs(name);
 
 
 -- Backtest Runs

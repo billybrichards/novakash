@@ -1,25 +1,27 @@
 import React from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext.jsx';
+import LiveToggle from './LiveToggle.jsx';
 
 /**
  * Layout — Dark sidebar nav + main content area.
  *
- * Nav items: Dashboard, Trades, Signals, P&L, System, Config, Setup
- * Header: Logo + user menu (logout)
+ * Top bar: logo + LiveToggle (PAPER + LIVE independent toggles)
+ * When live is active, header gets a subtle red border/glow.
  */
 export default function Layout() {
   const { user, logout } = useAuth();
   const location = useLocation();
 
   const navItems = [
-    { path: '/dashboard', label: 'Dashboard',    icon: '📊' },
-    { path: '/paper',     label: 'Paper Trading', icon: '📄' },
-    { path: '/trades',    label: 'Trades',        icon: '📋' },
-    { path: '/signals',   label: 'Signals',     icon: '📡' },
-    { path: '/pnl',       label: 'P&L',         icon: '💰' },
-    { path: '/system',    label: 'System',       icon: '🖥️' },
-    { path: '/config',    label: 'Config',       icon: '⚙️' },
+    { path: '/dashboard',       label: 'Dashboard',       icon: '📊' },
+    { path: '/paper',           label: 'Paper Trading',   icon: '📄' },
+    { path: '/trades',          label: 'Trades',          icon: '📋' },
+    { path: '/signals',         label: 'Signals',         icon: '📡' },
+    { path: '/pnl',             label: 'P&L',             icon: '💰' },
+    { path: '/system',          label: 'System',          icon: '🖥️' },
+    { path: '/trading-config',  label: 'Trading Config',  icon: '⚙️' },
+    { path: '/config',          label: 'Config',          icon: '🔩' },
   ];
 
   const bottomNavItems = [
@@ -31,17 +33,24 @@ export default function Layout() {
       {/* Sidebar */}
       <aside
         style={{
-          background: 'rgba(0, 0, 0, 0.2)',
+          background: 'rgba(0,0,0,0.2)',
           borderRight: '1px solid var(--border)',
         }}
         className="w-full lg:w-64 flex-shrink-0 p-6 flex flex-col"
       >
-        {/* Logo */}
-        <Link to="/dashboard" className="block mb-8">
-          <div style={{ color: 'var(--accent-purple)' }} className="text-2xl font-bold tracking-tight">
-            ₿ BTC Trader
+        {/* Logo + LiveToggle (stacked vertically on sidebar for mobile) */}
+        <div className="mb-6">
+          <Link to="/dashboard" className="block mb-4">
+            <div style={{ color: 'var(--accent-purple)' }} className="text-2xl font-bold tracking-tight">
+              ₿ BTC Trader
+            </div>
+          </Link>
+
+          {/* Live/Paper toggles — shown in sidebar */}
+          <div className="lg:hidden">
+            <LiveToggle />
           </div>
-        </Link>
+        </div>
 
         {/* Main Nav */}
         <nav className="space-y-1 flex-1">
@@ -67,7 +76,6 @@ export default function Layout() {
 
         {/* Bottom section: Setup + Logout */}
         <div style={{ borderTop: '1px solid var(--border)' }} className="pt-4 space-y-1">
-          {/* Setup nav item */}
           {bottomNavItems.map(item => {
             const isActive = location.pathname === item.path;
             return (
@@ -87,7 +95,6 @@ export default function Layout() {
             );
           })}
 
-          {/* User + logout */}
           <div className="pt-2 mt-1">
             <div style={{ color: 'var(--text-secondary)' }} className="text-xs px-4 mb-2">
               Logged in as {user?.username}
@@ -106,10 +113,49 @@ export default function Layout() {
         </div>
       </aside>
 
-      {/* Main Content */}
-      <main className="flex-1 overflow-auto">
-        <Outlet />
-      </main>
+      {/* Main Content + Top Bar */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Top bar — desktop only — contains LiveToggle */}
+        <LiveToggleHeader />
+
+        {/* Page content */}
+        <main className="flex-1 overflow-auto">
+          <Outlet />
+        </main>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * LiveToggleHeader — the thin top bar on desktop that hosts the two mode toggles.
+ * Reads live status from LiveToggle's internal state to apply red glow.
+ */
+function LiveToggleHeader() {
+  return (
+    <LiveToggleHeaderInner />
+  );
+}
+
+function LiveToggleHeaderInner() {
+  // We render LiveToggle inside the header — it manages its own state.
+  // The red-border effect when live is on is handled via the LiveToggle component
+  // rendering a sibling style element.
+  return (
+    <div
+      id="live-toggle-header"
+      className="hidden lg:flex"
+      style={{
+        borderBottom: '1px solid rgba(255,255,255,0.05)',
+        padding: '8px 20px',
+        justifyContent: 'flex-end',
+        alignItems: 'center',
+        background: 'rgba(0,0,0,0.15)',
+        minHeight: 48,
+        gap: 12,
+      }}
+    >
+      <LiveToggle />
     </div>
   );
 }

@@ -26,6 +26,7 @@ from api.config import router as config_router
 from api.backtest import router as backtest_router
 from api.setup import router as setup_router
 from api.paper import router as paper_router
+from api.trading_config import router as trading_config_router
 from ws.live_feed import router as ws_router
 
 log = structlog.get_logger(__name__)
@@ -70,6 +71,7 @@ app.include_router(config_router, prefix="/api", tags=["config"])
 app.include_router(backtest_router, prefix="/api", tags=["backtest"])
 app.include_router(setup_router, tags=["setup"])
 app.include_router(paper_router, prefix="/api", tags=["paper"])
+app.include_router(trading_config_router, prefix="/api", tags=["trading-config"])
 app.include_router(ws_router, tags=["websocket"])
 
 

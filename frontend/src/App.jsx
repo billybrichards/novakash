@@ -12,6 +12,7 @@ import System from './pages/System.jsx';
 import Config from './pages/Config.jsx';
 import Setup from './pages/Setup.jsx';
 import PaperTrading from './pages/PaperTrading.jsx';
+import TradingConfig from './pages/TradingConfig.jsx';
 
 export default function App() {
   return (
@@ -38,6 +39,7 @@ export default function App() {
             <Route path="pnl" element={<PnL />} />
             <Route path="system" element={<System />} />
             <Route path="config" element={<Config />} />
+            <Route path="trading-config" element={<TradingConfig />} />
             <Route path="setup" element={<Setup />} />
           </Route>
 
