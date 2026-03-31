@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+node_modules/
+dist/
+.vite/
+*.egg-info/
+.pytest_cache/
+pgdata/
+caddy_data/
+caddy_config/

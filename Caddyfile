@@ -1,0 +1,14 @@
+{$DOMAIN} {
+    handle /api/* {
+        reverse_proxy hub:8000
+    }
+    handle /ws/* {
+        reverse_proxy hub:8000
+    }
+    handle /auth/* {
+        reverse_proxy hub:8000
+    }
+    handle {
+        reverse_proxy frontend:3000
+    }
+}
