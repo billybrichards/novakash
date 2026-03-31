@@ -354,11 +354,17 @@ class Orchestrator:
                 log.error("orchestrator.cascade_update_failed", error=str(exc))
 
     async def _on_polymarket_book(self, book: PolymarketOrderBook) -> None:
-        """Polymarket order book → aggregator + arb scanner."""
+        """Polymarket order book → aggregator + arb scanner.
+        
+        The book now contains both YES and NO sides (NO derived from YES complement).
+        Feed the complete book to the arb scanner for scanning.
+        """
         await self._aggregator.on_polymarket_book(book)
 
-        # Feed arb scanner (both YES and NO sides from the single book snapshot)
+        # Feed arb scanner with the complete book (both sides now populated)
         try:
+            # Pass the book with side="YES" to maintain compatibility,
+            # but the book now contains both YES and NO data
             await self._arb_scanner.on_book(book, side="YES")
         except Exception as exc:
             log.error("orchestrator.arb_scanner_failed", error=str(exc))

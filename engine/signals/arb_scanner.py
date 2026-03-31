@@ -76,10 +76,44 @@ class ArbScanner:
             Updated :class:`PolymarketOrderBook`.
         side:
             ``"YES"`` or ``"NO"`` — which side of the market this book represents.
+            
+        Note:
+            When the book contains both YES and NO sides (NO derived from YES complement),
+            pass side="YES" and the scanner will use both sides from the single book.
         """
         market_slug = book.market_slug
         if market_slug not in self._books:
             self._books[market_slug] = {}
+        
+        # Check if the book already contains both sides (NO derived from YES)
+        # If so, store it under "YES" but mark it as complete
+        has_yes_data = bool(book.yes_bids or book.yes_asks)
+        has_no_data = bool(book.no_bids or book.no_asks)
+        
+        if has_yes_data:
+            self._books[market_slug]["YES"] = book
+        
+        # If NO side is also populated in the same book, we don't need a separate entry
+        # The _scan_market method will use both sides from the YES book
+        if has_no_data and has_yes_data:
+            # Book has both sides, scan immediately
+            opportunities = self._scan_market(market_slug)
+            if opportunities:
+                self._opportunities = opportunities
+                self._log.info(
+                    "arb_opportunities_found",
+                    market_slug=market_slug,
+                    count=len(opportunities),
+                    best_spread=str(max(o.net_spread for o in opportunities)),
+                )
+                if self._on_opportunities is not None:
+                    try:
+                        await self._on_opportunities(opportunities)
+                    except Exception:
+                        self._log.exception("on_opportunities callback raised")
+            return
+        
+        # Legacy mode: wait for both sides separately
         self._books[market_slug][side.upper()] = book
 
         self._log.debug(
@@ -157,8 +191,16 @@ class ArbScanner:
 
     def _scan_market(self, market_slug: str) -> list[ArbOpportunity]:
         """Scan a single market for arb given its YES and NO books."""
-        yes_book = self._books[market_slug]["YES"]
-        no_book = self._books[market_slug]["NO"]
+        # Check if both sides are in a single book (YES key contains complete data)
+        yes_book = self._books[market_slug].get("YES")
+        no_book = self._books[market_slug].get("NO")
+        
+        # If we have a complete book with both sides, use it
+        if yes_book and (yes_book.no_bids or yes_book.no_asks):
+            # Use the same book for both sides
+            no_book = yes_book
+        elif not yes_book or not no_book:
+            return []
 
         yes_ask = self._best_ask(yes_book, "YES")
         no_ask = self._best_ask(no_book, "NO")

@@ -137,6 +137,11 @@ class PolymarketWebSocketFeed:
             "bids": [{"price": "0.95", "size": "1000"}, ...],
             "asks": [{"price": "0.96", "size": "500"}, ...]
         }
+        
+        Since we only subscribe to YES tokens, we derive NO-side data from the complement:
+        - NO bid price = 1 - YES ask price
+        - NO ask price = 1 - YES bid price
+        - Sizes are the same as the corresponding YES levels
         """
         token_id = msg.get("asset_id", "")
         if not token_id:
@@ -153,13 +158,27 @@ class PolymarketWebSocketFeed:
                     result.append((Decimal(level[0]), Decimal(level[1])))
             return result
 
+        # Parse YES side from the message
+        yes_bids = _parse_levels(msg.get("bids", []))
+        yes_asks = _parse_levels(msg.get("asks", []))
+
+        # Derive NO side from YES complement
+        # NO bid = 1 - YES ask (someone buying NO is like someone selling YES)
+        # NO ask = 1 - YES bid (someone selling NO is like someone buying YES)
+        no_bids = [(Decimal("1.0") - price, size) for price, size in yes_asks]
+        no_asks = [(Decimal("1.0") - price, size) for price, size in yes_bids]
+
+        # Sort NO bids descending (highest first) and NO asks ascending (lowest first)
+        no_bids.sort(key=lambda x: x[0], reverse=True)
+        no_asks.sort(key=lambda x: x[0])
+
         book = PolymarketOrderBook(
             market_slug=market_slug,
             token_id=token_id,
-            yes_bids=_parse_levels(msg.get("bids", [])),
-            yes_asks=_parse_levels(msg.get("asks", [])),
-            no_bids=[],
-            no_asks=[],
+            yes_bids=yes_bids,
+            yes_asks=yes_asks,
+            no_bids=no_bids,
+            no_asks=no_asks,
             timestamp=datetime.utcnow(),
         )
 
