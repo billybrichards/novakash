@@ -100,10 +100,10 @@ class PolymarketWebSocketFeed:
         log.info("polymarket_ws.connecting")
         async with websockets.connect(POLYMARKET_WSS) as ws:
             # Subscribe to order books for all tracked tokens
+            # Polymarket WS expects: {"assets_ids": [...], "type": "market"}
             sub_msg = {
-                "type": "subscribe",
-                "channel": "market",
-                "markets": self.token_ids,
+                "assets_ids": self.token_ids,
+                "type": "market",
             }
             await ws.send(json.dumps(sub_msg))
             self._connected = True
@@ -113,8 +113,11 @@ class PolymarketWebSocketFeed:
                 if not self._running:
                     break
                 try:
-                    msg = json.loads(raw)
-                    await self._handle(msg)
+                    data = json.loads(raw)
+                    # Response can be a list of book updates
+                    msgs = data if isinstance(data, list) else [data]
+                    for msg in msgs:
+                        await self._handle(msg)
                     self._last_message_at = datetime.utcnow()
                 except Exception as exc:
                     log.error("polymarket_ws.parse_error", error=str(exc))
@@ -123,23 +126,39 @@ class PolymarketWebSocketFeed:
         log.info("polymarket_ws.connection_closed")
 
     async def _handle(self, msg: dict) -> None:
-        """Parse order book message and emit PolymarketOrderBook."""
-        event_type = msg.get("event_type", "")
-        if event_type not in ("book", "price_change"):
+        """Parse order book message and emit PolymarketOrderBook.
+        
+        Polymarket WS format:
+        {
+            "market": "0x...",
+            "asset_id": "12345...",
+            "timestamp": "1774969845936",
+            "hash": "...",
+            "bids": [{"price": "0.95", "size": "1000"}, ...],
+            "asks": [{"price": "0.96", "size": "500"}, ...]
+        }
+        """
+        token_id = msg.get("asset_id", "")
+        if not token_id:
             return
 
-        token_id = msg.get("asset_id", "")
-        market_slug = self._token_to_slug.get(token_id, token_id)
+        market_slug = self._token_to_slug.get(token_id, msg.get("market", token_id))
 
-        def _parse_levels(levels: list[list]) -> list[tuple[Decimal, Decimal]]:
-            return [(Decimal(p), Decimal(s)) for p, s in levels]
+        def _parse_levels(levels: list) -> list[tuple[Decimal, Decimal]]:
+            result = []
+            for level in levels:
+                if isinstance(level, dict):
+                    result.append((Decimal(level["price"]), Decimal(level["size"])))
+                elif isinstance(level, (list, tuple)):
+                    result.append((Decimal(level[0]), Decimal(level[1])))
+            return result
 
         book = PolymarketOrderBook(
             market_slug=market_slug,
             token_id=token_id,
             yes_bids=_parse_levels(msg.get("bids", [])),
             yes_asks=_parse_levels(msg.get("asks", [])),
-            no_bids=[],   # Separate subscription for NO token
+            no_bids=[],
             no_asks=[],
             timestamp=datetime.utcnow(),
         )
