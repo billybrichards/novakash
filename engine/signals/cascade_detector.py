@@ -35,14 +35,21 @@ from data.models import CascadeSignal
 
 log = structlog.get_logger(__name__)
 
-# Thresholds
-_VPIN_CASCADE_ENTRY: float = 0.70
-_VPIN_EXHAUSTION: float = 0.55
-_OI_DELTA_MIN: float = 0.02          # 2 %
-_LIQ_VOLUME_CASCADE: float = 5_000_000.0
-_LIQ_VOLUME_EXHAUSTION: float = 2_500_000.0
+# Thresholds — read from config/constants.py (which reads env vars)
+from config.constants import (
+    VPIN_CASCADE_THRESHOLD,
+    VPIN_INFORMED_THRESHOLD,
+    CASCADE_OI_DROP_THRESHOLD,
+    CASCADE_LIQ_VOLUME_THRESHOLD,
+    COOLDOWN_SECONDS,
+)
+
+_VPIN_CASCADE_ENTRY: float = VPIN_CASCADE_THRESHOLD
+_VPIN_EXHAUSTION: float = VPIN_INFORMED_THRESHOLD
+_OI_DELTA_MIN: float = CASCADE_OI_DROP_THRESHOLD
+_LIQ_VOLUME_CASCADE: float = CASCADE_LIQ_VOLUME_THRESHOLD
+_LIQ_VOLUME_EXHAUSTION: float = CASCADE_LIQ_VOLUME_THRESHOLD / 2.0
 _LIQ_DECLINE_RATIO: float = 0.85
-COOLDOWN_SECONDS: int = 900
 
 
 class CascadeDetector:
