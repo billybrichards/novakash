@@ -15,8 +15,12 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Callable, Awaitable, Optional
 import structlog
-from web3 import AsyncWeb3
-from web3.providers.async_rpc import AsyncHTTPProvider
+try:
+    from web3 import AsyncWeb3
+    from web3.providers.async_rpc import AsyncHTTPProvider
+except ImportError:
+    from web3 import AsyncWeb3
+    from web3.providers import AsyncHTTPProvider
 
 from data.models import ChainlinkPrice
 
