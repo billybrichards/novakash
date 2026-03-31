@@ -2,80 +2,52 @@
 hub/api/paper.py — Paper Trading API endpoints.
 
 All endpoints are unauthenticated (dev/paper mode).
-Queries the same DB as the trading engine:
-  - trades table
-  - signals table
-  - system_state table
+Uses SQLAlchemy async sessions for DB access.
 """
 
 from __future__ import annotations
 
 import math
-import time
 from datetime import datetime, timezone
 from typing import Any
 
 import structlog
-from fastapi import APIRouter
-from asyncpg.exceptions import UndefinedTableError
+from fastapi import APIRouter, Depends
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.database import get_asyncpg_pool as get_pool
+from db.database import get_session
 
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/paper", tags=["paper"])
 
-# ─── Defaults ────────────────────────────────────────────────────────────────
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
-DEFAULT_STATUS = {
-    "engine_status": "UNKNOWN",
-    "current_balance": 10000.0,
-    "peak_balance": 10000.0,
-    "current_drawdown_pct": 0.0,
-    "binance_connected": False,
-    "coinglass_connected": False,
-    "chainlink_connected": False,
-    "polymarket_connected": False,
-    "opinion_connected": False,
-    "last_vpin": None,
-    "last_cascade_state": "IDLE",
-    "regime": "UNKNOWN",
-    "active_positions": 0,
-    "last_heartbeat": None,
-    "uptime_seconds": 0,
-}
-
-
-async def _safe_fetch(pool, query: str, *args) -> list[dict]:
-    """Execute a query and return rows as dicts. Returns [] on any error."""
+async def _fetch_all(session: AsyncSession, query: str) -> list[dict]:
+    """Execute raw SQL, return list of dicts."""
     try:
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(query, *args)
-            return [dict(r) for r in rows]
+        result = await session.execute(text(query))
+        rows = result.mappings().all()
+        return [dict(r) for r in rows]
     except Exception as exc:
         log.warning("paper.query_failed", query=query[:80], exc=str(exc))
         return []
 
 
-async def _safe_fetchrow(pool, query: str, *args) -> dict | None:
-    """Execute a query and return one row as a dict. Returns None on error."""
+async def _fetch_one(session: AsyncSession, query: str) -> dict | None:
+    """Execute raw SQL, return single dict or None."""
     try:
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(query, *args)
-            return dict(row) if row else None
+        result = await session.execute(text(query))
+        row = result.mappings().first()
+        return dict(row) if row else None
     except Exception as exc:
         log.warning("paper.fetchrow_failed", query=query[:80], exc=str(exc))
         return None
 
 
-def _to_float(val, default=None):
-    try:
-        return float(val) if val is not None else default
-    except (TypeError, ValueError):
-        return default
-
-
-def _iso(dt) -> str | None:
+def _ts(dt) -> str | None:
+    """Convert datetime to ISO string."""
     if dt is None:
         return None
     if isinstance(dt, datetime):
@@ -83,19 +55,12 @@ def _iso(dt) -> str | None:
     return str(dt)
 
 
-# ─── /paper/status ───────────────────────────────────────────────────────────
-
+# ─── Endpoints ───────────────────────────────────────────────────────────────
 
 @router.get("/status")
-async def get_status() -> dict[str, Any]:
-    """
-    Returns engine status, connected feeds, VPIN, cascade state, regime,
-    uptime estimate, and paper balance from system_state.
-    """
-    pool = await get_pool()
-    row = await _safe_fetchrow(
-        pool,
-        """
+async def paper_status(session: AsyncSession = Depends(get_session)):
+    """Engine status, VPIN, cascade state, feeds, balance."""
+    row = await _fetch_one(session, """
         SELECT
             engine_status,
             current_balance,
@@ -109,402 +74,258 @@ async def get_status() -> dict[str, Any]:
             last_vpin,
             last_cascade_state,
             active_positions,
-            last_heartbeat
+            last_heartbeat,
+            config
         FROM system_state
-        LIMIT 1
-        """,
-    )
+        WHERE id = 1
+    """)
 
     if not row:
-        return DEFAULT_STATUS
+        return {
+            "engine_status": "UNKNOWN",
+            "current_balance": 0,
+            "peak_balance": 0,
+            "current_drawdown_pct": 0,
+            "binance_connected": False,
+            "coinglass_connected": False,
+            "chainlink_connected": False,
+            "polymarket_connected": False,
+            "opinion_connected": False,
+            "last_vpin": None,
+            "last_cascade_state": "IDLE",
+            "regime": "UNKNOWN",
+            "active_positions": 0,
+            "last_heartbeat": None,
+            "uptime_seconds": 0,
+        }
 
-    # Estimate uptime from last_heartbeat if available
-    uptime_seconds = 0
-    if row.get("last_heartbeat"):
-        try:
-            hb = row["last_heartbeat"]
-            if isinstance(hb, datetime):
-                delta = datetime.now(timezone.utc) - hb.replace(tzinfo=timezone.utc) if hb.tzinfo is None else datetime.now(timezone.utc) - hb
-                uptime_seconds = max(0, int(delta.total_seconds()))
-        except Exception:
-            pass
+    hb = row.get("last_heartbeat")
+    uptime = 0
+    if hb:
+        uptime = max(0, int((datetime.now(timezone.utc) - hb.replace(tzinfo=timezone.utc if hb.tzinfo is None else hb.tzinfo)).total_seconds()))
 
     return {
-        "engine_status": row.get("engine_status") or "UNKNOWN",
-        "current_balance": _to_float(row.get("current_balance"), 10000.0),
-        "peak_balance": _to_float(row.get("peak_balance"), 10000.0),
-        "current_drawdown_pct": _to_float(row.get("current_drawdown_pct"), 0.0),
+        "engine_status": row.get("engine_status", "UNKNOWN"),
+        "current_balance": float(row.get("current_balance") or 0),
+        "peak_balance": float(row.get("peak_balance") or 0),
+        "current_drawdown_pct": float(row.get("current_drawdown_pct") or 0),
         "binance_connected": bool(row.get("binance_connected")),
         "coinglass_connected": bool(row.get("coinglass_connected")),
         "chainlink_connected": bool(row.get("chainlink_connected")),
         "polymarket_connected": bool(row.get("polymarket_connected")),
         "opinion_connected": bool(row.get("opinion_connected")),
-        "last_vpin": _to_float(row.get("last_vpin")),
+        "last_vpin": float(row["last_vpin"]) if row.get("last_vpin") is not None else None,
         "last_cascade_state": row.get("last_cascade_state") or "IDLE",
-        "regime": row.get("regime") or "UNKNOWN",
+        "regime": (row.get("config") or {}).get("regime", "UNKNOWN") if isinstance(row.get("config"), dict) else "UNKNOWN",
         "active_positions": int(row.get("active_positions") or 0),
-        "last_heartbeat": _iso(row.get("last_heartbeat")),
-        "uptime_seconds": uptime_seconds,
+        "last_heartbeat": _ts(hb),
+        "uptime_seconds": uptime,
     }
-
-
-# ─── /paper/positions ────────────────────────────────────────────────────────
 
 
 @router.get("/positions")
-async def get_positions() -> list[dict[str, Any]]:
-    """
-    Returns currently open paper orders (status = 'OPEN').
-    """
-    pool = await get_pool()
-    rows = await _safe_fetch(
-        pool,
-        """
-        SELECT
-            id,
-            strategy,
-            direction,
-            venue,
-            entry_price,
-            stake_usd,
-            status,
-            vpin_at_entry,
-            created_at
+async def paper_positions(session: AsyncSession = Depends(get_session)):
+    """Currently open paper orders."""
+    rows = await _fetch_all(session, """
+        SELECT id, strategy, direction, venue, entry_price, stake_usd,
+               vpin_at_entry, created_at
         FROM trades
         WHERE status = 'OPEN'
         ORDER BY created_at DESC
-        """,
-    )
+    """)
 
     return [
         {
-            "id": str(r.get("id", "")),
-            "strategy": r.get("strategy"),
-            "direction": r.get("direction"),
-            "venue": r.get("venue"),
-            "entry_price": _to_float(r.get("entry_price")),
-            "stake_usd": _to_float(r.get("stake_usd")),
-            "status": r.get("status"),
-            "vpin_at_entry": _to_float(r.get("vpin_at_entry")),
-            "created_at": _iso(r.get("created_at")),
+            "id": r["id"],
+            "strategy": r.get("strategy", ""),
+            "direction": r.get("direction", ""),
+            "venue": r.get("venue", ""),
+            "entry_price": str(r.get("entry_price", "")),
+            "stake_usd": float(r.get("stake_usd") or 0),
+            "vpin_at_entry": float(r["vpin_at_entry"]) if r.get("vpin_at_entry") is not None else None,
+            "created_at": _ts(r.get("created_at")),
+            "age_seconds": int((datetime.now(timezone.utc) - r["created_at"].replace(
+                tzinfo=timezone.utc if r["created_at"].tzinfo is None else r["created_at"].tzinfo
+            )).total_seconds()) if r.get("created_at") else 0,
         }
         for r in rows
     ]
-
-
-# ─── /paper/trades ───────────────────────────────────────────────────────────
 
 
 @router.get("/trades")
-async def get_trades() -> list[dict[str, Any]]:
-    """
-    Returns last 50 resolved paper trades (WIN or LOSS).
-    """
-    pool = await get_pool()
-    rows = await _safe_fetch(
-        pool,
-        """
-        SELECT
-            id,
-            strategy,
-            direction,
-            venue,
-            entry_price,
-            stake_usd,
-            pnl_usd,
-            status,
-            vpin_at_entry,
-            created_at,
-            resolved_at
+async def paper_trades(session: AsyncSession = Depends(get_session)):
+    """Last 50 resolved paper trades."""
+    rows = await _fetch_all(session, """
+        SELECT id, strategy, direction, venue, entry_price, stake_usd,
+               pnl_usd, status, vpin_at_entry, created_at, resolved_at
         FROM trades
-        WHERE status IN ('WIN', 'LOSS')
-        ORDER BY created_at DESC
+        WHERE outcome IN ('WIN', 'LOSS')
+        ORDER BY resolved_at DESC NULLS LAST
         LIMIT 50
-        """,
-    )
+    """)
 
     return [
         {
-            "id": str(r.get("id", "")),
-            "strategy": r.get("strategy"),
-            "direction": r.get("direction"),
-            "venue": r.get("venue"),
-            "entry_price": _to_float(r.get("entry_price")),
-            "stake_usd": _to_float(r.get("stake_usd")),
-            "pnl_usd": _to_float(r.get("pnl_usd"), 0.0),
-            "status": r.get("status"),
-            "vpin_at_entry": _to_float(r.get("vpin_at_entry")),
-            "created_at": _iso(r.get("created_at")),
-            "resolved_at": _iso(r.get("resolved_at")),
+            "id": r["id"],
+            "strategy": r.get("strategy", ""),
+            "direction": r.get("direction", ""),
+            "venue": r.get("venue", ""),
+            "entry_price": str(r.get("entry_price", "")),
+            "stake_usd": float(r.get("stake_usd") or 0),
+            "pnl_usd": float(r.get("pnl_usd") or 0),
+            "outcome": r.get("outcome", ""),
+            "vpin_at_entry": float(r["vpin_at_entry"]) if r.get("vpin_at_entry") is not None else None,
+            "created_at": _ts(r.get("created_at")),
+            "resolved_at": _ts(r.get("resolved_at")),
         }
         for r in rows
     ]
 
 
-# ─── /paper/stats ────────────────────────────────────────────────────────────
-
-
 @router.get("/stats")
-async def get_stats() -> dict[str, Any]:
-    """
-    Computed stats: win rate, total P&L, avg trade, sharpe estimate, max drawdown.
-    All computed from the trades table.
-    """
-    pool = await get_pool()
-
-    # Aggregate query
-    agg = await _safe_fetchrow(
-        pool,
-        """
+async def paper_stats(session: AsyncSession = Depends(get_session)):
+    """Aggregated paper trading statistics."""
+    row = await _fetch_one(session, """
         SELECT
-            COUNT(*) FILTER (WHERE status IN ('WIN', 'LOSS'))                   AS total_trades,
-            COUNT(*) FILTER (WHERE status = 'WIN')                              AS wins,
-            COALESCE(SUM(pnl_usd) FILTER (WHERE status IN ('WIN','LOSS')), 0)  AS total_pnl,
-            COALESCE(AVG(pnl_usd) FILTER (WHERE status IN ('WIN','LOSS')), 0)  AS avg_pnl,
-            COALESCE(MAX(pnl_usd) FILTER (WHERE status IN ('WIN','LOSS')), 0)  AS best_trade,
-            COALESCE(MIN(pnl_usd) FILTER (WHERE status IN ('WIN','LOSS')), 0)  AS worst_trade,
-            COALESCE(STDDEV(pnl_usd) FILTER (WHERE status IN ('WIN','LOSS')), 0) AS pnl_stddev,
-            COALESCE(
-                AVG(
-                    EXTRACT(EPOCH FROM (resolved_at - created_at))
-                ) FILTER (WHERE status IN ('WIN','LOSS') AND resolved_at IS NOT NULL),
-                0
-            )                                                                   AS avg_duration_seconds
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE outcome = 'WIN') AS wins,
+            COUNT(*) FILTER (WHERE outcome = 'LOSS') AS losses,
+            COALESCE(SUM(pnl_usd), 0) AS total_pnl,
+            COALESCE(AVG(pnl_usd), 0) AS avg_pnl,
+            COALESCE(MAX(pnl_usd), 0) AS best_trade,
+            COALESCE(MIN(pnl_usd), 0) AS worst_trade,
+            COALESCE(STDDEV(pnl_usd), 0) AS stddev_pnl,
+            COALESCE(AVG(EXTRACT(EPOCH FROM (resolved_at - created_at))), 0) AS avg_duration_s
         FROM trades
-        """,
-    )
+        WHERE outcome IN ('WIN', 'LOSS')
+    """)
 
-    # Get current balance for drawdown
-    state = await _safe_fetchrow(
-        pool,
-        "SELECT current_balance, peak_balance, current_drawdown_pct FROM system_state LIMIT 1",
-    )
-
-    if not agg:
+    if not row or row["total"] == 0:
         return {
-            "total_trades": 0,
-            "win_rate": None,
-            "total_pnl": 0.0,
-            "avg_pnl": 0.0,
-            "best_trade": None,
-            "worst_trade": None,
-            "sharpe_ratio": None,
-            "max_drawdown_pct": None,
-            "avg_duration_seconds": None,
-            "current_balance": 10000.0,
+            "total_trades": 0, "wins": 0, "losses": 0,
+            "win_rate": 0, "total_pnl": 0, "avg_pnl": 0,
+            "best_trade": 0, "worst_trade": 0, "sharpe": 0,
+            "max_drawdown_pct": 0, "avg_duration_seconds": 0,
         }
 
-    total = int(agg.get("total_trades") or 0)
-    wins = int(agg.get("wins") or 0)
-    win_rate = wins / total if total > 0 else None
+    total = int(row["total"])
+    wins = int(row["wins"])
+    stddev = float(row["stddev_pnl"])
+    avg = float(row["avg_pnl"])
+    sharpe = (avg / stddev) if stddev > 0 else 0
 
-    avg_pnl = _to_float(agg.get("avg_pnl"), 0.0)
-    pnl_std = _to_float(agg.get("pnl_stddev"), 0.0)
-
-    # Simple Sharpe estimate: avg_pnl / std  (annualised would need trade frequency)
-    sharpe = (avg_pnl / pnl_std) if pnl_std and pnl_std > 0 else None
-
-    current_balance = _to_float(state.get("current_balance") if state else None, 10000.0)
-    max_drawdown = _to_float(state.get("current_drawdown_pct") if state else None, 0.0)
+    # Get max drawdown from system_state
+    state = await _fetch_one(session, "SELECT current_drawdown_pct FROM system_state WHERE id = 1")
+    dd = float(state["current_drawdown_pct"]) if state and state.get("current_drawdown_pct") else 0
 
     return {
         "total_trades": total,
-        "win_rate": win_rate,
-        "total_pnl": _to_float(agg.get("total_pnl"), 0.0),
-        "avg_pnl": avg_pnl,
-        "best_trade": _to_float(agg.get("best_trade")),
-        "worst_trade": _to_float(agg.get("worst_trade")),
-        "sharpe_ratio": round(sharpe, 3) if sharpe is not None else None,
-        "max_drawdown_pct": max_drawdown,
-        "avg_duration_seconds": _to_float(agg.get("avg_duration_seconds")),
-        "current_balance": current_balance,
+        "wins": wins,
+        "losses": int(row["losses"]),
+        "win_rate": round(wins / total, 4) if total > 0 else 0,
+        "total_pnl": round(float(row["total_pnl"]), 2),
+        "avg_pnl": round(avg, 2),
+        "best_trade": round(float(row["best_trade"]), 2),
+        "worst_trade": round(float(row["worst_trade"]), 2),
+        "sharpe": round(sharpe, 2),
+        "max_drawdown_pct": round(dd, 4),
+        "avg_duration_seconds": round(float(row["avg_duration_s"]), 0),
     }
-
-
-# ─── /paper/strategy-breakdown ───────────────────────────────────────────────
 
 
 @router.get("/strategy-breakdown")
-async def get_strategy_breakdown() -> dict[str, Any]:
-    """
-    Per-strategy stats, grouped by strategy name.
-    Returns arb and vpin_cascade buckets with equity curves.
-    """
-    pool = await get_pool()
-
-    rows = await _safe_fetch(
-        pool,
-        """
+async def paper_strategy_breakdown(session: AsyncSession = Depends(get_session)):
+    """Per-strategy stats."""
+    rows = await _fetch_all(session, """
         SELECT
             strategy,
-            COUNT(*) FILTER (WHERE status IN ('WIN', 'LOSS'))                   AS trade_count,
-            COUNT(*) FILTER (WHERE status = 'WIN')                              AS wins,
-            COALESCE(SUM(pnl_usd) FILTER (WHERE status IN ('WIN','LOSS')), 0)  AS total_pnl,
-            COALESCE(MAX(pnl_usd) FILTER (WHERE status IN ('WIN','LOSS')), 0)  AS best_trade,
-            COALESCE(MIN(pnl_usd) FILTER (WHERE status IN ('WIN','LOSS')), 0)  AS worst_trade,
-            COALESCE(AVG(vpin_at_entry) FILTER (WHERE status IN ('WIN','LOSS')), 0) AS avg_vpin_entry,
-            COALESCE(
-                AVG(EXTRACT(EPOCH FROM (resolved_at - created_at)))
-                FILTER (WHERE status IN ('WIN','LOSS') AND resolved_at IS NOT NULL),
-                0
-            )                                                                   AS avg_hold_seconds
+            COUNT(*) AS total,
+            COUNT(*) FILTER (WHERE outcome = 'WIN') AS wins,
+            COALESCE(SUM(pnl_usd), 0) AS total_pnl,
+            COALESCE(AVG(pnl_usd), 0) AS avg_pnl,
+            COALESCE(MAX(pnl_usd), 0) AS best,
+            COALESCE(MIN(pnl_usd), 0) AS worst,
+            COALESCE(AVG(EXTRACT(EPOCH FROM (resolved_at - created_at))), 0) AS avg_duration_s
         FROM trades
-        WHERE status IN ('WIN', 'LOSS')
+        WHERE outcome IN ('WIN', 'LOSS')
         GROUP BY strategy
-        """,
-    )
+    """)
 
-    # Build equity curve per strategy (running sum of pnl_usd ordered by created_at)
-    equity_rows = await _safe_fetch(
-        pool,
-        """
-        SELECT strategy, pnl_usd, created_at
-        FROM trades
-        WHERE status IN ('WIN', 'LOSS')
-        ORDER BY strategy, created_at ASC
-        """,
-    )
-
-    # Group equity curves
-    curves: dict[str, list[float]] = {}
-    running: dict[str, float] = {}
-    for r in equity_rows:
-        strat = r.get("strategy") or "unknown"
-        pnl = _to_float(r.get("pnl_usd"), 0.0)
-        running[strat] = running.get(strat, 0.0) + pnl
-        curves.setdefault(strat, []).append(round(running[strat], 4))
-
-    def _build(strategy_key: str, row: dict | None) -> dict:
-        if not row:
-            return {
-                "trade_count": 0,
-                "win_rate": None,
-                "total_pnl": 0.0,
-                "best_trade": None,
-                "worst_trade": None,
-                "avg_vpin_entry": None,
-                "avg_hold_seconds": None,
-                "avg_spread": None,
-                "equity_curve": curves.get(strategy_key, []),
-            }
-        total = int(row.get("trade_count") or 0)
-        wins = int(row.get("wins") or 0)
-        return {
-            "trade_count": total,
-            "win_rate": wins / total if total > 0 else None,
-            "total_pnl": _to_float(row.get("total_pnl"), 0.0),
-            "best_trade": _to_float(row.get("best_trade")),
-            "worst_trade": _to_float(row.get("worst_trade")),
-            "avg_vpin_entry": _to_float(row.get("avg_vpin_entry")),
-            "avg_hold_seconds": _to_float(row.get("avg_hold_seconds")),
-            "avg_spread": None,  # Could compute from arb-specific data if stored
-            "equity_curve": curves.get(strategy_key, []),
+    result = {}
+    for r in rows:
+        total = int(r["total"])
+        result[r["strategy"]] = {
+            "total": total,
+            "wins": int(r["wins"]),
+            "win_rate": round(int(r["wins"]) / total, 4) if total > 0 else 0,
+            "total_pnl": round(float(r["total_pnl"]), 2),
+            "avg_pnl": round(float(r["avg_pnl"]), 2),
+            "best": round(float(r["best"]), 2),
+            "worst": round(float(r["worst"]), 2),
+            "avg_duration_seconds": round(float(r["avg_duration_s"]), 0),
         }
 
-    # Map rows to strategy keys
-    row_map: dict[str, dict] = {}
-    for r in rows:
-        strat = (r.get("strategy") or "").lower()
-        row_map[strat] = r
-
-    # Identify arb vs vpin_cascade keys
-    arb_key = next((k for k in row_map if "arb" in k), None)
-    vpin_key = next((k for k in row_map if "vpin" in k or "cascade" in k), None)
-
-    return {
-        "arb": _build(arb_key or "arb", row_map.get(arb_key) if arb_key else None),
-        "vpin_cascade": _build(vpin_key or "vpin_cascade", row_map.get(vpin_key) if vpin_key else None),
-    }
-
-
-# ─── /paper/log ──────────────────────────────────────────────────────────────
+    return result
 
 
 @router.get("/log")
-async def get_log() -> list[dict[str, Any]]:
-    """
-    Recent engine events/signals from the signals table, formatted as log entries.
-    Returns up to 200 entries ordered newest-first.
-    """
-    pool = await get_pool()
-    rows = await _safe_fetch(
-        pool,
-        """
-        SELECT
-            id,
-            signal_type,
-            metadata,
-            value,
-            created_at
+async def paper_log(session: AsyncSession = Depends(get_session)):
+    """Recent engine signals as log entries."""
+    rows = await _fetch_all(session, """
+        SELECT signal_type, value, metadata, created_at
         FROM signals
         ORDER BY created_at DESC
         LIMIT 200
-        """,
-    )
+    """)
 
     entries = []
-    for r in rows:
-        signal_type = (r.get("signal_type") or "SYSTEM").upper()
+    for r in reversed(rows):
+        sig_type = r.get("signal_type", "unknown")
+        value = r.get("value")
         meta = r.get("metadata") or {}
 
-        # Build a human-readable message
-        message = _format_log_message(signal_type, meta, r.get("value"))
+        if sig_type == "vpin":
+            msg = f"VPIN = {float(value):.4f}" if value else "VPIN update"
+            if meta.get("cascade_threshold_crossed"):
+                msg += " ⚠️ CASCADE THRESHOLD"
+            elif meta.get("informed_threshold_crossed"):
+                msg += " ⚡ INFORMED FLOW"
+            level = "warning" if meta.get("cascade_threshold_crossed") else "info"
+        elif sig_type == "cascade":
+            state = meta.get("state", "?")
+            direction = meta.get("direction", "?")
+            msg = f"Cascade: {state} direction={direction}"
+            level = "error" if state == "EXHAUSTING" else "warning"
+        elif sig_type == "arb_opportunity":
+            spread = meta.get("spread", 0)
+            msg = f"Arb opportunity: spread={spread:.4f}" if spread else "Arb detected"
+            level = "success"
+        elif sig_type == "trade":
+            msg = f"Trade: {meta.get('strategy', '?')} {meta.get('direction', '?')} ${meta.get('stake', 0):.2f}"
+            level = "success" if meta.get("outcome") == "WIN" else "error"
+        else:
+            msg = f"{sig_type}: {value or ''}"
+            level = "info"
 
         entries.append({
-            "id": str(r.get("id", "")),
-            "type": signal_type,
-            "message": message,
-            "timestamp": _iso(r.get("created_at")),
-            "value": _to_float(r.get("value")),
+            "timestamp": _ts(r.get("created_at")),
+            "type": sig_type,
+            "level": level,
+            "message": msg,
         })
 
     return entries
 
 
-def _format_log_message(signal_type: str, meta: dict, value) -> str:
-    """Convert a signal record to a readable log line."""
-    if not meta:
-        if value is not None:
-            return f"{signal_type}: {value}"
-        return signal_type
-
-    # Common fields
-    parts = []
-    for key in ("strategy", "direction", "venue", "price", "pnl", "vpin", "state", "message", "detail"):
-        v = meta.get(key)
-        if v is not None:
-            parts.append(f"{key}={v}")
-
-    if parts:
-        return f"{signal_type} — {', '.join(parts)}"
-
-    # Fallback: dump first few keys
-    short = {k: v for i, (k, v) in enumerate(meta.items()) if i < 4}
-    return f"{signal_type} — {short}"
-
-
-# ─── /paper/equity ───────────────────────────────────────────────────────────
-
-
 @router.get("/equity")
-async def get_equity() -> list[dict[str, Any]]:
-    """
-    Cumulative P&L over the trade sequence, ordered by trade time.
-    Returns [{trade_num, cumulative_pnl, pnl_usd, created_at}]
-    """
-    pool = await get_pool()
-    rows = await _safe_fetch(
-        pool,
-        """
-        SELECT
-            id,
-            pnl_usd,
-            created_at
+async def paper_equity(session: AsyncSession = Depends(get_session)):
+    """Cumulative P&L over trade sequence."""
+    rows = await _fetch_all(session, """
+        SELECT pnl_usd, resolved_at
         FROM trades
-        WHERE status IN ('WIN', 'LOSS')
-        ORDER BY created_at ASC
-        """,
-    )
+        WHERE outcome IN ('WIN', 'LOSS')
+        ORDER BY resolved_at ASC NULLS LAST
+    """)
 
     if not rows:
         return []
@@ -512,13 +333,11 @@ async def get_equity() -> list[dict[str, Any]]:
     cumulative = 0.0
     result = []
     for i, r in enumerate(rows):
-        pnl = _to_float(r.get("pnl_usd"), 0.0)
-        cumulative += pnl
+        cumulative += float(r.get("pnl_usd") or 0)
         result.append({
             "trade_num": i + 1,
-            "cumulative_pnl": round(cumulative, 4),
-            "pnl_usd": round(pnl, 4),
-            "created_at": _iso(r.get("created_at")),
+            "cumulative_pnl": round(cumulative, 2),
+            "timestamp": _ts(r.get("resolved_at")),
         })
 
     return result
