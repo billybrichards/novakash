@@ -2,14 +2,14 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useApi } from '../hooks/useApi.js';
 
 /**
- * LiveToggle — Two independent mode toggles in the nav header.
+ * LiveToggle — Two independent mode toggles: 📄 PAPER + 💰 LIVE
  *
- * 📄 PAPER  — purple glow, always safe to toggle
- * 💰 LIVE   — red glow, requires confirmation + approved config
+ * 📄 PAPER  — purple glow, instant toggle
+ * 💰 LIVE   — red glow, requires confirmation modal with checklist
  *
- * Both can be ON simultaneously. They are completely independent.
+ * Mobile: stacks vertically, confirmation modal becomes full-screen.
  */
-export default function LiveToggle() {
+export default function LiveToggle({ compact = false }) {
   const api = useApi();
   const [status, setStatus] = useState({
     paper_enabled: true,
@@ -28,9 +28,7 @@ export default function LiveToggle() {
     try {
       const res = await api('GET', '/trading-config/live-status');
       setStatus(res.data);
-    } catch (e) {
-      // Silently ignore — don't spam errors in nav
-    }
+    } catch { /* silent */ }
   }, [api]);
 
   useEffect(() => {
@@ -39,7 +37,7 @@ export default function LiveToggle() {
     return () => clearInterval(interval);
   }, [fetchStatus]);
 
-  // Apply red glow to the header bar when live is enabled
+  // Apply red glow to header bar when live is enabled
   useEffect(() => {
     const header = document.getElementById('live-toggle-header');
     if (!header) return;
@@ -52,7 +50,6 @@ export default function LiveToggle() {
     }
   }, [status.live_enabled]);
 
-  // ── Paper toggle — always safe ───────────────────────────────────────────
   const handlePaperToggle = async () => {
     const newVal = !status.paper_enabled;
     try {
@@ -60,15 +57,11 @@ export default function LiveToggle() {
         data: { mode: 'paper', enabled: newVal },
       });
       setStatus(prev => ({ ...prev, paper_enabled: newVal }));
-    } catch (e) {
-      console.error('Failed to toggle paper mode', e);
-    }
+    } catch (e) { console.error('Failed to toggle paper mode', e); }
   };
 
-  // ── Live toggle — open modal if enabling ────────────────────────────────
   const handleLiveClick = () => {
     if (status.live_enabled) {
-      // Disabling live is always allowed
       disableLive();
     } else {
       setConfirmText('');
@@ -83,9 +76,7 @@ export default function LiveToggle() {
         data: { mode: 'live', enabled: false },
       });
       setStatus(prev => ({ ...prev, live_enabled: false }));
-    } catch (e) {
-      console.error('Failed to disable live mode', e);
-    }
+    } catch (e) { console.error('Failed to disable live mode', e); }
   };
 
   const confirmEnableLive = async () => {
@@ -108,7 +99,6 @@ export default function LiveToggle() {
     }
   };
 
-  // ── Check items for the live modal ──────────────────────────────────────
   const checks = [
     {
       label: 'API keys configured',
@@ -129,116 +119,92 @@ export default function LiveToggle() {
 
   const allChecksPass = checks.every(c => c.ok);
 
+  const toggleBtn = (opts) => {
+    const { label, icon, enabled, color, borderColor, bgColor, glowColor, onClick } = opts;
+    return (
+      <button
+        onClick={onClick}
+        title={`${label}: ${enabled ? 'ON' : 'OFF'}`}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: compact ? 4 : 6,
+          padding: compact ? '4px 8px' : '5px 10px 5px 8px',
+          borderRadius: 6,
+          border: `1px solid ${enabled ? borderColor : 'rgba(255,255,255,0.08)'}`,
+          background: enabled ? bgColor : 'rgba(255,255,255,0.03)',
+          cursor: 'pointer',
+          transition: 'all 200ms ease-out',
+          boxShadow: enabled ? `0 0 14px ${glowColor}` : 'none',
+          animation: enabled && label === 'LIVE' ? 'livePulse 2s ease-in-out infinite' : 'none',
+          minHeight: 36,
+        }}
+      >
+        <span style={{ fontSize: compact ? 11 : 13 }}>{icon}</span>
+        {!compact && (
+          <span style={{
+            fontSize: 10,
+            fontFamily: 'IBM Plex Mono, monospace',
+            fontWeight: 600,
+            letterSpacing: '0.08em',
+            color: enabled ? color : 'rgba(255,255,255,0.3)',
+            transition: 'color 200ms',
+          }}>
+            {label}
+          </span>
+        )}
+        {/* Mini toggle pill */}
+        <div style={{
+          width: compact ? 24 : 28,
+          height: compact ? 12 : 14,
+          borderRadius: 7,
+          background: enabled ? `${color}99` : 'rgba(255,255,255,0.1)',
+          position: 'relative',
+          transition: 'background 200ms',
+          flexShrink: 0,
+        }}>
+          <span style={{
+            position: 'absolute',
+            top: compact ? 1 : 2,
+            left: enabled ? (compact ? 13 : 15) : 2,
+            width: compact ? 10 : 10,
+            height: compact ? 10 : 10,
+            borderRadius: '50%',
+            background: '#fff',
+            transition: 'left 200ms ease-out',
+            boxShadow: enabled ? `0 0 4px ${glowColor}` : 'none',
+          }} />
+        </div>
+      </button>
+    );
+  };
+
   return (
     <>
-      {/* ── Two toggle switches ─────────────────────────────────────────── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-
-        {/* Paper toggle */}
-        <button
-          onClick={handlePaperToggle}
-          title={`Paper trading: ${status.paper_enabled ? 'ON' : 'OFF'}`}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '4px 10px 4px 8px',
-            borderRadius: 6,
-            border: `1px solid ${status.paper_enabled ? 'rgba(168,85,247,0.4)' : 'rgba(255,255,255,0.08)'}`,
-            background: status.paper_enabled ? 'rgba(168,85,247,0.1)' : 'rgba(255,255,255,0.03)',
-            cursor: 'pointer',
-            transition: 'all 200ms ease-out',
-            boxShadow: status.paper_enabled ? '0 0 12px rgba(168,85,247,0.2)' : 'none',
-          }}
-        >
-          <span style={{ fontSize: 12 }}>📄</span>
-          <span style={{
-            fontSize: 10,
-            fontFamily: 'IBM Plex Mono, monospace',
-            fontWeight: 600,
-            letterSpacing: '0.08em',
-            color: status.paper_enabled ? '#a855f7' : 'rgba(255,255,255,0.3)',
-            transition: 'color 200ms',
-          }}>
-            PAPER
-          </span>
-          {/* Mini toggle pill */}
-          <div style={{
-            width: 28,
-            height: 14,
-            borderRadius: 7,
-            background: status.paper_enabled ? 'rgba(168,85,247,0.6)' : 'rgba(255,255,255,0.1)',
-            position: 'relative',
-            transition: 'background 200ms',
-            flexShrink: 0,
-          }}>
-            <span style={{
-              position: 'absolute',
-              top: 2,
-              left: status.paper_enabled ? 15 : 2,
-              width: 10,
-              height: 10,
-              borderRadius: '50%',
-              background: '#fff',
-              transition: 'left 200ms ease-out',
-            }} />
-          </div>
-        </button>
-
-        {/* Live toggle */}
-        <button
-          onClick={handleLiveClick}
-          title={`Live trading: ${status.live_enabled ? 'ON' : 'OFF'}`}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '4px 10px 4px 8px',
-            borderRadius: 6,
-            border: `1px solid ${status.live_enabled ? 'rgba(248,113,113,0.5)' : 'rgba(255,255,255,0.08)'}`,
-            background: status.live_enabled ? 'rgba(248,113,113,0.1)' : 'rgba(255,255,255,0.03)',
-            cursor: 'pointer',
-            transition: 'all 200ms ease-out',
-            boxShadow: status.live_enabled ? '0 0 16px rgba(248,113,113,0.25), 0 0 4px rgba(248,113,113,0.1)' : 'none',
-            animation: status.live_enabled ? 'livePulse 2s ease-in-out infinite' : 'none',
-          }}
-        >
-          <span style={{ fontSize: 12 }}>💰</span>
-          <span style={{
-            fontSize: 10,
-            fontFamily: 'IBM Plex Mono, monospace',
-            fontWeight: 600,
-            letterSpacing: '0.08em',
-            color: status.live_enabled ? '#f87171' : 'rgba(255,255,255,0.3)',
-            transition: 'color 200ms',
-          }}>
-            LIVE
-          </span>
-          <div style={{
-            width: 28,
-            height: 14,
-            borderRadius: 7,
-            background: status.live_enabled ? 'rgba(248,113,113,0.7)' : 'rgba(255,255,255,0.1)',
-            position: 'relative',
-            transition: 'background 200ms',
-            flexShrink: 0,
-          }}>
-            <span style={{
-              position: 'absolute',
-              top: 2,
-              left: status.live_enabled ? 15 : 2,
-              width: 10,
-              height: 10,
-              borderRadius: '50%',
-              background: '#fff',
-              transition: 'left 200ms ease-out',
-              boxShadow: status.live_enabled ? '0 0 4px rgba(248,113,113,0.8)' : 'none',
-            }} />
-          </div>
-        </button>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} className="live-toggle-wrapper">
+        {toggleBtn({
+          label: 'PAPER',
+          icon: '📄',
+          enabled: status.paper_enabled,
+          color: '#a855f7',
+          borderColor: 'rgba(168,85,247,0.45)',
+          bgColor: 'rgba(168,85,247,0.1)',
+          glowColor: 'rgba(168,85,247,0.22)',
+          onClick: handlePaperToggle,
+        })}
+        {toggleBtn({
+          label: 'LIVE',
+          icon: '💰',
+          enabled: status.live_enabled,
+          color: '#f87171',
+          borderColor: 'rgba(248,113,113,0.5)',
+          bgColor: 'rgba(248,113,113,0.1)',
+          glowColor: 'rgba(248,113,113,0.3)',
+          onClick: handleLiveClick,
+        })}
       </div>
 
-      {/* ── Live Enable Modal ───────────────────────────────────────────────── */}
+      {/* ── Live Enable Modal ──────────────────────────────────────────────── */}
       {showLiveModal && (
         <div
           style={{
@@ -250,38 +216,54 @@ export default function LiveToggle() {
             justifyContent: 'center',
             zIndex: 9999,
             backdropFilter: 'blur(4px)',
+            padding: '0 16px',
           }}
           onClick={e => e.target === e.currentTarget && setShowLiveModal(false)}
         >
           <div
+            className="live-modal-inner"
             style={{
               background: '#0d0d16',
               border: '1px solid rgba(248,113,113,0.3)',
               borderRadius: 12,
-              padding: 28,
+              padding: 24,
               width: 420,
-              maxWidth: '90vw',
+              maxWidth: '100%',
               boxShadow: '0 0 40px rgba(248,113,113,0.15)',
               animation: 'fadeSlideIn 200ms ease-out',
+              maxHeight: '90vh',
+              overflowY: 'auto',
             }}
           >
             {/* Header */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
-              <span style={{ fontSize: 20 }}>⚠️</span>
-              <div>
-                <div style={{
-                  color: '#f87171',
-                  fontFamily: 'IBM Plex Mono, monospace',
-                  fontSize: 14,
-                  fontWeight: 700,
-                  letterSpacing: '0.05em',
-                }}>
-                  ENABLE LIVE TRADING
-                </div>
-                <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 11, marginTop: 2 }}>
-                  Real money. Real orders. No undo.
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 20 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontSize: 20 }}>⚠️</span>
+                <div>
+                  <div style={{
+                    color: '#f87171',
+                    fontFamily: 'IBM Plex Mono, monospace',
+                    fontSize: 14,
+                    fontWeight: 700,
+                    letterSpacing: '0.05em',
+                  }}>
+                    ENABLE LIVE TRADING
+                  </div>
+                  <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 11, marginTop: 2 }}>
+                    Real money. Real orders. No undo.
+                  </div>
                 </div>
               </div>
+              <button
+                onClick={() => setShowLiveModal(false)}
+                style={{
+                  background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)',
+                  fontSize: 18, cursor: 'pointer', padding: 4, lineHeight: 1,
+                  flexShrink: 0,
+                }}
+              >
+                ✕
+              </button>
             </div>
 
             {/* Active live config info */}
@@ -299,22 +281,18 @@ export default function LiveToggle() {
                 </div>
                 <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 11, marginTop: 2 }}>
                   v{status.active_live_config.version} ·{' '}
-                  {status.active_live_config.is_approved ? (
-                    <span style={{ color: '#4ade80' }}>✓ approved</span>
-                  ) : (
-                    <span style={{ color: '#f87171' }}>✗ not approved</span>
-                  )}
+                  {status.active_live_config.is_approved
+                    ? <span style={{ color: '#4ade80' }}>✓ approved</span>
+                    : <span style={{ color: '#f87171' }}>✗ not approved</span>
+                  }
                 </div>
               </div>
             ) : (
               <div style={{
                 background: 'rgba(248,113,113,0.05)',
                 border: '1px solid rgba(248,113,113,0.2)',
-                borderRadius: 8,
-                padding: '10px 14px',
-                marginBottom: 16,
-                color: '#f87171',
-                fontSize: 12,
+                borderRadius: 8, padding: '10px 14px', marginBottom: 16,
+                color: '#f87171', fontSize: 12,
               }}>
                 ✗ No active live config found
               </div>
@@ -327,21 +305,19 @@ export default function LiveToggle() {
                   display: 'flex',
                   alignItems: 'flex-start',
                   gap: 10,
-                  padding: '7px 0',
+                  padding: '8px 0',
                   borderBottom: i < checks.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
                 }}>
                   <span style={{
                     fontSize: 13,
                     marginTop: 1,
                     color: check.ok ? '#4ade80' : 'rgba(248,113,113,0.7)',
+                    flexShrink: 0,
                   }}>
                     {check.ok ? '✓' : '✗'}
                   </span>
                   <div>
-                    <div style={{
-                      color: check.ok ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.4)',
-                      fontSize: 12,
-                    }}>
+                    <div style={{ color: check.ok ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.4)', fontSize: 12 }}>
                       {check.label}
                     </div>
                     {!check.ok && (
@@ -363,10 +339,7 @@ export default function LiveToggle() {
                 <input
                   type="text"
                   value={confirmText}
-                  onChange={e => {
-                    setConfirmText(e.target.value);
-                    setError('');
-                  }}
+                  onChange={e => { setConfirmText(e.target.value); setError(''); }}
                   placeholder="CONFIRM"
                   autoFocus
                   style={{
@@ -379,10 +352,11 @@ export default function LiveToggle() {
                     fontSize: 14,
                     fontWeight: 600,
                     letterSpacing: '0.1em',
-                    padding: '8px 12px',
+                    padding: '10px 12px',
                     outline: 'none',
                     textTransform: 'uppercase',
                     boxSizing: 'border-box',
+                    minHeight: 44,
                   }}
                   onKeyDown={e => e.key === 'Enter' && confirmEnableLive()}
                 />
@@ -391,11 +365,8 @@ export default function LiveToggle() {
               <div style={{
                 background: 'rgba(248,113,113,0.05)',
                 border: '1px solid rgba(248,113,113,0.15)',
-                borderRadius: 6,
-                padding: '10px 12px',
-                marginBottom: 16,
-                color: 'rgba(248,113,113,0.7)',
-                fontSize: 12,
+                borderRadius: 6, padding: '10px 12px', marginBottom: 16,
+                color: 'rgba(248,113,113,0.7)', fontSize: 12,
               }}>
                 Complete all checklist items before enabling live trading.
               </div>
@@ -403,9 +374,7 @@ export default function LiveToggle() {
 
             {error && (
               <div style={{
-                color: '#f87171',
-                fontSize: 12,
-                marginBottom: 12,
+                color: '#f87171', fontSize: 12, marginBottom: 12,
                 padding: '6px 10px',
                 background: 'rgba(248,113,113,0.08)',
                 borderRadius: 4,
@@ -419,15 +388,12 @@ export default function LiveToggle() {
               <button
                 onClick={() => setShowLiveModal(false)}
                 style={{
-                  flex: 1,
-                  padding: '9px',
-                  borderRadius: 6,
+                  flex: 1, padding: '11px', borderRadius: 6,
                   border: '1px solid rgba(255,255,255,0.1)',
                   background: 'transparent',
-                  color: 'rgba(255,255,255,0.5)',
-                  fontSize: 12,
-                  cursor: 'pointer',
+                  color: 'rgba(255,255,255,0.5)', fontSize: 12, cursor: 'pointer',
                   fontFamily: 'IBM Plex Mono, monospace',
+                  minHeight: 44,
                 }}
               >
                 Cancel
@@ -436,22 +402,17 @@ export default function LiveToggle() {
                 onClick={confirmEnableLive}
                 disabled={!allChecksPass || confirmText !== 'CONFIRM' || loading}
                 style={{
-                  flex: 2,
-                  padding: '9px',
-                  borderRadius: 6,
-                  border: 'none',
+                  flex: 2, padding: '11px', borderRadius: 6, border: 'none',
                   background: allChecksPass && confirmText === 'CONFIRM'
                     ? 'rgba(248,113,113,0.85)'
                     : 'rgba(248,113,113,0.2)',
-                  color: allChecksPass && confirmText === 'CONFIRM'
-                    ? '#fff'
-                    : 'rgba(248,113,113,0.4)',
-                  fontSize: 12,
-                  fontWeight: 700,
+                  color: allChecksPass && confirmText === 'CONFIRM' ? '#fff' : 'rgba(248,113,113,0.4)',
+                  fontSize: 12, fontWeight: 700,
                   letterSpacing: '0.05em',
                   cursor: allChecksPass && confirmText === 'CONFIRM' && !loading ? 'pointer' : 'not-allowed',
                   fontFamily: 'IBM Plex Mono, monospace',
                   transition: 'all 150ms',
+                  minHeight: 44,
                 }}
               >
                 {loading ? 'ENABLING...' : 'ENABLE LIVE TRADING'}
@@ -464,11 +425,28 @@ export default function LiveToggle() {
       <style>{`
         @keyframes livePulse {
           0%, 100% { box-shadow: 0 0 12px rgba(248,113,113,0.2), 0 0 4px rgba(248,113,113,0.1); }
-          50% { box-shadow: 0 0 20px rgba(248,113,113,0.35), 0 0 8px rgba(248,113,113,0.15); }
+          50% { box-shadow: 0 0 22px rgba(248,113,113,0.4), 0 0 8px rgba(248,113,113,0.15); }
         }
         @keyframes fadeSlideIn {
           from { opacity: 0; transform: translateY(-8px) scale(0.97); }
           to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        @media (max-width: 768px) {
+          .live-toggle-wrapper {
+            flex-direction: row;
+            gap: 6px;
+          }
+          .live-modal-inner {
+            border-radius: 16px 16px 0 0 !important;
+            position: fixed !important;
+            bottom: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            max-height: 85vh !important;
+            padding: 20px 16px 32px !important;
+          }
         }
       `}</style>
     </>
