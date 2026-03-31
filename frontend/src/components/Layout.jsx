@@ -12,22 +12,24 @@ import { useApi } from '../hooks/useApi.js';
  */
 
 const NAV_ITEMS = [
-  { path: '/dashboard',       label: 'Dashboard',       icon: '📊' },
-  { path: '/paper',           label: 'Paper',           icon: '📄' },
-  { path: '/trades',          label: 'Trades',          icon: '📋' },
-  { path: '/signals',         label: 'Signals',         icon: '📡' },
-  { path: '/pnl',             label: 'P&L',             icon: '💰' },
-  { path: '/system',          label: 'System',          icon: '🖥️' },
-  { path: '/trading-config',  label: 'Config',          icon: '⚙️' },
+  { path: '/dashboard',       label: 'Dashboard',  icon: '📊' },
+  { path: '/paper',           label: 'Paper',      icon: '📄' },
+  { path: '/positions',       label: 'Positions',  icon: '📍' },
+  { path: '/trades',          label: 'Trades',     icon: '📋' },
+  { path: '/signals',         label: 'Signals',    icon: '📡' },
+  { path: '/pnl',             label: 'P&L',        icon: '💰' },
+  { path: '/risk',            label: 'Risk',       icon: '🛡️' },
+  { path: '/system',          label: 'System',     icon: '🖥️' },
+  { path: '/trading-config',  label: 'Config',     icon: '⚙️' },
 ];
 
-// Bottom tab bar items (mobile)
+// Bottom tab bar items (mobile) — 5 most important
 const TAB_ITEMS = [
-  { path: '/dashboard',       label: 'Home',    icon: '📊' },
-  { path: '/paper',           label: 'Paper',   icon: '📄' },
-  { path: '/trades',          label: 'Trades',  icon: '📋' },
-  { path: '/pnl',             label: 'P&L',     icon: '💰' },
-  { path: '/trading-config',  label: 'Config',  icon: '⚙️' },
+  { path: '/dashboard',       label: 'Home',      icon: '📊' },
+  { path: '/paper',           label: 'Paper',     icon: '📄' },
+  { path: '/positions',       label: 'Positions', icon: '📍' },
+  { path: '/risk',            label: 'Risk',      icon: '🛡️' },
+  { path: '/trading-config',  label: 'Config',    icon: '⚙️' },
 ];
 
 // ── Config Dropdown ──────────────────────────────────────────────────────────

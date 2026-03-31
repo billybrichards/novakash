@@ -13,6 +13,9 @@ import Setup from './pages/Setup.jsx';
 import PaperTrading from './pages/PaperTrading.jsx';
 import PaperDashboard from './pages/PaperDashboard.jsx';
 import TradingConfig from './pages/TradingConfig.jsx';
+import Positions from './pages/Positions.jsx';
+import Risk from './pages/Risk.jsx';
+import Learn from './pages/Learn.jsx';
 
 export default function App() {
   return (
@@ -35,13 +38,16 @@ export default function App() {
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="paper" element={<PaperDashboard />} />
             <Route path="paper-trading" element={<PaperTrading />} />
+            <Route path="positions" element={<Positions />} />
             <Route path="trades" element={<Trades />} />
             <Route path="signals" element={<Signals />} />
             <Route path="pnl" element={<PnL />} />
+            <Route path="risk" element={<Risk />} />
             <Route path="system" element={<System />} />
             <Route path="config" element={<TradingConfig />} />
             <Route path="trading-config" element={<TradingConfig />} />
             <Route path="setup" element={<Setup />} />
+            <Route path="learn" element={<Learn />} />
           </Route>
 
           {/* 404 fallback */}

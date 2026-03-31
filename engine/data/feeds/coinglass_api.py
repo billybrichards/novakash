@@ -79,7 +79,7 @@ class CoinGlassAPIFeed:
         """Start polling loop."""
         self._running = True
         headers = {
-            "secret_key": self.api_key,
+            "CG-API-KEY": self.api_key,
             "Content-Type": "application/json",
         }
         async with aiohttp.ClientSession(headers=headers) as session:
@@ -115,32 +115,27 @@ class CoinGlassAPIFeed:
         await self._fetch_liquidations(session)
 
     async def _fetch_oi(self, session: aiohttp.ClientSession) -> None:
-        """Fetch open interest for the symbol."""
+        """Fetch open interest for the symbol via CoinGlass v4 API."""
         url = f"{COINGLASS_BASE}/futures/open-interest/history"
-        params = {"symbol": self.symbol}
+        # Hobbyist plan: minimum interval is 4h
+        params = {"symbol": f"{self.symbol}USDT", "interval": "4h", "limit": "2", "exchange": "Binance"}
 
         async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             resp.raise_for_status()
             body = await resp.json()
 
-        if body.get("code") != "0" and body.get("success") is not True:
+        if body.get("code") != "0":
             log.warning("coinglass.oi_api_error", msg=body.get("msg", "unknown"))
             return
 
-        data = body.get("data", {})
+        data = body.get("data", [])
         if not data:
             log.debug("coinglass.oi_empty_response")
             return
 
-        # CoinGlass v2: data may be a list or dict depending on endpoint
-        if isinstance(data, list):
-            # Sum across all exchanges
-            total_oi = sum(
-                Decimal(str(item.get("openInterestUsd", item.get("oiUsd", 0))))
-                for item in data
-            )
-        else:
-            total_oi = Decimal(str(data.get("openInterestUsd", data.get("oiUsd", 0))))
+        # v4 API returns OHLC candles — use the latest close value
+        latest = data[-1] if isinstance(data, list) else data
+        total_oi = Decimal(str(latest.get("close", 0)))
 
         delta_pct = 0.0
         if self._prev_oi and self._prev_oi > 0:
@@ -163,13 +158,14 @@ class CoinGlassAPIFeed:
     async def _fetch_liquidations(self, session: aiohttp.ClientSession) -> None:
         """Fetch liquidation volume and update the 5-minute rolling window."""
         url = f"{COINGLASS_BASE}/futures/liquidation/history"
-        params = {"symbol": self.symbol}
+        # Hobbyist plan: minimum interval is 4h
+        params = {"symbol": f"{self.symbol}USDT", "interval": "4h", "limit": "2", "exchange": "Binance"}
 
         async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             resp.raise_for_status()
             body = await resp.json()
 
-        if body.get("code") != "0" and body.get("success") is not True:
+        if body.get("code") != "0":
             log.warning("coinglass.liq_api_error", msg=body.get("msg", "unknown"))
             return
 
@@ -180,10 +176,12 @@ class CoinGlassAPIFeed:
         now = datetime.utcnow()
         cutoff = now - timedelta(seconds=LIQ_WINDOW_SECONDS)
 
-        # Add the most recent data point to our window
+        # v4 API returns long_liquidation_usd + short_liquidation_usd
         if isinstance(data_list, list) and len(data_list) > 0:
             latest = data_list[-1]
-            liq_val = Decimal(str(latest.get("liquidationUsd", latest.get("liqUsd", 0))))
+            long_liq = Decimal(str(latest.get("long_liquidation_usd", 0)))
+            short_liq = Decimal(str(latest.get("short_liquidation_usd", 0)))
+            liq_val = long_liq + short_liq
             self._liq_window.append((now, liq_val))
 
         # Prune entries older than the window
