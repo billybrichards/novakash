@@ -281,7 +281,7 @@ function EnginePulse({ running }) {
 
 // ─── Section 1: Live Engine Status ───────────────────────────────────────────
 function EngineStatus({ data }) {
-  const running = data?.engine_status === 'RUNNING';
+  const running = data?.engine_status?.toLowerCase() === 'running';
   const vpin = data?.last_vpin;
   const cascade = data?.last_cascade_state || 'IDLE';
   const regime = data?.regime || 'UNKNOWN';
