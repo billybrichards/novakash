@@ -10,6 +10,7 @@ import Signals from './pages/Signals.jsx';
 import PnL from './pages/PnL.jsx';
 import System from './pages/System.jsx';
 import Config from './pages/Config.jsx';
+import Setup from './pages/Setup.jsx';
 
 export default function App() {
   return (
@@ -35,6 +36,7 @@ export default function App() {
             <Route path="pnl" element={<PnL />} />
             <Route path="system" element={<System />} />
             <Route path="config" element={<Config />} />
+            <Route path="setup" element={<Setup />} />
           </Route>
 
           {/* 404 fallback */}

@@ -24,6 +24,7 @@ from api.pnl import router as pnl_router
 from api.system import router as system_router
 from api.config import router as config_router
 from api.backtest import router as backtest_router
+from api.setup import router as setup_router
 from ws.live_feed import router as ws_router
 
 log = structlog.get_logger(__name__)
@@ -66,6 +67,7 @@ app.include_router(pnl_router, prefix="/api", tags=["pnl"])
 app.include_router(system_router, prefix="/api", tags=["system"])
 app.include_router(config_router, prefix="/api", tags=["config"])
 app.include_router(backtest_router, prefix="/api", tags=["backtest"])
+app.include_router(setup_router, tags=["setup"])
 app.include_router(ws_router, tags=["websocket"])
 
 
