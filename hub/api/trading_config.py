@@ -17,7 +17,55 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from db.database import get_db
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from db.database import get_session
+
+
+class _DBShim:
+    """Wraps SQLAlchemy AsyncSession to provide asyncpg-style fetch/fetchrow/execute."""
+
+    def __init__(self, session: AsyncSession):
+        self._session = session
+
+    def _prepare(self, query: str, args: tuple) -> tuple:
+        """Convert $1, $2... positional params to :p1, :p2... named params."""
+        import re
+        if not args:
+            return query, {}
+        params = {}
+        for i, val in enumerate(args, 1):
+            pname = f"p{i}"
+            query = query.replace(f"${i}", f":{pname}", 1)
+            params[pname] = val
+        return query, params
+
+    async def fetch(self, query: str, *args):
+        q, params = self._prepare(query, args)
+        result = await self._session.execute(text(q), params)
+        return [dict(r) for r in result.mappings().all()]
+
+    async def fetchrow(self, query: str, *args):
+        q, params = self._prepare(query, args)
+        result = await self._session.execute(text(q), params)
+        row = result.mappings().first()
+        return dict(row) if row else None
+
+    async def execute(self, query: str, *args):
+        q, params = self._prepare(query, args)
+        await self._session.execute(text(q), params)
+        await self._session.commit()
+
+    async def fetchval(self, query: str, *args):
+        q, params = self._prepare(query, args)
+        result = await self._session.execute(text(q), params)
+        row = result.first()
+        return row[0] if row else None
+
+
+async def get_db():
+    async for session in get_session():
+        yield _DBShim(session)
 
 log = structlog.get_logger(__name__)
 

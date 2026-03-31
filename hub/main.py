@@ -37,6 +37,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup/shutdown lifecycle."""
     log.info("hub.starting")
     await init_db()
+    # Auto-run migrations on startup
+    try:
+        from sqlalchemy import text
+        from db.database import get_session
+        async for session in get_session():
+            await session.execute(text("""
+                CREATE TABLE IF NOT EXISTS trading_configs (
+                    id SERIAL PRIMARY KEY, name VARCHAR(128) NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1, description TEXT,
+                    config JSONB NOT NULL, mode VARCHAR(16) NOT NULL DEFAULT 'paper',
+                    is_active BOOLEAN DEFAULT FALSE, is_approved BOOLEAN DEFAULT FALSE,
+                    approved_at TIMESTAMPTZ, approved_by VARCHAR(64),
+                    parent_id INTEGER REFERENCES trading_configs(id),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await session.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS mode VARCHAR(16) DEFAULT 'paper'"))
+            await session.execute(text("ALTER TABLE system_state ADD COLUMN IF NOT EXISTS paper_enabled BOOLEAN DEFAULT TRUE"))
+            await session.execute(text("ALTER TABLE system_state ADD COLUMN IF NOT EXISTS live_enabled BOOLEAN DEFAULT FALSE"))
+            await session.execute(text("ALTER TABLE system_state ADD COLUMN IF NOT EXISTS active_paper_config_id INTEGER"))
+            await session.execute(text("ALTER TABLE system_state ADD COLUMN IF NOT EXISTS active_live_config_id INTEGER"))
+            await session.commit()
+            log.info("hub.migrations_applied")
+            break
+    except Exception as exc:
+        log.warning("hub.migration_error", error=str(exc))
     yield
     log.info("hub.stopping")
     await close_db()
