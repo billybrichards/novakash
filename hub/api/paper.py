@@ -19,7 +19,7 @@ import structlog
 from fastapi import APIRouter
 from asyncpg.exceptions import UndefinedTableError
 
-from db.database import get_pool
+from db.database import get_asyncpg_pool as get_pool
 
 log = structlog.get_logger(__name__)
 

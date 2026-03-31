@@ -80,6 +80,53 @@ async def close_db() -> None:
         log.info("db.engine_disposed")
 
 
+async def get_pool():
+    """
+    Return the raw asyncpg pool from the SQLAlchemy async engine.
+    Used by endpoints that need raw SQL queries (e.g., paper trading API).
+    """
+    if _engine is None:
+        raise RuntimeError("Database not initialised — call init_db() first")
+    return _engine.raw_connection
+
+
+class _PoolProxy:
+    """Provides an asyncpg-style acquire() context manager from SQLAlchemy engine."""
+
+    def __init__(self, engine: AsyncEngine):
+        self._engine = engine
+
+    class _ConnProxy:
+        def __init__(self, engine: AsyncEngine):
+            self._engine = engine
+            self._conn = None
+
+        async def __aenter__(self):
+            self._conn = await self._engine.raw_connection()
+            # Get the underlying asyncpg connection
+            return self._conn.connection.dbapi_connection
+
+        async def __aexit__(self, *args):
+            if self._conn:
+                await self._conn.close()
+
+    def acquire(self):
+        return self._ConnProxy(self._engine)
+
+
+_pool_proxy: _PoolProxy | None = None
+
+
+async def get_asyncpg_pool() -> _PoolProxy:
+    """Return a pool-like proxy for raw asyncpg access."""
+    global _pool_proxy
+    if _engine is None:
+        raise RuntimeError("Database not initialised — call init_db() first")
+    if _pool_proxy is None:
+        _pool_proxy = _PoolProxy(_engine)
+    return _pool_proxy
+
+
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
     """
     FastAPI dependency that yields an async database session.
