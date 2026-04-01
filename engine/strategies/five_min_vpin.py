@@ -79,7 +79,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._last_executed_window: Optional[str] = None
         
         # Window info buffer (populated by feed callbacks)
-        self._pending_window: Optional[WindowInfo] = None
+        self._pending_windows: list = []  # Queue of windows to evaluate (multi-asset)
         
         self._log = log.bind(strategy="five_min_vpin")
         
@@ -92,7 +92,7 @@ class FiveMinVPINStrategy(BaseStrategy):
 
     async def _default_window_handler(self, window: WindowInfo) -> None:
         """Default window signal handler - stores window for evaluation."""
-        self._pending_window = window
+        self._pending_windows.append(window)
         self._log.info(
             "window.signal.received",
             asset=window.asset,
@@ -129,9 +129,11 @@ class FiveMinVPINStrategy(BaseStrategy):
             return
         
         # If we have a pending window, evaluate it
-        if self._pending_window:
-            await self._evaluate_window(self._pending_window, state)
-            self._pending_window = None
+        if self._pending_windows:
+            windows_to_eval = self._pending_windows[:]
+            self._pending_windows.clear()
+            for window in windows_to_eval:
+                await self._evaluate_window(window, state)
 
     # ─── Window Signal Handler ────────────────────────────────────────────────
 

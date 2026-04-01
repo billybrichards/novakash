@@ -499,9 +499,9 @@ class Orchestrator:
             up_price=window.up_price,
             down_price=window.down_price,
         )
-        # Forward to strategy — sets _pending_window so next on_market_state evaluates it
+        # Forward to strategy — queues window so next on_market_state evaluates it
         if self._five_min_strategy:
-            self._five_min_strategy._pending_window = window
+            self._five_min_strategy._pending_windows.append(window)
 
     # ─── Order Resolution Callback ────────────────────────────────────────────
 
