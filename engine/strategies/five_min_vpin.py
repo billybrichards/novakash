@@ -30,6 +30,7 @@ import structlog
 from config.constants import (
     BET_FRACTION,
     FIVE_MIN_ENABLED,
+    FIVE_MIN_ENTRY_OFFSET,
     FIVE_MIN_MODE,
     FIVE_MIN_MIN_CONFIDENCE,
     FIVE_MIN_MIN_DELTA_PCT,
@@ -182,6 +183,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 window_ts=window.window_ts,
                 delta_pct=f"{delta_pct:.4f}%",
                 reason="no edge",
+                entry=f"T-{FIVE_MIN_ENTRY_OFFSET}s",
             )
             return
         
@@ -280,6 +282,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 window_ts=window.window_ts,
                 stake=stake,
                 reason=reason,
+                entry=f"T-{FIVE_MIN_ENTRY_OFFSET}s",
             )
             return
         
@@ -337,6 +340,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                 "vpin": signal.current_vpin,
                 "confidence": signal.confidence,
                 "token_id": token_id,
+                "entry_offset_s": FIVE_MIN_ENTRY_OFFSET,
+                "entry_label": f"T-{FIVE_MIN_ENTRY_OFFSET}s",
             },
         )
         
@@ -351,6 +356,8 @@ class FiveMinVPINStrategy(BaseStrategy):
             delta_pct=f"{signal.delta_pct:.4f}%",
             vpin=f"{signal.current_vpin:.4f}",
             confidence=signal.confidence,
+            entry=f"T-{FIVE_MIN_ENTRY_OFFSET}s",
+            token_price=str(price),
         )
 
     @staticmethod
