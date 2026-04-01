@@ -2175,10 +2175,9 @@ For cascade bets:
   effective_price = market_price × (1 + directional_slippage)
   Default directional_slippage = 0.005 (0.5%)`}</MathBlock>
             </Card>
+          </section>
         </div>
-      </section>
+      </div>
     </div>
   );
 }
-
-export default Learn;
