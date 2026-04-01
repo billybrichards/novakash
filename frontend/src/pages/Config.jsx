@@ -16,6 +16,8 @@ const DEFAULTS = {
   arb_max_position: 50.0,
   arb_enabled: true,
   vpin_cascade_enabled: true,
+  telegram_alerts_paper: true,
+  telegram_alerts_live: false,
 };
 
 export default function Config() {
@@ -90,6 +92,14 @@ export default function Config() {
         <h3 className="text-sm font-medium text-white/40 uppercase tracking-wider mb-4">Strategies</h3>
         <Toggle label="Sub-$1 Arbitrage" field="arb_enabled" />
         <Toggle label="VPIN Cascade Filter" field="vpin_cascade_enabled" />
+      </div>
+
+      {/* Telegram Notifications */}
+      <div className="bg-[var(--card)] border border-[var(--border)] rounded-lg p-6">
+        <h3 className="text-sm font-medium text-white/40 uppercase tracking-wider mb-4">📬 Telegram Notifications</h3>
+        <p className="text-xs text-white/30 mb-3">Trade alerts sent to @novakashreporter_bot. Matches trading system status.</p>
+        <Toggle label="Paper Trading Alerts" field="telegram_alerts_paper" />
+        <Toggle label="Live Trading Alerts" field="telegram_alerts_live" />
       </div>
 
       {/* Risk Parameters */}

@@ -34,6 +34,9 @@ class ConfigUpdateRequest(BaseModel):
     arb_max_position: float | None = None
     strategy_sub_dollar_arb_enabled: bool | None = None
     strategy_vpin_cascade_enabled: bool | None = None
+    # Telegram notification toggles
+    telegram_alerts_paper: bool | None = None
+    telegram_alerts_live: bool | None = None
 
 
 @router.get("/config")

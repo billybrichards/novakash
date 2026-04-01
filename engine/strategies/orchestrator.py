@@ -81,6 +81,9 @@ class Orchestrator:
         self._alerter = TelegramAlerter(
             bot_token=settings.telegram_bot_token,
             chat_id=settings.telegram_chat_id,
+            alerts_paper=settings.telegram_alerts_paper,
+            alerts_live=settings.telegram_alerts_live,
+            paper_mode=settings.paper_mode,
         )
 
         # ── Signal Processors ──────────────────────────────────────────────────

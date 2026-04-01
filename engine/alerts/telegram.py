@@ -51,16 +51,44 @@ class TelegramAlerter:
 
     All public methods catch all exceptions to ensure alert failures
     never crash or block the engine.
+
+    Notification toggles:
+      - alerts_paper: send alerts for paper trades (default: True)
+      - alerts_live:  send alerts for live trades (default: False)
     """
 
-    def __init__(self, bot_token: str, chat_id: str) -> None:
+    def __init__(
+        self,
+        bot_token: str,
+        chat_id: str,
+        alerts_paper: bool = True,
+        alerts_live: bool = False,
+        paper_mode: bool = True,
+    ) -> None:
         self._bot_token = bot_token
         self._chat_id = chat_id
         self._url = TELEGRAM_API_BASE.format(token=bot_token)
+        self._alerts_paper = alerts_paper
+        self._alerts_live = alerts_live
+        self._paper_mode = paper_mode
         self._log = log.bind(component="TelegramAlerter")
 
         if not bot_token or not chat_id:
             self._log.warning("telegram.not_configured", reason="missing bot_token or chat_id")
+        else:
+            self._log.info(
+                "telegram.configured",
+                alerts_paper=alerts_paper,
+                alerts_live=alerts_live,
+                paper_mode=paper_mode,
+            )
+
+    @property
+    def trade_alerts_enabled(self) -> bool:
+        """Check if trade alerts should fire based on current mode + toggles."""
+        if self._paper_mode:
+            return self._alerts_paper
+        return self._alerts_live
 
     # ─── Public Alert Methods ─────────────────────────────────────────────────
 
@@ -68,26 +96,40 @@ class TelegramAlerter:
         """
         Send a trade execution / resolution alert.
 
+        Respects alerts_paper / alerts_live toggles.
+        Safely handles missing attributes (e.g. market_slug).
+
         Format:
-            🟢 [strategy] order
+            📈 [strategy] Trade Alert
             Direction: YES/NO/ARB
             Stake: $X.XX
             Venue: polymarket/opinion
             Status: OPEN/RESOLVED_WIN/RESOLVED_LOSS
             [PnL: $X.XX]
         """
+        if not self.trade_alerts_enabled:
+            self._log.debug(
+                "telegram.trade_alert_skipped",
+                reason="disabled_for_mode",
+                paper_mode=self._paper_mode,
+            )
+            return
+
         try:
             direction_emoji = _DIRECTION_EMOJI.get(order.direction.upper(), "🎯")
             outcome_emoji = ""
             if hasattr(order, "outcome") and order.outcome:
                 outcome_emoji = "✅ " if order.outcome == "WIN" else "❌ "
 
+            mode_tag = "📄 PAPER" if self._paper_mode else "💰 LIVE"
+            market_slug = getattr(order, "market_slug", None) or order.metadata.get("market_slug", order.market_id or "—")
+
             lines = [
-                f"{direction_emoji} *Trade Alert — {order.strategy}*",
+                f"{direction_emoji} *Trade Alert — {order.strategy}* ({mode_tag})",
                 f"Direction: `{order.direction}`",
                 f"Stake: `${order.stake_usd:.2f}`",
                 f"Venue: `{order.venue}`",
-                f"Market: `{order.market_slug}`",
+                f"Market: `{market_slug}`",
                 f"Status: `{order.status.value}`",
             ]
 

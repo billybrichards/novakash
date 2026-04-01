@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     # Telegram
     telegram_bot_token: str = Field(default="", description="Telegram bot token")
     telegram_chat_id: str = Field(default="", description="Telegram chat ID for alerts")
+    telegram_alerts_paper: bool = Field(default=True, description="Send Telegram alerts for paper trades")
+    telegram_alerts_live: bool = Field(default=False, description="Send Telegram alerts for live trades")
 
     # Risk / Trading
     starting_bankroll: float = Field(default=500.0, description="Starting bankroll in USD")
