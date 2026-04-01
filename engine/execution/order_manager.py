@@ -78,6 +78,16 @@ class Order:
     market_id: str = ""
     metadata: dict = field(default_factory=dict)
 
+    @property
+    def market_slug(self) -> str:
+        """Alias for market_id — used by db_client.write_trade."""
+        return self.market_id
+
+    @property
+    def entry_price(self) -> str:
+        """Alias for price — used by db_client.write_trade."""
+        return self.price
+
 
 class OrderManager:
     """
@@ -133,6 +143,9 @@ class OrderManager:
                 stake_usd=order.stake_usd,
             )
 
+        # Persist to DB (non-blocking — don't hold the lock)
+        await self._persist_trade(order)
+
     # ------------------------------------------------------------------
     # Resolution
     # ------------------------------------------------------------------
@@ -182,6 +195,28 @@ class OrderManager:
                 strategy=order.strategy,
             )
             return order
+
+    # ------------------------------------------------------------------
+    # DB Persistence
+    # ------------------------------------------------------------------
+
+    async def _persist_trade(self, order: Order) -> None:
+        """Write/upsert trade to DB via db_client.save_trade().
+
+        Silently skips if no DB is configured — engine keeps working
+        even without a database connection.
+        """
+        if self._db is None:
+            return
+        try:
+            await self._db.save_trade(order)
+            self._log.debug("order_manager.persisted", order_id=order.order_id)
+        except Exception as exc:
+            self._log.error(
+                "order_manager.persist_failed",
+                order_id=order.order_id,
+                error=str(exc),
+            )
 
     # ------------------------------------------------------------------
     # Queries
@@ -248,6 +283,10 @@ class OrderManager:
         for order in expired:
             outcome, payout = self._determine_paper_outcome(order, price)
             resolved = await self.resolve_order(order.order_id, outcome, payout)
+
+            # Persist updated trade to DB (upsert with resolution data)
+            await self._persist_trade(resolved)
+
             if self._on_resolution:
                 try:
                     self._on_resolution(resolved)

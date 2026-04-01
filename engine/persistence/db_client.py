@@ -84,6 +84,19 @@ class DBClient:
         """
 
         try:
+            # Convert unix float timestamps → datetime for TIMESTAMPTZ columns
+            from datetime import datetime, timezone
+            created_dt = (
+                datetime.fromtimestamp(order.created_at, tz=timezone.utc)
+                if isinstance(order.created_at, (int, float))
+                else order.created_at
+            )
+            resolved_dt = (
+                datetime.fromtimestamp(order.resolved_at, tz=timezone.utc)
+                if isinstance(order.resolved_at, (int, float))
+                else order.resolved_at
+            )
+
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     query,
@@ -99,8 +112,8 @@ class DBClient:
                     order.outcome,
                     order.payout_usd,
                     order.pnl_usd,
-                    order.created_at,
-                    order.resolved_at,
+                    created_dt,
+                    resolved_dt,
                     json.dumps(order.metadata),
                 )
             log.debug("db.trade_written", order_id=order.order_id)
