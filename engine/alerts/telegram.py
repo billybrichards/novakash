@@ -55,6 +55,10 @@ class TelegramAlerter:
     Notification toggles:
       - alerts_paper: send alerts for paper trades (default: True)
       - alerts_live:  send alerts for live trades (default: False)
+
+    Running totals:
+      - Accepts a risk_manager reference to include bankroll + daily P&L
+      - Accepts a poly_client reference to include wallet USDC balance
     """
 
     def __init__(
@@ -64,6 +68,8 @@ class TelegramAlerter:
         alerts_paper: bool = True,
         alerts_live: bool = False,
         paper_mode: bool = True,
+        risk_manager=None,
+        poly_client=None,
     ) -> None:
         self._bot_token = bot_token
         self._chat_id = chat_id
@@ -71,6 +77,8 @@ class TelegramAlerter:
         self._alerts_paper = alerts_paper
         self._alerts_live = alerts_live
         self._paper_mode = paper_mode
+        self._risk_manager = risk_manager
+        self._poly_client = poly_client
         self._log = log.bind(component="TelegramAlerter")
 
         if not bot_token or not chat_id:
@@ -82,6 +90,14 @@ class TelegramAlerter:
                 alerts_live=alerts_live,
                 paper_mode=paper_mode,
             )
+
+    def set_risk_manager(self, risk_manager) -> None:
+        """Set reference after construction (avoids circular dep)."""
+        self._risk_manager = risk_manager
+
+    def set_poly_client(self, poly_client) -> None:
+        """Set reference after construction (avoids circular dep)."""
+        self._poly_client = poly_client
 
     @property
     def trade_alerts_enabled(self) -> bool:
@@ -136,6 +152,31 @@ class TelegramAlerter:
             if order.pnl_usd is not None:
                 pnl_sign = "+" if order.pnl_usd >= 0 else ""
                 lines.append(f"{outcome_emoji}PnL: `{pnl_sign}${order.pnl_usd:.2f}`")
+
+            # ── Running Totals ────────────────────────────────────────────
+            lines.append("")  # blank line separator
+
+            if self._risk_manager:
+                try:
+                    status = self._risk_manager.get_status()
+                    bankroll = status.get("current_bankroll", 0)
+                    daily_pnl = status.get("daily_pnl", 0)
+                    drawdown = status.get("drawdown_pct", 0)
+                    daily_sign = "+" if daily_pnl >= 0 else ""
+
+                    lines.append(f"💼 Bankroll: `${bankroll:.2f}`")
+                    lines.append(f"📅 Daily P&L: `{daily_sign}${daily_pnl:.2f}`")
+                    if drawdown > 0.01:
+                        lines.append(f"📉 Drawdown: `{drawdown:.1%}`")
+                except Exception:
+                    pass
+
+            if self._poly_client:
+                try:
+                    wallet_balance = await self._poly_client.get_balance()
+                    lines.append(f"🏦 Poly Wallet: `${wallet_balance:.2f}` USDC")
+                except Exception:
+                    pass  # wallet balance is best-effort
 
             await self._send("\n".join(lines))
 
