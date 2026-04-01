@@ -19,6 +19,7 @@ All components are created internally; the caller simply does:
 from __future__ import annotations
 
 import asyncio
+import os
 import signal as _signal
 from typing import Optional
 
@@ -174,6 +175,20 @@ class Orchestrator:
             self._five_min_feed = None
             log.info("orchestrator.five_min_disabled")
 
+        # 15-minute Polymarket strategy (uses same strategy, different feed)
+        self._fifteen_min_feed = None
+        fifteen_min_enabled = os.environ.get("FIFTEEN_MIN_ENABLED", "false").lower() == "true"
+        fifteen_min_assets = os.environ.get("FIFTEEN_MIN_ASSETS", "BTC,ETH,SOL").split(",")
+        if fifteen_min_enabled:
+            self._fifteen_min_feed = Polymarket5MinFeed(
+                assets=fifteen_min_assets,
+                duration_secs=900,  # 15 minutes
+                signal_offset=FIVE_MIN_ENTRY_OFFSET,  # Same entry offset (T-60s)
+                on_window_signal=self._on_fifteen_min_window,
+                paper_mode=settings.paper_mode,
+            )
+            log.info("orchestrator.fifteen_min_enabled", assets=fifteen_min_assets)
+
         # ── Feeds (wired after all components exist) ────────────────────────────
         self._binance_feed = BinanceWebSocketFeed(
             symbol="btcusdt",
@@ -260,6 +275,11 @@ class Orchestrator:
                 asyncio.create_task(self._five_min_feed.start(), name="feed:five_min")
             )
 
+        if self._fifteen_min_feed:
+            self._tasks.append(
+                asyncio.create_task(self._fifteen_min_feed.start(), name="feed:fifteen_min")
+            )
+
         # 4. Start feed tasks
         self._tasks.append(
             asyncio.create_task(self._binance_feed.start(), name="feed:binance")
@@ -322,6 +342,8 @@ class Orchestrator:
             await self._five_min_strategy.stop()
         if self._five_min_feed:
             await self._five_min_feed.stop()
+        if self._fifteen_min_feed:
+            await self._fifteen_min_feed.stop()
 
         # Stop feeds
         await self._binance_feed.stop()
@@ -501,6 +523,21 @@ class Orchestrator:
             down_price=window.down_price,
         )
         # Forward to strategy — queues window so next on_market_state evaluates it
+        if self._five_min_strategy:
+            self._five_min_strategy._pending_windows.append(window)
+
+    async def _on_fifteen_min_window(self, window) -> None:
+        """Handle 15-minute window signal — same strategy, different timeframe."""
+        log.info(
+            "fifteen_min.window_signal",
+            asset=window.asset,
+            window_ts=window.window_ts,
+            open_price=window.open_price,
+            up_price=window.up_price,
+            down_price=window.down_price,
+            duration=900,
+        )
+        # Reuse the same 5-min strategy for evaluation
         if self._five_min_strategy:
             self._five_min_strategy._pending_windows.append(window)
 

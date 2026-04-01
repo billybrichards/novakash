@@ -450,7 +450,8 @@ class Polymarket5MinFeed:
 
     def _build_slug(self, window: WindowInfo) -> str:
         """Build the market slug for the window."""
-        return f"{window.asset.lower()}-updown-5m-{window.window_ts}"
+        tf = "15m" if window.duration_secs == 900 else "5m"
+        return f"{window.asset.lower()}-updown-{tf}-{window.window_ts}"
 
     # ─── Utility Methods ──────────────────────────────────────────────────────
 

@@ -312,7 +312,8 @@ class FiveMinVPINStrategy(BaseStrategy):
             token_price = self._delta_to_token_price(signal.delta_pct)
         
         price = Decimal(str(round(token_price, 4)))
-        market_slug = f"{window.asset.lower()}-updown-5m-{window.window_ts}"
+        tf = "15m" if window.duration_secs == 900 else "5m"
+        market_slug = f"{window.asset.lower()}-updown-{tf}-{window.window_ts}"
         
         # Place order — pass real token_id for live mode
         try:
@@ -357,7 +358,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 "entry_offset_s": FIVE_MIN_ENTRY_OFFSET,
                 "entry_label": f"T-{FIVE_MIN_ENTRY_OFFSET}s",
                 "clob_order_id": clob_order_id if 'clob_order_id' in dir() else None,
-                "market_slug": f"{window.asset.lower()}-updown-5m-{window.window_ts}",
+                "market_slug": f"{window.asset.lower()}-updown-{tf}-{window.window_ts}",
             },
         )
         
