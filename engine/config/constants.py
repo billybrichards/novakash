@@ -51,4 +51,4 @@ FIVE_MIN_ASSETS: list[str] = os.environ.get("FIVE_MIN_ASSETS", "BTC").split(",")
 FIVE_MIN_MODE: str = os.environ.get("FIVE_MIN_MODE", "safe")
 FIVE_MIN_ENTRY_OFFSET: int = _env_int("FIVE_MIN_ENTRY_OFFSET", 10)  # seconds before close
 FIVE_MIN_MIN_CONFIDENCE: float = _env_float("FIVE_MIN_MIN_CONFIDENCE", 0.30)
-FIVE_MIN_MIN_DELTA_PCT: float = _env_float("FIVE_MIN_MIN_DELTA_PCT", 0.005)  # skip below this
+FIVE_MIN_MIN_DELTA_PCT: float = _env_float("FIVE_MIN_MIN_DELTA_PCT", 0.001)  # skip below this (matches backtest)

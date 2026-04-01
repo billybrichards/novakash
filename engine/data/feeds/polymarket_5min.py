@@ -367,8 +367,9 @@ class Polymarket5MinFeed:
                 async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     data = await resp.json()
                     real_price = float(data["price"])
-                    # Add small noise (±0.05%) to simulate window open vs current
-                    window.open_price = real_price * (1 + random.uniform(-0.0005, 0.0005))
+                    # Use exact price — no noise. The real delta between window
+                    # open and T-10s evaluation IS the signal.
+                    window.open_price = real_price
         except Exception:
             # Fallback: use a reasonable estimate
             window.open_price = 68500.0 + random.uniform(-200, 200)

@@ -242,19 +242,15 @@ class FiveMinVPINStrategy(BaseStrategy):
         """
         abs_delta = abs(delta_pct)
         
-        # High confidence: strong VPIN with aligned delta
-        if current_vpin >= 0.30:
-            return "HIGH"
-        
-        # High confidence: strong delta
+        # High confidence: strong delta alone is enough
         if abs_delta > 0.10:
             return "HIGH"
         
-        # Moderate confidence
+        # Moderate confidence: decent delta
         if abs_delta > 0.02:
             return "MODERATE"
         
-        # Low confidence
+        # Low confidence: small but non-trivial delta
         if abs_delta > 0.005:
             return "LOW"
         
@@ -287,17 +283,18 @@ class FiveMinVPINStrategy(BaseStrategy):
             )
             return
         
-        # Get prices
-        prices = await self._poly.get_market_prices(f"{window.asset.lower()}-updown-5m-{window.window_ts}")
+        # Calculate realistic token price based on delta (matches backtest model)
+        # Market prices in for the directional lean as delta grows
+        token_price = self._delta_to_token_price(signal.delta_pct)
         
-        # Select price based on direction
+        # Select direction
         if signal.direction == "UP":
             direction = "YES"
-            price = prices.get("yes", Decimal("0.5")) if prices else Decimal("0.5")
+            price = Decimal(str(round(token_price, 4)))
             token_id = window.up_token_id
         else:
             direction = "NO"
-            price = prices.get("no", Decimal("0.5")) if prices else Decimal("0.5")
+            price = Decimal(str(round(token_price, 4)))
             token_id = window.down_token_id
         
         if token_id is None:
@@ -355,6 +352,29 @@ class FiveMinVPINStrategy(BaseStrategy):
             vpin=f"{signal.current_vpin:.4f}",
             confidence=signal.confidence,
         )
+
+    @staticmethod
+    def _delta_to_token_price(delta_pct: float) -> float:
+        """
+        Convert window delta to realistic token price.
+        Matches the backtest pricing model based on observed Polymarket behavior.
+        
+        When delta is small, tokens are near $0.50 (coin flip).
+        As delta grows, the favoured token gets more expensive.
+        """
+        d = abs(delta_pct)
+        if d < 0.005:
+            return 0.50
+        elif d < 0.02:
+            return 0.50 + (d - 0.005) / (0.02 - 0.005) * 0.05  # 0.50-0.55
+        elif d < 0.05:
+            return 0.55 + (d - 0.02) / (0.05 - 0.02) * 0.10   # 0.55-0.65
+        elif d < 0.10:
+            return 0.65 + (d - 0.05) / (0.10 - 0.05) * 0.15   # 0.65-0.80
+        elif d < 0.15:
+            return 0.80 + (d - 0.10) / (0.15 - 0.10) * 0.12   # 0.80-0.92
+        else:
+            return min(0.92 + (d - 0.15) / 0.10 * 0.05, 0.97)  # 0.92-0.97
 
     def _calculate_stake(self, confidence: str) -> float:
         """
