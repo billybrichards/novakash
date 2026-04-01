@@ -1,0 +1,9 @@
+[build]
+dockerfilePath = "engine/Dockerfile"
+
+[build.buildContext]
+context = "engine"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
