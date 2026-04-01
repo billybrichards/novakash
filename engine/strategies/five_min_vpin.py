@@ -301,13 +301,14 @@ class FiveMinVPINStrategy(BaseStrategy):
             self._log.error("execute.no_token_id", direction=signal.direction)
             return
         
-        # Place order
+        # Place order — pass real token_id for live mode
         try:
             order_id = await self._poly.place_order(
                 market_slug=f"{window.asset.lower()}-updown-5m-{window.window_ts}",
                 direction=direction,
                 price=price,
                 stake_usd=stake,
+                token_id=token_id,
             )
         except Exception as exc:
             self._log.error("execute.order_failed", error=str(exc))

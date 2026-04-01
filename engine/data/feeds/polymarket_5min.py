@@ -309,12 +309,33 @@ class Polymarket5MinFeed:
             await self._fetch_paper_data(window)
 
     async def _fetch_live_data(self, window: WindowInfo) -> None:
-        """Fetch live market data from Gamma API."""
+        """Fetch live market data from Gamma API.
+
+        The Gamma API returns a list of events. Each event has a ``markets``
+        array; each market has a ``clobTokenIds`` array where:
+          - index 0 → YES / Up token ID
+          - index 1 → NO  / Down token ID
+
+        Example abbreviated response::
+
+            [
+              {
+                "slug": "btc-updown-5m-...",
+                "markets": [
+                  {
+                    "clobTokenIds": ["<yes_token_id>", "<no_token_id>"],
+                    "bestAsk": "0.52",
+                    "bestBid": "0.48"
+                  }
+                ]
+              }
+            ]
+        """
         slug = self._build_slug(window)
-        
+
         if not self._http_client:
             return
-        
+
         try:
             # Fetch event from Gamma API
             resp = await self._http_client.get(
@@ -322,23 +343,55 @@ class Polymarket5MinFeed:
                 params={"slug": slug},
             )
             resp.raise_for_status()
-            
+
             data = resp.json()
-            
+
             if not data or not isinstance(data, list) or len(data) == 0:
                 self._log.warning("market.not_found", slug=slug)
                 return
-            
+
             event = data[0]
-            
-            # Extract market info
-            window.up_token_id = event.get("up_token_id")
-            window.down_token_id = event.get("down_token_id")
-            
-            # Extract prices (these would come from order book)
-            # For now, we'll use a simple approximation
-            self._log.info("market.fetched", slug=slug, data_keys=list(event.keys())[:5])
-            
+
+            # The event may carry markets as a nested list
+            markets = event.get("markets", [])
+            if not markets:
+                self._log.warning("market.no_markets_in_event", slug=slug, event_keys=list(event.keys()))
+                return
+
+            # Up/Down markets: first market in the list (there should only be one
+            # for 5-minute binary events, but be defensive)
+            market = markets[0]
+
+            clob_token_ids: list = market.get("clobTokenIds") or []
+
+            if len(clob_token_ids) >= 2:
+                window.up_token_id = str(clob_token_ids[0])    # YES / Up
+                window.down_token_id = str(clob_token_ids[1])  # NO  / Down
+            elif len(clob_token_ids) == 1:
+                window.up_token_id = str(clob_token_ids[0])
+                self._log.warning("market.only_one_token_id", slug=slug)
+            else:
+                self._log.warning("market.no_token_ids", slug=slug, market_keys=list(market.keys()))
+                return
+
+            # Extract best-ask prices if available
+            try:
+                best_ask = market.get("bestAsk") or market.get("best_ask")
+                if best_ask is not None:
+                    window.up_price = float(best_ask)
+                    window.down_price = round(1.0 - window.up_price, 4)
+            except (TypeError, ValueError):
+                pass  # prices will stay None; strategy will handle
+
+            self._log.info(
+                "market.fetched",
+                slug=slug,
+                up_token_id=window.up_token_id[:20] + "..." if window.up_token_id and len(window.up_token_id) > 20 else window.up_token_id,
+                down_token_id=window.down_token_id[:20] + "..." if window.down_token_id and len(window.down_token_id) > 20 else window.down_token_id,
+                up_price=window.up_price,
+                down_price=window.down_price,
+            )
+
         except Exception as exc:
             self._log.error("gamma_api_error", error=str(exc))
 
