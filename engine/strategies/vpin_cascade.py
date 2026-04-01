@@ -7,7 +7,7 @@ a BET_SIGNAL. Direction logic (mean reversion):
   - Cascade direction "up"   (shorts liquidated, price rose) → bet "NO" (price will revert)
 
 Venue preference: Opinion (lower fees, 4%) if connected; else Polymarket (7.2%).
-Stake: BET_FRACTION * bankroll
+Stake: runtime.bet_fraction * bankroll
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from typing import Optional
 
 import structlog
 
-from config.constants import BET_FRACTION
+from config.runtime_config import runtime
 from data.models import CascadeSignal, MarketState
 from execution.opinion_client import OpinionClient
 from execution.order_manager import Order, OrderManager, OrderStatus
@@ -125,7 +125,7 @@ class VPINCascadeStrategy(BaseStrategy):
         # Determine stake
         status = self._rm.get_status()
         bankroll = status["current_bankroll"]
-        stake = BET_FRACTION * bankroll
+        stake = runtime.bet_fraction * bankroll
 
         # Risk gate
         approved, reason = await self._check_risk(stake)
@@ -186,8 +186,8 @@ class VPINCascadeStrategy(BaseStrategy):
             return None
 
         # Compute fee based on venue
-        from config.constants import OPINION_CRYPTO_FEE_MULT, POLYMARKET_CRYPTO_FEE_MULT
-        fee_mult = OPINION_CRYPTO_FEE_MULT if venue == "opinion" else POLYMARKET_CRYPTO_FEE_MULT
+        # Fee mults read from runtime config
+        fee_mult = runtime.opinion_fee_mult if venue == "opinion" else runtime.polymarket_fee_mult
         fee_usd = fee_mult * float(price) * (1.0 - float(price)) * stake
 
         market_slug = self._poly.get_current_market_slug()

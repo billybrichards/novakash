@@ -275,12 +275,19 @@ async def get_stats(
         else:
             engine_status = "OFFLINE"
 
+        # Extract config snapshot from heartbeat (includes wallet balance)
+        config_data = engine_state.get("config", {})
+
         return {
             "balance": engine_state.get("current_bankroll"),
             "today_pnl": today_pnl,
             "win_rate": wins / total if total > 0 else 0.0,
             "engine_status": engine_status,
             "total_trades": total,
+            "wallet_balance_usdc": config_data.get("wallet_balance_usdc"),
+            "paper_mode": config_data.get("paper_mode", True),
+            "daily_pnl_engine": config_data.get("daily_pnl", 0),
+            "drawdown_pct": engine_state.get("current_drawdown_pct"),
         }
     except Exception:
         return {
@@ -289,6 +296,8 @@ async def get_stats(
             "win_rate": 0.0,
             "engine_status": "OFFLINE",
             "total_trades": 0,
+            "wallet_balance_usdc": None,
+            "paper_mode": True,
         }
 
 

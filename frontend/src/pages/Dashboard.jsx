@@ -1161,6 +1161,8 @@ export default function Dashboard() {
   const winRate = stats?.win_rate ?? 0;
   const engineStatus = stats?.engine_status ?? 'OFFLINE';
   const totalTrades = stats?.total_trades ?? 0;
+  const walletBalance = stats?.wallet_balance_usdc;
+  const paperMode = stats?.paper_mode ?? true;
 
   return (
     <div style={styles.page}>
@@ -1178,6 +1180,16 @@ export default function Dashboard() {
           <span style={styles.statLabel}>Balance</span>
           <span style={styles.statValue}>
             {balance != null ? `$${parseFloat(balance).toFixed(2)}` : '—'}
+          </span>
+        </div>
+
+        <div style={styles.statPill}>
+          <span style={styles.statLabel}>Poly Wallet</span>
+          <span style={{
+            ...styles.statValue,
+            color: walletBalance != null && walletBalance > 0 ? T.profit : T.label,
+          }}>
+            {walletBalance != null ? `$${parseFloat(walletBalance).toFixed(2)}` : paperMode ? '📄 Paper' : '—'}
           </span>
         </div>
 

@@ -25,6 +25,7 @@ from typing import Optional
 import structlog
 
 from alerts.telegram import TelegramAlerter
+from config.runtime_config import runtime
 from config.settings import Settings
 from config.constants import FIVE_MIN_ENTRY_OFFSET
 from data.aggregator import MarketAggregator
@@ -134,6 +135,10 @@ class Orchestrator:
             starting_bankroll=settings.starting_bankroll,
             paper_mode=settings.paper_mode,
         )
+
+        # Wire alerter references now that risk_manager and poly_client exist
+        self._alerter.set_risk_manager(self._risk_manager)
+        self._alerter.set_poly_client(self._poly_client)
 
         # ── Strategies ─────────────────────────────────────────────────────────
         self._arb_strategy = SubDollarArbStrategy(
@@ -516,12 +521,44 @@ class Orchestrator:
 
     async def _heartbeat_loop(self) -> None:
         """Every 10s: update system state and feed connection flags in DB."""
+        # Wallet balance refresh counter (fetch every 6th heartbeat = ~60s)
+        _wallet_check_counter = 0
+        _cached_wallet_balance: float | None = None
+
         while not self._shutdown_event.is_set():
             try:
+                # ── Sync runtime config from DB (trading_configs table) ────
+                # Pulls the active config for current mode every heartbeat.
+                # DB values overlay env var defaults — hot reload without restart.
+                if self._db._pool:
+                    await runtime.sync(
+                        self._db._pool,
+                        paper_mode=self._settings.paper_mode,
+                    )
+
                 risk_status = self._risk_manager.get_status()
                 state = await self._aggregator.get_state()
 
                 open_orders = await self._order_manager.get_open_orders()
+
+                # Fetch Polymarket wallet balance periodically (~every 60s)
+                _wallet_check_counter += 1
+                if _wallet_check_counter >= 6:
+                    _wallet_check_counter = 0
+                    try:
+                        _cached_wallet_balance = await self._poly_client.get_balance()
+                    except Exception as exc:
+                        log.debug("heartbeat.wallet_balance_error", error=str(exc))
+
+                # Build config snapshot with wallet + risk extras + runtime config
+                config_snapshot = {
+                    "wallet_balance_usdc": _cached_wallet_balance,
+                    "daily_pnl": risk_status.get("daily_pnl", 0),
+                    "consecutive_losses": risk_status.get("consecutive_losses", 0),
+                    "paper_mode": risk_status.get("paper_mode", True),
+                    "kill_switch_active": risk_status.get("kill_switch_active", False),
+                    "runtime_config": runtime.snapshot(),
+                }
 
                 await self._db.update_system_state(
                     engine_status="running",
@@ -531,6 +568,7 @@ class Orchestrator:
                     last_vpin=state.vpin.value if state.vpin else None,
                     last_cascade_state=state.cascade.state if state.cascade else None,
                     active_positions=len(open_orders),
+                    config=config_snapshot,
                 )
 
                 await self._db.update_feed_status(

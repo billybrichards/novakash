@@ -15,12 +15,7 @@ from typing import Callable, Awaitable, Optional
 
 import structlog
 
-from config.constants import (
-    VPIN_BUCKET_SIZE_USD,
-    VPIN_LOOKBACK_BUCKETS,
-    VPIN_INFORMED_THRESHOLD,
-    VPIN_CASCADE_THRESHOLD,
-)
+from config.runtime_config import runtime
 from data.models import AggTrade, VPINSignal
 
 log = structlog.get_logger(__name__)
@@ -38,9 +33,9 @@ class VPINCalculator:
     Parameters
     ----------
     bucket_size_usd:
-        USD notional per bucket. Defaults to VPIN_BUCKET_SIZE_USD constant.
+        USD notional per bucket. Defaults to runtime.vpin_bucket_size_usd constant.
     lookback_buckets:
-        Rolling window size. Defaults to VPIN_LOOKBACK_BUCKETS constant.
+        Rolling window size. Defaults to runtime.vpin_lookback_buckets constant.
     on_signal:
         Optional async callback invoked with a :class:`VPINSignal` each time
         a bucket completes.
@@ -48,8 +43,8 @@ class VPINCalculator:
 
     def __init__(
         self,
-        bucket_size_usd: float = VPIN_BUCKET_SIZE_USD,
-        lookback_buckets: int = VPIN_LOOKBACK_BUCKETS,
+        bucket_size_usd: float = runtime.vpin_bucket_size_usd,
+        lookback_buckets: int = runtime.vpin_lookback_buckets,
         on_signal: Optional[Callable[[VPINSignal], Awaitable[None]]] = None,
     ) -> None:
         self._bucket_size_usd = bucket_size_usd
@@ -72,8 +67,8 @@ class VPINCalculator:
             "initialised",
             bucket_size_usd=bucket_size_usd,
             lookback_buckets=lookback_buckets,
-            informed_threshold=VPIN_INFORMED_THRESHOLD,
-            cascade_threshold=VPIN_CASCADE_THRESHOLD,
+            informed_threshold=runtime.vpin_informed_threshold,
+            cascade_threshold=runtime.vpin_cascade_threshold,
         )
 
     # ------------------------------------------------------------------
@@ -182,8 +177,8 @@ class VPINCalculator:
             signal = VPINSignal(
                 value=self._current_vpin,
                 buckets_filled=self.buckets_filled,
-                informed_threshold_crossed=self._current_vpin >= VPIN_INFORMED_THRESHOLD,
-                cascade_threshold_crossed=self._current_vpin >= VPIN_CASCADE_THRESHOLD,
+                informed_threshold_crossed=self._current_vpin >= runtime.vpin_informed_threshold,
+                cascade_threshold_crossed=self._current_vpin >= runtime.vpin_cascade_threshold,
                 timestamp=datetime.now(tz=timezone.utc),
             )
             try:
