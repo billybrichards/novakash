@@ -59,23 +59,13 @@ def _ts(dt) -> str | None:
 
 @router.get("/status")
 async def paper_status(session: AsyncSession = Depends(get_session)):
-    """Engine status, VPIN, cascade state, feeds, balance."""
+    """Engine status, VPIN, cascade state, feeds, balance.
+
+    Reads from the system_state.state JSONB field which the engine writes
+    on each heartbeat.
+    """
     row = await _fetch_one(session, """
-        SELECT
-            engine_status,
-            current_balance,
-            peak_balance,
-            current_drawdown_pct,
-            binance_connected,
-            coinglass_connected,
-            chainlink_connected,
-            polymarket_connected,
-            opinion_connected,
-            last_vpin,
-            last_cascade_state,
-            active_positions,
-            last_heartbeat,
-            config
+        SELECT state, updated_at
         FROM system_state
         WHERE id = 1
     """)
@@ -99,25 +89,27 @@ async def paper_status(session: AsyncSession = Depends(get_session)):
             "uptime_seconds": 0,
         }
 
-    hb = row.get("last_heartbeat")
+    state = row.get("state") or {}
+    hb = row.get("updated_at")
     uptime = 0
     if hb:
-        uptime = max(0, int((datetime.now(timezone.utc) - hb.replace(tzinfo=timezone.utc if hb.tzinfo is None else hb.tzinfo)).total_seconds()))
+        hb_aware = hb.replace(tzinfo=timezone.utc) if hb.tzinfo is None else hb
+        uptime = max(0, int((datetime.now(timezone.utc) - hb_aware).total_seconds()))
 
     return {
-        "engine_status": row.get("engine_status", "UNKNOWN"),
-        "current_balance": float(row.get("current_balance") or 0),
-        "peak_balance": float(row.get("peak_balance") or 0),
-        "current_drawdown_pct": float(row.get("current_drawdown_pct") or 0),
-        "binance_connected": bool(row.get("binance_connected")),
-        "coinglass_connected": bool(row.get("coinglass_connected")),
-        "chainlink_connected": bool(row.get("chainlink_connected")),
-        "polymarket_connected": bool(row.get("polymarket_connected")),
-        "opinion_connected": bool(row.get("opinion_connected")),
-        "last_vpin": float(row["last_vpin"]) if row.get("last_vpin") is not None else None,
-        "last_cascade_state": row.get("last_cascade_state") or "IDLE",
-        "regime": (row.get("config") or {}).get("regime", "UNKNOWN") if isinstance(row.get("config"), dict) else "UNKNOWN",
-        "active_positions": int(row.get("active_positions") or 0),
+        "engine_status": state.get("engine_status", "UNKNOWN"),
+        "current_balance": float(state.get("current_balance") or 0),
+        "peak_balance": float(state.get("peak_balance") or 0),
+        "current_drawdown_pct": float(state.get("current_drawdown_pct") or 0),
+        "binance_connected": bool(state.get("binance_connected")),
+        "coinglass_connected": bool(state.get("coinglass_connected")),
+        "chainlink_connected": bool(state.get("chainlink_connected")),
+        "polymarket_connected": bool(state.get("polymarket_connected")),
+        "opinion_connected": bool(state.get("opinion_connected")),
+        "last_vpin": float(state["last_vpin"]) if state.get("last_vpin") is not None else None,
+        "last_cascade_state": state.get("last_cascade_state") or "IDLE",
+        "regime": state.get("config", {}).get("regime", "UNKNOWN") if isinstance(state.get("config"), dict) else "UNKNOWN",
+        "active_positions": int(state.get("active_positions") or 0),
         "last_heartbeat": _ts(hb),
         "uptime_seconds": uptime,
     }
@@ -154,14 +146,14 @@ async def paper_positions(session: AsyncSession = Depends(get_session)):
 
 @router.get("/trades")
 async def paper_trades(session: AsyncSession = Depends(get_session)):
-    """Last 50 resolved paper trades."""
+    """Last 100 resolved paper trades."""
     rows = await _fetch_all(session, """
         SELECT id, strategy, direction, venue, entry_price, stake_usd,
-               pnl_usd, status, vpin_at_entry, created_at, resolved_at
+               pnl_usd, outcome, status, vpin_at_entry, created_at, resolved_at
         FROM trades
         WHERE outcome IN ('WIN', 'LOSS')
         ORDER BY resolved_at DESC NULLS LAST
-        LIMIT 50
+        LIMIT 100
     """)
 
     return [
@@ -200,7 +192,7 @@ async def paper_stats(session: AsyncSession = Depends(get_session)):
         WHERE outcome IN ('WIN', 'LOSS')
     """)
 
-    if not row or row["total"] == 0:
+    if not row or int(row["total"]) == 0:
         return {
             "total_trades": 0, "wins": 0, "losses": 0,
             "win_rate": 0, "total_pnl": 0, "avg_pnl": 0,
@@ -214,9 +206,11 @@ async def paper_stats(session: AsyncSession = Depends(get_session)):
     avg = float(row["avg_pnl"])
     sharpe = (avg / stddev) if stddev > 0 else 0
 
-    # Get max drawdown from system_state
-    state = await _fetch_one(session, "SELECT current_drawdown_pct FROM system_state WHERE id = 1")
-    dd = float(state["current_drawdown_pct"]) if state and state.get("current_drawdown_pct") else 0
+    # Get max drawdown from system_state (stored in the state JSONB)
+    state_row = await _fetch_one(session, "SELECT state FROM system_state WHERE id = 1")
+    dd = 0
+    if state_row and state_row.get("state"):
+        dd = float(state_row["state"].get("current_drawdown_pct") or 0)
 
     return {
         "total_trades": total,
@@ -270,9 +264,12 @@ async def paper_strategy_breakdown(session: AsyncSession = Depends(get_session))
 
 @router.get("/log")
 async def paper_log(session: AsyncSession = Depends(get_session)):
-    """Recent engine signals as log entries."""
+    """Recent engine signals as log entries.
+
+    NOTE: signals table uses a 'payload' JSONB column, not 'value'/'metadata'.
+    """
     rows = await _fetch_all(session, """
-        SELECT signal_type, value, metadata, created_at
+        SELECT signal_type, payload, created_at
         FROM signals
         ORDER BY created_at DESC
         LIMIT 200
@@ -281,11 +278,13 @@ async def paper_log(session: AsyncSession = Depends(get_session)):
     entries = []
     for r in reversed(rows):
         sig_type = r.get("signal_type", "unknown")
-        value = r.get("value")
-        meta = r.get("metadata") or {}
+        payload = r.get("payload") or {}
+        # Support both old 'value'/'metadata' style and new 'payload' style
+        value = payload.get("value") if isinstance(payload, dict) else None
+        meta = payload if isinstance(payload, dict) else {}
 
         if sig_type == "vpin":
-            msg = f"VPIN = {float(value):.4f}" if value else "VPIN update"
+            msg = f"VPIN = {float(value):.4f}" if value else f"VPIN = {meta.get('vpin', '?')}"
             if meta.get("cascade_threshold_crossed"):
                 msg += " ⚠️ CASCADE THRESHOLD"
             elif meta.get("informed_threshold_crossed"):
@@ -319,7 +318,7 @@ async def paper_log(session: AsyncSession = Depends(get_session)):
 
 @router.get("/equity")
 async def paper_equity(session: AsyncSession = Depends(get_session)):
-    """Cumulative P&L over trade sequence."""
+    """Cumulative P&L over trade sequence for equity curve chart."""
     rows = await _fetch_all(session, """
         SELECT pnl_usd, resolved_at
         FROM trades

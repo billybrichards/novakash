@@ -1,10 +1,8 @@
 /**
  * PaperDashboard.jsx — Paper Trading View
  *
- * Same 7 canvas charts as main Dashboard, but:
- * - Shows paper-mode trades only
- * - Uses seeded demo data when no real trades exist
- * - Adjustable thresholds to generate mock trades
+ * Fetches real paper trade data from /api/paper/* endpoints.
+ * Falls back to seeded demo data when API is unavailable or has no trades yet.
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
@@ -84,19 +82,17 @@ function drawGrid(ctx, w, h, cols = 6, rows = 4) {
 function genPaperTrades(seed = 42) {
   const rng = seededRng(seed);
   const strategies = ['sub_dollar_arb', 'vpin_cascade'];
-  const outcomes = ['WIN', 'LOSS', 'WIN', 'WIN', 'LOSS', 'WIN', 'LOSS', 'WIN'];
-  
+
   return Array.from({ length: 50 }, (_, i) => {
     const strategy = strategies[Math.floor(rng() * strategies.length)];
     const isArb = strategy === 'sub_dollar_arb';
-    // Arb has higher win rate (~80%), cascade ~55%
     const winRate = isArb ? 0.80 : 0.55;
     const outcome = rng() < winRate ? 'WIN' : 'LOSS';
     const stake = isArb ? 20 + rng() * 30 : 15 + rng() * 35;
-    const pnl = outcome === 'WIN' 
-      ? stake * (0.03 + rng() * 0.05)  // Arb: 3-8% profit
-      : (rng() - 0.45) * stake;  // Cascade: variable PnL
-    
+    const pnl = outcome === 'WIN'
+      ? stake * (0.03 + rng() * 0.05)
+      : (rng() - 0.45) * stake;
+
     return {
       id: i,
       strategy,
@@ -128,7 +124,6 @@ function genVpinDemo() {
 
 function genArbDemo() {
   const rng = seededRng(77);
-  // Simulate sub-$1 arb opportunities (0.92-0.98 range = profitable)
   return Array.from({ length: 120 }, () => 0.92 + rng() * 0.06);
 }
 
@@ -136,19 +131,14 @@ function genEquityDemo() {
   const rng = seededRng(13);
   let balance = 1000;
   return Array.from({ length: 60 }, (_, i) => {
-    // Paper mode: slightly positive drift
     balance += (rng() - 0.40) * 45;
     return { day: `Day ${i + 1}`, balance: Math.max(600, balance) };
   });
 }
 
-function genDailyPnlDemo() {
-  const rng = seededRng(55);
-  return Array.from({ length: 60 }, () => (rng() - 0.38) * 80);
-}
-
 // ─── vpinColour helper ────────────────────────────────────────────────────────
 function vpinColour(v) {
+  if (v === undefined || v === null) return T.label;
   if (v < 0.40) return T.profit;
   if (v < 0.55) return T.warning;
   if (v < 0.70) return '#fb923c';
@@ -172,7 +162,6 @@ function VpinChart({ data }) {
     const maxVpin = 1.0;
     const minVpin = 0.0;
 
-    // Draw VPIN line
     ctx.save();
     ctx.strokeStyle = T.cyan;
     ctx.lineWidth = 2;
@@ -187,12 +176,10 @@ function VpinChart({ data }) {
 
     ctx.stroke();
 
-    // Draw threshold lines
     ctx.strokeStyle = 'rgba(245,158,11,0.5)';
     ctx.setLineDash([5, 5]);
     ctx.lineWidth = 1;
-    
-    // VPIN cascade threshold (0.70)
+
     const cascadeY = h - 0.70 * h;
     ctx.beginPath();
     ctx.moveTo(0, cascadeY);
@@ -225,7 +212,7 @@ function VpinChart({ data }) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // CHART 2: Equity Curve with Drawdown
 // ═══════════════════════════════════════════════════════════════════════════════
-function EquityCurve({ trades }) {
+function EquityCurve({ trades, equityData: equityDataProp }) {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -235,39 +222,53 @@ function EquityCurve({ trades }) {
 
     drawGrid(ctx, w, h, 8, 5);
 
-    // Calculate equity curve from trades
-    const dailyPnL = {};
-    (trades || genPaperTrades()).forEach(t => {
-      const day = t.created_at ? t.created_at.slice(0, 10) : 'Day 1';
-      dailyPnL[day] = (dailyPnL[day] || 0) + t.pnl_usd;
-    });
+    let equityData = [];
 
-    let balance = 1000;
-    let peak = 1000;
-    const equityData = Object.keys(dailyPnL).map(day => {
-      balance += dailyPnL[day];
-      peak = Math.max(peak, balance);
-      return { day, balance, drawdown: (peak - balance) / peak };
-    });
+    // Prefer pre-computed equity data from API
+    if (equityDataProp && equityDataProp.length > 0) {
+      let peak = 1000;
+      equityData = equityDataProp.map(d => {
+        const balance = 1000 + d.cumulative_pnl;
+        peak = Math.max(peak, balance);
+        return { balance, drawdown: (peak - balance) / peak };
+      });
+    } else {
+      // Build from trades
+      const dailyPnL = {};
+      (trades || genPaperTrades()).forEach(t => {
+        const day = t.created_at ? t.created_at.slice(0, 10) : 'Day 1';
+        dailyPnL[day] = (dailyPnL[day] || 0) + t.pnl_usd;
+      });
+
+      let balance = 1000;
+      let peak = 1000;
+      equityData = Object.keys(dailyPnL).map(day => {
+        balance += dailyPnL[day];
+        peak = Math.max(peak, balance);
+        return { day, balance, drawdown: (peak - balance) / peak };
+      });
+    }
 
     if (equityData.length === 0) {
-      equityData.push(...genEquityDemo());
+      equityData = genEquityDemo().map(d => ({
+        balance: d.balance,
+        drawdown: 0,
+      }));
     }
 
     const maxBalance = Math.max(...equityData.map(d => d.balance));
     const minBalance = Math.min(...equityData.map(d => d.balance));
     const range = maxBalance - minBalance || 1;
 
-    // Draw drawdown underlay
+    // Drawdown underlay
     ctx.save();
     ctx.fillStyle = 'rgba(248,113,113,0.15)';
     let prevX = 0;
-    let prevDDY = h;
 
     equityData.forEach((d, i) => {
       const x = (i / (equityData.length - 1)) * w;
-      const ddY = h - (d.drawdown / 0.5) * h; // 50% max drawdown scale
-      
+      const ddY = h - (d.drawdown / 0.5) * h;
+
       if (i === 0) {
         ctx.beginPath();
         ctx.moveTo(x, h);
@@ -276,7 +277,6 @@ function EquityCurve({ trades }) {
         ctx.lineTo(x, ddY);
       }
       prevX = x;
-      prevDDY = ddY;
     });
 
     ctx.lineTo(prevX, h);
@@ -284,7 +284,7 @@ function EquityCurve({ trades }) {
     ctx.fill();
     ctx.restore();
 
-    // Draw equity line
+    // Equity line
     ctx.save();
     ctx.strokeStyle = T.profit;
     ctx.lineWidth = 2;
@@ -299,14 +299,13 @@ function EquityCurve({ trades }) {
 
     ctx.stroke();
 
-    // Current balance label
     const last = equityData[equityData.length - 1];
     ctx.fillStyle = T.profit;
     ctx.font = '11px IBM Plex Mono';
     ctx.fillText(`$${last.balance.toFixed(0)}`, w - 60, 20);
 
     ctx.restore();
-  }, [trades]);
+  }, [trades, equityDataProp]);
 
   return (
     <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: 12 }}>
@@ -336,14 +335,13 @@ function DailyPnlBars({ trades }) {
 
     drawGrid(ctx, w, h, 10, 5);
 
-    // Aggregate daily PnL
     const dailyPnL = {};
     (trades || genPaperTrades()).forEach(t => {
       const day = t.created_at ? t.created_at.slice(0, 10) : 'Day 1';
-      dailyPnL[day] = (dailyPnL[day] || 0) + t.pnl_usd;
+      dailyPnL[day] = (dailyPnL[day] || 0) + (t.pnl_usd || 0);
     });
 
-    const days = Object.keys(dailyPnL).slice(-30); // Last 30 days
+    const days = Object.keys(dailyPnL).slice(-30);
     const values = days.map(d => dailyPnL[d]);
     const maxPnL = Math.max(...values.map(Math.abs)) || 100;
 
@@ -360,7 +358,6 @@ function DailyPnlBars({ trades }) {
       ctx.fillRect(x + 2, y, barWidth - 4, barHeight);
     });
 
-    // Zero line
     ctx.strokeStyle = 'rgba(255,255,255,0.2)';
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -401,7 +398,6 @@ function ArbMonitor({ data }) {
 
     const spreadData = data || genArbDemo();
 
-    // Draw 0.95 threshold line (breakeven after fees)
     ctx.save();
     ctx.strokeStyle = 'rgba(245,158,11,0.6)';
     ctx.setLineDash([5, 5]);
@@ -416,7 +412,6 @@ function ArbMonitor({ data }) {
     ctx.font = '10px IBM Plex Mono';
     ctx.fillText('BREAKEVEN → 0.95', w - 70, thresholdY - 5);
 
-    // Draw spread line
     ctx.setLineDash([]);
     ctx.strokeStyle = T.cyan;
     ctx.lineWidth = 2;
@@ -431,7 +426,6 @@ function ArbMonitor({ data }) {
 
     ctx.stroke();
 
-    // Mark profitable zones (below 0.95)
     ctx.fillStyle = 'rgba(6,182,212,0.1)';
     ctx.fillRect(0, thresholdY, w, h - thresholdY);
 
@@ -468,7 +462,6 @@ function WinRateByVpin({ trades }) {
 
     const tradeData = trades || genPaperTrades();
 
-    // Bucket by VPIN
     const buckets = {
       '0.0-0.3': { wins: 0, total: 0 },
       '0.3-0.5': { wins: 0, total: 0 },
@@ -478,11 +471,13 @@ function WinRateByVpin({ trades }) {
     };
 
     tradeData.forEach(t => {
+      const v = t.vpin ?? t.vpin_at_entry;
+      if (v === undefined || v === null) return;
       let bucket;
-      if (t.vpin < 0.3) bucket = '0.0-0.3';
-      else if (t.vpin < 0.5) bucket = '0.3-0.5';
-      else if (t.vpin < 0.7) bucket = '0.5-0.7';
-      else if (t.vpin < 0.9) bucket = '0.7-0.9';
+      if (v < 0.3) bucket = '0.0-0.3';
+      else if (v < 0.5) bucket = '0.3-0.5';
+      else if (v < 0.7) bucket = '0.5-0.7';
+      else if (v < 0.9) bucket = '0.7-0.9';
       else bucket = '0.9-1.0';
 
       buckets[bucket].total++;
@@ -498,22 +493,18 @@ function WinRateByVpin({ trades }) {
       const x = 20 + i * barWidth;
       const barHeight = winRate * (h - 30);
 
-      // Bar
       ctx.fillStyle = T.profit;
       ctx.fillRect(x + 4, h - barHeight - 20, barWidth - 8, barHeight);
 
-      // Label
       ctx.fillStyle = T.label;
       ctx.font = '9px IBM Plex Mono';
       ctx.fillText(key, x + 8, h - 5);
 
-      // Win rate %
       ctx.fillStyle = '#fff';
       ctx.font = '10px IBM Plex Mono';
       ctx.fillText(`${(winRate * 100).toFixed(0)}%`, x + 10, h - barHeight - 25);
     });
 
-    // Y-axis label
     ctx.fillStyle = T.label;
     ctx.font = '10px IBM Plex Mono';
     ctx.save();
@@ -541,13 +532,12 @@ function WinRateByVpin({ trades }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CHART 6: Cascade State Machine (SVG)
+// CHART 6: Cascade State Machine
 // ═══════════════════════════════════════════════════════════════════════════════
 function CascadeState({ vpin }) {
   const [state, setState] = useState('IDLE');
 
   useEffect(() => {
-    // Simple FSM based on current VPIN
     const v = vpin || 0.4;
     if (v < 0.55) setState('IDLE');
     else if (v < 0.70) setState('INFORMED');
@@ -573,10 +563,10 @@ function CascadeState({ vpin }) {
   };
 
   return (
-    <div style={{ 
-      background: T.card, 
-      border: `1px solid ${T.border}`, 
-      borderRadius: 8, 
+    <div style={{
+      background: T.card,
+      border: `1px solid ${T.border}`,
+      borderRadius: 8,
       padding: 12,
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
@@ -594,19 +584,19 @@ function CascadeState({ vpin }) {
         padding: '15px 20px',
         textAlign: 'center',
       }}>
-        <div style={{ 
-          color: '#fff', 
-          fontFamily: T.font, 
-          fontSize: 18, 
+        <div style={{
+          color: '#fff',
+          fontFamily: T.font,
+          fontSize: 18,
           fontWeight: 700,
           letterSpacing: '0.05em',
         }}>
           {stateLabels[state]}
         </div>
-        <div style={{ 
-          color: T.label2, 
-          fontFamily: T.font, 
-          fontSize: 11, 
+        <div style={{
+          color: T.label2,
+          fontFamily: T.font,
+          fontSize: 11,
           marginTop: 5,
         }}>
           VPIN: {(vpin || 0).toFixed(3)}
@@ -619,7 +609,7 @@ function CascadeState({ vpin }) {
 // ═══════════════════════════════════════════════════════════════════════════════
 // CHART 7: Trade History Table
 // ═══════════════════════════════════════════════════════════════════════════════
-function TradeHistory({ trades }) {
+function TradeHistory({ trades, isLive }) {
   const tradeData = trades || genPaperTrades();
 
   return (
@@ -629,7 +619,7 @@ function TradeHistory({ trades }) {
           📋 Recent Trades
         </span>
         <span style={{ color: T.label, fontFamily: T.font, fontSize: 10 }}>
-          {tradeData.length} paper trades
+          {isLive ? '🟢 live data' : '🟡 demo data'} · {tradeData.length} trades
         </span>
       </div>
       <div style={{ maxHeight: 200, overflowY: 'auto' }}>
@@ -637,47 +627,64 @@ function TradeHistory({ trades }) {
           <thead>
             <tr style={{ borderBottom: `1px solid ${T.border}` }}>
               <th style={{ textAlign: 'left', padding: '6px 4px', color: T.label }}>Strat</th>
+              <th style={{ textAlign: 'left', padding: '6px 4px', color: T.label }}>Dir</th>
               <th style={{ textAlign: 'left', padding: '6px 4px', color: T.label }}>Outcome</th>
+              <th style={{ textAlign: 'right', padding: '6px 4px', color: T.label }}>Stake</th>
               <th style={{ textAlign: 'right', padding: '6px 4px', color: T.label }}>PnL</th>
               <th style={{ textAlign: 'right', padding: '6px 4px', color: T.label }}>VPIN</th>
             </tr>
           </thead>
           <tbody>
-            {tradeData.slice(0, 15).map(t => (
-              <tr key={t.id} style={{ borderBottom: `1px solid ${T.border}` }}>
-                <td style={{ padding: '6px 4px', color: t.strategy === 'sub_dollar_arb' ? T.cyan : T.purple, fontFamily: T.font, fontSize: 10 }}>
-                  {t.strategy === 'sub_dollar_arb' ? '⚡ Arb' : '🌊 Cascade'}
-                </td>
-                <td style={{ padding: '6px 4px' }}>
-                  <span style={{
-                    color: t.outcome === 'WIN' ? T.profit : T.loss,
+            {tradeData.slice(0, 20).map((t, idx) => {
+              const vpin = t.vpin ?? t.vpin_at_entry;
+              return (
+                <tr key={t.id ?? idx} style={{ borderBottom: `1px solid ${T.border}` }}>
+                  <td style={{ padding: '6px 4px', color: t.strategy === 'sub_dollar_arb' ? T.cyan : T.purple, fontFamily: T.font, fontSize: 10 }}>
+                    {t.strategy === 'sub_dollar_arb' ? '⚡ Arb' : '🌊 Cascade'}
+                  </td>
+                  <td style={{ padding: '6px 4px', color: T.label2, fontFamily: T.font, fontSize: 10 }}>
+                    {t.direction || '—'}
+                  </td>
+                  <td style={{ padding: '6px 4px' }}>
+                    <span style={{
+                      color: t.outcome === 'WIN' ? T.profit : T.loss,
+                      fontFamily: T.font,
+                      fontSize: 10,
+                      fontWeight: 600,
+                    }}>
+                      {t.outcome}
+                    </span>
+                  </td>
+                  <td style={{
+                    padding: '6px 4px',
+                    textAlign: 'right',
+                    color: T.label2,
                     fontFamily: T.font,
                     fontSize: 10,
-                    fontWeight: 600,
                   }}>
-                    {t.outcome}
-                  </span>
-                </td>
-                <td style={{ 
-                  padding: '6px 4px', 
-                  textAlign: 'right', 
-                  color: t.pnl_usd >= 0 ? T.profit : T.loss,
-                  fontFamily: T.font,
-                  fontSize: 10,
-                }}>
-                  {t.pnl_usd >= 0 ? '+' : ''}${t.pnl_usd.toFixed(2)}
-                </td>
-                <td style={{ 
-                  padding: '6px 4px', 
-                  textAlign: 'right', 
-                  color: vpinColour(t.vpin),
-                  fontFamily: T.font,
-                  fontSize: 10,
-                }}>
-                  {t.vpin.toFixed(3)}
-                </td>
-              </tr>
-            ))}
+                    ${(t.stake_usd || 0).toFixed(2)}
+                  </td>
+                  <td style={{
+                    padding: '6px 4px',
+                    textAlign: 'right',
+                    color: (t.pnl_usd || 0) >= 0 ? T.profit : T.loss,
+                    fontFamily: T.font,
+                    fontSize: 10,
+                  }}>
+                    {(t.pnl_usd || 0) >= 0 ? '+' : ''}${(t.pnl_usd || 0).toFixed(2)}
+                  </td>
+                  <td style={{
+                    padding: '6px 4px',
+                    textAlign: 'right',
+                    color: vpinColour(vpin),
+                    fontFamily: T.font,
+                    fontSize: 10,
+                  }}>
+                    {vpin != null ? vpin.toFixed(3) : '—'}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -685,15 +692,112 @@ function TradeHistory({ trades }) {
   );
 }
 
+// ─── Data loading badge ───────────────────────────────────────────────────────
+function DataBadge({ isLive, loading, error }) {
+  if (loading) {
+    return (
+      <span style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        padding: '2px 8px',
+        borderRadius: 4,
+        border: '1px solid rgba(100,100,100,0.3)',
+        background: 'rgba(100,100,100,0.1)',
+        color: 'rgba(255,255,255,0.4)',
+        fontSize: 10,
+        fontFamily: "'IBM Plex Mono', monospace",
+      }}>
+        ⏳ loading…
+      </span>
+    );
+  }
+
+  if (isLive) {
+    return (
+      <span style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+        padding: '2px 8px',
+        borderRadius: 4,
+        border: '1px solid rgba(74,222,128,0.3)',
+        background: 'rgba(74,222,128,0.08)',
+        color: '#4ade80',
+        fontSize: 10,
+        fontFamily: "'IBM Plex Mono', monospace",
+      }}>
+        🟢 live data
+      </span>
+    );
+  }
+
+  return (
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 4,
+      padding: '2px 8px',
+      borderRadius: 4,
+      border: '1px solid rgba(245,158,11,0.3)',
+      background: 'rgba(245,158,11,0.08)',
+      color: '#f59e0b',
+      fontSize: 10,
+      fontFamily: "'IBM Plex Mono', monospace",
+    }}>
+      🟡 demo data
+    </span>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Main Paper Dashboard Page
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function PaperDashboard() {
-  const { data: tradesData } = useApi('/api/trades?mode=paper&limit=100');
+  // useApi returns a function: (method, url, config?) => Promise
+  const apiCall = useApi();
+
+  const [trades, setTrades] = useState(null);
+  const [stats, setStats] = useState(null);
+  const [equityData, setEquityData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [isLive, setIsLive] = useState(false);
   const [vpin, setVpin] = useState(0.45);
   const [arbSpreads, setArbSpreads] = useState([]);
 
-  // Simulate real-time updates
+  // Fetch paper trade data from hub API
+  const fetchData = useCallback(async () => {
+    try {
+      const [tradesRes, statsRes, equityRes] = await Promise.all([
+        apiCall('get', '/paper/trades'),
+        apiCall('get', '/paper/stats'),
+        apiCall('get', '/paper/equity'),
+      ]);
+
+      const tradesArr = tradesRes.data || [];
+      const statsObj = statsRes.data || {};
+      const equityArr = equityRes.data || [];
+
+      setTrades(tradesArr.length > 0 ? tradesArr : null);
+      setStats(statsObj.total_trades > 0 ? statsObj : null);
+      setEquityData(equityArr.length > 0 ? equityArr : null);
+      setIsLive(tradesArr.length > 0);
+    } catch (err) {
+      // API unavailable or auth failed — fall back to demo data silently
+      setIsLive(false);
+    } finally {
+      setLoading(false);
+    }
+  }, [apiCall]);
+
+  useEffect(() => {
+    fetchData();
+    // Refresh every 30 seconds
+    const refreshInterval = setInterval(fetchData, 30000);
+    return () => clearInterval(refreshInterval);
+  }, [fetchData]);
+
+  // Simulate real-time VPIN / arb updates
   useEffect(() => {
     const vpinInterval = setInterval(() => {
       setVpin(v => {
@@ -705,8 +809,7 @@ export default function PaperDashboard() {
     const arbInterval = setInterval(() => {
       setArbSpreads(prev => {
         const newSpread = 0.92 + Math.random() * 0.06;
-        const updated = [...prev, newSpread].slice(-120);
-        return updated;
+        return [...prev, newSpread].slice(-120);
       });
     }, 3000);
 
@@ -716,10 +819,38 @@ export default function PaperDashboard() {
     };
   }, []);
 
-  const trades = tradesData?.data || genPaperTrades();
+  // Use real data when available, fall back to demo
+  const displayTrades = trades || genPaperTrades();
+
+  // Summary stats: prefer real API stats, compute from demo trades if not
+  const summary = (() => {
+    if (stats) {
+      return {
+        totalPnL: stats.total_pnl ?? 0,
+        wins: stats.wins ?? 0,
+        losses: stats.losses ?? 0,
+        winRate: ((stats.win_rate ?? 0) * 100).toFixed(1),
+        totalTrades: stats.total_trades ?? 0,
+        avgPnL: stats.avg_pnl ?? 0,
+      };
+    }
+    // Compute from demo trades
+    const totalPnL = displayTrades.reduce((sum, t) => sum + (t.pnl_usd || 0), 0);
+    const wins = displayTrades.filter(t => t.outcome === 'WIN').length;
+    return {
+      totalPnL,
+      wins,
+      losses: displayTrades.length - wins,
+      winRate: displayTrades.length > 0 ? ((wins / displayTrades.length) * 100).toFixed(1) : '0.0',
+      totalTrades: displayTrades.length,
+      avgPnL: displayTrades.length > 0 ? totalPnL / displayTrades.length : 0,
+    };
+  })();
+
+  const arbTrades = displayTrades.filter(t => t.strategy === 'sub_dollar_arb').length;
 
   return (
-    <div style={{ 
+    <div style={{
       background: T.bg,
       minHeight: '100vh',
       padding: '20px 16px',
@@ -728,9 +859,9 @@ export default function PaperDashboard() {
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div style={{ marginBottom: 24 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-          <span style={{ 
-            display: 'inline-flex', 
-            alignItems: 'center', 
+          <span style={{
+            display: 'inline-flex',
+            alignItems: 'center',
             gap: 4,
             padding: '3px 8px',
             borderRadius: 4,
@@ -747,107 +878,82 @@ export default function PaperDashboard() {
           <h1 style={{
             color: 'rgba(255,255,255,0.9)',
             fontFamily: T.font,
-            fontSize: 20, 
-            fontWeight: 700, 
+            fontSize: 20,
+            fontWeight: 700,
             letterSpacing: '-0.01em',
             margin: 0,
           }}>
             Paper Trading Dashboard
           </h1>
+          <DataBadge isLive={isLive} loading={loading} />
         </div>
         <div style={{ color: T.label, fontSize: 12 }}>
-          Simulated trades · Adjust thresholds in Trading Config to see more activity
+          {isLive
+            ? `Live engine data · ${summary.totalTrades} resolved trades · refreshes every 30s`
+            : 'Waiting for engine trades · Showing demo data · Adjust thresholds in Trading Config to see activity'}
         </div>
       </div>
 
       {/* ── Summary Stats ───────────────────────────────────────────────────── */}
-      <div style={{ 
-        display: 'grid', 
-        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', 
-        gap: 12, 
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+        gap: 12,
         marginBottom: 20,
       }}>
-        {(() => {
-          const totalPnL = trades.reduce((sum, t) => sum + t.pnl_usd, 0);
-          const wins = trades.filter(t => t.outcome === 'WIN').length;
-          const winRate = trades.length > 0 ? (wins / trades.length) * 100 : 0;
-          const arbTrades = trades.filter(t => t.strategy === 'sub_dollar_arb').length;
-          
-          return (
-            <>
-              <div style={{ 
-                background: T.card, 
-                border: `1px solid ${T.border}`, 
-                borderRadius: 8, 
-                padding: 14,
-              }}>
-                <div style={{ color: T.label, fontSize: 10, marginBottom: 4 }}>Total P&L</div>
-                <div style={{ 
-                  color: totalPnL >= 0 ? T.profit : T.loss, 
-                  fontSize: 20, 
-                  fontWeight: 700,
-                  fontFamily: T.font,
-                }}>
-                  {totalPnL >= 0 ? '+' : ''}${totalPnL.toFixed(2)}
-                </div>
-              </div>
-              <div style={{ 
-                background: T.card, 
-                border: `1px solid ${T.border}`, 
-                borderRadius: 8, 
-                padding: 14,
-              }}>
-                <div style={{ color: T.label, fontSize: 10, marginBottom: 4 }}>Win Rate</div>
-                <div style={{ 
-                  color: T.profit, 
-                  fontSize: 20, 
-                  fontWeight: 700,
-                  fontFamily: T.font,
-                }}>
-                  {winRate.toFixed(1)}%
-                </div>
-              </div>
-              <div style={{ 
-                background: T.card, 
-                border: `1px solid ${T.border}`, 
-                borderRadius: 8, 
-                padding: 14,
-              }}>
-                <div style={{ color: T.label, fontSize: 10, marginBottom: 4 }}>Total Trades</div>
-                <div style={{ 
-                  color: '#fff', 
-                  fontSize: 20, 
-                  fontWeight: 700,
-                  fontFamily: T.font,
-                }}>
-                  {trades.length}
-                </div>
-              </div>
-              <div style={{ 
-                background: T.card, 
-                border: `1px solid ${T.border}`, 
-                borderRadius: 8, 
-                padding: 14,
-              }}>
-                <div style={{ color: T.label, fontSize: 10, marginBottom: 4 }}>Arb Trades</div>
-                <div style={{ 
-                  color: T.cyan, 
-                  fontSize: 20, 
-                  fontWeight: 700,
-                  fontFamily: T.font,
-                }}>
-                  {arbTrades}
-                </div>
-              </div>
-            </>
-          );
-        })()}
+        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: 14 }}>
+          <div style={{ color: T.label, fontSize: 10, marginBottom: 4 }}>Total P&L</div>
+          <div style={{
+            color: summary.totalPnL >= 0 ? T.profit : T.loss,
+            fontSize: 20,
+            fontWeight: 700,
+            fontFamily: T.font,
+          }}>
+            {summary.totalPnL >= 0 ? '+' : ''}${summary.totalPnL.toFixed(2)}
+          </div>
+        </div>
+
+        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: 14 }}>
+          <div style={{ color: T.label, fontSize: 10, marginBottom: 4 }}>Win Rate</div>
+          <div style={{ color: T.profit, fontSize: 20, fontWeight: 700, fontFamily: T.font }}>
+            {summary.winRate}%
+          </div>
+          <div style={{ color: T.label, fontSize: 10, marginTop: 2 }}>
+            {summary.wins}W / {summary.losses}L
+          </div>
+        </div>
+
+        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: 14 }}>
+          <div style={{ color: T.label, fontSize: 10, marginBottom: 4 }}>Total Trades</div>
+          <div style={{ color: '#fff', fontSize: 20, fontWeight: 700, fontFamily: T.font }}>
+            {summary.totalTrades}
+          </div>
+        </div>
+
+        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: 14 }}>
+          <div style={{ color: T.label, fontSize: 10, marginBottom: 4 }}>Avg P&L / Trade</div>
+          <div style={{
+            color: summary.avgPnL >= 0 ? T.profit : T.loss,
+            fontSize: 20,
+            fontWeight: 700,
+            fontFamily: T.font,
+          }}>
+            {summary.avgPnL >= 0 ? '+' : ''}${summary.avgPnL.toFixed(2)}
+          </div>
+        </div>
+
+        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: 14 }}>
+          <div style={{ color: T.label, fontSize: 10, marginBottom: 4 }}>Arb Trades</div>
+          <div style={{ color: T.cyan, fontSize: 20, fontWeight: 700, fontFamily: T.font }}>
+            {arbTrades}
+          </div>
+        </div>
       </div>
 
       {/* ── Charts Grid ─────────────────────────────────────────────────────── */}
-      <div style={{ 
-        display: 'grid', 
-        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', 
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
         gap: 16,
         marginBottom: 20,
       }}>
@@ -855,27 +961,27 @@ export default function PaperDashboard() {
         <CascadeState vpin={vpin} />
       </div>
 
-      <div style={{ 
-        display: 'grid', 
-        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', 
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
         gap: 16,
         marginBottom: 20,
       }}>
-        <EquityCurve trades={trades} />
+        <EquityCurve trades={displayTrades} equityData={equityData} />
         <ArbMonitor data={arbSpreads.length > 0 ? arbSpreads : genArbDemo()} />
       </div>
 
-      <div style={{ 
-        display: 'grid', 
-        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', 
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
         gap: 16,
         marginBottom: 20,
       }}>
-        <DailyPnlBars trades={trades} />
-        <WinRateByVpin trades={trades} />
+        <DailyPnlBars trades={displayTrades} />
+        <WinRateByVpin trades={displayTrades} />
       </div>
 
-      <TradeHistory trades={trades} />
+      <TradeHistory trades={displayTrades} isLive={isLive} />
     </div>
   );
 }
