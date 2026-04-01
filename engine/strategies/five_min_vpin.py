@@ -358,26 +358,14 @@ class FiveMinVPINStrategy(BaseStrategy):
 
     def _calculate_stake(self, confidence: str) -> float:
         """
-        Calculate stake based on confidence level and mode.
-        
-        Safe mode: 25% per trade
-        Flat mode: BET_FRACTION (default 2.5%)
-        Degen mode: 50% per trade
+        Calculate stake using BET_FRACTION from env/config.
+        Always respects the global BET_FRACTION so risk manager won't block.
         """
         status = self._rm.get_status()
         bankroll = status["current_bankroll"]
         
-        mode = FIVE_MIN_MODE
-        
-        if mode == "safe":
-            # 25% per trade in safe mode
-            return bankroll * 0.25
-        elif mode == "degen":
-            # 50% per trade in degen mode
-            return bankroll * 0.50
-        else:
-            # Flat mode: use standard BET_FRACTION
-            return bankroll * BET_FRACTION
+        # Always use BET_FRACTION — this ensures consistency with risk manager
+        return bankroll * BET_FRACTION
 
     # ─── Base Strategy Interface ──────────────────────────────────────────────
 
