@@ -25,7 +25,9 @@ POLY_WINDOW_SECONDS: int = 300    # 5 minutes
 OPINION_WINDOW_SECONDS: int = 900  # 15 minutes
 
 # Minimum BTC price move to count as directional win (paper mode)
-MIN_BTC_MOVE_PCT: float = 0.001  # 0.1%
+# For 5-min markets: no minimum — any move counts (matches Polymarket oracle)
+# For cascade/other: small threshold to avoid noise
+MIN_BTC_MOVE_PCT: float = 0.0001  # 0.01% — effectively zero for 5-min
 
 
 class OrderStatus(str, Enum):
@@ -274,10 +276,71 @@ class OrderManager:
             )
             return "WIN", payout
 
-        # For vpin_cascade and other directional strategies, check BTC move
+        # ── 5-Minute Market Resolution ────────────────────────────────────
+        # For five_min_vpin strategy, resolution is:
+        #   - Get the window OPEN price from order metadata
+        #   - Get the CURRENT price (= close price, since we resolve at window end)
+        #   - If close >= open → "UP" wins, otherwise "DOWN" wins
+        #   - YES bet = UP, NO bet = DOWN
+        #
+        # This matches the Polymarket Chainlink oracle exactly.
+        # ──────────────────────────────────────────────────────────────────
+
+        if order.strategy == "five_min_vpin":
+            window_open = order.metadata.get("window_open_price")
+            if window_open is None or window_open == 0:
+                # Fallback: use entry price (T-10s) — less accurate but workable
+                window_open = order.btc_entry_price
+
+            if window_open is None or window_open == 0:
+                import random
+                outcome = "WIN" if random.random() > 0.5 else "LOSS"
+                payout = order.stake_usd * 1.9 if outcome == "WIN" else 0.0
+                return outcome, payout
+
+            # Did BTC go up or down from window open to close?
+            btc_went_up = current_btc_price >= window_open
+
+            # Did our bet match?
+            if order.direction == "YES":
+                won = btc_went_up      # YES = bet on UP
+            else:
+                won = not btc_went_up  # NO = bet on DOWN
+
+            if won:
+                # Binary payout: $1 per share. Shares = stake / token_price
+                try:
+                    fill_price = float(order.price)
+                    shares = order.stake_usd / fill_price if fill_price > 0 else 0
+                    payout = shares * 1.0
+                except (ValueError, ZeroDivisionError):
+                    payout = order.stake_usd * 1.9
+
+                self._log.info(
+                    "paper_resolution.5min_win",
+                    order_id=order.order_id,
+                    direction=order.direction,
+                    window_open=f"{window_open:.2f}",
+                    close_price=f"{current_btc_price:.2f}",
+                    btc_went_up=btc_went_up,
+                    payout=f"{payout:.2f}",
+                )
+                return "WIN", payout
+            else:
+                self._log.info(
+                    "paper_resolution.5min_loss",
+                    order_id=order.order_id,
+                    direction=order.direction,
+                    window_open=f"{window_open:.2f}",
+                    close_price=f"{current_btc_price:.2f}",
+                    btc_went_up=btc_went_up,
+                )
+                return "LOSS", 0.0
+
+        # ── Generic Directional Resolution (cascade etc.) ─────────────────
+
         entry = order.btc_entry_price
         if entry is None or entry == 0.0:
-            # No entry price recorded — treat as coin-flip
             import random
             outcome = "WIN" if random.random() > 0.5 else "LOSS"
             payout = order.stake_usd * 1.9 if outcome == "WIN" else 0.0
@@ -285,20 +348,16 @@ class OrderManager:
 
         move_pct = (current_btc_price - entry) / entry
 
-        # Map direction to expected move
         if order.direction == "YES":
-            # YES bet = BTC goes UP
             won = move_pct >= MIN_BTC_MOVE_PCT
         else:
-            # NO bet = BTC goes DOWN
             won = move_pct <= -MIN_BTC_MOVE_PCT
 
         if won:
-            # Approximate payout based on fill price (binary payout = 1/price per share)
             try:
                 fill_price = float(order.price)
                 shares = order.stake_usd / fill_price if fill_price > 0 else 0
-                payout = shares * 1.0  # Binary market pays $1 per winning share
+                payout = shares * 1.0
             except (ValueError, ZeroDivisionError):
                 payout = order.stake_usd * 1.9
             self._log.debug(
