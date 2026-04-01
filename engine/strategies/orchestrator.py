@@ -26,6 +26,7 @@ import structlog
 
 from alerts.telegram import TelegramAlerter
 from config.settings import Settings
+from config.constants import FIVE_MIN_ENTRY_OFFSET
 from data.aggregator import MarketAggregator
 from data.feeds.binance_ws import BinanceWebSocketFeed
 from data.feeds.chainlink_rpc import ChainlinkRPCFeed
@@ -152,7 +153,7 @@ class Orchestrator:
         if settings.five_min_enabled:
             self._five_min_feed = Polymarket5MinFeed(
                 assets=settings.five_min_assets.split(","),
-                signal_offset=10,
+                signal_offset=FIVE_MIN_ENTRY_OFFSET,
                 on_window_signal=self._on_five_min_window,
                 paper_mode=settings.paper_mode,
             )
