@@ -167,6 +167,7 @@ class Orchestrator:
                 risk_manager=self._risk_manager,
                 poly_client=self._poly_client,
                 vpin_calculator=self._vpin_calc,
+                alerter=self._alerter,
             )
             log.info("orchestrator.five_min_enabled", assets=settings.five_min_assets)
         else:

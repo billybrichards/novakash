@@ -108,127 +108,116 @@ class TelegramAlerter:
 
     # ─── Public Alert Methods ─────────────────────────────────────────────────
 
-    async def send_trade_alert(self, order: "Order") -> None:
-        """
-        Send a trade execution / resolution alert.
-
-        Respects alerts_paper / alerts_live toggles.
-        Safely handles missing attributes (e.g. market_slug).
-
-        Format:
-            📈 [strategy] Trade Alert
-            Direction: YES/NO/ARB
-            Stake: $X.XX
-            Venue: polymarket/opinion
-            Status: OPEN/RESOLVED_WIN/RESOLVED_LOSS
-            [PnL: $X.XX]
-        """
+    async def send_entry_alert(self, order: "Order") -> None:
+        """Send alert when a trade is PLACED (before resolution)."""
         if not self.trade_alerts_enabled:
-            self._log.debug(
-                "telegram.trade_alert_skipped",
-                reason="disabled_for_mode",
-                paper_mode=self._paper_mode,
-            )
             return
 
         try:
-            direction_emoji = _DIRECTION_EMOJI.get(order.direction.upper(), "🎯")
-            outcome_emoji = ""
-            if hasattr(order, "outcome") and order.outcome:
-                outcome_emoji = "✅ " if order.outcome == "WIN" else "❌ "
-
+            meta = order.metadata or {}
+            asset = meta.get("market_slug", order.market_id or "").split("-")[0].upper() or "BTC"
+            direction_emoji = "📈" if order.direction == "YES" else "📉"
             mode_tag = "📄 PAPER" if self._paper_mode else "💰 LIVE"
-            market_slug = getattr(order, "market_slug", None) or order.metadata.get("market_slug", order.market_id or "—")
+            entry_label = meta.get("entry_label", "—")
+            delta_pct = meta.get("delta_pct")
+            confidence = meta.get("confidence", "—")
 
-            # Entry timing and pricing from metadata
-            entry_label = order.metadata.get("entry_label", "—")
-            delta_pct = order.metadata.get("delta_pct")
-            confidence = order.metadata.get("confidence", "—")
-            token_price = order.price
-            window_open = order.metadata.get("window_open_price")
-            clob_order_id = order.metadata.get("clob_order_id")
-            data_source = "REAL" if not self._paper_mode else "REAL prices, PAPER execution"
+            # Confidence as integer (0-100) + word
+            conf_pct = self._confidence_to_int(confidence)
 
-            # Price analysis
-            try:
-                tp = float(token_price)
-                shares = order.stake_usd / tp if tp > 0 else 0
-                potential_profit = shares * 1.0 - order.stake_usd
-                potential_return = (potential_profit / order.stake_usd * 100) if order.stake_usd > 0 else 0
-            except (ValueError, ZeroDivisionError):
-                shares = 0
-                potential_profit = 0
-                potential_return = 0
+            # Price math
+            tp = float(order.price) if order.price else 0.50
+            shares = order.stake_usd / tp if tp > 0 else 0
+            potential = shares * 1.0 - order.stake_usd
 
             lines = [
-                f"{direction_emoji} *Trade Alert — {order.strategy}* ({mode_tag})",
+                f"{direction_emoji} *BET PLACED — {asset}* ({mode_tag})",
                 f"",
-                f"📊 *Signal*",
-                f"Direction: `{order.direction}`",
-                f"Entry: `{entry_label}`",
+                f"Direction: `{order.direction}` {'(UP)' if order.direction == 'YES' else '(DOWN)'}",
+                f"Confidence: `{conf_pct}%` ({confidence})",
                 f"Delta: `{delta_pct:+.4f}%`" if delta_pct is not None else None,
-                f"Confidence: `{confidence}`",
+                f"Entry: `{entry_label}`",
                 f"",
-                f"💰 *Pricing* ({data_source})",
-                f"Token Price: `${float(token_price):.4f}`" if token_price else None,
-                f"Shares: `{shares:.2f}`",
+                f"Token: `${tp:.4f}` × `{shares:.1f}` shares",
                 f"Stake: `${order.stake_usd:.2f}`",
-                f"Potential Win: `+${potential_profit:.2f}` (`+{potential_return:.0f}%`)" if order.outcome is None else None,
-                f"",
-                f"🔗 *Market*",
-                f"Venue: `{order.venue}`",
-                f"Market: `{market_slug}`",
-                f"Window Open: `${window_open:,.2f}`" if window_open else None,
-                f"Status: `{order.status.value}`",
+                f"Potential: `+${potential:.2f}` if win",
             ]
-
-            # Add txn hash / block ref if present (live mode)
-            if clob_order_id:
-                lines.append(f"CLOB Order: `{clob_order_id}`")
-            
-            tx_hash = order.metadata.get("tx_hash")
-            block_ref = order.metadata.get("block_number")
-            if tx_hash:
-                lines.append(f"Tx: `{tx_hash}`")
-            if block_ref:
-                lines.append(f"Block: `{block_ref}`")
-
             lines = [l for l in lines if l is not None]
+
+            await self._send("\n".join(lines))
+        except Exception as exc:
+            self._log.warning("telegram.send_entry_alert_failed", error=str(exc))
+
+    async def send_trade_alert(self, order: "Order") -> None:
+        """Send alert when a trade RESOLVES (win or loss)."""
+        if not self.trade_alerts_enabled:
+            return
+
+        try:
+            meta = order.metadata or {}
+            asset = meta.get("market_slug", order.market_id or "").split("-")[0].upper() or "BTC"
+            direction_emoji = "📈" if order.direction == "YES" else "📉"
+            mode_tag = "📄 PAPER" if self._paper_mode else "💰 LIVE"
+            confidence = meta.get("confidence", "—")
+            conf_pct = self._confidence_to_int(confidence)
+            delta_pct = meta.get("delta_pct")
+            window_open = meta.get("window_open_price")
+            entry_label = meta.get("entry_label", "—")
+
+            if order.outcome == "WIN":
+                result_emoji = "✅"
+                result_text = "WIN"
+            else:
+                result_emoji = "❌"
+                result_text = "LOSS"
+
+            tp = float(order.price) if order.price else 0.50
+
+            lines = [
+                f"{result_emoji} *{result_text} — {asset}* ({mode_tag})",
+                f"",
+                f"Direction: `{order.direction}` {'(UP)' if order.direction == 'YES' else '(DOWN)'}",
+                f"Confidence: `{conf_pct}%` ({confidence})",
+                f"Entry: `{entry_label}` | Token: `${tp:.4f}`",
+                f"Delta: `{delta_pct:+.4f}%`" if delta_pct is not None else None,
+                f"Window Open: `${window_open:,.2f}`" if window_open else None,
+            ]
 
             if order.pnl_usd is not None:
                 pnl_sign = "+" if order.pnl_usd >= 0 else ""
                 lines.append(f"")
-                lines.append(f"{outcome_emoji}*PnL: `{pnl_sign}${order.pnl_usd:.2f}`*")
+                lines.append(f"*P&L: `{pnl_sign}${order.pnl_usd:.2f}`*")
 
-            # ── Running Totals ────────────────────────────────────────────
-            lines.append("")
-
+            # Running totals
+            lines.append(f"")
             if self._risk_manager:
                 try:
                     status = self._risk_manager.get_status()
                     bankroll = status.get("current_bankroll", 0)
                     daily_pnl = status.get("daily_pnl", 0)
-                    drawdown = status.get("drawdown_pct", 0)
                     daily_sign = "+" if daily_pnl >= 0 else ""
-
-                    lines.append(f"💼 Bankroll: `${bankroll:.2f}`")
-                    lines.append(f"📅 Daily P&L: `{daily_sign}${daily_pnl:.2f}`")
-                    if drawdown > 0.01:
-                        lines.append(f"📉 Drawdown: `{drawdown:.1%}`")
+                    lines.append(f"💼 `${bankroll:.2f}` | 📅 `{daily_sign}${daily_pnl:.2f}` today")
                 except Exception:
                     pass
 
-            if self._poly_client:
-                try:
-                    wallet_balance = await self._poly_client.get_balance()
-                    lines.append(f"🏦 Poly Wallet: `${wallet_balance:.2f}` USDC")
-                except Exception:
-                    pass
+            # Txn refs (live mode)
+            clob_id = meta.get("clob_order_id")
+            tx_hash = meta.get("tx_hash")
+            if clob_id:
+                lines.append(f"CLOB: `{clob_id}`")
+            if tx_hash:
+                lines.append(f"Tx: `{tx_hash}`")
 
+            lines = [l for l in lines if l is not None]
             await self._send("\n".join(lines))
-
         except Exception as exc:
             self._log.warning("telegram.send_trade_alert_failed", error=str(exc))
+
+    @staticmethod
+    def _confidence_to_int(confidence: str) -> int:
+        """Convert confidence word to integer percentage."""
+        mapping = {"HIGH": 85, "MODERATE": 65, "LOW": 45, "NONE": 20}
+        return mapping.get(confidence.upper() if isinstance(confidence, str) else "", 50)
 
     async def send_cascade_alert(self, signal: "CascadeSignal") -> None:
         """

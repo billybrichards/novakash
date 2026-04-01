@@ -65,6 +65,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         risk_manager: RiskManager,
         poly_client: PolymarketClient,
         vpin_calculator: VPINCalculator,
+        alerter=None,
         on_window_signal: Optional[Callable[[WindowInfo], Awaitable[None]]] = None,
     ) -> None:
         super().__init__(
@@ -74,6 +75,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         )
         self._poly = poly_client
         self._vpin = vpin_calculator
+        self._alerter = alerter
         
         # Track last executed window to avoid duplicates
         self._last_executed_window: Optional[str] = None
@@ -360,6 +362,14 @@ class FiveMinVPINStrategy(BaseStrategy):
         )
         
         await self._om.register_order(order)
+        
+        # Send entry alert to Telegram
+        if self._alerter:
+            try:
+                import asyncio
+                asyncio.create_task(self._alerter.send_entry_alert(order))
+            except Exception:
+                pass
         
         self._log.info(
             "trade.executed",
