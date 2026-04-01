@@ -346,7 +346,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             fee_usd=fee_usd,
             status=OrderStatus.OPEN,
             btc_entry_price=signal.current_price,
-            window_seconds=300,  # 5-minute window
+            window_seconds=window.duration_secs,
             market_id=market_slug,
             metadata={
                 "window_ts": window.window_ts,
@@ -357,6 +357,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                 "token_id": token_id,
                 "entry_offset_s": FIVE_MIN_ENTRY_OFFSET,
                 "entry_label": f"T-{FIVE_MIN_ENTRY_OFFSET}s",
+                "timeframe": tf,
+                "window_duration_s": window.duration_secs,
                 "clob_order_id": clob_order_id if 'clob_order_id' in dir() else None,
                 "market_slug": f"{window.asset.lower()}-updown-{tf}-{window.window_ts}",
             },

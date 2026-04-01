@@ -116,6 +116,7 @@ class TelegramAlerter:
         try:
             meta = order.metadata or {}
             asset = meta.get("market_slug", order.market_id or "").split("-")[0].upper() or "BTC"
+            tf = meta.get("timeframe", "5m")
             direction_emoji = "📈" if order.direction == "YES" else "📉"
             mode_tag = "📄 PAPER" if self._paper_mode else "💰 LIVE"
             market_slug = meta.get("market_slug", order.market_id or "—")
@@ -124,7 +125,7 @@ class TelegramAlerter:
             confidence = meta.get("confidence", "—")
             conf_pct = self._confidence_to_int(confidence)
             window_open = meta.get("window_open_price")
-            data_source = "REAL" if not self._paper_mode else "REAL prices, PAPER execution"
+            data_source = "LIVE execution" if not self._paper_mode else "REAL prices, PAPER execution"
 
             tp = float(order.price) if order.price else 0.50
             shares = order.stake_usd / tp if tp > 0 else 0
@@ -132,7 +133,7 @@ class TelegramAlerter:
             potential_pct = (potential / order.stake_usd * 100) if order.stake_usd > 0 else 0
 
             lines = [
-                f"{direction_emoji} *BET PLACED — {asset}* ({mode_tag})",
+                f"{direction_emoji} *BET PLACED — {asset} {tf}* ({mode_tag})",
                 f"",
                 f"📊 *Signal*",
                 f"Direction: `{order.direction}` {'(UP)' if order.direction == 'YES' else '(DOWN)'}",
@@ -170,6 +171,7 @@ class TelegramAlerter:
         try:
             meta = order.metadata or {}
             asset = meta.get("market_slug", order.market_id or "").split("-")[0].upper() or "BTC"
+            tf = meta.get("timeframe", "5m")
             direction_emoji = "📈" if order.direction == "YES" else "📉"
             mode_tag = "📄 PAPER" if self._paper_mode else "💰 LIVE"
             market_slug = meta.get("market_slug", order.market_id or "—")
@@ -178,7 +180,7 @@ class TelegramAlerter:
             delta_pct = meta.get("delta_pct")
             window_open = meta.get("window_open_price")
             entry_label = meta.get("entry_label", "—")
-            data_source = "REAL" if not self._paper_mode else "REAL prices, PAPER execution"
+            data_source = "LIVE execution" if not self._paper_mode else "REAL prices, PAPER execution"
 
             if order.outcome == "WIN":
                 result_emoji = "✅"
@@ -191,7 +193,7 @@ class TelegramAlerter:
             shares = order.stake_usd / tp if tp > 0 else 0
 
             lines = [
-                f"{result_emoji} *{result_text} — {asset}* ({mode_tag})",
+                f"{result_emoji} *{result_text} — {asset} {tf}* ({mode_tag})",
                 f"",
                 f"📊 *Signal*",
                 f"Direction: `{order.direction}` {'(UP)' if order.direction == 'YES' else '(DOWN)'}",
