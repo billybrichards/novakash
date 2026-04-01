@@ -343,23 +343,35 @@ class Polymarket5MinFeed:
             self._log.error("gamma_api_error", error=str(exc))
 
     async def _fetch_paper_data(self, window: WindowInfo) -> None:
-        """Generate paper market data for testing."""
+        """Generate paper market data using real BTC price from Binance feed."""
         import random
         
-        # Simulate a random open price (±5% around 50/50)
+        # Simulate token prices (±5% around 50/50)
         base_price = 0.50
         noise = random.uniform(-0.05, 0.05)
         
         window.up_price = max(0.01, min(0.99, base_price + noise))
         window.down_price = 1.0 - window.up_price
         
-        # Generate fake token IDs
+        # Generate paper token IDs
         window.up_token_id = f"paper-up-{window.asset}-{window.window_ts}"
         window.down_token_id = f"paper-down-{window.asset}-{window.window_ts}"
         
-        # Simulate open price (for delta calculation)
-        # In reality, this would come from the oracle at window open
-        window.open_price = 45000.0 + random.uniform(-500, 500)
+        # Use real BTC price as window open price (captured at window start)
+        # This ensures delta calculation works correctly vs real current price
+        # In paper mode, we grab the real price and add tiny noise to simulate
+        # the small difference between window open and "now"
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    data = await resp.json()
+                    real_price = float(data["price"])
+                    # Add small noise (±0.05%) to simulate window open vs current
+                    window.open_price = real_price * (1 + random.uniform(-0.0005, 0.0005))
+        except Exception:
+            # Fallback: use a reasonable estimate
+            window.open_price = 68500.0 + random.uniform(-200, 200)
         
         self._log.debug(
             "paper.market_data",
