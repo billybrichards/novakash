@@ -20,7 +20,7 @@ BET_SIGNAL
   → COOLDOWN          immediately after signal is emitted
 
 COOLDOWN
-  → IDLE              after COOLDOWN_SECONDS (900 s)
+  → IDLE              after runtime.cooldown_seconds (900 s)
 """
 
 from __future__ import annotations
@@ -36,19 +36,13 @@ from data.models import CascadeSignal
 log = structlog.get_logger(__name__)
 
 # Thresholds — read from config/constants.py (which reads env vars)
-from config.constants import (
-    VPIN_CASCADE_THRESHOLD,
-    VPIN_INFORMED_THRESHOLD,
-    CASCADE_OI_DROP_THRESHOLD,
-    CASCADE_LIQ_VOLUME_THRESHOLD,
-    COOLDOWN_SECONDS,
-)
+from config.runtime_config import runtime
 
-_VPIN_CASCADE_ENTRY: float = VPIN_CASCADE_THRESHOLD
-_VPIN_EXHAUSTION: float = VPIN_INFORMED_THRESHOLD
-_OI_DELTA_MIN: float = CASCADE_OI_DROP_THRESHOLD
-_LIQ_VOLUME_CASCADE: float = CASCADE_LIQ_VOLUME_THRESHOLD
-_LIQ_VOLUME_EXHAUSTION: float = CASCADE_LIQ_VOLUME_THRESHOLD / 2.0
+_VPIN_CASCADE_ENTRY: float = runtime.vpin_cascade_threshold
+_VPIN_EXHAUSTION: float = runtime.vpin_informed_threshold
+_OI_DELTA_MIN: float = runtime.cascade_oi_drop_threshold
+_LIQ_VOLUME_CASCADE: float = runtime.cascade_liq_volume_threshold
+_LIQ_VOLUME_EXHAUSTION: float = runtime.cascade_liq_volume_threshold / 2.0
 _LIQ_DECLINE_RATIO: float = 0.85
 
 
@@ -239,11 +233,11 @@ class CascadeDetector:
             self._cooldown_start = time.monotonic()
 
         elapsed = time.monotonic() - self._cooldown_start
-        if elapsed >= COOLDOWN_SECONDS:
+        if elapsed >= runtime.cooldown_seconds:
             self._log.info(
                 "cooldown_expired",
                 elapsed_s=round(elapsed, 1),
-                cooldown_s=COOLDOWN_SECONDS,
+                cooldown_s=runtime.cooldown_seconds,
             )
             self._direction = None
             self._cooldown_start = None

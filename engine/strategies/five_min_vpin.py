@@ -27,13 +27,7 @@ from typing import Optional, Callable, Awaitable
 
 import structlog
 
-from config.constants import (
-    BET_FRACTION,
-    FIVE_MIN_ENABLED,
-    FIVE_MIN_MODE,
-    FIVE_MIN_MIN_CONFIDENCE,
-    FIVE_MIN_MIN_DELTA_PCT,
-)
+from config.runtime_config import runtime
 from data.models import MarketState
 from data.feeds.polymarket_5min import WindowInfo, WindowState
 from execution.order_manager import Order, OrderManager, OrderStatus
@@ -110,8 +104,8 @@ class FiveMinVPINStrategy(BaseStrategy):
 
     async def start(self) -> None:
         """Start the strategy."""
-        if not FIVE_MIN_ENABLED:
-            self._log.info("strategy.disabled", reason="FIVE_MIN_ENABLED=false")
+        if not runtime.five_min_enabled:
+            self._log.info("strategy.disabled", reason="runtime.five_min_enabled=false")
             return
         
         self._running = True
@@ -130,7 +124,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         
         Also checks for pending window signals from the 5-min feed.
         """
-        if not self._running or not FIVE_MIN_ENABLED:
+        if not self._running or not runtime.five_min_enabled:
             return
         
         # If we have a pending window, evaluate it
@@ -204,7 +198,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         Returns None if no trade should be placed.
         """
         # Minimum delta threshold - skip if too small
-        if abs(delta_pct) < FIVE_MIN_MIN_DELTA_PCT:
+        if abs(delta_pct) < runtime.five_min_min_delta_pct:
             return None
         
         # Determine direction
@@ -214,7 +208,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         confidence = self._calculate_confidence(delta_pct, current_vpin, direction)
         
         # Check minimum confidence
-        if confidence == "LOW" and delta_pct < FIVE_MIN_MIN_CONFIDENCE:
+        if confidence == "LOW" and delta_pct < runtime.five_min_min_confidence:
             return None
         
         return FiveMinSignal(
@@ -390,14 +384,14 @@ class FiveMinVPINStrategy(BaseStrategy):
 
     def _calculate_stake(self, confidence: str) -> float:
         """
-        Calculate stake using BET_FRACTION from env/config.
-        Always respects the global BET_FRACTION so risk manager won't block.
+        Calculate stake using runtime.bet_fraction from env/config.
+        Always respects the global runtime.bet_fraction so risk manager won't block.
         """
         status = self._rm.get_status()
         bankroll = status["current_bankroll"]
         
-        # Always use BET_FRACTION — this ensures consistency with risk manager
-        return bankroll * BET_FRACTION
+        # Always use runtime.bet_fraction — this ensures consistency with risk manager
+        return bankroll * runtime.bet_fraction
 
     # ─── Base Strategy Interface ──────────────────────────────────────────────
 

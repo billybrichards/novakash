@@ -25,6 +25,7 @@ from typing import Optional
 import structlog
 
 from alerts.telegram import TelegramAlerter
+from config.runtime_config import runtime
 from config.settings import Settings
 from data.aggregator import MarketAggregator
 from data.feeds.binance_ws import BinanceWebSocketFeed
@@ -525,6 +526,15 @@ class Orchestrator:
 
         while not self._shutdown_event.is_set():
             try:
+                # ── Sync runtime config from DB (trading_configs table) ────
+                # Pulls the active config for current mode every heartbeat.
+                # DB values overlay env var defaults — hot reload without restart.
+                if self._db._pool:
+                    await runtime.sync(
+                        self._db._pool,
+                        paper_mode=self._settings.paper_mode,
+                    )
+
                 risk_status = self._risk_manager.get_status()
                 state = await self._aggregator.get_state()
 
@@ -539,13 +549,14 @@ class Orchestrator:
                     except Exception as exc:
                         log.debug("heartbeat.wallet_balance_error", error=str(exc))
 
-                # Build config snapshot with wallet + risk extras
+                # Build config snapshot with wallet + risk extras + runtime config
                 config_snapshot = {
                     "wallet_balance_usdc": _cached_wallet_balance,
                     "daily_pnl": risk_status.get("daily_pnl", 0),
                     "consecutive_losses": risk_status.get("consecutive_losses", 0),
                     "paper_mode": risk_status.get("paper_mode", True),
                     "kill_switch_active": risk_status.get("kill_switch_active", False),
+                    "runtime_config": runtime.snapshot(),
                 }
 
                 await self._db.update_system_state(

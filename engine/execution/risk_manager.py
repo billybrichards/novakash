@@ -22,14 +22,7 @@ from typing import Optional
 
 import structlog
 
-from config.constants import (
-    BET_FRACTION,
-    CONSECUTIVE_LOSS_COOLDOWN,
-    COOLDOWN_SECONDS,
-    DAILY_LOSS_LIMIT_PCT,
-    MAX_DRAWDOWN_KILL,
-    MAX_OPEN_EXPOSURE_PCT,
-)
+from config.runtime_config import runtime
 
 log = structlog.get_logger(__name__)
 
@@ -82,26 +75,26 @@ class RiskManager:
                 return False, f"kill_switch: active (drawdown {self._drawdown_pct:.1%})"
 
             # 2. Daily loss limit
-            max_daily_loss = self._day_start_bankroll * DAILY_LOSS_LIMIT_PCT
+            max_daily_loss = self._day_start_bankroll * runtime.daily_loss_limit_pct
             if self._daily_pnl <= -max_daily_loss:
                 return False, f"daily_loss_limit: down ${abs(self._daily_pnl):.2f} today"
 
             # 3. Position limit
-            max_stake = self._current_bankroll * BET_FRACTION
+            max_stake = self._current_bankroll * runtime.bet_fraction
             if stake_usd > max_stake:
                 return False, f"position_limit: ${stake_usd:.2f} > max ${max_stake:.2f}"
 
             # 4. Exposure limit
             if self._om:
                 open_exposure = await self._om.get_open_exposure_usd()
-                max_exposure = self._current_bankroll * MAX_OPEN_EXPOSURE_PCT
+                max_exposure = self._current_bankroll * runtime.max_open_exposure_pct
                 if open_exposure + stake_usd > max_exposure:
                     return False, f"exposure_limit: ${open_exposure + stake_usd:.2f} > ${max_exposure:.2f}"
 
             # 5. Cooldown
             if self._cooldown_until and datetime.utcnow() < self._cooldown_until:
                 remaining = (self._cooldown_until - datetime.utcnow()).seconds
-                return False, f"cooldown: {remaining}s remaining after {CONSECUTIVE_LOSS_COOLDOWN} losses"
+                return False, f"cooldown: {remaining}s remaining after {runtime.consecutive_loss_cooldown} losses"
 
             # 6. Venue connectivity
             if not self._polymarket_connected and not self._opinion_connected:
@@ -121,8 +114,8 @@ class RiskManager:
 
             if pnl_usd < 0:
                 self._consecutive_losses += 1
-                if self._consecutive_losses >= CONSECUTIVE_LOSS_COOLDOWN:
-                    self._cooldown_until = datetime.utcnow() + timedelta(seconds=COOLDOWN_SECONDS)
+                if self._consecutive_losses >= runtime.consecutive_loss_cooldown:
+                    self._cooldown_until = datetime.utcnow() + timedelta(seconds=runtime.cooldown_seconds)
                     log.warning("risk.cooldown_triggered", losses=self._consecutive_losses)
             else:
                 self._consecutive_losses = 0
@@ -130,7 +123,7 @@ class RiskManager:
                 self._cooldown_until = None
 
             # Auto kill switch on drawdown
-            if self._drawdown_pct >= MAX_DRAWDOWN_KILL:
+            if self._drawdown_pct >= runtime.max_drawdown_kill:
                 self._kill_switch_active = True
                 log.critical("risk.drawdown_kill", drawdown=f"{self._drawdown_pct:.1%}")
 
@@ -149,7 +142,7 @@ class RiskManager:
     @property
     def is_killed(self) -> bool:
         """True when trading is halted (manual or drawdown)."""
-        return self._kill_switch_active or self._drawdown_pct >= MAX_DRAWDOWN_KILL
+        return self._kill_switch_active or self._drawdown_pct >= runtime.max_drawdown_kill
 
     # ─── Venue Status ─────────────────────────────────────────────────────────
 

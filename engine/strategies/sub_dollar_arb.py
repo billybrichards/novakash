@@ -5,10 +5,10 @@ Detects and executes simultaneous YES+NO purchases when the combined price
 is below $1.00 minus fees, guaranteeing a risk-free profit on resolution.
 
 Fee model (per leg):
-    fee_leg = POLYMARKET_CRYPTO_FEE_MULT * price * (1 - price)
+    fee_leg = runtime.polymarket_fee_mult * price * (1 - price)
 
-Stake: min(ARB_MAX_POSITION, bankroll * BET_FRACTION)
-Both legs must be executed within ARB_MAX_EXECUTION_MS (500ms).
+Stake: min(runtime.arb_max_position, bankroll * runtime.bet_fraction)
+Both legs must be executed within runtime.arb_max_execution_ms (500ms).
 """
 
 from __future__ import annotations
@@ -21,13 +21,7 @@ from typing import Optional
 
 import structlog
 
-from config.constants import (
-    ARB_MAX_EXECUTION_MS,
-    ARB_MAX_POSITION,
-    ARB_MIN_SPREAD,
-    BET_FRACTION,
-    POLYMARKET_CRYPTO_FEE_MULT,
-)
+from config.runtime_config import runtime
 from data.models import ArbOpportunity, MarketState
 from execution.order_manager import Order, OrderManager, OrderStatus
 from execution.polymarket_client import PolymarketClient
@@ -63,7 +57,7 @@ class SubDollarArbStrategy(BaseStrategy):
 
     async def evaluate(self, state: MarketState) -> Optional[dict]:
         """
-        Scan arb opportunities from state and return the best one above ARB_MIN_SPREAD.
+        Scan arb opportunities from state and return the best one above runtime.arb_min_spread.
 
         Returns a signal dict with the selected ArbOpportunity if one qualifies,
         or None if no opportunity meets the minimum spread threshold.
@@ -74,7 +68,7 @@ class SubDollarArbStrategy(BaseStrategy):
         # Filter opportunities above minimum net spread
         qualified = [
             opp for opp in state.arb_opportunities
-            if float(opp.net_spread) >= ARB_MIN_SPREAD
+            if float(opp.net_spread) >= runtime.arb_min_spread
         ]
 
         if not qualified:
@@ -110,14 +104,14 @@ class SubDollarArbStrategy(BaseStrategy):
         # Determine stake
         status = self._rm.get_status()
         bankroll = status["current_bankroll"]
-        stake = min(ARB_MAX_POSITION, bankroll * BET_FRACTION)
+        stake = min(runtime.arb_max_position, bankroll * runtime.bet_fraction)
 
         # Each leg is stake/2 (total exposure = stake)
         leg_stake = stake / 2.0
 
         # Compute fees per leg
-        yes_fee = POLYMARKET_CRYPTO_FEE_MULT * float(opp.yes_price) * (1.0 - float(opp.yes_price))
-        no_fee = POLYMARKET_CRYPTO_FEE_MULT * float(opp.no_price) * (1.0 - float(opp.no_price))
+        yes_fee = runtime.polymarket_fee_mult * float(opp.yes_price) * (1.0 - float(opp.yes_price))
+        no_fee = runtime.polymarket_fee_mult * float(opp.no_price) * (1.0 - float(opp.no_price))
         total_fee = (yes_fee + no_fee) * leg_stake
 
         # Risk gate
@@ -128,7 +122,7 @@ class SubDollarArbStrategy(BaseStrategy):
 
         # Execute both legs within 500ms timeout
         try:
-            async with asyncio.timeout(ARB_MAX_EXECUTION_MS / 1000):
+            async with asyncio.timeout(runtime.arb_max_execution_ms / 1000):
                 yes_task = asyncio.create_task(
                     self._poly.place_order(
                         market_slug=opp.market_slug,
@@ -151,7 +145,7 @@ class SubDollarArbStrategy(BaseStrategy):
             self._log.error(
                 "arb.execution_timeout",
                 market=opp.market_slug,
-                timeout_ms=ARB_MAX_EXECUTION_MS,
+                timeout_ms=runtime.arb_max_execution_ms,
             )
             return None
         except Exception as exc:
