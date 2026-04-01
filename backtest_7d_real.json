@@ -1,0 +1,28 @@
+{
+  "period": "7d",
+  "data_source": "Binance 5m candles (real taker buy/sell volume)",
+  "generated": "2026-03-31T23:32:42.239851+00:00",
+  "config": {
+    "vpin_informed": 0.45,
+    "vpin_cascade": 0.55,
+    "bet_fraction": 0.1,
+    "starting_bankroll": 1000.0
+  },
+  "vpin_stats": {
+    "total_buckets": 2016,
+    "min": 0.0,
+    "max": 0.45,
+    "mean": 0.2604,
+    "above_informed": 0,
+    "above_cascade": 0
+  },
+  "summary": {
+    "total_pnl": 0.0,
+    "final_bankroll": 1000.0,
+    "total_trades": 0,
+    "win_rate": 0,
+    "max_drawdown": 0,
+    "profit_factor": 0
+  },
+  "trades": []
+}

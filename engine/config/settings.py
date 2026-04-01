@@ -46,5 +46,10 @@ class Settings(BaseSettings):
     # Polymarket token IDs for BTC markets (comma-separated)
     poly_btc_token_ids: str = Field(default="", description="Comma-separated Polymarket token IDs to watch")
 
+    # 5-minute Polymarket trading settings
+    five_min_enabled: bool = Field(default=False, description="Enable 5-minute Polymarket trading")
+    five_min_assets: str = Field(default="BTC", description="Comma-separated assets for 5-min trading")
+    five_min_mode: str = Field(default="safe", description="Trading mode: flat/safe/degen")
+
 
 settings = Settings()

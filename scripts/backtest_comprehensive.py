@@ -392,17 +392,28 @@ async def run_backtest(period_days: int) -> BacktestEngine:
     end_ts = int(now.timestamp() * 1000)
     start_ts = int((now - timedelta(days=period_days)).timestamp() * 1000)
     
-    # Fetch data from Binance with pagination
+    log.info("Time range", start_ts=start_ts, end_ts=end_ts, days=period_days)
+    
+    # Fetch data from Binance - get most recent data up to the required period
+    # For 5m candles: 24h=288, 7d=2016, 14d=4032, 28d=8064
+    # Max 1000 per request, so we need pagination for >1000 candles
+    
     all_candles = []
     current_start = start_ts
-    batch_size = 1000  # Max per request
+    batch_size = 1000
     
-    while current_start < end_ts:
+    max_iterations = 20  # Safety limit
+    iteration = 0
+    
+    while current_start < end_ts and iteration < max_iterations:
+        iteration += 1
+        
         # Calculate end time for this batch (5 min intervals * batch_size)
-        batch_end = current_start + (batch_size * 300 * 1000)  # 5 min * batch_size
+        batch_end = current_start + (batch_size * 300 * 1000)  # 5 min * 1000
         if batch_end > end_ts:
             batch_end = end_ts
         
+        # First try with both start and end
         candles = await fetch_binance_data(
             symbol='BTCUSDT',
             interval='5m',
@@ -411,29 +422,31 @@ async def run_backtest(period_days: int) -> BacktestEngine:
             end_ts=int(batch_end)
         )
         
+        # If that fails, try just start time
         if not candles:
-            # Try without end_ts if it fails
-            if batch_end < end_ts:
-                candles = await fetch_binance_data(
-                    symbol='BTCUSDT',
-                    interval='5m',
-                    limit=batch_size,
-                    start_ts=int(current_start)
-                )
+            log.info("Trying without endTime", start_ts=int(current_start))
+            candles = await fetch_binance_data(
+                symbol='BTCUSDT',
+                interval='5m',
+                limit=batch_size,
+                start_ts=int(current_start)
+            )
         
         if not candles:
             log.warning("No more candles fetched, stopping pagination", 
-                       current_start=current_start)
+                       iteration=iteration, current_start=current_start)
             break
             
         all_candles.extend(candles)
+        log.info("Batch fetched", iteration=iteration, count=len(candles), 
+                total=len(all_candles), current_start=current_start)
         
         if len(candles) < batch_size:
             break
             
         # Move to next batch
-        current_start = int(candles[-1]['timestamp'] * 1000) + 1000  # +1 second
-        time.sleep(0.15)  # Rate limit protection
+        current_start = int(candles[-1]['timestamp'] * 1000) + 1000
+        time.sleep(0.2)  # Rate limit protection
     
     log.info("Fetched candles", count=len(all_candles), period=period_days)
     

@@ -1,0 +1,953 @@
+{
+  "period": "14d",
+  "generated": "2026-03-31T23:48:02.492896+00:00",
+  "config": {
+    "vpin_informed": 0.35,
+    "vpin_cascade": 0.4,
+    "bet_fraction": 0.1
+  },
+  "by_category": {
+    "politics": {
+      "markets_tested": 30,
+      "total_trades": 8573,
+      "wins": 1265,
+      "losses": 1762,
+      "pushes": 5546,
+      "total_pnl": -9952.61,
+      "vpin_max": 1.0,
+      "signals": 15062
+    },
+    "other": {
+      "markets_tested": 30,
+      "total_trades": 8911,
+      "wins": 1464,
+      "losses": 1993,
+      "pushes": 5454,
+      "total_pnl": -11966.15,
+      "vpin_max": 1.0,
+      "signals": 17426
+    },
+    "sports": {
+      "markets_tested": 30,
+      "total_trades": 10645,
+      "wins": 1707,
+      "losses": 1977,
+      "pushes": 6961,
+      "total_pnl": -9190.69,
+      "vpin_max": 1.0,
+      "signals": 20428
+    },
+    "crypto": {
+      "markets_tested": 30,
+      "total_trades": 9841,
+      "wins": 1633,
+      "losses": 1985,
+      "pushes": 6223,
+      "total_pnl": -11546.19,
+      "vpin_max": 1.0,
+      "signals": 17575
+    },
+    "geopolitics": {
+      "markets_tested": 30,
+      "total_trades": 9808,
+      "wins": 1495,
+      "losses": 1885,
+      "pushes": 6428,
+      "total_pnl": -11972.35,
+      "vpin_max": 1.0,
+      "signals": 19066
+    }
+  },
+  "market_results": {
+    "New Rihanna Album before GTA VI?": {
+      "trades": 103,
+      "wins": 18,
+      "pnl": -459.44,
+      "cat": "politics"
+    },
+    "Will Harvey Weinstein be sentenced to between 20 a": {
+      "trades": 134,
+      "wins": 47,
+      "pnl": -386.95,
+      "cat": "other"
+    },
+    "Will Victor Wembanyama win the 2025\u20132026 NBA MVP?": {
+      "trades": 445,
+      "wins": 42,
+      "pnl": -450.62,
+      "cat": "sports"
+    },
+    "Will Real Madrid win the 2025\u201326 La Liga?": {
+      "trades": 259,
+      "wins": 31,
+      "pnl": -450.36,
+      "cat": "sports"
+    },
+    "Will Kylian Mbappe be the 2025/2026 top UCL goal s": {
+      "trades": 297,
+      "wins": 21,
+      "pnl": -451.03,
+      "cat": "sports"
+    },
+    "Opensea FDV above $500M one day after launch?": {
+      "trades": 385,
+      "wins": 46,
+      "pnl": -410.5,
+      "cat": "crypto"
+    },
+    "Will Ken Paxton win the 2026 Texas Republican Prim": {
+      "trades": 764,
+      "wins": 187,
+      "pnl": -301.59,
+      "cat": "politics"
+    },
+    "Will the Cleveland Cavaliers win the NBA Eastern C": {
+      "trades": 412,
+      "wins": 83,
+      "pnl": -334.36,
+      "cat": "sports"
+    },
+    "Will Harvey Weinstein be sentenced to between 5 an": {
+      "trades": 296,
+      "wins": 60,
+      "pnl": -362.9,
+      "cat": "other"
+    },
+    "Will Fl\u00e1vio Bolsonaro win the 2026 Brazilian presi": {
+      "trades": 324,
+      "wins": 4,
+      "pnl": -450.82,
+      "cat": "politics"
+    },
+    "Will Spain win the 2026 FIFA World Cup?": {
+      "trades": 306,
+      "wins": 0,
+      "pnl": -450.38,
+      "cat": "sports"
+    },
+    "Will the Republicans win the Arizona governor race": {
+      "trades": 347,
+      "wins": 52,
+      "pnl": -420.52,
+      "cat": "politics"
+    },
+    "Zelenskyy out as Ukraine president by end of 2026?": {
+      "trades": 297,
+      "wins": 23,
+      "pnl": -450.1,
+      "cat": "politics"
+    },
+    "Will England win the 2026 FIFA World Cup?": {
+      "trades": 252,
+      "wins": 0,
+      "pnl": -372.11,
+      "cat": "sports"
+    },
+    "Will Discord not IPO by June 30, 2026?": {
+      "trades": 263,
+      "wins": 29,
+      "pnl": -450.05,
+      "cat": "other"
+    },
+    "Will Ivan Cepeda Castro win the 2026 Colombian pre": {
+      "trades": 296,
+      "wins": 17,
+      "pnl": -450.65,
+      "cat": "politics"
+    },
+    "Will Jesus Christ return before GTA VI?": {
+      "trades": 9,
+      "wins": 0,
+      "pnl": -32.54,
+      "cat": "politics"
+    },
+    "Will the Oklahoma City Thunder win the NBA Western": {
+      "trades": 358,
+      "wins": 47,
+      "pnl": -410.87,
+      "cat": "sports"
+    },
+    "Will no Fed rate cuts happen in 2026?": {
+      "trades": 754,
+      "wins": 224,
+      "pnl": -165.43,
+      "cat": "other"
+    },
+    "Will the Democrats win the Texas governor race in ": {
+      "trades": 390,
+      "wins": 53,
+      "pnl": -450.35,
+      "cat": "politics"
+    },
+    "2026 Balance of Power: R Senate, D House": {
+      "trades": 221,
+      "wins": 1,
+      "pnl": -393.27,
+      "cat": "politics"
+    },
+    "Will the Republicans win the Oregon governor race ": {
+      "trades": 79,
+      "wins": 0,
+      "pnl": -152.66,
+      "cat": "politics"
+    },
+    "Will Abdul El-Sayed win the 2026 Michigan Democrat": {
+      "trades": 575,
+      "wins": 138,
+      "pnl": -244.53,
+      "cat": "politics"
+    },
+    "Erdo\u011fan out by December 31, 2026?": {
+      "trades": 298,
+      "wins": 28,
+      "pnl": -450.55,
+      "cat": "politics"
+    },
+    "Will the Los Angeles Clippers make the NBA Playoff": {
+      "trades": 566,
+      "wins": 121,
+      "pnl": -400.96,
+      "cat": "sports"
+    },
+    "Will the Democrats win the Oregon governor race in": {
+      "trades": 125,
+      "wins": 5,
+      "pnl": -210.04,
+      "cat": "politics"
+    },
+    "Will the Republicans win the Vermont governor race": {
+      "trades": 368,
+      "wins": 58,
+      "pnl": -456.44,
+      "cat": "politics"
+    },
+    "2026 Balance of Power: D Senate, D House": {
+      "trades": 235,
+      "wins": 1,
+      "pnl": -450.25,
+      "cat": "politics"
+    },
+    "Will the Republicans win the Kansas governor race ": {
+      "trades": 177,
+      "wins": 30,
+      "pnl": -450.24,
+      "cat": "politics"
+    },
+    "Will the Republicans win the Texas governor race i": {
+      "trades": 339,
+      "wins": 64,
+      "pnl": -441.06,
+      "cat": "politics"
+    },
+    "Ink FDV above $500M one day after launch?": {
+      "trades": 490,
+      "wins": 117,
+      "pnl": -132.22,
+      "cat": "crypto"
+    },
+    "Will Yulia Navalnaya win the Nobel Peace Prize in ": {
+      "trades": 98,
+      "wins": 0,
+      "pnl": -170.72,
+      "cat": "politics"
+    },
+    "Will the 10-year Treasury yield dip below 3.8% bef": {
+      "trades": 288,
+      "wins": 113,
+      "pnl": -303.14,
+      "cat": "politics"
+    },
+    "Will Dan Sullivan win the Alaska Senate race in 20": {
+      "trades": 235,
+      "wins": 43,
+      "pnl": -132.28,
+      "cat": "politics"
+    },
+    "Will Mary Peltola win the Alaska Senate race in 20": {
+      "trades": 194,
+      "wins": 44,
+      "pnl": 69.87,
+      "cat": "politics"
+    },
+    "Will Ari Weinstein leave OpenAI by December 31, 20": {
+      "trades": 170,
+      "wins": 11,
+      "pnl": -234.65,
+      "cat": "other"
+    },
+    "Will the Golden State Warriors make the NBA Playof": {
+      "trades": 352,
+      "wins": 55,
+      "pnl": -450.45,
+      "cat": "sports"
+    },
+    "Will the Democrats win the Nevada governor race in": {
+      "trades": 315,
+      "wins": 39,
+      "pnl": -450.28,
+      "cat": "politics"
+    },
+    "Will the Republicans win the Kansas Senate race in": {
+      "trades": 147,
+      "wins": 25,
+      "pnl": -491.14,
+      "cat": "politics"
+    },
+    "Will Marco Rubio win the 2028 Republican president": {
+      "trades": 321,
+      "wins": 1,
+      "pnl": -450.87,
+      "cat": "politics"
+    },
+    "Will Chelsea finish in the top 4 of the EPL 2025\u20132": {
+      "trades": 453,
+      "wins": 97,
+      "pnl": -318.94,
+      "cat": "sports"
+    },
+    "NYSE marketwide circuit breaker before 2027?": {
+      "trades": 284,
+      "wins": 20,
+      "pnl": -442.93,
+      "cat": "other"
+    },
+    "Will Connor Burbridge be the Democratic nominee fo": {
+      "trades": 133,
+      "wins": 2,
+      "pnl": -233.38,
+      "cat": "politics"
+    },
+    "Will Amazon acquire TikTok?": {
+      "trades": 544,
+      "wins": 85,
+      "pnl": -298.07,
+      "cat": "geopolitics"
+    },
+    "Callum Turner announced as next James Bond?": {
+      "trades": 401,
+      "wins": 69,
+      "pnl": -425.84,
+      "cat": "geopolitics"
+    },
+    "Will NVIDIA be the largest company in the world by": {
+      "trades": 458,
+      "wins": 78,
+      "pnl": -450.78,
+      "cat": "other"
+    },
+    "Ripple Labs IPO before 2027?": {
+      "trades": 132,
+      "wins": 31,
+      "pnl": -425.03,
+      "cat": "other"
+    },
+    "Will John Cornyn win the 2026 Texas Republican Pri": {
+      "trades": 642,
+      "wins": 190,
+      "pnl": -174.19,
+      "cat": "politics"
+    },
+    "Will Tom Steyer win the California Governor Electi": {
+      "trades": 587,
+      "wins": 80,
+      "pnl": -450.56,
+      "cat": "politics"
+    },
+    "Will any presidential candidate win outright in th": {
+      "trades": 372,
+      "wins": 39,
+      "pnl": -449.89,
+      "cat": "politics"
+    },
+    "Will the Republicans win the New Mexico governor r": {
+      "trades": 294,
+      "wins": 10,
+      "pnl": -450.98,
+      "cat": "politics"
+    },
+    "Will Barcelona win the 2025\u201326 La Liga?": {
+      "trades": 284,
+      "wins": 45,
+      "pnl": -450.6,
+      "cat": "sports"
+    },
+    "Will the minimum Arctic sea ice extent this summer": {
+      "trades": 237,
+      "wins": 69,
+      "pnl": -418.35,
+      "cat": "other"
+    },
+    "Will Galatasaray win the S\u00fcper Lig?": {
+      "trades": 292,
+      "wins": 64,
+      "pnl": -449.45,
+      "cat": "sports"
+    },
+    "Will Noah rank #1 among boy names on the SSA\u2019s off": {
+      "trades": 235,
+      "wins": 17,
+      "pnl": -450.27,
+      "cat": "other"
+    },
+    "Will the Philadelphia 76ers win more than 43.5 reg": {
+      "trades": 236,
+      "wins": 40,
+      "pnl": -452.21,
+      "cat": "sports"
+    },
+    "Will Liam rank #1 among boy names on the SSA\u2019s off": {
+      "trades": 325,
+      "wins": 18,
+      "pnl": -450.16,
+      "cat": "other"
+    },
+    "Will The Super Mario Galaxy Movie be the top gross": {
+      "trades": 350,
+      "wins": 36,
+      "pnl": -450.87,
+      "cat": "geopolitics"
+    },
+    "Will Chainlink reach $20 by December 31, 2026?": {
+      "trades": 125,
+      "wins": 25,
+      "pnl": -452.43,
+      "cat": "crypto"
+    },
+    "Will Gen.G Esports win the LCK 2026 season playoff": {
+      "trades": 353,
+      "wins": 51,
+      "pnl": -449.33,
+      "cat": "sports"
+    },
+    "Will the 10-year Treasury yield hit 4.6% before 20": {
+      "trades": 25,
+      "wins": 2,
+      "pnl": -450.22,
+      "cat": "other"
+    },
+    "Will Apple be the largest company in the world by ": {
+      "trades": 430,
+      "wins": 59,
+      "pnl": -439.67,
+      "cat": "other"
+    },
+    "Will Bitcoin reach $100,000 by December 31, 2026?": {
+      "trades": 395,
+      "wins": 77,
+      "pnl": -450.72,
+      "cat": "crypto"
+    },
+    "Will the 10-year Treasury yield hit 5.0% before 20": {
+      "trades": 388,
+      "wins": 71,
+      "pnl": -458.39,
+      "cat": "other"
+    },
+    "Will Ostium launch a token by December 31, 2026?": {
+      "trades": 502,
+      "wins": 121,
+      "pnl": -337.33,
+      "cat": "crypto"
+    },
+    "Will Waymo launch in Nashville by June 30 2026?": {
+      "trades": 159,
+      "wins": 29,
+      "pnl": -452.55,
+      "cat": "other"
+    },
+    "Will Pacifica launch a token by June 30 2026?": {
+      "trades": 263,
+      "wins": 29,
+      "pnl": -450.06,
+      "cat": "crypto"
+    },
+    "Will 2026 be the second-hottest year on record?": {
+      "trades": 405,
+      "wins": 61,
+      "pnl": -452.14,
+      "cat": "other"
+    },
+    "Will Extended launch a token by June 30 2026?": {
+      "trades": 312,
+      "wins": 41,
+      "pnl": -452.85,
+      "cat": "crypto"
+    },
+    "Will a dLLM be the top AI model before 2027?": {
+      "trades": 142,
+      "wins": 5,
+      "pnl": -267.3,
+      "cat": "other"
+    },
+    "Will the Edmonton Oilers win the Pacific Division?": {
+      "trades": 115,
+      "wins": 21,
+      "pnl": -453.66,
+      "cat": "sports"
+    },
+    "Will Arizona win the 2026 NCAA Tournament?": {
+      "trades": 358,
+      "wins": 23,
+      "pnl": -450.22,
+      "cat": "sports"
+    },
+    "Will Bitcoin dip to $35,000 by December 31, 2026?": {
+      "trades": 495,
+      "wins": 83,
+      "pnl": -447.5,
+      "cat": "crypto"
+    },
+    "Vanta IPO before 2027?": {
+      "trades": 382,
+      "wins": 92,
+      "pnl": -392.89,
+      "cat": "other"
+    },
+    "Will Wolves finish in last place in the 2025-26 En": {
+      "trades": 399,
+      "wins": 61,
+      "pnl": -450.36,
+      "cat": "sports"
+    },
+    "OpenAI announces it has achieved AGI before 2027?": {
+      "trades": 336,
+      "wins": 95,
+      "pnl": -338.9,
+      "cat": "other"
+    },
+    "Metamask FDV above $1B one day after launch?": {
+      "trades": 141,
+      "wins": 2,
+      "pnl": -242.57,
+      "cat": "crypto"
+    },
+    "Will Dogecoin reach $0.16 by December 31, 2026?": {
+      "trades": 408,
+      "wins": 48,
+      "pnl": -462.84,
+      "cat": "crypto"
+    },
+    "Will Manchester City win the 2025\u201326 English Premi": {
+      "trades": 187,
+      "wins": 12,
+      "pnl": -325.52,
+      "cat": "sports"
+    },
+    "Will Ethereum reach $4,500 by December 31, 2026?": {
+      "trades": 386,
+      "wins": 44,
+      "pnl": -437.51,
+      "cat": "crypto"
+    },
+    "Hyperbeat FDV above $50M one day after launch?": {
+      "trades": 160,
+      "wins": 0,
+      "pnl": -277.35,
+      "cat": "crypto"
+    },
+    "Will Google have the top AI model at the end of Ju": {
+      "trades": 384,
+      "wins": 72,
+      "pnl": -409.71,
+      "cat": "other"
+    },
+    "Will Hyperliquid dip to $12 by December 31, 2026?": {
+      "trades": 257,
+      "wins": 21,
+      "pnl": -452.06,
+      "cat": "crypto"
+    },
+    "Will Ethereum reach $4,000 by December 31, 2026?": {
+      "trades": 471,
+      "wins": 130,
+      "pnl": -38.97,
+      "cat": "crypto"
+    },
+    "Will the Oklahoma City Thunder win the 2026 NBA Fi": {
+      "trades": 256,
+      "wins": 12,
+      "pnl": -404.52,
+      "cat": "sports"
+    },
+    "OpenAI $1t+ IPO before 2027?": {
+      "trades": 282,
+      "wins": 40,
+      "pnl": -438.34,
+      "cat": "other"
+    },
+    "Will Ethena dip to $0.04 by December 31, 2026?": {
+      "trades": 99,
+      "wins": 15,
+      "pnl": -382.04,
+      "cat": "crypto"
+    },
+    "Will Hyperliquid reach $100 by December 31, 2026?": {
+      "trades": 354,
+      "wins": 41,
+      "pnl": -451.03,
+      "cat": "crypto"
+    },
+    "GTA 6 launch postponed again?": {
+      "trades": 453,
+      "wins": 45,
+      "pnl": -450.19,
+      "cat": "other"
+    },
+    "Will Solana dip to $40 by December 31, 2026?": {
+      "trades": 363,
+      "wins": 44,
+      "pnl": -437.53,
+      "cat": "crypto"
+    },
+    "Will Pizza Hut be acquired before 2027?": {
+      "trades": 285,
+      "wins": 46,
+      "pnl": -336.94,
+      "cat": "other"
+    },
+    "Will 2 Fed rate cuts happen in 2026?": {
+      "trades": 264,
+      "wins": 39,
+      "pnl": -430.21,
+      "cat": "other"
+    },
+    "Will Waymo operate in 10 cities on June 30 2026?": {
+      "trades": 380,
+      "wins": 42,
+      "pnl": -396.41,
+      "cat": "other"
+    },
+    "Will the 10-year Treasury yield hit 5.2% before 20": {
+      "trades": 264,
+      "wins": 15,
+      "pnl": -450.44,
+      "cat": "other"
+    },
+    "Will Bitcoin dip to $55,000 by December 31, 2026?": {
+      "trades": 580,
+      "wins": 173,
+      "pnl": -438.54,
+      "cat": "crypto"
+    },
+    "Will Bitcoin reach $110,000 by December 31, 2026?": {
+      "trades": 373,
+      "wins": 51,
+      "pnl": -450.17,
+      "cat": "crypto"
+    },
+    "Will Pump.fun reach $0.0050 by December 31, 2026?": {
+      "trades": 213,
+      "wins": 28,
+      "pnl": -450.25,
+      "cat": "crypto"
+    },
+    "Will UNI reach $14.00 by December 31, 2026?": {
+      "trades": 203,
+      "wins": 14,
+      "pnl": -319.31,
+      "cat": "crypto"
+    },
+    "Kraken IPO by December 31, 2026?": {
+      "trades": 129,
+      "wins": 44,
+      "pnl": -443.37,
+      "cat": "crypto"
+    },
+    "Will Unit launch a token by December 31, 2026?": {
+      "trades": 250,
+      "wins": 20,
+      "pnl": -450.28,
+      "cat": "crypto"
+    },
+    "New COVID variant of concern before 2027?": {
+      "trades": 139,
+      "wins": 9,
+      "pnl": -221.18,
+      "cat": "other"
+    },
+    "Fannie Mae IPO before 2027?": {
+      "trades": 241,
+      "wins": 41,
+      "pnl": -451.55,
+      "cat": "other"
+    },
+    "Will Hyperliquid dip to $8 by December 31, 2026?": {
+      "trades": 235,
+      "wins": 13,
+      "pnl": -350.51,
+      "cat": "crypto"
+    },
+    "Will XRP reach $4.20 by December 31, 2026?": {
+      "trades": 309,
+      "wins": 26,
+      "pnl": -437.95,
+      "cat": "crypto"
+    },
+    "Will 2026 be the hottest year on record?": {
+      "trades": 305,
+      "wins": 36,
+      "pnl": -440.25,
+      "cat": "other"
+    },
+    "Will Zcash reach $700 by December 31, 2026?": {
+      "trades": 246,
+      "wins": 26,
+      "pnl": -439.29,
+      "cat": "crypto"
+    },
+    "Will 2026 be the fourth-hottest year on record?": {
+      "trades": 359,
+      "wins": 61,
+      "pnl": -451.37,
+      "cat": "other"
+    },
+    "Will Manchester United finish in the top 4 of the ": {
+      "trades": 352,
+      "wins": 59,
+      "pnl": -426.85,
+      "cat": "sports"
+    },
+    "Will Keldon Johnson win the 2025\u20132026 NBA Sixth Ma": {
+      "trades": 706,
+      "wins": 269,
+      "pnl": 2822.92,
+      "cat": "sports"
+    },
+    "Will the Indiana Pacers have the worst record in t": {
+      "trades": 320,
+      "wins": 63,
+      "pnl": -468.86,
+      "cat": "sports"
+    },
+    "Will Bitcoin replace SHA-256 before 2027?": {
+      "trades": 319,
+      "wins": 7,
+      "pnl": -450.05,
+      "cat": "crypto"
+    },
+    "Will Manchester United finish in 3rd place in the ": {
+      "trades": 387,
+      "wins": 64,
+      "pnl": -447.4,
+      "cat": "sports"
+    },
+    "Will the Minnesota Timberwolves win more than 49.5": {
+      "trades": 241,
+      "wins": 23,
+      "pnl": -431.33,
+      "cat": "sports"
+    },
+    "Consensys IPO closing market cap above $3B?": {
+      "trades": 384,
+      "wins": 79,
+      "pnl": -394.18,
+      "cat": "crypto"
+    },
+    "Will MegaETH perform an airdrop by June 30?": {
+      "trades": 754,
+      "wins": 200,
+      "pnl": -179.83,
+      "cat": "crypto"
+    },
+    "Will Real Madrid win the 2025\u201326 Champions League?": {
+      "trades": 125,
+      "wins": 1,
+      "pnl": -254.63,
+      "cat": "sports"
+    },
+    "Will T1 win the LCK 2026 season playoffs?": {
+      "trades": 395,
+      "wins": 54,
+      "pnl": -436.39,
+      "cat": "sports"
+    },
+    "Will Hyperliquid perform an airdrop by December 31": {
+      "trades": 240,
+      "wins": 68,
+      "pnl": -426.95,
+      "cat": "crypto"
+    },
+    "Will the Orlando Magic make the NBA Playoffs?": {
+      "trades": 863,
+      "wins": 237,
+      "pnl": -278.14,
+      "cat": "sports"
+    },
+    "Will Illinois win the 2026 NCAA Tournament?": {
+      "trades": 353,
+      "wins": 12,
+      "pnl": -450.82,
+      "cat": "sports"
+    },
+    "Ukraine agrees not to join NATO before 2027?": {
+      "trades": 569,
+      "wins": 119,
+      "pnl": -357.45,
+      "cat": "geopolitics"
+    },
+    "Will Scottie Scheffler win the 2026 Masters tourna": {
+      "trades": 258,
+      "wins": 16,
+      "pnl": -391.29,
+      "cat": "sports"
+    },
+    "Will the Oklahoma City Thunder finish with the bes": {
+      "trades": 465,
+      "wins": 83,
+      "pnl": -451.95,
+      "cat": "sports"
+    },
+    "Will Avengers: Doomsday have the best domestic ope": {
+      "trades": 333,
+      "wins": 42,
+      "pnl": -449.97,
+      "cat": "geopolitics"
+    },
+    "Will there be at least 10000 measles cases in the ": {
+      "trades": 261,
+      "wins": 6,
+      "pnl": -450.08,
+      "cat": "geopolitics"
+    },
+    "No one announced as next James Bond?": {
+      "trades": 455,
+      "wins": 59,
+      "pnl": -411.6,
+      "cat": "geopolitics"
+    },
+    "Will Spider-Man: Brand New Day be the top grossing": {
+      "trades": 308,
+      "wins": 33,
+      "pnl": -442.76,
+      "cat": "geopolitics"
+    },
+    "Will Microsoft acquire TikTok?": {
+      "trades": 69,
+      "wins": 19,
+      "pnl": -448.8,
+      "cat": "geopolitics"
+    },
+    "Will Avengers: Doomsday be the top grossing movie ": {
+      "trades": 252,
+      "wins": 15,
+      "pnl": -354.86,
+      "cat": "geopolitics"
+    },
+    "Will Silver (SI) settle over $95 on the final trad": {
+      "trades": 189,
+      "wins": 29,
+      "pnl": -455.33,
+      "cat": "geopolitics"
+    },
+    "Will Russia enter Druzkhivka by June 30?": {
+      "trades": 391,
+      "wins": 50,
+      "pnl": -450.67,
+      "cat": "geopolitics"
+    },
+    "NATO x Russia military clash by June 30, 2026?": {
+      "trades": 359,
+      "wins": 19,
+      "pnl": -450.25,
+      "cat": "geopolitics"
+    },
+    "Will Yu Deng win the 2026 Fields Medal?": {
+      "trades": 191,
+      "wins": 60,
+      "pnl": -464.35,
+      "cat": "geopolitics"
+    },
+    "Will Silver (SI) settle over $120 on the final tra": {
+      "trades": 265,
+      "wins": 65,
+      "pnl": -345.85,
+      "cat": "geopolitics"
+    },
+    "Will China's annual inflation in 2026 be between -": {
+      "trades": 351,
+      "wins": 4,
+      "pnl": -902.74,
+      "cat": "geopolitics"
+    },
+    "Will China's annual inflation in 2026 be less than": {
+      "trades": 399,
+      "wins": 121,
+      "pnl": 129.33,
+      "cat": "geopolitics"
+    },
+    "Will China's annual inflation in 2026 be between 1": {
+      "trades": 391,
+      "wins": 10,
+      "pnl": -450.77,
+      "cat": "geopolitics"
+    },
+    "Will China\u2019s 2026 annual GDP growth (Y/Y) be betwe": {
+      "trades": 465,
+      "wins": 109,
+      "pnl": -451.64,
+      "cat": "geopolitics"
+    },
+    "Will Jack Thorne win the 2026 Fields Medal?": {
+      "trades": 206,
+      "wins": 28,
+      "pnl": -451.13,
+      "cat": "geopolitics"
+    },
+    "Will Russia enter Sloviansk by June 30?": {
+      "trades": 309,
+      "wins": 14,
+      "pnl": -450.79,
+      "cat": "geopolitics"
+    },
+    "Will Silver (SI) settle over $85 on the final trad": {
+      "trades": 203,
+      "wins": 66,
+      "pnl": -443.14,
+      "cat": "geopolitics"
+    },
+    "Will John Pardon win the 2026 Fields Medal?": {
+      "trades": 528,
+      "wins": 127,
+      "pnl": -256.38,
+      "cat": "geopolitics"
+    },
+    "Will Hong Wang win the 2026 Fields Medal?": {
+      "trades": 347,
+      "wins": 55,
+      "pnl": -423.57,
+      "cat": "geopolitics"
+    },
+    "Will Russia enter Kramatorsk by June 30?": {
+      "trades": 348,
+      "wins": 44,
+      "pnl": -368.36,
+      "cat": "geopolitics"
+    },
+    "Will Silver (SI) settle over $80 on the final trad": {
+      "trades": 142,
+      "wins": 46,
+      "pnl": -446.0,
+      "cat": "geopolitics"
+    },
+    "Will Finland win Eurovision 2026?": {
+      "trades": 409,
+      "wins": 32,
+      "pnl": -450.71,
+      "cat": "geopolitics"
+    },
+    "Will Russia capture Sumy by March 31, 2027?": {
+      "trades": 353,
+      "wins": 39,
+      "pnl": -432.02,
+      "cat": "geopolitics"
+    },
+    "Iran coup attempt by June 30?": {
+      "trades": 420,
+      "wins": 94,
+      "pnl": -317.68,
+      "cat": "geopolitics"
+    }
+  },
+  "total_pnl": -54627.99,
+  "total_trades": 47778
+}

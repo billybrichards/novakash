@@ -1,0 +1,955 @@
+{
+  "trades": [
+    {
+      "ts": "2026-03-28T02:50:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "LOSS",
+      "pnl": -0.55,
+      "stake": 50.0,
+      "vpin": 0.3543,
+      "price": 66018.0,
+      "bankroll": 999.45
+    },
+    {
+      "ts": "2026-03-28T02:55:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "WIN",
+      "pnl": 0.53,
+      "stake": 49.97,
+      "vpin": 0.3665,
+      "price": 66053.2,
+      "bankroll": 999.98
+    },
+    {
+      "ts": "2026-03-28T03:00:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "WIN",
+      "pnl": 0.3,
+      "stake": 50.0,
+      "vpin": 0.3618,
+      "price": 66090.12,
+      "bankroll": 1000.29
+    },
+    {
+      "ts": "2026-03-28T03:05:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "LOSS",
+      "pnl": -0.37,
+      "stake": 50.01,
+      "vpin": 0.3597,
+      "price": 66123.38,
+      "bankroll": 999.92
+    },
+    {
+      "ts": "2026-03-28T03:10:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "WIN",
+      "pnl": 0.38,
+      "stake": 50.0,
+      "vpin": 0.3609,
+      "price": 66130.13,
+      "bankroll": 1000.3
+    },
+    {
+      "ts": "2026-03-28T03:15:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -1.0,
+      "stake": 50.01,
+      "vpin": 0.357,
+      "price": 66172.0,
+      "bankroll": 999.3
+    },
+    {
+      "ts": "2026-03-28T03:20:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -1.0,
+      "stake": 49.96,
+      "vpin": 0.3637,
+      "price": 66180.12,
+      "bankroll": 998.3
+    },
+    {
+      "ts": "2026-03-28T03:25:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -1.0,
+      "stake": 49.91,
+      "vpin": 0.3674,
+      "price": 66179.04,
+      "bankroll": 997.3
+    },
+    {
+      "ts": "2026-03-28T03:40:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -1.0,
+      "stake": 49.86,
+      "vpin": 0.3699,
+      "price": 66231.64,
+      "bankroll": 996.3
+    },
+    {
+      "ts": "2026-03-28T03:45:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -1.0,
+      "stake": 49.82,
+      "vpin": 0.3793,
+      "price": 66241.81,
+      "bankroll": 995.31
+    },
+    {
+      "ts": "2026-03-28T03:50:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -1.0,
+      "stake": 49.77,
+      "vpin": 0.3915,
+      "price": 66201.91,
+      "bankroll": 994.31
+    },
+    {
+      "ts": "2026-03-28T04:05:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "WIN",
+      "pnl": 2.12,
+      "stake": 99.43,
+      "vpin": 0.4027,
+      "price": 66131.1,
+      "bankroll": 996.43
+    },
+    {
+      "ts": "2026-03-28T04:10:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "WIN",
+      "pnl": 2.17,
+      "stake": 99.64,
+      "vpin": 0.403,
+      "price": 66123.66,
+      "bankroll": 998.6
+    },
+    {
+      "ts": "2026-03-28T04:15:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -2.0,
+      "stake": 99.86,
+      "vpin": 0.4138,
+      "price": 66260.46,
+      "bankroll": 996.6
+    },
+    {
+      "ts": "2026-03-28T04:20:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.99,
+      "stake": 99.66,
+      "vpin": 0.4145,
+      "price": 66271.92,
+      "bankroll": 994.61
+    },
+    {
+      "ts": "2026-03-28T04:25:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.99,
+      "stake": 99.46,
+      "vpin": 0.4167,
+      "price": 66267.75,
+      "bankroll": 992.62
+    },
+    {
+      "ts": "2026-03-28T04:40:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.99,
+      "stake": 99.26,
+      "vpin": 0.4131,
+      "price": 66297.01,
+      "bankroll": 990.63
+    },
+    {
+      "ts": "2026-03-28T04:45:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.98,
+      "stake": 99.06,
+      "vpin": 0.4185,
+      "price": 66275.0,
+      "bankroll": 988.65
+    },
+    {
+      "ts": "2026-03-28T04:50:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.98,
+      "stake": 98.87,
+      "vpin": 0.4255,
+      "price": 66278.05,
+      "bankroll": 986.68
+    },
+    {
+      "ts": "2026-03-28T05:05:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "WIN",
+      "pnl": 2.1,
+      "stake": 98.67,
+      "vpin": 0.4323,
+      "price": 66221.0,
+      "bankroll": 988.78
+    },
+    {
+      "ts": "2026-03-28T05:10:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "WIN",
+      "pnl": 1.29,
+      "stake": 98.88,
+      "vpin": 0.4353,
+      "price": 66250.54,
+      "bankroll": 990.07
+    },
+    {
+      "ts": "2026-03-28T05:15:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "WIN",
+      "pnl": 2.05,
+      "stake": 99.01,
+      "vpin": 0.4388,
+      "price": 66224.57,
+      "bankroll": 992.12
+    },
+    {
+      "ts": "2026-03-28T05:20:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.98,
+      "stake": 99.21,
+      "vpin": 0.4404,
+      "price": 66362.13,
+      "bankroll": 990.14
+    },
+    {
+      "ts": "2026-03-28T05:25:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.98,
+      "stake": 99.01,
+      "vpin": 0.4354,
+      "price": 66336.79,
+      "bankroll": 988.16
+    },
+    {
+      "ts": "2026-03-28T05:30:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.98,
+      "stake": 98.82,
+      "vpin": 0.4337,
+      "price": 66362.0,
+      "bankroll": 986.18
+    },
+    {
+      "ts": "2026-03-28T05:45:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.97,
+      "stake": 98.62,
+      "vpin": 0.4381,
+      "price": 66330.0,
+      "bankroll": 984.21
+    },
+    {
+      "ts": "2026-03-28T05:50:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.97,
+      "stake": 98.42,
+      "vpin": 0.4405,
+      "price": 66340.5,
+      "bankroll": 982.24
+    },
+    {
+      "ts": "2026-03-28T05:55:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.96,
+      "stake": 98.22,
+      "vpin": 0.4473,
+      "price": 66341.9,
+      "bankroll": 980.27
+    },
+    {
+      "ts": "2026-03-28T06:10:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "WIN",
+      "pnl": 1.39,
+      "stake": 98.03,
+      "vpin": 0.4318,
+      "price": 66367.48,
+      "bankroll": 981.67
+    },
+    {
+      "ts": "2026-03-28T06:15:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.96,
+      "stake": 98.17,
+      "vpin": 0.4347,
+      "price": 66477.81,
+      "bankroll": 979.7
+    },
+    {
+      "ts": "2026-03-28T06:20:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.96,
+      "stake": 97.97,
+      "vpin": 0.4382,
+      "price": 66490.13,
+      "bankroll": 977.74
+    },
+    {
+      "ts": "2026-03-28T06:25:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.96,
+      "stake": 97.77,
+      "vpin": 0.4383,
+      "price": 66461.72,
+      "bankroll": 975.79
+    },
+    {
+      "ts": "2026-03-28T06:40:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.95,
+      "stake": 97.58,
+      "vpin": 0.4365,
+      "price": 66426.0,
+      "bankroll": 973.84
+    },
+    {
+      "ts": "2026-03-28T06:45:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.95,
+      "stake": 97.38,
+      "vpin": 0.431,
+      "price": 66365.36,
+      "bankroll": 971.89
+    },
+    {
+      "ts": "2026-03-28T06:50:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.94,
+      "stake": 97.19,
+      "vpin": 0.4313,
+      "price": 66387.11,
+      "bankroll": 969.95
+    },
+    {
+      "ts": "2026-03-28T07:05:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.94,
+      "stake": 96.99,
+      "vpin": 0.4236,
+      "price": 66420.74,
+      "bankroll": 968.01
+    },
+    {
+      "ts": "2026-03-28T07:10:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.94,
+      "stake": 96.8,
+      "vpin": 0.4229,
+      "price": 66437.73,
+      "bankroll": 966.07
+    },
+    {
+      "ts": "2026-03-28T07:15:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.93,
+      "stake": 96.61,
+      "vpin": 0.4344,
+      "price": 66472.31,
+      "bankroll": 964.14
+    },
+    {
+      "ts": "2026-03-28T07:30:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.93,
+      "stake": 96.41,
+      "vpin": 0.4302,
+      "price": 66451.0,
+      "bankroll": 962.21
+    },
+    {
+      "ts": "2026-03-28T07:35:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.92,
+      "stake": 96.22,
+      "vpin": 0.4293,
+      "price": 66439.6,
+      "bankroll": 960.28
+    },
+    {
+      "ts": "2026-03-28T07:40:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "WIN",
+      "pnl": 1.9,
+      "stake": 96.03,
+      "vpin": 0.4305,
+      "price": 66429.99,
+      "bankroll": 962.19
+    },
+    {
+      "ts": "2026-03-28T07:45:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "WIN",
+      "pnl": 1.25,
+      "stake": 96.22,
+      "vpin": 0.4294,
+      "price": 66483.67,
+      "bankroll": 963.43
+    },
+    {
+      "ts": "2026-03-28T07:50:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.93,
+      "stake": 96.34,
+      "vpin": 0.4309,
+      "price": 66502.43,
+      "bankroll": 961.51
+    },
+    {
+      "ts": "2026-03-28T07:55:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.92,
+      "stake": 96.15,
+      "vpin": 0.4232,
+      "price": 66561.48,
+      "bankroll": 959.58
+    },
+    {
+      "ts": "2026-03-28T08:00:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.92,
+      "stake": 95.96,
+      "vpin": 0.4102,
+      "price": 66570.0,
+      "bankroll": 957.67
+    },
+    {
+      "ts": "2026-03-28T08:15:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "WIN",
+      "pnl": 0.25,
+      "stake": 47.88,
+      "vpin": 0.393,
+      "price": 66517.23,
+      "bankroll": 957.92
+    },
+    {
+      "ts": "2026-03-28T08:20:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "LOSS",
+      "pnl": -0.24,
+      "stake": 47.9,
+      "vpin": 0.3947,
+      "price": 66545.04,
+      "bankroll": 957.68
+    },
+    {
+      "ts": "2026-03-28T08:25:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "LOSS",
+      "pnl": -0.7,
+      "stake": 47.88,
+      "vpin": 0.3894,
+      "price": 66552.28,
+      "bankroll": 956.98
+    },
+    {
+      "ts": "2026-03-28T08:30:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "WIN",
+      "pnl": 0.65,
+      "stake": 47.85,
+      "vpin": 0.397,
+      "price": 66511.71,
+      "bankroll": 957.63
+    },
+    {
+      "ts": "2026-03-28T08:35:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.92,
+      "stake": 95.76,
+      "vpin": 0.4056,
+      "price": 66455.67,
+      "bankroll": 955.72
+    },
+    {
+      "ts": "2026-03-28T08:40:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.91,
+      "stake": 95.57,
+      "vpin": 0.4151,
+      "price": 66421.61,
+      "bankroll": 953.8
+    },
+    {
+      "ts": "2026-03-28T08:45:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "LOSS",
+      "pnl": -1.26,
+      "stake": 95.38,
+      "vpin": 0.4097,
+      "price": 66457.5,
+      "bankroll": 952.55
+    },
+    {
+      "ts": "2026-03-28T09:00:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.91,
+      "stake": 95.25,
+      "vpin": 0.4089,
+      "price": 66370.01,
+      "bankroll": 950.64
+    },
+    {
+      "ts": "2026-03-28T09:05:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.9,
+      "stake": 95.06,
+      "vpin": 0.4104,
+      "price": 66365.63,
+      "bankroll": 948.74
+    },
+    {
+      "ts": "2026-03-28T09:10:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.9,
+      "stake": 94.87,
+      "vpin": 0.409,
+      "price": 66349.92,
+      "bankroll": 946.84
+    },
+    {
+      "ts": "2026-03-28T09:25:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "WIN",
+      "pnl": 0.62,
+      "stake": 47.34,
+      "vpin": 0.3969,
+      "price": 66354.06,
+      "bankroll": 947.47
+    },
+    {
+      "ts": "2026-03-28T09:30:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.95,
+      "stake": 47.37,
+      "vpin": 0.3941,
+      "price": 66290.0,
+      "bankroll": 946.52
+    },
+    {
+      "ts": "2026-03-28T09:35:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.89,
+      "stake": 94.65,
+      "vpin": 0.4002,
+      "price": 66266.67,
+      "bankroll": 944.63
+    },
+    {
+      "ts": "2026-03-28T09:40:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.89,
+      "stake": 94.46,
+      "vpin": 0.4111,
+      "price": 66259.49,
+      "bankroll": 942.74
+    },
+    {
+      "ts": "2026-03-28T09:55:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.89,
+      "stake": 94.27,
+      "vpin": 0.4194,
+      "price": 66311.32,
+      "bankroll": 940.85
+    },
+    {
+      "ts": "2026-03-28T10:00:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "LOSS",
+      "pnl": -1.23,
+      "stake": 94.09,
+      "vpin": 0.4173,
+      "price": 66379.83,
+      "bankroll": 939.62
+    },
+    {
+      "ts": "2026-03-28T10:05:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "LOSS",
+      "pnl": -1.83,
+      "stake": 93.96,
+      "vpin": 0.4159,
+      "price": 66383.63,
+      "bankroll": 937.79
+    },
+    {
+      "ts": "2026-03-28T10:20:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "LOSS",
+      "pnl": -1.65,
+      "stake": 93.78,
+      "vpin": 0.4141,
+      "price": 66254.31,
+      "bankroll": 936.14
+    },
+    {
+      "ts": "2026-03-28T10:25:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.87,
+      "stake": 93.61,
+      "vpin": 0.4097,
+      "price": 66169.67,
+      "bankroll": 934.27
+    },
+    {
+      "ts": "2026-03-28T10:30:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.93,
+      "stake": 46.71,
+      "vpin": 0.3964,
+      "price": 66195.01,
+      "bankroll": 933.33
+    },
+    {
+      "ts": "2026-03-28T10:45:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.87,
+      "stake": 93.33,
+      "vpin": 0.4125,
+      "price": 66179.61,
+      "bankroll": 931.47
+    },
+    {
+      "ts": "2026-03-28T10:50:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.86,
+      "stake": 93.15,
+      "vpin": 0.4236,
+      "price": 66208.1,
+      "bankroll": 929.6
+    },
+    {
+      "ts": "2026-03-28T10:55:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "PUSH",
+      "pnl": -1.86,
+      "stake": 92.96,
+      "vpin": 0.4229,
+      "price": 66221.38,
+      "bankroll": 927.74
+    },
+    {
+      "ts": "2026-03-28T11:10:00+00:00",
+      "strategy": "VPIN_CASCADE",
+      "outcome": "WIN",
+      "pnl": 1.01,
+      "stake": 92.77,
+      "vpin": 0.4009,
+      "price": 66254.0,
+      "bankroll": 928.75
+    },
+    {
+      "ts": "2026-03-28T11:15:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "WIN",
+      "pnl": 0.6,
+      "stake": 46.44,
+      "vpin": 0.3936,
+      "price": 66240.86,
+      "bankroll": 929.35
+    },
+    {
+      "ts": "2026-03-28T11:20:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "WIN",
+      "pnl": 0.26,
+      "stake": 46.47,
+      "vpin": 0.3959,
+      "price": 66287.7,
+      "bankroll": 929.61
+    },
+    {
+      "ts": "2026-03-28T11:25:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.93,
+      "stake": 46.48,
+      "vpin": 0.3962,
+      "price": 66325.93,
+      "bankroll": 928.68
+    },
+    {
+      "ts": "2026-03-28T11:30:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.93,
+      "stake": 46.43,
+      "vpin": 0.386,
+      "price": 66325.28,
+      "bankroll": 927.75
+    },
+    {
+      "ts": "2026-03-28T11:35:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.93,
+      "stake": 46.39,
+      "vpin": 0.3892,
+      "price": 66332.99,
+      "bankroll": 926.82
+    },
+    {
+      "ts": "2026-03-28T11:50:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "LOSS",
+      "pnl": -0.33,
+      "stake": 46.34,
+      "vpin": 0.3958,
+      "price": 66346.93,
+      "bankroll": 926.5
+    },
+    {
+      "ts": "2026-03-28T11:55:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.93,
+      "stake": 46.32,
+      "vpin": 0.3814,
+      "price": 66319.47,
+      "bankroll": 925.57
+    },
+    {
+      "ts": "2026-03-29T07:30:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.93,
+      "stake": 46.28,
+      "vpin": 0.3569,
+      "price": 66647.61,
+      "bankroll": 924.64
+    },
+    {
+      "ts": "2026-03-29T07:45:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.92,
+      "stake": 46.23,
+      "vpin": 0.3639,
+      "price": 66660.0,
+      "bankroll": 923.72
+    },
+    {
+      "ts": "2026-03-29T07:50:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "LOSS",
+      "pnl": -0.25,
+      "stake": 46.19,
+      "vpin": 0.3643,
+      "price": 66717.9,
+      "bankroll": 923.47
+    },
+    {
+      "ts": "2026-03-29T07:55:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.92,
+      "stake": 46.17,
+      "vpin": 0.3736,
+      "price": 66671.0,
+      "bankroll": 922.54
+    },
+    {
+      "ts": "2026-03-29T08:10:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.92,
+      "stake": 46.13,
+      "vpin": 0.3704,
+      "price": 66654.18,
+      "bankroll": 921.62
+    },
+    {
+      "ts": "2026-03-29T08:15:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "LOSS",
+      "pnl": -0.32,
+      "stake": 46.08,
+      "vpin": 0.3711,
+      "price": 66633.51,
+      "bankroll": 921.3
+    },
+    {
+      "ts": "2026-03-29T08:20:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "LOSS",
+      "pnl": -0.29,
+      "stake": 46.06,
+      "vpin": 0.3755,
+      "price": 66667.99,
+      "bankroll": 921.0
+    },
+    {
+      "ts": "2026-03-29T08:35:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.92,
+      "stake": 46.05,
+      "vpin": 0.3653,
+      "price": 66756.0,
+      "bankroll": 920.08
+    },
+    {
+      "ts": "2026-03-29T08:40:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.92,
+      "stake": 46.0,
+      "vpin": 0.3662,
+      "price": 66741.82,
+      "bankroll": 919.16
+    },
+    {
+      "ts": "2026-03-29T08:45:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.92,
+      "stake": 45.96,
+      "vpin": 0.3679,
+      "price": 66738.23,
+      "bankroll": 918.24
+    },
+    {
+      "ts": "2026-03-29T09:00:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.92,
+      "stake": 45.91,
+      "vpin": 0.374,
+      "price": 66728.97,
+      "bankroll": 917.33
+    },
+    {
+      "ts": "2026-03-29T09:05:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.92,
+      "stake": 45.87,
+      "vpin": 0.3688,
+      "price": 66673.49,
+      "bankroll": 916.41
+    },
+    {
+      "ts": "2026-03-29T09:10:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "LOSS",
+      "pnl": -0.33,
+      "stake": 45.82,
+      "vpin": 0.3743,
+      "price": 66696.24,
+      "bankroll": 916.08
+    },
+    {
+      "ts": "2026-03-29T09:25:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "WIN",
+      "pnl": 0.52,
+      "stake": 45.8,
+      "vpin": 0.3657,
+      "price": 66673.6,
+      "bankroll": 916.6
+    },
+    {
+      "ts": "2026-03-29T09:30:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.92,
+      "stake": 45.83,
+      "vpin": 0.3552,
+      "price": 66555.48,
+      "bankroll": 915.68
+    },
+    {
+      "ts": "2026-03-29T09:35:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "PUSH",
+      "pnl": -0.92,
+      "stake": 45.78,
+      "vpin": 0.3515,
+      "price": 66598.42,
+      "bankroll": 914.77
+    },
+    {
+      "ts": "2026-03-29T09:40:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "WIN",
+      "pnl": 0.34,
+      "stake": 45.74,
+      "vpin": 0.3513,
+      "price": 66581.57,
+      "bankroll": 915.1
+    },
+    {
+      "ts": "2026-03-29T09:50:00+00:00",
+      "strategy": "VPIN_INFORMED",
+      "outcome": "LOSS",
+      "pnl": -0.55,
+      "stake": 45.76,
+      "vpin": 0.3502,
+      "price": 66630.58,
+      "bankroll": 914.56
+    }
+  ],
+  "daily_pnl": {
+    "2026-03-28": -74.4297034037447,
+    "2026-03-29": -11.013612287844307
+  },
+  "summary": {
+    "pnl": -85.44,
+    "final": 914.56,
+    "trades": 94,
+    "win_rate": 20.2,
+    "max_dd": 8.6
+  }
+}

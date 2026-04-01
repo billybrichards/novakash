@@ -44,3 +44,11 @@ COOLDOWN_SECONDS: int = _env_int("COOLDOWN_SECONDS", 900)
 ARB_MIN_SPREAD: float = _env_float("ARB_MIN_SPREAD", 0.015)
 ARB_MAX_POSITION: float = _env_float("ARB_MAX_POSITION", 50.0)
 ARB_MAX_EXECUTION_MS: int = _env_int("ARB_MAX_EXECUTION_MS", 500)
+
+# ── 5-Minute Polymarket Trading ──
+FIVE_MIN_ENABLED: bool = os.environ.get("FIVE_MIN_ENABLED", "false").lower() == "true"
+FIVE_MIN_ASSETS: list[str] = os.environ.get("FIVE_MIN_ASSETS", "BTC").split(",")
+FIVE_MIN_MODE: str = os.environ.get("FIVE_MIN_MODE", "safe")
+FIVE_MIN_ENTRY_OFFSET: int = _env_int("FIVE_MIN_ENTRY_OFFSET", 10)  # seconds before close
+FIVE_MIN_MIN_CONFIDENCE: float = _env_float("FIVE_MIN_MIN_CONFIDENCE", 0.30)
+FIVE_MIN_MIN_DELTA_PCT: float = _env_float("FIVE_MIN_MIN_DELTA_PCT", 0.005)  # skip below this

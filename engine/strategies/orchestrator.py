@@ -31,6 +31,7 @@ from data.feeds.binance_ws import BinanceWebSocketFeed
 from data.feeds.chainlink_rpc import ChainlinkRPCFeed
 from data.feeds.coinglass_api import CoinGlassAPIFeed
 from data.feeds.polymarket_ws import PolymarketWebSocketFeed
+from data.feeds.polymarket_5min import Polymarket5MinFeed
 from data.models import (
     AggTrade,
     ArbOpportunity,
@@ -51,6 +52,7 @@ from signals.regime_classifier import RegimeClassifier
 from signals.vpin import VPINCalculator
 from strategies.sub_dollar_arb import SubDollarArbStrategy
 from strategies.vpin_cascade import VPINCascadeStrategy
+from strategies.five_min_vpin import FiveMinVPINStrategy
 
 log = structlog.get_logger(__name__)
 
@@ -141,6 +143,26 @@ class Orchestrator:
             poly_client=self._poly_client,
             opinion_client=self._opinion_client,
         )
+        
+        # 5-minute Polymarket strategy (optional)
+        self._five_min_strategy = None
+        if settings.five_min_enabled:
+            self._five_min_feed = Polymarket5MinFeed(
+                assets=settings.five_min_assets.split(","),
+                signal_offset=10,
+                on_window_signal=self._on_five_min_window,
+                paper_mode=settings.paper_mode,
+            )
+            self._five_min_strategy = FiveMinVPINStrategy(
+                order_manager=self._order_manager,
+                risk_manager=self._risk_manager,
+                poly_client=self._poly_client,
+                vpin_calculator=self._vpin_calc,
+            )
+            log.info("orchestrator.five_min_enabled", assets=settings.five_min_assets)
+        else:
+            self._five_min_feed = None
+            log.info("orchestrator.five_min_disabled")
 
         # ── Feeds (wired after all components exist) ────────────────────────────
         self._binance_feed = BinanceWebSocketFeed(
@@ -220,6 +242,13 @@ class Orchestrator:
         # 3. Start strategies
         await self._arb_strategy.start()
         await self._cascade_strategy.start()
+        
+        # Start 5-min feed and strategy if enabled
+        if self._five_min_feed and self._five_min_strategy:
+            await self._five_min_strategy.start()
+            self._tasks.append(
+                asyncio.create_task(self._five_min_feed.start(), name="feed:five_min")
+            )
 
         # 4. Start feed tasks
         self._tasks.append(
@@ -277,6 +306,12 @@ class Orchestrator:
         # Stop strategies
         await self._arb_strategy.stop()
         await self._cascade_strategy.stop()
+        
+        # Stop 5-min strategy and feed
+        if self._five_min_strategy:
+            await self._five_min_strategy.stop()
+        if self._five_min_feed:
+            await self._five_min_feed.stop()
 
         # Stop feeds
         await self._binance_feed.stop()
@@ -440,6 +475,22 @@ class Orchestrator:
             except Exception as exc:
                 log.error("orchestrator.db_arb_write_failed", error=str(exc))
 
+    # ─── 5-Minute Feed Callbacks ──────────────────────────────────────────────
+
+    async def _on_five_min_window(self, window) -> None:
+        """Handle 5-minute window signal from the feed.
+        
+        The strategy has its own window handler, but we log here for observability.
+        """
+        log.info(
+            "five_min.window_signal",
+            asset=window.asset,
+            window_ts=window.window_ts,
+            open_price=window.open_price,
+            up_price=window.up_price,
+            down_price=window.down_price,
+        )
+
     # ─── Order Resolution Callback ────────────────────────────────────────────
 
     def _on_order_resolution(self, order) -> None:
@@ -525,6 +576,10 @@ class Orchestrator:
         Strategies run concurrently per state update.
         """
         strategies = [self._arb_strategy, self._cascade_strategy]
+        
+        # Add 5-min strategy if enabled
+        if self._five_min_strategy:
+            strategies.append(self._five_min_strategy)
 
         try:
             async for state in self._aggregator.stream():
