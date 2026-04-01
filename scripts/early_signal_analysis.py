@@ -57,7 +57,7 @@ def evaluate_indicators(windows):
         {"label": "T-180s", "desc": "2 min in", "candles": 2},
         {"label": "T-120s", "desc": "3 min in", "candles": 3},
         {"label": "T-60s", "desc": "4 min in", "candles": 4},
-        {"label": "T-10s", "desc": "~close", "candles": 4},  # use 4th candle close as proxy
+        {"label": "T-10s", "desc": "~close", "candles": 5},  # 5th candle close ≈ T-1s (best proxy for T-10s)
     ]
     
     indicators = ["Window Delta", "VW Delta", "Taker Buy Ratio", "Price ROC", 
