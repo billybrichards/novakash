@@ -124,14 +124,25 @@ class TelegramAlerter:
             mode_tag = "📄 PAPER" if self._paper_mode else "💰 LIVE"
             market_slug = getattr(order, "market_slug", None) or order.metadata.get("market_slug", order.market_id or "—")
 
+            # Entry timing and token price from metadata
+            entry_label = order.metadata.get("entry_label", "—")
+            delta_pct = order.metadata.get("delta_pct")
+            confidence = order.metadata.get("confidence", "—")
+            token_price = order.price
+
             lines = [
                 f"{direction_emoji} *Trade Alert — {order.strategy}* ({mode_tag})",
                 f"Direction: `{order.direction}`",
+                f"Entry: `{entry_label}`",
+                f"Delta: `{delta_pct:+.4f}%`" if delta_pct is not None else None,
+                f"Token Price: `${float(token_price):.4f}`" if token_price else None,
+                f"Confidence: `{confidence}`",
                 f"Stake: `${order.stake_usd:.2f}`",
                 f"Venue: `{order.venue}`",
                 f"Market: `{market_slug}`",
                 f"Status: `{order.status.value}`",
             ]
+            lines = [l for l in lines if l is not None]  # filter None entries
 
             if order.pnl_usd is not None:
                 pnl_sign = "+" if order.pnl_usd >= 0 else ""
