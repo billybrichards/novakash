@@ -56,9 +56,10 @@
 
 ## Project: BTC Trader Hub
 
-A prediction market trading system for BTC with two strategies:
-1. **Sub-$1 Arbitrage** — Exploits YES+NO pricing inefficiencies on Polymarket
-2. **VPIN Cascade Filter** — Directional bets on forced liquidation cascades
+A prediction market trading system for BTC with three strategies:
+1. **5-Minute Up/Down** ⭐ — Trades Polymarket's ephemeral 5-min BTC markets using window delta at T-10s (82% backtest win rate)
+2. **Sub-$1 Arbitrage** — Exploits YES+NO pricing inefficiencies on Polymarket (currently inactive — spreads too wide)
+3. **VPIN Cascade Filter** — Directional bets on forced liquidation cascades (currently inactive — low vol)
 
 ## Tech Stack
 
