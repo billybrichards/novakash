@@ -480,7 +480,7 @@ class Orchestrator:
     async def _on_five_min_window(self, window) -> None:
         """Handle 5-minute window signal from the feed.
         
-        The strategy has its own window handler, but we log here for observability.
+        Logs for observability AND forwards to the strategy for evaluation.
         """
         log.info(
             "five_min.window_signal",
@@ -490,6 +490,9 @@ class Orchestrator:
             up_price=window.up_price,
             down_price=window.down_price,
         )
+        # Forward to strategy — sets _pending_window so next on_market_state evaluates it
+        if self._five_min_strategy:
+            self._five_min_strategy._pending_window = window
 
     # ─── Order Resolution Callback ────────────────────────────────────────────
 
