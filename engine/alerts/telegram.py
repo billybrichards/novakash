@@ -140,32 +140,68 @@ class TelegramAlerter:
             mode_tag = "📄 PAPER" if self._paper_mode else "💰 LIVE"
             market_slug = getattr(order, "market_slug", None) or order.metadata.get("market_slug", order.market_id or "—")
 
-            # Entry timing and token price from metadata
+            # Entry timing and pricing from metadata
             entry_label = order.metadata.get("entry_label", "—")
             delta_pct = order.metadata.get("delta_pct")
             confidence = order.metadata.get("confidence", "—")
             token_price = order.price
+            window_open = order.metadata.get("window_open_price")
+            clob_order_id = order.metadata.get("clob_order_id")
+            data_source = "REAL" if not self._paper_mode else "REAL prices, PAPER execution"
+
+            # Price analysis
+            try:
+                tp = float(token_price)
+                shares = order.stake_usd / tp if tp > 0 else 0
+                potential_profit = shares * 1.0 - order.stake_usd
+                potential_return = (potential_profit / order.stake_usd * 100) if order.stake_usd > 0 else 0
+            except (ValueError, ZeroDivisionError):
+                shares = 0
+                potential_profit = 0
+                potential_return = 0
 
             lines = [
                 f"{direction_emoji} *Trade Alert — {order.strategy}* ({mode_tag})",
+                f"",
+                f"📊 *Signal*",
                 f"Direction: `{order.direction}`",
                 f"Entry: `{entry_label}`",
                 f"Delta: `{delta_pct:+.4f}%`" if delta_pct is not None else None,
-                f"Token Price: `${float(token_price):.4f}`" if token_price else None,
                 f"Confidence: `{confidence}`",
+                f"",
+                f"💰 *Pricing* ({data_source})",
+                f"Token Price: `${float(token_price):.4f}`" if token_price else None,
+                f"Shares: `{shares:.2f}`",
                 f"Stake: `${order.stake_usd:.2f}`",
+                f"Potential Win: `+${potential_profit:.2f}` (`+{potential_return:.0f}%`)" if order.outcome is None else None,
+                f"",
+                f"🔗 *Market*",
                 f"Venue: `{order.venue}`",
                 f"Market: `{market_slug}`",
+                f"Window Open: `${window_open:,.2f}`" if window_open else None,
                 f"Status: `{order.status.value}`",
             ]
-            lines = [l for l in lines if l is not None]  # filter None entries
+
+            # Add txn hash / block ref if present (live mode)
+            if clob_order_id:
+                lines.append(f"CLOB Order: `{clob_order_id}`")
+            
+            tx_hash = order.metadata.get("tx_hash")
+            block_ref = order.metadata.get("block_number")
+            if tx_hash:
+                lines.append(f"Tx: `{tx_hash}`")
+            if block_ref:
+                lines.append(f"Block: `{block_ref}`")
+
+            lines = [l for l in lines if l is not None]
 
             if order.pnl_usd is not None:
                 pnl_sign = "+" if order.pnl_usd >= 0 else ""
-                lines.append(f"{outcome_emoji}PnL: `{pnl_sign}${order.pnl_usd:.2f}`")
+                lines.append(f"")
+                lines.append(f"{outcome_emoji}*PnL: `{pnl_sign}${order.pnl_usd:.2f}`*")
 
             # ── Running Totals ────────────────────────────────────────────
-            lines.append("")  # blank line separator
+            lines.append("")
 
             if self._risk_manager:
                 try:
@@ -187,7 +223,7 @@ class TelegramAlerter:
                     wallet_balance = await self._poly_client.get_balance()
                     lines.append(f"🏦 Poly Wallet: `${wallet_balance:.2f}` USDC")
                 except Exception:
-                    pass  # wallet balance is best-effort
+                    pass
 
             await self._send("\n".join(lines))
 
