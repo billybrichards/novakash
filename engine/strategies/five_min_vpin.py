@@ -283,28 +283,34 @@ class FiveMinVPINStrategy(BaseStrategy):
             )
             return
         
-        # Calculate realistic token price based on delta (matches backtest model)
-        # Market prices in for the directional lean as delta grows
-        token_price = self._delta_to_token_price(signal.delta_pct)
-        
-        # Select direction
+        # Select direction and token ID
         if signal.direction == "UP":
             direction = "YES"
-            price = Decimal(str(round(token_price, 4)))
             token_id = window.up_token_id
         else:
             direction = "NO"
-            price = Decimal(str(round(token_price, 4)))
             token_id = window.down_token_id
         
         if token_id is None:
             self._log.error("execute.no_token_id", direction=signal.direction)
             return
         
+        # Price: use real Gamma API prices when available (live mode),
+        # fall back to delta-based approximation (paper mode)
+        if direction == "YES" and window.up_price is not None:
+            token_price = window.up_price
+        elif direction == "NO" and window.down_price is not None:
+            token_price = window.down_price
+        else:
+            token_price = self._delta_to_token_price(signal.delta_pct)
+        
+        price = Decimal(str(round(token_price, 4)))
+        market_slug = f"{window.asset.lower()}-updown-5m-{window.window_ts}"
+        
         # Place order — pass real token_id for live mode
         try:
-            order_id = await self._poly.place_order(
-                market_slug=f"{window.asset.lower()}-updown-5m-{window.window_ts}",
+            clob_order_id = await self._poly.place_order(
+                market_slug=market_slug,
                 direction=direction,
                 price=price,
                 stake_usd=stake,
@@ -314,13 +320,16 @@ class FiveMinVPINStrategy(BaseStrategy):
             self._log.error("execute.order_failed", error=str(exc))
             return
         
+        # Use the real CLOB order ID so we can track it on-chain
+        order_id = clob_order_id if not self._poly.paper_mode else f"5min-{uuid.uuid4().hex[:12]}"
+        
         # Calculate fee
         fee_mult = 0.072  # Polymarket fee
         fee_usd = fee_mult * float(price) * (1.0 - float(price)) * stake
         
         # Create order
         order = Order(
-            order_id=f"5min-{uuid.uuid4().hex[:12]}",
+            order_id=order_id,
             strategy=self.name,
             venue="polymarket",
             direction=direction,
@@ -330,7 +339,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             status=OrderStatus.OPEN,
             btc_entry_price=signal.current_price,
             window_seconds=300,  # 5-minute window
-            market_id=f"{window.asset.lower()}-updown-5m-{window.window_ts}",
+            market_id=market_slug,
             metadata={
                 "window_ts": window.window_ts,
                 "window_open_price": window.open_price,
@@ -338,6 +347,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                 "vpin": signal.current_vpin,
                 "confidence": signal.confidence,
                 "token_id": token_id,
+                "clob_order_id": clob_order_id,
+                "market_slug": market_slug,
             },
         )
         

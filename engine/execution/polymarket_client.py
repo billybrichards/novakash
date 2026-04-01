@@ -12,6 +12,7 @@ Safety guards for live mode:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import random
 import time
@@ -110,18 +111,31 @@ class PolymarketClient:
         from py_clob_client.client import ClobClient
         from py_clob_client.clob_types import ApiCreds
 
-        self._clob_client = ClobClient(
+        # Build base client args
+        client_kwargs = dict(
             host="https://clob.polymarket.com",
             key=self._private_key,
             chain_id=137,  # Polygon mainnet
-            creds=ApiCreds(
-                api_key=self._api_key,
-                api_secret=self._api_secret,
-                api_passphrase=self._api_passphrase,
-            ),
             signature_type=2,  # POLY_GNOSIS_SAFE
             funder=self._funder_address,
         )
+
+        # Use provided API creds, or auto-derive from private key
+        if self._api_key and self._api_secret and self._api_passphrase:
+            client_kwargs["creds"] = ApiCreds(
+                api_key=self._api_key,
+                api_secret=self._api_secret,
+                api_passphrase=self._api_passphrase,
+            )
+            self._clob_client = ClobClient(**client_kwargs)
+        else:
+            # Derive creds from private key (first-time setup)
+            self._clob_client = ClobClient(**client_kwargs)
+            self._clob_client.set_api_creds(
+                self._clob_client.create_or_derive_api_creds()
+            )
+            self._log.info("polymarket_client.creds_derived", mode="live")
+
         self._log.info("polymarket_client.connected", mode="live")
 
     # ------------------------------------------------------------------
@@ -278,13 +292,21 @@ class PolymarketClient:
             side=BUY,
         )
 
-        # Create and sign the order (py-clob-client handles all crypto)
-        signed_order = self._clob_client.create_order(order_args)
+        # py-clob-client is synchronous — run in thread to avoid blocking
+        # the asyncio event loop (network + crypto signing)
+        client = self._clob_client
 
-        # Submit to CLOB as a GTC limit order
-        response = self._clob_client.post_order(signed_order, OrderType.GTC)
+        def _sign_and_submit():
+            signed_order = client.create_order(order_args)
+            return client.post_order(signed_order, OrderType.GTC)
 
-        order_id = response.get("orderID", f"live-{uuid.uuid4().hex[:12]}")
+        response = await asyncio.to_thread(_sign_and_submit)
+
+        # Response can be a dict or an object — handle both
+        if isinstance(response, dict):
+            order_id = response.get("orderID") or response.get("id") or f"live-{uuid.uuid4().hex[:12]}"
+        else:
+            order_id = getattr(response, "orderID", None) or getattr(response, "id", None) or f"live-{uuid.uuid4().hex[:12]}"
 
         self._log.info(
             "place_order.live_submitted",
@@ -338,9 +360,13 @@ class PolymarketClient:
 
         from py_clob_client.clob_types import MarketOrderArgs
 
+        client = self._clob_client
         order = MarketOrderArgs(token_id=token_id, amount=amount_usd)
-        resp = self._clob_client.create_and_post_order(order)
-        return resp.get("orderID", f"live-{uuid.uuid4().hex[:12]}")
+        resp = await asyncio.to_thread(client.create_and_post_order, order)
+
+        if isinstance(resp, dict):
+            return resp.get("orderID") or resp.get("id") or f"live-{uuid.uuid4().hex[:12]}"
+        return getattr(resp, "orderID", None) or f"live-{uuid.uuid4().hex[:12]}"
 
     # ------------------------------------------------------------------
     # Market helpers
@@ -380,30 +406,51 @@ class PolymarketClient:
         if not self._clob_client:
             raise RuntimeError("CLOB client not connected — call connect() first")
 
-        # Resolve market slug to a token ID by querying the CLOB markets endpoint.
-        # We use the YES (index 0) token to look up the order book.
-        # The caller should ideally pass the token_id directly for efficiency.
-        # Here we do a best-effort lookup via the CLOB client's get_markets().
+        # Resolve market slug to a token ID via the CLOB search endpoint,
+        # then fetch the order book for the YES token.
+        # Uses asyncio.to_thread() because py-clob-client is synchronous.
+        client = self._clob_client
         try:
-            markets = self._clob_client.get_markets()
-            yes_token_id = None
-            for market in (markets or []):
-                if market_slug in (market.get("market_slug", ""), market.get("slug", "")):
-                    tokens = market.get("clobTokenIds") or market.get("tokens", [])
-                    if tokens and len(tokens) >= 1:
-                        yes_token_id = tokens[0] if isinstance(tokens[0], str) else tokens[0].get("token_id")
-                    break
+            def _fetch_prices():
+                # Search for specific market instead of fetching all markets
+                # py-clob-client get_market(condition_id) or get_markets() with next_cursor
+                # Fallback: iterate paginated results with a slug filter
+                import httpx as _httpx
+                resp = _httpx.get(
+                    "https://clob.polymarket.com/markets",
+                    params={"slug": market_slug},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                markets = resp.json()
 
-            if not yes_token_id:
+                if isinstance(markets, dict):
+                    # Paginated response: {"data": [...], "next_cursor": ...}
+                    markets = markets.get("data", [])
+
+                yes_token_id = None
+                for market in (markets or []):
+                    slug = market.get("market_slug", "") or market.get("slug", "")
+                    if market_slug in slug:
+                        tokens = market.get("clobTokenIds") or market.get("tokens", [])
+                        if tokens and len(tokens) >= 1:
+                            yes_token_id = tokens[0] if isinstance(tokens[0], str) else tokens[0].get("token_id")
+                        break
+
+                if not yes_token_id:
+                    return None
+
+                order_book = client.get_order_book(yes_token_id)
+                if order_book and order_book.asks:
+                    return Decimal(str(order_book.asks[0].price))
+                return Decimal("0.5")
+
+            yes_best_ask = await asyncio.to_thread(_fetch_prices)
+
+            if yes_best_ask is None:
                 self._log.warning("get_market_prices.token_not_found", market_slug=market_slug)
                 return {}
 
-            order_book = self._clob_client.get_order_book(yes_token_id)
-            yes_best_ask = (
-                Decimal(str(order_book.asks[0].price))
-                if order_book and order_book.asks
-                else Decimal("0.5")
-            )
             no_price = Decimal("1") - yes_best_ask
 
             self._log.debug(
@@ -434,7 +481,7 @@ class PolymarketClient:
         if not self._clob_client:
             raise RuntimeError("CLOB client not connected — call connect() first")
 
-        return float(self._clob_client.get_balance())
+        return float(await asyncio.to_thread(self._clob_client.get_balance))
 
     async def get_order_status(self, order_id: str) -> dict:
         """Return status dict for a given order ID.
@@ -453,11 +500,17 @@ class PolymarketClient:
         if not self._clob_client:
             raise RuntimeError("CLOB client not connected — call connect() first")
 
-        resp = self._clob_client.get_order(order_id)
+        resp = await asyncio.to_thread(self._clob_client.get_order, order_id)
+        if isinstance(resp, dict):
+            return {
+                "order_id": order_id,
+                "status": resp.get("status", "UNKNOWN"),
+                "size_matched": resp.get("size_matched"),
+                "price": resp.get("price"),
+                "raw": resp,
+            }
         return {
             "order_id": order_id,
-            "status": resp.get("status", "UNKNOWN"),
-            "size_matched": resp.get("size_matched"),
-            "price": resp.get("price"),
+            "status": getattr(resp, "status", "UNKNOWN"),
             "raw": resp,
         }
