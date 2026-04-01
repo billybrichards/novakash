@@ -2173,4 +2173,12 @@ You can run paper and live simultaneously:
 
 For cascade bets:
   effective_price = market_price × (1 + directional_slippage)
-  Default directional_slippage = 0.005 (0.5%)
+  Default directional_slippage = 0.005 (0.5%)`}</MathBlock>
+            </Card>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+export default Learn;
