@@ -16,6 +16,7 @@ import TradingConfig from './pages/TradingConfig.jsx';
 import Positions from './pages/Positions.jsx';
 import Risk from './pages/Risk.jsx';
 import Learn from './pages/Learn.jsx';
+import Changelog from './pages/Changelog.jsx';
 
 export default function App() {
   return (
@@ -48,6 +49,7 @@ export default function App() {
             <Route path="trading-config" element={<TradingConfig />} />
             <Route path="setup" element={<Setup />} />
             <Route path="learn" element={<Learn />} />
+            <Route path="changelog" element={<Changelog />} />
           </Route>
 
           {/* 404 fallback */}
