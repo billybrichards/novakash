@@ -418,22 +418,26 @@ class Polymarket5MinFeed:
         if window.down_token_id is None:
             window.down_token_id = f"paper-down-{window.asset}-{window.window_ts}"
         
-        # Use real BTC price as window open price (captured at window start)
-        # This ensures delta calculation works correctly vs real current price
-        # In paper mode, we grab the real price and add tiny noise to simulate
-        # the small difference between window open and "now"
-        try:
-            import aiohttp
-            async with aiohttp.ClientSession() as session:
-                async with session.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                    data = await resp.json()
-                    real_price = float(data["price"])
-                    # Use exact price — no noise. The real delta between window
-                    # open and T-10s evaluation IS the signal.
-                    window.open_price = real_price
-        except Exception:
-            # Fallback: use a reasonable estimate
-            window.open_price = 68500.0 + random.uniform(-200, 200)
+        # Fetch real price for this asset from Binance (works for BTC, ETH, SOL, etc.)
+        asset_symbols = {
+            "BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT",
+            "DOGE": "DOGEUSDT", "XRP": "XRPUSDT", "BNB": "BNBUSDT",
+            "HYPE": "HYPEUSDT",
+        }
+        symbol = asset_symbols.get(window.asset, f"{window.asset}USDT")
+        
+        if window.open_price is None:
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                        data = await resp.json()
+                        window.open_price = float(data["price"])
+            except Exception:
+                # Fallback estimates
+                fallbacks = {"BTC": 68500, "ETH": 1850, "SOL": 130, "DOGE": 0.17, "XRP": 0.60}
+                window.open_price = fallbacks.get(window.asset, 100.0) + random.uniform(-5, 5)
         
         self._log.debug(
             "paper.market_data",

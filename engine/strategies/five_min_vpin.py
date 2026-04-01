@@ -149,10 +149,16 @@ class FiveMinVPINStrategy(BaseStrategy):
             self._log.debug("window.already_executed", window=window_key)
             return
         
-        # Get current BTC price
-        current_price = float(state.btc_price) if state.btc_price else None
+        # Get current price for this asset
+        # BTC comes from the live Binance websocket via state.btc_price
+        # Other assets: fetch spot price from Binance REST API
+        if window.asset == "BTC":
+            current_price = float(state.btc_price) if state.btc_price else None
+        else:
+            current_price = await self._fetch_current_price(window.asset)
+        
         if current_price is None:
-            self._log.warning("evaluate.no_current_price")
+            self._log.warning("evaluate.no_current_price", asset=window.asset)
             return
         
         # Get window open price
@@ -365,6 +371,31 @@ class FiveMinVPINStrategy(BaseStrategy):
             entry=f"T-{FIVE_MIN_ENTRY_OFFSET}s",
             token_price=str(price),
         )
+
+    # ─── Price Fetching ─────────────────────────────────────────────────────
+
+    _ASSET_TO_SYMBOL = {
+        "BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT",
+        "DOGE": "DOGEUSDT", "XRP": "XRPUSDT", "BNB": "BNBUSDT",
+        "HYPE": "HYPEUSDT",
+    }
+
+    async def _fetch_current_price(self, asset: str) -> float | None:
+        """Fetch current spot price from Binance REST API for non-BTC assets."""
+        symbol = self._ASSET_TO_SYMBOL.get(asset.upper())
+        if not symbol:
+            self._log.warning("unknown_asset_symbol", asset=asset)
+            return None
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    data = await resp.json()
+                    return float(data["price"])
+        except Exception as exc:
+            self._log.warning("price_fetch_failed", asset=asset, error=str(exc))
+            return None
 
     @staticmethod
     def _delta_to_token_price(delta_pct: float) -> float:
