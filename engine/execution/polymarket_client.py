@@ -347,7 +347,6 @@ class PolymarketClient:
             market_slug=market_slug,
             direction=direction,
             price=str(price),
-            size=size,
             stake_usd=stake_usd,
             token_id=token_id[:20] + "..." if len(token_id) > 20 else token_id,
         )
