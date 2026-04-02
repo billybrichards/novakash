@@ -288,6 +288,20 @@ class FiveMinVPINStrategy(BaseStrategy):
                 reason=reason,
                 entry=f"T-{FIVE_MIN_ENTRY_OFFSET}s",
             )
+            # Notify on Telegram when risk blocks a trade
+            if self._alerter:
+                try:
+                    tf = "15m" if window.duration_secs == 900 else "5m"
+                    import asyncio
+                    asyncio.create_task(self._alerter.send_system_alert(
+                        f"Trade BLOCKED — {window.asset} {tf}\n"
+                        f"Stake: ${stake:.2f}\n"
+                        f"Reason: {reason}\n"
+                        f"Delta: {signal.delta_pct:+.4f}%",
+                        level="warning",
+                    ))
+                except Exception:
+                    pass
             return
         
         # Select direction and token ID
