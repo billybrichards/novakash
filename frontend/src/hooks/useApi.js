@@ -1,45 +1,66 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { useAuth } from '../auth/AuthContext.jsx';
 
 /**
- * useApi — Axios wrapper with JWT auth header.
+ * useApi — Returns an axios-like object with auth headers.
  *
- * Usage:
- *   const api = useApi();
- *   const res = await api.get('/api/dashboard');
+ * Supports both calling conventions used across the codebase:
+ *   1. api.get('/trades')           — axios instance style
+ *   2. api('GET', '/trading-config') — callable style
+ *
+ * Base URL is '/api' — all paths are relative to it.
+ * Paths that already start with '/api/' are normalised to avoid double-prefix.
  */
 export function useApi() {
   const { token, logout } = useAuth();
 
-  return useCallback(
-    (method, url, config = {}) => {
-      const instance = axios.create({
-        baseURL: '/api',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          ...config.headers,
-        },
-      });
+  return useMemo(() => {
+    const instance = axios.create({
+      baseURL: '/api',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
 
-      instance.interceptors.response.use(
-        res => res,
-        err => {
-          // Logout on 401
-          if (err.response?.status === 401) {
-            logout();
-          }
-          return Promise.reject(err);
+    instance.interceptors.request.use(config => {
+      // Strip leading /api/ to avoid double-prefix (/api/api/...)
+      if (config.url && config.url.startsWith('/api/')) {
+        config.url = config.url.slice(4); // '/api/foo' → '/foo'
+      }
+      return config;
+    });
+
+    instance.interceptors.response.use(
+      res => res,
+      err => {
+        if (err.response?.status === 401) {
+          logout();
         }
-      );
+        return Promise.reject(err);
+      }
+    );
 
+    // Make the instance callable: api('GET', '/url', config)
+    const callable = (method, url, config = {}) => {
       return instance({ method, url, ...config });
-    },
-    [token, logout]
-  );
+    };
+
+    // Attach axios methods so api.get(), api.post() etc. work too
+    callable.get = instance.get.bind(instance);
+    callable.post = instance.post.bind(instance);
+    callable.put = instance.put.bind(instance);
+    callable.delete = instance.delete.bind(instance);
+    callable.patch = instance.patch.bind(instance);
+
+    // Expose the raw instance for edge cases
+    callable.instance = instance;
+
+    return callable;
+  }, [token, logout]);
 }
 
-// Also export a module-level instance for non-hook contexts
+// Module-level instance for non-hook contexts (no auth)
 export const api = {
   get: (url, config) => axios.get(url, config),
   post: (url, data, config) => axios.post(url, data, config),

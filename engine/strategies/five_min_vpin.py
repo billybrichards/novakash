@@ -1,25 +1,26 @@
 """
-5-Minute VPIN Strategy
+5-Minute VPIN Strategy — Full-Window Continuous Monitor
 
-Combines window delta analysis with VPIN signal for 5-minute Polymarket
-Up/Down markets. Trades at T-10s for optimal entry timing.
+Monitors the FULL 5-minute window from open to close.
+Fires when composite signal confidence meets the time-tier threshold:
+  - DECISIVE (any time): very high confidence → fire early, cheap tokens
+  - HIGH (T-120s+): good confidence → fire with decent pricing
+  - MODERATE (T-30s+): moderate confidence → fire with standard pricing
+  - DEADLINE (T-5s): use best signal seen → fire regardless
 
-Decision Logic:
-- If VPIN >= 0.30 AND delta direction aligns → HIGH confidence, enter early (T-30s)
-- If delta > 0.10% → HIGH confidence, bet with delta
-- If delta > 0.02% → MODERATE confidence
-- If delta > 0.005% → LOW confidence
-- If delta < 0.005% → SKIP (coin flip, no edge)
-
-Bankroll Management:
-- Safe mode: 25% per trade
-- Flat mode: Fixed USD amount
-- Degen mode: 50% per trade
+Signal components:
+  1. Window Delta (weight 5-7)  — primary
+  2. VPIN (weight 2-3)          — informed flow detection
+  3. Liquidation surge (wt 2)   — CoinGlass 1m (if available)
+  4. Long/Short ratio (wt 1.5)  — CoinGlass 1m (if available)
+  5. Funding rate (wt 1)        — CoinGlass (if available)
+  6. OI delta (wt 1)            — CoinGlass 1m (if available)
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -36,6 +37,7 @@ from execution.order_manager import Order, OrderManager, OrderStatus
 from execution.polymarket_client import PolymarketClient
 from execution.risk_manager import RiskManager
 from signals.vpin import VPINCalculator
+from signals.window_evaluator import WindowEvaluator, WindowState as EvalWindowState, WindowSignal
 from strategies.base import BaseStrategy
 
 log = structlog.get_logger(__name__)
@@ -67,6 +69,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         poly_client: PolymarketClient,
         vpin_calculator: VPINCalculator,
         alerter=None,
+        cg_enhanced=None,
         on_window_signal: Optional[Callable[[WindowInfo], Awaitable[None]]] = None,
     ) -> None:
         super().__init__(
@@ -77,9 +80,14 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._poly = poly_client
         self._vpin = vpin_calculator
         self._alerter = alerter
+        self._cg_enhanced = cg_enhanced  # CoinGlassEnhancedFeed (optional)
+        self._evaluator = WindowEvaluator()
         
         # Track last executed window to avoid duplicates
         self._last_executed_window: Optional[str] = None
+        
+        # Active window monitoring state (one per window)
+        self._active_eval_states: dict[str, EvalWindowState] = {}
         
         # Window info buffer (populated by feed callbacks)
         self._pending_windows: list = []  # Queue of windows to evaluate (multi-asset)
@@ -96,6 +104,13 @@ class FiveMinVPINStrategy(BaseStrategy):
     async def _default_window_handler(self, window: WindowInfo) -> None:
         """Default window signal handler - stores window for evaluation."""
         self._pending_windows.append(window)
+        # Keep recent windows for token ID lookup
+        if not hasattr(self, '_recent_windows'):
+            self._recent_windows = []
+        self._recent_windows.append(window)
+        # Only keep last 10 windows
+        if len(self._recent_windows) > 10:
+            self._recent_windows = self._recent_windows[-10:]
         self._log.info(
             "window.signal.received",
             asset=window.asset,
@@ -124,31 +139,100 @@ class FiveMinVPINStrategy(BaseStrategy):
 
     async def on_market_state(self, state: MarketState) -> None:
         """
-        Called by the orchestrator on every market state update.
+        Called by the orchestrator on every market state update (~every 1-3s).
         
-        Also checks for pending window signals from the 5-min feed.
+        Full-window continuous monitoring:
+        1. Register new windows from the feed
+        2. Evaluate ALL active windows with latest data
+        3. Fire when the evaluator says confidence is high enough
         """
         if not self._running or not runtime.five_min_enabled:
             return
         
-        # If we have a pending window, evaluate it
+        # Register new windows from the feed
         if self._pending_windows:
-            windows_to_eval = self._pending_windows[:]
+            for window in self._pending_windows:
+                window_key = f"{window.asset}-{window.window_ts}"
+                if window_key not in self._active_eval_states and window_key != self._last_executed_window:
+                    self._active_eval_states[window_key] = EvalWindowState(
+                        window_ts=window.window_ts,
+                        open_price=window.open_price or 0,
+                    )
+                    self._log.info(
+                        "window.monitoring_started",
+                        window_key=window_key,
+                        open_price=window.open_price,
+                    )
             self._pending_windows.clear()
-            for window in windows_to_eval:
-                await self._evaluate_window(window, state)
+        
+        # Evaluate all active windows
+        current_price = float(state.btc_price) if state.btc_price else None
+        if current_price is None:
+            return
+        
+        current_vpin = self._vpin.current_vpin
+        now = time.time()
+        
+        # Get CoinGlass enhanced data if available
+        cg_data = {}
+        if self._cg_enhanced and self._cg_enhanced.connected:
+            snap = self._cg_enhanced.snapshot
+            cg_data = {
+                "liq_total_1m": snap.liq_total_usd_1m,
+                "liq_long_1m": snap.liq_long_usd_1m,
+                "liq_short_1m": snap.liq_short_usd_1m,
+                "long_short_ratio": snap.long_short_ratio,
+                "long_pct": snap.long_pct,
+                "funding_rate": snap.funding_rate,
+                "oi_delta_pct_1m": snap.oi_delta_pct_1m,
+            }
+        
+        # Evaluate each active window
+        expired_keys = []
+        for window_key, eval_state in self._active_eval_states.items():
+            window_close_ts = eval_state.window_ts + 300  # 5-min window
+            seconds_to_close = window_close_ts - now
+            
+            # Clean up expired windows
+            if seconds_to_close < -10:
+                expired_keys.append(window_key)
+                continue
+            
+            # Skip if already fired
+            if eval_state.fired:
+                continue
+            
+            # Update open price if we didn't have it
+            if eval_state.open_price <= 0:
+                # Try to get from any matching pending window
+                continue
+            
+            # Evaluate
+            signal = self._evaluator.evaluate(
+                window_state=eval_state,
+                current_price=current_price,
+                current_vpin=current_vpin,
+                seconds_to_close=seconds_to_close,
+                **cg_data,
+            )
+            
+            if signal is not None:
+                # FIRE — execute the trade
+                eval_state.fired = True
+                self._last_executed_window = window_key
+                await self._execute_from_signal(state, signal, eval_state, window_key)
+        
+        # Clean up expired windows
+        for key in expired_keys:
+            del self._active_eval_states[key]
 
-    # ─── Window Signal Handler ────────────────────────────────────────────────
+    # ─── Legacy Window Handler (still used by feed callback) ──────────────────
 
     async def _evaluate_window(self, window: WindowInfo, state: MarketState) -> None:
         """
-        Evaluate a window at T-10s signal.
-        
-        Args:
-            window: Window info from the 5-min feed
-            state: Current market state
+        Legacy: evaluate a window from the T-offset signal.
+        Now just registers the window for continuous monitoring.
         """
-        # Dedup: skip if we already acted on this window
         window_key = f"{window.asset}-{window.window_ts}"
         if self._last_executed_window == window_key:
             self._log.debug("window.already_executed", window=window_key)
@@ -275,7 +359,155 @@ class FiveMinVPINStrategy(BaseStrategy):
         
         return "NONE"
 
-    # ─── Execution ────────────────────────────────────────────────────────────
+    # ─── Execution (Full-Window Signal) ─────────────────────────────────────
+
+    async def _execute_from_signal(
+        self,
+        state: MarketState,
+        signal: WindowSignal,
+        eval_state: EvalWindowState,
+        window_key: str,
+    ) -> None:
+        """Execute a trade from the full-window evaluator signal."""
+        # Parse window key: "BTC-1711900800"
+        parts = window_key.split("-", 1)
+        asset = parts[0] if len(parts) > 1 else "BTC"
+        window_ts = eval_state.window_ts
+
+        # Calculate stake
+        stake = self._calculate_stake(signal.tier)
+
+        # Risk check
+        approved, reason = await self._check_risk(stake)
+        if not approved:
+            self._log.info("trade.risk_blocked", window=window_key, reason=reason)
+            return
+
+        # Token price: use real Gamma price if available, else evaluator estimate
+        token_price = signal.estimated_token_price
+
+        # Direction and token ID
+        direction = "YES" if signal.direction == "UP" else "NO"
+        price = Decimal(str(round(token_price, 4)))
+
+        # Get token IDs from the feed's window info (if available)
+        token_id = None
+        for window in getattr(self, '_recent_windows', []):
+            if getattr(window, 'window_ts', 0) == window_ts:
+                token_id = window.up_token_id if direction == "YES" else window.down_token_id
+                # Use real Gamma price if available
+                if direction == "YES" and window.up_price is not None:
+                    price = Decimal(str(round(window.up_price, 4)))
+                elif direction == "NO" and window.down_price is not None:
+                    price = Decimal(str(round(window.down_price, 4)))
+                break
+
+        if token_id is None:
+            self._log.warning("execute.no_token_id", window=window_key, direction=direction)
+            # Still try — place_order handles paper mode without token_id
+            token_id = ""
+
+        market_slug = f"{asset.lower()}-updown-5m-{window_ts}"
+
+        try:
+            clob_order_id = await self._poly.place_order(
+                market_slug=market_slug,
+                direction=direction,
+                price=price,
+                stake_usd=stake,
+                token_id=token_id or None,
+            )
+        except Exception as exc:
+            self._log.error("execute.order_failed", window=window_key, error=str(exc))
+            return
+
+        order_id = clob_order_id if not self._poly.paper_mode else f"5min-{uuid.uuid4().hex[:12]}"
+
+        fee_mult = 0.072
+        fee_usd = fee_mult * float(price) * (1.0 - float(price)) * stake
+
+        order = Order(
+            order_id=order_id,
+            strategy=self.name,
+            venue="polymarket",
+            direction=direction,
+            price=str(price),
+            stake_usd=stake,
+            fee_usd=fee_usd,
+            status=OrderStatus.OPEN,
+            btc_entry_price=float(state.btc_price) if state.btc_price else None,
+            window_seconds=300,
+            market_id=market_slug,
+            metadata={
+                "window_ts": window_ts,
+                "window_open_price": eval_state.open_price,
+                "delta_pct": signal.delta_pct,
+                "vpin": signal.vpin,
+                "confidence": signal.confidence,
+                "tier": signal.tier,
+                "entry_reason": signal.entry_reason,
+                "token_id": token_id,
+                "clob_order_id": clob_order_id,
+                "market_slug": market_slug,
+                "seconds_to_close": signal.seconds_to_close,
+                "eval_count": eval_state.eval_count,
+                "score": signal.score,
+                "liq_surge_weight": signal.liq_surge_weight,
+                "ls_imbalance_weight": signal.ls_imbalance_weight,
+                "funding_weight": signal.funding_weight,
+            },
+        )
+
+        await self._om.register_order(order)
+
+        self._log.info(
+            "trade.executed",
+            order_id=order.order_id[:20] + "..." if len(order.order_id) > 20 else order.order_id,
+            window=window_key,
+            direction=direction,
+            tier=signal.tier,
+            confidence=f"{signal.confidence:.2f}",
+            delta_pct=f"{signal.delta_pct:+.4f}%",
+            score=f"{signal.score:.2f}",
+            stake=f"${stake:.2f}",
+            token_price=str(price),
+            seconds_to_close=f"{signal.seconds_to_close:.0f}",
+            entry_reason=signal.entry_reason,
+        )
+
+        # Post-trade fill verification (polling loop)
+        if not self._poly.paper_mode and order.order_id.startswith("0x"):
+            POLL_INTERVAL = 5
+            MAX_WAIT = 60
+            filled = False
+            try:
+                elapsed = 0
+                while elapsed < MAX_WAIT:
+                    await asyncio.sleep(POLL_INTERVAL)
+                    elapsed += POLL_INTERVAL
+                    status = await self._poly.get_order_status(order.order_id)
+                    clob_status = status.get("status", "UNKNOWN")
+                    size_matched = status.get("size_matched", "0")
+                    filled = float(size_matched) > 0 if size_matched else False
+                    if filled or clob_status not in ("LIVE", "UNKNOWN"):
+                        break
+
+                order.metadata["filled"] = filled
+                order.metadata["fill_wait_seconds"] = elapsed
+
+                if filled and self._alerter:
+                    asyncio.create_task(self._alerter.send_entry_alert(order))
+                elif not filled:
+                    self._log.warning("trade.not_filled", order_id=order.order_id[:20], waited=f"{elapsed}s")
+            except Exception as exc:
+                self._log.warning("trade.verify_failed", error=str(exc))
+                if self._alerter:
+                    asyncio.create_task(self._alerter.send_entry_alert(order))
+        else:
+            if self._alerter:
+                asyncio.create_task(self._alerter.send_entry_alert(order))
+
+    # ─── Execution (Legacy) ───────────────────────────────────────────────────
 
     async def _execute_trade(self, state: MarketState, signal: FiveMinSignal) -> None:
         """
