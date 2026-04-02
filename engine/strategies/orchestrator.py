@@ -652,19 +652,19 @@ class Orchestrator:
                 _wallet_check_counter += 1
                 if _wallet_check_counter >= 6:
                     _wallet_check_counter = 0
-                    try:
-                        _cached_wallet_balance = await self._poly_client.get_balance()
-                        # Sync risk manager bankroll from portfolio value (cash + positions)
-                        # This prevents bankroll shrinking due to unredeemed wins
+                    # Only sync from real wallet in LIVE mode
+                    # Paper mode uses STARTING_BANKROLL and tracks internally
+                    if not self._settings.paper_mode:
                         try:
-                            portfolio_value = await self._poly_client.get_portfolio_value()
-                            await self._risk_manager.sync_bankroll(portfolio_value)
-                        except Exception:
-                            # Fallback to cash-only if portfolio fetch fails
-                            if _cached_wallet_balance is not None:
-                                await self._risk_manager.sync_bankroll(_cached_wallet_balance)
-                    except Exception as exc:
-                        log.debug("heartbeat.wallet_balance_error", error=str(exc))
+                            _cached_wallet_balance = await self._poly_client.get_balance()
+                            try:
+                                portfolio_value = await self._poly_client.get_portfolio_value()
+                                await self._risk_manager.sync_bankroll(portfolio_value)
+                            except Exception:
+                                if _cached_wallet_balance is not None:
+                                    await self._risk_manager.sync_bankroll(_cached_wallet_balance)
+                        except Exception as exc:
+                            log.debug("heartbeat.wallet_balance_error", error=str(exc))
 
                 # Build config snapshot with wallet + risk extras + runtime config
                 config_snapshot = {
