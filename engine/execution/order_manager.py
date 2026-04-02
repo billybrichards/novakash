@@ -103,11 +103,13 @@ class OrderManager:
         bankroll: float = 500.0,
         paper_mode: bool = True,
         on_resolution: Optional[callable] = None,
+        poly_client: object = None,
     ) -> None:
         self._db = db
         self._bankroll = bankroll
         self._paper_mode = paper_mode
         self._on_resolution = on_resolution
+        self._poly_client = poly_client
         self._orders: Dict[str, Order] = {}
         self._lock = asyncio.Lock()
         self._log = logger.bind(component="order_manager")
@@ -281,6 +283,43 @@ class OrderManager:
                     expired.append(order)
 
         for order in expired:
+            # Live mode: check if CLOB order actually filled before resolving
+            if not self._paper_mode and self._poly_client and order.order_id.startswith("0x"):
+                try:
+                    clob_status = await self._poly_client.get_order_status(order.order_id)
+                    size_matched = float(clob_status.get("size_matched", "0") or "0")
+                    
+                    if size_matched == 0:
+                        # Order never filled — no position, no win/loss
+                        self._log.info(
+                            "order_manager.unfilled_expired",
+                            order_id=order.order_id[:20] + "...",
+                            clob_status=clob_status.get("status", "UNKNOWN"),
+                        )
+                        # Mark as expired, not win/loss
+                        async with self._lock:
+                            order.status = OrderStatus.EXPIRED
+                            order.outcome = None
+                            order.pnl_usd = 0.0
+                            order.payout_usd = 0.0
+                            order.resolved_at = time.time()
+                        await self._persist_trade(order)
+                        continue
+                    else:
+                        self._log.info(
+                            "order_manager.filled_resolving",
+                            order_id=order.order_id[:20] + "...",
+                            size_matched=size_matched,
+                        )
+                except Exception as exc:
+                    self._log.warning(
+                        "order_manager.clob_check_failed",
+                        order_id=order.order_id[:20] + "...",
+                        error=str(exc),
+                    )
+                    # If CLOB check fails, skip resolution rather than fake it
+                    continue
+
             outcome, payout = self._determine_paper_outcome(order, price)
             resolved = await self.resolve_order(order.order_id, outcome, payout)
 

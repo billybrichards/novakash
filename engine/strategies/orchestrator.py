@@ -130,6 +130,7 @@ class Orchestrator:
             bankroll=settings.starting_bankroll,
             paper_mode=settings.paper_mode,
             on_resolution=self._on_order_resolution,
+            poly_client=self._poly_client,
         )
         self._risk_manager = RiskManager(
             order_manager=self._order_manager,
