@@ -374,11 +374,10 @@ class FiveMinVPINStrategy(BaseStrategy):
         asset = parts[0] if len(parts) > 1 else "BTC"
         window_ts = eval_state.window_ts
 
-        # Calculate stake
-        stake = self._calculate_stake(signal.tier)
-
-        # Risk check
-        approved, reason = await self._check_risk(stake)
+        # Stake calculated after price is determined (see below)
+        # Preliminary risk check with base stake
+        base_stake = self._calculate_stake(signal.tier, signal.estimated_token_price)
+        approved, reason = await self._check_risk(base_stake)
         if not approved:
             self._log.info("trade.risk_blocked", window=window_key, reason=reason)
             return
@@ -458,6 +457,9 @@ class FiveMinVPINStrategy(BaseStrategy):
         except Exception as exc:
             self._log.debug("execute.fresh_price_failed", error=str(exc))
             # Keep the existing price from window/estimate
+
+        # Recalculate stake with the FRESH price for proper risk/reward scaling
+        stake = self._calculate_stake(signal.tier, float(price))
 
         try:
             clob_order_id = await self._poly.place_order(
@@ -569,8 +571,9 @@ class FiveMinVPINStrategy(BaseStrategy):
         """
         window = signal.window
         
-        # Determine stake based on mode
-        stake = self._calculate_stake(signal.confidence)
+        # Determine stake — will recalculate with fresh price later
+        token_price_est = window.down_price or window.up_price or 0.50
+        stake = self._calculate_stake(signal.confidence, token_price_est)
         
         # Risk check
         approved, reason = await self._check_risk(stake)
@@ -820,16 +823,48 @@ class FiveMinVPINStrategy(BaseStrategy):
         else:
             return min(0.92 + (d - 0.15) / 0.10 * 0.05, 0.97)  # 0.92-0.97
 
-    def _calculate_stake(self, confidence: str) -> float:
+    def _calculate_stake(self, confidence: str, token_price: float = 0.50) -> float:
         """
-        Calculate stake using runtime.bet_fraction from env/config.
-        Always respects the global runtime.bet_fraction so risk manager won't block.
+        Calculate stake scaled by token price for consistent risk/reward.
+        
+        Cheaper tokens (30-45¢) → full stake (best R/R, 100%+ upside)
+        Mid tokens (45-55¢)     → full stake (good R/R)
+        Expensive tokens (55-65¢) → reduced stake (lower upside)
+        
+        Formula: base_stake × price_multiplier
+        where price_multiplier = (1 - token_price) / 0.50
+        
+        Examples at $160 bankroll, 10% fraction ($16 base):
+          40¢ → $16 × 1.20 = $19.20 (upside: +$28.80)
+          50¢ → $16 × 1.00 = $16.00 (upside: +$16.00)
+          55¢ → $16 × 0.90 = $14.40 (upside: +$11.76)
+          60¢ → $16 × 0.80 = $12.80 (upside: +$8.53)
+          65¢ → $16 × 0.70 = $11.20 (upside: +$6.03)
         """
         status = self._rm.get_status()
         bankroll = status["current_bankroll"]
+        base_stake = bankroll * runtime.bet_fraction
         
-        # Always use runtime.bet_fraction — this ensures consistency with risk manager
-        return bankroll * runtime.bet_fraction
+        # Scale stake by token price — cheaper tokens get bigger bets
+        # Normalised so 50¢ = 1.0x, 40¢ = 1.2x, 60¢ = 0.8x
+        tp = max(0.30, min(0.65, token_price))
+        price_multiplier = (1.0 - tp) / 0.50
+        
+        # Clamp multiplier: 0.5x to 1.5x of base stake
+        price_multiplier = max(0.5, min(1.5, price_multiplier))
+        
+        adjusted_stake = base_stake * price_multiplier
+        
+        self._log.debug(
+            "stake.calculated",
+            bankroll=f"${bankroll:.2f}",
+            base=f"${base_stake:.2f}",
+            token_price=f"${tp:.2f}",
+            multiplier=f"{price_multiplier:.2f}x",
+            final=f"${adjusted_stake:.2f}",
+        )
+        
+        return adjusted_stake
 
     # ─── Base Strategy Interface ──────────────────────────────────────────────
 
