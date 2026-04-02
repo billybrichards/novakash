@@ -313,7 +313,6 @@ class PositionRedeemer:
 
         try:
             from web3 import Web3
-            from eth_account.messages import encode_defunct
 
             cid_bytes = bytes.fromhex(condition_id.replace("0x", ""))
             zero_bytes32 = b"\x00" * 32
@@ -385,7 +384,7 @@ class PositionRedeemer:
                     self._w3.eth.get_transaction_count, self._account.address
                 ),
                 "gas": int(gas_estimate * 1.2),  # 20% buffer
-                "gasPrice": await asyncio.to_thread(self._w3.eth.gas_price.__int__),
+                "gasPrice": await asyncio.to_thread(lambda: self._w3.eth.gas_price),
                 "chainId": 137,
             })
 

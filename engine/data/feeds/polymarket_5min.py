@@ -256,9 +256,11 @@ class Polymarket5MinFeed:
             if elapsed >= 0:
                 window.state = WindowState.ACTIVE
                 await self._emit_state_change(window.asset, window.window_ts, window.state)
+                # Emit window signal at OPEN so strategy can start monitoring
+                await self._emit_window_signal(window)
         
         elif window.state == WindowState.ACTIVE:
-            # Check for T-10s signal
+            # Check for T-offset signal (re-emit with updated prices)
             if remaining <= self._signal_offset and remaining > 0:
                 window.state = WindowState.CLOSING
                 await self._emit_state_change(window.asset, window.window_ts, window.state)
