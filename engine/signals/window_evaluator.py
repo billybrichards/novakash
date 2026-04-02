@@ -79,12 +79,16 @@ class WindowEvaluator:
     # ── Confidence tiers by time remaining ────────────────────────────────────
     # Earlier = need higher confidence (but get cheaper tokens)
     # Later = lower confidence OK (but tokens are expensive)
+    # v3 TIERS — recalibrated from real trading data (2026-04-02)
+    # Morning system (73% win rate): HIGH needed |delta| > 0.10%
+    # Afternoon system was overconfident: DECISIVE on 0.05% deltas
+    # Tightened thresholds + no DEADLINE (don't trade weak signals)
     TIERS = [
         # (min_seconds_remaining, min_confidence, tier_name)
-        (120, 0.85, "DECISIVE"),    # T-300s to T-120s: need very high confidence
-        (30,  0.60, "HIGH"),        # T-120s to T-30s: need good confidence
-        (5,   0.35, "MODERATE"),    # T-30s to T-5s: moderate is enough
-        (0,   0.00, "DEADLINE"),    # T-5s: fire with whatever we have
+        (120, 0.90, "DECISIVE"),    # T-300s to T-120s: very high bar
+        (30,  0.70, "HIGH"),        # T-120s to T-30s: strong signal required
+        (5,   0.55, "MODERATE"),    # T-30s to T-5s: decent confidence
+        # NO DEADLINE tier — don't fire weak signals at the last second
     ]
 
     def __init__(self) -> None:
@@ -193,9 +197,17 @@ class WindowEvaluator:
             score += oi_weight
 
         # ── Composite Confidence ──────────────────────────────────────────
-        # Normalise: divide by 7 (not 15) because delta dominates
-        # and we want to reach meaningful confidence levels
-        confidence = min(abs(score) / 7.0, 1.0)
+        # v3: Dynamic normalisation — only count ACTIVE components
+        # CoinGlass was returning all zeros → inflated confidence
+        active_max = 3.0  # delta always active (max 3.0)
+        if vpin_weight != 0: active_max += 3.0
+        if liq_weight != 0: active_max += 2.0
+        if ls_weight != 0: active_max += 1.5
+        if funding_weight != 0: active_max += 1.0
+        if oi_weight != 0: active_max += 1.0
+        active_max = max(active_max, 5.0)  # floor at 5.0
+        
+        confidence = min(abs(score) / active_max, 0.95)  # NEVER 100%
 
         # ── Token Price Estimate ──────────────────────────────────────────
         token_price = self._delta_to_token_price(abs_delta)
@@ -223,9 +235,25 @@ class WindowEvaluator:
             window_state.best_signal = signal
 
         # ── Check if we should fire ───────────────────────────────────────
+        # v3 GATES (must ALL pass):
+        #   1. VPIN >= 0.50 (informed flow detected — core thesis)
+        #   2. |delta| >= 0.02% (minimum price movement)
+        #   3. Confidence meets tier threshold
+        #   4. DECISIVE requires |delta| >= 0.10% (proven threshold)
+        
+        if current_vpin < 0.50:
+            return None  # No informed flow = no trade
+        
+        if abs_delta < 0.02:
+            return None  # Too small to have edge
+        
         for min_secs, min_conf, tier_name in self.TIERS:
             if seconds_to_close >= min_secs:
-                if confidence >= min_conf and abs_delta > 0.001:
+                # Extra gate for DECISIVE: need strong delta
+                if tier_name == "DECISIVE" and abs_delta < 0.10:
+                    break  # Don't fire DECISIVE on weak deltas
+                
+                if confidence >= min_conf:
                     signal.tier = tier_name
                     signal.entry_reason = (
                         f"{tier_name} at T-{seconds_to_close:.0f}s: "
@@ -246,29 +274,15 @@ class WindowEvaluator:
                     return signal
                 break  # Only check the applicable tier
 
-        # ── Deadline: T-5s, fire with best signal ─────────────────────────
-        if seconds_to_close <= 5 and window_state.best_signal:
-            best = window_state.best_signal
-            best.tier = "DEADLINE"
-            best.entry_reason = (
-                f"DEADLINE at T-{seconds_to_close:.0f}s: "
-                f"best delta={best.delta_pct:+.4f}%, conf={best.confidence:.2f}"
-            )
-            self._log.info(
-                "window_eval.deadline_fire",
-                direction=best.direction,
-                confidence=f"{best.confidence:.2f}",
-                delta_pct=f"{best.delta_pct:+.4f}%",
-                eval_count=window_state.eval_count,
-            )
-            return best
+        # v3: NO DEADLINE fire — don't trade weak signals at the last second
+        # The morning system never did this and had 73% win rate
 
         # ── Spike Detection ───────────────────────────────────────────────
-        # If score jumped significantly since last eval, fire immediately
-        # (the "teetering moment")
-        if window_state.best_signal and window_state.eval_count > 2:
+        # v3: Tightened — spike requires strong delta AND VPIN confirmation
+        if window_state.best_signal and window_state.eval_count > 5:
             prev_conf = window_state.best_signal.confidence
-            if confidence - prev_conf >= 0.25 and confidence >= 0.50:
+            if (confidence - prev_conf >= 0.30 and confidence >= 0.65 
+                    and abs_delta >= 0.05 and current_vpin >= 0.50):
                 signal.tier = "SPIKE"
                 signal.entry_reason = (
                     f"SPIKE at T-{seconds_to_close:.0f}s: "
