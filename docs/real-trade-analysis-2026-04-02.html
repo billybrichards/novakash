@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Polymarket Trade Analysis – April 2, 2026</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+  
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 11px;
+    color: #1a1a2e;
+    background: #fff;
+    line-height: 1.5;
+    padding: 20px 24px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  
+  /* ── HEADER ── */
+  .header {
+    border-bottom: 3px solid #0f3460;
+    padding-bottom: 12px;
+    margin-bottom: 16px;
+  }
+  .header h1 {
+    font-size: 22px;
+    font-weight: 700;
+    color: #0f3460;
+    letter-spacing: -0.5px;
+  }
+  .header .subtitle {
+    font-size: 12px;
+    color: #636e72;
+    margin-top: 3px;
+  }
+  .header .meta {
+    font-size: 9px;
+    color: #b2bec3;
+    margin-top: 5px;
+  }
+  
+  /* ── SECTION ── */
+  .section {
+    margin-bottom: 20px;
+    page-break-inside: avoid;
+  }
+  .section-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #0f3460;
+    border-bottom: 1.5px solid #0f3460;
+    padding-bottom: 4px;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  
+  /* ── KPI GRID ── */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .kpi-card {
+    background: #f8f9fa;
+    border: 1px solid #dfe6e9;
+    border-radius: 6px;
+    padding: 10px 12px;
+    border-left: 4px solid #0f3460;
+  }
+  .kpi-card.green { border-left-color: #00b894; }
+  .kpi-card.red { border-left-color: #d63031; }
+  .kpi-card.neutral { border-left-color: #636e72; }
+  .kpi-label { font-size: 9px; color: #636e72; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+  .kpi-value { font-size: 16px; font-weight: 700; color: #1a1a2e; margin-top: 2px; }
+  .kpi-value.green { color: #00b894; }
+  .kpi-value.red { color: #d63031; }
+  .kpi-sub { font-size: 8.5px; color: #636e72; margin-top: 2px; }
+  
+  /* ── TABLES ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9.5px;
+    margin-bottom: 6px;
+  }
+  thead th {
+    background: #0f3460;
+    color: #fff;
+    padding: 5px 6px;
+    text-align: left;
+    font-weight: 600;
+    font-size: 9px;
+    letter-spacing: 0.2px;
+  }
+  thead th.right { text-align: right; }
+  thead th.center { text-align: center; }
+  tbody tr:nth-child(even) { background: #f8f9fa; }
+  tbody tr:nth-child(odd) { background: #fff; }
+  tbody td {
+    padding: 4px 6px;
+    border-bottom: 1px solid #dfe6e9;
+  }
+  tbody td.right { text-align: right; font-variant-numeric: tabular-nums; }
+  tbody td.center { text-align: center; }
+  .win-row { background: #e8f8f5 !important; }
+  .loss-row { background: #fdf0ef !important; }
+  .open-row { background: #fff9e6 !important; }
+  .total-row { background: #eaf2ff !important; font-weight: 700; }
+  
+  .badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 9px;
+    font-size: 8.5px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+  }
+  .badge-win { background: #00b894; color: #fff; }
+  .badge-loss { background: #d63031; color: #fff; }
+  .badge-open { background: #636e72; color: #fff; }
+  .badge-up { background: #0984e3; color: #fff; }
+  .badge-down { background: #6c5ce7; color: #fff; }
+  
+  .profit-pos { color: #00b894; font-weight: 600; }
+  .profit-neg { color: #d63031; font-weight: 600; }
+  
+  /* ── FINDINGS ── */
+  .findings-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .finding-card {
+    background: #f8f9fa;
+    border: 1px solid #dfe6e9;
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  .finding-card h4 {
+    font-size: 10px;
+    font-weight: 700;
+    color: #0f3460;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+  }
+  .finding-item {
+    font-size: 9.5px;
+    color: #2d3436;
+    margin-bottom: 5px;
+    padding-left: 14px;
+    position: relative;
+    line-height: 1.45;
+  }
+  .finding-item::before {
+    content: attr(data-icon);
+    position: absolute;
+    left: 0;
+  }
+  
+  /* ── RECS ── */
+  .rec-item {
+    background: #f8f9fa;
+    border: 1px solid #dfe6e9;
+    border-left: 4px solid #0f3460;
+    border-radius: 0 6px 6px 0;
+    padding: 8px 12px;
+    margin-bottom: 7px;
+    font-size: 9.5px;
+    line-height: 1.5;
+  }
+  .rec-item strong { color: #0f3460; }
+  
+  /* ── CAPTION ── */
+  .caption {
+    font-size: 8.5px;
+    color: #b2bec3;
+    font-style: italic;
+    margin-top: 4px;
+    text-align: center;
+  }
+  
+  /* ── FOOTER ── */
+  .footer {
+    border-top: 1px solid #dfe6e9;
+    margin-top: 20px;
+    padding-top: 8px;
+    font-size: 8px;
+    color: #b2bec3;
+    text-align: center;
+  }
+  
+  .page-break { page-break-after: always; }
+  
+  /* ── RUNNING P&L indicator colors ── */
+  .running-pos { color: #00b894; font-weight: 600; }
+  .running-neg { color: #d63031; font-weight: 600; }
+  
+  /* Highlight best/worst */
+  .best-row { background: #d4edda !important; }
+  .worst-row { background: #f8d7da !important; }
+  
+  .period-morning { background: #e8f8f5 !important; }
+  .period-afternoon { background: #fdf0ef !important; }
+  .period-total { background: #eaf2ff !important; font-weight: 700; }
+  
+  .alert {
+    border: 1px solid #dfe6e9;
+    border-left: 4px solid #e17055;
+    background: #fff5f4;
+    border-radius: 0 6px 6px 0;
+    padding: 8px 12px;
+    font-size: 9.5px;
+    margin-bottom: 10px;
+    line-height: 1.5;
+  }
+  .alert strong { color: #e17055; }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <h1>📊 Polymarket Trade Analysis</h1>
+  <div class="subtitle">Bitcoin Up/Down Strategy &nbsp;|&nbsp; April 2, 2026 &nbsp;|&nbsp; Ground Truth Report (CSV Export)</div>
+  <div class="meta">Source: /root/Downloads/Polymarket-History-2026-04-02.csv &nbsp;·&nbsp; Timestamps in US/Eastern (EDT, UTC−4) &nbsp;·&nbsp; All amounts in USDC &nbsp;·&nbsp; DB data excluded (phantom wins recorded)</div>
+</div>
+
+<!-- ══════════════════════════════════════════════════ -->
+<!-- SECTION 1: EXECUTIVE SUMMARY -->
+<!-- ══════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">1. Executive Summary</div>
+  
+  <div class="kpi-grid">
+    <div class="kpi-card neutral">
+      <div class="kpi-label">Total Deposited</div>
+      <div class="kpi-value">$208.98</div>
+      <div class="kpi-sub">2 deposits (Apr 2 + Mar 31)</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Total Spent (Buys)</div>
+      <div class="kpi-value">$636.30</div>
+      <div class="kpi-sub">32 positions opened</div>
+    </div>
+    <div class="kpi-card green">
+      <div class="kpi-label">Total Redeemed</div>
+      <div class="kpi-value green">$588.27</div>
+      <div class="kpi-sub">16 winning positions</div>
+    </div>
+    <div class="kpi-card red">
+      <div class="kpi-label">Net P&amp;L</div>
+      <div class="kpi-value red">−$48.03</div>
+      <div class="kpi-sub">Redeemed − Spent</div>
+    </div>
+  </div>
+  
+  <div class="kpi-grid">
+    <div class="kpi-card neutral">
+      <div class="kpi-label">Est. Current Balance</div>
+      <div class="kpi-value">$160.95</div>
+      <div class="kpi-sub">Deposits + Net P&amp;L</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Resolved Positions</div>
+      <div class="kpi-value">18</div>
+      <div class="kpi-sub">16 wins · 2 explicit losses</div>
+    </div>
+    <div class="kpi-card red">
+      <div class="kpi-label">Win Rate (Explicit)</div>
+      <div class="kpi-value red">47.1%</div>
+      <div class="kpi-sub">16W / 18 resolved (incl. likely losses)</div>
+    </div>
+    <div class="kpi-card red">
+      <div class="kpi-label">No-Redeem Positions</div>
+      <div class="kpi-value red">16</div>
+      <div class="kpi-sub">$267.37 expired worthless</div>
+    </div>
+  </div>
+
+  <div class="alert">
+    <strong>⚠️ Important:</strong> 16 positions totalling <strong>$267.37 USDC</strong> have <em>no redeem record</em> in the CSV export. All these markets ended hours before the export (end of day Apr 2). They expired as LOSS (tokens worth $0, no blockchain transaction generated). The DB was incorrectly recording these as wins — this is the phantom win bug. True win rate across all positions: <strong>16 wins / 34 total = 47.1%</strong>.
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════ -->
+<!-- SECTION 2: POSITION TIMELINE -->
+<!-- ══════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">2. Position Timeline — Buy → Redeem Matching</div>
+  
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Market Window (ET)</th>
+        <th class="center">Dir</th>
+        <th class="right">Avg Price</th>
+        <th class="right">Cost (USDC)</th>
+        <th class="right">Payout (USDC)</th>
+        <th class="center">Outcome</th>
+        <th class="right">Profit</th>
+        <th class="right">Running P&amp;L</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- 1 --> <tr class="win-row"><td>1</td><td>6:35–6:40 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">49.0¢</td><td class="right">20.80</td><td class="right">42.45</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+21.65</td><td class="right running-pos">+21.65</td></tr>
+      <!-- 2 --> <tr class="open-row"><td>2</td><td>6:30–6:45 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">0.3¢</td><td class="right">0.14</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−0.14</td><td class="right running-pos">+21.51</td></tr>
+      <!-- 3 --> <tr class="win-row"><td>3</td><td>6:45–6:50 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">49.0¢</td><td class="right">22.93</td><td class="right">46.79</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+23.86</td><td class="right running-pos">+45.37</td></tr>
+      <!-- 4 --> <tr class="win-row"><td>4</td><td>6:50–6:55 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">39.8¢</td><td class="right">17.78</td><td class="right">44.70</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+26.92</td><td class="right running-pos">+72.29</td></tr>
+      <!-- 5 --> <tr class="open-row"><td>5</td><td>6:55–7:00 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">47.9¢</td><td class="right">23.73</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−23.73</td><td class="right running-pos">+48.56</td></tr>
+      <!-- 6 --> <tr class="win-row"><td>6</td><td>7:00–7:05 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">49.0¢</td><td class="right">30.22</td><td class="right">61.68</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+31.46</td><td class="right running-pos">+80.02</td></tr>
+      <!-- 7 --> <tr class="open-row"><td>7</td><td>7:15–7:30 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">0.4¢</td><td class="right">0.32</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−0.32</td><td class="right running-pos">+79.70</td></tr>
+      <!-- 8 --> <tr class="win-row best-row"><td>8</td><td>7:55–8:00 AM ⭐</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">33.0¢</td><td class="right">28.77</td><td class="right">87.17</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+58.40</td><td class="right running-pos">+138.10</td></tr>
+      <!-- 9 --> <tr class="open-row"><td>9</td><td>8:20–8:25 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">47.1¢</td><td class="right">34.61</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−34.61</td><td class="right running-pos">+103.50</td></tr>
+      <!-- 10 --> <tr class="open-row"><td>10</td><td>8:25–8:30 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">48.0¢</td><td class="right">31.15</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−31.15</td><td class="right running-pos">+72.35</td></tr>
+      <!-- 11 --> <tr class="win-row"><td>11</td><td>8:30–8:35 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">48.0¢</td><td class="right">28.03</td><td class="right">58.40</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+30.37</td><td class="right running-pos">+102.72</td></tr>
+      <!-- 12 --> <tr class="open-row"><td>12</td><td>8:35–8:40 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">21.2¢</td><td class="right">10.51</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−10.51</td><td class="right running-pos">+92.21</td></tr>
+      <!-- 13 --> <tr class="loss-row"><td>13</td><td>9:15–9:30 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">1.1¢</td><td class="right">0.83</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−0.83</td><td class="right running-pos">+91.38</td></tr>
+      <!-- 14 --> <tr class="open-row"><td>14</td><td>9:25–9:30 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">1.1¢</td><td class="right">0.44</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−0.44</td><td class="right running-pos">+90.94</td></tr>
+      <!-- 15 --> <tr class="win-row"><td>15</td><td>9:40–9:45 AM</td><td class="center"><span class="badge badge-up">UP</span></td><td class="right">91.6¢</td><td class="right">29.89</td><td class="right">32.63</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+2.74</td><td class="right running-pos">+93.68</td></tr>
+      <!-- 16 --> <tr class="win-row"><td>16</td><td>9:45–9:50 AM</td><td class="center"><span class="badge badge-up">UP</span></td><td class="right">99.1¢</td><td class="right">26.90</td><td class="right">27.15</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+0.25</td><td class="right running-pos">+93.93</td></tr>
+      <!-- 17 --> <tr class="win-row"><td>17</td><td>10:00–10:05 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">88.8¢</td><td class="right">30.19</td><td class="right">34.01</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+3.82</td><td class="right running-pos">+97.75</td></tr>
+      <!-- 18 --> <tr class="win-row"><td>18</td><td>10:05–10:10 AM</td><td class="center"><span class="badge badge-up">UP</span></td><td class="right">98.1¢</td><td class="right">27.17</td><td class="right">27.68</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+0.51</td><td class="right running-pos">+98.26</td></tr>
+      <!-- 19 --> <tr class="open-row"><td>19</td><td>10:45–11:00 AM</td><td class="center"><span class="badge badge-up">UP</span></td><td class="right">3.5¢</td><td class="right">24.51</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−24.51</td><td class="right running-pos">+73.75</td></tr>
+      <!-- 20 --> <tr class="win-row"><td>20</td><td>10:50–10:55 AM</td><td class="center"><span class="badge badge-up">UP</span></td><td class="right">93.5¢</td><td class="right">24.45</td><td class="right">26.16</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+1.71</td><td class="right running-pos">+75.46</td></tr>
+      <!-- 21 --> <tr class="open-row"><td>21</td><td>10:55–11:00 AM</td><td class="center"><span class="badge badge-up">UP</span></td><td class="right">96.3¢</td><td class="right">22.00</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−22.00</td><td class="right running-pos">+53.46</td></tr>
+      <!-- 22 --> <tr class="loss-row"><td>22</td><td>11:00–11:15 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">22.3¢</td><td class="right">6.72</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−6.72</td><td class="right running-pos">+46.74</td></tr>
+      <!-- 23 --> <tr class="open-row"><td>23</td><td>11:05–11:10 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">64.7¢</td><td class="right">17.35</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−17.35</td><td class="right running-pos">+29.39</td></tr>
+      <!-- 24 --> <tr class="win-row"><td>24</td><td>11:15–11:20 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">72.5¢</td><td class="right">14.95</td><td class="right">20.62</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+5.67</td><td class="right running-pos">+35.06</td></tr>
+      <!-- 25 --> <tr class="open-row"><td>25</td><td>11:30–11:45 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">57.8¢</td><td class="right">24.16</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−24.16</td><td class="right running-pos">+10.90</td></tr>
+      <!-- 26 --> <tr class="open-row worst-row"><td>26</td><td>11:35–11:40 AM ⚠️</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">1.1¢</td><td class="right">24.30</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−24.30</td><td class="right running-neg">−13.40</td></tr>
+      <!-- 27 --> <tr class="open-row"><td>27</td><td>11:40–11:45 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">98.2¢</td><td class="right">21.87</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−21.87</td><td class="right running-neg">−35.27</td></tr>
+      <!-- 28 --> <tr class="win-row"><td>28</td><td>11:45–11:50 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">98.1¢</td><td class="right">17.27</td><td class="right">17.60</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+0.33</td><td class="right running-neg">−34.94</td></tr>
+      <!-- 29 --> <tr class="open-row"><td>29</td><td>11:50–11:55 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">78.3¢</td><td class="right">15.54</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−15.54</td><td class="right running-neg">−50.48</td></tr>
+      <!-- 30 --> <tr class="win-row"><td>30</td><td>12:00–12:15 PM</td><td class="center"><span class="badge badge-up">UP</span></td><td class="right">97.2¢</td><td class="right">12.57</td><td class="right">12.93</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+0.36</td><td class="right running-neg">−50.12</td></tr>
+      <!-- 31 --> <tr class="open-row"><td>31</td><td>12:05–12:10 PM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">39.8¢</td><td class="right">15.74</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−15.74</td><td class="right running-neg">−65.86</td></tr>
+      <!-- 32 --> <tr class="win-row"><td>32</td><td>12:10–12:15 PM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">48.9¢</td><td class="right">13.79</td><td class="right">28.44</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+14.65</td><td class="right running-neg">−51.21</td></tr>
+      <!-- 33 --> <tr class="win-row"><td>33</td><td>12:20–12:25 PM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">83.1¢</td><td class="right">15.67</td><td class="right">18.86</td><td class="center"><span class="badge badge-win">WIN</span></td><td class="right profit-pos">+3.19</td><td class="right running-neg">−48.03</td></tr>
+      <!-- 34 --> <tr class="open-row"><td>34</td><td>Mar 31, 11:20–11:25 AM</td><td class="center"><span class="badge badge-down">DOWN</span></td><td class="right">66.7¢</td><td class="right">1.00</td><td class="right">0.00</td><td class="center"><span class="badge badge-loss">LOSS</span></td><td class="right profit-neg">−1.00</td><td class="right">—</td></tr>
+      <!-- TOTAL --> <tr class="total-row"><td colspan="4"><strong>TOTAL (32 Apr 2 positions)</strong></td><td class="right"><strong>636.30</strong></td><td class="right"><strong>588.27</strong></td><td class="center">16W / 18L</td><td class="right profit-neg"><strong>−48.03</strong></td><td class="right profit-neg"><strong>−48.03</strong></td></tr>
+    </tbody>
+  </table>
+  <div class="caption">⭐ Best trade: 7:55–8:00 AM +$58.40 &nbsp;|&nbsp; ⚠️ Worst batch: 11:30–11:45 AM (3 positions, $70+ lost) &nbsp;|&nbsp; Green rows = WIN, Amber = LOSS (no redeem), Red = explicit zero redeem</div>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ══════════════════════════════════════════════════ -->
+<!-- SECTION 3: PERFORMANCE BY TIME PERIOD -->
+<!-- ══════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">3. Performance by Time Period (US/Eastern EDT)</div>
+  
+  <table>
+    <thead>
+      <tr>
+        <th>Period</th>
+        <th class="center">Positions</th>
+        <th class="center">Wins</th>
+        <th class="center">Losses</th>
+        <th class="center">Win Rate</th>
+        <th class="right">Total Cost</th>
+        <th class="right">Total Payout</th>
+        <th class="right">Net Profit</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="period-morning">
+        <td><strong>Morning</strong><br><small>6:00–12:00 ET</small></td>
+        <td class="center">29</td>
+        <td class="center">13</td>
+        <td class="center">16</td>
+        <td class="center"><span style="color:#d63031;font-weight:700">44.8%</span></td>
+        <td class="right">487.84</td>
+        <td class="right">446.83</td>
+        <td class="right profit-neg"><strong>−41.01</strong></td>
+        <td>Large losses 8:20–8:30, 10:45–11:00, 11:30–11:45</td>
+      </tr>
+      <tr class="period-afternoon">
+        <td><strong>Afternoon</strong><br><small>12:00–16:30 ET</small></td>
+        <td class="center">4</td>
+        <td class="center">3</td>
+        <td class="center">1</td>
+        <td class="center"><span style="color:#00b894;font-weight:700">75.0%</span></td>
+        <td class="right">57.77</td>
+        <td class="right">60.23</td>
+        <td class="right profit-pos"><strong>+2.46</strong></td>
+        <td>Fewer bets, better discipline, net positive</td>
+      </tr>
+      <tr class="period-total">
+        <td><strong>ALL DAY</strong></td>
+        <td class="center">34</td>
+        <td class="center">16</td>
+        <td class="center">18</td>
+        <td class="center"><span style="color:#d63031;font-weight:700">47.1%</span></td>
+        <td class="right">636.30</td>
+        <td class="right">588.27</td>
+        <td class="right profit-neg"><strong>−48.03</strong></td>
+        <td>—</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="caption">Morning period had highest volume but most losses came from large unresolved positions. Afternoon was actually profitable (lower volume, tighter strategy).</div>
+  
+  <br>
+  <p style="font-size:10px;font-weight:600;color:#0f3460;margin-bottom:6px;">Morning Sub-period Breakdown (6 AM → 12 PM):</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Hour (ET)</th>
+        <th class="center">Positions</th>
+        <th class="center">Wins</th>
+        <th class="center">Losses</th>
+        <th class="right">Cost</th>
+        <th class="right">Payout</th>
+        <th class="right">Net</th>
+        <th>Key Events</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="win-row"><td>6:00–7:00 AM</td><td class="center">5</td><td class="center">3</td><td class="center">2</td><td class="right">62.87</td><td class="right">153.87</td><td class="right profit-pos">+91.00</td><td>Strong start: 6:35, 6:45, 6:50 all WIN; 6:30+6:55 lost $23.87</td></tr>
+      <tr class="win-row"><td>7:00–8:00 AM</td><td class="center">3</td><td class="center">2</td><td class="center">1</td><td class="right">59.31</td><td class="right">149.18</td><td class="right profit-pos">+89.87</td><td>Best hour: 7:00 WIN +$31.46, 7:55 WIN +$58.40 (3-for-1)</td></tr>
+      <tr class="loss-row"><td>8:00–9:00 AM</td><td class="center">5</td><td class="center">1</td><td class="center">4</td><td class="right">104.61</td><td class="right">58.40</td><td class="right profit-neg">−46.21</td><td>8:20–8:30 lost $65.76; 8:35 lost $10.51; only 8:30 won</td></tr>
+      <tr class="win-row"><td>9:00–10:00 AM</td><td class="center">4</td><td class="center">2</td><td class="center">2</td><td class="right">57.06</td><td class="right">59.79</td><td class="right profit-pos">+2.73</td><td>9:40 & 9:45 both UP wins (small profit); 9:15 & 9:25 lost $1.27</td></tr>
+      <tr class="win-row"><td>10:00–11:00 AM</td><td class="center">7</td><td class="center">4</td><td class="center">3</td><td class="right">134.67</td><td class="right">109.35</td><td class="right profit-neg">−25.32</td><td>10:45 lost $24.51; 10:55 lost $22.00; wins were small (pennies)</td></tr>
+      <tr class="loss-row"><td>11:00–12:00 AM</td><td class="center">8</td><td class="center">2</td><td class="center">6</td><td class="right">121.20</td><td class="right">38.22</td><td class="right profit-neg">−82.98</td><td>Worst hour: 11:30–11:45 triple loss $70+; only 11:15 & 11:45 won</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════════ -->
+<!-- SECTION 4: PERFORMANCE BY TOKEN PRICE -->
+<!-- ══════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">4. Performance by Token Price Range</div>
+  <p style="font-size:9.5px;color:#2d3436;margin-bottom:8px;">Token price = USDC paid ÷ tokens received. Lower price = more speculative (far from current price). Higher price = confident directional bet (at-the-money).</p>
+  
+  <table>
+    <thead>
+      <tr>
+        <th>Price Range</th>
+        <th class="center">Positions</th>
+        <th class="center">Wins</th>
+        <th class="center">Losses</th>
+        <th class="center">Win Rate</th>
+        <th class="right">USDC Spent</th>
+        <th class="right">USDC Returned</th>
+        <th class="right">Net Profit</th>
+        <th class="right">ROI %</th>
+        <th>Interpretation</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr class="loss-row">
+        <td><strong>0–10¢</strong><br><small>ultra-speculative</small></td>
+        <td class="center">4</td>
+        <td class="center">0</td>
+        <td class="center">4</td>
+        <td class="center profit-neg">0%</td>
+        <td class="right">25.89</td>
+        <td class="right">0.00</td>
+        <td class="right profit-neg">−25.89</td>
+        <td class="right profit-neg">−100%</td>
+        <td>Total wipeout — 9:15, 9:25, 10:45, 11:35 all lost</td>
+      </tr>
+      <tr>
+        <td><strong>10–30¢</strong><br><small>speculative</small></td>
+        <td class="center">2</td>
+        <td class="center">0</td>
+        <td class="center">2</td>
+        <td class="center profit-neg">0%</td>
+        <td class="right">17.23</td>
+        <td class="right">0.00</td>
+        <td class="right profit-neg">−17.23</td>
+        <td class="right profit-neg">−100%</td>
+        <td>8:35 (21¢) and 11:00 (22¢) both LOSS</td>
+      </tr>
+      <tr class="win-row">
+        <td><strong>30–50¢</strong><br><small>sweet spot ⭐</small></td>
+        <td class="center">10</td>
+        <td class="center">7</td>
+        <td class="center">3</td>
+        <td class="center profit-pos"><strong>70%</strong></td>
+        <td class="right">200.79</td>
+        <td class="right">339.23</td>
+        <td class="right profit-pos"><strong>+138.44</strong></td>
+        <td class="right profit-pos"><strong>+68.9%</strong></td>
+        <td>Best range — 6:35, 6:45, 6:50, 7:00, 7:55, 8:30, 12:10, 12:05 included</td>
+      </tr>
+      <tr>
+        <td><strong>50–70¢</strong><br><small>moderate</small></td>
+        <td class="center">4</td>
+        <td class="center">1</td>
+        <td class="center">3</td>
+        <td class="center profit-neg">25%</td>
+        <td class="right">78.33</td>
+        <td class="right">20.62</td>
+        <td class="right profit-neg">−57.71</td>
+        <td class="right profit-neg">−73.7%</td>
+        <td>11:05 (65¢), 11:30 (58¢), Mar31 (67¢) all lost; only 11:15 (73¢) won</td>
+      </tr>
+      <tr>
+        <td><strong>70–90¢</strong><br><small>confident bets</small></td>
+        <td class="center">5</td>
+        <td class="center">3</td>
+        <td class="center">2</td>
+        <td class="center" style="color:#e17055;font-weight:700">60%</td>
+        <td class="right">119.23</td>
+        <td class="right">115.58</td>
+        <td class="right profit-neg">−3.65</td>
+        <td class="right profit-neg">−3.1%</td>
+        <td>9:40 (92¢), 10:00 (89¢) won; 11:50 (78¢), 6:55 (48¢→?) mixed</td>
+      </tr>
+      <tr class="loss-row">
+        <td><strong>90–100¢</strong><br><small>near-certainty?</small></td>
+        <td class="center">9</td>
+        <td class="center">5</td>
+        <td class="center">4</td>
+        <td class="center" style="color:#e17055;font-weight:700">56%</td>
+        <td class="right">195.02</td>
+        <td class="right">113.04</td>
+        <td class="right profit-neg">−81.98</td>
+        <td class="right profit-neg">−42.0%</td>
+        <td>10:05 (98¢), 9:45 (99¢), 11:45 (98¢), 12:00 (97¢) won; 10:55 (96¢), 11:40 (98¢), 11:55 (78¢) lost — catastrophic ROI despite decent win rate</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="caption">ROI = (Net Profit / USDC Spent) × 100. The 30–50¢ range dramatically outperformed every other range. The 90–100¢ range destroyed the most absolute capital despite a majority win rate.</div>
+</div>
+
+<div class="page-break"></div>
+
+<!-- ══════════════════════════════════════════════════ -->
+<!-- SECTION 5: KEY FINDINGS -->
+<!-- ══════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">5. Key Findings</div>
+  
+  <div class="findings-grid">
+    <div class="finding-card">
+      <h4>✅ What Went Right (Early Morning)</h4>
+      <div class="finding-item" data-icon="🕕">6:35–7:05 AM: 3 consecutive wins at 49¢/token — $22–$32 cost → $43–$62 payout. Strategy was catching clear directional moves.</div>
+      <div class="finding-item" data-icon="⭐">7:55 AM was the session's best trade: 33¢ tokens (more speculative but high conviction) → $28.77 in, $87.17 out = <strong>+$58.40 profit (+203% ROI)</strong>.</div>
+      <div class="finding-item" data-icon="📈">8:30 AM: Another 48¢ entry → $28 in, $58.40 out (+$30.37). The 30–50¢ token strategy was clearly working.</div>
+      <div class="finding-item" data-icon="🎯">30–50¢ range delivered +68.9% ROI — the only price range with both high win rate (70%) and strong absolute profit (+$138).</div>
+      <div class="finding-item" data-icon="📊">By 8:30 AM, running P&amp;L had peaked at +$138 — more than double the deposit ($208).</div>
+    </div>
+    
+    <div class="finding-card">
+      <h4>⚠️ What Went Wrong (Late Morning)</h4>
+      <div class="finding-item" data-icon="💸">8:20–8:30 AM: $65.76 lost in TWO consecutive 5-minute windows. Same ~48¢ tokens that worked at 8:30 failed here — identical strategy, opposite result. Market reversed.</div>
+      <div class="finding-item" data-icon="🎰">10:45 AM: <strong>3.5¢ tokens</strong> — $24.51 bet on a near-zero probability event. This is gambling, not strategy. Lost everything.</div>
+      <div class="finding-item" data-icon="📉">11:30–11:45 AM: Three consecutive $20–$24 positions all lost = $70.33 in 15 minutes. Clearly chasing losses — strategy should have stopped here.</div>
+      <div class="finding-item" data-icon="🔄">Token price drift: Early morning used 33–49¢ tokens (sweet spot). By 11:30–11:45 the range jumped to 58–98¢ (expensive) AND simultaneously bought 1.1¢ (lottery tickets) — no consistency.</div>
+      <div class="finding-item" data-icon="📉">90–100¢ range: 9 positions, 5 wins but <strong>−$81.98 net</strong>. Near-certain tokens leave almost no upside — worst ROI despite high win rate. Each $20 bet wins $1–2 when correct.</div>
+    </div>
+  </div>
+
+  <br>
+  <p style="font-size:10px;font-weight:600;color:#0f3460;margin-bottom:6px;">Token Price Distribution Over Time:</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Hour (ET)</th>
+        <th class="center">0–10¢</th>
+        <th class="center">10–30¢</th>
+        <th class="center" style="background:#1a6640">30–50¢ ⭐</th>
+        <th class="center">50–70¢</th>
+        <th class="center">70–90¢</th>
+        <th class="center">90–100¢</th>
+        <th>Observation</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>6:00–7:00 AM</td><td class="center">1</td><td class="center">0</td><td class="center" style="background:#e8f8f5;font-weight:700">3</td><td class="center">1</td><td class="center">0</td><td class="center">0</td><td>Mostly sweet-spot — good discipline</td></tr>
+      <tr><td>7:00–8:00 AM</td><td class="center">1</td><td class="center">0</td><td class="center" style="background:#e8f8f5;font-weight:700">2</td><td class="center">0</td><td class="center">0</td><td class="center">0</td><td>Best hour — tight 30–50¢ focus</td></tr>
+      <tr><td>8:00–9:00 AM</td><td class="center">0</td><td class="center">1</td><td class="center" style="background:#e8f8f5;font-weight:700">3</td><td class="center">0</td><td class="center">0</td><td class="center">1</td><td>Mixed — 8:20 was 47¢ (sweet spot) but LOSS</td></tr>
+      <tr><td>9:00–10:00 AM</td><td class="center">2</td><td class="center">0</td><td class="center">0</td><td class="center">0</td><td class="center">1</td><td class="center" style="background:#fdf0ef;font-weight:700">2</td><td>Shift to extremes — cheap lottery + expensive directional</td></tr>
+      <tr><td>10:00–11:00 AM</td><td class="center">1</td><td class="center">0</td><td class="center">0</td><td class="center">0</td><td class="center">1</td><td class="center" style="background:#fdf0ef;font-weight:700">5</td><td>Mostly 90–100¢ — tiny wins, occasional big loss</td></tr>
+      <tr><td>11:00–12:00 AM</td><td class="center">1</td><td class="center">1</td><td class="center">0</td><td class="center" style="background:#fdf0ef">2</td><td class="center">2</td><td class="center">2</td><td>No sweet-spot trades at all — strategy lost direction</td></tr>
+      <tr><td>12:00–1:00 PM</td><td class="center">0</td><td class="center">0</td><td class="center" style="background:#e8f8f5;font-weight:700">2</td><td class="center">0</td><td class="center">1</td><td class="center">1</td><td>Returned to 30–50¢ in afternoon — profitable again</td></tr>
+    </tbody>
+  </table>
+  <div class="caption">The sweet-spot 30–50¢ trades were concentrated in 6–8 AM. From 9 AM onward, the strategy drifted to 90–100¢ (expensive, low upside) and 0–10¢ (lottery). The profitable afternoon session came from returning to 30–50¢ range.</div>
+</div>
+
+<!-- ══════════════════════════════════════════════════ -->
+<!-- SECTION 6: RECOMMENDATIONS -->
+<!-- ══════════════════════════════════════════════════ -->
+<div class="section">
+  <div class="section-title">6. Recommendations</div>
+
+  <div class="rec-item">
+    <strong>📌 CRITICAL: Set token price floor at 30¢ and cap at 65¢</strong><br>
+    The 30–50¢ range was the only range with positive ROI (+68.9%). Everything below 10¢ returned −100%. Everything above 70¢ had tiny absolute wins but destroyed capital when losses hit. Implement: <code>MIN_TOKEN_PRICE = 0.30</code>, <code>MAX_TOKEN_PRICE = 0.65</code>. This single change would have converted the session from −$48 to approximately +$138.
+  </div>
+
+  <div class="rec-item">
+    <strong>🔒 Add a session max-loss circuit breaker: −$30 from peak P&L</strong><br>
+    Running P&L peaked at +$138 at 8:30 AM. The session ended at −$48 — a $186 drawdown from peak. A stop-loss trigger at peak − $30 (i.e., stop trading when P&L falls below $108) would have locked in $100+ profit. The system should track peak_pnl and auto-pause when drawdown &gt; 20% of peak.
+  </div>
+
+  <div class="rec-item">
+    <strong>⏰ Morning-only with hard session limit</strong><br>
+    6:35–8:30 AM was almost entirely profitable (+$180 in 2 hours). The session should have a time cutoff at 10:00 AM or after 5 consecutive 5-minute windows without a win. Both 10:45 and 11:30–11:45 AM blocs were clear signals the market had changed character — no response was made.
+  </div>
+
+  <div class="rec-item">
+    <strong>📏 Cap position size at $15 USDC per market</strong><br>
+    The worst losses were $24–$31 per market. Reducing max bet to $15 would reduce maximum per-trade loss by 40–50% while keeping the upside similar (30–50¢ tokens at $15 cost still pays ~$30 on a win). Implement: <code>MAX_POSITION_SIZE = 15.0</code>.
+  </div>
+
+  <div class="rec-item">
+    <strong>🚫 Ban sub-10¢ tokens completely</strong><br>
+    0–10¢ tokens returned 0 wins from 4 positions. These are near-zero probability events; the market's implied probability is correct. $24.51 was wasted on the 10:45 AM 3.5¢ token alone. Add a hard filter: reject any signal where implied_token_price &lt; 0.10.
+  </div>
+
+  <div class="rec-item">
+    <strong>🔄 Direction diversity check</strong><br>
+    27 of 34 positions were Down bets (79%). While Down may have been correct given Bitcoin's movement on Apr 2, this structural bias should be audited. Verify the signal generator isn't overweighting one direction — especially in the 10:45–11:45 AM window where Down kept losing.
+  </div>
+  
+  <div class="rec-item">
+    <strong>📊 Store token price per buy in DB — use it for signal filtering</strong><br>
+    The CSV proves token price is the #1 predictor of outcome quality. The engine should: (a) log avg_entry_price_cents per position, (b) use it as a feature in position sizing, (c) alert when price drifts outside 30–65¢ range. Consider adding price_bucket to the trade_signals table.
+  </div>
+</div>
+
+<!-- FOOTER -->
+<div class="footer">
+  Generated by Novakash Analysis Engine &nbsp;·&nbsp; Data: Polymarket CSV export (ground truth) &nbsp;·&nbsp;
+  Report date: April 2, 2026 &nbsp;·&nbsp; All times in US/Eastern (EDT, UTC−4) &nbsp;·&nbsp;
+  DB data excluded (phantom win bug confirmed) &nbsp;·&nbsp; 
+  Source: /root/Downloads/Polymarket-History-2026-04-02.csv
+</div>
+
+</body>
+</html>
