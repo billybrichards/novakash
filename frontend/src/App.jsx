@@ -17,6 +17,7 @@ import Positions from './pages/Positions.jsx';
 import Risk from './pages/Risk.jsx';
 import Learn from './pages/Learn.jsx';
 import Changelog from './pages/Changelog.jsx';
+import PlaywrightDashboard from './pages/PlaywrightDashboard.jsx';
 
 export default function App() {
   return (
@@ -50,6 +51,7 @@ export default function App() {
             <Route path="setup" element={<Setup />} />
             <Route path="learn" element={<Learn />} />
             <Route path="changelog" element={<Changelog />} />
+            <Route path="playwright" element={<PlaywrightDashboard />} />
           </Route>
 
           {/* 404 fallback */}

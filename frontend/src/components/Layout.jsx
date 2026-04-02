@@ -21,6 +21,7 @@ const NAV_ITEMS = [
   { path: '/risk',            label: 'Risk',       icon: '🛡️' },
   { path: '/system',          label: 'System',     icon: '🖥️' },
   { path: '/trading-config',  label: 'Config',     icon: '⚙️' },
+  { path: '/playwright',      label: 'Account',    icon: '👁' },
   { path: '/changelog',       label: 'Changelog',  icon: '📝' },
 ];
 
