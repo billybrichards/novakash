@@ -558,9 +558,14 @@ class Orchestrator:
             up_price=window.up_price,
             down_price=window.down_price,
         )
-        # Forward to strategy — queues window so next on_market_state evaluates it
+        # Forward to strategy — queues window AND stores for token ID lookup
         if self._five_min_strategy:
             self._five_min_strategy._pending_windows.append(window)
+            if not hasattr(self._five_min_strategy, '_recent_windows'):
+                self._five_min_strategy._recent_windows = []
+            self._five_min_strategy._recent_windows.append(window)
+            if len(self._five_min_strategy._recent_windows) > 20:
+                self._five_min_strategy._recent_windows = self._five_min_strategy._recent_windows[-20:]
 
     async def _on_fifteen_min_window(self, window) -> None:
         """Handle 15-minute window signal — same strategy, different timeframe."""
@@ -573,9 +578,14 @@ class Orchestrator:
             down_price=window.down_price,
             duration=900,
         )
-        # Reuse the same 5-min strategy for evaluation
+        # Reuse the same 5-min strategy for evaluation + token ID lookup
         if self._five_min_strategy:
             self._five_min_strategy._pending_windows.append(window)
+            if not hasattr(self._five_min_strategy, '_recent_windows'):
+                self._five_min_strategy._recent_windows = []
+            self._five_min_strategy._recent_windows.append(window)
+            if len(self._five_min_strategy._recent_windows) > 20:
+                self._five_min_strategy._recent_windows = self._five_min_strategy._recent_windows[-20:]
 
     # ─── Order Resolution Callback ────────────────────────────────────────────
 

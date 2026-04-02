@@ -202,6 +202,11 @@ class FiveMinVPINStrategy(BaseStrategy):
             if eval_state.fired:
                 continue
             
+            # Skip if in retry cooldown (avoid spamming when token IDs not yet available)
+            retry_after = getattr(eval_state, '_retry_after', 0)
+            if retry_after and now < retry_after:
+                continue
+            
             # Update open price if we didn't have it
             if eval_state.open_price <= 0:
                 # Try to get from any matching pending window
@@ -424,6 +429,8 @@ class FiveMinVPINStrategy(BaseStrategy):
         if token_id is None:
             self._log.warning("execute.no_token_id_waiting", window=window_key, direction=direction, recent_count=len(recent))
             eval_state.fired = False
+            # Cooldown: don't retry for 5 seconds to avoid spamming
+            eval_state._retry_after = time.time() + 5.0
             return
 
         tf = "15m" if (window_ts % 900 == 0 and eval_state.window_ts + 900 > time.time()) else "5m"
