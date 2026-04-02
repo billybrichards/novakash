@@ -418,6 +418,7 @@ class Polymarket5MinFeed:
         
         Used in live mode where _fetch_paper_data is skipped but we still
         need the open price for delta calculation.
+        Tries spot API first, then futures API as fallback.
         """
         asset_symbols = {
             "BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT",
@@ -425,16 +426,28 @@ class Polymarket5MinFeed:
             "HYPE": "HYPEUSDT",
         }
         symbol = asset_symbols.get(window.asset, f"{window.asset}USDT")
-        try:
-            import aiohttp
-            async with aiohttp.ClientSession() as session:
-                url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                    data = await resp.json()
-                    window.open_price = float(data["price"])
-                    self._log.debug("live.open_price_fetched", asset=window.asset, price=window.open_price)
-        except Exception as exc:
-            self._log.warning("live.open_price_fetch_failed", asset=window.asset, error=str(exc))
+        
+        urls = [
+            f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}",
+            f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}",
+        ]
+        
+        import aiohttp
+        for url in urls:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                        if resp.status != 200:
+                            continue
+                        data = await resp.json()
+                        if isinstance(data, dict) and "price" in data:
+                            window.open_price = float(data["price"])
+                            self._log.info("live.open_price_fetched", asset=window.asset, price=window.open_price, source=url.split("/")[2])
+                            return
+            except Exception:
+                continue
+        
+        self._log.warning("live.open_price_all_failed", asset=window.asset)
 
     async def _fetch_paper_data(self, window: WindowInfo) -> None:
         """Set paper token IDs and open price. Preserves real Gamma prices if already fetched."""
