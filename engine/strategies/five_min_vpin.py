@@ -337,12 +337,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         else:
             token_price = self._delta_to_token_price(signal.delta_pct)
         
-        # Live mode: bump price by 2¢ to improve fill rate on thin books.
-        # Paying 51¢ instead of 49¢ costs ~4% upside but roughly doubles fills.
-        if not self._poly.paper_mode:
-            token_price = min(0.95, token_price + 0.02)
-        
-        price = Decimal(str(round(token_price, 2)))
+        price = Decimal(str(round(token_price, 4)))
         tf = "15m" if window.duration_secs == 900 else "5m"
         market_slug = f"{window.asset.lower()}-updown-{tf}-{window.window_ts}"
         
