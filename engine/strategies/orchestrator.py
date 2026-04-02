@@ -36,7 +36,7 @@ from data.feeds.coinglass_api import CoinGlassAPIFeed
 from data.feeds.coinglass_enhanced import CoinGlassEnhancedFeed
 from data.feeds.polymarket_ws import PolymarketWebSocketFeed
 from data.feeds.polymarket_5min import Polymarket5MinFeed
-from execution.redeemer import PositionRedeemer
+from playwright.service import PlaywrightService
 from data.models import (
     AggTrade,
     ArbOpportunity,
@@ -144,13 +144,14 @@ class Orchestrator:
         self._alerter.set_risk_manager(self._risk_manager)
         self._alerter.set_poly_client(self._poly_client)
 
-        # ── Position Redeemer (on-chain auto-redeem) ───────────────────────────
-        self._redeemer = PositionRedeemer(
-            rpc_url=os.environ.get("POLYGON_RPC_URL", ""),
-            private_key=settings.poly_private_key,
-            proxy_address=settings.poly_funder_address,
-            paper_mode=settings.paper_mode,
-        )
+        # ── Playwright browser automation (replaces on-chain redeemer) ────────
+        self._playwright: PlaywrightService | None = None
+        if settings.playwright_enabled:
+            self._playwright = PlaywrightService(
+                gmail_address=settings.gmail_address,
+                gmail_app_password=settings.gmail_app_password,
+                headless=True,
+            )
 
         # ── CoinGlass Enhanced Feed (1-min data for signal enrichment) ─────────
         self._cg_enhanced: Optional[CoinGlassEnhancedFeed] = None
@@ -336,16 +337,31 @@ class Orchestrator:
             asyncio.create_task(self._market_state_loop(), name="market_state_loop")
         )
 
-        # 8. Connect redeemer and start auto-redeem loop
-        try:
-            await self._redeemer.connect()
-        except Exception as exc:
-            log.warning("orchestrator.redeemer_connect_failed", error=str(exc))
+        # 8. Playwright automation (replaces on-chain redeemer)
+        if self._playwright:
+            try:
+                await self._playwright.start()
+                await self._db.ensure_playwright_tables()
+                self._tasks.append(
+                    asyncio.create_task(
+                        self._playwright_redeem_loop(), name="playwright:redeem"
+                    )
+                )
+                self._tasks.append(
+                    asyncio.create_task(
+                        self._playwright_balance_loop(), name="playwright:balance"
+                    )
+                )
+                self._tasks.append(
+                    asyncio.create_task(
+                        self._playwright_screenshot_loop(), name="playwright:screenshot"
+                    )
+                )
+                log.info("orchestrator.playwright_started")
+            except Exception as e:
+                log.error("orchestrator.playwright_start_failed", error=str(e))
 
         if not self._settings.paper_mode:
-            self._tasks.append(
-                asyncio.create_task(self._redeem_loop(), name="auto_redeem")
-            )
             self._tasks.append(
                 asyncio.create_task(self._position_monitor_loop(), name="position_monitor")
             )
@@ -371,6 +387,10 @@ class Orchestrator:
     async def stop(self) -> None:
         """Graceful shutdown of all components."""
         log.info("orchestrator.stopping")
+
+        # Stop Playwright browser
+        if self._playwright:
+            await self._playwright.stop()
 
         # Stop strategies
         await self._arb_strategy.stop()
@@ -798,28 +818,94 @@ class Orchestrator:
             except asyncio.TimeoutError:
                 pass
 
-    async def _redeem_loop(self) -> None:
-        """Every 5 minutes: scan for resolved positions and redeem on-chain."""
-        REDEEM_INTERVAL = 300  # 5 minutes
+    # ── Playwright Loops ────────────────────────────────────────────────────
 
+    async def _playwright_redeem_loop(self) -> None:
+        """Auto-redeem settled positions every 5 minutes via Playwright."""
+        REDEEM_INTERVAL = 300
         while not self._shutdown_event.is_set():
             try:
-                result = await self._redeemer.redeem_all()
-                if result.get("redeemed", 0) > 0:
-                    # Send Telegram alert
+                # Check for manual redeem request from Hub
+                if await self._db.check_redeem_requested():
+                    log.info("orchestrator.manual_redeem_triggered")
+
+                result = await self._playwright.redeem_all()
+
+                if result["redeemed"] > 0:
+                    await self._db.write_redeem_event(result)
                     msg = (
-                        f"💰 *Redeemed {result['redeemed']} positions*\n"
-                        f"USDC: `${result['usdc_before']:.2f}` → `${result['usdc_after']:.2f}`\n"
-                        f"Change: `+${result['usdc_after'] - result['usdc_before']:.2f}`"
+                        f"Redeemed {result['redeemed']} position(s) "
+                        f"via Playwright"
                     )
+                    if result["failed"] > 0:
+                        msg += f" ({result['failed']} failed)"
                     await self._alerter.send_system_alert(msg, level="info")
-            except Exception as exc:
-                log.error("orchestrator.redeem_error", error=str(exc))
+
+            except Exception as e:
+                log.error("orchestrator.playwright_redeem.error", error=str(e))
 
             try:
                 await asyncio.wait_for(
                     asyncio.shield(self._shutdown_event.wait()),
                     timeout=REDEEM_INTERVAL,
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    async def _playwright_balance_loop(self) -> None:
+        """Poll account balance every 60 seconds via Playwright."""
+        BALANCE_INTERVAL = 60
+        while not self._shutdown_event.is_set():
+            try:
+                balance = await self._playwright.get_portfolio_balance()
+                positions = await self._playwright.get_positions()
+                redeemable = await self._playwright.get_redeemable()
+                history = await self._playwright.get_order_history(limit=50)
+
+                await self._db.update_playwright_state(
+                    logged_in=self._playwright._logged_in,
+                    browser_alive=self._playwright._browser_alive,
+                    usdc_balance=balance.get("usdc", 0.0),
+                    positions_value=balance.get("positions_value", 0.0),
+                    positions_json=positions,
+                    redeemable_json=redeemable,
+                    history_json=history,
+                )
+
+            except Exception as e:
+                log.error("orchestrator.playwright_balance.error", error=str(e))
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=BALANCE_INTERVAL,
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    async def _playwright_screenshot_loop(self) -> None:
+        """Capture browser screenshot every 30 seconds."""
+        SCREENSHOT_INTERVAL = 30
+        while not self._shutdown_event.is_set():
+            try:
+                screenshot = await self._playwright.screenshot()
+                if screenshot:
+                    await self._db.update_playwright_state(
+                        logged_in=self._playwright._logged_in,
+                        browser_alive=self._playwright._browser_alive,
+                        usdc_balance=0,
+                        positions_value=0,
+                        screenshot_png=screenshot,
+                    )
+            except Exception as e:
+                log.error("orchestrator.playwright_screenshot.error", error=str(e))
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=SCREENSHOT_INTERVAL,
                 )
                 break
             except asyncio.TimeoutError:
