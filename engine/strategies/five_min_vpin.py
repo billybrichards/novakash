@@ -182,6 +182,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         signal = self._evaluate_signal(window, current_price, current_vpin, delta_pct)
         
         if signal is None:
+            tf = "15m" if window.duration_secs == 900 else "5m"
             self._log.info(
                 "evaluate.skip",
                 asset=window.asset,
@@ -190,6 +191,17 @@ class FiveMinVPINStrategy(BaseStrategy):
                 reason="no edge",
                 entry=f"T-{FIVE_MIN_ENTRY_OFFSET}s",
             )
+            if self._alerter:
+                try:
+                    asyncio.create_task(self._alerter.send_system_alert(
+                        f"SKIPPED — {window.asset} {tf}\n"
+                        f"Delta: {delta_pct:+.4f}% (too small)\n"
+                        f"VPIN: {current_vpin:.4f}\n"
+                        f"BTC: ${current_price:,.2f}",
+                        level="info",
+                    ))
+                except Exception:
+                    pass
             return
         
         # Execute trade
