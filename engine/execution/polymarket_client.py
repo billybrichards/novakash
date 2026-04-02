@@ -299,15 +299,25 @@ class PolymarketClient:
         # MAX PRICE CAP: 0.65 (65¢). Never buy tokens above this —
         # ensures minimum 54% upside on every trade.
         
-        # Enforce max token price cap
-        if float(price) > 0.65:
+        # Enforce token price range: 30-65¢
+        # Analysis shows 30-50¢ is the only profitable range.
+        # Below 30¢ = lottery tickets (0% win rate)
+        # Above 65¢ = terrible risk/reward
+        token_price_f = float(price)
+        if token_price_f > 0.65:
             self._log.warning(
                 "place_order.price_too_high",
                 price=str(price),
-                max_price="0.65",
                 market_slug=market_slug,
             )
             raise ValueError(f"Token price {price} exceeds 65¢ cap — skipping")
+        if token_price_f < 0.30:
+            self._log.warning(
+                "place_order.price_too_low",
+                price=str(price),
+                market_slug=market_slug,
+            )
+            raise ValueError(f"Token price {price} below 30¢ floor — skipping")
 
         size = round(stake_usd / float(price), 2)
         order_args = OrderArgs(
@@ -584,3 +594,56 @@ class PolymarketClient:
         except Exception as exc:
             self._log.debug("portfolio.position_fetch_failed", error=str(exc))
             return cash  # Fallback to cash only
+
+    async def get_position_outcomes(self) -> dict:
+        """Fetch real position outcomes from Polymarket data API.
+        
+        Returns dict of conditionId → {size, avgPrice, curPrice, outcome}
+        where outcome is 'WIN' (curPrice >= 0.99), 'LOSS' (curPrice <= 0.01),
+        or 'OPEN' (still trading).
+        
+        This is the SOURCE OF TRUTH for trade resolution — NOT internal logic.
+        """
+        if self.paper_mode:
+            return {}
+        
+        try:
+            import aiohttp
+            funder = self._funder_address.lower()
+            url = f"https://data-api.polymarket.com/positions?user={funder}"
+            headers = {"User-Agent": "Mozilla/5.0 NovakashEngine/1.0"}
+            
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status != 200:
+                        return {}
+                    positions = await resp.json()
+            
+            results = {}
+            for p in positions:
+                cid = p.get("conditionId", "")
+                cur_price = float(p.get("curPrice", 0))
+                size = float(p.get("size", 0))
+                avg_price = float(p.get("avgPrice", 0))
+                
+                if cur_price <= 0.01:
+                    outcome = "LOSS"
+                elif cur_price >= 0.99:
+                    outcome = "WIN"
+                else:
+                    outcome = "OPEN"
+                
+                results[cid] = {
+                    "size": size,
+                    "avgPrice": avg_price,
+                    "curPrice": cur_price,
+                    "outcome": outcome,
+                    "value": size * cur_price,
+                    "cost": size * avg_price,
+                    "pnl": (size * cur_price) - (size * avg_price),
+                }
+            
+            return results
+        except Exception as exc:
+            self._log.debug("positions.fetch_failed", error=str(exc))
+            return {}

@@ -671,15 +671,36 @@ class Orchestrator:
                         daily_sign = "+" if daily_pnl >= 0 else ""
                         status_emoji = "🛑" if killed else "🟢"
 
+                        # Fetch REAL position outcomes from Polymarket
+                        real_wins = 0
+                        real_losses = 0
+                        open_positions_val = 0
+                        try:
+                            pos_outcomes = await self._poly_client.get_position_outcomes()
+                            for cid, data in pos_outcomes.items():
+                                if data["outcome"] == "WIN":
+                                    real_wins += 1
+                                elif data["outcome"] == "LOSS":
+                                    real_losses += 1
+                                else:
+                                    open_positions_val += data["value"]
+                        except Exception:
+                            pass
+
+                        portfolio = wallet + open_positions_val
+                        real_pnl = portfolio - 208.98  # from deposits
+
                         sitrep = (
                             f"📋 *5-MIN SITREP* ({status_emoji} {'KILLED' if killed else 'ACTIVE'})\n"
                             f"\n"
-                            f"🏦 Wallet: `${wallet:.2f}` USDC\n"
-                            f"💼 Bankroll: `${bankroll:.2f}`\n"
-                            f"📅 Daily P&L: `{daily_sign}${daily_pnl:.2f}`\n"
+                            f"🏦 Cash: `${wallet:.2f}` USDC\n"
+                            f"📊 Positions: `${open_positions_val:.2f}`\n"
+                            f"💰 Portfolio: `${portfolio:.2f}`\n"
+                            f"📈 Real P&L: `${real_pnl:+.2f}` (from $209 deposit)\n"
+                            f"\n"
+                            f"✅ Poly Wins: `{real_wins}` | ❌ Losses: `{real_losses}`\n"
                             f"📉 Drawdown: `{drawdown:.1%}`\n"
                             f"\n"
-                            f"📊 Orders: `{om_total}` placed | `{om_open}` open | `{om_resolved}` resolved\n"
                             f"🔬 VPIN: `{vpin:.4f}` | Regime: `{regime}`\n"
                             f"🔗 Binance: `{'✅' if binance_ok else '❌'}` | BTC: `${self._order_manager._current_btc_price:,.2f}`\n"
                         )
