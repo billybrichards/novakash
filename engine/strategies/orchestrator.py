@@ -346,6 +346,9 @@ class Orchestrator:
             self._tasks.append(
                 asyncio.create_task(self._redeem_loop(), name="auto_redeem")
             )
+            self._tasks.append(
+                asyncio.create_task(self._position_monitor_loop(), name="position_monitor")
+            )
 
         # Register OS signal handlers
         loop = asyncio.get_running_loop()
@@ -833,3 +836,80 @@ class Orchestrator:
             pass
         except Exception as exc:
             log.error("orchestrator.market_state_loop_error", error=str(exc))
+
+    async def _position_monitor_loop(self) -> None:
+        """Every 30s: check Polymarket positions API for resolved trades.
+        
+        This is the SOURCE OF TRUTH for WIN/LOSS — not internal resolution.
+        Sends Telegram alerts when positions resolve on Polymarket's oracle.
+        """
+        POLL_INTERVAL = 30
+        # Track known resolved positions to avoid duplicate alerts
+        _resolved_conditions: set = set()
+        
+        while not self._shutdown_event.is_set():
+            try:
+                outcomes = await self._poly_client.get_position_outcomes()
+                
+                for cid, data in outcomes.items():
+                    if cid in _resolved_conditions:
+                        continue
+                    
+                    outcome = data["outcome"]
+                    if outcome == "OPEN":
+                        continue
+                    
+                    # Position just resolved — send alert
+                    _resolved_conditions.add(cid)
+                    
+                    size = data["size"]
+                    avg_price = data["avgPrice"]
+                    cost = data["cost"]
+                    value = data["value"]
+                    pnl = data["pnl"]
+                    
+                    if outcome == "WIN":
+                        emoji = "✅"
+                        pnl_str = f"+${pnl:.2f}"
+                    else:
+                        emoji = "❌"
+                        pnl_str = f"-${cost:.2f}"
+                    
+                    # Get wallet balance for context
+                    try:
+                        wallet = await self._poly_client.get_balance()
+                        wallet_str = f"\n🏦 Wallet: `${wallet:.2f}` USDC"
+                    except Exception:
+                        wallet_str = ""
+                    
+                    msg = (
+                        f"{emoji} *{outcome} — BTC* (💰 LIVE)\n"
+                        f"\n"
+                        f"📊 *Result (from Polymarket)*\n"
+                        f"Shares: `{size:.1f}`\n"
+                        f"Entry: `${avg_price:.4f}`\n"
+                        f"Cost: `${cost:.2f}`\n"
+                        f"Payout: `${value:.2f}`\n"
+                        f"PnL: `{pnl_str}`\n"
+                        f"{wallet_str}"
+                    )
+                    
+                    await self._alerter.send_system_alert(msg, level="info")
+                    log.info(
+                        "position_monitor.resolved",
+                        condition_id=cid[:20] + "...",
+                        outcome=outcome,
+                        pnl=pnl,
+                    )
+                
+            except Exception as exc:
+                log.debug("position_monitor.error", error=str(exc))
+            
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=POLL_INTERVAL,
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
