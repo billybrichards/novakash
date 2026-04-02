@@ -120,10 +120,16 @@ class TelegramAlerter:
             direction_emoji = "📈" if order.direction == "YES" else "📉"
             mode_tag = "📄 PAPER" if self._paper_mode else "💰 LIVE"
             market_slug = meta.get("market_slug", order.market_id or "—")
-            entry_label = meta.get("entry_label", "—")
+            entry_label = meta.get("entry_reason") or meta.get("entry_label", "—")
             delta_pct = meta.get("delta_pct")
             confidence = meta.get("confidence", "—")
-            conf_pct = self._confidence_to_int(confidence)
+            # Handle both float confidence (0.0-1.0 from new evaluator) and string ("HIGH"/"MODERATE")
+            if isinstance(confidence, (int, float)):
+                conf_pct = int(confidence * 100) if confidence <= 1.0 else int(confidence)
+                tier = meta.get("tier", "")
+                confidence = f"{tier}" if tier else f"{conf_pct}%"
+            else:
+                conf_pct = self._confidence_to_int(confidence)
             window_open = meta.get("window_open_price")
             data_source = "LIVE execution" if not self._paper_mode else "REAL prices, PAPER execution"
 
