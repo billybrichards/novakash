@@ -545,16 +545,28 @@ class Orchestrator:
     # ─── Order Resolution Callback ────────────────────────────────────────────
 
     def _on_order_resolution(self, order) -> None:
-        """Called by OrderManager when an order resolves. Notify risk manager."""
+        """Called by OrderManager when an order resolves. Notify risk manager.
+        
+        Only sends Telegram alerts for orders that actually filled on the CLOB
+        (metadata['filled'] == True). Unfilled/expired orders are silently
+        recorded — no misleading WIN/LOSS notifications.
+        """
         if order.pnl_usd is not None:
-            # Schedule async record_outcome (can't await in sync callback)
-            asyncio.create_task(
-                self._risk_manager.record_outcome(order.pnl_usd),
-                # name=f"risk_record_{order.order_id}",  # Python 3.11+
-            )
-
-            # Send trade alert
-            asyncio.create_task(self._alerter.send_trade_alert(order))
+            filled = order.metadata.get("filled", False) if order.metadata else False
+            
+            # Only update risk manager P&L for orders that actually filled
+            if filled:
+                asyncio.create_task(
+                    self._risk_manager.record_outcome(order.pnl_usd),
+                )
+                # Send trade alert only for real fills
+                asyncio.create_task(self._alerter.send_trade_alert(order))
+            else:
+                self._log.info(
+                    "resolution.skipped_unfilled",
+                    order_id=order.order_id[:20] + "..." if len(order.order_id) > 20 else order.order_id,
+                    phantom_pnl=order.pnl_usd,
+                )
 
     # ─── Background Tasks ─────────────────────────────────────────────────────
 
@@ -563,6 +575,10 @@ class Orchestrator:
         # Wallet balance refresh counter (fetch every 6th heartbeat = ~60s)
         _wallet_check_counter = 0
         _cached_wallet_balance: float | None = None
+        # Sitrep counter (send every 30th heartbeat = ~5 minutes)
+        _sitrep_counter = 0
+        _sitrep_trades_total = 0
+        _sitrep_trades_filled = 0
 
         while not self._shutdown_event.is_set():
             try:
@@ -626,6 +642,43 @@ class Orchestrator:
                     polymarket=self._polymarket_feed.connected,
                     opinion=self._opinion_client.connected,
                 )
+
+                # ── 5-Minute Sitrep to Telegram ──────────────────────────
+                _sitrep_counter += 1
+                if _sitrep_counter >= 30:  # 30 × 10s = 5 minutes
+                    _sitrep_counter = 0
+                    try:
+                        om_total = self._order_manager.total_orders
+                        om_resolved = self._order_manager.resolved_orders
+                        om_open = len(open_orders)
+                        wallet = _cached_wallet_balance or 0
+                        bankroll = risk_status.get("current_bankroll", 0)
+                        daily_pnl = risk_status.get("daily_pnl", 0)
+                        drawdown = risk_status.get("drawdown_pct", 0)
+                        killed = risk_status.get("is_killed", False)
+                        vpin = state.vpin.value if state.vpin else 0
+                        regime = "TRENDING" if state.regime and state.regime.regime == "TRENDING" else "LOW_VOL"
+                        binance_ok = self._binance_feed.connected
+
+                        daily_sign = "+" if daily_pnl >= 0 else ""
+                        status_emoji = "🛑" if killed else "🟢"
+
+                        sitrep = (
+                            f"📋 *5-MIN SITREP* ({status_emoji} {'KILLED' if killed else 'ACTIVE'})\n"
+                            f"\n"
+                            f"🏦 Wallet: `${wallet:.2f}` USDC\n"
+                            f"💼 Bankroll: `${bankroll:.2f}`\n"
+                            f"📅 Daily P&L: `{daily_sign}${daily_pnl:.2f}`\n"
+                            f"📉 Drawdown: `{drawdown:.1%}`\n"
+                            f"\n"
+                            f"📊 Orders: `{om_total}` placed | `{om_open}` open | `{om_resolved}` resolved\n"
+                            f"🔬 VPIN: `{vpin:.4f}` | Regime: `{regime}`\n"
+                            f"🔗 Binance: `{'✅' if binance_ok else '❌'}` | BTC: `${self._order_manager._current_btc_price:,.2f}`\n"
+                        )
+
+                        await self._alerter.send_system_alert(sitrep, level="info")
+                    except Exception as exc:
+                        log.debug("sitrep.failed", error=str(exc))
 
             except Exception as exc:
                 log.error("orchestrator.heartbeat_error", error=str(exc))
