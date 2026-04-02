@@ -390,21 +390,41 @@ class FiveMinVPINStrategy(BaseStrategy):
         direction = "YES" if signal.direction == "UP" else "NO"
         price = Decimal(str(round(token_price, 4)))
 
-        # Get token IDs from the feed's window info (if available)
+        # Get token IDs from recent windows
         token_id = None
-        for window in getattr(self, '_recent_windows', []):
-            if getattr(window, 'window_ts', 0) == window_ts:
-                token_id = window.up_token_id if direction == "YES" else window.down_token_id
-                # Use real Gamma price if available
-                if direction == "YES" and window.up_price is not None:
-                    price = Decimal(str(round(window.up_price, 4)))
-                elif direction == "NO" and window.down_price is not None:
-                    price = Decimal(str(round(window.down_price, 4)))
-                break
+        recent = getattr(self, '_recent_windows', [])
+        
+        # Try exact match first, then closest match
+        for window in recent:
+            wts = getattr(window, 'window_ts', 0)
+            w_asset = getattr(window, 'asset', '')
+            if wts == window_ts and w_asset == asset:
+                tid = window.up_token_id if direction == "YES" else window.down_token_id
+                if tid:
+                    token_id = tid
+                    if direction == "YES" and window.up_price is not None:
+                        price = Decimal(str(round(window.up_price, 4)))
+                    elif direction == "NO" and window.down_price is not None:
+                        price = Decimal(str(round(window.down_price, 4)))
+                    break
+        
+        # If no exact match, use the most recent window for this asset with token IDs
+        if token_id is None:
+            for window in reversed(recent):
+                w_asset = getattr(window, 'asset', '')
+                if w_asset == asset:
+                    tid = window.up_token_id if direction == "YES" else window.down_token_id
+                    if tid and not tid.startswith("paper"):
+                        token_id = tid
+                        if direction == "YES" and window.up_price is not None:
+                            price = Decimal(str(round(window.up_price, 4)))
+                        elif direction == "NO" and window.down_price is not None:
+                            price = Decimal(str(round(window.down_price, 4)))
+                        self._log.info("execute.token_id_from_recent", window=window_key, source_ts=getattr(window, 'window_ts', 0))
+                        break
 
         if token_id is None:
-            self._log.warning("execute.no_token_id_waiting", window=window_key, direction=direction)
-            # Token IDs not yet fetched from Gamma API — un-fire so it retries next eval
+            self._log.warning("execute.no_token_id_waiting", window=window_key, direction=direction, recent_count=len(recent))
             eval_state.fired = False
             return
 
