@@ -561,12 +561,19 @@ class Orchestrator:
             up_price=window.up_price,
             down_price=window.down_price,
         )
-        # Forward to strategy — queues window AND stores for token ID lookup
+        # Forward to strategy — store for token ID lookup AND evaluate immediately
+        # This is the MORNING STRATEGY: single-shot at T-60s (when feed fires signal)
         if self._five_min_strategy:
             self._five_min_strategy._pending_windows.append(window)
             if not hasattr(self._five_min_strategy, '_recent_windows'):
                 self._five_min_strategy._recent_windows = []
             self._five_min_strategy._recent_windows.append(window)
+            # Direct evaluation — the T-60s single-shot that made +$93
+            try:
+                state = await self._aggregator.get_state()
+                await self._five_min_strategy._evaluate_window(window, state)
+            except Exception as exc:
+                log.warning("five_min.evaluate_error", error=str(exc))
             if len(self._five_min_strategy._recent_windows) > 20:
                 self._five_min_strategy._recent_windows = self._five_min_strategy._recent_windows[-20:]
 
@@ -587,6 +594,12 @@ class Orchestrator:
             if not hasattr(self._five_min_strategy, '_recent_windows'):
                 self._five_min_strategy._recent_windows = []
             self._five_min_strategy._recent_windows.append(window)
+            # Direct evaluation — morning strategy single-shot
+            try:
+                state = await self._aggregator.get_state()
+                await self._five_min_strategy._evaluate_window(window, state)
+            except Exception as exc:
+                log.warning("fifteen_min.evaluate_error", error=str(exc))
             if len(self._five_min_strategy._recent_windows) > 20:
                 self._five_min_strategy._recent_windows = self._five_min_strategy._recent_windows[-20:]
 

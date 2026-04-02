@@ -141,15 +141,16 @@ class FiveMinVPINStrategy(BaseStrategy):
         """
         Called by the orchestrator on every market state update (~every 1-3s).
         
-        Full-window continuous monitoring:
-        1. Register new windows from the feed
-        2. Evaluate ALL active windows with latest data
-        3. Fire when the evaluator says confidence is high enough
+        REVERTED TO MORNING STRATEGY (2026-04-02):
+        Continuous evaluator disabled — it was overconfident and unprofitable.
+        Using legacy T-60s single-shot evaluation instead.
+        Legacy path fires via _evaluate_window() called from orchestrator
+        on each window signal.
         """
         if not self._running or not runtime.five_min_enabled:
             return
         
-        # Register new windows from the feed
+        # Still register windows (needed for token ID lookup)
         if self._pending_windows:
             for window in self._pending_windows:
                 window_key = f"{window.asset}-{window.window_ts}"
@@ -165,71 +166,16 @@ class FiveMinVPINStrategy(BaseStrategy):
                     )
             self._pending_windows.clear()
         
-        # Evaluate all active windows
-        current_price = float(state.btc_price) if state.btc_price else None
-        if current_price is None:
-            return
-        
-        current_vpin = self._vpin.current_vpin
-        now = time.time()
-        
-        # Get CoinGlass enhanced data if available
-        cg_data = {}
-        if self._cg_enhanced and self._cg_enhanced.connected:
-            snap = self._cg_enhanced.snapshot
-            cg_data = {
-                "liq_total_1m": snap.liq_total_usd_1m,
-                "liq_long_1m": snap.liq_long_usd_1m,
-                "liq_short_1m": snap.liq_short_usd_1m,
-                "long_short_ratio": snap.long_short_ratio,
-                "long_pct": snap.long_pct,
-                "funding_rate": snap.funding_rate,
-                "oi_delta_pct_1m": snap.oi_delta_pct_1m,
-            }
-        
-        # Evaluate each active window
-        expired_keys = []
-        for window_key, eval_state in self._active_eval_states.items():
-            window_close_ts = eval_state.window_ts + 300  # 5-min window
-            seconds_to_close = window_close_ts - now
-            
-            # Clean up expired windows
-            if seconds_to_close < -10:
-                expired_keys.append(window_key)
-                continue
-            
-            # Skip if already fired
-            if eval_state.fired:
-                continue
-            
-            # Skip if in retry cooldown (avoid spamming when token IDs not yet available)
-            retry_after = getattr(eval_state, '_retry_after', 0)
-            if retry_after and now < retry_after:
-                continue
-            
-            # Update open price if we didn't have it
-            if eval_state.open_price <= 0:
-                # Try to get from any matching pending window
-                continue
-            
-            # Evaluate
-            signal = self._evaluator.evaluate(
-                window_state=eval_state,
-                current_price=current_price,
-                current_vpin=current_vpin,
-                seconds_to_close=seconds_to_close,
-                **cg_data,
-            )
-            
-            if signal is not None:
-                # FIRE — execute the trade
-                eval_state.fired = True
-                self._last_executed_window = window_key
-                await self._execute_from_signal(state, signal, eval_state, window_key)
-        
-        # Clean up expired windows
-        for key in expired_keys:
-            del self._active_eval_states[key]
+        # ── CONTINUOUS EVALUATOR DISABLED ──────────────────────────────
+        # Reverted to morning's T-60s single-shot strategy.
+        # The continuous evaluator was overconfident and lost money.
+        # Legacy _evaluate_window() is called by orchestrator on each
+        # window signal (T-60s before close).
+        # 
+        # Morning session: +$93 with simple delta + VPIN at T-60s
+        # Afternoon with continuous evaluator: -$258
+        # ──────────────────────────────────────────────────────────────
+        pass
 
     # ─── Legacy Window Handler (still used by feed callback) ──────────────────
 
