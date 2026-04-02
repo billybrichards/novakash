@@ -73,8 +73,8 @@ class DBClient:
             INSERT INTO trades (
                 order_id, strategy, venue, market_slug, direction,
                 entry_price, stake_usd, fee_usd, status, outcome,
-                payout_usd, pnl_usd, created_at, resolved_at, metadata
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                payout_usd, pnl_usd, created_at, resolved_at, metadata, mode
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
             ON CONFLICT (order_id) DO UPDATE SET
                 status      = EXCLUDED.status,
                 outcome     = EXCLUDED.outcome,
@@ -115,6 +115,7 @@ class DBClient:
                     created_dt,
                     resolved_dt,
                     json.dumps(order.metadata),
+                    "live" if order.order_id.startswith("0x") else "paper",
                 )
             log.debug("db.trade_written", order_id=order.order_id)
         except Exception as exc:
