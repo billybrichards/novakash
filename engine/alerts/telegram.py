@@ -138,6 +138,9 @@ class TelegramAlerter:
             potential = shares * 1.0 - order.stake_usd
             potential_pct = (potential / order.stake_usd * 100) if order.stake_usd > 0 else 0
 
+            vpin = meta.get("vpin")
+            score = meta.get("score")
+            
             lines = [
                 f"{direction_emoji} *BET PLACED — {asset} {tf}* ({mode_tag})",
                 f"",
@@ -145,6 +148,8 @@ class TelegramAlerter:
                 f"Direction: `{order.direction}` {'(UP)' if order.direction == 'YES' else '(DOWN)'}",
                 f"Entry: `{entry_label}`",
                 f"Delta: `{delta_pct:+.4f}%`" if delta_pct is not None else None,
+                f"🔬 VPIN: `{vpin:.4f}`" if isinstance(vpin, (int, float)) else None,
+                f"Score: `{score:.1f}`" if isinstance(score, (int, float)) else None,
                 f"Confidence: `{conf_pct}%` ({confidence})",
                 f"",
                 f"💰 *Pricing* ({data_source})",

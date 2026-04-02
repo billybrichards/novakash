@@ -124,15 +124,19 @@ class WindowEvaluator:
         delta_pct = (current_price - window_state.open_price) / window_state.open_price * 100
         abs_delta = abs(delta_pct)
 
-        # Dynamic weight: stronger delta → higher weight
-        if abs_delta > 0.10:
-            delta_weight = 7.0
-        elif abs_delta > 0.05:
-            delta_weight = 5.0
-        elif abs_delta > 0.02:
+        # v3.1: Delta weight — calibrated to morning data
+        # Morning MODERATE wins were 0.03-0.09% delta
+        # Scale smoothly: max 3.0 (matches VPIN max = equal weighting)
+        if abs_delta > 0.15:
             delta_weight = 3.0
+        elif abs_delta > 0.10:
+            delta_weight = 2.0 + (abs_delta - 0.10) / 0.05 * 1.0   # 2.0-3.0
+        elif abs_delta > 0.05:
+            delta_weight = 1.5 + (abs_delta - 0.05) / 0.05 * 0.5   # 1.5-2.0
+        elif abs_delta > 0.02:
+            delta_weight = 0.5 + (abs_delta - 0.02) / 0.03 * 1.0   # 0.5-1.5
         elif abs_delta > 0.005:
-            delta_weight = 1.0
+            delta_weight = abs_delta / 0.02 * 0.5                    # 0.0-0.5
         else:
             delta_weight = 0.0
 
