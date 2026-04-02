@@ -307,6 +307,132 @@ class DBClient:
             log.error("db.update_feed_status_failed", error=str(exc))
             # Don't re-raise — status update failure is not fatal
 
+    # ─── Playwright State ────────────────────────────────────────────────────
+
+    async def ensure_playwright_tables(self) -> None:
+        """Create playwright_state and redeem_events tables if they don't exist."""
+        if not self._pool:
+            return
+        async with self._pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS playwright_state (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    logged_in BOOLEAN DEFAULT FALSE,
+                    browser_alive BOOLEAN DEFAULT FALSE,
+                    usdc_balance DOUBLE PRECISION DEFAULT 0,
+                    positions_value DOUBLE PRECISION DEFAULT 0,
+                    positions_json JSONB DEFAULT '[]'::jsonb,
+                    redeemable_json JSONB DEFAULT '[]'::jsonb,
+                    history_json JSONB DEFAULT '[]'::jsonb,
+                    screenshot_png BYTEA,
+                    redeem_requested BOOLEAN DEFAULT FALSE,
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                INSERT INTO playwright_state (id) VALUES (1) ON CONFLICT DO NOTHING;
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS redeem_events (
+                    id SERIAL PRIMARY KEY,
+                    redeemed_count INTEGER DEFAULT 0,
+                    failed_count INTEGER DEFAULT 0,
+                    total_value DOUBLE PRECISION DEFAULT 0,
+                    details_json JSONB DEFAULT '[]'::jsonb,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+        log.info("db.playwright_tables_ensured")
+
+    async def update_playwright_state(
+        self,
+        logged_in: bool = False,
+        browser_alive: bool = False,
+        usdc_balance: float = 0.0,
+        positions_value: float = 0.0,
+        positions_json: Optional[list] = None,
+        redeemable_json: Optional[list] = None,
+        history_json: Optional[list] = None,
+        screenshot_png: Optional[bytes] = None,
+    ) -> None:
+        """Upsert the playwright_state singleton row."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                if screenshot_png is not None:
+                    await conn.execute(
+                        """
+                        UPDATE playwright_state SET
+                            logged_in = $1, browser_alive = $2,
+                            usdc_balance = $3, positions_value = $4,
+                            positions_json = $5, redeemable_json = $6,
+                            history_json = $7, screenshot_png = $8,
+                            updated_at = NOW()
+                        WHERE id = 1
+                        """,
+                        logged_in, browser_alive,
+                        usdc_balance, positions_value,
+                        json.dumps(positions_json or []),
+                        json.dumps(redeemable_json or []),
+                        json.dumps(history_json or []),
+                        screenshot_png,
+                    )
+                else:
+                    await conn.execute(
+                        """
+                        UPDATE playwright_state SET
+                            logged_in = $1, browser_alive = $2,
+                            usdc_balance = $3, positions_value = $4,
+                            positions_json = $5, redeemable_json = $6,
+                            history_json = $7,
+                            updated_at = NOW()
+                        WHERE id = 1
+                        """,
+                        logged_in, browser_alive,
+                        usdc_balance, positions_value,
+                        json.dumps(positions_json or []),
+                        json.dumps(redeemable_json or []),
+                        json.dumps(history_json or []),
+                    )
+        except Exception as e:
+            log.error("db.playwright_state.error", error=str(e))
+
+    async def check_redeem_requested(self) -> bool:
+        """Check if a manual redeem was requested via Hub API."""
+        if not self._pool:
+            return False
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT redeem_requested FROM playwright_state WHERE id = 1"
+                )
+                if row and row["redeem_requested"]:
+                    await conn.execute(
+                        "UPDATE playwright_state SET redeem_requested = FALSE WHERE id = 1"
+                    )
+                    return True
+                return False
+        except Exception:
+            return False
+
+    async def write_redeem_event(self, result: dict) -> None:
+        """Record a redeem sweep event."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO redeem_events (redeemed_count, failed_count, total_value, details_json)
+                    VALUES ($1, $2, $3, $4)
+                    """,
+                    result.get("redeemed", 0),
+                    result.get("failed", 0),
+                    result.get("total_value", 0.0),
+                    json.dumps(result.get("details", [])),
+                )
+        except Exception as e:
+            log.error("db.redeem_event.error", error=str(e))
+
     # ─── Read Helpers ─────────────────────────────────────────────────────────
 
     async def get_daily_pnl(self, date: Optional[datetime] = None) -> float:
