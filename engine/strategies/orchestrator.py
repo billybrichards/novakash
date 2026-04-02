@@ -33,8 +33,10 @@ from data.aggregator import MarketAggregator
 from data.feeds.binance_ws import BinanceWebSocketFeed
 from data.feeds.chainlink_rpc import ChainlinkRPCFeed
 from data.feeds.coinglass_api import CoinGlassAPIFeed
+from data.feeds.coinglass_enhanced import CoinGlassEnhancedFeed
 from data.feeds.polymarket_ws import PolymarketWebSocketFeed
 from data.feeds.polymarket_5min import Polymarket5MinFeed
+from execution.redeemer import PositionRedeemer
 from data.models import (
     AggTrade,
     ArbOpportunity,
@@ -142,6 +144,23 @@ class Orchestrator:
         self._alerter.set_risk_manager(self._risk_manager)
         self._alerter.set_poly_client(self._poly_client)
 
+        # ── Position Redeemer (on-chain auto-redeem) ───────────────────────────
+        self._redeemer = PositionRedeemer(
+            rpc_url=os.environ.get("POLYGON_RPC_URL", ""),
+            private_key=settings.poly_private_key,
+            proxy_address=settings.poly_funder_address,
+            paper_mode=settings.paper_mode,
+        )
+
+        # ── CoinGlass Enhanced Feed (1-min data for signal enrichment) ─────────
+        self._cg_enhanced: Optional[CoinGlassEnhancedFeed] = None
+        if settings.coinglass_api_key:
+            self._cg_enhanced = CoinGlassEnhancedFeed(
+                api_key=settings.coinglass_api_key,
+                symbol="BTC",
+            )
+            log.info("orchestrator.coinglass_enhanced_enabled")
+
         # ── Strategies ─────────────────────────────────────────────────────────
         self._arb_strategy = SubDollarArbStrategy(
             order_manager=self._order_manager,
@@ -170,6 +189,7 @@ class Orchestrator:
                 poly_client=self._poly_client,
                 vpin_calculator=self._vpin_calc,
                 alerter=self._alerter,
+                cg_enhanced=self._cg_enhanced,
             )
             log.info("orchestrator.five_min_enabled", assets=settings.five_min_assets)
         else:
@@ -289,6 +309,10 @@ class Orchestrator:
             self._tasks.append(
                 asyncio.create_task(self._coinglass_feed.start(), name="feed:coinglass")
             )
+        if self._cg_enhanced:
+            self._tasks.append(
+                asyncio.create_task(self._cg_enhanced.start(), name="feed:coinglass_enhanced")
+            )
         if self._chainlink_feed:
             self._tasks.append(
                 asyncio.create_task(self._chainlink_feed.start(), name="feed:chainlink")
@@ -311,6 +335,17 @@ class Orchestrator:
         self._tasks.append(
             asyncio.create_task(self._market_state_loop(), name="market_state_loop")
         )
+
+        # 8. Connect redeemer and start auto-redeem loop
+        try:
+            await self._redeemer.connect()
+        except Exception as exc:
+            log.warning("orchestrator.redeemer_connect_failed", error=str(exc))
+
+        if not self._settings.paper_mode:
+            self._tasks.append(
+                asyncio.create_task(self._redeem_loop(), name="auto_redeem")
+            )
 
         # Register OS signal handlers
         loop = asyncio.get_running_loop()
@@ -722,6 +757,33 @@ class Orchestrator:
                 await asyncio.wait_for(
                     asyncio.shield(self._shutdown_event.wait()),
                     timeout=5.0,
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    async def _redeem_loop(self) -> None:
+        """Every 5 minutes: scan for resolved positions and redeem on-chain."""
+        REDEEM_INTERVAL = 300  # 5 minutes
+
+        while not self._shutdown_event.is_set():
+            try:
+                result = await self._redeemer.redeem_all()
+                if result.get("redeemed", 0) > 0:
+                    # Send Telegram alert
+                    msg = (
+                        f"💰 *Redeemed {result['redeemed']} positions*\n"
+                        f"USDC: `${result['usdc_before']:.2f}` → `${result['usdc_after']:.2f}`\n"
+                        f"Change: `+${result['usdc_after'] - result['usdc_before']:.2f}`"
+                    )
+                    await self._alerter.send_system_alert(msg, level="info")
+            except Exception as exc:
+                log.error("orchestrator.redeem_error", error=str(exc))
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=REDEEM_INTERVAL,
                 )
                 break
             except asyncio.TimeoutError:
