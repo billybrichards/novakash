@@ -380,14 +380,63 @@ class FiveMinVPINStrategy(BaseStrategy):
         
         await self._om.register_order(order)
         
-        # Send entry alert to Telegram
-        if self._alerter:
+        self._log.info(
+            "trade.submitted",
+            order_id=order.order_id,
+            asset=window.asset,
+            direction=direction,
+            stake=stake,
+            delta_pct=f"{signal.delta_pct:.4f}%",
+            vpin=f"{signal.current_vpin:.4f}",
+            confidence=signal.confidence,
+            entry=f"T-{FIVE_MIN_ENTRY_OFFSET}s",
+            token_price=str(price),
+        )
+
+        # Post-trade verification — only alert AFTER confirming fill
+        if not self._poly.paper_mode and order.order_id.startswith("0x"):
             try:
-                import asyncio
-                asyncio.create_task(self._alerter.send_entry_alert(order))
-            except Exception:
-                pass
-        
+                await asyncio.sleep(3)  # Wait for CLOB matching
+                status = await self._poly.get_order_status(order.order_id)
+                clob_status = status.get("status", "UNKNOWN")
+                size_matched = status.get("size_matched", "0")
+                
+                filled = float(size_matched) > 0 if size_matched else False
+                order.metadata["clob_status"] = clob_status
+                order.metadata["size_matched"] = size_matched
+                order.metadata["filled"] = filled
+
+                self._log.info(
+                    "trade.verified",
+                    order_id=order.order_id[:20] + "...",
+                    clob_status=clob_status,
+                    size_matched=size_matched,
+                    filled=filled,
+                )
+
+                # Only send Telegram alert if order actually filled
+                if filled and self._alerter:
+                    asyncio.create_task(self._alerter.send_entry_alert(order))
+                elif not filled:
+                    self._log.warning(
+                        "trade.not_filled",
+                        order_id=order.order_id[:20] + "...",
+                        clob_status=clob_status,
+                    )
+            except Exception as exc:
+                self._log.warning("trade.verify_failed", order_id=order.order_id[:20], error=str(exc))
+                # Still send alert on verify failure — better to over-notify than miss
+                if self._alerter:
+                    asyncio.create_task(self._alerter.send_entry_alert(order))
+        else:
+            # Paper mode — always alert
+            if self._alerter:
+                try:
+                    asyncio.create_task(self._alerter.send_entry_alert(order))
+                except Exception:
+                    pass
+
+        # Legacy log line for backward compat
         self._log.info(
             "trade.executed",
             order_id=order.order_id,
@@ -401,22 +450,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             token_price=str(price),
         )
 
-        # Post-trade verification (live mode only) — check order landed on CLOB
-        if not self._poly.paper_mode and order.order_id.startswith("0x"):
-            try:
-                import asyncio
-                await asyncio.sleep(2)  # Brief delay for CLOB propagation
-                status = await self._poly.get_order_status(order.order_id)
-                clob_status = status.get("status", "UNKNOWN")
-                size_matched = status.get("size_matched", "0")
-                self._log.info(
-                    "trade.verified",
-                    order_id=order.order_id[:20] + "...",
-                    clob_status=clob_status,
-                    size_matched=size_matched,
-                )
-            except Exception as exc:
-                self._log.warning("trade.verify_failed", order_id=order.order_id[:20], error=str(exc))
+
 
     # ─── Price Fetching ─────────────────────────────────────────────────────
 
