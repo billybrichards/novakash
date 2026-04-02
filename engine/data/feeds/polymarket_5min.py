@@ -428,14 +428,17 @@ class Polymarket5MinFeed:
         symbol = asset_symbols.get(window.asset, f"{window.asset}USDT")
         
         urls = [
+            f"https://data-api.binance.vision/api/v3/ticker/price?symbol={symbol}",
+            f"https://api1.binance.com/api/v3/ticker/price?symbol={symbol}",
             f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}",
             f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}",
         ]
         
         import aiohttp
+        headers = {"User-Agent": "Mozilla/5.0 NovakashEngine/1.0"}
         for url in urls:
             try:
-                async with aiohttp.ClientSession() as session:
+                async with aiohttp.ClientSession(headers=headers) as session:
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                         if resp.status != 200:
                             continue
