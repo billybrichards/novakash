@@ -284,56 +284,44 @@ class PolymarketClient:
         # Calculate size (number of shares = stake / price)
         client = self._clob_client
 
-        # ── Strategy: Market Order (FOK) with limit fallback ──────────
-        # 1. Try market order first — reads the orderbook, calculates
-        #    best available price, and fills immediately (Fill or Kill).
-        #    This is a TAKER order that crosses the spread.
-        # 2. If market order fails (no liquidity), fall back to limit
-        #    order at the Gamma API price (GTC, sits on book).
+        # ── Strategy: Limit orders ONLY at Gamma API price ─────────────
+        # REVERTED from FAK market orders (2026-04-02 afternoon).
         #
-        # Market orders fill ~95% of the time when there's any book.
-        # The old approach (limit at mid-price) only filled ~40%.
-
-        from py_clob_client.clob_types import MarketOrderArgs
-
-        def _try_market_order():
-            """Attempt a FAK market order (taker, partial fills OK)."""
-            mo = MarketOrderArgs(
-                token_id=token_id,
-                amount=stake_usd,
-                side=BUY,
-                order_type=OrderType.FAK,
-            )
-            signed = client.create_market_order(mo)
-            return client.post_order(signed, OrderType.FAK)
-
-        def _try_limit_order():
-            """Fallback: GTC limit order at the Gamma API price."""
-            size = round(stake_usd / float(price), 2)
-            order_args = OrderArgs(
-                token_id=token_id,
-                price=float(price),
-                size=size,
-                side=BUY,
-            )
-            signed = client.create_order(order_args)
-            return client.post_order(signed, OrderType.GTC)
-
-        try:
-            response = await asyncio.to_thread(_try_market_order)
-            self._log.info(
-                "place_order.market_order_ok",
-                market_slug=market_slug,
-                direction=direction,
-                stake_usd=stake_usd,
-            )
-        except Exception as mkt_err:
+        # WHY: Market orders (FAK) bought tokens at 88-98¢ on thin books.
+        # At 98¢ you need 98% accuracy to break even — impossible.
+        # Limit orders at Gamma price (38-52¢) gave 89% win rate and
+        # +$218 profit in the morning session.
+        #
+        # TRADEOFF: ~40-60% fill rate (some orders sit unfilled) but
+        # every fill has excellent risk/reward. Better to miss trades
+        # than pay terrible prices.
+        #
+        # MAX PRICE CAP: 0.65 (65¢). Never buy tokens above this —
+        # ensures minimum 54% upside on every trade.
+        
+        # Enforce max token price cap
+        if float(price) > 0.65:
             self._log.warning(
-                "place_order.market_order_failed_falling_back",
-                error=str(mkt_err)[:200],
+                "place_order.price_too_high",
+                price=str(price),
+                max_price="0.65",
                 market_slug=market_slug,
             )
-            response = await asyncio.to_thread(_try_limit_order)
+            raise ValueError(f"Token price {price} exceeds 65¢ cap — skipping")
+
+        size = round(stake_usd / float(price), 2)
+        order_args = OrderArgs(
+            token_id=token_id,
+            price=float(price),
+            size=size,
+            side=BUY,
+        )
+
+        def _sign_and_submit():
+            signed_order = client.create_order(order_args)
+            return client.post_order(signed_order, OrderType.GTC)
+
+        response = await asyncio.to_thread(_sign_and_submit)
 
         # Response can be a dict or an object — handle both
         if isinstance(response, dict):
