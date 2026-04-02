@@ -1624,6 +1624,11 @@ export default function Dashboard() {
   const [dailyPnlData, setDailyPnlData] = useState(null);
   const [tradesData, setTradesData] = useState(null);
   const [loading, setLoading] = useState(true);
+  // New monitoring charts
+  const [entryTimingData, setEntryTimingData] = useState(null);
+  const [signalBreakdownData, setSignalBreakdownData] = useState(null);
+  const [confidenceHistData, setConfidenceHistData] = useState(null);
+  const [tierStatsData, setTierStatsData] = useState(null);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -1635,9 +1640,14 @@ export default function Dashboard() {
         '/api/dashboard/equity',
         '/api/dashboard/daily-pnl',
         '/api/dashboard/trades',
+        '/api/dashboard/entry-timing',
+        '/api/dashboard/signal-breakdown',
+        '/api/dashboard/confidence-histogram',
+        '/api/dashboard/tier-stats',
       ];
 
-      const [statsRes, vpinRes, cascadeRes, arbRes, equityRes, pnlRes, tradesRes] =
+      const [statsRes, vpinRes, cascadeRes, arbRes, equityRes, pnlRes, tradesRes,
+        entryTimingRes, signalBreakdownRes, confidenceHistRes, tierStatsRes] =
         await Promise.allSettled(endpoints.map(url => api('GET', url)));
 
       const get = (res, fallback) => res.status === 'fulfilled' ? (res.value?.data ?? fallback) : fallback;
@@ -1649,6 +1659,10 @@ export default function Dashboard() {
       const rawEquity = get(equityRes, []);
       const rawPnl = get(pnlRes, []);
       const rawTrades = get(tradesRes, []);
+      const rawEntryTiming = get(entryTimingRes, []);
+      const rawSignalBreakdown = get(signalBreakdownRes, []);
+      const rawConfidenceHist = get(confidenceHistRes, []);
+      const rawTierStats = get(tierStatsRes, []);
 
       setStats(rawStats);
       setVpinData(rawVpin.length ? rawVpin : genVpinDemo());
@@ -1657,6 +1671,10 @@ export default function Dashboard() {
       setEquityData(rawEquity.length ? rawEquity : genEquityDemo());
       setDailyPnlData(rawPnl.length ? rawPnl : genDailyPnlDemo());
       setTradesData(rawTrades.length ? rawTrades : genTradesDemo());
+      setEntryTimingData(rawEntryTiming.length ? rawEntryTiming : genEntryTimingDemo());
+      setSignalBreakdownData(rawSignalBreakdown.length ? rawSignalBreakdown : genSignalBreakdownDemo());
+      setConfidenceHistData(rawConfidenceHist.length ? rawConfidenceHist : genConfidenceHistogramDemo());
+      setTierStatsData(rawTierStats.length ? rawTierStats : genTierStatsDemo());
     } catch (err) {
       console.error('Dashboard fetch error:', err);
       // Full fallback
@@ -1666,6 +1684,10 @@ export default function Dashboard() {
       setEquityData(genEquityDemo());
       setDailyPnlData(genDailyPnlDemo());
       setTradesData(genTradesDemo());
+      setEntryTimingData(genEntryTimingDemo());
+      setSignalBreakdownData(genSignalBreakdownDemo());
+      setConfidenceHistData(genConfidenceHistogramDemo());
+      setTierStatsData(genTierStatsDemo());
     } finally {
       setLoading(false);
     }
@@ -1776,6 +1798,25 @@ export default function Dashboard() {
 
         {/* Daily P&L — full width */}
         {dailyPnlData && <DailyPnlChart data={dailyPnlData} />}
+
+        {/* § MONITORING SYSTEM */}
+        <div>
+          <div style={styles.sectionTitle}>§ MONITORING SYSTEM</div>
+
+          {/* Entry Timing + Confidence Histogram */}
+          <div className="dash-grid2" style={{ ...styles.grid2, marginBottom: 16 }}>
+            {entryTimingData && <EntryTimingChart data={entryTimingData} />}
+            {confidenceHistData && <ConfidenceHistogramChart data={confidenceHistData} />}
+          </div>
+
+          {/* Tier Performance Cards — full width */}
+          {tierStatsData && <TierPerformanceCards data={tierStatsData} />}
+
+          {/* Signal Breakdown — full width */}
+          <div style={{ marginTop: 16 }}>
+            {signalBreakdownData && <SignalBreakdownChart data={signalBreakdownData} />}
+          </div>
+        </div>
 
       </div>
     </div>
