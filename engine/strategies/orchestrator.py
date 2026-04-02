@@ -840,67 +840,114 @@ class Orchestrator:
     async def _position_monitor_loop(self) -> None:
         """Every 30s: check Polymarket positions API for resolved trades.
         
-        This is the SOURCE OF TRUTH for WIN/LOSS — not internal resolution.
-        Sends Telegram alerts when positions resolve on Polymarket's oracle.
+        SOURCE OF TRUTH for WIN/LOSS — uses Polymarket's oracle, not internal logic.
+        Only alerts on NEW resolutions (ignores positions resolved before engine started).
         """
         POLL_INTERVAL = 30
-        # Track known resolved positions to avoid duplicate alerts
         _resolved_conditions: set = set()
+        _first_run = True
+        _start_time = time.time()
         
         while not self._shutdown_event.is_set():
             try:
                 outcomes = await self._poly_client.get_position_outcomes()
                 
-                for cid, data in outcomes.items():
-                    if cid in _resolved_conditions:
-                        continue
-                    
-                    outcome = data["outcome"]
-                    if outcome == "OPEN":
-                        continue
-                    
-                    # Position just resolved — send alert
-                    _resolved_conditions.add(cid)
-                    
-                    size = data["size"]
-                    avg_price = data["avgPrice"]
-                    cost = data["cost"]
-                    value = data["value"]
-                    pnl = data["pnl"]
-                    
-                    if outcome == "WIN":
-                        emoji = "✅"
-                        pnl_str = f"+${pnl:.2f}"
-                    else:
-                        emoji = "❌"
-                        pnl_str = f"-${cost:.2f}"
-                    
-                    # Get wallet balance for context
-                    try:
-                        wallet = await self._poly_client.get_balance()
-                        wallet_str = f"\n🏦 Wallet: `${wallet:.2f}` USDC"
-                    except Exception:
-                        wallet_str = ""
-                    
-                    msg = (
-                        f"{emoji} *{outcome} — BTC* (💰 LIVE)\n"
-                        f"\n"
-                        f"📊 *Result (from Polymarket)*\n"
-                        f"Shares: `{size:.1f}`\n"
-                        f"Entry: `${avg_price:.4f}`\n"
-                        f"Cost: `${cost:.2f}`\n"
-                        f"Payout: `${value:.2f}`\n"
-                        f"PnL: `{pnl_str}`\n"
-                        f"{wallet_str}"
-                    )
-                    
-                    await self._alerter.send_system_alert(msg, level="info")
-                    log.info(
-                        "position_monitor.resolved",
-                        condition_id=cid[:20] + "...",
-                        outcome=outcome,
-                        pnl=pnl,
-                    )
+                if _first_run:
+                    # On first run, mark ALL currently resolved positions as "known"
+                    # so we don't spam alerts for old historical positions
+                    for cid, data in outcomes.items():
+                        if data["outcome"] != "OPEN":
+                            _resolved_conditions.add(cid)
+                    _first_run = False
+                    log.info("position_monitor.started", known_resolved=len(_resolved_conditions))
+                    # Continue to next poll — don't alert on existing positions
+                else:
+                    for cid, data in outcomes.items():
+                        if cid in _resolved_conditions:
+                            continue
+                        
+                        outcome = data["outcome"]
+                        if outcome == "OPEN":
+                            continue
+                        
+                        # NEW resolution detected
+                        _resolved_conditions.add(cid)
+                        
+                        size = data["size"]
+                        avg_price = data["avgPrice"]
+                        cost = data["cost"]
+                        value = data["value"]
+                        pnl = data["pnl"]
+                        
+                        from datetime import datetime, timezone
+                        now_str = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+                        
+                        if outcome == "WIN":
+                            emoji = "✅"
+                            pnl_str = f"+${pnl:.2f}"
+                        else:
+                            emoji = "❌"
+                            pnl_str = f"-${cost:.2f}"
+                        
+                        # Try to find matching trade in DB for signal details
+                        trade_info = ""
+                        try:
+                            if self._db._pool:
+                                async with self._db._pool.acquire() as conn:
+                                    row = await conn.fetchrow(
+                                        """SELECT metadata, created_at FROM trades 
+                                           WHERE mode = 'live' AND stake_usd BETWEEN $1 AND $2
+                                           ORDER BY created_at DESC LIMIT 1""",
+                                        cost * 0.8, cost * 1.2,
+                                    )
+                                    if row and row["metadata"]:
+                                        import json as _json
+                                        meta = _json.loads(row["metadata"]) if isinstance(row["metadata"], str) else row["metadata"]
+                                        tier = meta.get("tier", "")
+                                        conf = meta.get("confidence", "")
+                                        delta = meta.get("delta_pct", "")
+                                        entry_reason = meta.get("entry_reason", "")
+                                        if tier or conf:
+                                            conf_str = f"{int(conf*100)}%" if isinstance(conf, float) else str(conf)
+                                            trade_info = (
+                                                f"\n📊 *Signal*\n"
+                                                f"Tier: `{tier}`\n"
+                                                f"Confidence: `{conf_str}`\n"
+                                                f"Delta: `{delta}`\n"
+                                            )
+                                            if entry_reason:
+                                                trade_info += f"Entry: `{entry_reason[:60]}`\n"
+                        except Exception:
+                            pass
+                        
+                        # Get wallet balance
+                        try:
+                            wallet = await self._poly_client.get_balance()
+                            wallet_str = f"\n🏦 Wallet: `${wallet:.2f}` USDC"
+                        except Exception:
+                            wallet_str = ""
+                        
+                        msg = (
+                            f"{emoji} *{outcome} — BTC* (💰 LIVE)\n"
+                            f"🕐 `{now_str}`\n"
+                            f"\n"
+                            f"📊 *Result (from Polymarket)*\n"
+                            f"Shares: `{size:.1f}`\n"
+                            f"Entry: `${avg_price:.4f}`\n"
+                            f"Cost: `${cost:.2f}`\n"
+                            f"Payout: `${value:.2f}`\n"
+                            f"PnL: `{pnl_str}`\n"
+                            f"{trade_info}"
+                            f"{wallet_str}"
+                        )
+                        
+                        await self._alerter.send_system_alert(msg, level="info")
+                        log.info(
+                            "position_monitor.resolved",
+                            condition_id=cid[:20] + "...",
+                            outcome=outcome,
+                            pnl=pnl,
+                        )
                 
             except Exception as exc:
                 log.debug("position_monitor.error", error=str(exc))
