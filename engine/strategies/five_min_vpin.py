@@ -452,14 +452,20 @@ class FiveMinVPINStrategy(BaseStrategy):
                                 fresh_up = float(best_ask)
                                 fresh_down = round(1.0 - fresh_up, 4)
                                 if direction == "YES":
-                                    price = Decimal(str(round(fresh_up, 4)))
+                                    base_price = fresh_up
                                 else:
-                                    price = Decimal(str(round(fresh_down, 4)))
+                                    base_price = fresh_down
+                                # +2¢ bump to improve fill rate
+                                # Costs ~4% profit but roughly doubles fills
+                                # Hard cap still enforced in place_order()
+                                bumped = round(base_price + 0.02, 4)
+                                price = Decimal(str(bumped))
                                 self._log.info(
                                     "execute.fresh_gamma_price",
                                     window=window_key,
                                     direction=direction,
-                                    price=str(price),
+                                    base_price=str(base_price),
+                                    bumped_price=str(price),
                                 )
         except Exception as exc:
             self._log.debug("execute.fresh_price_failed", error=str(exc))
