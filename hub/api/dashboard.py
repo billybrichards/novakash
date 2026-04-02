@@ -337,3 +337,213 @@ async def get_trades_for_analysis(
         return out
     except Exception:
         return []
+
+
+# ─── New monitoring endpoints ──────────────────────────────────────────────────
+
+@router.get("/dashboard/entry-timing")
+async def get_entry_timing(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> list:
+    """
+    Entry timing analysis: when in the window did we fire?
+    Returns [{seconds_to_close, confidence, tier, outcome, pnl_usd, delta_pct, token_price}]
+    Last 200 trades.
+    """
+    try:
+        result = await session.execute(
+            select(Trade)
+            .order_by(desc(Trade.created_at))
+            .limit(200)
+        )
+        trades = result.scalars().all()
+        if not trades:
+            return []
+
+        out = []
+        for t in trades:
+            meta = t.metadata_json or {}
+            out.append({
+                "seconds_to_close": meta.get("seconds_to_close"),
+                "confidence": meta.get("confidence"),
+                "tier": meta.get("tier"),
+                "outcome": t.outcome,
+                "pnl_usd": float(t.pnl_usd) if t.pnl_usd is not None else None,
+                "delta_pct": meta.get("delta_pct"),
+                "token_price": float(t.entry_price) if t.entry_price is not None else None,
+                "stake_usd": float(t.stake_usd) if t.stake_usd is not None else None,
+            })
+        return out
+    except Exception:
+        return []
+
+
+@router.get("/dashboard/signal-breakdown")
+async def get_signal_breakdown(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> list:
+    """
+    Signal component weights for recent trades.
+    Returns [{delta_weight, vpin_weight, liq_surge_weight, ls_imbalance_weight,
+              funding_weight, oi_delta_weight, score, confidence, outcome}]
+    Last 200 trades.
+    """
+    try:
+        result = await session.execute(
+            select(Trade)
+            .order_by(desc(Trade.created_at))
+            .limit(200)
+        )
+        trades = result.scalars().all()
+        if not trades:
+            return []
+
+        out = []
+        for t in trades:
+            meta = t.metadata_json or {}
+            out.append({
+                "delta_weight": meta.get("delta_weight"),
+                "vpin_weight": meta.get("vpin_weight"),
+                "liq_surge_weight": meta.get("liq_surge_weight"),
+                "ls_imbalance_weight": meta.get("ls_imbalance_weight"),
+                "funding_weight": meta.get("funding_weight"),
+                "oi_delta_weight": meta.get("oi_delta_weight"),
+                "score": meta.get("score"),
+                "confidence": meta.get("confidence"),
+                "outcome": t.outcome,
+            })
+        return out
+    except Exception:
+        return []
+
+
+@router.get("/dashboard/confidence-histogram")
+async def get_confidence_histogram(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> list:
+    """
+    Confidence vs win rate histogram.
+    Buckets confidence into 0.1 ranges.
+    Returns [{range, total, wins, losses, win_rate, avg_pnl}]
+    """
+    try:
+        result = await session.execute(
+            select(Trade)
+            .order_by(desc(Trade.created_at))
+            .limit(200)
+        )
+        trades = result.scalars().all()
+        if not trades:
+            return []
+
+        # Build buckets: 0.0–0.1, 0.1–0.2, ..., 0.9–1.0
+        buckets: dict[str, Any] = {}
+        for i in range(10):
+            lo = i / 10
+            hi = (i + 1) / 10
+            key = f"{int(lo * 100)}-{int(hi * 100)}%"
+            buckets[key] = {"lo": lo, "hi": hi, "total": 0, "wins": 0, "pnl_sum": 0.0}
+
+        for t in trades:
+            meta = t.metadata_json or {}
+            conf = meta.get("confidence")
+            if conf is None:
+                continue
+            try:
+                conf = float(conf)
+            except (TypeError, ValueError):
+                continue
+            bucket_idx = min(int(conf * 10), 9)
+            lo = bucket_idx / 10
+            hi = (bucket_idx + 1) / 10
+            key = f"{int(lo * 100)}-{int(hi * 100)}%"
+            if key in buckets:
+                buckets[key]["total"] += 1
+                if t.outcome == "WIN":
+                    buckets[key]["wins"] += 1
+                pnl = float(t.pnl_usd) if t.pnl_usd is not None else 0.0
+                buckets[key]["pnl_sum"] += pnl
+
+        out = []
+        for key, b in buckets.items():
+            total = b["total"]
+            wins = b["wins"]
+            losses = total - wins
+            out.append({
+                "range": key,
+                "total": total,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": wins / total if total > 0 else 0.0,
+                "avg_pnl": b["pnl_sum"] / total if total > 0 else 0.0,
+            })
+        return out
+    except Exception:
+        return []
+
+
+@router.get("/dashboard/tier-stats")
+async def get_tier_stats(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> list:
+    """
+    Win rate and P&L by entry tier.
+    Groups by tier (DECISIVE/HIGH/MODERATE/DEADLINE/SPIKE).
+    Returns [{tier, count, wins, losses, win_rate, total_pnl, avg_entry_seconds}]
+    """
+    try:
+        result = await session.execute(
+            select(Trade)
+            .order_by(desc(Trade.created_at))
+            .limit(500)
+        )
+        trades = result.scalars().all()
+        if not trades:
+            return []
+
+        tier_order = ["DECISIVE", "HIGH", "MODERATE", "DEADLINE", "SPIKE"]
+        tiers: dict[str, Any] = {
+            t: {"count": 0, "wins": 0, "pnl_sum": 0.0, "seconds_sum": 0.0, "seconds_count": 0}
+            for t in tier_order
+        }
+
+        for trade in trades:
+            meta = trade.metadata_json or {}
+            tier = meta.get("tier")
+            if not tier or tier not in tiers:
+                continue
+            tiers[tier]["count"] += 1
+            if trade.outcome == "WIN":
+                tiers[tier]["wins"] += 1
+            pnl = float(trade.pnl_usd) if trade.pnl_usd is not None else 0.0
+            tiers[tier]["pnl_sum"] += pnl
+            stc = meta.get("seconds_to_close")
+            if stc is not None:
+                try:
+                    tiers[tier]["seconds_sum"] += float(stc)
+                    tiers[tier]["seconds_count"] += 1
+                except (TypeError, ValueError):
+                    pass
+
+        out = []
+        for tier in tier_order:
+            b = tiers[tier]
+            count = b["count"]
+            wins = b["wins"]
+            losses = count - wins
+            out.append({
+                "tier": tier,
+                "count": count,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": wins / count if count > 0 else 0.0,
+                "total_pnl": b["pnl_sum"],
+                "avg_entry_seconds": b["seconds_sum"] / b["seconds_count"] if b["seconds_count"] > 0 else None,
+            })
+        return out
+    except Exception:
+        return []

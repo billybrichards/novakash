@@ -979,6 +979,527 @@ function DailyPnlChart({ data }) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHART 8: Entry Timing Scatter Plot
+// ═══════════════════════════════════════════════════════════════════════════════
+function EntryTimingChart({ data }) {
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const draw = () => {
+      const { ctx, w, h } = setupCanvas(canvas);
+      if (!ctx) return;
+
+      ctx.fillStyle = T.chartBg;
+      ctx.fillRect(0, 0, w, h);
+      drawGrid(ctx, w, h, 6, 5);
+
+      const PAD = { top: 28, right: 100, bottom: 36, left: 44 };
+      const cw = w - PAD.left - PAD.right;
+      const ch = h - PAD.top - PAD.bottom;
+
+      // X: seconds_to_close 300 → 0 (left to right = closer to end)
+      // Y: confidence 0 → 1
+      const toX = (s) => PAD.left + (1 - s / 300) * cw;
+      const toY = (c) => PAD.top + (1 - c) * ch;
+
+      // Tier threshold lines
+      const thresholds = [
+        { conf: 0.85, label: 'DECISIVE', color: '#f59e0b' },
+        { conf: 0.60, label: 'HIGH', color: T.profit },
+        { conf: 0.35, label: 'MODERATE', color: T.purple },
+      ];
+
+      thresholds.forEach(({ conf, label, color }) => {
+        const y = toY(conf);
+        ctx.save();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 6]);
+        ctx.globalAlpha = 0.4;
+        ctx.beginPath();
+        ctx.moveTo(PAD.left, y);
+        ctx.lineTo(PAD.left + cw, y);
+        ctx.stroke();
+        ctx.restore();
+        ctx.font = `9px ${T.font}`;
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.7;
+        ctx.fillText(label, PAD.left + cw + 4, y + 4);
+        ctx.globalAlpha = 1;
+      });
+
+      // X-axis labels (seconds to close)
+      ctx.font = `9px ${T.font}`;
+      ctx.fillStyle = T.label;
+      [300, 240, 180, 120, 60, 0].forEach(s => {
+        const x = toX(s);
+        ctx.fillText(`T-${s}`, x - 10, PAD.top + ch + 16);
+      });
+
+      // Y-axis labels
+      [0, 0.25, 0.5, 0.75, 1.0].forEach(c => {
+        ctx.fillText(c.toFixed(2), 2, toY(c) + 4);
+      });
+
+      // Plot trades
+      const validTrades = data.filter(
+        d => d.seconds_to_close != null && d.confidence != null
+      );
+
+      validTrades.forEach(d => {
+        const x = toX(d.seconds_to_close);
+        const y = toY(d.confidence);
+        const isWin = d.outcome === 'WIN';
+        const stake = d.stake_usd || 20;
+        const r = Math.max(3, Math.min(8, 3 + (stake / 100) * 5));
+        const color = isWin ? T.profit : T.loss;
+
+        // Glow
+        const grd = ctx.createRadialGradient(x, y, 0, x, y, r * 2);
+        grd.addColorStop(0, isWin ? 'rgba(74,222,128,0.35)' : 'rgba(248,113,113,0.35)');
+        grd.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grd;
+        ctx.beginPath();
+        ctx.arc(x, y, r * 2, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.8;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      });
+
+      // Legend
+      ctx.font = `9px ${T.font}`;
+      [[T.profit, 'WIN'], [T.loss, 'LOSS']].forEach(([color, label], i) => {
+        const lx = PAD.left + i * 60;
+        const ly = PAD.top - 14;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(lx + 5, ly, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = T.label;
+        ctx.fillText(label, lx + 12, ly + 4);
+      });
+
+      // Count badge
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.strokeStyle = T.border;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(w - 94, 6, 88, 20, 4);
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = T.label;
+      ctx.font = `10px ${T.font}`;
+      ctx.fillText(`${validTrades.length} trades`, w - 88, 20);
+      ctx.restore();
+    };
+
+    draw();
+    const ro = new ResizeObserver(draw);
+    ro.observe(canvas.parentElement || canvas);
+    return () => ro.disconnect();
+  }, [data]);
+
+  return (
+    <div style={styles.chartWrap}>
+      <div style={styles.chartTitle}>⏱ Entry Timing — seconds to close vs confidence</div>
+      <canvas ref={canvasRef} style={{ ...styles.canvas, height: 280 }} />
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHART 9: Confidence → Win Rate Bar Chart
+// ═══════════════════════════════════════════════════════════════════════════════
+function ConfidenceHistogramChart({ data }) {
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const draw = () => {
+      const { ctx, w, h } = setupCanvas(canvas);
+      if (!ctx) return;
+
+      ctx.fillStyle = T.chartBg;
+      ctx.fillRect(0, 0, w, h);
+      drawGrid(ctx, w, h, data.length, 4);
+
+      if (!data.length) return;
+
+      const PAD = { top: 28, right: 60, bottom: 40, left: 44 };
+      const cw = w - PAD.left - PAD.right;
+      const ch = h - PAD.top - PAD.bottom;
+
+      const maxCount = Math.max(...data.map(d => d.total), 1);
+      const barW = cw / data.length;
+      const barPad = 4;
+
+      // 50% line
+      const y50 = PAD.top + (1 - 0.5) * ch;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(PAD.left, y50);
+      ctx.lineTo(PAD.left + cw, y50);
+      ctx.stroke();
+      ctx.restore();
+      ctx.font = `9px ${T.font}`;
+      ctx.fillStyle = 'rgba(255,255,255,0.2)';
+      ctx.fillText('50%', 2, y50 + 4);
+
+      // Bars
+      data.forEach((b, i) => {
+        const x = PAD.left + i * barW + barPad;
+        const bw = barW - barPad * 2;
+        const wr = b.win_rate;
+
+        // Gradient colour: red → yellow → green based on win rate
+        const r = Math.round(255 * (1 - wr));
+        const g = Math.round(255 * wr);
+        const color = `rgb(${r},${g},80)`;
+
+        if (b.total > 0) {
+          const barH = wr * ch;
+          const by = PAD.top + ch - barH;
+          ctx.fillStyle = color;
+          ctx.globalAlpha = 0.75;
+          ctx.fillRect(x, by, bw, barH);
+          ctx.globalAlpha = 1;
+
+          // WR label
+          ctx.font = `9px ${T.font}`;
+          ctx.fillStyle = color;
+          ctx.fillText(`${(wr * 100).toFixed(0)}%`, x + bw / 2 - 10, by - 4);
+        } else {
+          ctx.fillStyle = 'rgba(255,255,255,0.04)';
+          ctx.fillRect(x, PAD.top, bw, ch);
+        }
+
+        // X label
+        ctx.font = `9px ${T.font}`;
+        ctx.fillStyle = T.label;
+        ctx.fillText(b.range, x - 2, PAD.top + ch + 14);
+
+        // n= label
+        ctx.fillStyle = 'rgba(255,255,255,0.2)';
+        ctx.fillText(`n=${b.total}`, x + bw / 2 - 10, PAD.top + ch + 26);
+      });
+
+      // Trade count overlay line (secondary axis)
+      ctx.save();
+      ctx.strokeStyle = T.cyan;
+      ctx.lineWidth = 1.5;
+      ctx.globalAlpha = 0.6;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      data.forEach((b, i) => {
+        const x = PAD.left + i * barW + barPad + (barW - barPad * 2) / 2;
+        const y = PAD.top + (1 - b.total / maxCount) * ch;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      ctx.restore();
+
+      // Y-axis
+      ctx.font = `10px ${T.font}`;
+      ctx.fillStyle = T.label;
+      [0, 0.25, 0.5, 0.75, 1.0].forEach(v => {
+        ctx.fillText(`${(v * 100).toFixed(0)}%`, 2, PAD.top + (1 - v) * ch + 4);
+      });
+
+      // Secondary Y (count) label
+      ctx.fillStyle = T.cyan;
+      ctx.font = `9px ${T.font}`;
+      ctx.fillText(`${maxCount}n`, w - 54, PAD.top + 10);
+      ctx.fillStyle = T.label;
+      ctx.fillText('count →', w - 54, PAD.top + 22);
+    };
+
+    draw();
+    const ro = new ResizeObserver(draw);
+    ro.observe(canvas.parentElement || canvas);
+    return () => ro.disconnect();
+  }, [data]);
+
+  return (
+    <div style={styles.chartWrap}>
+      <div style={styles.chartTitle}>📊 Confidence → Win Rate</div>
+      <canvas ref={canvasRef} style={{ ...styles.canvas, height: 260 }} />
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHART 10: Tier Performance Cards
+// ═══════════════════════════════════════════════════════════════════════════════
+const TIER_COLORS = {
+  DECISIVE: '#f59e0b',
+  HIGH: '#4ade80',
+  MODERATE: '#a855f7',
+  DEADLINE: '#fb923c',
+  SPIKE: '#06b6d4',
+};
+
+function TierPerformanceCards({ data }) {
+  const tiers = ['DECISIVE', 'HIGH', 'MODERATE', 'DEADLINE', 'SPIKE'];
+  const dataMap = {};
+  (data || []).forEach(d => { dataMap[d.tier] = d; });
+
+  return (
+    <div style={styles.chartWrap}>
+      <div style={styles.chartTitle}>🎯 Performance by Entry Tier</div>
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(5, 1fr)',
+        gap: 10,
+      }}>
+        {tiers.map(tier => {
+          const d = dataMap[tier];
+          const color = TIER_COLORS[tier] || T.purple;
+          const wr = d ? (d.win_rate * 100).toFixed(1) : '—';
+          const pnl = d ? d.total_pnl : 0;
+          const count = d ? d.count : 0;
+          const avgSec = d?.avg_entry_seconds != null ? `${Math.round(d.avg_entry_seconds)}s` : '—';
+
+          return (
+            <div key={tier} style={{
+              background: `rgba(0,0,0,0.3)`,
+              border: `1px solid ${color}40`,
+              borderRadius: 8,
+              padding: '12px 10px',
+              fontFamily: T.font,
+              position: 'relative',
+              overflow: 'hidden',
+            }}>
+              {/* Glow accent */}
+              <div style={{
+                position: 'absolute', top: 0, left: 0, right: 0, height: 2,
+                background: color, opacity: 0.6,
+              }} />
+              <div style={{ fontSize: 9, color, letterSpacing: '0.1em', marginBottom: 8, fontWeight: 600 }}>
+                {tier}
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: '#fff', marginBottom: 4 }}>
+                {count}
+              </div>
+              <div style={{ fontSize: 10, color: T.label, marginBottom: 2 }}>trades</div>
+              <div style={{
+                fontSize: 16, fontWeight: 600,
+                color: count > 0 ? (parseFloat(wr) >= 50 ? T.profit : T.loss) : T.label,
+                marginTop: 8, marginBottom: 2,
+              }}>
+                {wr}{count > 0 ? '%' : ''}
+              </div>
+              <div style={{ fontSize: 10, color: T.label, marginBottom: 6 }}>win rate</div>
+              <div style={{
+                fontSize: 12, fontWeight: 600,
+                color: pnl >= 0 ? T.profit : T.loss,
+                marginBottom: 2,
+              }}>
+                {count > 0 ? `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}` : '—'}
+              </div>
+              <div style={{ fontSize: 10, color: T.label, marginBottom: 6 }}>total P&amp;L</div>
+              <div style={{ fontSize: 11, color: T.label }}>
+                avg entry: <span style={{ color: color }}>{avgSec}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CHART 11: Signal Component Breakdown (Stacked Horizontal Bar)
+// ═══════════════════════════════════════════════════════════════════════════════
+const SIGNAL_COMPONENTS = [
+  { key: 'delta_weight', label: 'delta', color: '#a855f7' },
+  { key: 'vpin_weight', label: 'vpin', color: '#06b6d4' },
+  { key: 'liq_surge_weight', label: 'liq', color: '#fb923c' },
+  { key: 'ls_imbalance_weight', label: 'l/s', color: '#eab308' },
+  { key: 'funding_weight', label: 'fund', color: '#ec4899' },
+  { key: 'oi_delta_weight', label: 'oi', color: '#2dd4bf' },
+];
+
+function SignalBreakdownChart({ data }) {
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // Take last 10 trades that have at least one signal component
+    const recent = (data || [])
+      .filter(d => SIGNAL_COMPONENTS.some(c => d[c.key] != null))
+      .slice(0, 10)
+      .reverse(); // chronological
+
+    const draw = () => {
+      const { ctx, w, h } = setupCanvas(canvas);
+      if (!ctx) return;
+
+      ctx.fillStyle = T.chartBg;
+      ctx.fillRect(0, 0, w, h);
+
+      if (!recent.length) {
+        ctx.font = `11px ${T.font}`;
+        ctx.fillStyle = T.label;
+        ctx.fillText('No signal data yet', w / 2 - 60, h / 2);
+        return;
+      }
+
+      const PAD = { top: 28, right: 16, bottom: 28, left: 44 };
+      const cw = w - PAD.left - PAD.right;
+      const ch = h - PAD.top - PAD.bottom;
+
+      const rowH = ch / recent.length;
+      const barH = Math.max(14, rowH - 10);
+
+      recent.forEach((trade, i) => {
+        const isWin = trade.outcome === 'WIN';
+        const borderColor = isWin ? T.profit : T.loss;
+        const by = PAD.top + i * rowH + (rowH - barH) / 2;
+
+        // Compute total weight for normalisation
+        let total = 0;
+        SIGNAL_COMPONENTS.forEach(c => {
+          const v = trade[c.key];
+          if (v != null) total += Math.abs(parseFloat(v) || 0);
+        });
+        if (total === 0) total = 1;
+
+        // Row background
+        ctx.fillStyle = isWin ? 'rgba(74,222,128,0.04)' : 'rgba(248,113,113,0.04)';
+        ctx.fillRect(PAD.left, by - 1, cw, barH + 2);
+
+        // Stacked bars
+        let x = PAD.left;
+        SIGNAL_COMPONENTS.forEach(comp => {
+          const v = trade[comp.key];
+          if (v == null) return;
+          const weight = Math.abs(parseFloat(v) || 0);
+          const segW = (weight / total) * cw;
+          ctx.fillStyle = comp.color;
+          ctx.globalAlpha = 0.75;
+          ctx.fillRect(x, by, segW, barH);
+          ctx.globalAlpha = 1;
+          x += segW;
+        });
+
+        // Win/Loss border line
+        ctx.save();
+        ctx.strokeStyle = borderColor;
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.6;
+        ctx.strokeRect(PAD.left, by, cw, barH);
+        ctx.restore();
+
+        // Outcome label
+        ctx.font = `9px ${T.font}`;
+        ctx.fillStyle = borderColor;
+        ctx.fillText(isWin ? 'W' : 'L', 2, by + barH / 2 + 4);
+
+        // Confidence label on right
+        if (trade.confidence != null) {
+          ctx.fillStyle = T.label;
+          ctx.fillText((parseFloat(trade.confidence) * 100).toFixed(0) + '%', PAD.left + cw + 4, by + barH / 2 + 4);
+        }
+      });
+
+      // Legend
+      const legY = PAD.top - 14;
+      SIGNAL_COMPONENTS.forEach((comp, i) => {
+        const lx = PAD.left + i * (cw / SIGNAL_COMPONENTS.length);
+        ctx.fillStyle = comp.color;
+        ctx.fillRect(lx, legY, 10, 8);
+        ctx.fillStyle = T.label;
+        ctx.font = `9px ${T.font}`;
+        ctx.fillText(comp.label, lx + 12, legY + 8);
+      });
+    };
+
+    draw();
+    const ro = new ResizeObserver(draw);
+    ro.observe(canvas.parentElement || canvas);
+    return () => ro.disconnect();
+  }, [data]);
+
+  return (
+    <div style={styles.chartWrap}>
+      <div style={styles.chartTitle}>🔬 Signal Breakdown — last 10 trades</div>
+      <canvas ref={canvasRef} style={{ ...styles.canvas, height: 240 }} />
+    </div>
+  );
+}
+
+// ─── Demo Data for new charts ─────────────────────────────────────────────────
+function genEntryTimingDemo() {
+  const rng = seededRng(201);
+  const tiers = ['DECISIVE', 'HIGH', 'MODERATE', 'DEADLINE', 'SPIKE'];
+  const outcomes = ['WIN', 'WIN', 'WIN', 'LOSS', 'LOSS'];
+  return Array.from({ length: 80 }, () => ({
+    seconds_to_close: Math.floor(rng() * 300),
+    confidence: 0.2 + rng() * 0.75,
+    tier: tiers[Math.floor(rng() * tiers.length)],
+    outcome: outcomes[Math.floor(rng() * outcomes.length)],
+    pnl_usd: (rng() - 0.4) * 60,
+    delta_pct: (rng() - 0.5) * 0.1,
+    stake_usd: 20 + rng() * 80,
+  }));
+}
+
+function genConfidenceHistogramDemo() {
+  const rng = seededRng(303);
+  const ranges = ['0-10%', '10-20%', '20-30%', '30-40%', '40-50%', '50-60%', '60-70%', '70-80%', '80-90%', '90-100%'];
+  return ranges.map((range, i) => {
+    const total = Math.floor(rng() * 30 + 2);
+    const wr = 0.3 + (i / 10) * 0.5 + (rng() - 0.5) * 0.1;
+    const wins = Math.round(total * Math.min(1, Math.max(0, wr)));
+    return { range, total, wins, losses: total - wins, win_rate: wins / total, avg_pnl: (rng() - 0.4) * 20 };
+  });
+}
+
+function genTierStatsDemo() {
+  const rng = seededRng(404);
+  return [
+    { tier: 'DECISIVE', count: 45, wins: 32, losses: 13, win_rate: 0.71, total_pnl: 280, avg_entry_seconds: 45 },
+    { tier: 'HIGH', count: 78, wins: 50, losses: 28, win_rate: 0.64, total_pnl: 190, avg_entry_seconds: 95 },
+    { tier: 'MODERATE', count: 120, wins: 64, losses: 56, win_rate: 0.53, total_pnl: 42, avg_entry_seconds: 160 },
+    { tier: 'DEADLINE', count: 33, wins: 17, losses: 16, win_rate: 0.52, total_pnl: -12, avg_entry_seconds: 18 },
+    { tier: 'SPIKE', count: 22, wins: 14, losses: 8, win_rate: 0.64, total_pnl: 95, avg_entry_seconds: 8 },
+  ];
+}
+
+function genSignalBreakdownDemo() {
+  const rng = seededRng(505);
+  const outcomes = ['WIN', 'WIN', 'WIN', 'LOSS', 'LOSS'];
+  return Array.from({ length: 15 }, () => ({
+    delta_weight: rng() * 0.4,
+    vpin_weight: rng() * 0.3,
+    liq_surge_weight: rng() * 0.2,
+    ls_imbalance_weight: rng() * 0.15,
+    funding_weight: rng() * 0.1,
+    oi_delta_weight: rng() * 0.2,
+    score: 0.3 + rng() * 0.6,
+    confidence: 0.3 + rng() * 0.6,
+    outcome: outcomes[Math.floor(rng() * outcomes.length)],
+  }));
+}
+
 // ─── Shared Styles ────────────────────────────────────────────────────────────
 const styles = {
   page: {

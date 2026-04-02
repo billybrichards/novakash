@@ -403,9 +403,10 @@ class FiveMinVPINStrategy(BaseStrategy):
                 break
 
         if token_id is None:
-            self._log.warning("execute.no_token_id", window=window_key, direction=direction)
-            # Still try — place_order handles paper mode without token_id
-            token_id = ""
+            self._log.warning("execute.no_token_id_waiting", window=window_key, direction=direction)
+            # Token IDs not yet fetched from Gamma API — un-fire so it retries next eval
+            eval_state.fired = False
+            return
 
         market_slug = f"{asset.lower()}-updown-5m-{window_ts}"
 
