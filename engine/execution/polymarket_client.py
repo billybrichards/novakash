@@ -304,13 +304,17 @@ class PolymarketClient:
         # Below 30¢ = lottery tickets (0% win rate)
         # Above 65¢ = terrible risk/reward
         token_price_f = float(price)
-        if token_price_f > 0.65:
+        # 15m markets run higher prices — allow up to 70¢
+        is_15m = "15m" in market_slug
+        max_price = 0.70 if is_15m else 0.65
+        if token_price_f > max_price:
             self._log.warning(
                 "place_order.price_too_high",
                 price=str(price),
+                max_price=max_price,
                 market_slug=market_slug,
             )
-            raise ValueError(f"Token price {price} exceeds 65¢ cap — skipping")
+            raise ValueError(f"Token price {price} exceeds {int(max_price*100)}¢ cap — skipping")
         if token_price_f < 0.30:
             self._log.warning(
                 "place_order.price_too_low",

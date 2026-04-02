@@ -79,16 +79,14 @@ class WindowEvaluator:
     # ── Confidence tiers by time remaining ────────────────────────────────────
     # Earlier = need higher confidence (but get cheaper tokens)
     # Later = lower confidence OK (but tokens are expensive)
-    # v3 TIERS — recalibrated from real trading data (2026-04-02)
-    # Morning system (73% win rate): HIGH needed |delta| > 0.10%
-    # Afternoon system was overconfident: DECISIVE on 0.05% deltas
-    # Tightened thresholds + no DEADLINE (don't trade weak signals)
+    # v3.1 TIERS — matched to ACTUAL morning winning thresholds
+    # Morning wins: delta 0.03-0.09%, MODERATE conf, VPIN 0.65-0.93
+    # The edge is in MODERATE signals, not just the big deltas
     TIERS = [
         # (min_seconds_remaining, min_confidence, tier_name)
-        (120, 0.90, "DECISIVE"),    # T-300s to T-120s: very high bar
-        (30,  0.70, "HIGH"),        # T-120s to T-30s: strong signal required
-        (5,   0.55, "MODERATE"),    # T-30s to T-5s: decent confidence
-        # NO DEADLINE tier — don't fire weak signals at the last second
+        (180, 0.85, "DECISIVE"),    # T-300s to T-180s: high bar early
+        (60,  0.65, "HIGH"),        # T-180s to T-60s: good signal
+        (10,  0.50, "MODERATE"),    # T-60s to T-10s: morning's sweet spot
     ]
 
     def __init__(self) -> None:
@@ -235,24 +233,19 @@ class WindowEvaluator:
             window_state.best_signal = signal
 
         # ── Check if we should fire ───────────────────────────────────────
-        # v3 GATES (must ALL pass):
-        #   1. VPIN >= 0.50 (informed flow detected — core thesis)
-        #   2. |delta| >= 0.02% (minimum price movement)
+        # v3.1 GATES — matched to morning winning session:
+        #   1. VPIN >= 0.50 (morning range was 0.58-0.94)
+        #   2. |delta| >= 0.02% (morning minimum was ~0.03%)
         #   3. Confidence meets tier threshold
-        #   4. DECISIVE requires |delta| >= 0.10% (proven threshold)
         
         if current_vpin < 0.50:
             return None  # No informed flow = no trade
         
         if abs_delta < 0.02:
-            return None  # Too small to have edge
+            return None  # Below morning's minimum edge
         
         for min_secs, min_conf, tier_name in self.TIERS:
             if seconds_to_close >= min_secs:
-                # Extra gate for DECISIVE: need strong delta
-                if tier_name == "DECISIVE" and abs_delta < 0.10:
-                    break  # Don't fire DECISIVE on weak deltas
-                
                 if confidence >= min_conf:
                     signal.tier = tier_name
                     signal.entry_reason = (
