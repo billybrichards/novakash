@@ -297,15 +297,15 @@ class PolymarketClient:
         from py_clob_client.clob_types import MarketOrderArgs
 
         def _try_market_order():
-            """Attempt a FOK market order (taker, instant fill)."""
+            """Attempt a FAK market order (taker, partial fills OK)."""
             mo = MarketOrderArgs(
                 token_id=token_id,
                 amount=stake_usd,
                 side=BUY,
-                order_type=OrderType.FOK,
+                order_type=OrderType.FAK,
             )
             signed = client.create_market_order(mo)
-            return client.post_order(signed, OrderType.FOK)
+            return client.post_order(signed, OrderType.FAK)
 
         def _try_limit_order():
             """Fallback: GTC limit order at the Gamma API price."""
