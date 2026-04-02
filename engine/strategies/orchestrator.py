@@ -701,9 +701,18 @@ class Orchestrator:
                         daily_pnl = risk_status.get("daily_pnl", 0)
                         drawdown = risk_status.get("drawdown_pct", 0)
                         killed = risk_status.get("is_killed", False)
-                        vpin = state.vpin.value if state.vpin else 0
-                        regime = "TRENDING" if state.regime and state.regime.regime == "TRENDING" else "LOW_VOL"
-                        binance_ok = self._binance_feed.connected
+                        try:
+                            vpin = state.vpin.value if state.vpin else 0
+                        except Exception:
+                            vpin = 0
+                        try:
+                            regime = "TRENDING" if state.regime and state.regime.regime == "TRENDING" else "LOW_VOL"
+                        except Exception:
+                            regime = "UNKNOWN"
+                        try:
+                            binance_ok = self._binance_feed.connected
+                        except Exception:
+                            binance_ok = False
 
                         daily_sign = "+" if daily_pnl >= 0 else ""
                         status_emoji = "🛑" if killed else "🟢"
@@ -743,8 +752,9 @@ class Orchestrator:
                         )
 
                         await self._alerter.send_system_alert(sitrep, level="info")
+                        log.info("sitrep.sent")
                     except Exception as exc:
-                        log.debug("sitrep.failed", error=str(exc))
+                        log.warning("sitrep.failed", error=str(exc))
 
             except Exception as exc:
                 log.error("orchestrator.heartbeat_error", error=str(exc))
