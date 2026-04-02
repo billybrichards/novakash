@@ -28,6 +28,7 @@ from api.setup import router as setup_router
 from api.paper import router as paper_router
 from api.trading_config import router as trading_config_router
 from ws.live_feed import router as ws_router
+from api.playwright import router as playwright_router
 
 log = structlog.get_logger(__name__)
 
@@ -101,6 +102,7 @@ app.include_router(setup_router, tags=["setup"])
 app.include_router(paper_router, prefix="/api", tags=["paper"])
 app.include_router(trading_config_router, prefix="/api", tags=["trading-config"])
 app.include_router(ws_router, tags=["websocket"])
+app.include_router(playwright_router, prefix="/api", tags=["playwright"])
 
 
 @app.get("/health", tags=["health"])
