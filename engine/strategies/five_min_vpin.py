@@ -383,12 +383,11 @@ class FiveMinVPINStrategy(BaseStrategy):
             self._log.info("trade.risk_blocked", window=window_key, reason=reason)
             return
 
-        # Token price: use real Gamma price if available, else evaluator estimate
-        token_price = signal.estimated_token_price
-
-        # Direction and token ID
+        # Direction
         direction = "YES" if signal.direction == "UP" else "NO"
-        price = Decimal(str(round(token_price, 4)))
+        
+        # Start with evaluator's estimate, will override with fresh Gamma price
+        price = Decimal(str(round(signal.estimated_token_price, 4)))
 
         # Get token IDs from recent windows
         token_id = None
@@ -428,7 +427,37 @@ class FiveMinVPINStrategy(BaseStrategy):
             eval_state.fired = False
             return
 
-        market_slug = f"{asset.lower()}-updown-5m-{window_ts}"
+        tf = "15m" if (window_ts % 900 == 0 and eval_state.window_ts + 900 > time.time()) else "5m"
+        market_slug = f"{asset.lower()}-updown-{tf}-{window_ts}"
+
+        # Fetch FRESH Gamma price right before placing order
+        try:
+            import aiohttp
+            slug = market_slug
+            async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as session:
+                url = f"https://gamma-api.polymarket.com/events?slug={slug}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data and isinstance(data, list) and data[0].get("markets"):
+                            mkt = data[0]["markets"][0]
+                            best_ask = mkt.get("bestAsk")
+                            if best_ask is not None:
+                                fresh_up = float(best_ask)
+                                fresh_down = round(1.0 - fresh_up, 4)
+                                if direction == "YES":
+                                    price = Decimal(str(round(fresh_up, 4)))
+                                else:
+                                    price = Decimal(str(round(fresh_down, 4)))
+                                self._log.info(
+                                    "execute.fresh_gamma_price",
+                                    window=window_key,
+                                    direction=direction,
+                                    price=str(price),
+                                )
+        except Exception as exc:
+            self._log.debug("execute.fresh_price_failed", error=str(exc))
+            # Keep the existing price from window/estimate
 
         try:
             clob_order_id = await self._poly.place_order(
