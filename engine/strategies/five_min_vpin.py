@@ -387,6 +387,23 @@ class FiveMinVPINStrategy(BaseStrategy):
             token_price=str(price),
         )
 
+        # Post-trade verification (live mode only) — check order landed on CLOB
+        if not self._poly.paper_mode and order.order_id.startswith("0x"):
+            try:
+                import asyncio
+                await asyncio.sleep(2)  # Brief delay for CLOB propagation
+                status = await self._poly.get_order_status(order.order_id)
+                clob_status = status.get("status", "UNKNOWN")
+                size_matched = status.get("size_matched", "0")
+                self._log.info(
+                    "trade.verified",
+                    order_id=order.order_id[:20] + "...",
+                    clob_status=clob_status,
+                    size_matched=size_matched,
+                )
+            except Exception as exc:
+                self._log.warning("trade.verify_failed", order_id=order.order_id[:20], error=str(exc))
+
     # ─── Price Fetching ─────────────────────────────────────────────────────
 
     _ASSET_TO_SYMBOL = {

@@ -159,6 +159,30 @@ class TelegramAlerter:
                 lines.append(f"CLOB Order: `{clob_id}`")
 
             lines = [l for l in lines if l is not None]
+
+            # Wallet & portfolio info
+            lines.append(f"")
+            if self._risk_manager:
+                try:
+                    status = self._risk_manager.get_status()
+                    bankroll = status.get("current_bankroll", 0)
+                    daily_pnl = status.get("daily_pnl", 0)
+                    open_exposure = status.get("open_exposure_usd", 0)
+                    daily_sign = "+" if daily_pnl >= 0 else ""
+                    lines.append(f"💼 Bankroll: `${bankroll:.2f}`")
+                    lines.append(f"📅 Daily P&L: `{daily_sign}${daily_pnl:.2f}`")
+                    if open_exposure > 0:
+                        lines.append(f"📊 Open Exposure: `${open_exposure:.2f}`")
+                except Exception:
+                    pass
+
+            if self._poly_client:
+                try:
+                    wallet_balance = await self._poly_client.get_balance()
+                    lines.append(f"🏦 Available: `${wallet_balance:.2f}` USDC")
+                except Exception:
+                    pass
+
             await self._send("\n".join(lines))
         except Exception as exc:
             self._log.warning("telegram.send_entry_alert_failed", error=str(exc))
