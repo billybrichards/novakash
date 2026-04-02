@@ -116,7 +116,7 @@ class PolymarketClient:
             host="https://clob.polymarket.com",
             key=self._private_key,
             chain_id=137,  # Polygon mainnet
-            signature_type=2,  # POLY_GNOSIS_SAFE
+            signature_type=int(os.environ.get("POLY_SIGNATURE_TYPE", "2")),
             funder=self._funder_address,
         )
 
