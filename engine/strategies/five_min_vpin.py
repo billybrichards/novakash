@@ -455,17 +455,15 @@ class FiveMinVPINStrategy(BaseStrategy):
                                     base_price = fresh_up
                                 else:
                                     base_price = fresh_down
-                                # +2¢ bump to improve fill rate
-                                # Costs ~4% profit but roughly doubles fills
-                                # Hard cap still enforced in place_order()
-                                bumped = round(base_price + 0.02, 4)
-                                price = Decimal(str(bumped))
+                                # Use exact Gamma price first — bump only if no fill
+                                price = Decimal(str(round(base_price, 4)))
+                                # Store base price for potential retry at +2¢
+                                eval_state._base_price = base_price
                                 self._log.info(
                                     "execute.fresh_gamma_price",
                                     window=window_key,
                                     direction=direction,
-                                    base_price=str(base_price),
-                                    bumped_price=str(price),
+                                    price=str(price),
                                 )
         except Exception as exc:
             self._log.debug("execute.fresh_price_failed", error=str(exc))
@@ -564,6 +562,54 @@ class FiveMinVPINStrategy(BaseStrategy):
                     asyncio.create_task(self._alerter.send_entry_alert(order))
                 elif not filled:
                     self._log.warning("trade.not_filled", order_id=order.order_id[:20], waited=f"{elapsed}s")
+                    
+                    # RETRY at +2¢ bump if original didn't fill
+                    base_price = getattr(eval_state, '_base_price', None)
+                    if base_price and not filled:
+                        bumped = round(base_price + 0.02, 4)
+                        bumped_price = Decimal(str(bumped))
+                        self._log.info(
+                            "trade.retry_bumped",
+                            original_price=str(price),
+                            bumped_price=str(bumped_price),
+                            window=window_key,
+                        )
+                        # Cancel original order
+                        try:
+                            if hasattr(self._poly, '_clob_client') and self._poly._clob_client:
+                                await asyncio.to_thread(self._poly._clob_client.cancel, order.order_id)
+                        except Exception:
+                            pass
+                        
+                        # Recalculate stake for bumped price
+                        retry_stake = self._calculate_stake(signal.tier, float(bumped_price))
+                        
+                        try:
+                            retry_id = await self._poly.place_order(
+                                market_slug=market_slug,
+                                direction=direction,
+                                price=bumped_price,
+                                stake_usd=retry_stake,
+                                token_id=token_id,
+                            )
+                            order.order_id = retry_id
+                            order.price = str(bumped_price)
+                            order.stake_usd = retry_stake
+                            order.metadata["retried_at_bump"] = True
+                            order.metadata["bumped_price"] = str(bumped_price)
+                            self._log.info("trade.retry_placed", order_id=retry_id[:20] if retry_id else "?", price=str(bumped_price))
+                            
+                            # Quick fill check on retry (15s)
+                            await asyncio.sleep(15)
+                            status2 = await self._poly.get_order_status(retry_id)
+                            retry_filled = float(status2.get("size_matched", "0") or "0") > 0
+                            order.metadata["filled"] = retry_filled
+                            if retry_filled and self._alerter:
+                                asyncio.create_task(self._alerter.send_entry_alert(order))
+                            elif not retry_filled:
+                                self._log.warning("trade.retry_not_filled", order_id=retry_id[:20] if retry_id else "?")
+                        except Exception as exc:
+                            self._log.warning("trade.retry_failed", error=str(exc))
             except Exception as exc:
                 self._log.warning("trade.verify_failed", error=str(exc))
                 if self._alerter:
