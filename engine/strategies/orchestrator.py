@@ -36,7 +36,7 @@ from data.feeds.coinglass_api import CoinGlassAPIFeed
 from data.feeds.coinglass_enhanced import CoinGlassEnhancedFeed
 from data.feeds.polymarket_ws import PolymarketWebSocketFeed
 from data.feeds.polymarket_5min import Polymarket5MinFeed
-from playwright.service import PlaywrightService
+from polymarket_browser.service import PlaywrightService
 from data.models import (
     AggTrade,
     ArbOpportunity,

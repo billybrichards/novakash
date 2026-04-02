@@ -14,13 +14,13 @@ from typing import Optional
 import structlog
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
-from playwright.login import login_to_polymarket
-from playwright.account import (
+from .login import login_to_polymarket
+from .account import (
     get_portfolio_balance,
     get_positions,
     get_order_history,
 )
-from playwright.redeemer import get_redeemable_positions, redeem_all_positions
+from .redeemer import get_redeemable_positions, redeem_all_positions
 
 log = structlog.get_logger(__name__)
 
