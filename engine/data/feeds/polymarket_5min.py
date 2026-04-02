@@ -372,7 +372,15 @@ class Polymarket5MinFeed:
             # for 5-minute binary events, but be defensive)
             market = markets[0]
 
-            clob_token_ids: list = market.get("clobTokenIds") or []
+            raw_token_ids = market.get("clobTokenIds") or []
+            # Gamma API returns clobTokenIds as a JSON string, not a list
+            if isinstance(raw_token_ids, str):
+                import json as _json
+                try:
+                    raw_token_ids = _json.loads(raw_token_ids)
+                except (ValueError, TypeError):
+                    raw_token_ids = []
+            clob_token_ids: list = raw_token_ids
 
             if len(clob_token_ids) >= 2:
                 window.up_token_id = str(clob_token_ids[0])    # YES / Up
