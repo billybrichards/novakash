@@ -19,6 +19,7 @@ Bankroll Management:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -292,7 +293,6 @@ class FiveMinVPINStrategy(BaseStrategy):
             if self._alerter:
                 try:
                     tf = "15m" if window.duration_secs == 900 else "5m"
-                    import asyncio
                     asyncio.create_task(self._alerter.send_system_alert(
                         f"Trade BLOCKED — {window.asset} {tf}\n"
                         f"Stake: ${stake:.2f}\n"
