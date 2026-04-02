@@ -405,35 +405,61 @@ class FiveMinVPINStrategy(BaseStrategy):
             token_price=str(price),
         )
 
-        # Post-trade verification — only alert AFTER confirming fill
+        # Post-trade verification — poll until filled or timeout
+        # CLOB matching can take 5-30s on thin books near window close.
+        # Poll every 5s for up to 60s before giving up.
         if not self._poly.paper_mode and order.order_id.startswith("0x"):
+            POLL_INTERVAL = 5    # seconds between checks
+            MAX_WAIT = 60        # total seconds to wait for fill
+            filled = False
+
             try:
-                await asyncio.sleep(3)  # Wait for CLOB matching
-                status = await self._poly.get_order_status(order.order_id)
-                clob_status = status.get("status", "UNKNOWN")
-                size_matched = status.get("size_matched", "0")
-                
-                filled = float(size_matched) > 0 if size_matched else False
+                elapsed = 0
+                while elapsed < MAX_WAIT:
+                    await asyncio.sleep(POLL_INTERVAL)
+                    elapsed += POLL_INTERVAL
+
+                    status = await self._poly.get_order_status(order.order_id)
+                    clob_status = status.get("status", "UNKNOWN")
+                    size_matched = status.get("size_matched", "0")
+                    filled = float(size_matched) > 0 if size_matched else False
+
+                    self._log.info(
+                        "trade.fill_check",
+                        order_id=order.order_id[:20] + "...",
+                        clob_status=clob_status,
+                        size_matched=size_matched,
+                        filled=filled,
+                        elapsed=f"{elapsed}s",
+                    )
+
+                    if filled:
+                        break
+
+                    # If order was cancelled or matched (not LIVE), stop polling
+                    if clob_status not in ("LIVE", "UNKNOWN"):
+                        break
+
                 order.metadata["clob_status"] = clob_status
                 order.metadata["size_matched"] = size_matched
                 order.metadata["filled"] = filled
+                order.metadata["fill_wait_seconds"] = elapsed
 
-                self._log.info(
-                    "trade.verified",
-                    order_id=order.order_id[:20] + "...",
-                    clob_status=clob_status,
-                    size_matched=size_matched,
-                    filled=filled,
-                )
-
-                # Only send Telegram alert if order actually filled
-                if filled and self._alerter:
-                    asyncio.create_task(self._alerter.send_entry_alert(order))
-                elif not filled:
+                if filled:
+                    self._log.info(
+                        "trade.verified",
+                        order_id=order.order_id[:20] + "...",
+                        size_matched=size_matched,
+                        wait=f"{elapsed}s",
+                    )
+                    if self._alerter:
+                        asyncio.create_task(self._alerter.send_entry_alert(order))
+                else:
                     self._log.warning(
                         "trade.not_filled",
                         order_id=order.order_id[:20] + "...",
                         clob_status=clob_status,
+                        waited=f"{elapsed}s",
                     )
             except Exception as exc:
                 self._log.warning("trade.verify_failed", order_id=order.order_id[:20], error=str(exc))
