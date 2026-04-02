@@ -36,12 +36,18 @@ async def login_to_polymarket(
         if "polymarket.com" not in (page.url or ""):
             await page.goto("https://polymarket.com", wait_until="networkidle", timeout=30000)
 
+        # Dismiss any overlay modals (cookie consent, promotions, etc.)
+        await _dismiss_overlays(page)
+
         login_btn = await page.query_selector('button:has-text("Log In"), a:has-text("Log In"), [data-testid="login-button"]')
         if not login_btn:
             log.warning("playwright.login.no_login_button")
             return False
         await login_btn.click()
         await page.wait_for_timeout(2000)
+
+        # Dismiss any overlays that appeared after clicking Log In
+        await _dismiss_overlays(page)
 
         email_btn = await page.query_selector(
             'button:has-text("email"), button:has-text("Email"), '
@@ -221,3 +227,75 @@ def _extract_code(body: str) -> Optional[str]:
     if matches:
         return matches[0]
     return None
+
+
+async def _dismiss_overlays(page) -> None:
+    """
+    Dismiss any overlay modals that block interaction on Polymarket.
+
+    Polymarket shows various popups on first visit:
+    - Cookie consent banners
+    - Promotional modals
+    - Terms/region modals
+    - Generic dialog overlays
+
+    Strategy: Try multiple dismiss approaches in order.
+    """
+    try:
+        # 1. Click any close/X buttons on modals
+        close_selectors = [
+            'button[aria-label="Close"]',
+            'button[aria-label="close"]',
+            '[data-testid="close-button"]',
+            '[data-testid="modal-close"]',
+            'button:has-text("Close")',
+            'button:has-text("Got it")',
+            'button:has-text("Accept")',
+            'button:has-text("I agree")',
+            'button:has-text("OK")',
+            'button:has-text("Dismiss")',
+            'button:has-text("Continue")',
+            'button:has-text("I understand")',
+            # Common X button patterns
+            'div[data-slot="modal-overlay"] ~ div button',
+            '[role="dialog"] button[aria-label]',
+        ]
+
+        for selector in close_selectors:
+            btn = await page.query_selector(selector)
+            if btn:
+                try:
+                    await btn.click(timeout=3000)
+                    log.info("playwright.overlay_dismissed", selector=selector)
+                    await page.wait_for_timeout(1000)
+                    return
+                except Exception:
+                    continue
+
+        # 2. Press Escape to dismiss any open modal
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(1000)
+
+        # 3. If there's still a modal overlay, try clicking it to dismiss
+        overlay = await page.query_selector('[data-slot="modal-overlay"]')
+        if overlay:
+            # Click outside the modal content (on the overlay background)
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(500)
+
+        # 4. Last resort: use JS to remove blocking overlays
+        await page.evaluate("""
+            () => {
+                // Remove any modal overlays blocking interaction
+                document.querySelectorAll('[data-slot="modal-overlay"]').forEach(el => el.remove());
+                // Also remove any fixed overlays with pointer-events
+                document.querySelectorAll('div[class*="fixed"][class*="inset-0"]').forEach(el => {
+                    if (el.style.pointerEvents !== 'none') el.remove();
+                });
+            }
+        """)
+        log.info("playwright.overlays_cleared_via_js")
+        await page.wait_for_timeout(500)
+
+    except Exception as e:
+        log.warning("playwright.dismiss_overlays.error", error=str(e))
