@@ -552,23 +552,12 @@ class Orchestrator:
         recorded — no misleading WIN/LOSS notifications.
         """
         if order.pnl_usd is not None:
-            # ── RESOLUTION ALERTS DISABLED ──────────────────────────────
-            # The internal resolution logic (paper mode) does NOT match
-            # Polymarket's oracle. It declares WIN when Polymarket says LOSS.
-            # 
-            # Until we integrate with Polymarket's actual resolution API,
-            # DO NOT send WIN/LOSS alerts or record P&L from internal resolution.
-            # The bankroll syncs from the real wallet balance instead.
-            #
-            # Only BET PLACED alerts (verified CLOB fills) are trustworthy.
-            # ───────────────────────────────────────────────────────────────
-            self._log.info(
-                "resolution.internal_only",
-                order_id=order.order_id[:20] + "..." if len(order.order_id) > 20 else order.order_id,
-                internal_outcome=order.outcome,
-                internal_pnl=order.pnl_usd,
-                note="NOT sent to Telegram — internal resolution unreliable",
-            )
+            # Resolution alerts — labelled as ESTIMATE
+            # Internal resolution may not match Polymarket oracle.
+            # Wallet balance in the alert lets Billy cross-check.
+            filled = order.metadata.get("filled", False) if order.metadata else False
+            if filled:
+                asyncio.create_task(self._alerter.send_trade_alert(order))
 
     # ─── Background Tasks ─────────────────────────────────────────────────────
 
