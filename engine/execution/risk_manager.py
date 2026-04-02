@@ -131,6 +131,30 @@ class RiskManager:
 
     # ─── Kill Switch ──────────────────────────────────────────────────────────
 
+    async def sync_bankroll(self, wallet_balance: float) -> None:
+        """Sync internal bankroll from the real Polymarket wallet balance.
+
+        Called periodically from the orchestrator heartbeat. This ensures
+        the risk manager's bankroll matches reality (including redeems,
+        deposits, and withdrawals the engine didn't track).
+
+        Only updates if the wallet balance is a valid positive number.
+        """
+        if wallet_balance is None or wallet_balance <= 0:
+            return
+
+        old = self._current_bankroll
+        self._current_bankroll = wallet_balance
+        self._peak_bankroll = max(self._peak_bankroll, wallet_balance)
+
+        if abs(old - wallet_balance) > 1.0:
+            log.info(
+                "risk.bankroll_synced",
+                old=f"${old:.2f}",
+                new=f"${wallet_balance:.2f}",
+                peak=f"${self._peak_bankroll:.2f}",
+            )
+
     async def force_kill(self, reason: str = "Manual kill") -> None:
         """Manually activate kill switch."""
         self._kill_switch_active = True

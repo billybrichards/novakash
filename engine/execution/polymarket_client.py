@@ -481,7 +481,15 @@ class PolymarketClient:
         if not self._clob_client:
             raise RuntimeError("CLOB client not connected — call connect() first")
 
-        return float(await asyncio.to_thread(self._clob_client.get_balance))
+        from py_clob_client.clob_types import BalanceAllowanceParams
+        sig_type = int(os.environ.get("POLY_SIGNATURE_TYPE", "2"))
+
+        def _fetch():
+            params = BalanceAllowanceParams(asset_type="COLLATERAL", signature_type=sig_type)
+            ba = self._clob_client.get_balance_allowance(params)
+            return int(ba.get("balance", "0")) / 1e6
+
+        return float(await asyncio.to_thread(_fetch))
 
     async def get_order_status(self, order_id: str) -> dict:
         """Return status dict for a given order ID.
