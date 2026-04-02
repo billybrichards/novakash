@@ -602,9 +602,15 @@ class Orchestrator:
                     _wallet_check_counter = 0
                     try:
                         _cached_wallet_balance = await self._poly_client.get_balance()
-                        # Sync risk manager bankroll from real wallet balance
-                        if _cached_wallet_balance is not None:
-                            await self._risk_manager.sync_bankroll(_cached_wallet_balance)
+                        # Sync risk manager bankroll from portfolio value (cash + positions)
+                        # This prevents bankroll shrinking due to unredeemed wins
+                        try:
+                            portfolio_value = await self._poly_client.get_portfolio_value()
+                            await self._risk_manager.sync_bankroll(portfolio_value)
+                        except Exception:
+                            # Fallback to cash-only if portfolio fetch fails
+                            if _cached_wallet_balance is not None:
+                                await self._risk_manager.sync_bankroll(_cached_wallet_balance)
                     except Exception as exc:
                         log.debug("heartbeat.wallet_balance_error", error=str(exc))
 

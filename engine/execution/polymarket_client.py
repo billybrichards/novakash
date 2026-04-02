@@ -554,3 +554,45 @@ class PolymarketClient:
             "status": getattr(resp, "status", "UNKNOWN"),
             "raw": resp,
         }
+
+    async def get_portfolio_value(self) -> float:
+        """Return total portfolio value: CLOB cash + open position value.
+        
+        Fetches position value from Polymarket data API so unredeemed
+        wins are included in the bankroll calculation.
+        """
+        cash = await self.get_balance()
+        
+        if self.paper_mode:
+            return cash
+        
+        # Fetch position value from data API
+        try:
+            import aiohttp
+            funder = self._funder_address.lower()
+            url = f"https://data-api.polymarket.com/positions?user={funder}"
+            headers = {"User-Agent": "Mozilla/5.0 NovakashEngine/1.0"}
+            
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status != 200:
+                        return cash
+                    positions = await resp.json()
+            
+            position_value = 0.0
+            for p in positions:
+                sz = float(p.get("size", 0))
+                cur = float(p.get("curPrice", 0))
+                position_value += sz * cur
+            
+            total = cash + position_value
+            self._log.debug(
+                "portfolio.value",
+                cash=f"${cash:.2f}",
+                positions=f"${position_value:.2f}",
+                total=f"${total:.2f}",
+            )
+            return total
+        except Exception as exc:
+            self._log.debug("portfolio.position_fetch_failed", error=str(exc))
+            return cash  # Fallback to cash only
