@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     starting_bankroll: float = Field(default=500.0, description="Starting bankroll in USD")
     paper_mode: bool = Field(default=True, description="Paper trading mode (no real orders)")
 
+    # Playwright / Gmail
+    playwright_enabled: bool = Field(default=False, description="Enable Playwright browser automation")
+    gmail_address: str = Field(default="", description="Gmail address for Polymarket login")
+    gmail_app_password: str = Field(default="", description="Gmail app password for IMAP")
+
     # Polymarket token IDs for BTC markets (comma-separated)
     poly_btc_token_ids: str = Field(default="", description="Comma-separated Polymarket token IDs to watch")
 
