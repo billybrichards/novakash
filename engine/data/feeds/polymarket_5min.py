@@ -310,9 +310,13 @@ class Polymarket5MinFeed:
         except Exception as exc:
             self._log.warning("market_fetch_failed_falling_back", error=str(exc))
         
-        # Paper mode: always need to set open price from Binance + generate paper token IDs
+        # Paper mode: set open price from Binance + generate paper token IDs
         if self._paper_mode:
             await self._fetch_paper_data(window)
+        else:
+            # Live mode: still need open price from Binance for delta calculation
+            if window.open_price is None:
+                await self._fetch_open_price(window)
 
     async def _fetch_live_data(self, window: WindowInfo) -> None:
         """Fetch live market data from Gamma API.
@@ -400,6 +404,29 @@ class Polymarket5MinFeed:
 
         except Exception as exc:
             self._log.error("gamma_api_error", error=str(exc))
+
+    async def _fetch_open_price(self, window: WindowInfo) -> None:
+        """Fetch the current spot price from Binance REST API for the window's asset.
+        
+        Used in live mode where _fetch_paper_data is skipped but we still
+        need the open price for delta calculation.
+        """
+        asset_symbols = {
+            "BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT",
+            "DOGE": "DOGEUSDT", "XRP": "XRPUSDT", "BNB": "BNBUSDT",
+            "HYPE": "HYPEUSDT",
+        }
+        symbol = asset_symbols.get(window.asset, f"{window.asset}USDT")
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    data = await resp.json()
+                    window.open_price = float(data["price"])
+                    self._log.debug("live.open_price_fetched", asset=window.asset, price=window.open_price)
+        except Exception as exc:
+            self._log.warning("live.open_price_fetch_failed", asset=window.asset, error=str(exc))
 
     async def _fetch_paper_data(self, window: WindowInfo) -> None:
         """Set paper token IDs and open price. Preserves real Gamma prices if already fetched."""
