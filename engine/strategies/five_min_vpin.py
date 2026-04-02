@@ -257,6 +257,10 @@ class FiveMinVPINStrategy(BaseStrategy):
         
         Returns None if no trade should be placed.
         """
+        # VPIN gate — core thesis: no informed flow = no trade
+        if current_vpin < 0.50:
+            return None
+        
         # Minimum delta threshold - skip if too small
         if abs(delta_pct) < runtime.five_min_min_delta_pct:
             return None
