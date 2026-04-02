@@ -468,6 +468,12 @@ async def get_live_status(db=Depends(get_db)):
     paper_config_id = state.get("active_paper_config_id")
     live_config_id = state.get("active_live_config_id")
 
+    # Also check engine's actual runtime state from heartbeat data
+    engine_state = state.get("state", {}) or {}
+    engine_config = engine_state.get("config", {}) or {}
+    engine_paper_mode = engine_config.get("paper_mode", True)
+    runtime_config = engine_config.get("runtime_config", {})
+
     # Check live config approval
     live_config = None
     if live_config_id:
@@ -487,9 +493,9 @@ async def get_live_status(db=Depends(get_db)):
 
     has_approved_config = live_config is not None and live_config.get("is_approved", False)
 
-    # Check API keys (look for them in setup/env)
+    # Check API keys — match the actual env var names used by the engine
     api_keys_configured = bool(
-        os.environ.get("POLYMARKET_API_KEY") or os.environ.get("OPINION_API_KEY")
+        os.environ.get("POLY_API_KEY") or os.environ.get("OPINION_API_KEY")
     )
 
     can_go_live = has_approved_config and api_keys_configured
@@ -502,6 +508,12 @@ async def get_live_status(db=Depends(get_db)):
         "live_has_approved_config": has_approved_config,
         "api_keys_configured": api_keys_configured,
         "can_go_live": can_go_live,
+        # Engine runtime state (from heartbeat, updated every ~10s)
+        "engine_paper_mode": engine_paper_mode,
+        "engine_active_config": runtime_config.get("active_config_name"),
+        "engine_bet_fraction": runtime_config.get("bet_fraction"),
+        "engine_kill_switch": engine_config.get("kill_switch_active", False),
+        "wallet_balance_usdc": engine_config.get("wallet_balance_usdc"),
     }
 
 

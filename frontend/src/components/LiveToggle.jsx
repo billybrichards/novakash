@@ -18,6 +18,10 @@ export default function LiveToggle({ compact = false }) {
     live_has_approved_config: false,
     api_keys_configured: false,
     active_live_config: null,
+    engine_paper_mode: true,
+    engine_active_config: null,
+    engine_kill_switch: false,
+    wallet_balance_usdc: null,
   });
   const [showLiveModal, setShowLiveModal] = useState(false);
   const [confirmText, setConfirmText] = useState('');
@@ -202,6 +206,44 @@ export default function LiveToggle({ compact = false }) {
           glowColor: 'rgba(248,113,113,0.3)',
           onClick: handleLiveClick,
         })}
+
+        {/* Engine runtime indicator — shows what the engine is ACTUALLY running */}
+        {!compact && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 4,
+            padding: '4px 8px', borderRadius: 4,
+            background: 'rgba(255,255,255,0.03)',
+            border: '1px solid rgba(255,255,255,0.06)',
+          }}>
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: status.engine_kill_switch ? '#f87171'
+                : status.engine_paper_mode ? '#a855f7' : '#4ade80',
+              boxShadow: status.engine_kill_switch
+                ? '0 0 6px rgba(248,113,113,0.5)'
+                : status.engine_paper_mode
+                  ? '0 0 6px rgba(168,85,247,0.3)'
+                  : '0 0 6px rgba(74,222,128,0.4)',
+            }} />
+            <span style={{
+              fontSize: 9, fontFamily: "'IBM Plex Mono', monospace",
+              fontWeight: 600, letterSpacing: '0.06em',
+              color: status.engine_kill_switch ? '#f87171'
+                : status.engine_paper_mode ? 'rgba(168,85,247,0.7)' : 'rgba(74,222,128,0.8)',
+            }}>
+              {status.engine_kill_switch ? 'KILLED'
+                : status.engine_paper_mode ? 'ENGINE: PAPER' : 'ENGINE: LIVE'}
+            </span>
+            {status.wallet_balance_usdc != null && !status.engine_paper_mode && (
+              <span style={{
+                fontSize: 9, fontFamily: "'IBM Plex Mono', monospace",
+                color: 'rgba(255,255,255,0.35)',
+              }}>
+                ${parseFloat(status.wallet_balance_usdc).toFixed(0)}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── Live Enable Modal ──────────────────────────────────────────────── */}
