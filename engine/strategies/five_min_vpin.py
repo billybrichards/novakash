@@ -262,12 +262,16 @@ class FiveMinVPINStrategy(BaseStrategy):
             "cg_taker_buy_usd": cg.taker_buy_volume_1m if cg else None,
             "cg_taker_sell_usd": cg.taker_sell_volume_1m if cg else None,
             "cg_funding_rate": cg.funding_rate if cg else None,
-            # Signal
-            "direction": signal.direction if signal else None,
+            # Signal — always show implied direction from delta, even on skips
+            "direction": signal.direction if signal else ("UP" if delta_pct > 0 else "DOWN"),
             "confidence": signal.confidence if signal else None,
             "cg_modifier": signal.cg_modifier if signal else 0.0,
             "trade_placed": signal is not None,
-            "skip_reason": None if signal else "no_edge",
+            "skip_reason": None if signal else (
+                f"VPIN {current_vpin:.3f} < gate {_runtime.five_min_vpin_gate}"
+                if current_vpin < _runtime.five_min_vpin_gate
+                else f"delta {abs(delta_pct):.4f}% too small"
+            ),
         }
 
         # ── Non-blocking DB write ────────────────────────────────────────────
@@ -288,6 +292,12 @@ class FiveMinVPINStrategy(BaseStrategy):
             )
             if self._alerter:
                 try:
+                    _implied_dir = "UP" if delta_pct > 0 else "DOWN"
+                    _skip_reason = (
+                        f"VPIN {current_vpin:.3f} < gate {_runtime.five_min_vpin_gate}"
+                        if current_vpin < _runtime.five_min_vpin_gate
+                        else f"delta {abs(delta_pct):.4f}% too small"
+                    )
                     asyncio.create_task(self._alerter.send_window_report(
                         window_ts=window.window_ts,
                         asset=window.asset,
@@ -298,10 +308,10 @@ class FiveMinVPINStrategy(BaseStrategy):
                         vpin=current_vpin,
                         regime=_snap_regime,
                         cg_snapshot=cg,
-                        direction=None,
+                        direction=_implied_dir,
                         confidence=None,
                         trade_placed=False,
-                        skip_reason="no_edge",
+                        skip_reason=_skip_reason,
                         cg_modifier=0.0,
                     ))
                 except Exception:
