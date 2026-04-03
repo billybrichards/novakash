@@ -320,7 +320,15 @@ class OrderManager:
                     # If CLOB check fails, skip resolution rather than fake it
                     continue
 
-            outcome, payout = self._determine_paper_outcome(order, price)
+            # PRIMARY: Query Polymarket oracle for actual market outcome
+            poly_result = await self._resolve_from_polymarket(order)
+            if poly_result is not None:
+                outcome, payout = poly_result
+            else:
+                # FALLBACK: Use Binance BTC price (less accurate)
+                self._log.debug("resolution.fallback_to_binance", order_id=order.order_id[:20] + "...")
+                outcome, payout = self._determine_paper_outcome(order, price)
+            
             resolved = await self.resolve_order(order.order_id, outcome, payout)
 
             # Persist updated trade to DB (upsert with resolution data)
@@ -332,10 +340,91 @@ class OrderManager:
                 except Exception as exc:
                     self._log.error("order_manager.resolution_callback_error", error=str(exc))
 
+    async def _resolve_from_polymarket(self, order: Order) -> tuple[str, float] | None:
+        """Query Polymarket Gamma API for actual market resolution.
+        
+        Returns (outcome, payout) if market is resolved, None if not yet resolved.
+        """
+        market_slug = (order.metadata or {}).get("market_slug")
+        if not market_slug:
+            return None
+        
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                url = f"https://gamma-api.polymarket.com/markets?slug={market_slug}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+            
+            if not data or not isinstance(data, list) or not data[0].get("closed"):
+                return None
+            
+            market = data[0]
+            outcome_prices = market.get("outcomePrices", [])
+            outcomes = market.get("outcomes", [])
+            
+            if isinstance(outcome_prices, str):
+                import json as _json
+                outcome_prices = _json.loads(outcome_prices)
+            if isinstance(outcomes, str):
+                import json as _json
+                outcomes = _json.loads(outcomes)
+            
+            # Find the winning outcome (price >= 0.99)
+            winner = None
+            for i, price in enumerate(outcome_prices):
+                if float(price) >= 0.99:
+                    winner = outcomes[i] if i < len(outcomes) else None
+                    break
+            
+            if winner is None:
+                return None
+            
+            # Map: YES bet = Up, NO bet = Down
+            if order.direction == "YES":
+                won = winner == "Up"
+            else:
+                won = winner == "Down"
+            
+            if won:
+                try:
+                    fill_price = float(order.price)
+                    shares = order.stake_usd / fill_price if fill_price > 0 else 0
+                    payout = shares * 1.0
+                except (ValueError, ZeroDivisionError):
+                    payout = order.stake_usd * 1.9
+                
+                self._log.info(
+                    "polymarket_resolution.win",
+                    order_id=order.order_id[:20] + "...",
+                    direction=order.direction,
+                    poly_winner=winner,
+                    payout=f"{payout:.2f}",
+                    market=market_slug,
+                )
+                return "WIN", payout
+            else:
+                self._log.info(
+                    "polymarket_resolution.loss",
+                    order_id=order.order_id[:20] + "...",
+                    direction=order.direction,
+                    poly_winner=winner,
+                    market=market_slug,
+                )
+                return "LOSS", 0.0
+        
+        except Exception as exc:
+            self._log.debug("polymarket_resolution.failed", error=str(exc))
+            return None
+
     def _determine_paper_outcome(
         self, order: Order, current_btc_price: float
     ) -> tuple[str, float]:
-        """Determine WIN/LOSS and payout for an expired paper order.
+        """Determine WIN/LOSS and payout for an expired paper order (FALLBACK only).
+
+        Used when Polymarket API is unavailable. Prefer _resolve_from_polymarket().
 
         Args:
             order: The expired order.
