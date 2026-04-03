@@ -268,9 +268,17 @@ class FiveMinVPINStrategy(BaseStrategy):
             "cg_modifier": signal.cg_modifier if signal else 0.0,
             "trade_placed": signal is not None,
             "skip_reason": None if signal else (
-                f"VPIN {current_vpin:.3f} < gate {_runtime.five_min_vpin_gate}"
+                f"VPIN {current_vpin:.3f} < gate {_runtime.five_min_vpin_gate} — not enough informed trading detected to justify entry"
                 if current_vpin < _runtime.five_min_vpin_gate
-                else f"delta {abs(delta_pct):.4f}% too small"
+                else (
+                    f"delta {abs(delta_pct):.4f}% < cascade threshold {_runtime.five_min_cascade_min_delta_pct}% — price barely moved despite high informed flow"
+                    if current_vpin >= _runtime.vpin_cascade_direction_threshold
+                    else (
+                        f"delta {abs(delta_pct):.4f}% < transition threshold 0.12% — not enough price conviction in transition zone"
+                        if current_vpin >= _runtime.vpin_informed_threshold
+                        else f"delta {abs(delta_pct):.4f}% < threshold {_runtime.five_min_min_delta_pct}% — price move too small to trade"
+                    )
+                )
             ),
         }
 
@@ -293,11 +301,14 @@ class FiveMinVPINStrategy(BaseStrategy):
             if self._alerter:
                 try:
                     _implied_dir = "UP" if delta_pct > 0 else "DOWN"
-                    _skip_reason = (
-                        f"VPIN {current_vpin:.3f} < gate {_runtime.five_min_vpin_gate}"
-                        if current_vpin < _runtime.five_min_vpin_gate
-                        else f"delta {abs(delta_pct):.4f}% too small"
-                    )
+                    if current_vpin < _runtime.five_min_vpin_gate:
+                        _skip_reason = f"VPIN {current_vpin:.3f} < gate {_runtime.five_min_vpin_gate} — not enough informed trading detected to justify entry"
+                    elif current_vpin >= _runtime.vpin_cascade_direction_threshold:
+                        _skip_reason = f"delta {abs(delta_pct):.4f}% < cascade threshold {_runtime.five_min_cascade_min_delta_pct}% — price barely moved despite high informed flow"
+                    elif current_vpin >= _runtime.vpin_informed_threshold:
+                        _skip_reason = f"delta {abs(delta_pct):.4f}% < transition threshold 0.12% — not enough price conviction in transition zone"
+                    else:
+                        _skip_reason = f"delta {abs(delta_pct):.4f}% < threshold {_runtime.five_min_min_delta_pct}% — price move too small to trade"
                     asyncio.create_task(self._alerter.send_window_report(
                         window_ts=window.window_ts,
                         asset=window.asset,
