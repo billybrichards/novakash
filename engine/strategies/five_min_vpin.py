@@ -422,22 +422,16 @@ class FiveMinVPINStrategy(BaseStrategy):
                 scaled="mega" if current_vpin >= 0.85 else ("high" if current_vpin >= 0.75 else "base"),
             )
         elif current_vpin >= runtime.vpin_informed_threshold:
-            # TRANSITION: contrarian but require larger delta
-            if abs(delta_pct) < 0.12:
-                self._log.debug(
-                    "evaluate.skip_transition",
-                    vpin=f"{current_vpin:.3f}",
-                    delta=f"{delta_pct:.4f}%",
-                    reason="transition zone needs delta >= 0.12%",
-                )
-                return None
-            direction = "DOWN" if delta_pct > 0 else "UP"
-            regime = "TRANSITION"
-        else:
-            # NORMAL: mean-reversion (contrarian), standard delta bar
+            # TRANSITION: v5.1 ALL MOMENTUM (contrarian = coin flip per 30-day data)
             if abs(delta_pct) < runtime.five_min_min_delta_pct:
                 return None
-            direction = "DOWN" if delta_pct > 0 else "UP"
+            direction = "UP" if delta_pct > 0 else "DOWN"
+            regime = "TRANSITION"
+        else:
+            # NORMAL: v5.1 ALL MOMENTUM (contrarian = coin flip per 30-day data)
+            if abs(delta_pct) < runtime.five_min_min_delta_pct:
+                return None
+            direction = "UP" if delta_pct > 0 else "DOWN"
             regime = "NORMAL"
         
         # Calculate base confidence from VPIN + delta (primary signals)
@@ -453,116 +447,33 @@ class FiveMinVPINStrategy(BaseStrategy):
         cg = self._cg_enhanced.snapshot if self._cg_enhanced is not None else None
 
         if cg is not None and cg.connected:
-            # a) Liquidation confirmation
-            # Longs getting wrecked (liq_long >> liq_short) → confirms DOWN
-            # Shorts getting wrecked → confirms UP
-            if cg.liq_total_usd_1m > 0:
-                if cg.liq_long_usd_1m > cg.liq_short_usd_1m * 2:
-                    liq_bias = "DOWN"
-                    liq_delta = 0.15
-                elif cg.liq_short_usd_1m > cg.liq_long_usd_1m * 2:
-                    liq_bias = "UP"
-                    liq_delta = 0.15
-                else:
-                    liq_bias = "NEUTRAL"
-                    liq_delta = 0.0
+            # ── v5.1 DATA-DRIVEN CG MODIFIERS ─────────────────────────────
+            # 30-day backtest (8,640 windows) proved:
+            #   - L/S ratio: coin flip at ANY threshold (49-51%)
+            #   - Crowd positioning: coin flip
+            #   - Smart money divergence: insufficient samples
+            #   - Taker aggression: not validated within-window
+            #   - Funding rate: coin flip
+            #   - OI delta >0.10%: +2.9% WR lift (ONLY signal that works)
+            #
+            # ZEROED: liq, crowd, smart money, taker, funding
+            # KEPT: OI delta as sole confirmer
+            # ALL data still logged + saved for future analysis
 
-                if liq_delta > 0:
-                    if liq_bias == direction:
-                        cg_confidence_modifier += liq_delta
-                        cg_log_parts.append(f"liq_confirms_{direction}(+{liq_delta:.2f})")
-                    else:
-                        cg_confidence_modifier -= liq_delta
-                        cg_log_parts.append(f"liq_contradicts_{direction}(-{liq_delta:.2f})")
+            # OI Delta confirmation — the only CG signal backed by data
+            # Rising OI >0.10% confirms real position changes backing the move
+            if abs(cg.oi_delta_pct_1m) > 0.001:  # >0.10% OI change
+                cg_confidence_modifier += 0.10
+                cg_log_parts.append(f"oi_delta_confirms(+0.10, OI_Δ={cg.oi_delta_pct_1m:.3f}%)")
 
-            # b) Crowd positioning (contrarian signal in NORMAL/TRANSITION)
-            # Crowd overleveraged long → slight DOWN bias
-            if regime in ("NORMAL", "TRANSITION"):
-                if cg.long_pct > 60.0:
-                    crowd_bias = "DOWN"
-                    crowd_delta = 0.10
-                elif cg.short_pct > 60.0:
-                    crowd_bias = "UP"
-                    crowd_delta = 0.10
-                else:
-                    crowd_bias = "NEUTRAL"
-                    crowd_delta = 0.0
-
-                if crowd_delta > 0:
-                    if crowd_bias == direction:
-                        cg_confidence_modifier += crowd_delta
-                        cg_log_parts.append(f"crowd_contrarian_{direction}(+{crowd_delta:.2f})")
-                    else:
-                        cg_confidence_modifier -= crowd_delta
-                        cg_log_parts.append(f"crowd_contra_{direction}(-{crowd_delta:.2f})")
-
-            # c) Smart money divergence (strongest contrarian signal)
-            # Top traders SHORT but crowd LONG → strong DOWN signal
-            # Top traders LONG but crowd SHORT → strong UP signal
-            smart_money_short = cg.top_position_short_pct > cg.top_position_long_pct
-            crowd_long = cg.long_pct > cg.short_pct
-            if smart_money_short and crowd_long:
-                # Smart/crowd diverge: smart shorts, crowd longs → contrarian DOWN
-                if direction == "DOWN":
-                    cg_confidence_modifier += 0.20
-                    cg_log_parts.append(f"smart_vs_crowd_confirms_DOWN(+0.20)")
-                else:
-                    cg_confidence_modifier -= 0.20
-                    cg_log_parts.append(f"smart_vs_crowd_contradicts_UP(-0.20)")
-            elif not smart_money_short and not crowd_long:
-                # Smart longs, crowd shorts → contrarian UP
-                if direction == "UP":
-                    cg_confidence_modifier += 0.20
-                    cg_log_parts.append(f"smart_vs_crowd_confirms_UP(+0.20)")
-                else:
-                    cg_confidence_modifier -= 0.20
-                    cg_log_parts.append(f"smart_vs_crowd_contradicts_DOWN(-0.20)")
-
-            # d) Taker aggression (confirms momentum in CASCADE)
-            # Aggressive selling (sell >> buy) confirms DOWN in cascade
-            total_taker = cg.taker_buy_volume_1m + cg.taker_sell_volume_1m
-            if total_taker > 0:
-                taker_sell_ratio = cg.taker_sell_volume_1m / total_taker
-                taker_buy_ratio = cg.taker_buy_volume_1m / total_taker
-                if taker_sell_ratio > 0.65:
-                    taker_bias = "DOWN"
-                    taker_delta = 0.15 if regime == "CASCADE" else 0.08
-                elif taker_buy_ratio > 0.65:
-                    taker_bias = "UP"
-                    taker_delta = 0.15 if regime == "CASCADE" else 0.08
-                else:
-                    taker_bias = "NEUTRAL"
-                    taker_delta = 0.0
-
-                if taker_delta > 0:
-                    if taker_bias == direction:
-                        cg_confidence_modifier += taker_delta
-                        cg_log_parts.append(f"taker_aggression_{direction}(+{taker_delta:.2f})")
-                    else:
-                        cg_confidence_modifier -= taker_delta
-                        cg_log_parts.append(f"taker_contra_{direction}(-{taker_delta:.2f})")
+            # MONITORING ONLY — logged but NOT used in trade decisions:
+            # Liquidation, L/S ratio, Smart money, Taker, Funding
+            # All saved to window_snapshots for future recalibration
 
             # e) Funding rate extremes → persistent directional pressure
             # Extreme positive funding (>0.01%) → longs paying → DOWN pressure
-            # Extreme negative funding (<-0.01%) → shorts paying → UP pressure
-            funding = cg.funding_rate
-            if funding > 0.0001:  # > 0.01%
-                funding_bias = "DOWN"
-                funding_delta = min(0.10, abs(funding) * 500)  # scale with magnitude
-            elif funding < -0.0001:
-                funding_bias = "UP"
-                funding_delta = min(0.10, abs(funding) * 500)
-            else:
-                funding_bias = "NEUTRAL"
-                funding_delta = 0.0
-
-            if funding_delta > 0:
-                if funding_bias == direction:
-                    cg_confidence_modifier += funding_delta
-                    cg_log_parts.append(f"funding_confirms_{direction}(+{funding_delta:.2f})")
-                else:
-                    cg_confidence_modifier -= funding_delta
-                    cg_log_parts.append(f"funding_contra_{direction}(-{funding_delta:.2f})")
+            # e) Funding rate — ZEROED in v5.1 (coin flip per 30-day data)
+            # Data preserved in CG snapshot for window_snapshots DB
 
         # Clamp modifier to [-0.5, +0.5]
         cg_confidence_modifier = max(-0.5, min(0.5, cg_confidence_modifier))
