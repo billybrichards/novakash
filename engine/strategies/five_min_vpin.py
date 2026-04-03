@@ -284,12 +284,31 @@ class FiveMinVPINStrategy(BaseStrategy):
         # who's already septic vs a healthy one.
         
         if current_vpin >= runtime.vpin_cascade_direction_threshold:
-            # CASCADE/TREND: ride the momentum, lower delta bar
-            min_delta = runtime.five_min_cascade_min_delta_pct
+            # CASCADE/TREND: ride the momentum, VPIN-scaled delta bar
+            # The higher the VPIN, the less delta we need — VPIN IS the signal
+            # VPIN 0.65-0.75: use configured cascade min delta (0.03%)
+            # VPIN 0.75-0.85: halve it (0.015%)
+            # VPIN 0.85+:     near-zero (0.005%) — mega cascade, just go
+            base_min = runtime.five_min_cascade_min_delta_pct
+            if current_vpin >= 0.85:
+                min_delta = 0.005
+            elif current_vpin >= 0.75:
+                # Linear scale from base_min down to base_min/2
+                t = (current_vpin - 0.75) / 0.10
+                min_delta = base_min * (1.0 - 0.5 * t)
+            else:
+                min_delta = base_min
             if abs(delta_pct) < min_delta:
                 return None
             direction = "UP" if delta_pct > 0 else "DOWN"
             regime = "CASCADE"
+            self._log.debug(
+                "evaluate.cascade_delta_bar",
+                vpin=f"{current_vpin:.3f}",
+                min_delta=f"{min_delta:.4f}%",
+                actual_delta=f"{abs(delta_pct):.4f}%",
+                scaled="mega" if current_vpin >= 0.85 else ("high" if current_vpin >= 0.75 else "base"),
+            )
         elif current_vpin >= runtime.vpin_informed_threshold:
             # TRANSITION: contrarian but require larger delta
             if abs(delta_pct) < 0.12:
