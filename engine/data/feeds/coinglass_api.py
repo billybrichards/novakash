@@ -117,8 +117,8 @@ class CoinGlassAPIFeed:
     async def _fetch_oi(self, session: aiohttp.ClientSession) -> None:
         """Fetch open interest for the symbol via CoinGlass v4 API."""
         url = f"{COINGLASS_BASE}/futures/open-interest/history"
-        # Hobbyist plan: minimum interval is 4h
-        params = {"symbol": f"{self.symbol}USDT", "interval": "4h", "limit": "2", "exchange": "Binance"}
+        # Standard plan: 1m intervals now available
+        params = {"symbol": f"{self.symbol}USDT", "interval": "1m", "limit": "2", "exchange": "Binance"}
 
         async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             resp.raise_for_status()
@@ -158,8 +158,8 @@ class CoinGlassAPIFeed:
     async def _fetch_liquidations(self, session: aiohttp.ClientSession) -> None:
         """Fetch liquidation volume and update the 5-minute rolling window."""
         url = f"{COINGLASS_BASE}/futures/liquidation/history"
-        # Hobbyist plan: minimum interval is 4h
-        params = {"symbol": f"{self.symbol}USDT", "interval": "4h", "limit": "2", "exchange": "Binance"}
+        # Standard plan: 1m intervals now available
+        params = {"symbol": f"{self.symbol}USDT", "interval": "1m", "limit": "2", "exchange": "Binance"}
 
         async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             resp.raise_for_status()

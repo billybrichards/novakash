@@ -1,12 +1,14 @@
 """
 CoinGlass Enhanced Feed — 1-Minute Granularity
 
-Requires CoinGlass Hobbyist+ plan for ≤1min data intervals.
+Requires CoinGlass Standard plan for ≤1min data intervals.
 Polls every 10 seconds for:
   - OI delta (1-min candles)
   - Liquidation volume (1-min, long + short)
   - Long/Short ratio (global account ratio)
-  - Funding rate (current)
+  - Top Traders L/S Position Ratio (1-min, smart money)
+  - Taker Buy/Sell Volume (1-min, aggression signal)
+  - Funding rate (8h history)
 
 Exposes a snapshot object that the strategy reads on each evaluation.
 """
@@ -39,13 +41,22 @@ class CoinGlassSnapshot:
     liq_short_usd_1m: float = 0.0      # Short liquidations in last minute
     liq_total_usd_1m: float = 0.0      # Total liquidations in last minute
 
-    # Long/Short ratio
+    # Long/Short ratio (global crowd)
     long_short_ratio: float = 1.0       # >1 = more longs, <1 = more shorts
     long_pct: float = 50.0             # % of accounts that are long
     short_pct: float = 50.0            # % of accounts that are short
 
+    # Top Traders L/S Position Ratio (smart money)
+    top_position_long_pct: float = 50.0    # Top traders long %
+    top_position_short_pct: float = 50.0   # Top traders short %
+    top_position_ratio: float = 1.0        # Top traders L/S ratio
+
+    # Taker Buy/Sell Volume (1-min, aggression)
+    taker_buy_volume_1m: float = 0.0    # Taker buy volume USD
+    taker_sell_volume_1m: float = 0.0   # Taker sell volume USD
+
     # Funding rate
-    funding_rate: float = 0.0           # Current funding rate (positive = longs pay)
+    funding_rate: float = 0.0           # Latest 8h funding rate (positive = longs pay)
     funding_rate_annual: float = 0.0    # Annualised
 
     # Meta
@@ -125,6 +136,8 @@ class CoinGlassEnhancedFeed:
             self._fetch_oi(session),
             self._fetch_liquidations(session),
             self._fetch_long_short(session),
+            self._fetch_top_position_ratio(session),
+            self._fetch_taker_volume(session),
             self._fetch_funding(session),
             return_exceptions=True,
         )
@@ -217,10 +230,15 @@ class CoinGlassEnhancedFeed:
         self.snapshot.long_pct = long_pct
         self.snapshot.short_pct = short_pct
 
-    async def _fetch_funding(self, session: aiohttp.ClientSession) -> None:
-        """Fetch current funding rate."""
-        url = f"{COINGLASS_BASE}/futures/funding-rate/current"
-        params = {"symbol": f"{self.symbol}USDT"}
+    async def _fetch_top_position_ratio(self, session: aiohttp.ClientSession) -> None:
+        """Fetch top traders long/short position ratio (smart money positioning)."""
+        url = f"{COINGLASS_BASE}/futures/top-long-short-position-ratio/history"
+        params = {
+            "symbol": f"{self.symbol}USDT",
+            "interval": "1m",
+            "limit": "1",
+            "exchange": "Binance",
+        }
 
         async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=8)) as resp:
             resp.raise_for_status()
@@ -233,17 +251,86 @@ class CoinGlassEnhancedFeed:
         if not data:
             return
 
-        # Find Binance entry
-        for entry in data:
-            if entry.get("exchange", "").lower() == "binance":
-                rate = float(entry.get("rate", 0))
-                self.snapshot.funding_rate = rate
-                # Annualise: rate × 3 (8h periods/day) × 365
-                self.snapshot.funding_rate_annual = rate * 3 * 365
-                return
+        latest = data[-1] if isinstance(data, list) else data
+        long_pct = float(latest.get("longAccount", latest.get("top_position_long_percent", 50.0)))
+        short_pct = float(latest.get("shortAccount", latest.get("top_position_short_percent", 50.0)))
+        ratio = float(latest.get("longShortRatio", latest.get("top_position_long_short_ratio", 1.0)))
 
-        # Fallback: use first entry
-        if data:
-            rate = float(data[0].get("rate", 0))
-            self.snapshot.funding_rate = rate
-            self.snapshot.funding_rate_annual = rate * 3 * 365
+        self.snapshot.top_position_long_pct = long_pct
+        self.snapshot.top_position_short_pct = short_pct
+        self.snapshot.top_position_ratio = ratio
+
+        self._log.debug(
+            "coinglass_enhanced.top_position_ratio",
+            long_pct=f"{long_pct:.1f}%",
+            short_pct=f"{short_pct:.1f}%",
+            ratio=f"{ratio:.3f}",
+        )
+
+    async def _fetch_taker_volume(self, session: aiohttp.ClientSession) -> None:
+        """Fetch taker buy/sell volume (aggression signal)."""
+        url = f"{COINGLASS_BASE}/futures/taker-buy-sell-volume/history"
+        params = {
+            "symbol": f"{self.symbol}USDT",
+            "interval": "1m",
+            "limit": "1",
+            "exchange": "Binance",
+        }
+
+        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+            resp.raise_for_status()
+            body = await resp.json()
+
+        if body.get("code") != "0":
+            return
+
+        data = body.get("data", [])
+        if not data:
+            return
+
+        latest = data[-1] if isinstance(data, list) else data
+        buy_vol = float(latest.get("taker_buy_volume_usd", latest.get("buyVolume", 0)))
+        sell_vol = float(latest.get("taker_sell_volume_usd", latest.get("sellVolume", 0)))
+
+        self.snapshot.taker_buy_volume_1m = buy_vol
+        self.snapshot.taker_sell_volume_1m = sell_vol
+
+        self._log.debug(
+            "coinglass_enhanced.taker_volume",
+            buy_vol_usd=f"${buy_vol:,.0f}",
+            sell_vol_usd=f"${sell_vol:,.0f}",
+            ratio=f"{buy_vol / sell_vol:.2f}" if sell_vol > 0 else "inf",
+        )
+
+    async def _fetch_funding(self, session: aiohttp.ClientSession) -> None:
+        """Fetch latest funding rate from history (8h candles)."""
+        url = f"{COINGLASS_BASE}/futures/funding-rate/history"
+        params = {
+            "symbol": f"{self.symbol}USDT",
+            "exchange": "Binance",
+            "interval": "8h",
+            "limit": "1",
+        }
+
+        async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+            resp.raise_for_status()
+            body = await resp.json()
+
+        if body.get("code") != "0":
+            return
+
+        data = body.get("data", [])
+        if not data:
+            return
+
+        latest = data[-1] if isinstance(data, list) else data
+        rate = float(latest.get("fundingRate", latest.get("rate", 0)))
+        self.snapshot.funding_rate = rate
+        # Annualise: rate × 3 (8h periods/day) × 365
+        self.snapshot.funding_rate_annual = rate * 3 * 365
+
+        self._log.debug(
+            "coinglass_enhanced.funding_rate",
+            rate=f"{rate:.6f}",
+            annual_pct=f"{rate * 3 * 365 * 100:.2f}%",
+        )

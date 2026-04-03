@@ -824,6 +824,25 @@ class Orchestrator:
                         real_pnl = portfolio - baseline
                         mode_label = "📄 PAPER" if self._settings.paper_mode else "💰 LIVE"
 
+                        # Build CoinGlass line for sitrep
+                        cg_line = ""
+                        try:
+                            if self._cg_enhanced is not None and self._cg_enhanced.snapshot.connected:
+                                cg = self._cg_enhanced.snapshot
+                                liq_total_m = cg.liq_total_usd_1m / 1_000_000
+                                liq_long_m = cg.liq_long_usd_1m / 1_000_000
+                                liq_short_m = cg.liq_short_usd_1m / 1_000_000
+                                top_short = cg.top_position_short_pct
+                                funding_pct = cg.funding_rate * 100
+                                cg_line = (
+                                    f"🔬 CG: Liq `${liq_total_m:.1f}M` (L:`${liq_long_m:.1f}M`/S:`${liq_short_m:.1f}M`) "
+                                    f"| L/S: `{cg.long_pct:.0f}%` "
+                                    f"| Smart: `{top_short:.0f}% short` "
+                                    f"| Fund: `{funding_pct:.4f}%`\n"
+                                )
+                        except Exception:
+                            pass
+
                         sitrep = (
                             f"📋 *5-MIN SITREP* ({status_emoji} {'KILLED' if killed else 'ACTIVE'}) {mode_label}\n"
                             f"\n"
@@ -836,6 +855,7 @@ class Orchestrator:
                             f"📉 Drawdown: `{drawdown:.1%}`\n"
                             f"\n"
                             f"🔬 VPIN: `{vpin:.4f}` | Vol: `{regime}` | Trade: `{'CASCADE' if vpin >= 0.65 else ('TRANSITION' if vpin >= 0.55 else 'NORMAL' if vpin >= 0.45 else 'CALM')}`\n"
+                            + cg_line +
                             f"🔗 Binance: `{'✅' if binance_ok else '❌'}` | BTC: `${self._order_manager._current_btc_price:,.2f}`\n"
                         )
 

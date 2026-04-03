@@ -328,13 +328,183 @@ class FiveMinVPINStrategy(BaseStrategy):
             direction = "DOWN" if delta_pct > 0 else "UP"
             regime = "NORMAL"
         
-        # Calculate confidence
+        # Calculate base confidence from VPIN + delta (primary signals)
         confidence = self._calculate_confidence(delta_pct, current_vpin, direction)
-        
+
+        # ── CoinGlass Confirmation Layer ───────────────────────────────────
+        # CoinGlass is a CONFIRMING signal only. VPIN + delta are primary.
+        # If CG agrees → can lift LOW to MODERATE, boost MODERATE to HIGH.
+        # If CG strongly disagrees → reduce confidence or skip.
+        cg_confidence_modifier = 0.0
+        cg_log_parts: list[str] = []
+
+        cg = self._cg_enhanced.snapshot if self._cg_enhanced is not None else None
+
+        if cg is not None and cg.connected:
+            # a) Liquidation confirmation
+            # Longs getting wrecked (liq_long >> liq_short) → confirms DOWN
+            # Shorts getting wrecked → confirms UP
+            if cg.liq_total_usd_1m > 0:
+                if cg.liq_long_usd_1m > cg.liq_short_usd_1m * 2:
+                    liq_bias = "DOWN"
+                    liq_delta = 0.15
+                elif cg.liq_short_usd_1m > cg.liq_long_usd_1m * 2:
+                    liq_bias = "UP"
+                    liq_delta = 0.15
+                else:
+                    liq_bias = "NEUTRAL"
+                    liq_delta = 0.0
+
+                if liq_delta > 0:
+                    if liq_bias == direction:
+                        cg_confidence_modifier += liq_delta
+                        cg_log_parts.append(f"liq_confirms_{direction}(+{liq_delta:.2f})")
+                    else:
+                        cg_confidence_modifier -= liq_delta
+                        cg_log_parts.append(f"liq_contradicts_{direction}(-{liq_delta:.2f})")
+
+            # b) Crowd positioning (contrarian signal in NORMAL/TRANSITION)
+            # Crowd overleveraged long → slight DOWN bias
+            if regime in ("NORMAL", "TRANSITION"):
+                if cg.long_pct > 60.0:
+                    crowd_bias = "DOWN"
+                    crowd_delta = 0.10
+                elif cg.short_pct > 60.0:
+                    crowd_bias = "UP"
+                    crowd_delta = 0.10
+                else:
+                    crowd_bias = "NEUTRAL"
+                    crowd_delta = 0.0
+
+                if crowd_delta > 0:
+                    if crowd_bias == direction:
+                        cg_confidence_modifier += crowd_delta
+                        cg_log_parts.append(f"crowd_contrarian_{direction}(+{crowd_delta:.2f})")
+                    else:
+                        cg_confidence_modifier -= crowd_delta
+                        cg_log_parts.append(f"crowd_contra_{direction}(-{crowd_delta:.2f})")
+
+            # c) Smart money divergence (strongest contrarian signal)
+            # Top traders SHORT but crowd LONG → strong DOWN signal
+            # Top traders LONG but crowd SHORT → strong UP signal
+            smart_money_short = cg.top_position_short_pct > cg.top_position_long_pct
+            crowd_long = cg.long_pct > cg.short_pct
+            if smart_money_short and crowd_long:
+                # Smart/crowd diverge: smart shorts, crowd longs → contrarian DOWN
+                if direction == "DOWN":
+                    cg_confidence_modifier += 0.20
+                    cg_log_parts.append(f"smart_vs_crowd_confirms_DOWN(+0.20)")
+                else:
+                    cg_confidence_modifier -= 0.20
+                    cg_log_parts.append(f"smart_vs_crowd_contradicts_UP(-0.20)")
+            elif not smart_money_short and not crowd_long:
+                # Smart longs, crowd shorts → contrarian UP
+                if direction == "UP":
+                    cg_confidence_modifier += 0.20
+                    cg_log_parts.append(f"smart_vs_crowd_confirms_UP(+0.20)")
+                else:
+                    cg_confidence_modifier -= 0.20
+                    cg_log_parts.append(f"smart_vs_crowd_contradicts_DOWN(-0.20)")
+
+            # d) Taker aggression (confirms momentum in CASCADE)
+            # Aggressive selling (sell >> buy) confirms DOWN in cascade
+            total_taker = cg.taker_buy_volume_1m + cg.taker_sell_volume_1m
+            if total_taker > 0:
+                taker_sell_ratio = cg.taker_sell_volume_1m / total_taker
+                taker_buy_ratio = cg.taker_buy_volume_1m / total_taker
+                if taker_sell_ratio > 0.65:
+                    taker_bias = "DOWN"
+                    taker_delta = 0.15 if regime == "CASCADE" else 0.08
+                elif taker_buy_ratio > 0.65:
+                    taker_bias = "UP"
+                    taker_delta = 0.15 if regime == "CASCADE" else 0.08
+                else:
+                    taker_bias = "NEUTRAL"
+                    taker_delta = 0.0
+
+                if taker_delta > 0:
+                    if taker_bias == direction:
+                        cg_confidence_modifier += taker_delta
+                        cg_log_parts.append(f"taker_aggression_{direction}(+{taker_delta:.2f})")
+                    else:
+                        cg_confidence_modifier -= taker_delta
+                        cg_log_parts.append(f"taker_contra_{direction}(-{taker_delta:.2f})")
+
+            # e) Funding rate extremes → persistent directional pressure
+            # Extreme positive funding (>0.01%) → longs paying → DOWN pressure
+            # Extreme negative funding (<-0.01%) → shorts paying → UP pressure
+            funding = cg.funding_rate
+            if funding > 0.0001:  # > 0.01%
+                funding_bias = "DOWN"
+                funding_delta = min(0.10, abs(funding) * 500)  # scale with magnitude
+            elif funding < -0.0001:
+                funding_bias = "UP"
+                funding_delta = min(0.10, abs(funding) * 500)
+            else:
+                funding_bias = "NEUTRAL"
+                funding_delta = 0.0
+
+            if funding_delta > 0:
+                if funding_bias == direction:
+                    cg_confidence_modifier += funding_delta
+                    cg_log_parts.append(f"funding_confirms_{direction}(+{funding_delta:.2f})")
+                else:
+                    cg_confidence_modifier -= funding_delta
+                    cg_log_parts.append(f"funding_contra_{direction}(-{funding_delta:.2f})")
+
+        # Clamp modifier to [-0.5, +0.5]
+        cg_confidence_modifier = max(-0.5, min(0.5, cg_confidence_modifier))
+
+        self._log.debug(
+            "evaluate.coinglass_signal",
+            regime=regime,
+            direction=direction,
+            cg_modifier=f"{cg_confidence_modifier:+.2f}",
+            cg_connected=cg is not None and cg.connected if cg else False,
+            contributions=", ".join(cg_log_parts) if cg_log_parts else "none",
+            liq_long=f"${cg.liq_long_usd_1m:,.0f}" if cg else "n/a",
+            liq_short=f"${cg.liq_short_usd_1m:,.0f}" if cg else "n/a",
+            long_pct=f"{cg.long_pct:.1f}%" if cg else "n/a",
+            top_short_pct=f"{cg.top_position_short_pct:.1f}%" if cg else "n/a",
+            taker_sell_pct=f"{cg.taker_sell_volume_1m / (cg.taker_buy_volume_1m + cg.taker_sell_volume_1m) * 100:.1f}%" if (cg and (cg.taker_buy_volume_1m + cg.taker_sell_volume_1m) > 0) else "n/a",
+            funding=f"{cg.funding_rate * 100:.4f}%" if cg else "n/a",
+        )
+
+        # Apply CoinGlass modifier to lift/suppress confidence
+        # Modifier > 0.2: can lift LOW → MODERATE
+        # Modifier < -0.2: suppress MODERATE → LOW (skip), or HIGH → MODERATE (skip)
+        if cg_confidence_modifier >= 0.2 and confidence == "LOW":
+            self._log.info(
+                "evaluate.cg_lift",
+                from_confidence="LOW",
+                to_confidence="MODERATE",
+                modifier=f"{cg_confidence_modifier:+.2f}",
+                contributions=", ".join(cg_log_parts),
+            )
+            confidence = "MODERATE"
+        elif cg_confidence_modifier <= -0.2 and confidence == "MODERATE":
+            self._log.info(
+                "evaluate.cg_suppress",
+                from_confidence="MODERATE",
+                to_confidence="LOW",
+                modifier=f"{cg_confidence_modifier:+.2f}",
+                contributions=", ".join(cg_log_parts),
+            )
+            confidence = "LOW"
+        elif cg_confidence_modifier <= -0.35 and confidence == "HIGH":
+            self._log.info(
+                "evaluate.cg_suppress",
+                from_confidence="HIGH",
+                to_confidence="MODERATE",
+                modifier=f"{cg_confidence_modifier:+.2f}",
+                contributions=", ".join(cg_log_parts),
+            )
+            confidence = "MODERATE"
+
         # Block NONE and LOW confidence — only trade MODERATE or HIGH
         if confidence in ("NONE", "LOW"):
             return None
-        
+
         self._log.info(
             "evaluate.regime_signal",
             regime=regime,
@@ -342,8 +512,9 @@ class FiveMinVPINStrategy(BaseStrategy):
             delta=f"{delta_pct:+.4f}%",
             direction=direction,
             confidence=confidence,
+            cg_modifier=f"{cg_confidence_modifier:+.2f}",
         )
-        
+
         return FiveMinSignal(
             window=window,
             current_price=current_price,
