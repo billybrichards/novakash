@@ -134,9 +134,13 @@ class Orchestrator:
             on_resolution=self._on_order_resolution,
             poly_client=self._poly_client,
         )
+        
+        # Determine effective starting bankroll (paper override if set)
+        effective_bankroll = settings.paper_bankroll if settings.paper_mode and settings.paper_bankroll > 0 else settings.starting_bankroll
+        
         self._risk_manager = RiskManager(
             order_manager=self._order_manager,
-            starting_bankroll=settings.starting_bankroll,
+            starting_bankroll=effective_bankroll,
             paper_mode=settings.paper_mode,
         )
 
@@ -285,6 +289,10 @@ class Orchestrator:
             await self._opinion_client.connect()
         except Exception as exc:
             log.warning("orchestrator.opinion_connect_failed", error=str(exc))
+
+        # 3. Set paper bankroll if configured (before strategies start)
+        if self._settings.paper_mode and self._settings.paper_bankroll > 0:
+            await self._risk_manager.set_paper_bankroll(self._settings.paper_bankroll)
 
         # 3. Start strategies
         await self._arb_strategy.start()
@@ -573,6 +581,8 @@ class Orchestrator:
         
         Logs for observability AND forwards to the strategy for evaluation.
         """
+        window_state = getattr(window, 'state', None)
+        state_value = window_state.value if hasattr(window_state, 'value') else str(window_state) if window_state else 'NO_STATE'
         log.info(
             "five_min.window_signal",
             asset=window.asset,
@@ -580,25 +590,32 @@ class Orchestrator:
             open_price=window.open_price,
             up_price=window.up_price,
             down_price=window.down_price,
+            state=state_value,
         )
-        # Forward to strategy — store for token ID lookup AND evaluate immediately
-        # This is the MORNING STRATEGY: single-shot at T-60s (when feed fires signal)
+        # Forward to strategy — store for token ID lookup
         if self._five_min_strategy:
             self._five_min_strategy._pending_windows.append(window)
             if not hasattr(self._five_min_strategy, '_recent_windows'):
                 self._five_min_strategy._recent_windows = []
             self._five_min_strategy._recent_windows.append(window)
-            # Direct evaluation — the T-60s single-shot that made +$93
-            try:
-                state = await self._aggregator.get_state()
-                await self._five_min_strategy._evaluate_window(window, state)
-            except Exception as exc:
-                log.warning("five_min.evaluate_error", error=str(exc))
+            # ONLY evaluate at T-60s (CLOSING state), NOT at window open
+            # Window open signal is just for token ID registration
+            if state_value == "CLOSING":
+                # This is the T-60s signal — evaluate now
+                try:
+                    state = await self._aggregator.get_state()
+                    await self._five_min_strategy._evaluate_window(window, state)
+                except Exception as exc:
+                    log.warning("five_min.evaluate_error", error=str(exc))
+            else:
+                log.info("five_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
             if len(self._five_min_strategy._recent_windows) > 20:
                 self._five_min_strategy._recent_windows = self._five_min_strategy._recent_windows[-20:]
 
     async def _on_fifteen_min_window(self, window) -> None:
         """Handle 15-minute window signal — same strategy, different timeframe."""
+        window_state = getattr(window, 'state', None)
+        state_value = window_state.value if hasattr(window_state, 'value') else str(window_state) if window_state else 'NO_STATE'
         log.info(
             "fifteen_min.window_signal",
             asset=window.asset,
@@ -607,6 +624,7 @@ class Orchestrator:
             up_price=window.up_price,
             down_price=window.down_price,
             duration=900,
+            state=state_value,
         )
         # Reuse the same 5-min strategy for evaluation + token ID lookup
         if self._five_min_strategy:
@@ -614,31 +632,53 @@ class Orchestrator:
             if not hasattr(self._five_min_strategy, '_recent_windows'):
                 self._five_min_strategy._recent_windows = []
             self._five_min_strategy._recent_windows.append(window)
-            # Direct evaluation — morning strategy single-shot
-            try:
-                state = await self._aggregator.get_state()
-                await self._five_min_strategy._evaluate_window(window, state)
-            except Exception as exc:
-                log.warning("fifteen_min.evaluate_error", error=str(exc))
+            # ONLY evaluate at T-60s (CLOSING state), NOT at window open
+            if state_value == "CLOSING":
+                # This is the T-60s signal — evaluate now
+                try:
+                    state = await self._aggregator.get_state()
+                    await self._five_min_strategy._evaluate_window(window, state)
+                except Exception as exc:
+                    log.warning("fifteen_min.evaluate_error", error=str(exc))
+            else:
+                log.info("fifteen_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
             if len(self._five_min_strategy._recent_windows) > 20:
                 self._five_min_strategy._recent_windows = self._five_min_strategy._recent_windows[-20:]
 
     # ─── Order Resolution Callback ────────────────────────────────────────────
 
     def _on_order_resolution(self, order) -> None:
-        """Called by OrderManager when an order resolves. Notify risk manager.
-        
-        Only sends Telegram alerts for orders that actually filled on the CLOB
-        (metadata['filled'] == True). Unfilled/expired orders are silently
-        recorded — no misleading WIN/LOSS notifications.
-        """
+        """Called by OrderManager when an order resolves. Update risk manager + send Telegram alert."""
         if order.pnl_usd is not None:
-            # Resolution alerts — labelled as ESTIMATE
-            # Internal resolution may not match Polymarket oracle.
-            # Wallet balance in the alert lets Billy cross-check.
             filled = order.metadata.get("filled", False) if order.metadata else False
-            if filled:
-                asyncio.create_task(self._alerter.send_trade_alert(order))
+            is_paper_mode = self._settings.paper_mode
+            
+            log.info(
+                "resolution.callback",
+                order_id=order.order_id[:20],
+                outcome=order.outcome,
+                pnl=f"${order.pnl_usd:.2f}",
+                filled=filled,
+                paper=is_paper_mode,
+                will_alert=filled or is_paper_mode,
+            )
+            
+            # Update risk manager with PnL (bankroll, daily PnL, drawdown, consecutive losses)
+            async def _record_and_alert():
+                try:
+                    await self._risk_manager.record_outcome(order.pnl_usd)
+                    log.info("resolution.pnl_recorded", order_id=order.order_id[:20], pnl=f"${order.pnl_usd:.2f}")
+                except Exception as exc:
+                    log.error("resolution.pnl_record_failed", error=str(exc))
+                
+                if filled or is_paper_mode:
+                    try:
+                        await self._alerter.send_trade_alert(order)
+                        log.info("resolution.alert_sent", order_id=order.order_id[:20])
+                    except Exception as exc:
+                        log.error("resolution.alert_failed", order_id=order.order_id[:20], error=str(exc))
+            
+            asyncio.create_task(_record_and_alert())
 
     # ─── Background Tasks ─────────────────────────────────────────────────────
 
@@ -672,19 +712,16 @@ class Orchestrator:
                 _wallet_check_counter += 1
                 if _wallet_check_counter >= 6:
                     _wallet_check_counter = 0
-                    # Only sync from real wallet in LIVE mode
-                    # Paper mode uses STARTING_BANKROLL and tracks internally
                     if not self._settings.paper_mode:
+                        # Live mode: sync from real Polymarket wallet (cash only)
                         try:
                             _cached_wallet_balance = await self._poly_client.get_balance()
-                            try:
-                                portfolio_value = await self._poly_client.get_portfolio_value()
-                                await self._risk_manager.sync_bankroll(portfolio_value)
-                            except Exception:
-                                if _cached_wallet_balance is not None:
-                                    await self._risk_manager.sync_bankroll(_cached_wallet_balance)
+                            await self._risk_manager.sync_bankroll(_cached_wallet_balance)
                         except Exception as exc:
                             log.debug("heartbeat.wallet_balance_error", error=str(exc))
+                    else:
+                        # Paper mode: use risk manager's tracked bankroll for sitrep
+                        _cached_wallet_balance = risk_status.get("current_bankroll", 0)
 
                 # Build config snapshot with wallet + risk extras + runtime config
                 config_snapshot = {
@@ -750,34 +787,52 @@ class Orchestrator:
                         daily_sign = "+" if daily_pnl >= 0 else ""
                         status_emoji = "🛑" if killed else "🟢"
 
-                        # Fetch REAL position outcomes from Polymarket
+                        # Fetch position outcomes
                         real_wins = 0
                         real_losses = 0
                         open_positions_val = 0
-                        try:
-                            pos_outcomes = await self._poly_client.get_position_outcomes()
-                            for cid, data in pos_outcomes.items():
-                                if data["outcome"] == "WIN":
-                                    real_wins += 1
-                                elif data["outcome"] == "LOSS":
-                                    real_losses += 1
-                                else:
-                                    open_positions_val += data["value"]
-                        except Exception:
-                            pass
+
+                        if not self._settings.paper_mode:
+                            # Live mode: fetch real Polymarket position outcomes
+                            try:
+                                pos_outcomes = await self._poly_client.get_position_outcomes()
+                                for cid, data in pos_outcomes.items():
+                                    if data["outcome"] == "WIN":
+                                        real_wins += 1
+                                    elif data["outcome"] == "LOSS":
+                                        real_losses += 1
+                                    else:
+                                        open_positions_val += data["value"]
+                            except Exception:
+                                pass
+                        else:
+                            # Paper mode: use internal order manager counts
+                            try:
+                                for oid, o in self._order_manager._orders.items():
+                                    if o.outcome == "WIN":
+                                        real_wins += 1
+                                    elif o.outcome == "LOSS":
+                                        real_losses += 1
+                                    elif o.status.value in ("OPEN", "FILLED"):
+                                        open_positions_val += o.stake_usd
+                            except Exception:
+                                pass
 
                         portfolio = wallet + open_positions_val
-                        real_pnl = portfolio - 208.98  # from deposits
+                        # Use starting bankroll as baseline (not hardcoded $208.98)
+                        baseline = runtime.starting_bankroll if self._settings.paper_mode else 208.98
+                        real_pnl = portfolio - baseline
+                        mode_label = "📄 PAPER" if self._settings.paper_mode else "💰 LIVE"
 
                         sitrep = (
-                            f"📋 *5-MIN SITREP* ({status_emoji} {'KILLED' if killed else 'ACTIVE'})\n"
+                            f"📋 *5-MIN SITREP* ({status_emoji} {'KILLED' if killed else 'ACTIVE'}) {mode_label}\n"
                             f"\n"
-                            f"🏦 Cash: `${wallet:.2f}` USDC\n"
+                            f"🏦 Cash: `${wallet:.2f}`{' USDC' if not self._settings.paper_mode else ''}\n"
                             f"📊 Positions: `${open_positions_val:.2f}`\n"
                             f"💰 Portfolio: `${portfolio:.2f}`\n"
-                            f"📈 Real P&L: `${real_pnl:+.2f}` (from $209 deposit)\n"
+                            f"📈 P&L: `${real_pnl:+.2f}` (from ${baseline:.0f})\n"
                             f"\n"
-                            f"✅ Poly Wins: `{real_wins}` | ❌ Losses: `{real_losses}`\n"
+                            f"✅ Wins: `{real_wins}` | ❌ Losses: `{real_losses}`\n"
                             f"📉 Drawdown: `{drawdown:.1%}`\n"
                             f"\n"
                             f"🔬 VPIN: `{vpin:.4f}` | Regime: `{regime}`\n"

@@ -46,6 +46,7 @@ _DB_KEY_MAP: dict[str, tuple[str, type]] = {
     "vpin_cascade_threshold":   ("vpin_cascade_threshold", float),
     "vpin_bucket_size_usd":     ("vpin_bucket_size_usd", float),
     "vpin_lookback_buckets":    ("vpin_lookback_buckets", int),
+    "five_min_vpin_gate":       ("five_min_vpin_gate", float),
     "arb_min_spread":           ("arb_min_spread", float),
     "arb_max_position":         ("arb_max_position", float),
     "arb_max_execution_ms":     ("arb_max_execution_ms", int),
@@ -56,6 +57,7 @@ _DB_KEY_MAP: dict[str, tuple[str, type]] = {
     "polymarket_fee_mult":      ("polymarket_fee_mult", float),
     "opinion_fee_mult":         ("opinion_fee_mult", float),
     "preferred_venue":          ("preferred_venue", str),
+    "five_min_min_delta_pct":   ("five_min_min_delta_pct", float),
 }
 
 
@@ -109,6 +111,7 @@ class RuntimeConfig:
         self.five_min_entry_offset: int = _env_int("FIVE_MIN_ENTRY_OFFSET", 10)
         self.five_min_min_confidence: float = _env_float("FIVE_MIN_MIN_CONFIDENCE", 0.30)
         self.five_min_min_delta_pct: float = _env_float("FIVE_MIN_MIN_DELTA_PCT", 0.001)
+        self.five_min_vpin_gate: float = _env_float("FIVE_MIN_VPIN_GATE", 0.628)
 
         # ── Window ────────────────────────────────────────────────────────
         self.poly_window_seconds: int = _env_int("POLY_WINDOW_SECONDS", 300)
@@ -126,6 +129,11 @@ class RuntimeConfig:
 
         Returns True if config was updated, False if no change or error.
         """
+        # Skip DB sync if env var says so — use pure env var config
+        if os.environ.get('SKIP_DB_CONFIG_SYNC') == 'true':
+            log.info("runtime_config.skip_db_sync", reason="SKIP_DB_CONFIG_SYNC=true")
+            return False
+        
         mode = "paper" if paper_mode else "live"
 
         try:
@@ -215,6 +223,7 @@ class RuntimeConfig:
             "daily_loss_limit_pct": self.daily_loss_limit_pct,
             "vpin_informed_threshold": self.vpin_informed_threshold,
             "vpin_cascade_threshold": self.vpin_cascade_threshold,
+            "five_min_vpin_gate": self.five_min_vpin_gate,
             "arb_enabled": self.arb_enabled,
             "cascade_enabled": self.cascade_enabled,
             "preferred_venue": self.preferred_venue,

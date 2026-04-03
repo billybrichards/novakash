@@ -258,7 +258,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         Returns None if no trade should be placed.
         """
         # VPIN gate — core thesis: no informed flow = no trade
-        if current_vpin < 0.50:
+        if current_vpin < runtime.five_min_vpin_gate:
             return None
         
         # Minimum delta threshold - skip if too small
@@ -271,8 +271,8 @@ class FiveMinVPINStrategy(BaseStrategy):
         # Calculate confidence
         confidence = self._calculate_confidence(delta_pct, current_vpin, direction)
         
-        # Check minimum confidence
-        if confidence == "LOW" and delta_pct < runtime.five_min_min_confidence:
+        # Block NONE and LOW confidence — only trade MODERATE or HIGH
+        if confidence in ("NONE", "LOW"):
             return None
         
         return FiveMinSignal(
@@ -755,6 +755,66 @@ class FiveMinVPINStrategy(BaseStrategy):
                         clob_status=clob_status,
                         waited=f"{elapsed}s",
                     )
+                    # ── +2¢ RETRY ──────────────────────────────────────────
+                    # Cancel original, bump price by 2¢, re-check risk, retry
+                    self._log.info("trade.retry_starting", original_price=str(price), order_id=order.order_id[:20] + "...")
+                    try:
+                        bumped_price_f = round(float(price) + 0.02, 4)
+                        # Only retry if bumped price is still reasonable (<0.70)
+                        if bumped_price_f < 0.70:
+                            # Cancel the unfilled original order
+                            try:
+                                if hasattr(self._poly, '_clob_client') and self._poly._clob_client:
+                                    await asyncio.to_thread(self._poly._clob_client.cancel, order.order_id)
+                                    self._log.info("trade.retry_cancelled_original", order_id=order.order_id[:20] + "...")
+                            except Exception:
+                                pass
+
+                            # Recalculate stake at bumped price
+                            retry_stake = self._calculate_stake(signal.confidence, bumped_price_f)
+
+                            # Re-check risk with new stake
+                            retry_approved, retry_reason = await self._check_risk(retry_stake)
+                            if not retry_approved:
+                                self._log.info("trade.retry_risk_blocked", reason=retry_reason, stake=retry_stake)
+                            else:
+                                bumped_price_dec = Decimal(str(bumped_price_f))
+                                self._log.info(
+                                    "trade.retry_bumped",
+                                    original_price=str(price),
+                                    bumped_price=str(bumped_price_dec),
+                                    retry_stake=f"${retry_stake:.2f}",
+                                )
+                                retry_id = await self._poly.place_order(
+                                    market_slug=market_slug,
+                                    direction=direction,
+                                    price=bumped_price_dec,
+                                    stake_usd=retry_stake,
+                                    token_id=token_id,
+                                )
+                                order.order_id = retry_id
+                                order.price = str(bumped_price_dec)
+                                order.stake_usd = retry_stake
+                                order.metadata["retried_at_bump"] = True
+                                order.metadata["bumped_price"] = str(bumped_price_dec)
+                                self._log.info("trade.retry_placed", order_id=str(retry_id)[:20], price=str(bumped_price_dec))
+
+                                # Quick fill check on retry (15s)
+                                await asyncio.sleep(15)
+                                status2 = await self._poly.get_order_status(retry_id)
+                                retry_filled = float(status2.get("size_matched", "0") or "0") > 0
+                                order.metadata["filled"] = retry_filled
+                                if retry_filled:
+                                    self._log.info("trade.retry_filled", order_id=str(retry_id)[:20], size_matched=status2.get("size_matched"))
+                                    if self._alerter:
+                                        asyncio.create_task(self._alerter.send_entry_alert(order))
+                                else:
+                                    self._log.warning("trade.retry_not_filled", order_id=str(retry_id)[:20])
+                        else:
+                            self._log.info("trade.retry_skip_expensive", bumped_price=bumped_price_f)
+                    except Exception as retry_exc:
+                        self._log.warning("trade.retry_failed", error=str(retry_exc))
+                    # ── END RETRY ──────────────────────────────────────────
             except Exception as exc:
                 self._log.warning("trade.verify_failed", order_id=order.order_id[:20], error=str(exc))
                 # Still send alert on verify failure — better to over-notify than miss
@@ -843,12 +903,15 @@ class FiveMinVPINStrategy(BaseStrategy):
         Formula: base_stake × price_multiplier
         where price_multiplier = (1 - token_price) / 0.50
         
-        Examples at $160 bankroll, 10% fraction ($16 base):
-          40¢ → $16 × 1.20 = $19.20 (upside: +$28.80)
-          50¢ → $16 × 1.00 = $16.00 (upside: +$16.00)
-          55¢ → $16 × 0.90 = $14.40 (upside: +$11.76)
-          60¢ → $16 × 0.80 = $12.80 (upside: +$8.53)
-          65¢ → $16 × 0.70 = $11.20 (upside: +$6.03)
+        Examples at $160 bankroll, 20% fraction ($32 base):
+          40¢ → $32 × 1.20 = $38.40 (upside: +$57.60)
+          50¢ → $32 × 1.00 = $32.00 (upside: +$32.00)
+          55¢ → $32 × 0.90 = $28.80 (upside: +$23.52)
+          60¢ → $32 × 0.80 = $25.60 (upside: +$17.07)
+          65¢ → $32 × 0.70 = $22.40 (upside: +$12.05)
+        
+        Hard max: $50 (from DB config max_position_usd)
+        Safety buffer: 5% below the calculated max
         """
         status = self._rm.get_status()
         bankroll = status["current_bankroll"]
@@ -864,13 +927,34 @@ class FiveMinVPINStrategy(BaseStrategy):
         
         adjusted_stake = base_stake * price_multiplier
         
+        # Apply 5% safety buffer — leave headroom for price bumps + slippage
+        # Max stake from risk manager: bankroll × bet_fraction
+        # Effective max: 95% of that
+        max_stake = bankroll * runtime.bet_fraction
+        adjusted_stake = min(adjusted_stake, max_stake * 0.95)
+        
+        # HARD MAX: Never exceed max_position_usd from config (default $50)
+        # If calculated stake exceeds hard max, scale down to stay below
+        hard_max = runtime.max_position_usd
+        if adjusted_stake > hard_max:
+            adjusted_stake = hard_max * 0.95  # Scale to 95% of hard max
+            self._log.warning(
+                "stake.hard_max_exceeded",
+                original=f"${adjusted_stake / 0.95:.2f}",
+                scaled=f"${adjusted_stake:.2f}",
+                hard_max=f"${hard_max:.2f}",
+                reason="Scaling bet to stay under max_position_usd",
+            )
+        
         self._log.debug(
             "stake.calculated",
             bankroll=f"${bankroll:.2f}",
             base=f"${base_stake:.2f}",
             token_price=f"${tp:.2f}",
             multiplier=f"{price_multiplier:.2f}x",
+            max_stake=f"${max_stake:.2f}",
             final=f"${adjusted_stake:.2f}",
+            buffer="5% headroom applied",
         )
         
         return adjusted_stake

@@ -187,7 +187,7 @@ class TelegramAlerter:
                 except Exception:
                     pass
 
-            if self._poly_client:
+            if self._poly_client and not self._paper_mode:
                 try:
                     wallet_balance = await self._poly_client.get_balance()
                     lines.append(f"🏦 Available: `${wallet_balance:.2f}` USDC")
@@ -281,7 +281,7 @@ class TelegramAlerter:
                 except Exception:
                     pass
 
-            if self._poly_client:
+            if self._poly_client and not self._paper_mode:
                 try:
                     wallet_balance = await self._poly_client.get_balance()
                     lines.append(f"🏦 Poly Wallet: `${wallet_balance:.2f}` USDC")

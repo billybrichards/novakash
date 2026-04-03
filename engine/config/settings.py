@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     # Risk / Trading
     starting_bankroll: float = Field(default=500.0, description="Starting bankroll in USD")
     paper_mode: bool = Field(default=True, description="Paper trading mode (no real orders)")
+    paper_bankroll: float = Field(default=0.0, description="Paper bankroll override (0 = use starting_bankroll)")
 
     # Playwright / Gmail
     playwright_enabled: bool = Field(default=False, description="Enable Playwright browser automation")

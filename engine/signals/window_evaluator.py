@@ -145,7 +145,7 @@ class WindowEvaluator:
 
         # ── 2. VPIN Signal ────────────────────────────────────────────────
         vpin_weight = 0.0
-        if current_vpin > 0.50:
+        if current_vpin > runtime.five_min_vpin_gate:
             # High VPIN = informed trading detected
             # Confirms direction if delta agrees, warns if disagrees
             vpin_weight = min((current_vpin - 0.30) * 10, 3.0)  # 0-3 weight
@@ -238,11 +238,11 @@ class WindowEvaluator:
 
         # ── Check if we should fire ───────────────────────────────────────
         # v3.1 GATES — matched to morning winning session:
-        #   1. VPIN >= 0.50 (morning range was 0.58-0.94)
+        #   1. VPIN >= 0.628 (configurable, default 0.628)
         #   2. |delta| >= 0.02% (morning minimum was ~0.03%)
         #   3. Confidence meets tier threshold
         
-        if current_vpin < 0.50:
+        if current_vpin < runtime.five_min_vpin_gate:
             return None  # No informed flow = no trade
         
         if abs_delta < 0.02:
@@ -279,7 +279,7 @@ class WindowEvaluator:
         if window_state.best_signal and window_state.eval_count > 5:
             prev_conf = window_state.best_signal.confidence
             if (confidence - prev_conf >= 0.30 and confidence >= 0.65 
-                    and abs_delta >= 0.05 and current_vpin >= 0.50):
+                    and abs_delta >= 0.05 and current_vpin >= runtime.five_min_vpin_gate):
                 signal.tier = "SPIKE"
                 signal.entry_reason = (
                     f"SPIKE at T-{seconds_to_close:.0f}s: "

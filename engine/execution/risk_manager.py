@@ -82,7 +82,14 @@ class RiskManager:
                     return False, f"daily_loss_limit: down ${abs(self._daily_pnl):.2f} today"
 
             # 3. Position limit
-            max_stake = self._current_bankroll * runtime.bet_fraction
+            # Allow up to bankroll × bet_fraction × 1.5 (max price multiplier)
+            # The stake calculator already applies its own 5% buffer internally
+            max_stake = self._current_bankroll * runtime.bet_fraction * 1.5
+            
+            # Apply hard max cap (from config)
+            hard_max = runtime.max_position_usd
+            max_stake = min(max_stake, hard_max)
+            
             if stake_usd > max_stake:
                 return False, f"position_limit: ${stake_usd:.2f} > max ${max_stake:.2f}"
 
@@ -138,8 +145,14 @@ class RiskManager:
         the risk manager's bankroll matches reality (including redeems,
         deposits, and withdrawals the engine didn't track).
 
-        Only updates if the wallet balance is a valid positive number.
+        In paper mode, wallet_balance will be $0, so we skip sync to preserve
+        the paper bankroll tracking. In live mode, we sync from the wallet.
         """
+        # Skip sync in paper mode - wallet is $0, we track paper bankroll internally
+        if self._paper_mode:
+            return
+
+        # In live mode, only sync if we have a valid positive balance
         if wallet_balance is None or wallet_balance <= 0:
             return
 
@@ -203,6 +216,29 @@ class RiskManager:
         """Toggle paper trading mode at runtime."""
         self._paper_mode = enabled
         log.info("risk.paper_mode", enabled=enabled)
+
+    async def set_paper_bankroll(self, amount: float) -> None:
+        """Set the paper trading bankroll explicitly.
+        
+        In paper mode, the Polymarket wallet shows $0, so we need to
+        track paper bankroll separately. Call this to initialize or
+        adjust the paper bankroll (e.g., on engine start or deposit).
+        """
+        if not self._paper_mode:
+            log.warning("risk.set_paper_bankroll_skipped", reason="not in paper mode")
+            return
+
+        old = self._current_bankroll
+        self._current_bankroll = amount
+        self._peak_bankroll = max(self._peak_bankroll, amount)
+        self._day_start_bankroll = amount  # Reset daily tracking too
+        
+        log.info(
+            "risk.paper_bankroll_set",
+            old=f"${old:.2f}",
+            new=f"${amount:.2f}",
+            peak=f"${self._peak_bankroll:.2f}",
+        )
 
     # ─── Internal ─────────────────────────────────────────────────────────────
 
