@@ -58,6 +58,7 @@ _DB_KEY_MAP: dict[str, tuple[str, type]] = {
     "opinion_fee_mult":         ("opinion_fee_mult", float),
     "preferred_venue":          ("preferred_venue", str),
     "five_min_min_delta_pct":   ("five_min_min_delta_pct", float),
+    "five_min_cascade_min_delta_pct": ("five_min_cascade_min_delta_pct", float),
 }
 
 
@@ -111,7 +112,8 @@ class RuntimeConfig:
         self.five_min_mode: str = os.environ.get("FIVE_MIN_MODE", "safe")
         self.five_min_entry_offset: int = _env_int("FIVE_MIN_ENTRY_OFFSET", 10)
         self.five_min_min_confidence: float = _env_float("FIVE_MIN_MIN_CONFIDENCE", 0.30)
-        self.five_min_min_delta_pct: float = _env_float("FIVE_MIN_MIN_DELTA_PCT", 0.001)
+        self.five_min_min_delta_pct: float = _env_float("FIVE_MIN_MIN_DELTA_PCT", 0.08)
+        self.five_min_cascade_min_delta_pct: float = _env_float("FIVE_MIN_CASCADE_MIN_DELTA_PCT", 0.03)
         self.five_min_vpin_gate: float = _env_float("FIVE_MIN_VPIN_GATE", 0.45)
 
         # ── Window ────────────────────────────────────────────────────────

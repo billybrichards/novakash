@@ -273,17 +273,21 @@ class FiveMinVPINStrategy(BaseStrategy):
         if current_vpin < runtime.five_min_vpin_gate:
             return None
         
-        # Minimum delta threshold - skip if too small
-        if abs(delta_pct) < runtime.five_min_min_delta_pct:
-            return None
-        
-        # ── REGIME-AWARE DIRECTION (v4) ────────────────────────────
-        # Cascade/trend regime: VPIN >= 0.65 → follow the momentum
-        # Normal/ranging regime: VPIN < 0.55 → bet on mean-reversion
-        # Transition zone: 0.55-0.65 → contrarian but need stronger signal
+        # ── REGIME-AWARE DIRECTION (v4.1) ──────────────────────────
+        # Cascade/trend regime: VPIN >= 0.65 → MOMENTUM + lower delta bar
+        # Transition zone:      VPIN 0.55-0.65 → CONTRARIAN + higher delta bar
+        # Normal/ranging:       VPIN < 0.55 → CONTRARIAN + standard delta bar
+        #
+        # KEY INSIGHT (Billy): In cascade, VPIN IS the signal. A smaller
+        # delta still means something when informed flow is extreme.
+        # Like how a small temperature rise matters more in a patient
+        # who's already septic vs a healthy one.
         
         if current_vpin >= runtime.vpin_cascade_direction_threshold:
-            # CASCADE/TREND: ride the momentum
+            # CASCADE/TREND: ride the momentum, lower delta bar
+            min_delta = runtime.five_min_cascade_min_delta_pct
+            if abs(delta_pct) < min_delta:
+                return None
             direction = "UP" if delta_pct > 0 else "DOWN"
             regime = "CASCADE"
         elif current_vpin >= runtime.vpin_informed_threshold:
@@ -299,7 +303,9 @@ class FiveMinVPINStrategy(BaseStrategy):
             direction = "DOWN" if delta_pct > 0 else "UP"
             regime = "TRANSITION"
         else:
-            # NORMAL: mean-reversion (contrarian)
+            # NORMAL: mean-reversion (contrarian), standard delta bar
+            if abs(delta_pct) < runtime.five_min_min_delta_pct:
+                return None
             direction = "DOWN" if delta_pct > 0 else "UP"
             regime = "NORMAL"
         
