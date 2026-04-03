@@ -835,7 +835,7 @@ class Orchestrator:
                             f"✅ Wins: `{real_wins}` | ❌ Losses: `{real_losses}`\n"
                             f"📉 Drawdown: `{drawdown:.1%}`\n"
                             f"\n"
-                            f"🔬 VPIN: `{vpin:.4f}` | Vol: `{regime}` | Trade: `{'CASCADE' if vpin >= 0.65 else ('TRANSITION' if vpin >= 0.55 else 'NORMAL' if vpin >= 0.45 else 'QUIET')}`\n"
+                            f"🔬 VPIN: `{vpin:.4f}` | Vol: `{regime}` | Trade: `{'CASCADE' if vpin >= 0.65 else ('TRANSITION' if vpin >= 0.55 else 'NORMAL' if vpin >= 0.45 else 'CALM')}`\n"
                             f"🔗 Binance: `{'✅' if binance_ok else '❌'}` | BTC: `${self._order_manager._current_btc_price:,.2f}`\n"
                         )
 
