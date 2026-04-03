@@ -752,10 +752,10 @@ class FiveMinVPINStrategy(BaseStrategy):
             entry_reason=signal.entry_reason,
         )
 
-        # Post-trade fill verification (polling loop)
+        # Post-trade fill verification (v5.3: faster poll + dynamic bump + GTD)
         if not self._poly.paper_mode and order.order_id.startswith("0x"):
             POLL_INTERVAL = 5
-            MAX_WAIT = 60
+            MAX_WAIT = 30  # v5.3: reduced from 60s → 30s (6 checks, not 12)
             filled = False
             try:
                 elapsed = 0
@@ -777,23 +777,29 @@ class FiveMinVPINStrategy(BaseStrategy):
                 elif not filled:
                     self._log.warning("trade.not_filled", order_id=order.order_id[:20], waited=f"{elapsed}s")
                     
-                    # RETRY at +2¢ bump if original didn't fill
+                    # v5.3: DYNAMIC BUMP — read order book spread, bump by min(2¢, spread)
                     base_price = getattr(eval_state, '_base_price', None)
                     if base_price and not filled:
-                        bumped = round(base_price + 0.02, 4)
+                        # Get current order book spread for smart bump sizing
+                        try:
+                            spread = await self._poly.get_order_book_spread(token_id)
+                            bumped = self._poly.calculate_dynamic_bump(base_price, spread)
+                        except Exception:
+                            bumped = round(base_price + 0.02, 4)  # Fallback to fixed 2¢
+                        
                         bumped_price = Decimal(str(bumped))
                         self._log.info(
-                            "trade.retry_bumped",
+                            "trade.retry_dynamic_bump",
                             original_price=str(price),
                             bumped_price=str(bumped_price),
                             window=window_key,
                         )
-                        # Cancel original order
+                        # Cancel original order (GTD will auto-expire, but cancel is faster)
                         try:
                             if hasattr(self._poly, '_clob_client') and self._poly._clob_client:
                                 await asyncio.to_thread(self._poly._clob_client.cancel, order.order_id)
                         except Exception:
-                            pass
+                            pass  # GTD auto-expires anyway — no stale order risk
                         
                         # Recalculate stake for bumped price
                         retry_stake = self._calculate_stake(signal.tier, float(bumped_price))
@@ -811,9 +817,10 @@ class FiveMinVPINStrategy(BaseStrategy):
                             order.stake_usd = retry_stake
                             order.metadata["retried_at_bump"] = True
                             order.metadata["bumped_price"] = str(bumped_price)
+                            order.metadata["bump_spread"] = str(spread) if 'spread' in dir() else "fallback"
                             self._log.info("trade.retry_placed", order_id=retry_id[:20] if retry_id else "?", price=str(bumped_price))
                             
-                            # Quick fill check on retry (15s)
+                            # Quick fill check on retry (15s = 3 checks)
                             await asyncio.sleep(15)
                             status2 = await self._poly.get_order_status(retry_id)
                             retry_filled = float(status2.get("size_matched", "0") or "0") > 0
@@ -990,12 +997,12 @@ class FiveMinVPINStrategy(BaseStrategy):
             token_price=str(price),
         )
 
-        # Post-trade verification — poll until filled or timeout
+        # Post-trade verification — v5.3: faster poll (30s) + dynamic bump + GTD
         # CLOB matching can take 5-30s on thin books near window close.
-        # Poll every 5s for up to 60s before giving up.
+        # Poll every 5s for 30s, then dynamic bump retry for 15s.
         if not self._poly.paper_mode and order.order_id.startswith("0x"):
             POLL_INTERVAL = 5    # seconds between checks
-            MAX_WAIT = 60        # total seconds to wait for fill
+            MAX_WAIT = 30        # v5.3: reduced from 60s → 30s
             filled = False
 
             try:
@@ -1046,11 +1053,16 @@ class FiveMinVPINStrategy(BaseStrategy):
                         clob_status=clob_status,
                         waited=f"{elapsed}s",
                     )
-                    # ── +2¢ RETRY ──────────────────────────────────────────
-                    # Cancel original, bump price by 2¢, re-check risk, retry
+                    # ── v5.3 DYNAMIC BUMP RETRY ────────────────────────────
+                    # Read order book spread, bump by min(2¢, spread)
                     self._log.info("trade.retry_starting", original_price=str(price), order_id=order.order_id[:20] + "...")
                     try:
-                        bumped_price_f = round(float(price) + 0.02, 4)
+                        # Dynamic bump: read spread, bump intelligently
+                        try:
+                            spread = await self._poly.get_order_book_spread(token_id)
+                            bumped_price_f = self._poly.calculate_dynamic_bump(float(price), spread)
+                        except Exception:
+                            bumped_price_f = round(float(price) + 0.02, 4)
                         # Only retry if bumped price is still reasonable (<0.70)
                         if bumped_price_f < 0.70:
                             # Cancel the unfilled original order

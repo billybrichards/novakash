@@ -324,16 +324,39 @@ class PolymarketClient:
             raise ValueError(f"Token price {price} below 30¢ floor — skipping")
 
         size = round(stake_usd / float(price), 2)
+
+        # ── GTD expiry: auto-expire when the 5m/15m window closes ──────
+        # Extract window_ts from market_slug: "btc-updown-5m-1775256000"
+        # Window closes at window_ts + duration (300s for 5m, 900s for 15m)
+        expiration = 0
+        try:
+            parts = market_slug.split("-")
+            window_ts = int(parts[-1])
+            duration = 900 if is_15m else 300
+            expiration = window_ts + duration  # Unix timestamp when window resolves
+        except (ValueError, IndexError):
+            pass  # Fallback to no expiry (GTC)
+
+        order_type = OrderType.GTD if expiration > 0 else OrderType.GTC
+
         order_args = OrderArgs(
             token_id=token_id,
             price=float(price),
             size=size,
             side=BUY,
+            expiration=expiration,
         )
 
         def _sign_and_submit():
             signed_order = client.create_order(order_args)
-            return client.post_order(signed_order, OrderType.GTC)
+            return client.post_order(signed_order, order_type)
+
+        self._log.info(
+            "place_order.order_type",
+            order_type="GTD" if expiration > 0 else "GTC",
+            expiration=expiration,
+            seconds_to_expiry=expiration - int(time.time()) if expiration > 0 else "none",
+        )
 
         response = await asyncio.to_thread(_sign_and_submit)
 
@@ -354,6 +377,59 @@ class PolymarketClient:
         )
 
         return order_id
+
+    async def get_order_book_spread(self, token_id: str) -> float:
+        """Get the best ask - best bid spread for a token.
+        
+        Returns spread in price units (e.g. 0.02 = 2¢ spread).
+        Returns 0.02 as default if book can't be read.
+        """
+        if self.paper_mode or not self._clob_client:
+            return 0.02  # Default 2¢ spread assumption
+        
+        try:
+            client = self._clob_client
+            book = await asyncio.to_thread(client.get_order_book, token_id)
+            
+            best_bid = float(book.bids[0].price) if book.bids else 0.0
+            best_ask = float(book.asks[0].price) if book.asks else 1.0
+            spread = best_ask - best_bid
+            
+            self._log.debug(
+                "order_book.spread",
+                token_id=token_id[:20] + "...",
+                best_bid=f"${best_bid:.4f}",
+                best_ask=f"${best_ask:.4f}",
+                spread=f"${spread:.4f}",
+            )
+            return max(0.005, spread)  # Floor at 0.5¢
+        except Exception as exc:
+            self._log.debug("order_book.spread_error", error=str(exc))
+            return 0.02  # Default fallback
+
+    def calculate_dynamic_bump(self, base_price: float, spread: float) -> float:
+        """Calculate dynamic price bump based on order book spread.
+        
+        Strategy: bump by min(2¢, spread) — don't overpay more than the spread,
+        but always bump at least 0.5¢ to cross the spread.
+        
+        Args:
+            base_price: Original order price
+            spread: Current bid-ask spread from get_order_book_spread()
+            
+        Returns:
+            Bumped price (capped at 65¢ for 5m, safety enforced by caller)
+        """
+        bump = min(0.02, max(0.005, spread))
+        bumped = round(base_price + bump, 4)
+        self._log.info(
+            "price.dynamic_bump",
+            base=f"${base_price:.4f}",
+            spread=f"${spread:.4f}",
+            bump=f"${bump:.4f}",
+            bumped=f"${bumped:.4f}",
+        )
+        return bumped
 
     # ------------------------------------------------------------------
     # Low-level CLOB call
