@@ -726,12 +726,15 @@ async def activate_config(config_id: int, db=Depends(get_db)):
         "UPDATE trading_configs SET is_active = TRUE, updated_at = NOW() WHERE id = $1",
         config_id,
     )
-    # Update system_state
+    # Update system_state (table may not have updated_at column)
     col = "active_paper_config_id" if mode == "paper" else "active_live_config_id"
-    await db.execute(
-        f"UPDATE system_state SET {col} = $1, updated_at = NOW() WHERE id = 1",
-        config_id,
-    )
+    try:
+        await db.execute(
+            f"UPDATE system_state SET {col} = $1 WHERE id = 1",
+            config_id,
+        )
+    except Exception as exc:
+        log.warning("activate.system_state_update_failed", error=str(exc))
 
     log.info("trading_config.activated", config_id=config_id, mode=mode)
     return {"ok": True, "config_id": config_id, "mode": mode}
