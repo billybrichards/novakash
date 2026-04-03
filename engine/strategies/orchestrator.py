@@ -680,7 +680,8 @@ class Orchestrator:
                 
                 if filled or is_paper_mode:
                     try:
-                        await self._alerter.send_trade_alert(order)
+                        cg_snap = self._cg_enhanced.snapshot if self._cg_enhanced else None
+                        await self._alerter.send_trade_alert(order, cg_snapshot=cg_snap)
                         log.info("resolution.alert_sent", order_id=order.order_id[:20])
                     except Exception as exc:
                         log.error("resolution.alert_failed", order_id=order.order_id[:20], error=str(exc))

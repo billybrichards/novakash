@@ -1008,6 +1008,31 @@ class FiveMinVPINStrategy(BaseStrategy):
         fee_mult = 0.072  # Polymarket fee
         fee_usd = fee_mult * float(price) * (1.0 - float(price)) * stake
         
+        # Build human-readable entry reason for resolution alerts
+        try:
+            _cg_snap = self._cg_enhanced.snapshot if self._cg_enhanced is not None else None
+            _regime_word = (
+                "CASCADE" if signal.current_vpin >= 0.65 else
+                "TRANSITION" if signal.current_vpin >= 0.55 else "NORMAL"
+            )
+            _dir_word = "upward" if signal.direction == "UP" else "downward"
+            _entry_reason_detail = (
+                f"{_regime_word} momentum: VPIN {signal.current_vpin:.2f} "
+                f"with δ{signal.delta_pct:+.3f}% — "
+                f"{'high informed flow confirms' if _regime_word == 'CASCADE' else 'mean-reversion signal,'} "
+                f"{_dir_word} pressure."
+            )
+            if _cg_snap is not None and getattr(_cg_snap, "connected", False):
+                _total_t = _cg_snap.taker_buy_volume_1m + _cg_snap.taker_sell_volume_1m
+                _taker_sell_r = (_cg_snap.taker_sell_volume_1m / _total_t) if _total_t > 0 else 0.5
+                _entry_reason_detail += (
+                    f" CG: taker sell ratio {_taker_sell_r:.2f}, "
+                    f"smart {_cg_snap.top_position_short_pct:.0f}% short, "
+                    f"OI Δ{_cg_snap.oi_delta_pct_1m:+.2f}%"
+                )
+        except Exception:
+            _entry_reason_detail = f"T-{FIVE_MIN_ENTRY_OFFSET}s signal — delta {signal.delta_pct:+.4f}%, VPIN {signal.current_vpin:.4f}"
+
         # Create order
         order = Order(
             order_id=order_id,
@@ -1027,9 +1052,11 @@ class FiveMinVPINStrategy(BaseStrategy):
                 "delta_pct": signal.delta_pct,
                 "vpin": signal.current_vpin,
                 "confidence": signal.confidence,
+                "cg_modifier": signal.cg_modifier,
                 "token_id": token_id,
                 "entry_offset_s": FIVE_MIN_ENTRY_OFFSET,
                 "entry_label": f"T-{FIVE_MIN_ENTRY_OFFSET}s",
+                "entry_reason_detail": _entry_reason_detail,
                 "timeframe": tf,
                 "window_duration_s": window.duration_secs,
                 "clob_order_id": clob_order_id if 'clob_order_id' in dir() else None,

@@ -15,6 +15,8 @@ Uses simple HTTP POST to the Telegram Bot API sendMessage endpoint.
 
 from __future__ import annotations
 
+import asyncio
+import os
 from typing import TYPE_CHECKING
 import aiohttp
 import structlog
@@ -79,6 +81,8 @@ class TelegramAlerter:
         self._paper_mode = paper_mode
         self._risk_manager = risk_manager
         self._poly_client = poly_client
+        # Read Anthropic API key once at construction — never per-call
+        self._anthropic_api_key: str | None = os.environ.get("ANTHROPIC_API_KEY") or None
         self._log = log.bind(component="TelegramAlerter")
 
         if not bot_token or not chat_id:
@@ -198,8 +202,13 @@ class TelegramAlerter:
         except Exception as exc:
             self._log.warning("telegram.send_entry_alert_failed", error=str(exc))
 
-    async def send_trade_alert(self, order: "Order") -> None:
-        """Send detailed alert when a trade RESOLVES (win or loss)."""
+    async def send_trade_alert(self, order: "Order", cg_snapshot=None) -> None:
+        """Send detailed alert when a trade RESOLVES (win or loss).
+
+        Args:
+            order:       The resolved Order dataclass.
+            cg_snapshot: CoinGlassSnapshot at resolution time (optional).
+        """
         if not self.trade_alerts_enabled:
             return
 
@@ -215,6 +224,9 @@ class TelegramAlerter:
             delta_pct = meta.get("delta_pct")
             window_open = meta.get("window_open_price")
             entry_label = meta.get("entry_label", "—")
+            entry_reason_detail = meta.get("entry_reason_detail")
+            vpin = meta.get("vpin")
+            cg_modifier = meta.get("cg_modifier")
             data_source = "LIVE execution" if not self._paper_mode else "REAL prices, PAPER execution"
 
             if order.outcome == "WIN":
@@ -234,7 +246,33 @@ class TelegramAlerter:
                 f"Direction: `{order.direction}` {'(UP)' if order.direction == 'YES' else '(DOWN)'}",
                 f"Entry: `{entry_label}`",
                 f"Delta: `{delta_pct:+.4f}%`" if delta_pct is not None else None,
+                f"🔬 VPIN: `{vpin:.4f}`" if isinstance(vpin, (int, float)) else None,
                 f"Confidence: `{conf_pct}%` ({confidence})",
+                f"CG Modifier: `{cg_modifier:+.2f}`" if isinstance(cg_modifier, (int, float)) else None,
+            ]
+
+            # Original entry reason detail
+            if entry_reason_detail:
+                lines.append(f"")
+                lines.append(f"📝 *Entry Reason*")
+                lines.append(f"`{entry_reason_detail}`")
+
+            # Entry vs outcome comparison
+            lines.append(f"")
+            lines.append(f"📈 *Entry vs Outcome*")
+            if delta_pct is not None and window_open:
+                direction_word = "UP" if order.direction == "YES" else "DOWN"
+                prediction_correct = (
+                    (order.direction == "YES" and order.outcome == "WIN") or
+                    (order.direction == "NO" and order.outcome == "WIN")
+                )
+                correct_str = "✅ Prediction correct" if prediction_correct else "❌ Prediction wrong"
+                lines.append(
+                    f"Entered `{direction_word}` at δ`{delta_pct:+.4f}%` "
+                    f"from open `${window_open:,.2f}`. {correct_str}."
+                )
+
+            lines += [
                 f"",
                 f"💰 *Pricing* ({data_source})",
                 f"Token Price: `${tp:.4f}`",
@@ -265,6 +303,12 @@ class TelegramAlerter:
                 lines.append(f"")
                 lines.append(f"{result_emoji} *PnL: `{pnl_sign}${order.pnl_usd:.2f}`*")
 
+            # CoinGlass data AT RESOLUTION TIME
+            if cg_snapshot is not None:
+                lines.append(f"")
+                lines.append(f"🔬 *CoinGlass @ Resolution*")
+                lines.append(self.format_coinglass_block(cg_snapshot))
+
             # Running totals
             lines.append(f"")
             if self._risk_manager:
@@ -288,9 +332,137 @@ class TelegramAlerter:
                 except Exception:
                     pass
 
+            # AI outcome assessment (non-blocking, uses Claude)
+            try:
+                assessment = await self._generate_outcome_assessment(order, cg_snapshot)
+                if assessment:
+                    lines.append(f"")
+                    lines.append(f"🤖 *AI Assessment*")
+                    lines.append(assessment)
+            except Exception:
+                pass
+
             await self._send("\n".join(lines))
         except Exception as exc:
             self._log.warning("telegram.send_trade_alert_failed", error=str(exc))
+
+    async def _generate_outcome_assessment(self, order: "Order", cg_snapshot=None) -> str:
+        """
+        Call Claude API to generate a 2-3 sentence expert assessment of the trade outcome.
+
+        Uses claude-opus-4-6 with a 60-second timeout. Returns a fallback string if
+        the API key is missing, the call fails, or the timeout is hit.
+
+        The ANTHROPIC_API_KEY is read once at TelegramAlerter construction — never per call.
+        """
+        if not self._anthropic_api_key:
+            return "Assessment unavailable (no ANTHROPIC_API_KEY set)."
+
+        try:
+            meta = order.metadata or {}
+
+            # ── Build a rich prompt with ALL available data ─────────────────
+            asset = meta.get("market_slug", order.market_id or "").split("-")[0].upper() or "BTC"
+            tf = meta.get("timeframe", "5m")
+            direction_word = "UP (YES)" if order.direction == "YES" else "DOWN (NO)"
+            delta_pct = meta.get("delta_pct")
+            vpin = meta.get("vpin")
+            confidence = meta.get("confidence", "—")
+            cg_modifier = meta.get("cg_modifier")
+            entry_reason_detail = meta.get("entry_reason_detail", "—")
+            window_open = meta.get("window_open_price")
+            tp = float(order.price) if order.price else 0.50
+            outcome = order.outcome or "UNKNOWN"
+            pnl = order.pnl_usd
+
+            # Format CoinGlass metrics if available
+            cg_lines: list[str] = []
+            if cg_snapshot is not None and getattr(cg_snapshot, "connected", False):
+                cg = cg_snapshot
+                try:
+                    total_taker = cg.taker_buy_volume_1m + cg.taker_sell_volume_1m
+                    taker_sell_ratio = (cg.taker_sell_volume_1m / total_taker) if total_taker > 0 else 0.5
+                    cg_lines = [
+                        f"  OI: ${cg.oi_usd / 1e9:.2f}B (Δ {cg.oi_delta_pct_1m:+.3f}% 1m)",
+                        f"  Liq 1m: ${cg.liq_total_usd_1m / 1e6:.2f}M "
+                        f"(Long ${cg.liq_long_usd_1m / 1e6:.2f}M / Short ${cg.liq_short_usd_1m / 1e6:.2f}M)",
+                        f"  L/S Ratio: {cg.long_short_ratio:.3f} "
+                        f"(Long {cg.long_pct:.1f}% / Short {cg.short_pct:.1f}%)",
+                        f"  Top Traders: Long {cg.top_position_long_pct:.1f}% / Short {cg.top_position_short_pct:.1f}%",
+                        f"  Taker Sell Ratio: {taker_sell_ratio:.3f} "
+                        f"(Buy ${cg.taker_buy_volume_1m / 1e6:.2f}M / Sell ${cg.taker_sell_volume_1m / 1e6:.2f}M)",
+                        f"  Funding Rate: {cg.funding_rate * 100:.4f}%",
+                    ]
+                except Exception:
+                    cg_lines = ["  CoinGlass data parse error"]
+            else:
+                cg_lines = ["  CoinGlass: not available at resolution"]
+
+            user_content = (
+                f"TRADE SUMMARY — {asset} {tf} Polymarket prediction market\n\n"
+                f"Direction bet: {direction_word}\n"
+                f"Token price paid: ${tp:.4f}\n"
+                f"Stake: ${order.stake_usd:.2f}\n"
+                f"Window open price: ${window_open:,.2f}" if window_open else f"Window open price: unknown"
+            )
+            user_content += (
+                f"\nOutcome: {outcome}"
+                f"\nPnL: {'+' if (pnl or 0) >= 0 else ''}${pnl:.2f}" if pnl is not None else f"\nPnL: unknown"
+            )
+            user_content += (
+                f"\n\nSIGNAL DATA AT ENTRY:\n"
+                f"  VPIN: {vpin:.4f}" if isinstance(vpin, (int, float)) else "\n  VPIN: n/a"
+            )
+            user_content += (
+                f"\n  Delta: {delta_pct:+.4f}%" if delta_pct is not None else "\n  Delta: n/a"
+            )
+            user_content += (
+                f"\n  Confidence: {confidence}"
+                f"\n  CoinGlass modifier: {cg_modifier:+.2f}" if isinstance(cg_modifier, (int, float)) else "\n  CoinGlass modifier: n/a"
+            )
+            user_content += f"\n  Entry reason: {entry_reason_detail}"
+            user_content += f"\n\nCOINGLASS AT RESOLUTION:\n" + "\n".join(cg_lines)
+
+            payload = {
+                "model": "claude-opus-4-6",
+                "max_tokens": 200,
+                "system": (
+                    "You are an expert crypto derivatives trading analyst reviewing a "
+                    "5-minute BTC prediction market trade on Polymarket. Assess the entry "
+                    "decision quality, signal alignment, and outcome. Write 2-3 sentences."
+                ),
+                "messages": [{"role": "user", "content": user_content}],
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://api.anthropic.com/v1/messages",
+                    json=payload,
+                    headers={
+                        "x-api-key": self._anthropic_api_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    },
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        self._log.warning(
+                            "telegram.claude_api_error",
+                            status=resp.status,
+                            body=body[:200],
+                        )
+                        return "Assessment unavailable (API error)."
+                    data = await resp.json()
+                    text = data.get("content", [{}])[0].get("text", "").strip()
+                    return text if text else "Assessment unavailable."
+
+        except asyncio.TimeoutError:
+            self._log.warning("telegram.claude_timeout")
+            return "Assessment unavailable (timeout)."
+        except Exception as exc:
+            self._log.warning("telegram.claude_failed", error=str(exc))
+            return "Assessment unavailable."
 
     @staticmethod
     def _confidence_to_int(confidence: str) -> int:

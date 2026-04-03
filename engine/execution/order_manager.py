@@ -334,6 +334,24 @@ class OrderManager:
             # Persist updated trade to DB (upsert with resolution data)
             await self._persist_trade(resolved)
 
+            # Update window_snapshots with outcome so we can analyse signal quality
+            if self._db:
+                try:
+                    meta = resolved.metadata or {}
+                    window_ts = meta.get("window_ts")
+                    asset = meta.get("market_slug", "").split("-")[0].upper() or "BTC"
+                    tf = meta.get("timeframe", "5m")
+                    # poly_winner: "Up" or "Down" depending on resolved direction
+                    if resolved.outcome == "WIN":
+                        poly_winner = "Up" if resolved.direction == "YES" else "Down"
+                    else:
+                        poly_winner = "Down" if resolved.direction == "YES" else "Up"
+                    await self._db.update_window_outcome(
+                        window_ts, asset, tf, resolved.outcome, resolved.pnl_usd or 0.0, poly_winner
+                    )
+                except Exception:
+                    pass
+
             if self._on_resolution:
                 try:
                     self._on_resolution(resolved)

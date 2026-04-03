@@ -572,6 +572,44 @@ class DBClient:
             )
             # Never re-raise — DB writes must not crash the engine
 
+    async def update_window_outcome(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        outcome: str,
+        pnl_usd: float,
+        poly_winner=None,
+    ) -> None:
+        """Update a window_snapshot with resolution data (outcome, PnL, poly_winner)."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE window_snapshots
+                    SET outcome = $1, pnl_usd = $2, poly_winner = $3
+                    WHERE window_ts = $4 AND asset = $5 AND timeframe = $6
+                    """,
+                    outcome,
+                    pnl_usd,
+                    poly_winner,
+                    window_ts,
+                    asset,
+                    timeframe,
+                )
+            log.debug(
+                "db.window_outcome_updated",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                outcome=outcome,
+                pnl_usd=pnl_usd,
+            )
+        except Exception as exc:
+            log.error("db.update_window_outcome_failed", error=str(exc))
+
     # ─── Read Helpers ─────────────────────────────────────────────────────────
 
     async def get_daily_pnl(self, date: Optional[datetime] = None) -> float:
