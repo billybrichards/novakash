@@ -59,6 +59,7 @@ _DB_KEY_MAP: dict[str, tuple[str, type]] = {
     "preferred_venue":          ("preferred_venue", str),
     "five_min_min_delta_pct":   ("five_min_min_delta_pct", float),
     "five_min_cascade_min_delta_pct": ("five_min_cascade_min_delta_pct", float),
+    "vpin_cascade_direction_threshold": ("vpin_cascade_direction_threshold", float),
 }
 
 
