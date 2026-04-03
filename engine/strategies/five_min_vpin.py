@@ -253,7 +253,19 @@ class FiveMinVPINStrategy(BaseStrategy):
         delta_pct: float,
     ) -> Optional[FiveMinSignal]:
         """
-        Evaluate trading signal based on delta and VPIN.
+        Evaluate trading signal based on delta, VPIN, and market regime.
+
+        REGIME-AWARE DIRECTION (v4):
+        ─────────────────────────────────────────────────────────
+        VPIN >= 0.65 (cascade/trend):  MOMENTUM  — ride the trend
+        VPIN  < 0.55 (normal/ranging): CONTRARIAN — mean-reversion
+        VPIN 0.55–0.65 (transition):   CONTRARIAN with higher delta bar
+        ─────────────────────────────────────────────────────────
+
+        Evidence:
+        - De Nicola (2021): 5-min BTC autocorrelation = -0.1016 (mean-reversion)
+        - 4-day backtest: 55-59% contrarian WR in normal VPIN regime
+        - Live data (Apr 3): 83% momentum WR when VPIN > 0.75 (cascade)
         
         Returns None if no trade should be placed.
         """
@@ -265,8 +277,31 @@ class FiveMinVPINStrategy(BaseStrategy):
         if abs(delta_pct) < runtime.five_min_min_delta_pct:
             return None
         
-        # Determine direction
-        direction = "UP" if delta_pct > 0 else "DOWN"
+        # ── REGIME-AWARE DIRECTION (v4) ────────────────────────────
+        # Cascade/trend regime: VPIN >= 0.65 → follow the momentum
+        # Normal/ranging regime: VPIN < 0.55 → bet on mean-reversion
+        # Transition zone: 0.55-0.65 → contrarian but need stronger signal
+        
+        if current_vpin >= runtime.vpin_cascade_direction_threshold:
+            # CASCADE/TREND: ride the momentum
+            direction = "UP" if delta_pct > 0 else "DOWN"
+            regime = "CASCADE"
+        elif current_vpin >= runtime.vpin_informed_threshold:
+            # TRANSITION: contrarian but require larger delta
+            if abs(delta_pct) < 0.12:
+                self._log.debug(
+                    "evaluate.skip_transition",
+                    vpin=f"{current_vpin:.3f}",
+                    delta=f"{delta_pct:.4f}%",
+                    reason="transition zone needs delta >= 0.12%",
+                )
+                return None
+            direction = "DOWN" if delta_pct > 0 else "UP"
+            regime = "TRANSITION"
+        else:
+            # NORMAL: mean-reversion (contrarian)
+            direction = "DOWN" if delta_pct > 0 else "UP"
+            regime = "NORMAL"
         
         # Calculate confidence
         confidence = self._calculate_confidence(delta_pct, current_vpin, direction)
@@ -274,6 +309,15 @@ class FiveMinVPINStrategy(BaseStrategy):
         # Block NONE and LOW confidence — only trade MODERATE or HIGH
         if confidence in ("NONE", "LOW"):
             return None
+        
+        self._log.info(
+            "evaluate.regime_signal",
+            regime=regime,
+            vpin=f"{current_vpin:.3f}",
+            delta=f"{delta_pct:+.4f}%",
+            direction=direction,
+            confidence=confidence,
+        )
         
         return FiveMinSignal(
             window=window,

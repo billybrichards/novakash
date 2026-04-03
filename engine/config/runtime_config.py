@@ -83,10 +83,11 @@ class RuntimeConfig:
         self.cooldown_seconds: int = _env_int("COOLDOWN_SECONDS", 900)
 
         # ── VPIN ──────────────────────────────────────────────────────────
-        self.vpin_bucket_size_usd: float = _env_float("VPIN_BUCKET_SIZE_USD", 50_000)
+        self.vpin_bucket_size_usd: float = _env_float("VPIN_BUCKET_SIZE_USD", 500_000)
         self.vpin_lookback_buckets: int = _env_int("VPIN_LOOKBACK_BUCKETS", 50)
         self.vpin_informed_threshold: float = _env_float("VPIN_INFORMED_THRESHOLD", 0.55)
         self.vpin_cascade_threshold: float = _env_float("VPIN_CASCADE_THRESHOLD", 0.70)
+        self.vpin_cascade_direction_threshold: float = _env_float("VPIN_CASCADE_DIRECTION_THRESHOLD", 0.65)
 
         # ── Cascade ───────────────────────────────────────────────────────
         self.cascade_oi_drop_threshold: float = _env_float("CASCADE_OI_DROP_THRESHOLD", 0.02)
@@ -111,7 +112,7 @@ class RuntimeConfig:
         self.five_min_entry_offset: int = _env_int("FIVE_MIN_ENTRY_OFFSET", 10)
         self.five_min_min_confidence: float = _env_float("FIVE_MIN_MIN_CONFIDENCE", 0.30)
         self.five_min_min_delta_pct: float = _env_float("FIVE_MIN_MIN_DELTA_PCT", 0.001)
-        self.five_min_vpin_gate: float = _env_float("FIVE_MIN_VPIN_GATE", 0.628)
+        self.five_min_vpin_gate: float = _env_float("FIVE_MIN_VPIN_GATE", 0.45)
 
         # ── Window ────────────────────────────────────────────────────────
         self.poly_window_seconds: int = _env_int("POLY_WINDOW_SECONDS", 300)
