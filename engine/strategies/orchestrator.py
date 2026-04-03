@@ -776,7 +776,7 @@ class Orchestrator:
                         except Exception:
                             vpin = 0
                         try:
-                            regime = "TRENDING" if state.regime and state.regime.regime == "TRENDING" else "LOW_VOL"
+                            regime = self._regime.current_regime
                         except Exception:
                             regime = "UNKNOWN"
                         try:
@@ -835,7 +835,7 @@ class Orchestrator:
                             f"✅ Wins: `{real_wins}` | ❌ Losses: `{real_losses}`\n"
                             f"📉 Drawdown: `{drawdown:.1%}`\n"
                             f"\n"
-                            f"🔬 VPIN: `{vpin:.4f}` | Regime: `{regime}`\n"
+                            f"🔬 VPIN: `{vpin:.4f}` | Vol: `{regime}` | Trade: `{'CASCADE' if vpin >= 0.65 else ('TRANSITION' if vpin >= 0.55 else 'NORMAL' if vpin >= 0.45 else 'QUIET')}`\n"
                             f"🔗 Binance: `{'✅' if binance_ok else '❌'}` | BTC: `${self._order_manager._current_btc_price:,.2f}`\n"
                         )
 
