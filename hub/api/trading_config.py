@@ -715,24 +715,23 @@ async def activate_config(config_id: int, db=Depends(get_db)):
             detail="Live configs must be approved before activation",
         )
 
-    async with db.transaction():
-        # Deactivate other configs of same mode
-        await db.execute(
-            "UPDATE trading_configs SET is_active = FALSE WHERE mode = $1 AND id != $2",
-            mode,
-            config_id,
-        )
-        # Activate this one
-        await db.execute(
-            "UPDATE trading_configs SET is_active = TRUE, updated_at = NOW() WHERE id = $1",
-            config_id,
-        )
-        # Update system_state
-        col = "active_paper_config_id" if mode == "paper" else "active_live_config_id"
-        await db.execute(
-            f"UPDATE system_state SET {col} = $1, updated_at = NOW() WHERE id = 1",
-            config_id,
-        )
+    # Deactivate other configs of same mode
+    await db.execute(
+        "UPDATE trading_configs SET is_active = FALSE WHERE mode = $1 AND id != $2",
+        mode,
+        config_id,
+    )
+    # Activate this one
+    await db.execute(
+        "UPDATE trading_configs SET is_active = TRUE, updated_at = NOW() WHERE id = $1",
+        config_id,
+    )
+    # Update system_state
+    col = "active_paper_config_id" if mode == "paper" else "active_live_config_id"
+    await db.execute(
+        f"UPDATE system_state SET {col} = $1, updated_at = NOW() WHERE id = 1",
+        config_id,
+    )
 
     log.info("trading_config.activated", config_id=config_id, mode=mode)
     return {"ok": True, "config_id": config_id, "mode": mode}
