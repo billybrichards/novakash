@@ -195,6 +195,7 @@ class Orchestrator:
                 vpin_calculator=self._vpin_calc,
                 alerter=self._alerter,
                 cg_enhanced=self._cg_enhanced,
+                db_client=self._db,
             )
             log.info("orchestrator.five_min_enabled", assets=settings.five_min_assets)
         else:
@@ -278,6 +279,12 @@ class Orchestrator:
         except Exception as exc:
             log.error("orchestrator.db_connect_failed", error=str(exc))
             raise
+
+        # Ensure window_snapshots table exists (non-fatal if it fails)
+        try:
+            await self._db.ensure_window_tables()
+        except Exception as exc:
+            log.warning("orchestrator.ensure_window_tables_failed", error=str(exc))
 
         # 2. Connect exchange clients
         try:
@@ -824,22 +831,11 @@ class Orchestrator:
                         real_pnl = portfolio - baseline
                         mode_label = "📄 PAPER" if self._settings.paper_mode else "💰 LIVE"
 
-                        # Build CoinGlass line for sitrep
-                        cg_line = ""
+                        # Build CoinGlass block for sitrep
+                        cg_block = ""
                         try:
-                            if self._cg_enhanced is not None and self._cg_enhanced.snapshot.connected:
-                                cg = self._cg_enhanced.snapshot
-                                liq_total_m = cg.liq_total_usd_1m / 1_000_000
-                                liq_long_m = cg.liq_long_usd_1m / 1_000_000
-                                liq_short_m = cg.liq_short_usd_1m / 1_000_000
-                                top_short = cg.top_position_short_pct
-                                funding_pct = cg.funding_rate * 100
-                                cg_line = (
-                                    f"🔬 CG: Liq `${liq_total_m:.1f}M` (L:`${liq_long_m:.1f}M`/S:`${liq_short_m:.1f}M`) "
-                                    f"| L/S: `{cg.long_pct:.0f}%` "
-                                    f"| Smart: `{top_short:.0f}% short` "
-                                    f"| Fund: `{funding_pct:.4f}%`\n"
-                                )
+                            cg_snapshot = self._cg_enhanced.snapshot if self._cg_enhanced is not None else None
+                            cg_block = self._alerter.format_coinglass_block(cg_snapshot) + "\n"
                         except Exception:
                             pass
 
@@ -855,7 +851,7 @@ class Orchestrator:
                             f"📉 Drawdown: `{drawdown:.1%}`\n"
                             f"\n"
                             f"🔬 VPIN: `{vpin:.4f}` | Vol: `{regime}` | Trade: `{'CASCADE' if vpin >= 0.65 else ('TRANSITION' if vpin >= 0.55 else 'NORMAL' if vpin >= 0.45 else 'CALM')}`\n"
-                            + cg_line +
+                            + cg_block +
                             f"🔗 Binance: `{'✅' if binance_ok else '❌'}` | BTC: `${self._order_manager._current_btc_price:,.2f}`\n"
                         )
 

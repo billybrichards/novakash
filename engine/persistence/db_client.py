@@ -433,6 +433,145 @@ class DBClient:
         except Exception as e:
             log.error("db.redeem_event.error", error=str(e))
 
+    # ─── Window Snapshots ────────────────────────────────────────────────────
+
+    async def ensure_window_tables(self) -> None:
+        """Create window_snapshots table if it doesn't exist."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS window_snapshots (
+                        id SERIAL PRIMARY KEY,
+                        window_ts BIGINT NOT NULL,
+                        asset VARCHAR(10) NOT NULL,
+                        timeframe VARCHAR(5) NOT NULL,
+                        open_price DOUBLE PRECISION,
+                        close_price DOUBLE PRECISION,
+                        delta_pct DOUBLE PRECISION,
+                        vpin DOUBLE PRECISION,
+                        regime VARCHAR(20),
+                        cg_connected BOOLEAN DEFAULT FALSE,
+                        cg_oi_usd DOUBLE PRECISION,
+                        cg_oi_delta_pct DOUBLE PRECISION,
+                        cg_liq_long_usd DOUBLE PRECISION,
+                        cg_liq_short_usd DOUBLE PRECISION,
+                        cg_liq_total_usd DOUBLE PRECISION,
+                        cg_long_pct DOUBLE PRECISION,
+                        cg_short_pct DOUBLE PRECISION,
+                        cg_long_short_ratio DOUBLE PRECISION,
+                        cg_top_long_pct DOUBLE PRECISION,
+                        cg_top_short_pct DOUBLE PRECISION,
+                        cg_top_ratio DOUBLE PRECISION,
+                        cg_taker_buy_usd DOUBLE PRECISION,
+                        cg_taker_sell_usd DOUBLE PRECISION,
+                        cg_funding_rate DOUBLE PRECISION,
+                        direction VARCHAR(4),
+                        confidence DOUBLE PRECISION,
+                        cg_modifier DOUBLE PRECISION,
+                        trade_placed BOOLEAN DEFAULT FALSE,
+                        skip_reason VARCHAR(100),
+                        outcome VARCHAR(4),
+                        pnl_usd DOUBLE PRECISION,
+                        poly_winner VARCHAR(10),
+                        btc_price DOUBLE PRECISION,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        UNIQUE(window_ts, asset, timeframe)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_ws_ts ON window_snapshots(window_ts);
+                    CREATE INDEX IF NOT EXISTS idx_ws_regime ON window_snapshots(regime);
+                """)
+            log.info("db.window_tables_ensured")
+        except Exception as exc:
+            log.error("db.ensure_window_tables_failed", error=str(exc))
+
+    async def write_window_snapshot(self, snapshot: dict) -> None:
+        """
+        Persist a 5m/15m window evaluation snapshot.
+
+        All fields are optional — missing keys default to None.
+        Conflicts on (window_ts, asset, timeframe) are ignored (INSERT OR IGNORE semantics).
+        """
+        if not self._pool:
+            return
+        try:
+            # Normalise confidence to float if it's a string
+            confidence = snapshot.get("confidence")
+            if isinstance(confidence, str):
+                _conf_map = {"HIGH": 0.85, "MODERATE": 0.65, "LOW": 0.45, "NONE": 0.20}
+                confidence = _conf_map.get(confidence.upper(), 0.5)
+
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO window_snapshots (
+                        window_ts, asset, timeframe,
+                        open_price, close_price, delta_pct, vpin, regime,
+                        cg_connected, cg_oi_usd, cg_oi_delta_pct,
+                        cg_liq_long_usd, cg_liq_short_usd, cg_liq_total_usd,
+                        cg_long_pct, cg_short_pct, cg_long_short_ratio,
+                        cg_top_long_pct, cg_top_short_pct, cg_top_ratio,
+                        cg_taker_buy_usd, cg_taker_sell_usd, cg_funding_rate,
+                        direction, confidence, cg_modifier,
+                        trade_placed, skip_reason,
+                        outcome, pnl_usd, poly_winner, btc_price
+                    ) VALUES (
+                        $1,$2,$3,$4,$5,$6,$7,$8,
+                        $9,$10,$11,$12,$13,$14,$15,$16,$17,
+                        $18,$19,$20,$21,$22,$23,
+                        $24,$25,$26,$27,$28,$29,$30,$31,$32
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe) DO NOTHING
+                    """,
+                    snapshot.get("window_ts"),
+                    snapshot.get("asset", "BTC"),
+                    snapshot.get("timeframe", "5m"),
+                    snapshot.get("open_price"),
+                    snapshot.get("close_price"),
+                    snapshot.get("delta_pct"),
+                    snapshot.get("vpin"),
+                    snapshot.get("regime"),
+                    snapshot.get("cg_connected", False),
+                    snapshot.get("cg_oi_usd"),
+                    snapshot.get("cg_oi_delta_pct"),
+                    snapshot.get("cg_liq_long_usd"),
+                    snapshot.get("cg_liq_short_usd"),
+                    snapshot.get("cg_liq_total_usd"),
+                    snapshot.get("cg_long_pct"),
+                    snapshot.get("cg_short_pct"),
+                    snapshot.get("cg_long_short_ratio"),
+                    snapshot.get("cg_top_long_pct"),
+                    snapshot.get("cg_top_short_pct"),
+                    snapshot.get("cg_top_ratio"),
+                    snapshot.get("cg_taker_buy_usd"),
+                    snapshot.get("cg_taker_sell_usd"),
+                    snapshot.get("cg_funding_rate"),
+                    snapshot.get("direction"),
+                    confidence,
+                    snapshot.get("cg_modifier"),
+                    snapshot.get("trade_placed", False),
+                    snapshot.get("skip_reason"),
+                    snapshot.get("outcome"),
+                    snapshot.get("pnl_usd"),
+                    snapshot.get("poly_winner"),
+                    snapshot.get("btc_price"),
+                )
+            log.debug(
+                "db.window_snapshot_written",
+                asset=snapshot.get("asset"),
+                timeframe=snapshot.get("timeframe"),
+                window_ts=snapshot.get("window_ts"),
+            )
+        except Exception as exc:
+            log.error(
+                "db.write_window_snapshot_failed",
+                error=str(exc),
+                asset=snapshot.get("asset"),
+                window_ts=snapshot.get("window_ts"),
+            )
+            # Never re-raise — DB writes must not crash the engine
+
     # ─── Read Helpers ─────────────────────────────────────────────────────────
 
     async def get_daily_pnl(self, date: Optional[datetime] = None) -> float:

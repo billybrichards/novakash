@@ -368,6 +368,174 @@ class TelegramAlerter:
         except Exception as exc:
             self._log.warning("telegram.send_kill_switch_alert_failed", error=str(exc))
 
+    def format_coinglass_block(self, snapshot) -> str:
+        """
+        Format a CoinGlassSnapshot into a detailed multi-line string for sitrep.
+
+        Args:
+            snapshot: CoinGlassSnapshot dataclass instance.
+
+        Returns:
+            Multi-line formatted string (no trailing newline).
+        """
+        try:
+            if snapshot is None or not snapshot.connected:
+                err = ""
+                if snapshot is not None and snapshot.last_error:
+                    err = f" ({snapshot.last_error[:60]})"
+                return f"🔬 *CoinGlass*: ❌ Disconnected{err}"
+
+            cg = snapshot
+
+            # OI
+            oi_b = cg.oi_usd / 1_000_000_000
+            oi_delta_sign = "+" if cg.oi_delta_pct_1m >= 0 else ""
+            oi_line = f"OI: `${oi_b:.1f}B` (Δ `{oi_delta_sign}{cg.oi_delta_pct_1m:.2f}%` 1m)"
+
+            # Liquidations
+            liq_total_m = cg.liq_total_usd_1m / 1_000_000
+            liq_long_m = cg.liq_long_usd_1m / 1_000_000
+            liq_short_m = cg.liq_short_usd_1m / 1_000_000
+            liq_line = (
+                f"Liq 1m: `${liq_total_m:.1f}M` "
+                f"(Long: `${liq_long_m:.1f}M` / Short: `${liq_short_m:.1f}M`)"
+            )
+
+            # Long/Short ratio
+            ls_line = (
+                f"L/S Ratio: `{cg.long_short_ratio:.2f}` "
+                f"(Long `{cg.long_pct:.0f}%` / Short `{cg.short_pct:.0f}%`)"
+            )
+
+            # Top traders
+            top_ratio = cg.top_position_ratio
+            top_line = (
+                f"Top Traders: Long `{cg.top_position_long_pct:.0f}%` / "
+                f"Short `{cg.top_position_short_pct:.0f}%` "
+                f"(ratio `{top_ratio:.2f}`)"
+            )
+
+            # Taker buy/sell
+            taker_buy_m = cg.taker_buy_volume_1m / 1_000_000
+            taker_sell_m = cg.taker_sell_volume_1m / 1_000_000
+            total_taker = cg.taker_buy_volume_1m + cg.taker_sell_volume_1m
+            taker_ratio = (cg.taker_buy_volume_1m / total_taker) if total_taker > 0 else 1.0
+            taker_line = (
+                f"Taker: Buy `${taker_buy_m:.1f}M` / Sell `${taker_sell_m:.1f}M` "
+                f"(ratio `{taker_ratio:.2f}`)"
+            )
+
+            # Funding
+            funding_pct = cg.funding_rate * 100
+            annual_pct = cg.funding_rate_annual * 100 if hasattr(cg, 'funding_rate_annual') else funding_pct * 3 * 365
+            funding_line = f"Funding: `{funding_pct:.4f}%` (annual `{annual_pct:.1f}%`)"
+
+            # Status
+            status_line = "Status: ✅ Connected"
+
+            return "\n".join([
+                "🔬 *CoinGlass*",
+                oi_line,
+                liq_line,
+                ls_line,
+                top_line,
+                taker_line,
+                funding_line,
+                status_line,
+            ])
+        except Exception as exc:
+            self._log.warning("telegram.format_coinglass_block_failed", error=str(exc))
+            return "🔬 *CoinGlass*: ⚠️ Format error"
+
+    async def send_window_report(
+        self,
+        window_ts: int,
+        asset: str,
+        timeframe: str,
+        open_price: float,
+        close_price: float,
+        delta_pct: float,
+        vpin: float,
+        regime: str,
+        cg_snapshot=None,
+        direction=None,
+        confidence=None,
+        trade_placed: bool = False,
+        skip_reason: str | None = None,
+        cg_modifier: float = 0.0,
+    ) -> None:
+        """
+        Send a per-window summary after each 5m/15m window evaluation.
+
+        Args:
+            window_ts:    Unix timestamp of the window open.
+            asset:        Asset symbol (e.g. "BTC").
+            timeframe:    "5m" or "15m".
+            open_price:   Window open price.
+            close_price:  Current / close price.
+            delta_pct:    Price delta % over the window.
+            vpin:         VPIN value at evaluation time.
+            regime:       CASCADE / TRANSITION / NORMAL / CALM.
+            cg_snapshot:  CoinGlassSnapshot at evaluation time (may be None).
+            direction:    "UP" or "DOWN" (None if no signal).
+            confidence:   Signal confidence string or float.
+            trade_placed: Whether a trade was actually placed.
+            skip_reason:  Reason trade was skipped (if not placed).
+            cg_modifier:  CoinGlass confidence modifier applied.
+        """
+        try:
+            from datetime import datetime, timezone
+            ts_str = datetime.fromtimestamp(window_ts, tz=timezone.utc).strftime("%H:%M UTC")
+
+            delta_sign = "+" if delta_pct >= 0 else ""
+            trade_emoji = "✅" if trade_placed else "⏭️"
+            dir_str = f"`{direction}`" if direction else "`—`"
+
+            if isinstance(confidence, float) and confidence <= 1.0:
+                conf_str = f"{int(confidence * 100)}%"
+            elif isinstance(confidence, float):
+                conf_str = f"{int(confidence)}%"
+            else:
+                conf_str = f"`{confidence}`" if confidence else "`—`"
+
+            # Regime emoji
+            regime_emoji = {
+                "CASCADE": "🌊",
+                "TRANSITION": "🔄",
+                "NORMAL": "📊",
+                "CALM": "😴",
+            }.get(regime, "❓")
+
+            lines = [
+                f"📋 *Window Report — {asset} {timeframe}*",
+                f"",
+                f"⏰ `{ts_str}` | Open: `${open_price:,.2f}` → Close: `${close_price:,.2f}`",
+                f"Δ: `{delta_sign}{delta_pct:.4f}%`",
+                f"",
+                f"🔬 VPIN: `{vpin:.4f}` | Regime: {regime_emoji} `{regime}`",
+                f"",
+            ]
+
+            # CoinGlass block
+            if cg_snapshot is not None:
+                lines.append(self.format_coinglass_block(cg_snapshot))
+                lines.append(f"")
+
+            # Signal
+            lines += [
+                f"📡 *Signal*",
+                f"Direction: {dir_str} | Confidence: {conf_str}",
+                f"CG Modifier: `{cg_modifier:+.2f}`",
+                f"",
+                f"{trade_emoji} Trade placed: `{'YES' if trade_placed else 'NO'}`",
+            ]
+            if not trade_placed and skip_reason:
+                lines.append(f"Skip reason: `{skip_reason}`")
+
+            await self._send("\n".join(lines))
+        except Exception as exc:
+            self._log.warning("telegram.send_window_report_failed", error=str(exc))
+
     # ─── Internal ─────────────────────────────────────────────────────────────
 
     async def _send(self, text: str) -> None:

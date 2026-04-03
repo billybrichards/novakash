@@ -52,6 +52,7 @@ class FiveMinSignal:
     delta_pct: float
     confidence: str  # "HIGH", "MODERATE", "LOW"
     direction: str   # "UP" or "DOWN"
+    cg_modifier: float = 0.0  # CoinGlass confidence modifier applied
 
 
 class FiveMinVPINStrategy(BaseStrategy):
@@ -70,6 +71,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         vpin_calculator: VPINCalculator,
         alerter=None,
         cg_enhanced=None,
+        db_client=None,
         on_window_signal: Optional[Callable[[WindowInfo], Awaitable[None]]] = None,
     ) -> None:
         super().__init__(
@@ -81,6 +83,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._vpin = vpin_calculator
         self._alerter = alerter
         self._cg_enhanced = cg_enhanced  # CoinGlassEnhancedFeed (optional)
+        self._db = db_client            # DBClient for window snapshot persistence (optional)
         self._evaluator = WindowEvaluator()
         
         # Track last executed window to avoid duplicates
@@ -215,9 +218,66 @@ class FiveMinVPINStrategy(BaseStrategy):
         
         # Evaluate signal
         signal = self._evaluate_signal(window, current_price, current_vpin, delta_pct)
-        
+
+        tf = "15m" if window.duration_secs == 900 else "5m"
+
+        # ── Determine regime for snapshot (mirrors _evaluate_signal logic) ───
+        from config.runtime_config import runtime as _runtime
+        if current_vpin >= _runtime.vpin_cascade_direction_threshold:
+            _snap_regime = "CASCADE"
+        elif current_vpin >= _runtime.vpin_informed_threshold:
+            _snap_regime = "TRANSITION"
+        elif current_vpin >= 0.45:
+            _snap_regime = "NORMAL"
+        else:
+            _snap_regime = "CALM"
+
+        # ── Capture CoinGlass snapshot at evaluation time ────────────────────
+        cg = self._cg_enhanced.snapshot if self._cg_enhanced is not None else None
+
+        # ── Build window snapshot dict ───────────────────────────────────────
+        window_snapshot = {
+            "window_ts": window.window_ts,
+            "asset": window.asset,
+            "timeframe": tf,
+            "open_price": open_price,
+            "close_price": current_price,
+            "delta_pct": delta_pct,
+            "vpin": current_vpin,
+            "regime": _snap_regime,
+            "btc_price": current_price,
+            # CoinGlass
+            "cg_connected": cg.connected if cg else False,
+            "cg_oi_usd": cg.oi_usd if cg else None,
+            "cg_oi_delta_pct": cg.oi_delta_pct_1m if cg else None,
+            "cg_liq_long_usd": cg.liq_long_usd_1m if cg else None,
+            "cg_liq_short_usd": cg.liq_short_usd_1m if cg else None,
+            "cg_liq_total_usd": cg.liq_total_usd_1m if cg else None,
+            "cg_long_pct": cg.long_pct if cg else None,
+            "cg_short_pct": cg.short_pct if cg else None,
+            "cg_long_short_ratio": cg.long_short_ratio if cg else None,
+            "cg_top_long_pct": cg.top_position_long_pct if cg else None,
+            "cg_top_short_pct": cg.top_position_short_pct if cg else None,
+            "cg_top_ratio": cg.top_position_ratio if cg else None,
+            "cg_taker_buy_usd": cg.taker_buy_volume_1m if cg else None,
+            "cg_taker_sell_usd": cg.taker_sell_volume_1m if cg else None,
+            "cg_funding_rate": cg.funding_rate if cg else None,
+            # Signal
+            "direction": signal.direction if signal else None,
+            "confidence": signal.confidence if signal else None,
+            "cg_modifier": signal.cg_modifier if signal else 0.0,
+            "trade_placed": signal is not None,
+            "skip_reason": None if signal else "no_edge",
+        }
+
+        # ── Non-blocking DB write ────────────────────────────────────────────
+        if self._db is not None:
+            try:
+                asyncio.create_task(self._db.write_window_snapshot(window_snapshot))
+            except Exception:
+                pass
+
         if signal is None:
-            tf = "15m" if window.duration_secs == 900 else "5m"
             self._log.info(
                 "evaluate.skip",
                 asset=window.asset,
@@ -228,17 +288,48 @@ class FiveMinVPINStrategy(BaseStrategy):
             )
             if self._alerter:
                 try:
-                    asyncio.create_task(self._alerter.send_system_alert(
-                        f"SKIPPED — {window.asset} {tf}\n"
-                        f"Delta: {delta_pct:+.4f}% (too small)\n"
-                        f"VPIN: {current_vpin:.4f}\n"
-                        f"BTC: ${current_price:,.2f}",
-                        level="info",
+                    asyncio.create_task(self._alerter.send_window_report(
+                        window_ts=window.window_ts,
+                        asset=window.asset,
+                        timeframe=tf,
+                        open_price=open_price,
+                        close_price=current_price,
+                        delta_pct=delta_pct,
+                        vpin=current_vpin,
+                        regime=_snap_regime,
+                        cg_snapshot=cg,
+                        direction=None,
+                        confidence=None,
+                        trade_placed=False,
+                        skip_reason="no_edge",
+                        cg_modifier=0.0,
                     ))
                 except Exception:
                     pass
             return
-        
+
+        # ── Send window report (non-blocking) ────────────────────────────────
+        if self._alerter:
+            try:
+                asyncio.create_task(self._alerter.send_window_report(
+                    window_ts=window.window_ts,
+                    asset=window.asset,
+                    timeframe=tf,
+                    open_price=open_price,
+                    close_price=current_price,
+                    delta_pct=delta_pct,
+                    vpin=current_vpin,
+                    regime=_snap_regime,
+                    cg_snapshot=cg,
+                    direction=signal.direction,
+                    confidence=signal.confidence,
+                    trade_placed=True,
+                    skip_reason=None,
+                    cg_modifier=signal.cg_modifier,
+                ))
+            except Exception:
+                pass
+
         # Execute trade
         await self._execute_trade(state, signal)
         
@@ -522,6 +613,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             delta_pct=delta_pct,
             confidence=confidence,
             direction=direction,
+            cg_modifier=cg_confidence_modifier,
         )
 
     def _calculate_confidence(

@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { margin: 15mm; size: A4; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 10pt;
+    line-height: 1.5;
+    color: #1a1a2e;
+    max-width: 100%;
+    margin: 0 auto;
+  }
+  .page { max-width: 780px; margin: 0 auto; }
+  .page-break { page-break-after: always; }
+
+  /* Header */
+  .doc-header {
+    text-align: center;
+    padding: 30px 0 20px;
+    border-bottom: 3px solid #e74c3c;
+    margin-bottom: 25px;
+  }
+  .doc-header h1 {
+    font-size: 24pt;
+    font-weight: 800;
+    margin: 0;
+    letter-spacing: -0.5px;
+    color: #1a1a2e;
+  }
+  .doc-header .subtitle {
+    font-size: 12pt;
+    color: #7f8c8d;
+    margin-top: 6px;
+  }
+  .doc-header .meta {
+    font-size: 9pt;
+    color: #95a5a6;
+    margin-top: 8px;
+  }
+
+  /* Section headers */
+  .section { margin-bottom: 25px; }
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 15px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #e74c3c;
+  }
+  .section-num {
+    background: #e74c3c;
+    color: white;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 13pt;
+    flex-shrink: 0;
+  }
+  .section-header h2 {
+    margin: 0;
+    font-size: 16pt;
+    font-weight: 700;
+    color: #1a1a2e;
+  }
+  .subsection-title {
+    font-size: 11pt;
+    font-weight: 700;
+    color: #2c3e50;
+    margin: 18px 0 10px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #ecf0f1;
+  }
+
+  /* Tables */
+  .styled-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9pt;
+    margin: 12px 0;
+  }
+  .styled-table th {
+    background: #1a1a2e;
+    color: white;
+    padding: 8px 10px;
+    text-align: left;
+    font-weight: 600;
+  }
+  .styled-table td {
+    padding: 7px 10px;
+    border-bottom: 1px solid #ecf0f1;
+  }
+  .styled-table tr:nth-child(even) { background: #f8f9fa; }
+
+  /* SVG diagrams */
+  .svg-container {
+    margin: 15px 0;
+    text-align: center;
+  }
+  .svg-caption {
+    font-size: 8.5pt;
+    color: #7f8c8d;
+    text-align: center;
+    margin-top: 6px;
+    font-style: italic;
+  }
+
+  /* Code blocks */
+  .code-block {
+    background: #1a1a2e;
+    color: #a8e6cf;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 8.5pt;
+    line-height: 1.6;
+    overflow-x: auto;
+    margin: 10px 0;
+    white-space: pre;
+  }
+  .code-block .cmt { color: #6c7a89; }
+  .code-block .kw { color: #e74c3c; }
+  .code-block .val { color: #f39c12; }
+  .code-block .str { color: #2ecc71; }
+
+  /* Badges */
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 8pt;
+    font-weight: 700;
+  }
+  .badge-new { background: #e74c3c; color: white; }
+  .badge-unchanged { background: #ecf0f1; color: #7f8c8d; }
+  .badge-enhanced { background: #f39c12; color: white; }
+
+  /* Callout */
+  .callout {
+    background: #fef9e7;
+    border-left: 4px solid #f39c12;
+    padding: 10px 14px;
+    margin: 12px 0;
+    border-radius: 0 6px 6px 0;
+    font-size: 9.5pt;
+  }
+  .callout-red {
+    background: #fdedec;
+    border-left-color: #e74c3c;
+  }
+  .callout-green {
+    background: #eafaf1;
+    border-left-color: #2ecc71;
+  }
+
+  p { margin: 6px 0; font-size: 9.5pt; }
+  strong { color: #1a1a2e; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- HEADER -->
+  <div class="doc-header">
+    <h1>Novakash V5: CoinGlass-Enriched Architecture</h1>
+    <div class="subtitle">What Changed, Why, and How CoinGlass Data Feeds Into Every Trade Decision</div>
+    <div class="meta">Deploy: April 3, 2026 &nbsp;|&nbsp; Branch: develop &nbsp;|&nbsp; CoinGlass Standard Plan</div>
+  </div>
+
+  <!-- SECTION 1: WHAT CHANGED -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">1</div>
+      <h2>What Changed (v4.1 → v5)</h2>
+    </div>
+
+    <table class="styled-table">
+      <thead>
+        <tr><th>#</th><th>Change</th><th>Before (v4.1)</th><th>After (v5)</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="badge badge-new">NEW</span></td>
+          <td><strong>CoinGlass Confidence Modifier</strong></td>
+          <td>CG data polled but NEVER used in trade decisions</td>
+          <td>6 signals feed into a ±0.50 confidence modifier that confirms or blocks trades</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-new">NEW</span></td>
+          <td><strong>Taker Buy/Sell Volume</strong></td>
+          <td>Not tracked</td>
+          <td>1-min taker aggression — who is pushing the market</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-new">NEW</span></td>
+          <td><strong>Smart Money Divergence</strong></td>
+          <td>No positioning data</td>
+          <td>Top traders vs crowd — strongest contrarian signal</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-enhanced">FIX</span></td>
+          <td><strong>CoinGlass Intervals</strong></td>
+          <td>4-hour candles (useless for 5-min windows)</td>
+          <td>1-minute candles (Standard plan unlocked)</td>
+        </tr>
+        <tr>
+          <td><span class="badge badge-unchanged">SAME</span></td>
+          <td><strong>Core Regime Logic</strong></td>
+          <td colspan="2">VPIN + Delta remain primary. CoinGlass is CONFIRMING only.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout">
+      <strong>Key Principle:</strong> CoinGlass does NOT change the direction or regime classification. It only adjusts confidence after VPIN + delta have already decided. This means v5 is strictly backward-compatible — if CG is disconnected, it works identically to v4.1.
+    </div>
+  </div>
+
+  <!-- SECTION 2: SYSTEM ARCHITECTURE -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">2</div>
+      <h2>System Architecture</h2>
+    </div>
+
+    <div class="svg-container">
+      <svg width="720" height="420" viewBox="0 0 720 420" xmlns="http://www.w3.org/2000/svg">
+        <!-- Background -->
+        <rect width="720" height="420" fill="#f8fafc" rx="10"/>
+
+        <!-- Data Sources Row -->
+        <text x="360" y="22" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="10" fill="#95a5a6" font-weight="600">DATA SOURCES</text>
+
+        <!-- Binance -->
+        <rect x="15" y="35" width="150" height="80" rx="10" fill="#1a1a2e" stroke="#f39c12" stroke-width="2"/>
+        <text x="90" y="56" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="11" fill="#f39c12" font-weight="700">BINANCE</text>
+        <text x="90" y="72" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="rgba(255,255,255,0.7)">WebSocket (real-time)</text>
+        <text x="90" y="86" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.6)">aggTrade → VPIN + Delta</text>
+        <text x="90" y="98" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.6)">forceOrder → Liq events</text>
+
+        <!-- CoinGlass -->
+        <rect x="185" y="35" width="200" height="80" rx="10" fill="#1a1a2e" stroke="#e74c3c" stroke-width="2.5"/>
+        <text x="285" y="56" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="11" fill="#e74c3c" font-weight="700">COINGLASS v4 ★ NEW</text>
+        <text x="285" y="72" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="rgba(255,255,255,0.7)">REST API (10s poll, Standard)</text>
+        <text x="285" y="86" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.6)">OI · Liqs · L/S · Smart Money</text>
+        <text x="285" y="98" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.6)">Taker Vol · Funding (all 1-min)</text>
+
+        <!-- Polymarket -->
+        <rect x="405" y="35" width="150" height="80" rx="10" fill="#1a1a2e" stroke="#3498db" stroke-width="2"/>
+        <text x="480" y="56" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="11" fill="#3498db" font-weight="700">POLYMARKET</text>
+        <text x="480" y="72" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="rgba(255,255,255,0.7)">WebSocket + Gamma API</text>
+        <text x="480" y="86" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.6)">Token prices · Windows</text>
+        <text x="480" y="98" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.6)">CLOB order book</text>
+
+        <!-- Gamma/Oracle -->
+        <rect x="575" y="35" width="130" height="80" rx="10" fill="#1a1a2e" stroke="#2ecc71" stroke-width="2"/>
+        <text x="640" y="56" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="11" fill="#2ecc71" font-weight="700">GAMMA API</text>
+        <text x="640" y="72" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="rgba(255,255,255,0.7)">Oracle (TRUTH)</text>
+        <text x="640" y="86" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.6)">Chainlink resolution</text>
+        <text x="640" y="98" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.6)">WIN / LOSS truth</text>
+
+        <!-- Arrows down -->
+        <line x1="90" y1="115" x2="90" y2="145" stroke="#f39c12" stroke-width="2" marker-end="url(#arrowY)"/>
+        <line x1="285" y1="115" x2="285" y2="145" stroke="#e74c3c" stroke-width="2.5" marker-end="url(#arrowR)"/>
+        <line x1="480" y1="115" x2="480" y2="145" stroke="#3498db" stroke-width="2" marker-end="url(#arrowB)"/>
+
+        <defs>
+          <marker id="arrowY" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#f39c12"/></marker>
+          <marker id="arrowR" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#e74c3c"/></marker>
+          <marker id="arrowB" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#3498db"/></marker>
+          <marker id="arrowG" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2ecc71"/></marker>
+          <marker id="arrowW" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="white"/></marker>
+        </defs>
+
+        <!-- SIGNAL PROCESSOR -->
+        <rect x="15" y="150" width="540" height="130" rx="10" fill="#2c3e50"/>
+        <text x="285" y="172" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="12" fill="white" font-weight="700">REGIME-AWARE EVALUATOR (v5)</text>
+
+        <!-- Inner boxes -->
+        <rect x="25" y="182" width="120" height="50" rx="6" fill="#34495e"/>
+        <text x="85" y="200" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#f39c12" font-weight="700">VPIN + DELTA</text>
+        <text x="85" y="212" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.7)">Primary signals</text>
+        <text x="85" y="224" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.7)">Regime + Direction</text>
+
+        <text x="157" y="207" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="14" fill="white" font-weight="700">→</text>
+
+        <rect x="170" y="182" width="100" height="50" rx="6" fill="#e74c3c"/>
+        <text x="220" y="200" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">CG MODIFIER</text>
+        <text x="220" y="212" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">★ NEW: -0.5 → +0.5</text>
+        <text x="220" y="224" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">Confirm or warn</text>
+
+        <text x="282" y="207" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="14" fill="white" font-weight="700">→</text>
+
+        <rect x="295" y="182" width="110" height="50" rx="6" fill="#34495e"/>
+        <text x="350" y="200" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#2ecc71" font-weight="700">CONFIDENCE</text>
+        <text x="350" y="212" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.7)">NONE→LOW→MOD→HIGH</text>
+        <text x="350" y="224" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.7)">MOD+ = TRADE</text>
+
+        <text x="417" y="207" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="14" fill="white" font-weight="700">→</text>
+
+        <rect x="430" y="182" width="115" height="50" rx="6" fill="#2ecc71"/>
+        <text x="487" y="200" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">EXECUTE</text>
+        <text x="487" y="212" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">GTC limit @ Gamma px</text>
+        <text x="487" y="224" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">+2¢ retry on no-fill</text>
+
+        <!-- Right side: Oracle -->
+        <line x1="545" y1="207" x2="575" y2="207" stroke="#2ecc71" stroke-width="2" marker-end="url(#arrowG)"/>
+        <rect x="575" y="150" width="130" height="130" rx="10" fill="#1a1a2e" stroke="#2ecc71" stroke-width="2"/>
+        <text x="640" y="195" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="10" fill="#2ecc71" font-weight="700">RESOLUTION</text>
+        <text x="640" y="212" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.7)">Polymarket Oracle</text>
+        <text x="640" y="225" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.7)">WIN / LOSS</text>
+        <text x="640" y="245" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.5)">NEVER trust Binance</text>
+
+        <!-- CG DETAIL BOX -->
+        <rect x="15" y="300" width="690" height="108" rx="10" fill="#fdedec" stroke="#e74c3c" stroke-width="1.5"/>
+        <text x="30" y="320" font-family="-apple-system,sans-serif" font-size="10" fill="#e74c3c" font-weight="700">★ CoinGlass Confidence Modifier — 6 Signals</text>
+
+        <!-- Signal boxes -->
+        <rect x="25" y="330" width="105" height="35" rx="5" fill="#e74c3c"/>
+        <text x="77" y="347" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="white" font-weight="700">Liq Direction</text>
+        <text x="77" y="359" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">±0.15</text>
+
+        <rect x="140" y="330" width="105" height="35" rx="5" fill="#e67e22"/>
+        <text x="192" y="347" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="white" font-weight="700">Smart Money</text>
+        <text x="192" y="359" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">±0.20</text>
+
+        <rect x="255" y="330" width="105" height="35" rx="5" fill="#f39c12"/>
+        <text x="307" y="347" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="white" font-weight="700">Taker Aggression</text>
+        <text x="307" y="359" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">±0.15 (cascade)</text>
+
+        <rect x="370" y="330" width="105" height="35" rx="5" fill="#3498db"/>
+        <text x="422" y="347" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="white" font-weight="700">Crowd L/S</text>
+        <text x="422" y="359" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">±0.10</text>
+
+        <rect x="485" y="330" width="105" height="35" rx="5" fill="#9b59b6"/>
+        <text x="537" y="347" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="white" font-weight="700">Funding Rate</text>
+        <text x="537" y="359" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">±0.10</text>
+
+        <rect x="600" y="330" width="95" height="35" rx="5" fill="#1abc9c"/>
+        <text x="647" y="347" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="white" font-weight="700">OI Delta</text>
+        <text x="647" y="359" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">context</text>
+
+        <text x="360" y="398" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8.5" fill="#e74c3c" font-weight="600">Total modifier: -0.50 to +0.50 · Can lift LOW→MODERATE (enables trade) or suppress MODERATE→LOW (blocks trade)</text>
+      </svg>
+      <div class="svg-caption">Fig 1. V5 System Architecture — CoinGlass confidence modifier sits between regime classification and execution</div>
+    </div>
+  </div>
+
+  <div class="page-break"></div>
+
+  <!-- SECTION 3: CG SIGNAL MATRIX -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">3</div>
+      <h2>CoinGlass Signal Matrix</h2>
+    </div>
+
+    <table class="styled-table">
+      <thead>
+        <tr><th>Signal</th><th>Interval</th><th>What It Tells Us</th><th>Weight</th><th>Example</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Liquidation Direction</strong></td>
+          <td>1 min</td>
+          <td>WHO is getting liquidated (longs or shorts)</td>
+          <td>±0.15</td>
+          <td>Long liqs $2.1M vs Short $0.3M → confirms DOWN</td>
+        </tr>
+        <tr>
+          <td><strong>Smart Money Position</strong></td>
+          <td>1 min</td>
+          <td>Top traders vs crowd divergence</td>
+          <td>±0.20</td>
+          <td>Smart 56% SHORT + Crowd 64% LONG → DOWN bias</td>
+        </tr>
+        <tr>
+          <td><strong>Taker Buy/Sell Volume</strong></td>
+          <td>1 min</td>
+          <td>Who is the market aggressor right now</td>
+          <td>±0.15*</td>
+          <td>Sell $8.2M vs Buy $3.1M → confirms DOWN momentum</td>
+        </tr>
+        <tr>
+          <td><strong>Crowd L/S Ratio</strong></td>
+          <td>1 min</td>
+          <td>Retail positioning (>60% = overleveraged)</td>
+          <td>±0.10</td>
+          <td>64% long = crowd overleveraged → contrarian DOWN</td>
+        </tr>
+        <tr>
+          <td><strong>Funding Rate</strong></td>
+          <td>8 hour</td>
+          <td>Cost of holding positions</td>
+          <td>±0.10</td>
+          <td>+0.03% = longs paying heavily → DOWN pressure</td>
+        </tr>
+        <tr>
+          <td><strong>OI Delta</strong></td>
+          <td>1 min</td>
+          <td>New positions being opened/closed</td>
+          <td>context</td>
+          <td>Falling OI + falling price = longs closing (capitulation)</td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="font-size:8pt;color:#7f8c8d;">* Taker weight is ±0.15 in CASCADE regime, ±0.08 in NORMAL/TRANSITION</p>
+  </div>
+
+  <!-- SECTION 4: REGIME × CG INTERACTION -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">4</div>
+      <h2>Regime × CoinGlass Interaction</h2>
+    </div>
+
+    <div class="svg-container">
+      <svg width="720" height="280" viewBox="0 0 720 280" xmlns="http://www.w3.org/2000/svg">
+        <rect width="720" height="280" fill="#f8fafc" rx="10"/>
+
+        <!-- VPIN Scale bar -->
+        <text x="360" y="20" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="10" fill="#1a1a2e" font-weight="700">VPIN SCALE WITH CoinGlass ROLE</text>
+
+        <!-- Scale segments -->
+        <rect x="30" y="35" width="150" height="55" rx="8" fill="#bdc3c7"/>
+        <text x="105" y="55" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="10" fill="white" font-weight="700">CALM</text>
+        <text x="105" y="70" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.8)">VPIN < 0.45</text>
+        <text x="105" y="82" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.7)">CG: logged only</text>
+
+        <rect x="190" y="35" width="155" height="55" rx="8" fill="#3498db"/>
+        <text x="267" y="55" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="10" fill="white" font-weight="700">NORMAL</text>
+        <text x="267" y="70" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.8)">0.45 – 0.55 | δ≥0.08%</text>
+        <text x="267" y="82" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">CG: QUALITY FILTER</text>
+
+        <rect x="355" y="35" width="145" height="55" rx="8" fill="#f39c12"/>
+        <text x="427" y="55" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="10" fill="white" font-weight="700">TRANSITION</text>
+        <text x="427" y="70" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.8)">0.55 – 0.65 | δ≥0.12%</text>
+        <text x="427" y="82" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">CG: EARLY WARNING</text>
+
+        <rect x="510" y="35" width="180" height="55" rx="8" fill="#e74c3c"/>
+        <text x="600" y="55" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="10" fill="white" font-weight="700">CASCADE</text>
+        <text x="600" y="70" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.8)">≥0.65 | δ≥0.03% (scaled)</text>
+        <text x="600" y="82" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">CG: CONFIRMATION</text>
+
+        <!-- Detail boxes below -->
+        <rect x="190" y="100" width="155" height="75" rx="6" fill="white" stroke="#3498db" stroke-width="1.5"/>
+        <text x="267" y="118" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#3498db" font-weight="700">Quality Filter Role</text>
+        <text x="267" y="132" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#2c3e50">Is this REAL mean-reversion?</text>
+        <text x="267" y="144" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#2c3e50">Smart money agrees? → boost</text>
+        <text x="267" y="156" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#2c3e50">Crowd + smart + taker all UP?</text>
+        <text x="267" y="168" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#e74c3c">→ don't bet against it</text>
+
+        <rect x="355" y="100" width="145" height="75" rx="6" fill="white" stroke="#f39c12" stroke-width="1.5"/>
+        <text x="427" y="118" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#f39c12" font-weight="700">Early Warning Role</text>
+        <text x="427" y="132" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#2c3e50">Something brewing...</text>
+        <text x="427" y="144" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#2c3e50">Liqs starting? Which side?</text>
+        <text x="427" y="156" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#2c3e50">Smart money repositioning?</text>
+        <text x="427" y="168" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#f39c12">Like elevated CRP + biomarkers</text>
+
+        <rect x="510" y="100" width="180" height="75" rx="6" fill="white" stroke="#e74c3c" stroke-width="1.5"/>
+        <text x="600" y="118" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#e74c3c" font-weight="700">Confirmation Role</text>
+        <text x="600" y="132" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#2c3e50">ARE liqs actually happening?</text>
+        <text x="600" y="144" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#2c3e50">WHICH side being liquidated?</text>
+        <text x="600" y="156" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#2c3e50">Smart money riding it?</text>
+        <text x="600" y="168" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#e74c3c">Like observing substrate depletion</text>
+
+        <!-- Biology analogy bar -->
+        <rect x="30" y="195" width="660" height="75" rx="8" fill="#1a1a2e"/>
+        <text x="360" y="215" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="#2ecc71" font-weight="700">BIOLOGY ANALOGY — CDK1/Cyclin Cascade × CoinGlass Enrichment</text>
+        <text x="360" y="232" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.8)">v4.1: CDK1 crossing threshold (VPIN) = we know a cascade started</text>
+        <text x="360" y="246" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.8)">v5: + observing cyclin destruction rate (OI drop), substrate depletion (liq volume),</text>
+        <text x="360" y="260" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.8)">downstream pathway activation (taker aggression), and feedback loop strength (smart money)</text>
+      </svg>
+      <div class="svg-caption">Fig 2. CoinGlass plays a different role in each regime — from quality filter (NORMAL) to cascade confirmation (CASCADE)</div>
+    </div>
+  </div>
+
+  <div class="page-break"></div>
+
+  <!-- SECTION 5: WORKED EXAMPLES -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">5</div>
+      <h2>Worked Examples — v5 vs v4.1</h2>
+    </div>
+
+    <div class="subsection-title">Example A: CASCADE + CoinGlass Agrees (Stronger Trade)</div>
+    <div class="svg-container">
+      <svg width="720" height="200" viewBox="0 0 720 200" xmlns="http://www.w3.org/2000/svg">
+        <rect width="720" height="200" fill="#eafaf1" rx="8" stroke="#2ecc71" stroke-width="1.5"/>
+
+        <text x="20" y="25" font-family="-apple-system,sans-serif" font-size="10" fill="#1a1a2e" font-weight="700">VPIN: 0.82 (CASCADE) | Delta: -0.04% | Direction: DOWN</text>
+
+        <rect x="20" y="35" width="210" height="70" rx="6" fill="white" stroke="#f39c12" stroke-width="1"/>
+        <text x="125" y="53" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#f39c12" font-weight="700">v4.1 Decision</text>
+        <text x="125" y="68" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="#2c3e50">Confidence: MODERATE</text>
+        <text x="125" y="82" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="#2c3e50">→ TRADE (but how confident?)</text>
+        <text x="125" y="97" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#7f8c8d">No external confirmation</text>
+
+        <text x="245" y="72" font-family="-apple-system,sans-serif" font-size="16" fill="#2c3e50" font-weight="700">→</text>
+
+        <rect x="265" y="35" width="430" height="70" rx="6" fill="white" stroke="#2ecc71" stroke-width="2"/>
+        <text x="480" y="53" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#2ecc71" font-weight="700">v5 Decision</text>
+        <text x="480" y="68" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="#2c3e50">CG: Liq longs $2.1M (+0.15) | Smart 56%S (+0.20) | Taker sell 73% (+0.15)</text>
+        <text x="480" y="82" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="#2c3e50">Crowd 64%L (+0.10) | Funding +0.02% (+0.10) → modifier: +0.50</text>
+        <text x="480" y="97" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#2ecc71" font-weight="700">MODERATE → HIGH ✅ STRONG TRADE</text>
+
+        <!-- Bottom note -->
+        <rect x="20" y="115" width="680" height="75" rx="6" fill="#1a1a2e"/>
+        <text x="360" y="135" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="#2ecc71" font-weight="700">WHY THIS IS BETTER</text>
+        <text x="360" y="152" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.8)">v4.1 trades this at MODERATE confidence — a coin flip on whether to be aggressive.</text>
+        <text x="360" y="166" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.8)">v5 sees that EVERYTHING confirms the cascade — liqs, smart money, taker flow, funding.</text>
+        <text x="360" y="180" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="#2ecc71">This is a HIGH confidence trade. Size it accordingly.</text>
+      </svg>
+    </div>
+
+    <div class="subsection-title">Example B: NORMAL + CoinGlass Disagrees (Trade Blocked)</div>
+    <div class="svg-container">
+      <svg width="720" height="200" viewBox="0 0 720 200" xmlns="http://www.w3.org/2000/svg">
+        <rect width="720" height="200" fill="#fdedec" rx="8" stroke="#e74c3c" stroke-width="1.5"/>
+
+        <text x="20" y="25" font-family="-apple-system,sans-serif" font-size="10" fill="#1a1a2e" font-weight="700">VPIN: 0.48 (NORMAL) | Delta: +0.09% | Direction: DOWN (contrarian)</text>
+
+        <rect x="20" y="35" width="210" height="70" rx="6" fill="white" stroke="#f39c12" stroke-width="1"/>
+        <text x="125" y="53" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#f39c12" font-weight="700">v4.1 Decision</text>
+        <text x="125" y="68" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="#2c3e50">Confidence: MODERATE</text>
+        <text x="125" y="82" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="#e74c3c" font-weight="600">→ TRADE DOWN ← risky!</text>
+        <text x="125" y="97" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#7f8c8d">No way to know if move is genuine</text>
+
+        <text x="245" y="72" font-family="-apple-system,sans-serif" font-size="16" fill="#2c3e50" font-weight="700">→</text>
+
+        <rect x="265" y="35" width="430" height="70" rx="6" fill="white" stroke="#e74c3c" stroke-width="2"/>
+        <text x="480" y="53" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#e74c3c" font-weight="700">v5 Decision</text>
+        <text x="480" y="68" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="#2c3e50">CG: Short liqs $1.8M (-0.15) | Smart 57%L (-0.20) | Taker buy 78% (-0.15)</text>
+        <text x="480" y="82" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="#2c3e50">modifier: -0.40 → suppress MODERATE → LOW</text>
+        <text x="480" y="97" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#e74c3c" font-weight="700">SKIP ❌ CG says the UP move is genuine</text>
+
+        <rect x="20" y="115" width="680" height="75" rx="6" fill="#1a1a2e"/>
+        <text x="360" y="135" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="#e74c3c" font-weight="700">WHY THIS SAVES MONEY</text>
+        <text x="360" y="152" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.8)">v4.1 bets contrarian DOWN — but BTC is genuinely breaking out. Likely LOSS.</text>
+        <text x="360" y="166" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.8)">v5 sees shorts getting liquidated, smart money long, aggressive buying.</text>
+        <text x="360" y="180" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="#e74c3c">This is NOT mean-reversion. This is a genuine move. Don't fight it.</text>
+      </svg>
+    </div>
+  </div>
+
+  <div class="page-break"></div>
+
+  <!-- SECTION 6: API RATE BUDGET -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">6</div>
+      <h2>API Rate Budget</h2>
+    </div>
+
+    <table class="styled-table">
+      <thead>
+        <tr><th>Endpoint</th><th>Poll Interval</th><th>Requests/min</th><th>Data Granularity</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>OI History</td><td>10s</td><td>6</td><td>1-min OHLC candles</td></tr>
+        <tr><td>Liquidation History</td><td>10s</td><td>6</td><td>1-min long + short split</td></tr>
+        <tr><td>Global L/S Ratio</td><td>10s</td><td>6</td><td>1-min account ratio</td></tr>
+        <tr><td>Top Traders Position</td><td>10s</td><td>6</td><td>1-min position ratio</td></tr>
+        <tr><td>Taker Buy/Sell Vol</td><td>10s</td><td>6</td><td>1-min aggressor volume</td></tr>
+        <tr><td>Funding Rate</td><td>60s</td><td>1</td><td>8-hour snapshots</td></tr>
+        <tr style="background:#eafaf1;font-weight:600;">
+          <td>TOTAL</td><td></td><td>31</td><td></td>
+        </tr>
+        <tr>
+          <td>Standard Plan Limit</td><td></td><td><strong>300</strong></td><td></td>
+        </tr>
+        <tr style="background:#eafaf1;">
+          <td>Headroom</td><td></td><td><strong>269 (90%)</strong></td><td></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- SECTION 7: CONFIG -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">7</div>
+      <h2>Full Configuration (Railway Env Vars)</h2>
+    </div>
+
+    <div class="code-block"><span class="cmt"># ── Strategy Parameters ──</span>
+FIVE_MIN_VPIN_GATE=<span class="val">0.45</span>          <span class="cmt"># Below this = no trade</span>
+FIVE_MIN_MIN_DELTA_PCT=<span class="val">0.08</span>     <span class="cmt"># Normal regime min delta</span>
+FIVE_MIN_CASCADE_MIN_DELTA_PCT=<span class="val">0.03</span> <span class="cmt"># CASCADE min (scaled by VPIN)</span>
+FIVE_MIN_ENTRY_OFFSET=<span class="val">60</span>       <span class="cmt"># T-60s evaluation</span>
+FIVE_MIN_ENABLED=<span class="val">true</span>
+
+<span class="cmt"># ── VPIN Thresholds ──</span>
+VPIN_INFORMED_THRESHOLD=<span class="val">0.55</span>
+VPIN_CASCADE_THRESHOLD=<span class="val">0.70</span>
+VPIN_CASCADE_DIRECTION_THRESHOLD=<span class="val">0.65</span>
+VPIN_BUCKET_SIZE_USD=<span class="val">500000</span>
+
+<span class="cmt"># ── CoinGlass (Standard Plan) ──</span>
+COINGLASS_API_KEY=<span class="val">abd0524e...</span>
+<span class="cmt"># 31 req/min of 300 limit (90% headroom)</span>
+
+<span class="cmt"># ── Risk Management ──</span>
+BET_FRACTION=<span class="val">0.05</span>
+MAX_POSITION_USD=<span class="val">120</span>
+STARTING_BANKROLL=<span class="val">160</span>
+SKIP_DB_CONFIG_SYNC=<span class="val">true</span></div>
+  </div>
+
+  <!-- Footer -->
+  <div style="margin-top: 20px; padding: 10px; background: #f8f9fa; border-radius: 8px; border: 1px solid #e0e0e0; text-align: center;">
+    <div style="font-size: 16pt; font-weight: 800; color: #1a1a2e; letter-spacing: -1px;">Novakash<span style="color:#e74c3c;">.</span></div>
+    <div style="font-size: 8pt; color: #7f8c8d; margin-top: 4px;">V5 Architecture — CoinGlass-Enriched | April 2026 | Confidential</div>
+  </div>
+
+</div>
+</body>
+</html>
