@@ -1093,28 +1093,25 @@ class FiveMinVPINStrategy(BaseStrategy):
         is_15m = "15m" in _slug
         _max_price = 0.70 if is_15m else 0.65
         
-        # Read CLOB spread and bump bestAsk to cross it for instant fills
-        _spread = await self._poly.get_order_book_spread(token_id)
+        # FOK PRICING (v5.5b): Buy at whatever the market offers, up to our cap
+        # FOK order at cap price → fills at best available (could be much cheaper)
+        # If Gamma bestAsk > cap → skip (market too expensive)
+        # If Gamma bestAsk <= cap → use cap as limit, FOK fills at actual market price
         
-        if _fresh_best_ask is not None and _fresh_best_ask >= 0.30:
-            # Bump by the actual CLOB spread (min 0.5c, max 2c) to cross
-            _bump = min(0.02, max(0.005, _spread))
-            _buy_price = round(_fresh_best_ask + _bump, 4)
-            if _buy_price <= _max_price:
-                token_price = _buy_price
-                _price_source = f"gamma+spread({_spread:.3f})"
-            else:
-                self._log.warning(
-                    "execute.price_out_of_range",
-                    bestask=f"${_fresh_best_ask:.4f}",
-                    spread=f"${_spread:.4f}",
-                    with_bump=f"${_buy_price:.4f}",
-                    cap=f"${_max_price:.2f}",
-                )
-                return
+        if _fresh_best_ask is not None and _fresh_best_ask >= 0.30 and _fresh_best_ask <= _max_price:
+            # Market price is within our cap — use cap as limit, FOK fills at actual
+            token_price = _max_price  # Submit at cap, pay actual market price
+            _price_source = f"fok_at_cap(market={_fresh_best_ask:.2f})"
+        elif _fresh_best_ask is not None and _fresh_best_ask > _max_price:
+            self._log.warning(
+                "execute.price_above_cap",
+                bestask=f"${_fresh_best_ask:.4f}",
+                cap=f"${_max_price:.2f}",
+            )
+            return
         elif _model_price <= _max_price and _model_price >= 0.30:
-            token_price = _model_price
-            _price_source = "delta_model_fallback"
+            token_price = _max_price  # FOK at cap with model fallback
+            _price_source = "fok_at_cap(model_fallback)"
         else:
             self._log.warning(
                 "execute.price_out_of_range",
@@ -1360,6 +1357,18 @@ class FiveMinVPINStrategy(BaseStrategy):
                         clob_status=clob_status,
                         waited=f"{elapsed}s",
                     )
+                    # Notify on Telegram when order doesn't fill
+                    if self._alerter:
+                        try:
+                            asyncio.create_task(self._alerter.send_system_alert(
+                                f"⏰ Order NOT FILLED — {window.asset} {tf}\n"
+                                f"Direction: {direction} at ${float(price):.2f}\n"
+                                f"Waited {elapsed}s, status: {clob_status}\n"
+                                f"Attempting retry...",
+                                level="warning",
+                            ))
+                        except Exception:
+                            pass
                     # ── v5.3 DYNAMIC BUMP RETRY ────────────────────────────
                     # Read order book spread, bump by min(2¢, spread)
                     self._log.info("trade.retry_starting", original_price=str(price), order_id=order.order_id[:20] + "...")
@@ -1442,6 +1451,16 @@ class FiveMinVPINStrategy(BaseStrategy):
                                                     asyncio.create_task(self._alerter.send_entry_alert(order))
                                             else:
                                                 self._log.warning("trade.retry_not_filled", order_id=str(retry_id)[:20])
+                                                if self._alerter:
+                                                    try:
+                                                        asyncio.create_task(self._alerter.send_system_alert(
+                                                            f"❌ Retry also NOT FILLED — {window.asset} {tf}\n"
+                                                            f"Direction: {direction}\n"
+                                                            f"Order expired unfilled. No position taken.",
+                                                            level="warning",
+                                                        ))
+                                                    except Exception:
+                                                        pass
                         else:
                             self._log.info("trade.retry_skip_expensive", bumped_price=bumped_price_f)
                     except Exception as retry_exc:

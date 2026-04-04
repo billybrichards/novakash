@@ -337,24 +337,38 @@ class PolymarketClient:
         except (ValueError, IndexError):
             pass  # Fallback to no expiry (GTC)
 
-        order_type = OrderType.GTD if expiration > 0 else OrderType.GTC
+        # v5.5b: FOK (Fill-or-Kill) for instant fills at market price
+        # FOK matches instantly against resting orders, pays actual market price
+        # If no liquidity, immediately cancels (no 30s wait on empty book)
+        # GTD fallback only if FOK is rejected (some markets require it)
+        order_type = OrderType.FOK
 
         order_args = OrderArgs(
             token_id=token_id,
             price=float(price),
             size=size,
             side=BUY,
-            expiration=expiration,
         )
 
         def _sign_and_submit():
             signed_order = client.create_order(order_args)
-            return client.post_order(signed_order, order_type)
+            try:
+                result = client.post_order(signed_order, order_type)
+                return result
+            except Exception as fok_exc:
+                # FOK rejected — fall back to GTD
+                if "FOK" in str(fok_exc) or "order type" in str(fok_exc).lower():
+                    self._log.info("place_order.fok_rejected_trying_gtd", error=str(fok_exc)[:100])
+                    order_args.expiration = expiration
+                    signed_order_gtd = client.create_order(order_args)
+                    return client.post_order(signed_order_gtd, OrderType.GTD if expiration > 0 else OrderType.GTC)
+                raise
 
         self._log.info(
             "place_order.order_type",
-            order_type="GTD" if expiration > 0 else "GTC",
-            expiration=expiration,
+            order_type="FOK",
+            price=str(price),
+            size=f"{size:.2f}",
             seconds_to_expiry=expiration - int(time.time()) if expiration > 0 else "none",
         )
 
