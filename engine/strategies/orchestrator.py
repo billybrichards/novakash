@@ -612,7 +612,9 @@ class Orchestrator:
                 if len(parts) == 2:
                     try:
                         wts = int(parts[1])
-                        self._twap_tracker.add_tick("BTC", wts, float(trade.price), float(trade.timestamp) / 1000 if trade.timestamp > 1e12 else float(trade.timestamp))
+                        # Convert trade_time (datetime) to unix timestamp
+                        ts = trade.trade_time.timestamp() if hasattr(trade.trade_time, 'timestamp') else time.time()
+                        self._twap_tracker.add_tick("BTC", wts, float(trade.price), ts)
                     except (ValueError, TypeError):
                         pass
 
