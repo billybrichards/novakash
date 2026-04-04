@@ -760,7 +760,7 @@ class TelegramAlerter:
                 lines.append(self.format_coinglass_block(cg_snapshot))
                 lines.append(f"")
 
-            # TWAP block (v5.7)
+            # TWAP block (v5.7c)
             if twap_result is not None:
                 _agree_score = getattr(twap_result, 'agreement_score', 0)
                 _agree_max = 3
@@ -768,21 +768,38 @@ class TelegramAlerter:
                 _twap_dir = getattr(twap_result, 'twap_direction', '—')
                 _gamma_dir = getattr(twap_result, 'gamma_direction', '—')
                 _point_dir = getattr(twap_result, 'point_direction', '—')
+                _mom_dir = getattr(twap_result, 'momentum_direction', '—')
                 _twap_delta = getattr(twap_result, 'twap_delta_pct', 0)
+                _mom_pct = getattr(twap_result, 'momentum_pct', 0)
+                _trend_pct = getattr(twap_result, 'trend_pct', 0.5)
                 _boost = getattr(twap_result, 'confidence_boost', 0)
                 _ticks = getattr(twap_result, 'n_ticks', 0)
                 _stability = getattr(twap_result, 'twap_stability', 0)
                 _gamma_up = getattr(twap_result, 'gamma_up_price', 0.50)
                 _gamma_down = getattr(twap_result, 'gamma_down_price', 0.50)
+                _gamma_gate = getattr(twap_result, 'gamma_gate', 'OK')
+                _should_skip = getattr(twap_result, 'should_skip', False)
+
+                # Gamma gate emoji
+                _gate_emoji = {"BLOCK": "🚫", "SKIP": "⚠️", "REDUCE": "🔻", "OK": "✅", "PRICED_IN": "💸"}.get(_gamma_gate, "❓")
+
+                # Trend bar: visual representation of trend_pct
+                _trend_filled = int(_trend_pct * 10)
+                _trend_bar = "▓" * _trend_filled + "░" * (10 - _trend_filled)
+
                 lines += [
-                    f"📐 *TWAP Analysis*",
+                    f"📐 *TWAP Analysis* ({_ticks} ticks)",
                     f"TWAP δ: `{_twap_delta:+.4f}%` → `{_twap_dir}`",
                     f"Point δ: `{delta_pct:+.4f}%` → `{_point_dir}`",
-                    f"Gamma: `{_gamma_up:.2f}`/`{_gamma_down:.2f}` → `{_gamma_dir}`",
-                    f"Agreement: {_agree_bar} `{_agree_score}/{_agree_max}`",
-                    f"Boost: `{_boost:+.2f}` | Ticks: `{_ticks}` | Stability: `{_stability:.2f}`",
-                    f"",
+                    f"Momentum: `{_mom_pct:+.3f}%` → `{_mom_dir}` (last 30s)",
+                    f"Trend: `[{_trend_bar}]` `{_trend_pct:.0%}` above open",
+                    f"Gamma: `{_gamma_up:.2f}`/`{_gamma_down:.2f}` → `{_gamma_dir}` {_gate_emoji}`{_gamma_gate}`",
+                    f"Agreement: {_agree_bar} `{_agree_score}/{_agree_max}` | Boost: `{_boost:+.2f}`",
                 ]
+                if _should_skip:
+                    _skip_reason = getattr(twap_result, 'skip_reason', '')
+                    lines.append(f"⛔ *TWAP SKIP:* `{_skip_reason}`")
+                lines.append(f"")
 
             # Signal
             lines += [

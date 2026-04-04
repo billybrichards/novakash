@@ -249,6 +249,15 @@ class FiveMinVPINStrategy(BaseStrategy):
                     asset=window.asset,
                     summary=twap_result.summary(),
                 )
+                # TWAP skip gate: if TWAP says skip (Gamma block, mixed signal, priced in)
+                if twap_result.should_skip:
+                    self._log.info(
+                        "evaluate.twap_skip",
+                        asset=window.asset,
+                        reason=twap_result.skip_reason,
+                        gamma_gate=twap_result.gamma_gate,
+                        trend_pct=f"{twap_result.trend_pct:.2f}",
+                    )
             # Cleanup window tracking data after evaluation
             self._twap.cleanup_window(window.asset, window.window_ts)
 
@@ -325,6 +334,11 @@ class FiveMinVPINStrategy(BaseStrategy):
             "twap_confidence_boost": twap_result.confidence_boost if twap_result else None,
             "twap_n_ticks": twap_result.n_ticks if twap_result else None,
             "twap_stability": twap_result.twap_stability if twap_result else None,
+            "twap_trend_pct": twap_result.trend_pct if twap_result else None,
+            "twap_momentum_pct": twap_result.momentum_pct if twap_result else None,
+            "twap_gamma_gate": twap_result.gamma_gate if twap_result else None,
+            "twap_should_skip": twap_result.should_skip if twap_result else None,
+            "twap_skip_reason": twap_result.skip_reason if twap_result else None,
             "skip_reason": None if signal else (
                 f"VPIN {current_vpin:.3f} < gate {_runtime.five_min_vpin_gate} — not enough informed trading detected to justify entry"
                 if current_vpin < _runtime.five_min_vpin_gate
@@ -475,6 +489,20 @@ class FiveMinVPINStrategy(BaseStrategy):
         """
         # VPIN gate — core thesis: no informed flow = no trade
         if current_vpin < runtime.five_min_vpin_gate:
+            return None
+
+        # ── TWAP Gamma Gate (v5.7c) ───────────────────────────────
+        # Block trades where the market strongly disagrees with our direction
+        # or where the token is already >60¢ (priced in, bad R/R)
+        if twap_result and twap_result.should_skip and twap_result.n_ticks >= 5:
+            self._log.info(
+                "evaluate.twap_gate_blocked",
+                reason=twap_result.skip_reason,
+                gamma_gate=twap_result.gamma_gate,
+                trend_pct=f"{twap_result.trend_pct:.2f}",
+                twap_delta=f"{twap_result.twap_delta_pct:+.4f}%",
+                asset=window.asset,
+            )
             return None
         
         # ── REGIME-AWARE DIRECTION (v4.1) ──────────────────────────

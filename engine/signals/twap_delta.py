@@ -44,11 +44,21 @@ class TWAPResult:
     twap_direction: str = ""         # "UP" or "DOWN" based on TWAP
     point_direction: str = ""        # "UP" or "DOWN" based on current price
 
+    # Trend consistency (what % of samples were on the winning side)
+    trend_pct: float = 0.50          # 0-1: fraction of ticks above open (0.9 = 90% UP)
+    trend_consistent: bool = False   # True if trend_pct > 0.6 (UP) or < 0.4 (DOWN)
+    trend_mixed: bool = False        # True if 0.4 <= trend_pct <= 0.6 (unclear)
+
+    # Recent momentum (last ~30 seconds)
+    momentum_pct: float = 0.0       # Price change over last ~30s (%)
+    momentum_direction: str = ""     # "UP" or "DOWN" based on recent momentum
+
     # Gamma overlay
     gamma_direction: str = ""        # "UP" or "DOWN" based on which token > 0.50
     gamma_up_price: float = 0.50     # Current UP token price
     gamma_down_price: float = 0.50   # Current DOWN token price
     gamma_skew: float = 0.0          # How far from 50/50 (0 = neutral, >0 = skewed)
+    gamma_gate: str = "OK"           # "BLOCK" / "SKIP" / "REDUCE" / "OK" / "PRICED_IN"
 
     # Agreement
     all_agree: bool = False          # TWAP + point + Gamma all same direction
@@ -64,16 +74,20 @@ class TWAPResult:
 
     # Final recommendation
     recommended_direction: str = ""  # Final direction recommendation
+    should_skip: bool = False        # True if signal is mixed/unclear → don't trade
+    skip_reason: str = ""            # Why we recommend skipping
     confidence_boost: float = 0.0    # Modifier to apply to base confidence
 
     def summary(self) -> str:
         """One-line summary for logging."""
+        skip_tag = f" ⛔ {self.skip_reason}" if self.should_skip else ""
         return (
             f"TWAP δ{self.twap_delta_pct:+.4f}%→{self.twap_direction} | "
             f"Point δ{self.point_delta_pct:+.4f}%→{self.point_direction} | "
-            f"Gamma {self.gamma_up_price:.2f}/{self.gamma_down_price:.2f}→{self.gamma_direction} | "
+            f"Trend {self.trend_pct:.0%} | Mom {self.momentum_pct:+.3f}%→{self.momentum_direction} | "
+            f"Gamma {self.gamma_up_price:.2f}/{self.gamma_down_price:.2f}→{self.gamma_direction} [{self.gamma_gate}] | "
             f"Agree: {self.agreement_score}/3 | "
-            f"Dir: {self.recommended_direction} (boost {self.confidence_boost:+.2f})"
+            f"Dir: {self.recommended_direction} (boost {self.confidence_boost:+.2f}){skip_tag}"
         )
 
 
@@ -236,9 +250,39 @@ class TWAPTracker:
         twap_direction = "UP" if twap_delta_pct > 0 else "DOWN"
         point_direction = "UP" if point_delta_pct > 0 else "DOWN"
 
+        # ── Trend Consistency ───────────────────────────────────────────
+        # What % of the window was price above open?
+        # 0.9 = 90% of ticks above open → strong UP trend
+        # 0.1 = 90% below open → strong DOWN trend
+        # 0.5 = mixed, no clear direction
+        n_ticks = len(tracker.ticks)
+        if n_ticks > 0:
+            above_open = sum(1 for t in tracker.ticks if t.price > tracker.open_price)
+            trend_pct = above_open / n_ticks
+        else:
+            trend_pct = 0.5
+
+        trend_consistent = trend_pct > 0.60 or trend_pct < 0.40
+        trend_mixed = 0.40 <= trend_pct <= 0.60
+
+        # ── Recent Momentum (last ~30 seconds) ────────────────────────
+        # How is price moving RIGHT NOW vs ~30s ago?
+        # Catches "was UP all window, just dipped" scenarios
+        momentum_pct = 0.0
+        momentum_direction = point_direction
+        if n_ticks >= 4:
+            # Look back ~4 ticks (at ~10s interval = ~30-40s)
+            lookback = min(4, n_ticks - 1)
+            recent_price = tracker.ticks[-1].price
+            past_price = tracker.ticks[-(lookback + 1)].price
+            if past_price > 0:
+                momentum_pct = (recent_price - past_price) / past_price * 100
+                momentum_direction = "UP" if momentum_pct > 0 else "DOWN"
+
         # ── Gamma Overlay ──────────────────────────────────────────────
         gamma_direction = ""
         gamma_skew = 0.0
+        gamma_gate = "OK"
         g_up = gamma_up_price or 0.50
         g_down = gamma_down_price or 0.50
 
@@ -250,15 +294,28 @@ class TWAPTracker:
                 gamma_direction = "DOWN"
                 gamma_skew = g_down - 0.50
             else:
-                gamma_direction = twap_direction  # Neutral — follow TWAP
+                gamma_direction = twap_direction
                 gamma_skew = 0.0
+
+            # Gamma gate: check if market agrees with our TWAP direction
+            # Our token = UP token if TWAP says UP, DOWN token if TWAP says DOWN
+            our_gamma = g_up if twap_direction == "UP" else g_down
+            if our_gamma < 0.15:
+                gamma_gate = "BLOCK"   # Market STRONGLY disagrees (<15¢)
+            elif our_gamma < 0.25:
+                gamma_gate = "SKIP"    # Market leans against us (15-25¢)
+            elif our_gamma < 0.40:
+                gamma_gate = "REDUCE"  # Mild disagreement (25-40¢)
+            elif our_gamma <= 0.60:
+                gamma_gate = "OK"      # Sweet spot (40-60¢)
+            else:
+                gamma_gate = "PRICED_IN"  # Already >60¢ = bad R/R
 
         # ── Agreement Score ────────────────────────────────────────────
         directions = [twap_direction, point_direction]
         if gamma_direction:
             directions.append(gamma_direction)
 
-        # Count agreement
         up_count = sum(1 for d in directions if d == "UP")
         down_count = sum(1 for d in directions if d == "DOWN")
         agreement_score = max(up_count, down_count)
@@ -269,17 +326,12 @@ class TWAPTracker:
         all_agree = agreement_score == len(directions)
 
         # ── Quality Metrics ────────────────────────────────────────────
-        n_ticks = len(tracker.ticks)
         elapsed = now - tracker.started_at
         window_coverage = min(elapsed / tracker.window_duration_s, 1.0) * 100
 
-        # Stability: fewer direction flips = more stable signal
-        # Normalise: 0 flips = 1.0 stability, 20+ flips = 0.0
-        max_flips = max(n_ticks * 0.3, 20)  # Expect some noise
+        max_flips = max(n_ticks * 0.3, 20)
         stability = max(0.0, 1.0 - (tracker._direction_flips / max_flips))
 
-        # Trend strength: is TWAP moving consistently in one direction?
-        # Compare first-half TWAP vs second-half TWAP
         trend_strength = 0.0
         if n_ticks >= 10:
             mid = n_ticks // 2
@@ -288,63 +340,86 @@ class TWAPTracker:
             if first_half and second_half:
                 avg_first = sum(t.price for t in first_half) / len(first_half)
                 avg_second = sum(t.price for t in second_half) / len(second_half)
-                trend_delta = (avg_second - avg_first) / tracker.open_price * 100
-                # Positive trend_delta = price trending UP over window
-                trend_strength = trend_delta
+                trend_strength = (avg_second - avg_first) / tracker.open_price * 100
+
+        # ── Should Skip? ──────────────────────────────────────────────
+        should_skip = False
+        skip_reason = ""
+
+        if gamma_gate == "BLOCK":
+            should_skip = True
+            skip_reason = f"Gamma BLOCK: market strongly disagrees (our token <15¢)"
+        elif gamma_gate == "SKIP":
+            should_skip = True
+            skip_reason = f"Gamma SKIP: market leans against us (our token 15-25¢)"
+        elif gamma_gate == "PRICED_IN":
+            should_skip = True
+            skip_reason = f"Gamma PRICED_IN: already >60¢, bad R/R"
+        elif trend_mixed and not all_agree:
+            should_skip = True
+            skip_reason = f"Mixed signal: trend_pct={trend_pct:.2f} (40-60%), sources disagree"
 
         # ── Confidence Boost ───────────────────────────────────────────
-        # This modifier is ADDED to the base confidence from the existing evaluator
         confidence_boost = 0.0
 
-        # 1. Agreement bonus: all sources agree → +0.10
-        if all_agree and len(directions) >= 3:
-            confidence_boost += 0.10
-        elif all_agree and len(directions) == 2:
-            confidence_boost += 0.05
+        if should_skip:
+            confidence_boost = -0.20  # Max penalty
+        else:
+            # 1. All agree + consistent trend → strong boost
+            if all_agree and trend_consistent:
+                confidence_boost += 0.15
+            elif all_agree:
+                confidence_boost += 0.10
 
-        # 2. TWAP-Gamma agreement (strongest signal) → +0.08
-        if twap_gamma_agree and gamma_direction:
-            confidence_boost += 0.08
-
-        # 3. Stability bonus: TWAP direction was consistent → +0.05
-        if stability > 0.7:
-            confidence_boost += 0.05
-
-        # 4. Strong Gamma skew (token price far from 50¢) → +0.05
-        if gamma_skew > 0.08:  # Token at 58¢+ in favoured direction
-            confidence_boost += 0.05
-
-        # 5. Trend confirmation: trend matches TWAP direction → +0.05
-        if trend_strength != 0:
-            trend_dir = "UP" if trend_strength > 0 else "DOWN"
-            if trend_dir == twap_direction and abs(trend_strength) > 0.01:
+            # 2. TWAP-Gamma agreement
+            if twap_gamma_agree and gamma_direction:
                 confidence_boost += 0.05
 
-        # 6. Penalty: TWAP disagrees with point delta → -0.10
-        if not twap_point_agree and abs(twap_delta_pct) > 0.01:
-            confidence_boost -= 0.10
+            # 3. High trend consistency (>70% on one side)
+            if trend_pct > 0.70 or trend_pct < 0.30:
+                confidence_boost += 0.05
 
-        # 7. Penalty: Gamma opposes TWAP → -0.08
-        if gamma_direction and not twap_gamma_agree and gamma_skew > 0.05:
-            confidence_boost -= 0.08
+            # 4. Momentum confirms direction
+            if momentum_direction == twap_direction and abs(momentum_pct) > 0.005:
+                confidence_boost += 0.03
 
-        # 8. Penalty: low stability (lots of direction flips) → -0.05
-        if stability < 0.3:
-            confidence_boost -= 0.05
+            # 5. Gamma in sweet spot (40-60¢)
+            if gamma_gate == "OK":
+                confidence_boost += 0.02
 
-        # Clamp boost
-        confidence_boost = max(-0.20, min(0.20, confidence_boost))
+            # Penalties
+            # 6. TWAP disagrees with point delta
+            if not twap_point_agree and abs(twap_delta_pct) > 0.01:
+                confidence_boost -= 0.08
+
+            # 7. Gamma reduced confidence
+            if gamma_gate == "REDUCE":
+                confidence_boost -= 0.05
+
+            # 8. Low stability
+            if stability < 0.3:
+                confidence_boost -= 0.05
+
+            # 9. Momentum opposes TWAP (dipping at evaluation time)
+            if momentum_direction != twap_direction and abs(momentum_pct) > 0.01:
+                confidence_boost -= 0.08
+
+        confidence_boost = max(-0.20, min(0.25, confidence_boost))
 
         # ── Recommended Direction ──────────────────────────────────────
-        # Priority: TWAP direction (smoothed signal), confirmed by agreement
-        # If TWAP and point disagree: use TWAP (it's more robust)
-        # If all disagree: use majority
-        if all_agree:
+        # Use TWAP + trend consistency as primary signal
+        # Point delta is noisy at T-60s, TWAP is smoothed
+        if should_skip:
+            recommended_direction = twap_direction  # Still set, but should_skip=True
+        elif all_agree and trend_consistent:
             recommended_direction = majority_direction
-        elif twap_gamma_agree and gamma_direction:
-            recommended_direction = twap_direction  # TWAP + Gamma beats point
+        elif twap_gamma_agree and trend_consistent:
+            recommended_direction = twap_direction
+        elif trend_consistent:
+            # Trend says one direction clearly — use it
+            recommended_direction = "UP" if trend_pct > 0.60 else "DOWN"
         else:
-            recommended_direction = twap_direction  # Default to TWAP
+            recommended_direction = twap_direction
 
         result = TWAPResult(
             twap_price=twap_price,
@@ -352,10 +427,16 @@ class TWAPTracker:
             point_delta_pct=point_delta_pct,
             twap_direction=twap_direction,
             point_direction=point_direction,
+            trend_pct=trend_pct,
+            trend_consistent=trend_consistent,
+            trend_mixed=trend_mixed,
+            momentum_pct=momentum_pct,
+            momentum_direction=momentum_direction,
             gamma_direction=gamma_direction,
             gamma_up_price=g_up,
             gamma_down_price=g_down,
             gamma_skew=gamma_skew,
+            gamma_gate=gamma_gate,
             all_agree=all_agree,
             twap_gamma_agree=twap_gamma_agree,
             twap_point_agree=twap_point_agree,
@@ -365,6 +446,8 @@ class TWAPTracker:
             twap_stability=stability,
             trend_strength=trend_strength,
             recommended_direction=recommended_direction,
+            should_skip=should_skip,
+            skip_reason=skip_reason,
             confidence_boost=confidence_boost,
         )
 
