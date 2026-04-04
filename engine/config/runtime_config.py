@@ -124,10 +124,10 @@ class RuntimeConfig:
         # G1: Staggered asset execution
         self.order_stagger_seconds: float = _env_float("ORDER_STAGGER_SECONDS", 5.0)
         # G3: Single best signal mode (only trade the top-scoring asset per window)
-        self.single_best_signal: bool = os.environ.get("SINGLE_BEST_SIGNAL", "true").lower() == "true"
+        self.single_best_signal: bool = os.environ.get("SINGLE_BEST_SIGNAL", "false").lower() == "true"
         # G4: Order rate limiter
         self.max_orders_per_hour: int = _env_int("MAX_ORDERS_PER_HOUR", 10)
-        self.min_order_interval_seconds: float = _env_float("MIN_ORDER_INTERVAL_SECONDS", 30.0)
+        self.min_order_interval_seconds: float = _env_float("MIN_ORDER_INTERVAL_SECONDS", 4.0)
 
         # ── Sync metadata ─────────────────────────────────────────────────
         self._active_config_id: Optional[int] = None
