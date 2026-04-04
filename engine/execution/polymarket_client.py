@@ -333,7 +333,7 @@ class PolymarketClient:
             parts = market_slug.split("-")
             window_ts = int(parts[-1])
             duration = 900 if is_15m else 300
-            expiration = window_ts + duration  # Unix timestamp when window resolves
+            expiration = window_ts + duration + 120  # +2min buffer for Polymarket 1min threshold
         except (ValueError, IndexError):
             pass  # Fallback to no expiry (GTC)
 

@@ -990,14 +990,46 @@ class FiveMinVPINStrategy(BaseStrategy):
             self._log.error("execute.no_token_id", direction=signal.direction)
             return
         
-        # Price: use real Gamma API prices when available (live mode),
-        # fall back to delta-based approximation (paper mode)
-        if direction == "YES" and window.up_price is not None:
-            token_price = window.up_price
-        elif direction == "NO" and window.down_price is not None:
-            token_price = window.down_price
-        else:
-            token_price = self._delta_to_token_price(signal.delta_pct)
+        # Price: SMART LIMIT PRICING (v5.4)
+        # 1. Place limit at our delta-model price (near 50c — best R/R)
+        # 2. If unfilled after 15s, check bestAsk from Gamma
+        # 3. If bestAsk <= 65c cap, bump to bestAsk (accept market price)
+        # 4. If bestAsk > 65c, skip (too expensive, no edge)
+        #
+        # This matches the paper system's winning approach:
+        #   92% WR with tokens at $0.45-$0.51 sweet spot
+        
+        # Step 1: Our target price from delta model
+        token_price = self._delta_to_token_price(signal.delta_pct)
+        
+        # Also fetch fresh Gamma bestAsk for potential bump later
+        _fresh_best_ask = None
+        _tf_str = "15m" if window.duration_secs == 900 else "5m"
+        _slug = f"{window.asset.lower()}-updown-{_tf_str}-{window.window_ts}"
+        try:
+            import aiohttp as _aiohttp
+            async with _aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as _sess:
+                _url = f"https://gamma-api.polymarket.com/events?slug={_slug}"
+                async with _sess.get(_url, timeout=_aiohttp.ClientTimeout(total=5)) as _resp:
+                    if _resp.status == 200:
+                        _data = await _resp.json()
+                        if _data and isinstance(_data, list) and _data[0].get("markets"):
+                            _mkt = _data[0]["markets"][0]
+                            _ba = _mkt.get("bestAsk")
+                            if _ba is not None:
+                                _fresh_up = float(_ba)
+                                _fresh_down = round(1.0 - _fresh_up, 4)
+                                _fresh_best_ask = _fresh_up if direction == "YES" else _fresh_down
+        except Exception:
+            pass
+        
+        self._log.info(
+            "execute.smart_pricing",
+            direction=direction,
+            delta_model_price=f"${token_price:.4f}",
+            gamma_bestask=f"${_fresh_best_ask:.4f}" if _fresh_best_ask else "unavailable",
+            strategy="limit_at_model_price",
+        )
         
         price = Decimal(str(round(token_price, 4)))
         tf = "15m" if window.duration_secs == 900 else "5m"
