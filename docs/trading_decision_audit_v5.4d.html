@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Novakash v5.4d Trading Engine Analysis</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', 'Helvetica', sans-serif;
+            line-height: 1.6;
+            color: #1a1a1a;
+            background: #f5f5f5;
+            padding: 40px 20px;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            padding: 60px 50px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            border-radius: 8px;
+        }
+
+        h1 {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: #0a0a0a;
+            letter-spacing: -0.5px;
+        }
+
+        .subtitle {
+            font-size: 16px;
+            color: #666;
+            margin-bottom: 40px;
+            border-bottom: 2px solid #e0e0e0;
+            padding-bottom: 20px;
+        }
+
+        h2 {
+            font-size: 24px;
+            font-weight: 700;
+            margin-top: 40px;
+            margin-bottom: 20px;
+            color: #0a0a0a;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        h2::before {
+            content: attr(data-number);
+            display: inline-block;
+            width: 36px;
+            height: 36px;
+            background: #2563eb;
+            color: white;
+            border-radius: 4px;
+            font-size: 18px;
+            line-height: 36px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+
+        h3 {
+            font-size: 18px;
+            font-weight: 600;
+            margin-top: 24px;
+            margin-bottom: 12px;
+            color: #1a1a1a;
+        }
+
+        p {
+            margin-bottom: 16px;
+            color: #333;
+            line-height: 1.7;
+        }
+
+        .decision-tree {
+            background: #f9fafb;
+            border-left: 4px solid #2563eb;
+            padding: 24px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+
+        .decision-tree ol {
+            margin-left: 24px;
+            color: #333;
+        }
+
+        .decision-tree li {
+            margin-bottom: 12px;
+            line-height: 1.7;
+        }
+
+        .decision-tree strong {
+            color: #0a0a0a;
+            font-weight: 600;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 24px 0;
+            font-size: 14px;
+        }
+
+        th {
+            background: #f3f4f6;
+            padding: 14px 16px;
+            text-align: left;
+            font-weight: 600;
+            color: #1a1a1a;
+            border-bottom: 2px solid #e5e7eb;
+        }
+
+        td {
+            padding: 14px 16px;
+            border-bottom: 1px solid #e5e7eb;
+            color: #333;
+        }
+
+        tbody tr:nth-child(even) {
+            background: #f9fafb;
+        }
+
+        tbody tr:hover {
+            background: #f3f4f6;
+        }
+
+        .impact-critical {
+            color: #dc2626;
+            font-weight: 600;
+        }
+
+        .impact-minor {
+            color: #f59e0b;
+            font-weight: 600;
+        }
+
+        .impact-zero {
+            color: #6b7280;
+            font-weight: 600;
+        }
+
+        .impact-moderate {
+            color: #0891b2;
+            font-weight: 600;
+        }
+
+        .callout {
+            margin: 24px 0;
+            padding: 20px;
+            border-radius: 6px;
+            border-left: 4px solid;
+        }
+
+        .callout.warning {
+            background: #fef3c7;
+            border-left-color: #f59e0b;
+        }
+
+        .callout.warning h4 {
+            color: #b45309;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .callout.warning p {
+            color: #92400e;
+            margin: 0;
+        }
+
+        .callout.danger {
+            background: #fee2e2;
+            border-left-color: #dc2626;
+        }
+
+        .callout.danger h4 {
+            color: #7f1d1d;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .callout.danger p {
+            color: #991b1b;
+            margin: 0;
+        }
+
+        .callout.insight {
+            background: #dbeafe;
+            border-left-color: #2563eb;
+        }
+
+        .callout.insight h4 {
+            color: #1e40af;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .callout.insight p {
+            color: #1e3a8a;
+            margin: 0;
+            line-height: 1.7;
+        }
+
+        .gap-analysis {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin: 24px 0;
+        }
+
+        .gap-card {
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            padding: 20px;
+        }
+
+        .gap-card h4 {
+            font-weight: 600;
+            margin-bottom: 12px;
+            font-size: 16px;
+        }
+
+        .gap-card.paper {
+            border-top: 4px solid #10b981;
+        }
+
+        .gap-card.paper h4 {
+            color: #10b981;
+        }
+
+        .gap-card.live {
+            border-top: 4px solid #ef4444;
+        }
+
+        .gap-card.live h4 {
+            color: #ef4444;
+        }
+
+        .gap-card ul {
+            list-style: none;
+            margin-left: 0;
+        }
+
+        .gap-card li {
+            padding-left: 20px;
+            margin-bottom: 8px;
+            position: relative;
+            color: #555;
+            font-size: 14px;
+        }
+
+        .gap-card.paper li::before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #10b981;
+            font-weight: bold;
+        }
+
+        .gap-card.live li::before {
+            content: "✗";
+            position: absolute;
+            left: 0;
+            color: #ef4444;
+            font-weight: bold;
+        }
+
+        .recommendations {
+            margin: 24px 0;
+        }
+
+        .recommendation-item {
+            margin-bottom: 20px;
+            padding: 16px;
+            background: #f9fafb;
+            border-radius: 6px;
+            border-left: 4px solid #2563eb;
+        }
+
+        .recommendation-item.urgent {
+            border-left-color: #dc2626;
+            background: #fef2f2;
+        }
+
+        .rec-priority {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .rec-priority.urgent {
+            background: #dc2626;
+            color: white;
+        }
+
+        .rec-priority.normal {
+            background: #2563eb;
+            color: white;
+        }
+
+        .recommendation-item h4 {
+            margin-bottom: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            color: #0a0a0a;
+        }
+
+        .recommendation-item p {
+            margin-bottom: 8px;
+            color: #555;
+            font-size: 14px;
+        }
+
+        .recommendation-item ul {
+            margin-left: 20px;
+            margin-bottom: 0;
+        }
+
+        .recommendation-item li {
+            margin-bottom: 6px;
+            color: #555;
+            font-size: 14px;
+        }
+
+        .metric {
+            display: inline-block;
+            background: #f0f4ff;
+            color: #2563eb;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-weight: 600;
+            font-size: 13px;
+            margin: 0 2px;
+        }
+
+        .metric.bad {
+            background: #fef2f2;
+            color: #dc2626;
+        }
+
+        .metric.good {
+            background: #f0fdf4;
+            color: #10b981;
+        }
+
+        .footer {
+            margin-top: 60px;
+            padding-top: 20px;
+            border-top: 2px solid #e5e7eb;
+            text-align: center;
+            color: #999;
+            font-size: 13px;
+        }
+
+        @media print {
+            body {
+                background: white;
+                padding: 0;
+            }
+
+            .container {
+                box-shadow: none;
+                max-width: 100%;
+            }
+
+            .gap-analysis {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .decision-flow {
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            padding: 24px;
+            margin: 20px 0;
+            font-size: 14px;
+        }
+
+        .flow-step {
+            margin-bottom: 16px;
+            display: flex;
+            gap: 12px;
+        }
+
+        .flow-number {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            background: #2563eb;
+            color: white;
+            border-radius: 50%;
+            font-weight: 600;
+            font-size: 13px;
+            flex-shrink: 0;
+        }
+
+        .flow-content {
+            flex: 1;
+        }
+
+        .flow-content strong {
+            color: #0a0a0a;
+            display: block;
+            margin-bottom: 4px;
+        }
+
+        .flow-content code {
+            background: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-family: 'Monaco', monospace;
+            color: #2563eb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Novakash v5.4d Trading Engine</h1>
+        <div class="subtitle">Comprehensive Analysis: Decision Logic, Data Sources, and Live Performance Gaps</div>
+
+        <!-- Section 1: Decision Tree -->
+        <h2 data-number="1">What Actually Impacts Trading Decisions</h2>
+        
+        <p>The Novakash trading strategy follows a strict hierarchical decision tree. Each layer acts as a filter, and orders only proceed when <strong>all</strong> conditions pass. Understanding this flow is critical to diagnosing live performance.</p>
+
+        <div class="decision-flow">
+            <div class="flow-step">
+                <div class="flow-number">1</div>
+                <div class="flow-content">
+                    <strong>VPIN Gate (≥0.45)</strong>
+                    <p>PRIMARY filter. No informed flow detected = <strong>NO TRADE</strong>. This is the gating mechanism for all signals.</p>
+                </div>
+            </div>
+
+            <div class="flow-step">
+                <div class="flow-number">2</div>
+                <div class="flow-content">
+                    <strong>Regime Detection</strong>
+                    <p>Based on VPIN value, apply different delta thresholds:</p>
+                    <ul style="margin-left: 12px; margin-top: 8px;">
+                        <li><strong>CASCADE (VPIN ≥ 0.65):</strong> momentum, delta ≥ 0.03% (scaled down at higher VPIN)</li>
+                        <li><strong>TRANSITION (0.55–0.65):</strong> momentum, delta ≥ 0.05%</li>
+                        <li><strong>NORMAL (0.45–0.55):</strong> momentum, delta ≥ 0.05%</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="flow-step">
+                <div class="flow-number">3</div>
+                <div class="flow-content">
+                    <strong>Direction</strong>
+                    <p>ALL MOMENTUM (follow delta). Contrarian strategy was removed in v5.1.</p>
+                </div>
+            </div>
+
+            <div class="flow-step">
+                <div class="flow-number">4</div>
+                <div class="flow-content">
+                    <strong>Confidence Level</strong>
+                    <p>HIGH (δ > 0.10%), MODERATE (δ > 0.02%), LOW (δ > 0.005%). No trade below δ > 0.005%.</p>
+                </div>
+            </div>
+
+            <div class="flow-step">
+                <div class="flow-number">5</div>
+                <div class="flow-content">
+                    <strong>CoinGlass Modifier</strong>
+                    <p>Only OI delta > 0.10% is active (+0.10 boost). All other CG signals are <strong>zeroed</strong>.</p>
+                </div>
+            </div>
+
+            <div class="flow-step">
+                <div class="flow-number">6</div>
+                <div class="flow-content">
+                    <strong>CG Veto (NEW v5.4d)</strong>
+                    <p>Blocks trade if 3+ CoinGlass signals oppose direction. Veto fires even if modifier is zeroed.</p>
+                </div>
+            </div>
+
+            <div class="flow-step">
+                <div class="flow-number">7</div>
+                <div class="flow-content">
+                    <strong>Risk Checks</strong>
+                    <p>Exposure limit, daily loss limit, rate limiter, circuit breaker. Any breach = <strong>NO TRADE</strong>.</p>
+                </div>
+            </div>
+
+            <div class="flow-step">
+                <div class="flow-number">8</div>
+                <div class="flow-content">
+                    <strong>Pricing & Order</strong>
+                    <p>Gamma bestAsk + CLOB spread bump. Capped at <span class="metric">65¢ (5m)</span> / <span class="metric">70¢ (15m)</span>, floor <span class="metric">30¢</span>.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="callout insight">
+            <h4>Key Insight: Filter Hierarchy</h4>
+            <p>VPIN is the gating mechanism. Regime determines delta threshold. Direction, confidence, and modifiers apply only after VPIN passes. CG veto can kill otherwise-valid trades. Risk checks are last-mile guardrails. When a trade fails to fill or underperforms, trace back through this tree to identify which filter broke.</p>
+        </div>
+
+        <!-- Section 2: Data Sources -->
+        <h2 data-number="2">Data Sources and Their Actual Impact</h2>
+
+        <p>Not all data sources are created equal. Some are <strong>critical path</strong>; others are <strong>auxiliary</strong> or <strong>disconnected</strong>. Here's the honest breakdown:</p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Data Source</th>
+                    <th>What It Provides</th>
+                    <th>Impact on Decision</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Binance WebSocket</strong></td>
+                    <td>BTC aggTrade → VPIN calculation</td>
+                    <td><span class="impact-critical">CRITICAL — VPIN is the #1 filter</span></td>
+                </tr>
+                <tr>
+                    <td><strong>Binance REST</strong></td>
+                    <td>Non-BTC spot prices (ETH, SOL, XRP)</td>
+                    <td><span class="impact-critical">CRITICAL — delta calculation</span></td>
+                </tr>
+                <tr>
+                    <td><strong>Polymarket 5min feed</strong></td>
+                    <td>Window open/close, token IDs, prices</td>
+                    <td><span class="impact-critical">CRITICAL — defines trading windows</span></td>
+                </tr>
+                <tr>
+                    <td><strong>CoinGlass OI delta</strong></td>
+                    <td>Open Interest change %</td>
+                    <td><span class="impact-minor">MINOR — only fires when OI Δ > 0.10%</span></td>
+                </tr>
+                <tr>
+                    <td><strong>CoinGlass L/S ratio</strong></td>
+                    <td>Crowd positioning</td>
+                    <td><span class="impact-zero">ZERO (zeroed in v5.1, but contributes to veto)</span></td>
+                </tr>
+                <tr>
+                    <td><strong>CoinGlass Smart Money</strong></td>
+                    <td>Top trader positioning</td>
+                    <td><span class="impact-zero">ZERO (zeroed, contributes to veto)</span></td>
+                </tr>
+                <tr>
+                    <td><strong>CoinGlass Taker Volume</strong></td>
+                    <td>Buy/sell aggression</td>
+                    <td><span class="impact-zero">ZERO (zeroed, contributes to veto)</span></td>
+                </tr>
+                <tr>
+                    <td><strong>CoinGlass Funding Rate</strong></td>
+                    <td>Funding rate</td>
+                    <td><span class="impact-zero">ZERO (zeroed, contributes to veto)</span></td>
+                </tr>
+                <tr>
+                    <td><strong>CoinGlass Liquidations</strong></td>
+                    <td>Liquidation volume</td>
+                    <td><span class="impact-zero">ZERO (not even in veto)</span></td>
+                </tr>
+                <tr>
+                    <td><strong>Gamma API</strong></td>
+                    <td>Token bestAsk for pricing</td>
+                    <td><span class="impact-critical">CRITICAL — determines entry price</span></td>
+                </tr>
+                <tr>
+                    <td><strong>CLOB Order Book</strong></td>
+                    <td>Bid-ask spread</td>
+                    <td><span class="impact-moderate">MODERATE — determines spread bump</span></td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="callout insight">
+            <h4>Data Quality Snapshot</h4>
+            <p>Three data sources are on the critical path: <strong>VPIN (BTC)</strong>, <strong>delta (Binance REST)</strong>, and <strong>Polymarket windows</strong>. If any of these fail or lag, the strategy breaks. CoinGlass signals are mostly decorative—they're zeroed as weights but still fire the veto. Gamma bestAsk is critical for pricing, but liquidity (CLOB) is where the real problem lives.</p>
+        </div>
+
+        <!-- Section 3: Critical Issue -->
+        <h2 data-number="3">Critical Issue: Zero Fill Rate in Live Mode</h2>
+
+        <p>Live logs show a consistent, catastrophic pattern: <strong>orders are placed but not filled</strong>. Here are recent examples:</p>
+
+        <div style="background: #fef2f2; border-left: 4px solid #ef4444; padding: 16px; margin: 16px 0; border-radius: 4px; font-size: 14px;">
+            <div style="margin-bottom: 12px;"><strong style="color: #7f1d1d;">BTC NO at $0.55</strong> → UNFILLED for 30s, retry → UNFILLED</div>
+            <div style="margin-bottom: 12px;"><strong style="color: #7f1d1d;">XRP YES at $0.54</strong> → UNFILLED for 30s, retry → UNFILLED</div>
+            <div style="margin-bottom: 12px;"><strong style="color: #7f1d1d;">ETH YES at $0.44</strong> → UNFILLED for 30s, retry at $0.46 → UNFILLED</div>
+            <div><strong style="color: #7f1d1d;">ETH YES at $0.47</strong> → UNFILLED for 30s, retry → UNFILLED</div>
+        </div>
+
+        <h3>Root Cause Analysis</h3>
+
+        <p>The CLOB spread reading <strong>0.980 = 98¢</strong> tells the story: there is essentially <strong>NO LIQUIDITY</strong> on the order book for UpDown tokens.</p>
+
+        <div class="callout danger">
+            <h4>The Gamma vs. CLOB Gap</h4>
+            <p>Gamma bestAsk is an <strong>indicative mid-market price</strong>—it reflects fair value in the broader market. But the actual CLOB order book has <strong>no resting sell orders</strong> near that price. The strategy places limit orders at Gamma's suggested price, but nobody is willing to sell at those levels on the CLOB.</p>
+        </div>
+
+        <p>Why does this happen?</p>
+        <ul style="margin-left: 20px; color: #555;">
+            <li><strong>Thin markets:</strong> UpDown tokens trade in low volume. There are few market makers and limited resting liquidity.</li>
+            <li><strong>Price discovery mismatch:</strong> Gamma is aggregating signals from broader markets (crypto exchanges, futures, etc.). The CLOB is isolated and often illiquid at Gamma prices.</li>
+            <li><strong>Our order size:</strong> Even small orders may exceed typical CLOB size at that price level.</li>
+        </ul>
+
+        <div class="callout warning">
+            <h4>Why Paper Mode Looked Good</h4>
+            <p>The paper (backtest) system <strong>assumed fills at model prices</strong>. It simulated instant fills at Gamma's bestAsk without checking actual CLOB liquidity. Paper never interacted with the real order book. That's why it showed 92% win rate on paper—the fills were never questioned.</p>
+        </div>
+
+        <!-- Section 4: Paper vs Live -->
+        <h2 data-number="4">The Paper vs Live Gap</h2>
+
+        <div class="gap-analysis">
+            <div class="gap-card paper">
+                <h4>Paper Mode (92% WR, $4,290 profit)</h4>
+                <ul>
+                    <li>Assumed tokens at $0.49–$0.51</li>
+                    <li>Simulated instant fills</li>
+                    <li>No order book interaction</li>
+                    <li>No slippage or failed orders</li>
+                    <li>Assumed pricing held static for 30s</li>
+                </ul>
+            </div>
+
+            <div class="gap-card live">
+                <h4>Live Mode (Multiple Losses)</h4>
+                <ul>
+                    <li>Real CLOB has tokens at 12¢–90¢ (not 50¢)</li>
+                    <li>Zero fill rate on limit orders near bestAsk</li>
+                    <li>When orders DO fill, they fill at wrong prices</li>
+                    <li>CLOB spread is 98¢ on some tokens = no liquidity</li>
+                    <li>Gamma prices move rapidly; fills lag</li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="callout insight">
+            <h4>The Core Problem</h4>
+            <p>Paper backtesting made two fatal assumptions: (1) tokens always trade near 50¢, and (2) we can always buy/sell at Gamma's bestAsk. Neither is true in live mode. The real market has thin CLOB liquidity and tokens at much wider price ranges. Backtests trained the model on synthetic data that never matched reality.</p>
+        </div>
+
+        <h3>Why the April 2 Winning Streak Was Different</h3>
+
+        <p>The system had a brief winning run on April 2 where orders <strong>did fill</strong> at reasonable prices. This raises a critical question: <strong>What changed?</strong></p>
+
+        <ul style="margin-left: 20px; color: #555;">
+            <li>Was there a temporary liquidity event? More market makers on the CLOB?</li>
+            <li>Were token prices genuinely near 50¢ at T-60s? Did the market structure shift?</li>
+            <li>Did the system use a different order type (market vs. limit)?</li>
+            <li>Did entry timing differ (T-120s vs. T-60s)?</li>
+        </ul>
+
+        <p style="margin-top: 16px;"><strong>This must be investigated.</strong> If we can isolate what made April 2 work, we can replicate it.</p>
+
+        <!-- Section 5: Recommendations -->
+        <h2 data-number="5">Recommendations (Prioritized)</h2>
+
+        <div class="recommendations">
+            <div class="recommendation-item urgent">
+                <div class="rec-priority urgent">URGENT</div>
+                <h4>1. Fix Order Type to FOK or Market-Like</h4>
+                <p><strong>Problem:</strong> GTC limit orders sit unfilled because the CLOB has no matching resting orders.</p>
+                <ul>
+                    <li><strong>Option A – Fill-or-Kill (FOK):</strong> Place FOK at a reasonable price (e.g., Gamma bestAsk ± spread). If no immediate fill, cancel and skip.</li>
+                    <li><strong>Option B – Taker Orders:</strong> Use the CLOB's "taker" order mode to aggressively hit resting bids/asks.</li>
+                    <li><strong>Option C – Investigate April 2:</strong> The winning streak used GTC limits that DID fill. What was the order type and pricing? Recreate that setup.</li>
+                </ul>
+                <p style="margin-top: 12px; font-weight: 600; color: #7f1d1d;">Impact: This is blocking 100% of trades right now.</p>
+            </div>
+
+            <div class="recommendation-item">
+                <div class="rec-priority normal">High Priority</div>
+                <h4>2. Investigate April 2 Winning Streak</h4>
+                <p><strong>Goal:</strong> Reverse-engineer what made that run profitable.</p>
+                <ul>
+                    <li>Pull logs from April 2 trading session</li>
+                    <li>Compare order prices, types, and timing vs. recent logs</li>
+                    <li>Check if market conditions were different (CLOB liquidity, token prices, VPIN)</li>
+                    <li>If it was a lucky liquidity event, note and plan for future windows</li>
+                    <li>If it was a system difference, fix current system to match</li>
+                </ul>
+                <p style="margin-top: 12px; font-weight: 600;">Timeline: 1–2 days. This unlocks the rest of the optimization.</p>
+            </div>
+
+            <div class="recommendation-item">
+                <div class="rec-priority normal">Normal Priority</div>
+                <h4>3. Re-Evaluate CoinGlass as Veto, Not Modifier</h4>
+                <p><strong>Context:</strong> 30-day backtest showed CG signals are coin flips individually. But v5.4d added the veto (blocks if 3+ signals oppose).</p>
+                <ul>
+                    <li>Run backtest with veto enabled: how many losses would it have prevented?</li>
+                    <li>Compare: losing trades blocked by veto vs. winning trades blocked by veto</li>
+                    <li>Decision: keep veto, tune threshold, or remove entirely</li>
+                </ul>
+                <p style="margin-top: 12px; font-weight: 600;">Goal: Decide if veto is a feature or a hindrance.</p>
+            </div>
+
+            <div class="recommendation-item">
+                <div class="rec-priority normal">Normal Priority</div>
+                <h4>4. Earlier Entry (T-120s or T-180s)</h4>
+                <p><strong>Hypothesis:</strong> At T-60s, the market has already moved tokens to extreme prices. At T-120s, tokens might still be near 50¢ with less certainty.</p>
+                <ul>
+                    <li>Backtest delta accuracy at T-120s vs. T-60s</li>
+                    <li>Compare fill prices: T-120s vs. T-60s</li>
+                    <li>Trade-off: lower directional accuracy but better pricing</li>
+                </ul>
+                <p style="margin-top: 12px; font-weight: 600;">Requires backtest iteration. Consider if VPIN window should extend earlier too.</p>
+            </div>
+
+            <div class="recommendation-item">
+                <div class="rec-priority normal">Normal Priority</div>
+                <h4>5. Only Trade CASCADE Regime</h4>
+                <p><strong>Data insight:</strong> Paper backtest shows NORMAL regime (VPIN 0.45–0.55) has lower win rate. CASCADE (VPIN ≥ 0.65) had 89% WR in live.</p>
+                <ul>
+                    <li>Set minimum VPIN ≥ 0.65 (skip NORMAL and TRANSITION)</li>
+                    <li>Expect fewer trades but higher quality</li>
+                    <li>A/B test: CASCADE-only vs. all regimes</li>
+                </ul>
+                <p style="margin-top: 12px; font-weight: 600;">Quick win: higher selectivity → better win rate.</p>
+            </div>
+        </div>
+
+        <div class="callout insight">
+            <h4>Prioritization Logic</h4>
+            <p><strong>URGENT (1):</strong> You can't trade if orders don't fill. This is blocking all live trades right now.<br><br><strong>High Priority (2):</strong> Reverse-engineer the winning setup. Once you know what worked, you can rebuild from there.<br><br><strong>Normal (3, 4, 5):</strong> These are optimizations. Run them in parallel once (1) and (2) are solved.</p>
+        </div>
+
+        <!-- Summary -->
+        <h2 data-number="6">Summary: The Path Forward</h2>
+
+        <p>The Novakash v5.4d decision tree is sound. VPIN is a good gating mechanism. The regime system makes sense. But <strong>the live implementation has a fatal flaw: orders don't fill</strong>.</p>
+
+        <div style="background: #f0fdf4; border-left: 4px solid #10b981; padding: 16px; margin: 20px 0; border-radius: 4px;">
+            <p><strong style="color: #065f46; display: block; margin-bottom: 12px;">Immediate Actions (This Week)</strong></p>
+            <ol style="margin-left: 20px; color: #166534;">
+                <li>Swap GTC limit orders for FOK or taker mode</li>
+                <li>Pull April 2 logs and reverse-engineer the winning setup</li>
+                <li>Test live with FOK orders on next signal</li>
+            </ol>
+        </div>
+
+        <div style="background: #dbeafe; border-left: 4px solid #2563eb; padding: 16px; margin: 20px 0; border-radius: 4px;">
+            <p><strong style="color: #1e40af; display: block; margin-bottom: 12px;">Follow-Up Actions (Next 2 Weeks)</strong></p>
+            <ol style="margin-left: 20px; color: #1e3a8a;">
+                <li>Run veto analysis on historical trades</li>
+                <li>Backtest T-120s vs. T-60s entry timing</li>
+                <li>Implement CASCADE-only filter and A/B test</li>
+            </ol>
+        </div>
+
+        <p style="margin-top: 24px;"><strong>The strategy logic is good. The problem is <span style="color: #dc2626;">execution</span>, not strategy.</strong> Fix the order type, find out what made April 2 work, and the system should start profiting again.</p>
+
+        <div class="footer">
+            <p>Novakash v5.4d Trading Engine Analysis</p>
+            <p>Generated: April 4, 2026 | Analysis covers decision tree, data sources, fill rate issue, and prioritized recommendations</p>
+        </div>
+    </div>
+</body>
+</html>

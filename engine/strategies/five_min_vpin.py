@@ -980,7 +980,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         is_error = True  # Any exception counts as consecutive error
 
         if is_4xx:
-            self._circuit_break_until = now + 900  # 15 minutes
+            self._circuit_break_until = now + 60  # 60 seconds (was 15 min)
             self._consecutive_errors = 0
             self._log.error(
                 "guardrail.circuit_breaker.4xx",
@@ -991,7 +991,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         elif is_error:
             self._consecutive_errors += 1
             if self._consecutive_errors >= 3:
-                self._circuit_break_until = now + 3600  # 1 hour
+                self._circuit_break_until = now + 180  # 3 minutes (was 1 hour)
                 self._log.error(
                     "guardrail.circuit_breaker.consecutive",
                     consecutive_errors=self._consecutive_errors,
@@ -1170,24 +1170,61 @@ class FiveMinVPINStrategy(BaseStrategy):
                 ))
             return
 
-        # Place order — pass real token_id for live mode
-        try:
-            clob_order_id = await self._poly.place_order(
-                market_slug=market_slug,
-                direction=direction,
-                price=price,
-                stake_usd=stake,
-                token_id=token_id,
-            )
-            # G4: Record order placed
-            self._record_order_placed()
-            # G5: Reset consecutive errors
-            self._on_order_success()
-        except Exception as exc:
-            # G5: Record error for circuit breaker
-            self._on_order_error(exc)
-            self._log.error("execute.order_failed", error=str(exc))
-            return
+        # Place order — TRY RFQ FIRST (UpDown tokens have no CLOB book)
+        # Then fall back to GTC limit if RFQ fails
+        clob_order_id = None
+        _rfq_fill_price = None
+        _used_rfq = False
+        
+        if not self._poly.paper_mode:
+            # Calculate size in shares
+            _shares = stake / float(price) if float(price) > 0 else 0
+            is_15m = "15m" in market_slug
+            _rfq_cap = 0.70 if is_15m else 0.65
+            
+            try:
+                rfq_id, rfq_price = await self._poly.place_rfq_order(
+                    token_id=token_id,
+                    direction=direction,
+                    price=float(price),
+                    size=_shares,
+                    max_price=_rfq_cap,
+                )
+                if rfq_id:
+                    clob_order_id = rfq_id
+                    _rfq_fill_price = rfq_price
+                    _used_rfq = True
+                    self._log.info(
+                        "trade.rfq_filled",
+                        order_id=str(rfq_id)[:20],
+                        fill_price=f"${rfq_price:.4f}" if rfq_price else "n/a",
+                    )
+                    self._record_order_placed()
+                    self._on_order_success()
+                else:
+                    self._log.info("trade.rfq_no_fill_trying_clob")
+            except Exception as rfq_exc:
+                self._log.warning("trade.rfq_error", error=str(rfq_exc)[:100])
+        
+        # Fall back to GTC limit if RFQ didn't fill
+        if not clob_order_id:
+            try:
+                clob_order_id = await self._poly.place_order(
+                    market_slug=market_slug,
+                    direction=direction,
+                    price=price,
+                    stake_usd=stake,
+                    token_id=token_id,
+                )
+                # G4: Record order placed
+                self._record_order_placed()
+                # G5: Reset consecutive errors
+                self._on_order_success()
+            except Exception as exc:
+                # G5: Record error for circuit breaker
+                self._on_order_error(exc)
+                self._log.error("execute.order_failed", error=str(exc))
+                return
         
         # Use the real CLOB order ID so we can track it on-chain
         order_id = clob_order_id if not self._poly.paper_mode else f"5min-{uuid.uuid4().hex[:12]}"

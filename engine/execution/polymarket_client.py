@@ -435,6 +435,147 @@ class PolymarketClient:
     # Low-level CLOB call
     # ------------------------------------------------------------------
 
+    async def place_rfq_order(
+        self,
+        token_id: str,
+        direction: str,
+        price: float,
+        size: float,
+        max_price: float = 0.65,
+    ) -> tuple[str | None, float | None]:
+        """
+        Place an order via RFQ (Request for Quote) system.
+        
+        UpDown tokens have NO CLOB order book — market makers respond to RFQ only.
+        
+        Flow:
+        1. Create RFQ request at our target price
+        2. Check for best quote from market makers
+        3. If quote price <= max_price, accept it
+        4. Return (order_id, fill_price) or (None, None)
+        
+        Args:
+            token_id: The conditional token ID
+            direction: "YES" or "NO"
+            price: Our target price
+            size: Number of shares to buy
+            max_price: Maximum acceptable price (cap)
+            
+        Returns:
+            (order_id, fill_price) if filled, (None, None) if not
+        """
+        if self.paper_mode:
+            self._log.info("rfq.paper_mode", price=f"${price:.4f}", size=f"{size:.1f}")
+            return (f"rfq-paper-{__import__('uuid').uuid4().hex[:12]}", price)
+        
+        if not self._clob_client:
+            self._log.error("rfq.no_clob_client")
+            return (None, None)
+        
+        try:
+            from py_clob_client.rfq import RfqUserRequest
+            from py_clob_client.order_builder.constants import BUY
+            
+            side = BUY  # We always BUY tokens
+            
+            self._log.info(
+                "rfq.creating_request",
+                token_id=token_id[:20] + "...",
+                direction=direction,
+                price=f"${price:.4f}",
+                size=f"{size:.1f}",
+                max_price=f"${max_price:.2f}",
+            )
+            
+            # Create the RFQ request
+            user_request = RfqUserRequest(
+                token_id=token_id,
+                price=price,
+                side=side,
+                size=size,
+            )
+            
+            response = await asyncio.to_thread(
+                self._clob_client.rfq.create_rfq_request,
+                user_request,
+            )
+            
+            request_id = response.get("requestId") or response.get("request_id") or response.get("id")
+            if not request_id:
+                self._log.warning("rfq.no_request_id", response=str(response)[:200])
+                return (None, None)
+            
+            self._log.info("rfq.request_created", request_id=str(request_id)[:20])
+            
+            # Wait a moment for market makers to respond
+            await asyncio.sleep(2)
+            
+            # Get best quote
+            from py_clob_client.rfq import GetRfqBestQuoteParams
+            best_quote = await asyncio.to_thread(
+                self._clob_client.rfq.get_rfq_best_quote,
+                request_id,
+            )
+            
+            if not best_quote:
+                self._log.info("rfq.no_quotes", request_id=str(request_id)[:20])
+                # Cancel the request
+                try:
+                    from py_clob_client.rfq import CancelRfqRequestParams
+                    await asyncio.to_thread(
+                        self._clob_client.rfq.cancel_rfq_request,
+                        request_id,
+                    )
+                except Exception:
+                    pass
+                return (None, None)
+            
+            # Check quote price
+            quote_price = float(best_quote.get("price", 0))
+            quote_id = best_quote.get("quoteId") or best_quote.get("quote_id") or best_quote.get("id")
+            
+            self._log.info(
+                "rfq.quote_received",
+                quote_price=f"${quote_price:.4f}",
+                max_price=f"${max_price:.2f}",
+                quote_id=str(quote_id)[:20] if quote_id else "none",
+            )
+            
+            if quote_price > max_price:
+                self._log.warning(
+                    "rfq.quote_too_expensive",
+                    quote_price=f"${quote_price:.4f}",
+                    max_price=f"${max_price:.2f}",
+                )
+                try:
+                    await asyncio.to_thread(
+                        self._clob_client.rfq.cancel_rfq_request,
+                        request_id,
+                    )
+                except Exception:
+                    pass
+                return (None, None)
+            
+            # Accept the quote
+            result = await asyncio.to_thread(
+                self._clob_client.rfq.accept_rfq_quote,
+                quote_id,
+            )
+            
+            order_id = result.get("orderID") or result.get("order_id") or result.get("id") or str(quote_id)
+            
+            self._log.info(
+                "rfq.accepted",
+                order_id=str(order_id)[:20] if order_id else "none",
+                fill_price=f"${quote_price:.4f}",
+            )
+            
+            return (str(order_id), quote_price)
+            
+        except Exception as exc:
+            self._log.warning("rfq.failed", error=str(exc)[:200])
+            return (None, None)
+
     async def place_market_order(
         self,
         token_id: str,
