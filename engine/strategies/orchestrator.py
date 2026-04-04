@@ -86,6 +86,10 @@ class Orchestrator:
         # ── TWAP Tracker (v5.7: time-weighted delta for direction) ─────────
         self._twap_tracker = TWAPTracker(max_windows=50)
 
+        # ── TimesFM Client (v6.0, initialized early for FiveMinVPIN alerts) ──
+        self._timesfm_client: Optional[TimesFMClient] = None
+        self._timesfm_strategy: Optional[TimesFMOnlyStrategy] = None
+
         log.info("orchestrator.init", paper_mode=settings.paper_mode)
 
         # ── Persistence ────────────────────────────────────────────────────────
@@ -246,8 +250,6 @@ class Orchestrator:
             log.info("orchestrator.five_min_disabled")
 
         # ── v6.0 TimesFM-Only Strategy ──────────────────────────────────────
-        self._timesfm_client: Optional[TimesFMClient] = None
-        self._timesfm_strategy: Optional[TimesFMOnlyStrategy] = None
         timesfm_enabled = os.environ.get("TIMESFM_ENABLED", "false").lower() == "true"
         timesfm_url = os.environ.get("TIMESFM_URL", "http://16.52.148.255:8000")
         timesfm_min_conf = float(os.environ.get("TIMESFM_MIN_CONFIDENCE", "0.30"))
