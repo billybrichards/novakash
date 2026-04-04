@@ -120,6 +120,15 @@ class RuntimeConfig:
         # ── Window ────────────────────────────────────────────────────────
         self.poly_window_seconds: int = _env_int("POLY_WINDOW_SECONDS", 300)
 
+        # ── Guardrails ────────────────────────────────────────────────────
+        # G1: Staggered asset execution
+        self.order_stagger_seconds: float = _env_float("ORDER_STAGGER_SECONDS", 5.0)
+        # G3: Single best signal mode (only trade the top-scoring asset per window)
+        self.single_best_signal: bool = os.environ.get("SINGLE_BEST_SIGNAL", "true").lower() == "true"
+        # G4: Order rate limiter
+        self.max_orders_per_hour: int = _env_int("MAX_ORDERS_PER_HOUR", 10)
+        self.min_order_interval_seconds: float = _env_float("MIN_ORDER_INTERVAL_SECONDS", 30.0)
+
         # ── Sync metadata ─────────────────────────────────────────────────
         self._active_config_id: Optional[int] = None
         self._active_config_name: Optional[str] = None
@@ -231,6 +240,11 @@ class RuntimeConfig:
             "arb_enabled": self.arb_enabled,
             "cascade_enabled": self.cascade_enabled,
             "preferred_venue": self.preferred_venue,
+            # Guardrails
+            "order_stagger_seconds": self.order_stagger_seconds,
+            "single_best_signal": self.single_best_signal,
+            "max_orders_per_hour": self.max_orders_per_hour,
+            "min_order_interval_seconds": self.min_order_interval_seconds,
         }
 
 

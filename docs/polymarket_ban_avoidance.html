@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { margin: 15mm; size: A4; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 10pt; line-height: 1.5; color: #1a1a2e; }
+  .page { max-width: 780px; margin: 0 auto; }
+  .page-break { page-break-after: always; }
+  .doc-header { text-align: center; padding: 30px 0 20px; border-bottom: 3px solid #e74c3c; margin-bottom: 25px; }
+  .doc-header h1 { font-size: 22pt; font-weight: 800; margin: 0; color: #1a1a2e; }
+  .doc-header .subtitle { font-size: 11pt; color: #7f8c8d; margin-top: 6px; }
+  .doc-header .meta { font-size: 9pt; color: #95a5a6; margin-top: 8px; }
+  .section { margin-bottom: 25px; }
+  .section-header { display: flex; align-items: center; gap: 12px; margin-bottom: 15px; padding-bottom: 8px; border-bottom: 2px solid #e74c3c; }
+  .section-num { background: #e74c3c; color: white; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13pt; flex-shrink: 0; }
+  .section-header h2 { margin: 0; font-size: 16pt; font-weight: 700; color: #1a1a2e; }
+  .subsection-title { font-size: 11pt; font-weight: 700; color: #2c3e50; margin: 18px 0 10px; padding-bottom: 4px; border-bottom: 1px solid #ecf0f1; }
+  .styled-table { width: 100%; border-collapse: collapse; font-size: 9pt; margin: 12px 0; }
+  .styled-table th { background: #1a1a2e; color: white; padding: 8px 10px; text-align: left; font-weight: 600; }
+  .styled-table td { padding: 7px 10px; border-bottom: 1px solid #ecf0f1; }
+  .styled-table tr:nth-child(even) { background: #f8f9fa; }
+  .callout { background: #fef9e7; border-left: 4px solid #f39c12; padding: 10px 14px; margin: 12px 0; border-radius: 0 6px 6px 0; font-size: 9.5pt; }
+  .callout-red { background: #fdedec; border-left-color: #e74c3c; }
+  .callout-green { background: #eafaf1; border-left-color: #2ecc71; }
+  .callout-blue { background: #ebf5fb; border-left-color: #3498db; }
+  .rule-box { background: #1a1a2e; color: white; padding: 14px 18px; border-radius: 10px; margin: 12px 0; font-size: 9.5pt; }
+  .rule-box .rule-title { color: #e74c3c; font-weight: 700; font-size: 11pt; margin-bottom: 6px; }
+  .rule-box ul { margin: 4px 0; padding-left: 18px; }
+  .rule-box li { margin: 4px 0; color: rgba(255,255,255,0.85); }
+  .rule-box .do { color: #2ecc71; font-weight: 600; }
+  .rule-box .dont { color: #e74c3c; font-weight: 600; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 8pt; font-weight: 700; }
+  .badge-critical { background: #e74c3c; color: white; }
+  .badge-high { background: #f39c12; color: white; }
+  .badge-medium { background: #3498db; color: white; }
+  p { margin: 6px 0; font-size: 9.5pt; }
+  code { background: #f0f0f0; padding: 1px 5px; border-radius: 3px; font-size: 8.5pt; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="doc-header">
+    <h1>Polymarket Bot Ban Avoidance Guide</h1>
+    <div class="subtitle">Rules, Patterns, and Architecture for Automated Trading Without Getting Banned</div>
+    <div class="meta">Generated: April 4, 2026 | For: Novakash Engine | Status: CRITICAL — Address 0x2e42... banned</div>
+  </div>
+
+  <!-- SECTION 1: WHAT HAPPENED -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">1</div>
+      <h2>What Happened</h2>
+    </div>
+
+    <div class="callout-red callout">
+      <strong>Ban Event:</strong> April 4, 2026 ~01:14 UTC<br>
+      <strong>Address:</strong> <code>0x2e420915e26dd584db550bb1c54912bfbbf3e87c</code><br>
+      <strong>Error:</strong> <code>PolyApiException[status_code=400, error_message={'error': "'0x2e42...' address banned"}]</code><br>
+      <strong>Context:</strong> Engine switched from paper → live mode, attempted 5 orders across BTC/ETH/SOL in ~2 seconds
+    </div>
+
+    <div class="subsection-title">Probable Trigger Factors</div>
+    <table class="styled-table">
+      <thead><tr><th>Factor</th><th>Risk Level</th><th>What Happened</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>Burst Order Pattern</strong></td>
+          <td><span class="badge badge-critical">CRITICAL</span></td>
+          <td>5 orders across 3 assets in 2 seconds. Classic bot fingerprint.</td>
+        </tr>
+        <tr>
+          <td><strong>Geographic Block</strong></td>
+          <td><span class="badge badge-critical">CRITICAL</span></td>
+          <td>Railway CDN edge: <code>VIE</code> (Vienna). UK is geo-blocked by Polymarket. Railway Europe region likely routes through blocked countries.</td>
+        </tr>
+        <tr>
+          <td><strong>Server IP Pattern</strong></td>
+          <td><span class="badge badge-high">HIGH</span></td>
+          <td>Orders from a cloud provider IP (Railway), not residential. Polymarket flags datacenter IPs.</td>
+        </tr>
+        <tr>
+          <td><strong>Multi-Asset Sweep</strong></td>
+          <td><span class="badge badge-high">HIGH</span></td>
+          <td>Simultaneous orders on BTC, ETH, SOL Up/Down markets. No human trades 3 assets in 2 seconds.</td>
+        </tr>
+        <tr>
+          <td><strong>Order Type Pattern</strong></td>
+          <td><span class="badge badge-medium">MEDIUM</span></td>
+          <td>All GTC/GTD limit orders with precise decimal stakes ($3.43, $4.31). Human bets are round numbers.</td>
+        </tr>
+        <tr>
+          <td><strong>No Prior Manual Activity</strong></td>
+          <td><span class="badge badge-medium">MEDIUM</span></td>
+          <td>Account may have gone straight from dormant → burst automated trading with no gradual warm-up.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="page-break"></div>
+
+  <!-- SECTION 2: POLYMARKET GEO RESTRICTIONS -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">2</div>
+      <h2>Polymarket Geographic Restrictions</h2>
+    </div>
+
+    <div class="callout-red callout">
+      <strong>⚠️ UK IS BLOCKED.</strong> Polymarket's geoblock list includes GB (United Kingdom). Any orders from a UK IP will be rejected. This is likely the PRIMARY cause of the ban — even if Railway is in Europe, the IP may resolve to a UK-affiliated range, or the account was flagged for UK residency.
+    </div>
+
+    <div class="subsection-title">Blocked Countries (relevant subset)</div>
+    <table class="styled-table">
+      <thead><tr><th>Code</th><th>Country</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td><strong>GB</strong></td><td><strong>United Kingdom</strong></td><td><span class="badge badge-critical">BLOCKED</span></td></tr>
+        <tr><td>US</td><td>United States</td><td><span class="badge badge-critical">BLOCKED</span></td></tr>
+        <tr><td>FR</td><td>France</td><td><span class="badge badge-critical">BLOCKED</span></td></tr>
+        <tr><td>DE</td><td>Germany</td><td><span class="badge badge-critical">BLOCKED</span></td></tr>
+        <tr><td>IT</td><td>Italy</td><td><span class="badge badge-critical">BLOCKED</span></td></tr>
+        <tr><td>NL</td><td>Netherlands</td><td><span class="badge badge-critical">BLOCKED</span></td></tr>
+        <tr><td>AU</td><td>Australia</td><td><span class="badge badge-critical">BLOCKED</span></td></tr>
+        <tr><td>SG</td><td>Singapore</td><td>Close-only</td></tr>
+      </tbody>
+    </table>
+    <p>Full list at <code>https://docs.polymarket.com/api-reference/geoblock.md</code></p>
+
+    <div class="callout-blue callout">
+      <strong>Allowed regions for hosting:</strong> Most of Southeast Asia, South America, Middle East, Africa, parts of Eastern Europe. Consider Railway deployment in <code>us-west</code> region with a VPN/proxy to an allowed country, or use a VPS in an allowed region (e.g., Dubai, Brazil, Japan, South Korea, India).
+    </div>
+  </div>
+
+  <!-- SECTION 3: THE 12 RULES -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">3</div>
+      <h2>The 12 Rules for Bot Survival</h2>
+    </div>
+
+    <div class="rule-box">
+      <div class="rule-title">Rule 1: NEVER Trade from a Blocked Country</div>
+      <ul>
+        <li class="dont">✗ Don't deploy to Railway Europe (routes through DE/NL/AT)</li>
+        <li class="dont">✗ Don't use a UK residential IP</li>
+        <li class="do">✓ Deploy to a VPS in Japan, South Korea, Brazil, India, or UAE</li>
+        <li class="do">✓ Check <code>GET https://polymarket.com/api/geoblock</code> from your server BEFORE enabling live trading</li>
+        <li class="do">✓ Add a startup geoblock check to the engine — refuse to start in live mode if blocked</li>
+      </ul>
+    </div>
+
+    <div class="rule-box">
+      <div class="rule-title">Rule 2: ONE Asset, ONE Order at a Time</div>
+      <ul>
+        <li class="dont">✗ Don't fire 5 orders across 3 assets in 2 seconds</li>
+        <li class="dont">✗ Don't trade multiple timeframes (5m + 15m) simultaneously</li>
+        <li class="do">✓ Trade ONE asset per 5-minute window</li>
+        <li class="do">✓ Add 30-60 second delays between orders on different assets</li>
+        <li class="do">✓ Prioritise: pick the best signal, trade only that one</li>
+      </ul>
+    </div>
+
+    <div class="rule-box">
+      <div class="rule-title">Rule 3: Humanise Your Order Pattern</div>
+      <ul>
+        <li class="dont">✗ Don't stake $3.431912785 (7 decimal precision = bot)</li>
+        <li class="dont">✗ Don't always use the exact same entry timing (T-60.000s)</li>
+        <li class="do">✓ Round stakes to $0.50 increments ($3.50, $4.00, $5.00)</li>
+        <li class="do">✓ Add random jitter: T-55s to T-65s instead of exact T-60s</li>
+        <li class="do">✓ Vary order sizes ±15% randomly</li>
+      </ul>
+    </div>
+
+    <div class="rule-box">
+      <div class="rule-title">Rule 4: Rate Limit EVERYTHING</div>
+      <ul>
+        <li class="dont">✗ Don't retry immediately on failure</li>
+        <li class="dont">✗ Don't poll order status every 5 seconds</li>
+        <li class="do">✓ Maximum 1 order per 30 seconds</li>
+        <li class="do">✓ Maximum 10 orders per hour</li>
+        <li class="do">✓ Add exponential backoff on any 4xx error</li>
+        <li class="do">✓ If order fails, wait 5+ minutes before retrying</li>
+      </ul>
+    </div>
+
+    <div class="rule-box">
+      <div class="rule-title">Rule 5: No +2¢ Retry Pattern</div>
+      <ul>
+        <li class="dont">✗ Don't cancel and re-submit at a higher price — classic bot signal</li>
+        <li class="dont">✗ Don't auto-bump prices in a tight loop</li>
+        <li class="do">✓ Place one order at a fair price. If it doesn't fill, accept it.</li>
+        <li class="do">✓ If you must retry, wait 60+ seconds and treat it as a new order</li>
+      </ul>
+    </div>
+
+    <div class="rule-box">
+      <div class="rule-title">Rule 6: Warm Up New Wallets</div>
+      <ul>
+        <li class="dont">✗ Don't go from zero activity → 50 automated trades</li>
+        <li class="do">✓ First week: 1-3 manual trades per day via the web UI</li>
+        <li class="do">✓ Second week: 5-10 trades per day, mix of manual and API</li>
+        <li class="do">✓ Third week+: gradually increase API volume</li>
+        <li class="do">✓ Always maintain some manual web UI activity on the account</li>
+      </ul>
+    </div>
+
+    <div class="rule-box">
+      <div class="rule-title">Rule 7: Use Residential/Mobile Proxies</div>
+      <ul>
+        <li class="dont">✗ Don't trade from datacenter IPs (AWS, Railway, GCP, etc.)</li>
+        <li class="do">✓ Route API calls through a residential proxy in an allowed country</li>
+        <li class="do">✓ Rotate proxy IPs periodically (but not too fast — that's suspicious too)</li>
+        <li class="do">✓ Services: Bright Data, Oxylabs, SmartProxy (residential rotating)</li>
+      </ul>
+    </div>
+
+    <div class="rule-box">
+      <div class="rule-title">Rule 8: Separate Read and Write Endpoints</div>
+      <ul>
+        <li class="do">✓ Read operations (Gamma API, order book, prices) → direct from server, high frequency OK</li>
+        <li class="do">✓ Write operations (place order, cancel) → through residential proxy, rate limited</li>
+        <li class="do">✓ This reduces proxy costs and suspicious write-pattern exposure</li>
+      </ul>
+    </div>
+
+    <div class="rule-box">
+      <div class="rule-title">Rule 9: Use GTD (Good Till Date), Not GTC</div>
+      <ul>
+        <li class="do">✓ Set orders to expire in 60-120 seconds (GTD with short window_ts)</li>
+        <li class="do">✓ Reduces the "stale bot order" pattern of GTC orders sitting on the book</li>
+        <li class="do">✓ Already implemented in v5 — keep this</li>
+      </ul>
+    </div>
+
+    <div class="rule-box">
+      <div class="rule-title">Rule 10: Don't Trade Every Window</div>
+      <ul>
+        <li class="dont">✗ Don't trade 288 times per day (every 5-min window)</li>
+        <li class="do">✓ Maximum 20-30 trades per day</li>
+        <li class="do">✓ Skip windows where confidence is only MODERATE — trade HIGH only</li>
+        <li class="do">✓ Add a per-hour trade limit to the engine (e.g., max 4/hour)</li>
+      </ul>
+    </div>
+
+    <div class="rule-box">
+      <div class="rule-title">Rule 11: Multiple Wallets / Key Rotation</div>
+      <ul>
+        <li class="do">✓ Maintain 2-3 funded wallets</li>
+        <li class="do">✓ Rotate between them (Wallet A for odd hours, Wallet B for even)</li>
+        <li class="do">✓ Never blast orders from the same wallet on multiple markets simultaneously</li>
+        <li class="do">✓ Fund from different source addresses (not all from the same exchange)</li>
+      </ul>
+    </div>
+
+    <div class="rule-box">
+      <div class="rule-title">Rule 12: Monitor and Circuit-Break</div>
+      <ul>
+        <li class="do">✓ If ANY order returns 4xx, immediately halt all trading for 15 minutes</li>
+        <li class="do">✓ If 3 consecutive errors, halt for 1 hour and alert on Telegram</li>
+        <li class="do">✓ Track Polymarket's <code>/api/geoblock</code> status every 10 minutes</li>
+        <li class="do">✓ If wallet balance drops unexpectedly, halt and investigate</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="page-break"></div>
+
+  <!-- SECTION 4: ARCHITECTURE CHANGES -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">4</div>
+      <h2>Required Engine Architecture Changes</h2>
+    </div>
+
+    <table class="styled-table">
+      <thead><tr><th>Change</th><th>Priority</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>Geoblock startup check</strong></td>
+          <td><span class="badge badge-critical">P0</span></td>
+          <td>On engine start in live mode, call <code>GET polymarket.com/api/geoblock</code>. If blocked=true, refuse to start and alert.</td>
+        </tr>
+        <tr>
+          <td><strong>Order rate limiter</strong></td>
+          <td><span class="badge badge-critical">P0</span></td>
+          <td>Max 1 order per 30s, max 4/hour, max 30/day. Token bucket algorithm.</td>
+        </tr>
+        <tr>
+          <td><strong>Stake humanisation</strong></td>
+          <td><span class="badge badge-critical">P0</span></td>
+          <td>Round stakes to $0.50 increments + add ±10% random jitter.</td>
+        </tr>
+        <tr>
+          <td><strong>Entry timing jitter</strong></td>
+          <td><span class="badge badge-high">P1</span></td>
+          <td>Add random ±5 seconds to T-60s evaluation time.</td>
+        </tr>
+        <tr>
+          <td><strong>Single-asset mode</strong></td>
+          <td><span class="badge badge-high">P1</span></td>
+          <td>Evaluate all assets but trade only the BEST signal per window. No simultaneous multi-asset orders.</td>
+        </tr>
+        <tr>
+          <td><strong>Remove +2¢ retry</strong></td>
+          <td><span class="badge badge-high">P1</span></td>
+          <td>One shot at the Gamma price. If no fill, move on. No price bumping.</td>
+        </tr>
+        <tr>
+          <td><strong>Residential proxy for orders</strong></td>
+          <td><span class="badge badge-high">P1</span></td>
+          <td>Route CLOB order placement through a residential proxy. Read endpoints stay direct.</td>
+        </tr>
+        <tr>
+          <td><strong>Error circuit breaker</strong></td>
+          <td><span class="badge badge-high">P1</span></td>
+          <td>Any 4xx from Polymarket → halt trading 15 min. 3 consecutive → halt 1 hour + alert.</td>
+        </tr>
+        <tr>
+          <td><strong>Deploy region change</strong></td>
+          <td><span class="badge badge-critical">P0</span></td>
+          <td>Move from Railway Europe to a non-blocked region (Japan, Brazil, India). Or use allowed-region VPS.</td>
+        </tr>
+        <tr>
+          <td><strong>Wallet warm-up protocol</strong></td>
+          <td><span class="badge badge-medium">P2</span></td>
+          <td>New wallet? First 7 days = manual trades only. Days 8-14 = mixed. Day 15+ = full automation.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- SECTION 5: RECOVERY PLAN -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">5</div>
+      <h2>Recovery Plan — Getting Back to Live</h2>
+    </div>
+
+    <div class="subsection-title">Step 1: New Wallet Setup</div>
+    <p>Generate a new Ethereum private key → derive new address → fund via a DIFFERENT source than the banned wallet. Do NOT fund the new wallet directly from 0x2e42.</p>
+
+    <div class="subsection-title">Step 2: New Polymarket API Credentials</div>
+    <p>Create new CLOB API key + secret + passphrase at <code>docs.polymarket.com</code>. The old API key may be associated with the banned address.</p>
+
+    <div class="subsection-title">Step 3: Allowed-Region Deployment</div>
+    <p>Either: (a) Move Railway to an allowed region, or (b) Deploy on a VPS in Japan/Brazil/India, or (c) Route orders through a residential proxy in an allowed country.</p>
+
+    <div class="subsection-title">Step 4: Wallet Warm-Up (7-14 days)</div>
+    <p>Manual trades from the Polymarket web UI for at least 7 days. Build normal account history. Then gradually introduce API trading.</p>
+
+    <div class="subsection-title">Step 5: Implement All P0/P1 Changes</div>
+    <p>Before going live: geoblock check, rate limiter, stake humanisation, single-asset mode, remove retry, error circuit breaker.</p>
+
+    <div class="callout">
+      <strong>Timeline estimate:</strong> 2-3 weeks minimum before safe to go live again. The engine continues paper trading and building v5 performance data in the meantime.
+    </div>
+  </div>
+
+  <!-- SECTION 6: WHAT WE DID RIGHT -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">6</div>
+      <h2>What We Did Right (Keep These)</h2>
+    </div>
+    <table class="styled-table">
+      <thead><tr><th>Feature</th><th>Why It's Good</th></tr></thead>
+      <tbody>
+        <tr><td>GTD orders (60s expiry)</td><td>Short-lived orders are less suspicious than stale GTC orders</td></tr>
+        <tr><td>Maker orders (limit, not market)</td><td>Maker orders add liquidity — Polymarket wants this</td></tr>
+        <tr><td>Oracle-based resolution</td><td>We never manipulate or dispute outcomes</td></tr>
+        <tr><td>Single direction per window</td><td>Not placing opposing orders (wash trading)</td></tr>
+        <tr><td>Paper mode as default</td><td>Safe testing before any real capital at risk</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Footer -->
+  <div style="margin-top: 20px; padding: 10px; background: #fdedec; border-radius: 8px; border: 1px solid #e74c3c; text-align: center;">
+    <div style="font-size: 10pt; font-weight: 700; color: #e74c3c;">⚠️ DO NOT go live until ALL P0 items are implemented and wallet is warmed up</div>
+    <div style="font-size: 8pt; color: #7f8c8d; margin-top: 4px;">Novakash Bot Ban Avoidance Guide | April 2026 | Confidential</div>
+  </div>
+
+</div>
+</body>
+</html>

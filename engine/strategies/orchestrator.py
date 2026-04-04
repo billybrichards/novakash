@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal as _signal
+import time
 from typing import Optional
 
 import structlog
@@ -73,6 +74,10 @@ class Orchestrator:
         self._settings = settings
         self._shutdown_event = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
+
+        # ── G1 & G3: Staggered execution + single best signal ─────────────────
+        self._execution_queue: asyncio.Queue = asyncio.Queue()  # Pending window evaluations
+        self._geoblock_active: bool = False  # G6: Geoblock flag
 
         log.info("orchestrator.init", paper_mode=settings.paper_mode)
 
@@ -206,6 +211,7 @@ class Orchestrator:
                 alerter=self._alerter,
                 cg_enhanced=self._cg_enhanced,
                 db_client=self._db,
+                geoblock_check_fn=lambda: self._geoblock_active,  # G6
             )
             log.info("orchestrator.five_min_enabled", assets=settings.five_min_assets)
         else:
@@ -273,15 +279,46 @@ class Orchestrator:
         Initialise all components, wire callbacks, and start all tasks.
 
         Order:
-        1. Connect DB
-        2. Connect exchange clients
-        3. Start strategies
-        4. Start feed tasks
-        5. Start heartbeat task
-        6. Start resolution polling task
-        7. Start market state fan-out loop
+        1. Geoblock check (live mode only) — G6
+        2. Connect DB
+        3. Connect exchange clients
+        4. Start strategies
+        5. Start feed tasks
+        6. Start heartbeat task
+        7. Start resolution polling task
+        8. Start market state fan-out loop
         """
         log.info("orchestrator.starting")
+
+        # ── G6: Geoblock check (live mode only) ────────────────────────────────
+        if not self._settings.paper_mode:
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        "https://polymarket.com/api/geoblock",
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp:
+                        data = await resp.json()
+                        if data.get("blocked"):
+                            self._geoblock_active = True
+                            country = data.get("country", "UNKNOWN")
+                            ip = data.get("ip", "UNKNOWN")
+                            log.error(
+                                "guardrail.geoblock.blocked",
+                                country=country,
+                                ip=ip,
+                            )
+                            await self._alerter.send_system_alert(
+                                f"🚨 GEOBLOCK: Trading blocked from {country} ({ip}). "
+                                f"Engine will NOT place live orders.",
+                                level="critical",
+                            )
+            except Exception as exc:
+                # Geoblock check failed — log but don't block startup
+                log.warning("guardrail.geoblock.check_failed", error=str(exc))
+        
+        # ── Startup continues ──────────────────────────────────────────────────
 
         # 1. Connect DB
         try:
@@ -398,6 +435,11 @@ class Orchestrator:
             self._tasks.append(
                 asyncio.create_task(self._position_monitor_loop(), name="position_monitor")
             )
+
+        # ── G1 & G3: Staggered execution + single best signal loop ──────────────
+        self._tasks.append(
+            asyncio.create_task(self._staggered_execution_loop(), name="staggered_execution")
+        )
 
         # Register OS signal handlers
         loop = asyncio.get_running_loop()
@@ -604,6 +646,7 @@ class Orchestrator:
     async def _on_five_min_window(self, window) -> None:
         """Handle 5-minute window signal from the feed.
         
+        G1 & G3: Collect windows for staggered, single-best-signal execution.
         Logs for observability AND forwards to the strategy for evaluation.
         """
         window_state = getattr(window, 'state', None)
@@ -626,19 +669,18 @@ class Orchestrator:
             # ONLY evaluate at T-60s (CLOSING state), NOT at window open
             # Window open signal is just for token ID registration
             if state_value == "CLOSING":
-                # This is the T-60s signal — evaluate now
-                try:
-                    state = await self._aggregator.get_state()
-                    await self._five_min_strategy._evaluate_window(window, state)
-                except Exception as exc:
-                    log.warning("five_min.evaluate_error", error=str(exc))
+                # G1 & G3: Queue window for staggered execution instead of immediate eval
+                await self._execution_queue.put((window, self._aggregator))
             else:
                 log.info("five_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
             if len(self._five_min_strategy._recent_windows) > 20:
                 self._five_min_strategy._recent_windows = self._five_min_strategy._recent_windows[-20:]
 
     async def _on_fifteen_min_window(self, window) -> None:
-        """Handle 15-minute window signal — same strategy, different timeframe."""
+        """Handle 15-minute window signal — same strategy, different timeframe.
+        
+        G1 & G3: Collect windows for staggered, single-best-signal execution.
+        """
         window_state = getattr(window, 'state', None)
         state_value = window_state.value if hasattr(window_state, 'value') else str(window_state) if window_state else 'NO_STATE'
         log.info(
@@ -659,12 +701,8 @@ class Orchestrator:
             self._five_min_strategy._recent_windows.append(window)
             # ONLY evaluate at T-60s (CLOSING state), NOT at window open
             if state_value == "CLOSING":
-                # This is the T-60s signal — evaluate now
-                try:
-                    state = await self._aggregator.get_state()
-                    await self._five_min_strategy._evaluate_window(window, state)
-                except Exception as exc:
-                    log.warning("fifteen_min.evaluate_error", error=str(exc))
+                # G1 & G3: Queue window for staggered execution instead of immediate eval
+                await self._execution_queue.put((window, self._aggregator))
             else:
                 log.info("fifteen_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
             if len(self._five_min_strategy._recent_windows) > 20:
@@ -1197,3 +1235,116 @@ class Orchestrator:
                 break
             except asyncio.TimeoutError:
                 pass
+
+    # ── G1 & G3: Staggered Execution + Single Best Signal ────────────────────
+
+    async def _staggered_execution_loop(self) -> None:
+        """
+        G1 & G3: Process queued window signals with staggered execution.
+        
+        - Collects all pending windows for the same time period
+        - If G3 enabled (single_best_signal), picks only the highest-scoring asset
+        - If G3 disabled, keeps all assets
+        - Executes them sequentially with configurable gaps (G1)
+        
+        Gap: ORDER_STAGGER_SECONDS (default 5) + 1-3s random jitter
+        """
+        import random
+        
+        while not self._shutdown_event.is_set():
+            try:
+                # Wait for first window, with timeout to avoid hanging
+                try:
+                    window, agg_ref = await asyncio.wait_for(
+                        self._execution_queue.get(),
+                        timeout=1.0,
+                    )
+                except asyncio.TimeoutError:
+                    # No pending windows — continue loop
+                    continue
+                
+                # Collect all windows for the same period (within 2 seconds)
+                windows_batch = [(window, agg_ref)]
+                batch_start_time = time.time()
+                
+                while time.time() - batch_start_time < 2.0:
+                    try:
+                        next_window, next_agg_ref = await asyncio.wait_for(
+                            self._execution_queue.get(),
+                            timeout=0.5,
+                        )
+                        windows_batch.append((next_window, next_agg_ref))
+                    except asyncio.TimeoutError:
+                        break
+                
+                # G3: Single best signal mode — pick only the top-scoring window
+                if runtime.single_best_signal and len(windows_batch) > 1:
+                    # Score each window: abs(delta_pct) * current_vpin
+                    scored_windows = []
+                    for w, agg_ref in windows_batch:
+                        try:
+                            state = await agg_ref.get_state()
+                            current_price = float(state.btc_price) if state.btc_price else None
+                            if current_price is None or w.open_price is None:
+                                continue
+                            delta_pct = (current_price - w.open_price) / w.open_price * 100
+                            current_vpin = self._vpin_calc.current_vpin
+                            score = abs(delta_pct) * current_vpin
+                            scored_windows.append((score, w, agg_ref))
+                        except Exception:
+                            continue
+                    
+                    if scored_windows:
+                        # Sort by score descending, pick top
+                        scored_windows.sort(key=lambda x: x[0], reverse=True)
+                        top_score, top_window, top_agg_ref = scored_windows[0]
+                        windows_batch = [(top_window, top_agg_ref)]
+                        log.info(
+                            "guardrail.single_best_signal",
+                            selected_asset=top_window.asset,
+                            score=f"{top_score:.4f}",
+                            skipped=len(scored_windows) - 1,
+                        )
+                
+                # Execute windows sequentially with staggered gaps
+                for idx, (w, agg_ref) in enumerate(windows_batch):
+                    if self._shutdown_event.is_set():
+                        break
+                    
+                    if idx > 0:
+                        # G1: Stagger execution with jitter
+                        stagger_delay = runtime.order_stagger_seconds
+                        jitter = random.uniform(1.0, 3.0)  # 1-3s random jitter
+                        total_delay = stagger_delay + jitter
+                        log.info(
+                            "guardrail.staggered_execution.wait",
+                            asset=w.asset,
+                            window_ts=w.window_ts,
+                            delay=f"{total_delay:.2f}s",
+                            base=f"{stagger_delay:.1f}s",
+                            jitter=f"{jitter:.2f}s",
+                        )
+                        await asyncio.sleep(total_delay)
+                    
+                    # Evaluate and execute
+                    try:
+                        state = await agg_ref.get_state()
+                        await self._five_min_strategy._evaluate_window(w, state)
+                        log.info(
+                            "guardrail.staggered_execution.evaluated",
+                            asset=w.asset,
+                            window_ts=w.window_ts,
+                            position=f"{idx + 1}/{len(windows_batch)}",
+                        )
+                    except Exception as exc:
+                        log.warning(
+                            "guardrail.staggered_execution.eval_error",
+                            asset=w.asset,
+                            error=str(exc),
+                        )
+            
+            except Exception as exc:
+                log.error("orchestrator.staggered_execution_error", error=str(exc))
+            
+            # Small yield to prevent busy loop
+            await asyncio.sleep(0.1)

@@ -73,6 +73,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         cg_enhanced=None,
         db_client=None,
         on_window_signal: Optional[Callable[[WindowInfo], Awaitable[None]]] = None,
+        geoblock_check_fn: Optional[Callable[[], bool]] = None,
     ) -> None:
         super().__init__(
             name="five_min_vpin",
@@ -84,6 +85,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._alerter = alerter
         self._cg_enhanced = cg_enhanced  # CoinGlassEnhancedFeed (optional)
         self._db = db_client            # DBClient for window snapshot persistence (optional)
+        self._geoblock_check_fn = geoblock_check_fn  # G6: Callable to check if geoblock is active
         self._evaluator = WindowEvaluator()
         
         # Track last executed window to avoid duplicates
@@ -94,6 +96,14 @@ class FiveMinVPINStrategy(BaseStrategy):
         
         # Window info buffer (populated by feed callbacks)
         self._pending_windows: list = []  # Queue of windows to evaluate (multi-asset)
+
+        # ── G4: Order rate limiter state ──────────────────────────────────────
+        self._order_timestamps: list[float] = []  # timestamps of recent orders
+        self._last_order_time: float = 0.0
+
+        # ── G5: Circuit breaker state ─────────────────────────────────────────
+        self._circuit_break_until: float = 0.0
+        self._consecutive_errors: int = 0
         
         self._log = log.bind(strategy="five_min_vpin")
         
@@ -839,6 +849,93 @@ class FiveMinVPINStrategy(BaseStrategy):
             if self._alerter:
                 asyncio.create_task(self._alerter.send_entry_alert(order))
 
+    # ─── Guardrail Helpers ────────────────────────────────────────────────────
+
+    def _check_rate_limit(self) -> tuple[bool, str]:
+        """
+        G4: Check order rate limiting.
+        Returns (allowed, reason). reason is empty string when allowed.
+        """
+        now = time.time()
+
+        # Purge timestamps older than 1 hour
+        cutoff = now - 3600.0
+        self._order_timestamps = [ts for ts in self._order_timestamps if ts > cutoff]
+
+        # Check minimum interval between orders
+        if self._last_order_time > 0:
+            elapsed = now - self._last_order_time
+            if elapsed < runtime.min_order_interval_seconds:
+                return False, (
+                    f"rate_limit.too_fast: {elapsed:.1f}s since last order "
+                    f"(min {runtime.min_order_interval_seconds:.0f}s)"
+                )
+
+        # Check hourly cap
+        if len(self._order_timestamps) >= runtime.max_orders_per_hour:
+            return False, (
+                f"rate_limit.hourly_cap: {len(self._order_timestamps)} orders "
+                f"in last hour (max {runtime.max_orders_per_hour})"
+            )
+
+        return True, ""
+
+    def _record_order_placed(self) -> None:
+        """G4: Record that an order was placed now."""
+        now = time.time()
+        self._order_timestamps.append(now)
+        self._last_order_time = now
+
+    def _check_circuit_breaker(self) -> tuple[bool, str]:
+        """
+        G5: Check if the circuit breaker is active.
+        Returns (allowed, reason).
+        """
+        now = time.time()
+        if self._circuit_break_until > now:
+            remaining = self._circuit_break_until - now
+            return False, f"circuit_breaker.active: {remaining:.0f}s remaining"
+        return True, ""
+
+    def _on_order_error(self, error: Exception) -> None:
+        """G5: Handle an order error — activate circuit breaker if needed."""
+        now = time.time()
+        error_str = str(error)
+
+        # Check for 4xx errors
+        is_4xx = any(str(code) in error_str for code in range(400, 500))
+        is_error = True  # Any exception counts as consecutive error
+
+        if is_4xx:
+            self._circuit_break_until = now + 900  # 15 minutes
+            self._consecutive_errors = 0
+            self._log.error(
+                "guardrail.circuit_breaker.4xx",
+                error=error_str[:200],
+                break_until=self._circuit_break_until,
+                break_minutes=15,
+            )
+        elif is_error:
+            self._consecutive_errors += 1
+            if self._consecutive_errors >= 3:
+                self._circuit_break_until = now + 3600  # 1 hour
+                self._log.error(
+                    "guardrail.circuit_breaker.consecutive",
+                    consecutive_errors=self._consecutive_errors,
+                    break_until=self._circuit_break_until,
+                    break_minutes=60,
+                )
+            else:
+                self._log.warning(
+                    "guardrail.circuit_breaker.error_count",
+                    consecutive_errors=self._consecutive_errors,
+                    breaks_at=3,
+                )
+
+    def _on_order_success(self) -> None:
+        """G5: Reset consecutive error counter on successful order."""
+        self._consecutive_errors = 0
+
     # ─── Execution (Legacy) ───────────────────────────────────────────────────
 
     async def _execute_trade(self, state: MarketState, signal: FiveMinSignal) -> None:
@@ -906,6 +1003,38 @@ class FiveMinVPINStrategy(BaseStrategy):
         tf = "15m" if window.duration_secs == 900 else "5m"
         market_slug = f"{window.asset.lower()}-updown-{tf}-{window.window_ts}"
         
+        # ── G6: Geoblock check ────────────────────────────────────────────────
+        if self._geoblock_check_fn and self._geoblock_check_fn():
+            self._log.error("guardrail.geoblock.blocked")
+            if self._alerter:
+                asyncio.create_task(self._alerter.send_system_alert(
+                    "🚨 GEOBLOCK: Trading blocked. Skipping order.",
+                    level="critical",
+                ))
+            return
+
+        # ── G5: Circuit breaker check ─────────────────────────────────────────
+        cb_allowed, cb_reason = self._check_circuit_breaker()
+        if not cb_allowed:
+            self._log.warning("guardrail.circuit_breaker.blocked", reason=cb_reason)
+            if self._alerter:
+                asyncio.create_task(self._alerter.send_system_alert(
+                    f"⚡ CIRCUIT BREAKER: Trade blocked — {cb_reason}",
+                    level="warning",
+                ))
+            return
+
+        # ── G4: Rate limiter check ────────────────────────────────────────────
+        rl_allowed, rl_reason = self._check_rate_limit()
+        if not rl_allowed:
+            self._log.warning("guardrail.rate_limit.blocked", reason=rl_reason)
+            if self._alerter:
+                asyncio.create_task(self._alerter.send_system_alert(
+                    f"🚦 RATE LIMIT: Trade blocked — {rl_reason}",
+                    level="warning",
+                ))
+            return
+
         # Place order — pass real token_id for live mode
         try:
             clob_order_id = await self._poly.place_order(
@@ -915,7 +1044,13 @@ class FiveMinVPINStrategy(BaseStrategy):
                 stake_usd=stake,
                 token_id=token_id,
             )
+            # G4: Record order placed
+            self._record_order_placed()
+            # G5: Reset consecutive errors
+            self._on_order_success()
         except Exception as exc:
+            # G5: Record error for circuit breaker
+            self._on_order_error(exc)
             self._log.error("execute.order_failed", error=str(exc))
             return
         
@@ -1081,38 +1216,60 @@ class FiveMinVPINStrategy(BaseStrategy):
                             if not retry_approved:
                                 self._log.info("trade.retry_risk_blocked", reason=retry_reason, stake=retry_stake)
                             else:
-                                bumped_price_dec = Decimal(str(bumped_price_f))
-                                self._log.info(
-                                    "trade.retry_bumped",
-                                    original_price=str(price),
-                                    bumped_price=str(bumped_price_dec),
-                                    retry_stake=f"${retry_stake:.2f}",
-                                )
-                                retry_id = await self._poly.place_order(
-                                    market_slug=market_slug,
-                                    direction=direction,
-                                    price=bumped_price_dec,
-                                    stake_usd=retry_stake,
-                                    token_id=token_id,
-                                )
-                                order.order_id = retry_id
-                                order.price = str(bumped_price_dec)
-                                order.stake_usd = retry_stake
-                                order.metadata["retried_at_bump"] = True
-                                order.metadata["bumped_price"] = str(bumped_price_dec)
-                                self._log.info("trade.retry_placed", order_id=str(retry_id)[:20], price=str(bumped_price_dec))
-
-                                # Quick fill check on retry (15s)
-                                await asyncio.sleep(15)
-                                status2 = await self._poly.get_order_status(retry_id)
-                                retry_filled = float(status2.get("size_matched", "0") or "0") > 0
-                                order.metadata["filled"] = retry_filled
-                                if retry_filled:
-                                    self._log.info("trade.retry_filled", order_id=str(retry_id)[:20], size_matched=status2.get("size_matched"))
-                                    if self._alerter:
-                                        asyncio.create_task(self._alerter.send_entry_alert(order))
+                                # G4: Check rate limit before retry
+                                rl_allowed_retry, rl_reason_retry = self._check_rate_limit()
+                                if not rl_allowed_retry:
+                                    self._log.warning("guardrail.rate_limit.blocked_on_retry", reason=rl_reason_retry)
                                 else:
-                                    self._log.warning("trade.retry_not_filled", order_id=str(retry_id)[:20])
+                                    # G5: Check circuit breaker before retry
+                                    cb_allowed_retry, cb_reason_retry = self._check_circuit_breaker()
+                                    if not cb_allowed_retry:
+                                        self._log.warning("guardrail.circuit_breaker.blocked_on_retry", reason=cb_reason_retry)
+                                    else:
+                                        bumped_price_dec = Decimal(str(bumped_price_f))
+                                        self._log.info(
+                                            "trade.retry_bumped",
+                                            original_price=str(price),
+                                            bumped_price=str(bumped_price_dec),
+                                            retry_stake=f"${retry_stake:.2f}",
+                                        )
+                                        try:
+                                            retry_id = await self._poly.place_order(
+                                                market_slug=market_slug,
+                                                direction=direction,
+                                                price=bumped_price_dec,
+                                                stake_usd=retry_stake,
+                                                token_id=token_id,
+                                            )
+                                            # G4: Record order placed
+                                            self._record_order_placed()
+                                            # G5: Reset consecutive errors
+                                            self._on_order_success()
+                                            
+                                            order.order_id = retry_id
+                                            order.price = str(bumped_price_dec)
+                                            order.stake_usd = retry_stake
+                                            order.metadata["retried_at_bump"] = True
+                                            order.metadata["bumped_price"] = str(bumped_price_dec)
+                                            self._log.info("trade.retry_placed", order_id=str(retry_id)[:20], price=str(bumped_price_dec))
+                                        except Exception as retry_place_exc:
+                                            # G5: Record error for circuit breaker
+                                            self._on_order_error(retry_place_exc)
+                                            self._log.error("trade.retry_place_failed", error=str(retry_place_exc))
+                                            retry_id = None
+
+                                        # Quick fill check on retry (15s) — only if order was placed
+                                        if 'retry_id' in locals() and retry_id:
+                                            await asyncio.sleep(15)
+                                            status2 = await self._poly.get_order_status(retry_id)
+                                            retry_filled = float(status2.get("size_matched", "0") or "0") > 0
+                                            order.metadata["filled"] = retry_filled
+                                            if retry_filled:
+                                                self._log.info("trade.retry_filled", order_id=str(retry_id)[:20], size_matched=status2.get("size_matched"))
+                                                if self._alerter:
+                                                    asyncio.create_task(self._alerter.send_entry_alert(order))
+                                            else:
+                                                self._log.warning("trade.retry_not_filled", order_id=str(retry_id)[:20])
                         else:
                             self._log.info("trade.retry_skip_expensive", bumped_price=bumped_price_f)
                     except Exception as retry_exc:
@@ -1248,7 +1405,11 @@ class FiveMinVPINStrategy(BaseStrategy):
                 hard_max=f"${hard_max:.2f}",
                 reason="Scaling bet to stay under max_position_usd",
             )
-        
+
+        # G2: Stake humanisation — round to 2 decimal places
+        # Avoids bot-like precision that can flag suspicious order sizes
+        adjusted_stake = round(adjusted_stake, 2)
+
         self._log.debug(
             "stake.calculated",
             bankroll=f"${bankroll:.2f}",
