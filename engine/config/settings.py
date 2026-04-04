@@ -63,5 +63,11 @@ class Settings(BaseSettings):
     five_min_assets: str = Field(default="BTC", description="Comma-separated assets for 5-min trading")
     five_min_mode: str = Field(default="safe", description="Trading mode: flat/safe/degen")
 
+    # v6.0 TimesFM-only strategy
+    timesfm_enabled: bool = Field(default=False, description="Enable v6.0 TimesFM-only strategy")
+    timesfm_url: str = Field(default="http://16.52.148.255:8000", description="TimesFM forecast service URL")
+    timesfm_min_confidence: float = Field(default=0.30, description="Minimum TimesFM confidence to trade")
+    timesfm_assets: str = Field(default="BTC", description="Comma-separated assets for TimesFM strategy")
+
 
 settings = Settings()

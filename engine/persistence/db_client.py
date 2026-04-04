@@ -499,6 +499,28 @@ class DBClient:
                     ("twap_confidence_boost", "DOUBLE PRECISION"),
                     ("twap_n_ticks", "INTEGER"),
                     ("twap_stability", "DOUBLE PRECISION"),
+                    # v5.7c: trend + momentum + gamma gate
+                    ("twap_trend_pct", "DOUBLE PRECISION"),
+                    ("twap_momentum_pct", "DOUBLE PRECISION"),
+                    ("twap_gamma_gate", "VARCHAR(12)"),
+                    ("twap_should_skip", "BOOLEAN"),
+                    ("twap_skip_reason", "VARCHAR(200)"),
+                    # v6.0: TimesFM forecast data
+                    ("timesfm_direction", "VARCHAR(4)"),
+                    ("timesfm_confidence", "DOUBLE PRECISION"),
+                    ("timesfm_predicted_close", "DOUBLE PRECISION"),
+                    ("timesfm_delta_vs_open", "DOUBLE PRECISION"),
+                    ("timesfm_spread", "DOUBLE PRECISION"),
+                    ("timesfm_p10", "DOUBLE PRECISION"),
+                    ("timesfm_p50", "DOUBLE PRECISION"),
+                    ("timesfm_p90", "DOUBLE PRECISION"),
+                    # v6.0: Spread/liquidity data
+                    ("market_best_bid", "DOUBLE PRECISION"),
+                    ("market_best_ask", "DOUBLE PRECISION"),
+                    ("market_spread", "DOUBLE PRECISION"),
+                    ("market_mid_price", "DOUBLE PRECISION"),
+                    ("market_volume", "DOUBLE PRECISION"),
+                    ("market_liquidity", "DOUBLE PRECISION"),
                 ]:
                     try:
                         await conn.execute(f"ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS {col} {col_type}")
@@ -540,13 +562,24 @@ class DBClient:
                         outcome, pnl_usd, poly_winner, btc_price,
                         twap_delta_pct, twap_direction, twap_gamma_agree,
                         twap_agreement_score, twap_confidence_boost,
-                        twap_n_ticks, twap_stability
+                        twap_n_ticks, twap_stability,
+                        twap_trend_pct, twap_momentum_pct, twap_gamma_gate,
+                        twap_should_skip, twap_skip_reason,
+                        timesfm_direction, timesfm_confidence,
+                        timesfm_predicted_close, timesfm_delta_vs_open,
+                        timesfm_spread, timesfm_p10, timesfm_p50, timesfm_p90,
+                        market_best_bid, market_best_ask,
+                        market_spread, market_mid_price,
+                        market_volume, market_liquidity
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,
                         $9,$10,$11,$12,$13,$14,$15,$16,$17,
                         $18,$19,$20,$21,$22,$23,
                         $24,$25,$26,$27,$28,$29,$30,$31,$32,
-                        $33,$34,$35,$36,$37,$38,$39
+                        $33,$34,$35,$36,$37,$38,$39,
+                        $40,$41,$42,$43,$44,
+                        $45,$46,$47,$48,$49,$50,$51,$52,
+                        $53,$54,$55,$56,$57,$58
                     )
                     ON CONFLICT (window_ts, asset, timeframe) DO NOTHING
                     """,
@@ -589,6 +622,28 @@ class DBClient:
                     snapshot.get("twap_confidence_boost"),
                     snapshot.get("twap_n_ticks"),
                     snapshot.get("twap_stability"),
+                    # v5.7c: trend + momentum + gamma gate
+                    snapshot.get("twap_trend_pct"),
+                    snapshot.get("twap_momentum_pct"),
+                    snapshot.get("twap_gamma_gate"),
+                    snapshot.get("twap_should_skip"),
+                    snapshot.get("twap_skip_reason"),
+                    # v6.0: TimesFM forecast
+                    snapshot.get("timesfm_direction"),
+                    snapshot.get("timesfm_confidence"),
+                    snapshot.get("timesfm_predicted_close"),
+                    snapshot.get("timesfm_delta_vs_open"),
+                    snapshot.get("timesfm_spread"),
+                    snapshot.get("timesfm_p10"),
+                    snapshot.get("timesfm_p50"),
+                    snapshot.get("timesfm_p90"),
+                    # v6.0: Spread/liquidity
+                    snapshot.get("market_best_bid"),
+                    snapshot.get("market_best_ask"),
+                    snapshot.get("market_spread"),
+                    snapshot.get("market_mid_price"),
+                    snapshot.get("market_volume"),
+                    snapshot.get("market_liquidity"),
                 )
             log.debug(
                 "db.window_snapshot_written",

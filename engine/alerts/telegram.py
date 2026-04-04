@@ -702,6 +702,7 @@ class TelegramAlerter:
         skip_reason: str | None = None,
         cg_modifier: float = 0.0,
         twap_result=None,
+        timesfm_forecast=None,
     ) -> None:
         """
         Send a per-window summary after each 5m/15m window evaluation.
@@ -801,6 +802,31 @@ class TelegramAlerter:
                     lines.append(f"⛔ *TWAP SKIP:* `{_skip_reason}`")
                 lines.append(f"")
 
+            # TimesFM block (v6.0 — shown in all window reports for comparison)
+            if timesfm_forecast is not None:
+                _tfm = timesfm_forecast
+                if not getattr(_tfm, 'error', ''):
+                    _tfm_dir = getattr(_tfm, 'direction', '?')
+                    _tfm_conf = getattr(_tfm, 'confidence', 0)
+                    _tfm_close = getattr(_tfm, 'predicted_close', 0)
+                    _tfm_delta = getattr(_tfm, 'delta_vs_open_pct', 0)
+                    _tfm_spread = getattr(_tfm, 'spread', 0)
+                    _tfm_dir_emoji = "📈" if _tfm_dir == "UP" else "📉"
+                    _tfm_agree_point = "🟢" if _tfm_dir == (direction or ("UP" if delta_pct > 0 else "DOWN")) else "🔴"
+                    _tfm_agree_twap = "🟢" if (twap_result and _tfm_dir == getattr(twap_result, 'twap_direction', '')) else "⚫"
+
+                    lines += [
+                        f"🧠 *TimesFM Forecast*",
+                        f"{_tfm_dir_emoji} `{_tfm_dir}` (conf `{_tfm_conf:.2f}`) | Close: `${_tfm_close:,.2f}` (δ `{_tfm_delta:+.4f}%`)",
+                        f"Spread: `${_tfm_spread:.2f}` | vs Point: {_tfm_agree_point} | vs TWAP: {_tfm_agree_twap}",
+                        f"",
+                    ]
+                else:
+                    lines += [
+                        f"🧠 *TimesFM*: ❌ `{getattr(_tfm, 'error', 'unknown')[:60]}`",
+                        f"",
+                    ]
+
             # Signal
             lines += [
                 f"📡 *Signal*",
@@ -815,6 +841,153 @@ class TelegramAlerter:
             await self._send("\n".join(lines))
         except Exception as exc:
             self._log.warning("telegram.send_window_report_failed", error=str(exc))
+
+    async def send_timesfm_window_report(
+        self,
+        window_ts: int,
+        asset: str,
+        timeframe: str,
+        open_price: float,
+        close_price: float,
+        delta_pct: float,
+        forecast=None,
+        twap_result=None,
+        trade_placed: bool = False,
+        skip_reason: str | None = None,
+        spread_data: dict | None = None,
+    ) -> None:
+        """
+        v6.0 window report — TimesFM-only strategy with full comparison data.
+
+        Shows:
+        1. TimesFM forecast (direction, confidence, predicted close)
+        2. TWAP / Point / Gamma comparison (for analysis)
+        3. Real spread/liquidity data
+        4. Agreement matrix
+        """
+        try:
+            from datetime import datetime, timezone
+            ts_str = datetime.fromtimestamp(window_ts, tz=timezone.utc).strftime("%H:%M UTC")
+
+            delta_sign = "+" if delta_pct >= 0 else ""
+            trade_emoji = "✅" if trade_placed else "⏭️"
+
+            lines = [
+                f"🤖 *v6.0 TimesFM Window — {asset} {timeframe}*",
+                f"",
+                f"⏰ `{ts_str}` | Open: `${open_price:,.2f}` → Close: `${close_price:,.2f}`",
+                f"Point Δ: `{delta_sign}{delta_pct:.4f}%`",
+                f"",
+            ]
+
+            # ── TimesFM Forecast Block ────────────────────────────────
+            if forecast and not forecast.error:
+                _tf_dir = forecast.direction
+                _tf_conf = forecast.confidence
+                _tf_close = forecast.predicted_close
+                _tf_delta = forecast.delta_vs_open_pct
+                _tf_spread = forecast.spread
+                _tf_p10 = getattr(forecast, 'p10', 0)
+                _tf_p50 = getattr(forecast, 'p50', 0)
+                _tf_p90 = getattr(forecast, 'p90', 0)
+                _tf_latency = getattr(forecast, 'fetch_latency_ms', 0)
+                _tf_stale = getattr(forecast, 'is_stale', False)
+
+                _conf_bar_filled = int(_tf_conf * 10)
+                _conf_bar = "█" * _conf_bar_filled + "░" * (10 - _conf_bar_filled)
+                _dir_emoji = "📈" if _tf_dir == "UP" else "📉"
+                _stale_tag = " ⚠️ STALE" if _tf_stale else ""
+
+                lines += [
+                    f"🧠 *TimesFM Forecast*{_stale_tag}",
+                    f"Direction: {_dir_emoji} `{_tf_dir}` | Confidence: `[{_conf_bar}]` `{_tf_conf:.2f}`",
+                    f"Predicted Close: `${_tf_close:,.2f}` (δ `{_tf_delta:+.4f}%` vs open)",
+                    f"P10: `${_tf_p10:,.2f}` | P50: `${_tf_p50:,.2f}` | P90: `${_tf_p90:,.2f}`",
+                    f"Spread: `${_tf_spread:.2f}` | Latency: `{_tf_latency:.0f}ms`",
+                    f"",
+                ]
+            elif forecast and forecast.error:
+                lines += [
+                    f"🧠 *TimesFM*: ❌ `{forecast.error[:80]}`",
+                    f"",
+                ]
+
+            # ── Direction Agreement Matrix ─────────────────────────────
+            point_dir = "UP" if delta_pct > 0 else "DOWN"
+            timesfm_dir = forecast.direction if forecast and not forecast.error else "?"
+            twap_dir = getattr(twap_result, 'twap_direction', '?') if twap_result else "?"
+            gamma_dir = getattr(twap_result, 'gamma_direction', '?') if twap_result else "?"
+
+            def _agree_emoji(a, b):
+                if a == "?" or b == "?":
+                    return "⚫"
+                return "🟢" if a == b else "🔴"
+
+            lines += [
+                f"📊 *Direction Agreement*",
+                f"```",
+                f"TimesFM:  {timesfm_dir:>4}  {_agree_emoji(timesfm_dir, point_dir)} Point  {_agree_emoji(timesfm_dir, twap_dir)} TWAP  {_agree_emoji(timesfm_dir, gamma_dir)} Gamma",
+                f"Point:    {point_dir:>4}  {'──':>6}  {_agree_emoji(point_dir, twap_dir)} TWAP  {_agree_emoji(point_dir, gamma_dir)} Gamma",
+                f"TWAP:     {twap_dir:>4}  {'──':>6}  {'──':>6}  {_agree_emoji(twap_dir, gamma_dir)} Gamma",
+                f"Gamma:    {gamma_dir:>4}",
+                f"```",
+                f"",
+            ]
+
+            # ── TWAP Block (comparison) ────────────────────────────────
+            if twap_result:
+                _agree_score = getattr(twap_result, 'agreement_score', 0)
+                _twap_delta = getattr(twap_result, 'twap_delta_pct', 0)
+                _trend_pct = getattr(twap_result, 'trend_pct', 0.5)
+                _stability = getattr(twap_result, 'twap_stability', 0)
+                _ticks = getattr(twap_result, 'n_ticks', 0)
+                _gamma_up = getattr(twap_result, 'gamma_up_price', 0.50)
+                _gamma_down = getattr(twap_result, 'gamma_down_price', 0.50)
+                _gamma_gate = getattr(twap_result, 'gamma_gate', 'OK')
+                _gate_emoji = {"BLOCK": "🚫", "SKIP": "⚠️", "REDUCE": "🔻", "OK": "✅", "PRICED_IN": "💸"}.get(_gamma_gate, "❓")
+
+                lines += [
+                    f"📐 *TWAP/Gamma (comparison only)*",
+                    f"TWAP δ: `{_twap_delta:+.4f}%` → `{twap_dir}` ({_ticks} ticks)",
+                    f"Gamma: `{_gamma_up:.2f}`/`{_gamma_down:.2f}` → `{gamma_dir}` {_gate_emoji}`{_gamma_gate}`",
+                    f"Trend: `{_trend_pct:.0%}` above open | Stability: `{_stability:.2f}`",
+                    f"",
+                ]
+
+            # ── Spread/Liquidity Block ─────────────────────────────────
+            if spread_data:
+                _bid = spread_data.get("best_bid", 0)
+                _ask = spread_data.get("best_ask", 0)
+                _spread = spread_data.get("spread", 0)
+                _mid = spread_data.get("mid_price", 0)
+                _vol = spread_data.get("volume", 0)
+                _liq = spread_data.get("liquidity", 0)
+
+                lines += [
+                    f"💧 *Market Spread/Liquidity*",
+                    f"Best Bid: `${_bid:.4f}` | Best Ask: `${_ask:.4f}`",
+                    f"Spread: `${_spread:.4f}` ({_spread/_mid*100:.2f}%)" if _mid > 0 else f"Spread: `${_spread:.4f}`",
+                    f"Mid Price: `${_mid:.4f}`",
+                ]
+                if _vol > 0:
+                    lines.append(f"Volume: `${_vol:,.0f}` | Liquidity: `${_liq:,.0f}`")
+                lines.append(f"")
+            else:
+                lines += [
+                    f"💧 *Spread*: ❌ No orderbook data",
+                    f"",
+                ]
+
+            # ── Trade Decision ─────────────────────────────────────────
+            lines += [
+                f"{trade_emoji} Trade placed: `{'YES' if trade_placed else 'NO'}` (v6.0 TimesFM-only)",
+            ]
+            if not trade_placed and skip_reason:
+                lines.append(f"Skip: `{skip_reason}`")
+
+            await self._send("\n".join(lines))
+        except Exception as exc:
+            self._log.warning("telegram.send_timesfm_window_report_failed", error=str(exc))
 
     # ─── Internal ─────────────────────────────────────────────────────────────
 

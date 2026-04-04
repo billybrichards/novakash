@@ -60,7 +60,9 @@ from signals.vpin import VPINCalculator
 from strategies.sub_dollar_arb import SubDollarArbStrategy
 from strategies.vpin_cascade import VPINCascadeStrategy
 from strategies.five_min_vpin import FiveMinVPINStrategy
+from strategies.timesfm_only import TimesFMOnlyStrategy
 from signals.twap_delta import TWAPTracker
+from signals.timesfm_client import TimesFMClient
 
 log = structlog.get_logger(__name__)
 
@@ -236,11 +238,42 @@ class Orchestrator:
                 db_client=self._db,
                 geoblock_check_fn=lambda: self._geoblock_active,  # G6
                 twap_tracker=self._twap_tracker,  # v5.7: TWAP direction
+                timesfm_client=self._timesfm_client,  # v6.0: TimesFM for comparison alerts
             )
             log.info("orchestrator.five_min_enabled", assets=settings.five_min_assets)
         else:
             self._five_min_feed = None
             log.info("orchestrator.five_min_disabled")
+
+        # ── v6.0 TimesFM-Only Strategy ──────────────────────────────────────
+        self._timesfm_client: Optional[TimesFMClient] = None
+        self._timesfm_strategy: Optional[TimesFMOnlyStrategy] = None
+        timesfm_enabled = os.environ.get("TIMESFM_ENABLED", "false").lower() == "true"
+        timesfm_url = os.environ.get("TIMESFM_URL", "http://16.52.148.255:8000")
+        timesfm_min_conf = float(os.environ.get("TIMESFM_MIN_CONFIDENCE", "0.30"))
+
+        if timesfm_enabled:
+            self._timesfm_client = TimesFMClient(
+                base_url=timesfm_url,
+                timeout_seconds=10.0,
+            )
+            self._timesfm_strategy = TimesFMOnlyStrategy(
+                order_manager=self._order_manager,
+                risk_manager=self._risk_manager,
+                poly_client=self._poly_client,
+                timesfm_client=self._timesfm_client,
+                alerter=self._alerter,
+                db_client=self._db,
+                twap_tracker=self._twap_tracker,
+                min_confidence=timesfm_min_conf,
+            )
+            log.info(
+                "orchestrator.timesfm_v6_enabled",
+                url=timesfm_url,
+                min_confidence=timesfm_min_conf,
+            )
+        else:
+            log.info("orchestrator.timesfm_v6_disabled")
 
         # 15-minute Polymarket strategy (uses same strategy, different feed)
         self._fifteen_min_feed = None
@@ -383,6 +416,10 @@ class Orchestrator:
                 asyncio.create_task(self._five_min_feed.start(), name="feed:five_min")
             )
 
+        # Start v6.0 TimesFM-only strategy if enabled
+        if self._timesfm_strategy:
+            await self._timesfm_strategy.start()
+
         if self._fifteen_min_feed:
             self._tasks.append(
                 asyncio.create_task(self._fifteen_min_feed.start(), name="feed:fifteen_min")
@@ -500,6 +537,9 @@ class Orchestrator:
         await self._arb_strategy.stop()
         await self._cascade_strategy.stop()
         
+        # Stop v6.0 TimesFM strategy
+        if self._timesfm_strategy:
+            await self._timesfm_strategy.stop()
         # Stop 5-min strategy and feed
         if self._five_min_strategy:
             await self._five_min_strategy.stop()
@@ -744,6 +784,10 @@ class Orchestrator:
             if state_value == "CLOSING":
                 # G1 & G3: Queue window for staggered execution instead of immediate eval
                 await self._execution_queue.put((window, self._aggregator))
+
+                # v6.0: Also evaluate with TimesFM-only strategy (parallel, independent)
+                if self._timesfm_strategy:
+                    asyncio.create_task(self._evaluate_timesfm_window(window))
             else:
                 log.info("five_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
             if len(self._five_min_strategy._recent_windows) > 20:
@@ -794,10 +838,32 @@ class Orchestrator:
             if state_value == "CLOSING":
                 # G1 & G3: Queue window for staggered execution instead of immediate eval
                 await self._execution_queue.put((window, self._aggregator))
+
+                # v6.0: Also evaluate with TimesFM-only strategy
+                if self._timesfm_strategy:
+                    asyncio.create_task(self._evaluate_timesfm_window(window))
             else:
                 log.info("fifteen_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
             if len(self._five_min_strategy._recent_windows) > 20:
                 self._five_min_strategy._recent_windows = self._five_min_strategy._recent_windows[-20:]
+
+    # ─── v6.0 TimesFM Window Evaluation ──────────────────────────────────────
+
+    async def _evaluate_timesfm_window(self, window) -> None:
+        """
+        Evaluate a window with the v6.0 TimesFM-only strategy.
+        Runs in parallel with v5.7c — independent paper trades.
+        """
+        try:
+            state = await self._aggregator.get_state()
+            # Register window for token ID lookup in TimesFM strategy
+            if self._timesfm_strategy:
+                self._timesfm_strategy._recent_windows.append(window)
+                if len(self._timesfm_strategy._recent_windows) > 20:
+                    self._timesfm_strategy._recent_windows = self._timesfm_strategy._recent_windows[-20:]
+                await self._timesfm_strategy.evaluate_window(window, state)
+        except Exception as exc:
+            log.warning("timesfm.evaluate_error", asset=window.asset, error=str(exc))
 
     # ─── Order Resolution Callback ────────────────────────────────────────────
 

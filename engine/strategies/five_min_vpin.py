@@ -38,6 +38,7 @@ from execution.polymarket_client import PolymarketClient
 from execution.risk_manager import RiskManager
 from signals.vpin import VPINCalculator
 from signals.twap_delta import TWAPTracker, TWAPResult
+from signals.timesfm_client import TimesFMClient, TimesFMForecast
 from signals.window_evaluator import WindowEvaluator, WindowState as EvalWindowState, WindowSignal
 from strategies.base import BaseStrategy
 
@@ -78,6 +79,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         on_window_signal: Optional[Callable[[WindowInfo], Awaitable[None]]] = None,
         geoblock_check_fn: Optional[Callable[[], bool]] = None,
         twap_tracker: Optional[TWAPTracker] = None,
+        timesfm_client: Optional[TimesFMClient] = None,
     ) -> None:
         super().__init__(
             name="five_min_vpin",
@@ -93,6 +95,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._db = db_client            # DBClient for window snapshot persistence (optional)
         self._geoblock_check_fn = geoblock_check_fn  # G6: Callable to check if geoblock is active
         self._twap = twap_tracker  # v5.7: TWAP-delta direction tracker
+        self._timesfm = timesfm_client  # v6.0: TimesFM forecast client (for comparison alerts)
         self._evaluator = WindowEvaluator()
         
         # Track last executed window to avoid duplicates
@@ -261,6 +264,22 @@ class FiveMinVPINStrategy(BaseStrategy):
             # Cleanup window tracking data after evaluation
             self._twap.cleanup_window(window.asset, window.window_ts)
 
+        # ── TimesFM forecast (v6.0 comparison data for alerts) ────────────
+        timesfm_forecast: Optional[TimesFMForecast] = None
+        if self._timesfm:
+            try:
+                timesfm_forecast = await self._timesfm.get_forecast(open_price=open_price)
+                if timesfm_forecast and not timesfm_forecast.error:
+                    self._log.info(
+                        "evaluate.timesfm_forecast",
+                        asset=window.asset,
+                        direction=timesfm_forecast.direction,
+                        confidence=f"{timesfm_forecast.confidence:.2f}",
+                        predicted_close=f"${timesfm_forecast.predicted_close:,.2f}",
+                    )
+            except Exception as exc:
+                self._log.debug("evaluate.timesfm_fetch_failed", error=str(exc))
+
         # Evaluate signal (with TWAP override for direction)
         signal = self._evaluate_signal(window, current_price, current_vpin, delta_pct, twap_result=twap_result)
 
@@ -397,6 +416,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                         skip_reason=_skip_reason,
                         cg_modifier=0.0,
                         twap_result=twap_result,
+                        timesfm_forecast=timesfm_forecast,
                     ))
                 except Exception:
                     pass
@@ -421,6 +441,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                     skip_reason=None,
                     cg_modifier=signal.cg_modifier,
                     twap_result=twap_result,
+                    timesfm_forecast=timesfm_forecast,
                 ))
             except Exception:
                 pass

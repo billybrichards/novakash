@@ -120,6 +120,12 @@ class RuntimeConfig:
         # ── Window ────────────────────────────────────────────────────────
         self.poly_window_seconds: int = _env_int("POLY_WINDOW_SECONDS", 300)
 
+        # ── v6.0 TimesFM-Only Strategy ────────────────────────────────────
+        self.timesfm_enabled: bool = os.environ.get("TIMESFM_ENABLED", "false").lower() == "true"
+        self.timesfm_url: str = os.environ.get("TIMESFM_URL", "http://16.52.148.255:8000")
+        self.timesfm_min_confidence: float = _env_float("TIMESFM_MIN_CONFIDENCE", 0.30)
+        self.timesfm_assets: list[str] = os.environ.get("TIMESFM_ASSETS", "BTC").split(",")
+
         # ── Guardrails ────────────────────────────────────────────────────
         # G1: Staggered asset execution
         self.order_stagger_seconds: float = _env_float("ORDER_STAGGER_SECONDS", 5.0)
