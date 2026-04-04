@@ -172,14 +172,20 @@ class Orchestrator:
                 headless=True,
             )
 
-        # ── CoinGlass Enhanced Feed (1-min data for signal enrichment) ─────────
+        # ── CoinGlass Enhanced Feeds (per-asset, 10s poll each) ────────────────
+        # BTC primary + ETH/SOL/XRP with staggered polls to stay within 300 req/min
         self._cg_enhanced: Optional[CoinGlassEnhancedFeed] = None
+        self._cg_feeds: dict[str, CoinGlassEnhancedFeed] = {}
         if settings.coinglass_api_key:
-            self._cg_enhanced = CoinGlassEnhancedFeed(
-                api_key=settings.coinglass_api_key,
-                symbol="BTC",
-            )
-            log.info("orchestrator.coinglass_enhanced_enabled")
+            for _cg_sym in ("BTC", "ETH", "SOL", "XRP"):
+                _feed = CoinGlassEnhancedFeed(
+                    api_key=settings.coinglass_api_key,
+                    symbol=_cg_sym,
+                )
+                self._cg_feeds[_cg_sym] = _feed
+                if _cg_sym == "BTC":
+                    self._cg_enhanced = _feed  # backward compat
+            log.info("orchestrator.coinglass_multi_asset", assets=list(self._cg_feeds.keys()))
 
         # ── Strategies ─────────────────────────────────────────────────────────
         self._arb_strategy = SubDollarArbStrategy(
@@ -210,6 +216,7 @@ class Orchestrator:
                 vpin_calculator=self._vpin_calc,
                 alerter=self._alerter,
                 cg_enhanced=self._cg_enhanced,
+                cg_feeds=self._cg_feeds,
                 db_client=self._db,
                 geoblock_check_fn=lambda: self._geoblock_active,  # G6
             )
@@ -372,7 +379,12 @@ class Orchestrator:
             self._tasks.append(
                 asyncio.create_task(self._coinglass_feed.start(), name="feed:coinglass")
             )
-        if self._cg_enhanced:
+        if self._cg_feeds:
+            for _sym, _cgf in self._cg_feeds.items():
+                self._tasks.append(
+                    asyncio.create_task(self._start_cg_staggered(_cgf, _sym), name=f"feed:cg_{_sym.lower()}")
+                )
+        elif self._cg_enhanced:
             self._tasks.append(
                 asyncio.create_task(self._cg_enhanced.start(), name="feed:coinglass_enhanced")
             )
@@ -532,6 +544,15 @@ class Orchestrator:
 
         # Update regime classifier
         self._regime.on_price(float(trade.price))
+
+    async def _start_cg_staggered(self, feed: CoinGlassEnhancedFeed, symbol: str):
+        """Start CG feed with stagger to spread API load."""
+        import random
+        _delay = {"BTC": 0, "ETH": 2, "SOL": 4, "XRP": 6}.get(symbol, 0)
+        _delay += random.uniform(0, 1)
+        await asyncio.sleep(_delay)
+        log.info("coinglass.starting_feed", symbol=symbol, delay=f"{_delay:.1f}s")
+        await feed.start()
 
     async def _on_oi_update(self, oi: OpenInterestSnapshot) -> None:
         """CoinGlass OI → aggregator + cascade detector update."""

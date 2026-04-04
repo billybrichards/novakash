@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+  @page { margin: 8mm 10mm; size: A4; }
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 9pt; line-height: 1.4; color: #1a1a2e; }
+  .page { max-width: 800px; margin: 0 auto; }
+  .page-break { page-break-after: always; }
+  .doc-header { text-align: center; padding: 15px 0 10px; border-bottom: 3px solid #e74c3c; margin-bottom: 15px; }
+  .doc-header h1 { font-size: 18pt; font-weight: 800; margin: 0; }
+  .doc-header .sub { font-size: 10pt; color: #7f8c8d; margin-top: 3px; }
+  .doc-header .meta { font-size: 8pt; color: #95a5a6; margin-top: 5px; }
+  .section { margin-bottom: 16px; }
+  .sh { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 5px; border-bottom: 2px solid #e74c3c; }
+  .sn { background: #e74c3c; color: white; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 11pt; flex-shrink: 0; }
+  .sh h2 { margin: 0; font-size: 13pt; font-weight: 700; }
+  .st { font-size: 10pt; font-weight: 700; color: #2c3e50; margin: 12px 0 6px; padding-bottom: 3px; border-bottom: 1px solid #ecf0f1; }
+  table { width: 100%; border-collapse: collapse; font-size: 8pt; margin: 8px 0; }
+  th { background: #1a1a2e; color: white; padding: 5px 6px; text-align: left; font-weight: 600; }
+  td { padding: 4px 6px; border-bottom: 1px solid #ecf0f1; }
+  tr:nth-child(even) { background: #f8f9fa; }
+  .co { border-left: 3px solid #2ecc71; background: #eafaf1; padding: 8px 10px; margin: 8px 0; border-radius: 0 5px 5px 0; font-size: 8.5pt; }
+  .co-r { border-left-color: #e74c3c; background: #fdedec; }
+  .co-a { border-left-color: #f39c12; background: #fef9e7; }
+  p { margin: 4px 0; font-size: 8.5pt; }
+  code { background: #f0f0f0; padding: 0 3px; border-radius: 2px; font-size: 7.5pt; }
+  .b { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 7pt; font-weight: 700; }
+  .bw { background: #2ecc71; color: white; }
+  .bl { background: #e74c3c; color: white; }
+  .ba { background: #f39c12; color: white; }
+  .svg-cap { font-size: 7.5pt; color: #7f8c8d; text-align: center; margin-top: 4px; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="doc-header">
+    <h1>Novakash: Strategy Evolution & Architecture</h1>
+    <div class="sub">v4.0 → v5.4 — What Worked, What Didn't, and Why</div>
+    <div class="meta">April 4, 2026 | Develop Branch | BTC/ETH/SOL/XRP 5-Min Polymarket Up/Down</div>
+  </div>
+
+  <!-- SECTION 1: THE WINNING SESSION -->
+  <div class="section">
+    <div class="sh"><div class="sn">1</div><h2>The Live Winning Session (Apr 2, Morning)</h2></div>
+
+    <div class="co">
+      <strong>Result: +$93 profit, 89% WR, 6 hours live trading.</strong> This is the ground truth for what works.
+    </div>
+
+    <table>
+      <thead><tr><th>Parameter</th><th>Value</th><th>Why It Worked</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Order Type</strong></td><td>GTC limit</td><td>Passive maker orders — adds liquidity, Polymarket rewards this</td></tr>
+        <tr><td><strong>Pricing</strong></td><td>Exact Gamma API bestAsk</td><td>Mid-market price (38–52¢ tokens) → best risk/reward</td></tr>
+        <tr><td><strong>Evaluation</strong></td><td>Single-shot at T-60s</td><td>One check per window, no continuous monitoring</td></tr>
+        <tr><td><strong>Direction</strong></td><td>Momentum (follow delta)</td><td>VPIN was 0.65–0.93 all morning = CASCADE regime</td></tr>
+        <tr><td><strong>VPIN Range</strong></td><td>0.65–0.93</td><td>Genuine informed flow — BTC in real downtrend</td></tr>
+        <tr><td><strong>Delta Range</strong></td><td>0.03–0.09%</td><td>Small but meaningful in high-VPIN cascade</td></tr>
+        <tr><td><strong>Token Prices</strong></td><td>38–52¢</td><td>Sweet spot: win = +100% return, loss = -100% (symmetric)</td></tr>
+        <tr><td><strong>Fill Rate</strong></td><td>~40%</td><td>Low fill rate but great prices — better than 90% fill at 95¢</td></tr>
+        <tr><td><strong>Confidence</strong></td><td>MODERATE (65%+)</td><td>Matched delta 0.03–0.09% which is the engine's bread and butter</td></tr>
+      </tbody>
+    </table>
+
+    <svg width="780" height="85" viewBox="0 0 780 85" xmlns="http://www.w3.org/2000/svg">
+      <rect width="780" height="85" fill="#f8fafc" rx="6"/>
+      <text x="390" y="16" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#95a5a6" font-weight="600">MORNING SESSION PRICING — WHY 50¢ TOKENS WIN</text>
+      <rect x="20" y="25" width="230" height="50" rx="6" fill="#2ecc71"/>
+      <text x="135" y="44" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="white" font-weight="700">Morning: GTC @ 49¢</text>
+      <text x="135" y="57" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.9)">Win: +51¢ (104%) | Loss: -49¢ | Break-even: 49%</text>
+      <text x="135" y="68" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">89% WR → massive positive EV</text>
+      <rect x="275" y="25" width="230" height="50" rx="6" fill="#e74c3c"/>
+      <text x="390" y="44" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="white" font-weight="700">Afternoon: FAK @ 95¢</text>
+      <text x="390" y="57" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.9)">Win: +5¢ (5%) | Loss: -95¢ | Break-even: 95%</text>
+      <text x="390" y="68" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">Even 89% WR = net loss at these prices</text>
+      <rect x="530" y="25" width="230" height="50" rx="6" fill="#3498db"/>
+      <text x="645" y="44" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="white" font-weight="700">v5.4: Smart Limit @ 50¢</text>
+      <text x="645" y="57" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="rgba(255,255,255,0.9)">Posts at delta-model price → fills near 50¢</text>
+      <text x="645" y="68" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">Bump to bestAsk only if ≤65¢ cap</text>
+    </svg>
+    <div class="svg-cap">Fig 1. Token pricing is the single biggest factor in profitability — not win rate</div>
+  </div>
+
+  <!-- SECTION 2: VERSION HISTORY -->
+  <div class="section">
+    <div class="sh"><div class="sn">2</div><h2>Version Evolution: v4.0 → v5.4</h2></div>
+
+    <svg width="780" height="220" viewBox="0 0 780 220" xmlns="http://www.w3.org/2000/svg">
+      <rect width="780" height="220" fill="#f8fafc" rx="6"/>
+      <text x="390" y="16" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#95a5a6" font-weight="600">VERSION TIMELINE — APRIL 2-4, 2026</text>
+
+      <defs><marker id="a" markerWidth="6" markerHeight="5" refX="5" refY="2.5" orient="auto"><polygon points="0 0,6 2.5,0 5" fill="#7f8c8d"/></marker></defs>
+      <line x1="30" y1="45" x2="750" y2="45" stroke="#ddd" stroke-width="2"/>
+
+      <!-- v4.0 -->
+      <rect x="20" y="30" width="95" height="30" rx="5" fill="#3498db"/>
+      <text x="67" y="49" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">v4.0 Regime</text>
+      <rect x="15" y="65" width="105" height="60" rx="4" fill="white" stroke="#3498db" stroke-width="1"/>
+      <text x="67" y="78" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50" font-weight="600">3 regimes (VPIN)</text>
+      <text x="67" y="89" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">CASCADE: momentum</text>
+      <text x="67" y="99" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">NORMAL: contrarian</text>
+      <text x="67" y="109" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">δ ≥ 0.08% all regimes</text>
+      <text x="67" y="119" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#2ecc71">✓ Live morning +$93</text>
+
+      <!-- v4.1 -->
+      <rect x="130" y="30" width="95" height="30" rx="5" fill="#2ecc71"/>
+      <text x="177" y="49" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">v4.1 Cascade</text>
+      <rect x="125" y="65" width="105" height="60" rx="4" fill="white" stroke="#2ecc71" stroke-width="1"/>
+      <text x="177" y="78" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50" font-weight="600">Per-regime deltas</text>
+      <text x="177" y="89" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">CASCADE: δ ≥ 0.03%</text>
+      <text x="177" y="99" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">VPIN 0.85+: δ ≥ 0.005%</text>
+      <text x="177" y="109" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">Scaled delta bar</text>
+      <text x="177" y="119" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#2ecc71">✓ Don't block cascades</text>
+
+      <!-- v4.2 (reverted) -->
+      <rect x="240" y="30" width="95" height="30" rx="5" fill="#e74c3c"/>
+      <text x="287" y="49" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">v4.2 ✗ REVERTED</text>
+      <rect x="235" y="65" width="105" height="50" rx="4" fill="white" stroke="#e74c3c" stroke-width="1"/>
+      <text x="287" y="78" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#e74c3c" font-weight="600">All-momentum (first try)</text>
+      <text x="287" y="89" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">Removed contrarian</text>
+      <text x="287" y="99" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">Had bugs → reverted</text>
+      <text x="287" y="109" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#e74c3c">✗ Direction bug</text>
+
+      <!-- v5.0 -->
+      <rect x="350" y="30" width="80" height="30" rx="5" fill="#9b59b6"/>
+      <text x="390" y="49" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">v5.0 CG</text>
+      <rect x="345" y="65" width="90" height="50" rx="4" fill="white" stroke="#9b59b6" stroke-width="1"/>
+      <text x="390" y="78" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50" font-weight="600">CoinGlass wired in</text>
+      <text x="390" y="89" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">6 CG signals</text>
+      <text x="390" y="99" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">±0.50 modifier</text>
+      <text x="390" y="109" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#f39c12">△ Blocked too many</text>
+
+      <!-- v5.1 -->
+      <rect x="445" y="30" width="80" height="30" rx="5" fill="#2ecc71"/>
+      <text x="485" y="49" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">v5.1 Data</text>
+      <rect x="440" y="65" width="90" height="60" rx="4" fill="white" stroke="#2ecc71" stroke-width="1"/>
+      <text x="485" y="78" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50" font-weight="600">30-day backtest</text>
+      <text x="485" y="89" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">CG = coin flips</text>
+      <text x="485" y="99" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">Only OI delta kept</text>
+      <text x="485" y="109" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">ALL momentum</text>
+      <text x="485" y="119" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#2ecc71">✓ 92% WR paper</text>
+
+      <!-- v5.3 -->
+      <rect x="540" y="30" width="80" height="30" rx="5" fill="#f39c12"/>
+      <text x="580" y="49" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">v5.3 GTD</text>
+      <rect x="535" y="65" width="90" height="50" rx="4" fill="white" stroke="#f39c12" stroke-width="1"/>
+      <text x="580" y="78" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50" font-weight="600">Order management</text>
+      <text x="580" y="89" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">GTD auto-expiry</text>
+      <text x="580" y="99" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">Dynamic spread bump</text>
+      <text x="580" y="109" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">30s faster poll</text>
+
+      <!-- v5.4 -->
+      <rect x="635" y="30" width="130" height="30" rx="5" fill="#2ecc71" stroke="#1a1a2e" stroke-width="1.5"/>
+      <text x="700" y="49" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">v5.4 CURRENT ★</text>
+      <rect x="630" y="65" width="140" height="60" rx="4" fill="white" stroke="#2ecc71" stroke-width="1.5"/>
+      <text x="700" y="78" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50" font-weight="600">Smart limit pricing</text>
+      <text x="700" y="89" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">Post at delta-model price (~50¢)</text>
+      <text x="700" y="99" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">Bump to bestAsk only if ≤65¢</text>
+      <text x="700" y="109" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">+ 6 guardrails (G1-G6)</text>
+      <text x="700" y="119" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#2ecc71">✓ Wallet banned → paper</text>
+
+      <!-- Timeline labels -->
+      <text x="67" y="142" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#95a5a6">Apr 3 AM</text>
+      <text x="177" y="142" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#95a5a6">Apr 3 PM</text>
+      <text x="287" y="132" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#95a5a6">Apr 3 (reverted)</text>
+      <text x="390" y="132" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#95a5a6">Apr 3 Eve</text>
+      <text x="485" y="142" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#95a5a6">Apr 3 Night</text>
+      <text x="580" y="132" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#95a5a6">Apr 4 AM</text>
+      <text x="700" y="142" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#95a5a6">Apr 4 PM</text>
+
+      <!-- Key lesson -->
+      <rect x="20" y="155" width="740" height="55" rx="6" fill="#1a1a2e"/>
+      <text x="390" y="172" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#2ecc71" font-weight="700">KEY INSIGHT: Every profitable session used momentum direction + limit orders at ~50¢</text>
+      <text x="390" y="186" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">Contrarian was a coin flip (50-51% WR per 30-day backtest). CoinGlass modifiers were noise (except OI delta +2.9% lift).</text>
+      <text x="390" y="200" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">The FAK disaster (-$258) proved: pricing strategy matters more than win rate. 89% WR at 95¢ tokens = net loss.</text>
+    </svg>
+    <div class="svg-cap">Fig 2. Version timeline — green = worked, red = failed/reverted, orange = incremental improvement</div>
+  </div>
+
+  <div class="page-break"></div>
+
+  <!-- SECTION 3: DETAILED VERSION TABLE -->
+  <div class="section">
+    <div class="sh"><div class="sn">3</div><h2>Version Decision Log</h2></div>
+    <table>
+      <thead><tr><th>Version</th><th>Commit</th><th>What Changed</th><th>Result</th><th>Decision</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>v4.0</strong></td><td><code>8307ea4</code></td>
+          <td>Regime-aware direction. CASCADE=momentum, NORMAL/TRANSITION=contrarian. VPIN gate 0.45, bucket $500K, delta 0.08%</td>
+          <td><span class="b bw">WIN</span> +$93 live</td>
+          <td>Foundation. Proven in live. But contrarian in NORMAL was untested.</td>
+        </tr>
+        <tr>
+          <td><strong>v4.1</strong></td><td><code>27e078b</code></td>
+          <td>Per-regime delta thresholds. CASCADE: 0.03% (scaled to 0.005% at VPIN 0.85+). TRANSITION: 0.12%</td>
+          <td><span class="b bw">WIN</span> No missed cascades</td>
+          <td>Billy's insight: VPIN IS the signal in cascade. Small delta still confirms.</td>
+        </tr>
+        <tr>
+          <td><strong>v4.2</strong></td><td><code>4cf801b</code></td>
+          <td>ALL momentum (remove contrarian). Had direction bug.</td>
+          <td><span class="b bl">REVERTED</span></td>
+          <td>Right idea, wrong execution. Reverted same day.</td>
+        </tr>
+        <tr>
+          <td><strong>v5.0</strong></td><td><code>a9ffe57</code></td>
+          <td>CoinGlass integration. 6 signals: liqs, L/S, smart money, taker, funding, OI. ±0.50 modifier.</td>
+          <td><span class="b ba">MIXED</span> Too aggressive</td>
+          <td>CG modifiers blocked valid trades. Smart money divergence caused -0.40 suppression on good signals.</td>
+        </tr>
+        <tr>
+          <td><strong>v5.1</strong></td><td><code>b141718</code></td>
+          <td>30-day backtest: CG signals = coin flips. ZEROED all except OI delta. ALL momentum (contrarian removed).</td>
+          <td><span class="b bw">WIN</span> 92% WR paper</td>
+          <td>Data-driven: 8,640 windows proved contrarian = 50% WR, momentum > contrarian in ALL regimes.</td>
+        </tr>
+        <tr>
+          <td><strong>v5.2</strong></td><td><code>5af78fb</code></td>
+          <td>Claude Opus AI assessment per trade. Rich Telegram alerts with entry/exit analysis.</td>
+          <td><span class="b bw">WIN</span> Observability</td>
+          <td>Doesn't affect trades — adds AI reasoning post-hoc for learning.</td>
+        </tr>
+        <tr>
+          <td><strong>v5.3</strong></td><td><code>cb37525</code></td>
+          <td>GTD auto-expiry at window close. Dynamic spread bump (min 0.5¢, max 2¢). 30s faster poll.</td>
+          <td><span class="b bw">WIN</span> Better fills</td>
+          <td>No stale orders. Smart retry that reads actual spread. Cleaner than cancel-and-replace.</td>
+        </tr>
+        <tr>
+          <td><strong>v5.4</strong></td><td><code>78c383a</code></td>
+          <td>Smart limit pricing: post at delta-model price (~50¢), NOT Gamma bestAsk. Bump only if ≤65¢. +6 guardrails (G1-G6).</td>
+          <td><span class="b bw">CURRENT</span></td>
+          <td>Replicates morning session pricing. Paper system proved 92% WR at 45-51¢ tokens.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- SECTION 4: THE SCIENCE -->
+  <div class="section">
+    <div class="sh"><div class="sn">4</div><h2>The Science: Why Momentum Beats Contrarian</h2></div>
+
+    <div class="st">The Academic Foundation</div>
+    <table>
+      <thead><tr><th>Source</th><th>Finding</th><th>Our Application</th></tr></thead>
+      <tbody>
+        <tr><td>De Nicola (2021)</td><td>5-min BTC autocorrelation = <strong>-0.1016</strong> (p < 10⁻²⁰⁰)</td><td>Originally: mean-reversion. But -0.10 is tiny — the effect is real but weak.</td></tr>
+        <tr><td>Easley et al. (2024)</td><td>Crypto VPIN averages <strong>0.469</strong> (2× traditional markets)</td><td>VPIN gate at 0.45 — only trade when informed flow exceeds crypto baseline.</td></tr>
+        <tr><td>30-day backtest (8,640 windows)</td><td>Contrarian WR: <strong>50.1%</strong> (coin flip). Momentum WR: <strong>57%</strong></td><td>Abandoned contrarian. ALL regimes now momentum.</td></tr>
+        <tr><td>Live Apr 2 morning (CASCADE)</td><td>Momentum WR: <strong>89%</strong> at VPIN 0.65-0.93</td><td>Highest conviction in CASCADE. VPIN IS the signal.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="st">The CDK1/Cyclin Cascade Analogy</div>
+    <svg width="780" height="100" viewBox="0 0 780 100" xmlns="http://www.w3.org/2000/svg">
+      <rect width="780" height="100" fill="#1a1a2e" rx="6"/>
+      <text x="390" y="18" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#2ecc71" font-weight="700">CASCADE REGIME = CDK1/CYCLIN BISTABLE SWITCH</text>
+
+      <rect x="15" y="28" width="145" height="30" rx="4" fill="#34495e"/>
+      <text x="87" y="41" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#f39c12" font-weight="600">OI Builds Up</text>
+      <text x="87" y="52" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">Cyclin accumulates</text>
+
+      <text x="170" y="45" font-family="-apple-system,sans-serif" font-size="10" fill="#2ecc71">→</text>
+
+      <rect x="185" y="28" width="145" height="30" rx="4" fill="#e74c3c"/>
+      <text x="257" y="41" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="white" font-weight="600">Cascade Triggers</text>
+      <text x="257" y="52" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.8)">CDK1 crosses threshold</text>
+
+      <text x="340" y="45" font-family="-apple-system,sans-serif" font-size="10" fill="#2ecc71">→</text>
+
+      <rect x="355" y="28" width="170" height="30" rx="4" fill="#e74c3c"/>
+      <text x="440" y="41" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="white" font-weight="600">Positive Feedback Loop</text>
+      <text x="440" y="52" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.8)">Liq → price drop → more liq</text>
+
+      <text x="535" y="45" font-family="-apple-system,sans-serif" font-size="10" fill="#2ecc71">→</text>
+
+      <rect x="550" y="28" width="100" height="30" rx="4" fill="#34495e"/>
+      <text x="600" y="41" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#3498db" font-weight="600">OI Depletes</text>
+      <text x="600" y="52" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">APC destroys cyclin</text>
+
+      <text x="660" y="45" font-family="-apple-system,sans-serif" font-size="10" fill="#2ecc71">→</text>
+
+      <rect x="675" y="28" width="90" height="30" rx="4" fill="#2ecc71"/>
+      <text x="720" y="41" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="white" font-weight="600">Bounce</text>
+      <text x="720" y="52" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.8)">Cell → G1</text>
+
+      <text x="390" y="80" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.6)">VPIN measures the cascade intensity. When it crosses 0.65, the switch has flipped — ride the momentum until OI depletes.</text>
+      <text x="390" y="92" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.6)">In NORMAL regime (VPIN < 0.55), the cascade hasn't triggered — price moves are noise → momentum still works but with lower conviction.</text>
+    </svg>
+  </div>
+
+  <!-- SECTION 5: CURRENT ARCHITECTURE -->
+  <div class="section">
+    <div class="sh"><div class="sn">5</div><h2>Current Architecture (v5.4)</h2></div>
+
+    <svg width="780" height="280" viewBox="0 0 780 280" xmlns="http://www.w3.org/2000/svg">
+      <rect width="780" height="280" fill="#f8fafc" rx="6"/>
+      <defs><marker id="ar" markerWidth="6" markerHeight="5" refX="5" refY="2.5" orient="auto"><polygon points="0 0,6 2.5,0 5" fill="#7f8c8d"/></marker></defs>
+
+      <!-- Data sources -->
+      <rect x="10" y="10" width="120" height="55" rx="6" fill="#1a1a2e" stroke="#f39c12" stroke-width="1.5"/>
+      <text x="70" y="28" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#f39c12" font-weight="700">BINANCE WS</text>
+      <text x="70" y="40" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">aggTrade → VPIN</text>
+      <text x="70" y="50" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">$500K buckets, 50 lookback</text>
+
+      <rect x="140" y="10" width="120" height="55" rx="6" fill="#1a1a2e" stroke="#e74c3c" stroke-width="1.5"/>
+      <text x="200" y="28" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#e74c3c" font-weight="700">COINGLASS v4</text>
+      <text x="200" y="40" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">Standard, 10s poll</text>
+      <text x="200" y="50" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">OI active | rest monitoring</text>
+
+      <rect x="270" y="10" width="120" height="55" rx="6" fill="#1a1a2e" stroke="#3498db" stroke-width="1.5"/>
+      <text x="330" y="28" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#3498db" font-weight="700">POLYMARKET</text>
+      <text x="330" y="40" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">5min windows, token px</text>
+      <text x="330" y="50" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">Gamma API (bestAsk)</text>
+
+      <rect x="400" y="10" width="120" height="55" rx="6" fill="#1a1a2e" stroke="#2ecc71" stroke-width="1.5"/>
+      <text x="460" y="28" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#2ecc71" font-weight="700">ORACLE</text>
+      <text x="460" y="40" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">Chainlink resolution</text>
+      <text x="460" y="50" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">WIN/LOSS truth</text>
+
+      <!-- Arrows -->
+      <line x1="70" y1="65" x2="70" y2="80" stroke="#7f8c8d" stroke-width="1" marker-end="url(#ar)"/>
+      <line x1="200" y1="65" x2="200" y2="80" stroke="#7f8c8d" stroke-width="1" marker-end="url(#ar)"/>
+      <line x1="330" y1="65" x2="330" y2="80" stroke="#7f8c8d" stroke-width="1" marker-end="url(#ar)"/>
+
+      <!-- EVALUATOR -->
+      <rect x="10" y="82" width="510" height="80" rx="6" fill="#2c3e50"/>
+      <text x="260" y="98" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="white" font-weight="700">T-60s EVALUATOR (single-shot per window)</text>
+
+      <rect x="18" y="105" width="95" height="48" rx="4" fill="#34495e"/>
+      <text x="65" y="118" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#f39c12" font-weight="700">① VPIN GATE</text>
+      <text x="65" y="129" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">≥ 0.45 → proceed</text>
+      <text x="65" y="140" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">< 0.45 → SKIP</text>
+      <text x="65" y="148" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="5.5" fill="#e74c3c">(CALM regime)</text>
+
+      <text x="120" y="130" font-family="-apple-system,sans-serif" font-size="8" fill="white">→</text>
+
+      <rect x="130" y="105" width="120" height="48" rx="4" fill="#34495e"/>
+      <text x="190" y="118" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#e74c3c" font-weight="700">② REGIME + DELTA</text>
+      <text x="190" y="129" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">VPIN≥0.65: δ≥0.03%</text>
+      <text x="190" y="139" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">0.55-0.65: δ≥0.08%</text>
+      <text x="190" y="149" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)"><0.55: δ≥0.08%</text>
+
+      <text x="257" y="130" font-family="-apple-system,sans-serif" font-size="8" fill="white">→</text>
+
+      <rect x="265" y="105" width="80" height="48" rx="4" fill="#34495e"/>
+      <text x="305" y="118" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2ecc71" font-weight="700">③ DIRECTION</text>
+      <text x="305" y="130" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">ALL MOMENTUM</text>
+      <text x="305" y="140" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">Follow delta</text>
+      <text x="305" y="149" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="5.5" fill="#e74c3c">(no contrarian)</text>
+
+      <text x="352" y="130" font-family="-apple-system,sans-serif" font-size="8" fill="white">→</text>
+
+      <rect x="360" y="105" width="70" height="48" rx="4" fill="#34495e"/>
+      <text x="395" y="118" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#9b59b6" font-weight="700">④ CG</text>
+      <text x="395" y="130" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">OI Δ >0.1%</text>
+      <text x="395" y="140" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.7)">= +0.10 boost</text>
+      <text x="395" y="149" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="5.5" fill="#7f8c8d">rest: monitor</text>
+
+      <text x="437" y="130" font-family="-apple-system,sans-serif" font-size="8" fill="white">→</text>
+
+      <rect x="445" y="105" width="65" height="48" rx="4" fill="#2ecc71"/>
+      <text x="477" y="120" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="white" font-weight="700">⑤ CONF</text>
+      <text x="477" y="132" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.8)">MOD/HIGH</text>
+      <text x="477" y="142" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.8)">→ TRADE</text>
+
+      <!-- GUARDRAILS -->
+      <rect x="530" y="82" width="240" height="80" rx="6" fill="#fdedec" stroke="#e74c3c" stroke-width="1"/>
+      <text x="650" y="98" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#e74c3c" font-weight="700">GUARDRAILS (G1-G6)</text>
+      <text x="650" y="112" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#2c3e50">G1: Stagger 5s + jitter</text>
+      <text x="650" y="122" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#2c3e50">G2: Stake rounded 2dp</text>
+      <text x="650" y="132" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#2c3e50">G3: Single best signal (off)</text>
+      <text x="650" y="142" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#2c3e50">G4: Rate limit 4s/10 per hr</text>
+      <text x="650" y="152" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#2c3e50">G5: Circuit breaker (4xx)</text>
+
+      <!-- EXECUTION -->
+      <rect x="10" y="175" width="760" height="50" rx="6" fill="#1a1a2e"/>
+      <text x="390" y="193" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="#2ecc71" font-weight="700">SMART LIMIT PRICING (v5.4)</text>
+      <text x="390" y="208" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">① Post GTC limit at delta-model price (~50¢) → ② Wait 15s → ③ If unfilled, check Gamma bestAsk → ④ If bestAsk ≤ 65¢ cap, bump → ⑤ GTD auto-expires at window close</text>
+      <text x="390" y="219" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.6)">Replicates the morning session pricing that produced +$93 at 89% WR | NEVER buys above 65¢ | Stake × (1-price)/0.50 scaling</text>
+
+      <!-- RESOLUTION -->
+      <rect x="10" y="238" width="760" height="35" rx="6" fill="#2ecc71"/>
+      <text x="390" y="256" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="white" font-weight="700">RESOLUTION: Polymarket Oracle (Chainlink) → WIN/LOSS → Claude Opus AI Assessment → Telegram Alert</text>
+      <text x="390" y="268" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">NEVER trust Binance-only resolution. Oracle is the TRUTH. AI assessment explains why the trade won/lost for continuous learning.</text>
+    </svg>
+    <div class="svg-cap">Fig 3. v5.4 architecture — the full signal-to-execution pipeline with guardrails</div>
+  </div>
+
+  <div class="page-break"></div>
+
+  <!-- SECTION 6: THRESHOLDS -->
+  <div class="section">
+    <div class="sh"><div class="sn">6</div><h2>All Thresholds & Parameters</h2></div>
+    <table>
+      <thead><tr><th>Parameter</th><th>Value</th><th>Source</th><th>Rationale</th></tr></thead>
+      <tbody>
+        <tr><td colspan="4" style="background:#2c3e50;color:white;font-weight:700;">VPIN Configuration</td></tr>
+        <tr><td>Bucket Size</td><td>$500,000</td><td>Tuned from $50K</td><td>~1,800 meaningful buckets/day vs 18,000 noisy</td></tr>
+        <tr><td>Lookback</td><td>50 buckets</td><td>Standard</td><td>~$25M lookback ≈ 1 hour of moderate BTC volume</td></tr>
+        <tr><td>VPIN Gate</td><td>0.45</td><td>Easley (2024)</td><td>Crypto VPIN avg 0.469 — gate filters below-average informed flow</td></tr>
+        <tr><td>Informed Threshold</td><td>0.55</td><td>Research</td><td>NORMAL → TRANSITION boundary</td></tr>
+        <tr><td>Cascade Direction</td><td>0.65</td><td>Live data</td><td>Momentum switch point. 83% WR above this.</td></tr>
+        <tr><td>Cascade Alert</td><td>0.70</td><td>Research</td><td>High informed flow. Triggers cascade detector FSM.</td></tr>
+        <tr><td colspan="4" style="background:#2c3e50;color:white;font-weight:700;">Delta Thresholds</td></tr>
+        <tr><td>NORMAL min</td><td>0.08%</td><td>Backtest</td><td>Below this = coin flip. Proven edge starts at 0.08%.</td></tr>
+        <tr><td>TRANSITION min</td><td>0.08%</td><td>v5.1</td><td>Was 0.12% (v4), equalised in v5.1 all-momentum switch.</td></tr>
+        <tr><td>CASCADE min</td><td>0.03%</td><td>Billy</td><td>VPIN IS the signal. Small delta still confirms in cascade.</td></tr>
+        <tr><td>CASCADE scaled (0.85+)</td><td>0.005%</td><td>v4.1</td><td>Mega cascade — basically any price movement confirms.</td></tr>
+        <tr><td colspan="4" style="background:#2c3e50;color:white;font-weight:700;">Pricing</td></tr>
+        <tr><td>Target entry</td><td>~50¢ (delta model)</td><td>v5.4</td><td>Best R/R: win +100%, loss -100%. Break-even at 50%.</td></tr>
+        <tr><td>Max price cap</td><td>65¢</td><td>FAK postmortem</td><td>Above 65¢: win +54%, loss -100%. Need 65% WR to break even.</td></tr>
+        <tr><td>Retry bump</td><td>min(2¢, spread)</td><td>v5.3</td><td>Dynamic, reads actual order book spread.</td></tr>
+        <tr><td colspan="4" style="background:#2c3e50;color:white;font-weight:700;">Risk</td></tr>
+        <tr><td>Bet Fraction</td><td>5%</td><td>Kelly</td><td>Conservative Kelly. Bankroll × 0.05 per trade.</td></tr>
+        <tr><td>Max Position</td><td>$120</td><td>Config</td><td>Hard cap per trade regardless of bankroll size.</td></tr>
+        <tr><td>Daily Loss Limit</td><td>30%</td><td>Config</td><td>Engine halts if daily P&L drops 30%.</td></tr>
+        <tr><td colspan="4" style="background:#2c3e50;color:white;font-weight:700;">CoinGlass (v5.1)</td></tr>
+        <tr><td>OI Delta</td><td>>0.10% = +0.10 boost</td><td>30-day data</td><td>Only CG signal with proven lift (+2.9% WR).</td></tr>
+        <tr><td>L/S, Smart Money, Taker, Funding, Liq</td><td>ZEROED</td><td>30-day data</td><td>All coin flips (49-51% WR). Data still logged for future analysis.</td></tr>
+        <tr><td colspan="4" style="background:#2c3e50;color:white;font-weight:700;">Guardrails</td></tr>
+        <tr><td>Order Stagger</td><td>5s + 1-3s jitter</td><td>Anti-ban</td><td>No more 5 orders in 2 seconds.</td></tr>
+        <tr><td>Min Order Interval</td><td>4s</td><td>Anti-ban</td><td>Minimum gap between any two orders.</td></tr>
+        <tr><td>Max Orders/Hour</td><td>10</td><td>Anti-ban</td><td>Hourly cap. Polymarket likely flags >10/min.</td></tr>
+        <tr><td>Circuit Breaker</td><td>15min (4xx) / 1hr (3×)</td><td>Anti-ban</td><td>Auto-halt on errors. Prevents cascading failures.</td></tr>
+        <tr><td>Geoblock Check</td><td>Startup</td><td>Anti-ban</td><td>Refuses live mode from blocked countries (UK, US, DE, etc.).</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- SECTION 7: WHAT NEXT -->
+  <div class="section">
+    <div class="sh"><div class="sn">7</div><h2>Current State & What's Next</h2></div>
+    <table>
+      <thead><tr><th>Item</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Engine</td><td><strong>Paper mode</strong> on Railway (develop branch). Wallet 0x2e42 banned.</td></tr>
+        <tr><td>Paper Performance</td><td>92% WR, 100 trades, $4,290 P&L (paper stakes). v5.1 all-momentum.</td></tr>
+        <tr><td>CoinGlass</td><td>Standard plan, 31 req/min. BTC-only (ETH/SOL/XRP use BTC data).</td></tr>
+        <tr><td>Guardrails</td><td>All 6 active in paper mode. Stagger + rate limit confirmed working.</td></tr>
+        <tr><td>To Go Live</td><td>New wallet → Montreal VPS → 7-14 day warm-up → gradual automation.</td></tr>
+      </tbody>
+    </table>
+
+    <div class="co">
+      <strong>Key Lessons Distilled:</strong><br>
+      1. <strong>Pricing > Win Rate.</strong> 89% WR at 95¢ tokens = loss. 57% WR at 50¢ tokens = profit.<br>
+      2. <strong>Momentum > Contrarian.</strong> 30-day data proves contrarian = coin flip in 5-min BTC.<br>
+      3. <strong>VPIN is the edge.</strong> Everything else (CG signals, fancy evaluators) was noise except OI delta.<br>
+      4. <strong>Simple > Complex.</strong> Morning's 3-line evaluator beat the 300-line continuous evaluator.<br>
+      5. <strong>Never iterate on live money.</strong> The FAK switch and continuous evaluator both burned $250+ each.
+    </div>
+  </div>
+
+  <div style="margin-top: 10px; padding: 6px; background: #f8f9fa; border-radius: 6px; text-align: center; border: 1px solid #e0e0e0;">
+    <span style="font-size: 12pt; font-weight: 800;">Novakash<span style="color:#e74c3c;">.</span></span>
+    <span style="font-size: 7pt; color: #7f8c8d; margin-left: 8px;">Strategy Evolution v4.0→v5.4 | April 2026 | Confidential</span>
+  </div>
+
+</div>
+</body>
+</html>

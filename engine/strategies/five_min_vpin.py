@@ -71,6 +71,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         vpin_calculator: VPINCalculator,
         alerter=None,
         cg_enhanced=None,
+        cg_feeds=None,
         db_client=None,
         on_window_signal: Optional[Callable[[WindowInfo], Awaitable[None]]] = None,
         geoblock_check_fn: Optional[Callable[[], bool]] = None,
@@ -84,6 +85,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._vpin = vpin_calculator
         self._alerter = alerter
         self._cg_enhanced = cg_enhanced  # CoinGlassEnhancedFeed (optional)
+        self._cg_feeds = cg_feeds or {}  # Per-asset CG feeds: {"BTC": feed, "ETH": feed, ...}
         self._db = db_client            # DBClient for window snapshot persistence (optional)
         self._geoblock_check_fn = geoblock_check_fn  # G6: Callable to check if geoblock is active
         self._evaluator = WindowEvaluator()
@@ -243,7 +245,21 @@ class FiveMinVPINStrategy(BaseStrategy):
             _snap_regime = "CALM"
 
         # ── Capture CoinGlass snapshot at evaluation time ────────────────────
-        cg = self._cg_enhanced.snapshot if self._cg_enhanced is not None else None
+        # Per-asset CG feed (v5.4d) — fall back to BTC if asset feed unavailable
+
+        cg = None
+
+        if hasattr(self, '_cg_feeds') and self._cg_feeds:
+
+            _asset_feed = self._cg_feeds.get(window.asset, self._cg_feeds.get("BTC"))
+
+            if _asset_feed and _asset_feed.connected:
+
+                cg = _asset_feed.snapshot
+
+        elif self._cg_enhanced and self._cg_enhanced.connected:
+
+            cg = self._cg_enhanced.snapshot
 
         # ── Build window snapshot dict ───────────────────────────────────────
         window_snapshot = {
@@ -476,14 +492,71 @@ class FiveMinVPINStrategy(BaseStrategy):
                 cg_confidence_modifier += 0.10
                 cg_log_parts.append(f"oi_delta_confirms(+0.10, OI_Δ={cg.oi_delta_pct_1m:.3f}%)")
 
-            # MONITORING ONLY — logged but NOT used in trade decisions:
-            # Liquidation, L/S ratio, Smart money, Taker, Funding
-            # All saved to window_snapshots for future recalibration
-
-            # e) Funding rate extremes → persistent directional pressure
-            # Extreme positive funding (>0.01%) → longs paying → DOWN pressure
-            # e) Funding rate — ZEROED in v5.1 (coin flip per 30-day data)
-            # Data preserved in CG snapshot for window_snapshots DB
+            # MONITORING + VETO SYSTEM (v5.4d)
+            # Individual CG signals are coin flips per 30-day backtest.
+            # But EXTREME DIVERGENCE (multiple signals aligned against our direction)
+            # warrants a veto. This catches contradictory trades like the 18:35 loss.
+            #
+            # Veto triggers when 3+ signals oppose direction:
+            
+            _veto_count = 0
+            _veto_reasons = []
+            
+            # Smart money opposing: top traders > 55% on the other side
+            if direction == "YES" and cg.top_position_short_pct > 55:
+                _veto_count += 1
+                _veto_reasons.append(f"smart_money_short={cg.top_position_short_pct:.0f}%")
+            elif direction == "NO" and cg.top_position_long_pct > 55:
+                _veto_count += 1
+                _veto_reasons.append(f"smart_money_long={cg.top_position_long_pct:.0f}%")
+            
+            # Funding extreme opposing direction
+            if direction == "YES" and cg.funding_rate > 0.0005:  # >0.05% = longs paying heavily
+                _veto_count += 1
+                _veto_reasons.append(f"funding_bearish={cg.funding_rate*100:.3f}%")
+            elif direction == "NO" and cg.funding_rate < -0.0005:  # negative = shorts paying
+                _veto_count += 1
+                _veto_reasons.append(f"funding_bullish={cg.funding_rate*100:.3f}%")
+            
+            # Crowd heavily positioned (>60%) in our direction = contrarian risk
+            if direction == "YES" and cg.long_pct > 60:
+                _veto_count += 1
+                _veto_reasons.append(f"crowd_overleveraged_long={cg.long_pct:.0f}%")
+            elif direction == "NO" and cg.short_pct > 60:
+                _veto_count += 1
+                _veto_reasons.append(f"crowd_overleveraged_short={cg.short_pct:.0f}%")
+            
+            # Taker volume opposing (>65% sell when going UP, >65% buy when going DOWN)
+            _taker_total = cg.taker_buy_volume_1m + cg.taker_sell_volume_1m
+            if _taker_total > 0:
+                _sell_pct = cg.taker_sell_volume_1m / _taker_total * 100
+                if direction == "YES" and _sell_pct > 65:
+                    _veto_count += 1
+                    _veto_reasons.append(f"taker_selling={_sell_pct:.0f}%")
+                elif direction == "NO" and (100 - _sell_pct) > 65:
+                    _veto_count += 1
+                    _veto_reasons.append(f"taker_buying={100-_sell_pct:.0f}%")
+            
+            # VETO: 3+ signals opposing = too much divergence, skip
+            if _veto_count >= 3:
+                self._log.warning(
+                    "evaluate.cg_veto",
+                    direction=direction,
+                    veto_count=_veto_count,
+                    reasons=", ".join(_veto_reasons),
+                    asset=window.asset,
+                )
+                return None
+            
+            # Log "would have blocked" for tracking — even when not vetoing
+            if _veto_count >= 2:
+                self._log.info(
+                    "evaluate.cg_would_warn",
+                    direction=direction,
+                    veto_count=_veto_count,
+                    reasons=", ".join(_veto_reasons),
+                    asset=window.asset,
+                )
 
         # Clamp modifier to [-0.5, +0.5]
         cg_confidence_modifier = max(-0.5, min(0.5, cg_confidence_modifier))
@@ -990,19 +1063,12 @@ class FiveMinVPINStrategy(BaseStrategy):
             self._log.error("execute.no_token_id", direction=signal.direction)
             return
         
-        # Price: SMART LIMIT PRICING (v5.4)
-        # 1. Place limit at our delta-model price (near 50c — best R/R)
-        # 2. If unfilled after 15s, check bestAsk from Gamma
-        # 3. If bestAsk <= 65c cap, bump to bestAsk (accept market price)
-        # 4. If bestAsk > 65c, skip (too expensive, no edge)
-        #
-        # This matches the paper system's winning approach:
-        #   92% WR with tokens at $0.45-$0.51 sweet spot
+        # Price: SMART LIMIT PRICING (v5.4b)
+        # Strategy: Use Gamma bestAsk as limit price if within our cap.
+        # This gets us REAL market fills. If bestAsk > cap, skip.
+        # The paper winning streak used tokens at $0.45-$0.51 — aim for that.
         
-        # Step 1: Our target price from delta model
-        token_price = self._delta_to_token_price(signal.delta_pct)
-        
-        # Also fetch fresh Gamma bestAsk for potential bump later
+        _model_price = self._delta_to_token_price(signal.delta_pct)
         _fresh_best_ask = None
         _tf_str = "15m" if window.duration_secs == 900 else "5m"
         _slug = f"{window.asset.lower()}-updown-{_tf_str}-{window.window_ts}"
@@ -1023,12 +1089,49 @@ class FiveMinVPINStrategy(BaseStrategy):
         except Exception:
             pass
         
+        # Use Gamma bestAsk if available and within cap, else model price
+        is_15m = "15m" in _slug
+        _max_price = 0.70 if is_15m else 0.65
+        
+        # Read CLOB spread and bump bestAsk to cross it for instant fills
+        _spread = await self._poly.get_order_book_spread(token_id)
+        
+        if _fresh_best_ask is not None and _fresh_best_ask >= 0.30:
+            # Bump by the actual CLOB spread (min 0.5c, max 2c) to cross
+            _bump = min(0.02, max(0.005, _spread))
+            _buy_price = round(_fresh_best_ask + _bump, 4)
+            if _buy_price <= _max_price:
+                token_price = _buy_price
+                _price_source = f"gamma+spread({_spread:.3f})"
+            else:
+                self._log.warning(
+                    "execute.price_out_of_range",
+                    bestask=f"${_fresh_best_ask:.4f}",
+                    spread=f"${_spread:.4f}",
+                    with_bump=f"${_buy_price:.4f}",
+                    cap=f"${_max_price:.2f}",
+                )
+                return
+        elif _model_price <= _max_price and _model_price >= 0.30:
+            token_price = _model_price
+            _price_source = "delta_model_fallback"
+        else:
+            self._log.warning(
+                "execute.price_out_of_range",
+                model=f"${_model_price:.4f}",
+                bestask=f"${_fresh_best_ask:.4f}" if _fresh_best_ask else "n/a",
+                cap=f"${_max_price:.2f}",
+            )
+            return
+        
         self._log.info(
             "execute.smart_pricing",
             direction=direction,
-            delta_model_price=f"${token_price:.4f}",
-            gamma_bestask=f"${_fresh_best_ask:.4f}" if _fresh_best_ask else "unavailable",
-            strategy="limit_at_model_price",
+            used_price=f"${token_price:.4f}",
+            source=_price_source,
+            model_price=f"${_model_price:.4f}",
+            gamma_bestask=f"${_fresh_best_ask:.4f}" if _fresh_best_ask else "n/a",
+            cap=f"${_max_price:.2f}",
         )
         
         price = Decimal(str(round(token_price, 4)))
