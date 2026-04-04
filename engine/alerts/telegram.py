@@ -703,25 +703,21 @@ class TelegramAlerter:
         cg_modifier: float = 0.0,
         twap_result=None,
         timesfm_forecast=None,
+        gamma_bid: float | None = None,
+        gamma_ask: float | None = None,
+        bankroll: float = 160.0,
+        max_bet: float = 32.0,
     ) -> None:
         """
-        Send a per-window summary after each 5m/15m window evaluation.
+        Enhanced window report with P&L scenarios and clear market prices.
+
+        Shows what would happen if we followed TimesFM vs v5.7c, including realistic
+        fill prices from Gamma API and post-fee P&L.
 
         Args:
-            window_ts:    Unix timestamp of the window open.
-            asset:        Asset symbol (e.g. "BTC").
-            timeframe:    "5m" or "15m".
-            open_price:   Window open price.
-            close_price:  Current / close price.
-            delta_pct:    Price delta % over the window.
-            vpin:         VPIN value at evaluation time.
-            regime:       CASCADE / TRANSITION / NORMAL / CALM.
-            cg_snapshot:  CoinGlassSnapshot at evaluation time (may be None).
-            direction:    "UP" or "DOWN" (None if no signal).
-            confidence:   Signal confidence string or float.
-            trade_placed: Whether a trade was actually placed.
-            skip_reason:  Reason trade was skipped (if not placed).
-            cg_modifier:  CoinGlass confidence modifier applied.
+            gamma_bid, gamma_ask:  Real Gamma market prices (bid/ask)
+            bankroll:              Paper bankroll in USD
+            max_bet:               Max bet per trade in USD
         """
         try:
             from datetime import datetime, timezone
@@ -738,7 +734,6 @@ class TelegramAlerter:
             else:
                 conf_str = f"`{confidence}`" if confidence else "`—`"
 
-            # Regime emoji
             regime_emoji = {
                 "CASCADE": "🌊",
                 "TRANSITION": "🔄",
@@ -747,25 +742,37 @@ class TelegramAlerter:
             }.get(regime, "❓")
 
             lines = [
-                f"📋 *Window Report — {asset} {timeframe}*",
+                f"🎯 *{asset} {timeframe} Window*",
                 f"",
-                f"⏰ `{ts_str}` | Open: `${open_price:,.2f}` → Close: `${close_price:,.2f}`",
-                f"Δ: `{delta_sign}{delta_pct:.4f}%`",
+                f"⏰ {ts_str} | Open `${open_price:,.2f}` → Close `${close_price:,.2f}` | Δ `{delta_sign}{delta_pct:+.4f}%`",
                 f"",
-                f"🔬 VPIN: `{vpin:.4f}` | Regime: {regime_emoji} `{regime}`",
-                f"",
+                f"📊 *Market State*",
+                f"VPIN: `{vpin:.4f}` | Regime: {regime_emoji} `{regime}`",
             ]
+
+            # Real Gamma prices (critical info)
+            if gamma_bid is not None and gamma_ask is not None:
+                gamma_mid = (gamma_bid + gamma_ask) / 2
+                gamma_spread = gamma_ask - gamma_bid
+                lines += [
+                    f"Gamma Prices: *`${gamma_bid:.4f}`* bid / *`${gamma_ask:.4f}`* ask | mid: `${gamma_mid:.4f}` | spread: `${gamma_spread:.4f}`",
+                ]
+            else:
+                lines += [f"Gamma Prices: ❌ unavailable"]
+            
+            lines.append("")
 
             # CoinGlass block
             if cg_snapshot is not None:
                 lines.append(self.format_coinglass_block(cg_snapshot))
-                lines.append(f"")
+                lines.append("")
 
-            # TWAP block (v5.7c)
+            # UNIFIED INDICATORS SECTION
+            lines.append("🔮 *Indicators (What Each Means)*")
+            lines.append("")
+
+            # TWAP/VPIN/Point indicators
             if twap_result is not None:
-                _agree_score = getattr(twap_result, 'agreement_score', 0)
-                _agree_max = 3
-                _agree_bar = "🟢" * _agree_score + "⚫" * (_agree_max - _agree_score)
                 _twap_dir = getattr(twap_result, 'twap_direction', '—')
                 _gamma_dir = getattr(twap_result, 'gamma_direction', '—')
                 _point_dir = getattr(twap_result, 'point_direction', '—')
@@ -773,36 +780,40 @@ class TelegramAlerter:
                 _twap_delta = getattr(twap_result, 'twap_delta_pct', 0)
                 _mom_pct = getattr(twap_result, 'momentum_pct', 0)
                 _trend_pct = getattr(twap_result, 'trend_pct', 0.5)
-                _boost = getattr(twap_result, 'confidence_boost', 0)
-                _ticks = getattr(twap_result, 'n_ticks', 0)
-                _stability = getattr(twap_result, 'twap_stability', 0)
+                _agree_score = getattr(twap_result, 'agreement_score', 0)
+                _agree_max = 3
+                _agree_bar = "🟢" * _agree_score + "⚫" * (_agree_max - _agree_score)
                 _gamma_up = getattr(twap_result, 'gamma_up_price', 0.50)
                 _gamma_down = getattr(twap_result, 'gamma_down_price', 0.50)
                 _gamma_gate = getattr(twap_result, 'gamma_gate', 'OK')
+                _boost = getattr(twap_result, 'confidence_boost', 0)
+                _ticks = getattr(twap_result, 'n_ticks', 0)
                 _should_skip = getattr(twap_result, 'should_skip', False)
 
-                # Gamma gate emoji
                 _gate_emoji = {"BLOCK": "🚫", "SKIP": "⚠️", "REDUCE": "🔻", "OK": "✅", "PRICED_IN": "💸"}.get(_gamma_gate, "❓")
-
-                # Trend bar: visual representation of trend_pct
                 _trend_filled = int(_trend_pct * 10)
                 _trend_bar = "▓" * _trend_filled + "░" * (10 - _trend_filled)
 
                 lines += [
-                    f"📐 *TWAP Analysis* ({_ticks} ticks)",
-                    f"TWAP δ: `{_twap_delta:+.4f}%` → `{_twap_dir}`",
-                    f"Point δ: `{delta_pct:+.4f}%` → `{_point_dir}`",
-                    f"Momentum: `{_mom_pct:+.3f}%` → `{_mom_dir}` (last 30s)",
-                    f"Trend: `[{_trend_bar}]` `{_trend_pct:.0%}` above open",
-                    f"Gamma: `{_gamma_up:.2f}`/`{_gamma_down:.2f}` → `{_gamma_dir}` {_gate_emoji}`{_gamma_gate}`",
-                    f"Agreement: {_agree_bar} `{_agree_score}/{_agree_max}` | Boost: `{_boost:+.2f}`",
+                    f"✓ VPIN `{vpin:.4f}` → {regime_emoji} *{regime}* — [Shows informed trading activity level]",
+                    f"✓ TWAP Δ `{_twap_delta:+.4f}%` → `{_twap_dir}` — [Average price moved this much in window]",
+                    f"✓ Point Δ `{delta_pct:+.4f}%` → `{_point_dir}` — [Last trade vs window open]",
+                    f"✓ Momentum `{_mom_pct:+.3f}%` → `{_mom_dir}` (30s) — [Is price accelerating?]",
+                    f"✓ Trend `[{_trend_bar}]` `{_trend_pct:.0%}` above open — [How much of window was bullish?]",
+                    f"✓ Gamma `{_gamma_up:.2f}`/`{_gamma_down:.2f}` → `{_gamma_dir}` {_gate_emoji} `{_gamma_gate}` — [Market maker fair prices]",
+                    f"✓ Agreement {_agree_bar} `{_agree_score}/3` | Boost `{_boost:+.2f}` — [How many signals agree?]",
+                    f"",
                 ]
+
                 if _should_skip:
                     _skip_reason = getattr(twap_result, 'skip_reason', '')
-                    lines.append(f"⛔ *TWAP SKIP:* `{_skip_reason}`")
-                lines.append(f"")
+                    lines.append(f"⛔ *v5.7c (multi-indicator) → SKIP* — `{_skip_reason}`")
+            else:
+                lines.append(f"✓ v5.7c: not evaluated")
+            
+            lines.append("")
 
-            # TimesFM block (v6.0 — shown in all window reports for comparison)
+            # TimesFM block — only for v6.0 strategy reporting
             if timesfm_forecast is not None:
                 _tfm = timesfm_forecast
                 if not getattr(_tfm, 'error', ''):
@@ -810,33 +821,98 @@ class TelegramAlerter:
                     _tfm_conf = getattr(_tfm, 'confidence', 0)
                     _tfm_close = getattr(_tfm, 'predicted_close', 0)
                     _tfm_delta = getattr(_tfm, 'delta_vs_open_pct', 0)
-                    _tfm_spread = getattr(_tfm, 'spread', 0)
                     _tfm_dir_emoji = "📈" if _tfm_dir == "UP" else "📉"
-                    _tfm_agree_point = "🟢" if _tfm_dir == (direction or ("UP" if delta_pct > 0 else "DOWN")) else "🔴"
-                    _tfm_agree_twap = "🟢" if (twap_result and _tfm_dir == getattr(twap_result, 'twap_direction', '')) else "⚫"
 
                     lines += [
-                        f"🧠 *TimesFM Forecast*",
-                        f"{_tfm_dir_emoji} `{_tfm_dir}` (conf `{_tfm_conf:.2f}`) | Close: `${_tfm_close:,.2f}` (δ `{_tfm_delta:+.4f}%`)",
-                        f"Spread: `${_tfm_spread:.2f}` | vs Point: {_tfm_agree_point} | vs TWAP: {_tfm_agree_twap}",
-                        f"",
-                    ]
-                else:
-                    lines += [
-                        f"🧠 *TimesFM*: ❌ `{getattr(_tfm, 'error', 'unknown')[:60]}`",
+                        f"🧠 *TimesFM ML Forecast* — `{_tfm_dir}` | Confidence `{_tfm_conf*100:.0f}%` — [Neural net predicts close price]",
+                        f"   Predicted close: `${_tfm_close:,.2f}` (Δ `{_tfm_delta:+.4f}%`)",
                         f"",
                     ]
 
-            # Signal
+            # P&L SCENARIOS SECTION
+            lines.append("💡 *What If We Followed Each Strategy?*")
+            lines.append("")
+
+            # TimesFM P&L scenario
+            if timesfm_forecast is not None and not getattr(_tfm, 'error', ''):
+                _tfm_dir = getattr(_tfm, 'direction', '?')
+                _tfm_conf = getattr(_tfm, 'confidence', 0)
+                _tfm_close = getattr(_tfm, 'predicted_close', 0)
+
+                if gamma_mid := ((gamma_bid or 0.50) + (gamma_ask or 0.50)) / 2:
+                    _entry_price = gamma_mid
+                    _exit_price = _tfm_close
+                    
+                    # Assuming binary: if direction is DOWN, bet on NO (price goes down); if UP, bet on YES
+                    if _tfm_dir == "DOWN":
+                        # Bet NO, entry at ask (gamma_ask), exit if price falls to _tfm_close
+                        _raw_pnl = ((_entry_price - _exit_price) * max_bet)
+                        _fee_pct = 0.02  # ~2% fee on win
+                        _net_pnl = _raw_pnl * (1 - _fee_pct)
+                    elif _tfm_dir == "UP":
+                        # Bet YES, entry at bid (gamma_bid), exit if price rises to _tfm_close
+                        _raw_pnl = ((_exit_price - _entry_price) * max_bet)
+                        _fee_pct = 0.02
+                        _net_pnl = _raw_pnl * (1 - _fee_pct)
+                    else:
+                        _raw_pnl = 0
+                        _net_pnl = 0
+
+                    _dir_label = "NO" if _tfm_dir == "DOWN" else "YES"
+                    _pnl_emoji = "📈" if _net_pnl > 0 else ("📉" if _net_pnl < 0 else "➖")
+                    
+                    lines += [
+                        f"*TimesFM-Only Strategy*",
+                        f"  → Bet `{_dir_label}` at `${_entry_price:.4f}` (Gamma mid)",
+                        f"  → Exit at `${_exit_price:.4f}` (predicted close)",
+                        f"  → Raw P&L: {_pnl_emoji} `${_raw_pnl:+.2f}` | After 2% fee: `${_net_pnl:+.2f}`",
+                        f"",
+                    ]
+
+            # v5.7c P&L scenario
+            if twap_result is not None and not _should_skip:
+                _v57_dir = _gamma_dir  # Use gamma direction as the signal
+                _v57_conf = 0.90  # Assumption: high confidence if all agree
+
+                if gamma_mid := ((gamma_bid or 0.50) + (gamma_ask or 0.50)) / 2:
+                    _entry_price = gamma_bid if _v57_dir == "UP" else gamma_ask
+                    
+                    # What would be a realistic exit? Use close price as proxy
+                    _exit_price = close_price if close_price > 0 else _entry_price
+
+                    if _v57_dir == "DOWN":
+                        _raw_pnl = ((_entry_price - _exit_price) * max_bet)
+                        _fee_pct = 0.02
+                        _net_pnl = _raw_pnl * (1 - _fee_pct)
+                    elif _v57_dir == "UP":
+                        _raw_pnl = ((_exit_price - _entry_price) * max_bet)
+                        _fee_pct = 0.02
+                        _net_pnl = _raw_pnl * (1 - _fee_pct)
+                    else:
+                        _raw_pnl = 0
+                        _net_pnl = 0
+
+                    _dir_label = "NO" if _v57_dir == "DOWN" else "YES"
+                    _pnl_emoji = "📈" if _net_pnl > 0 else ("📉" if _net_pnl < 0 else "➖")
+
+                    lines += [
+                        f"*v5.7c (Multi-Indicator) Strategy*",
+                        f"  → Bet `{_dir_label}` at `${_entry_price:.4f}` (Gamma {('bid' if _v57_dir == 'UP' else 'ask')})",
+                        f"  → Realistic exit: `${_exit_price:.4f}` (window close)",
+                        f"  → Raw P&L: {_pnl_emoji} `${_raw_pnl:+.2f}` | After 2% fee: `${_net_pnl:+.2f}`",
+                        f"",
+                    ]
+
+            # DECISION SECTION
             lines += [
-                f"📡 *Signal*",
-                f"Direction: {dir_str} | Confidence: {conf_str}",
-                f"CG Modifier: `{cg_modifier:+.2f}`",
-                f"",
-                f"{trade_emoji} Trade placed: `{'YES' if trade_placed else 'NO'}`",
+                f"⚡ *Decision*",
+                f"Trade placed: `{'YES ✅' if trade_placed else 'NO ⏭️'}`",
             ]
+            
             if not trade_placed and skip_reason:
-                lines.append(f"Skip reason: `{skip_reason}`")
+                lines.append(f"Reason: `{skip_reason}`")
+
+            lines.append(f"Bankroll: `${bankroll:.2f}` | Max bet: `${max_bet:.2f}`")
 
             await self._send("\n".join(lines))
         except Exception as exc:
