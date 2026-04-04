@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  timesfm-api:
+    build: .
+    image: novakash-timesfm:latest
+    container_name: timesfm-api
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    environment:
+      PYTHONUNBUFFERED: "1"
+      # Cache HuggingFace model download across restarts
+      HF_HOME: /app/.cache/huggingface
+    volumes:
+      # Persist HF model cache so we don't re-download on restart
+      - hf_cache:/app/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s  # model takes a while to load
+
+volumes:
+  hf_cache:
+    driver: local

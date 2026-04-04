@@ -1,0 +1,25 @@
+# TimesFM BTC Forecast Service — Python dependencies
+
+# Web framework
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+
+# TimesFM — Google's time series foundation model
+timesfm>=1.2.7
+
+# PyTorch CPU only (keeps image lean)
+torch>=2.2.0
+# Note: install torch CPU via: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# HTTP + WebSocket client (for Binance feed)
+aiohttp>=3.9.0
+websockets>=12.0
+
+# Data
+numpy>=1.26.0
+
+# Pydantic v2 (FastAPI uses this)
+pydantic>=2.6.0
+
+# Hugging Face (timesfm uses it for checkpoint download)
+huggingface_hub>=0.22.0
