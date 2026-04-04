@@ -382,6 +382,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                         trade_placed=False,
                         skip_reason=_skip_reason,
                         cg_modifier=0.0,
+                        twap_result=twap_result,
                     ))
                 except Exception:
                     pass
@@ -405,6 +406,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                     trade_placed=True,
                     skip_reason=None,
                     cg_modifier=signal.cg_modifier,
+                    twap_result=twap_result,
                 ))
             except Exception:
                 pass

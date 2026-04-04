@@ -701,6 +701,7 @@ class TelegramAlerter:
         trade_placed: bool = False,
         skip_reason: str | None = None,
         cg_modifier: float = 0.0,
+        twap_result=None,
     ) -> None:
         """
         Send a per-window summary after each 5m/15m window evaluation.
@@ -758,6 +759,30 @@ class TelegramAlerter:
             if cg_snapshot is not None:
                 lines.append(self.format_coinglass_block(cg_snapshot))
                 lines.append(f"")
+
+            # TWAP block (v5.7)
+            if twap_result is not None:
+                _agree_score = getattr(twap_result, 'agreement_score', 0)
+                _agree_max = 3
+                _agree_bar = "🟢" * _agree_score + "⚫" * (_agree_max - _agree_score)
+                _twap_dir = getattr(twap_result, 'twap_direction', '—')
+                _gamma_dir = getattr(twap_result, 'gamma_direction', '—')
+                _point_dir = getattr(twap_result, 'point_direction', '—')
+                _twap_delta = getattr(twap_result, 'twap_delta_pct', 0)
+                _boost = getattr(twap_result, 'confidence_boost', 0)
+                _ticks = getattr(twap_result, 'n_ticks', 0)
+                _stability = getattr(twap_result, 'twap_stability', 0)
+                _gamma_up = getattr(twap_result, 'gamma_up_price', 0.50)
+                _gamma_down = getattr(twap_result, 'gamma_down_price', 0.50)
+                lines += [
+                    f"📐 *TWAP Analysis*",
+                    f"TWAP δ: `{_twap_delta:+.4f}%` → `{_twap_dir}`",
+                    f"Point δ: `{delta_pct:+.4f}%` → `{_point_dir}`",
+                    f"Gamma: `{_gamma_up:.2f}`/`{_gamma_down:.2f}` → `{_gamma_dir}`",
+                    f"Agreement: {_agree_bar} `{_agree_score}/{_agree_max}`",
+                    f"Boost: `{_boost:+.2f}` | Ticks: `{_ticks}` | Stability: `{_stability:.2f}`",
+                    f"",
+                ]
 
             # Signal
             lines += [
