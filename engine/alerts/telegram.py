@@ -540,6 +540,60 @@ class TelegramAlerter:
         except Exception as exc:
             self._log.warning("telegram.send_kill_switch_alert_failed", error=str(exc))
 
+    async def send_redeem_alert(self, result: dict) -> None:
+        """
+        Send a redemption sweep result to Telegram.
+
+        Args:
+            result: dict returned by PositionRedeemer.redeem_all()
+                    Keys: scanned, redeemed, failed, wins, losses,
+                          total_pnl, usdc_before, usdc_after, tx_hashes
+        """
+        try:
+            redeemed = result.get("redeemed", 0)
+            failed = result.get("failed", 0)
+            wins = result.get("wins", 0)
+            losses = result.get("losses", 0)
+            scanned = result.get("scanned", 0)
+            total_pnl = result.get("total_pnl", 0.0)
+            usdc_before = result.get("usdc_before", 0.0)
+            usdc_after = result.get("usdc_after", 0.0)
+            tx_hashes = result.get("tx_hashes", [])
+            usdc_delta = usdc_after - usdc_before
+
+            pnl_sign = "+" if total_pnl >= 0 else ""
+            delta_sign = "+" if usdc_delta >= 0 else ""
+            result_emoji = "✅" if failed == 0 else "⚠️"
+
+            lines = [
+                f"{result_emoji} *Redemption Sweep*",
+                f"",
+                f"📊 *Summary*",
+                f"Scanned: `{scanned}` positions",
+                f"Redeemed: `{redeemed}` ✅  Failed: `{failed}` ❌",
+                f"Wins: `{wins}` 🏆  Losses cleared: `{losses}` 🗑️",
+                f"",
+                f"💰 *USDC Balance*",
+                f"Before: `${usdc_before:.2f}`",
+                f"After:  `${usdc_after:.2f}`",
+                f"Change: `{delta_sign}${usdc_delta:.2f}`",
+                f"",
+                f"📈 *P&L*",
+                f"Total: `{pnl_sign}${total_pnl:.2f}`",
+            ]
+
+            if tx_hashes:
+                lines.append(f"")
+                lines.append(f"🔗 *Transactions*")
+                for h in tx_hashes[:5]:  # max 5 to avoid message overflow
+                    lines.append(f"`{h}`")
+                if len(tx_hashes) > 5:
+                    lines.append(f"_...and {len(tx_hashes) - 5} more_")
+
+            await self._send("\n".join(lines))
+        except Exception as exc:
+            self._log.warning("telegram.send_redeem_alert_failed", error=str(exc))
+
     def format_coinglass_block(self, snapshot) -> str:
         """
         Format a CoinGlassSnapshot into a detailed multi-line string for sitrep.

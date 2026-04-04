@@ -148,6 +148,16 @@ class Orchestrator:
         self._alerter.set_risk_manager(self._risk_manager)
         self._alerter.set_poly_client(self._poly_client)
 
+        # ── Builder Relayer Redeemer ──────────────────────────────────────────
+        from execution.redeemer import PositionRedeemer
+        self._redeemer = PositionRedeemer(
+            rpc_url=settings.polygon_rpc_url,
+            private_key=settings.poly_private_key,
+            proxy_address=settings.poly_funder_address,
+            paper_mode=settings.paper_mode,
+            builder_key=settings.builder_key or os.environ.get("BUILDER_KEY", ""),
+        )
+
         # ── Playwright browser automation (replaces on-chain redeemer) ────────
         self._playwright: PlaywrightService | None = None
         if settings.playwright_enabled:
@@ -352,16 +362,24 @@ class Orchestrator:
             asyncio.create_task(self._market_state_loop(), name="market_state_loop")
         )
 
-        # 8. Playwright automation (replaces on-chain redeemer)
+        # 8. Builder Relayer redeemer (live mode only)
+        if not self._settings.paper_mode:
+            try:
+                await self._redeemer.connect()
+                self._tasks.append(
+                    asyncio.create_task(
+                        self._redeemer_loop(), name="redeemer:sweep"
+                    )
+                )
+                log.info("orchestrator.redeemer_started")
+            except Exception as e:
+                log.error("orchestrator.redeemer_start_failed", error=str(e))
+
+        # 9. Playwright automation (balance / screenshot only — redeem handled by redeemer)
         if self._playwright:
             try:
                 await self._playwright.start()
                 await self._db.ensure_playwright_tables()
-                self._tasks.append(
-                    asyncio.create_task(
-                        self._playwright_redeem_loop(), name="playwright:redeem"
-                    )
-                )
                 self._tasks.append(
                     asyncio.create_task(
                         self._playwright_balance_loop(), name="playwright:balance"
@@ -885,6 +903,44 @@ class Orchestrator:
                 await asyncio.wait_for(
                     asyncio.shield(self._shutdown_event.wait()),
                     timeout=5.0,
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    # ── Builder Relayer Redeemer Loop ───────────────────────────────────────
+
+    async def _redeemer_loop(self) -> None:
+        """Auto-redeem settled positions every 5 minutes via Builder Relayer."""
+        REDEEM_INTERVAL = 300
+        while not self._shutdown_event.is_set():
+            try:
+                # Check for manual redeem request from Hub
+                try:
+                    if await self._db.check_redeem_requested():
+                        log.info("orchestrator.manual_redeem_triggered")
+                except Exception:
+                    pass
+
+                result = await self._redeemer.redeem_all()
+
+                if result.get("redeemed", 0) > 0:
+                    try:
+                        await self._db.write_redeem_event(result)
+                    except Exception:
+                        pass
+                    try:
+                        await self._alerter.send_redeem_alert(result)
+                    except Exception:
+                        pass
+
+            except Exception as e:
+                log.error("orchestrator.redeemer_loop.error", error=str(e))
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=REDEEM_INTERVAL,
                 )
                 break
             except asyncio.TimeoutError:
