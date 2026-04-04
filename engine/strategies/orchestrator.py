@@ -60,6 +60,7 @@ from signals.vpin import VPINCalculator
 from strategies.sub_dollar_arb import SubDollarArbStrategy
 from strategies.vpin_cascade import VPINCascadeStrategy
 from strategies.five_min_vpin import FiveMinVPINStrategy
+from signals.twap_delta import TWAPTracker
 
 log = structlog.get_logger(__name__)
 
@@ -79,6 +80,9 @@ class Orchestrator:
         # ── G1 & G3: Staggered execution + single best signal ─────────────────
         self._execution_queue: asyncio.Queue = asyncio.Queue()  # Pending window evaluations
         self._geoblock_active: bool = False  # G6: Geoblock flag
+
+        # ── TWAP Tracker (v5.7: time-weighted delta for direction) ─────────
+        self._twap_tracker = TWAPTracker(max_windows=50)
 
         log.info("orchestrator.init", paper_mode=settings.paper_mode)
 
@@ -231,6 +235,7 @@ class Orchestrator:
                 claude_evaluator=self._claude_evaluator,
                 db_client=self._db,
                 geoblock_check_fn=lambda: self._geoblock_active,  # G6
+                twap_tracker=self._twap_tracker,  # v5.7: TWAP direction
             )
             log.info("orchestrator.five_min_enabled", assets=settings.five_min_assets)
         else:
@@ -544,7 +549,7 @@ class Orchestrator:
     # ─── Feed Callback Wiring ─────────────────────────────────────────────────
 
     async def _on_binance_trade(self, trade: AggTrade) -> None:
-        """Binance aggTrade → aggregator + VPIN calculator + regime classifier."""
+        """Binance aggTrade → aggregator + VPIN calculator + regime classifier + TWAP."""
         # Update aggregator (BTC price, price history)
         await self._aggregator.on_agg_trade(trade)
 
@@ -556,6 +561,18 @@ class Orchestrator:
 
         # Update regime classifier
         self._regime.on_price(float(trade.price))
+
+        # Feed TWAP tracker — add tick to all active BTC windows
+        # For non-BTC assets, ticks are added via _fetch_current_price in strategy
+        for wkey in self._twap_tracker.active_windows:
+            if wkey.startswith("BTC-"):
+                parts = wkey.split("-", 1)
+                if len(parts) == 2:
+                    try:
+                        wts = int(parts[1])
+                        self._twap_tracker.add_tick("BTC", wts, float(trade.price), float(trade.timestamp) / 1000 if trade.timestamp > 1e12 else float(trade.timestamp))
+                    except (ValueError, TypeError):
+                        pass
 
     async def _start_cg_staggered(self, feed: CoinGlassEnhancedFeed, symbol: str):
         """Start CG feed with stagger to spread API load."""
@@ -699,6 +716,29 @@ class Orchestrator:
             if not hasattr(self._five_min_strategy, '_recent_windows'):
                 self._five_min_strategy._recent_windows = []
             self._five_min_strategy._recent_windows.append(window)
+
+            # TWAP: Start tracking on ACTIVE, add price ticks on every signal
+            if state_value == "ACTIVE" and window.open_price:
+                self._twap_tracker.start_window(
+                    asset=window.asset,
+                    window_ts=window.window_ts,
+                    open_price=window.open_price,
+                    duration_s=300.0,
+                )
+            # Feed non-BTC prices to TWAP from window signals (these arrive every ~1s)
+            if window.open_price and window.asset != "BTC":
+                # Use up_price as a proxy for current market price direction
+                # up_price > 0.50 means market thinks UP, which implies price rose
+                _proxy_price = window.open_price  # Fallback
+                if window.up_price and window.down_price:
+                    # Infer approximate current price from token prices
+                    # This is an approximation — better than no ticks at all
+                    _up_ratio = window.up_price / (window.up_price + window.down_price) if (window.up_price + window.down_price) > 0 else 0.5
+                    # Map token ratio to price delta: ratio 0.55 ≈ +0.05% delta
+                    _implied_delta = (_up_ratio - 0.5) * 0.002  # Scale factor
+                    _proxy_price = window.open_price * (1 + _implied_delta)
+                self._twap_tracker.add_tick(window.asset, window.window_ts, _proxy_price)
+
             # ONLY evaluate at T-60s (CLOSING state), NOT at window open
             # Window open signal is just for token ID registration
             if state_value == "CLOSING":
@@ -732,6 +772,24 @@ class Orchestrator:
             if not hasattr(self._five_min_strategy, '_recent_windows'):
                 self._five_min_strategy._recent_windows = []
             self._five_min_strategy._recent_windows.append(window)
+
+            # TWAP: Start tracking on ACTIVE for 15-min windows
+            if state_value == "ACTIVE" and window.open_price:
+                self._twap_tracker.start_window(
+                    asset=window.asset,
+                    window_ts=window.window_ts,
+                    open_price=window.open_price,
+                    duration_s=900.0,
+                )
+            # Feed non-BTC prices to TWAP from window signals
+            if window.open_price and window.asset != "BTC":
+                _proxy_price = window.open_price
+                if window.up_price and window.down_price:
+                    _up_ratio = window.up_price / (window.up_price + window.down_price) if (window.up_price + window.down_price) > 0 else 0.5
+                    _implied_delta = (_up_ratio - 0.5) * 0.002
+                    _proxy_price = window.open_price * (1 + _implied_delta)
+                self._twap_tracker.add_tick(window.asset, window.window_ts, _proxy_price)
+
             # ONLY evaluate at T-60s (CLOSING state), NOT at window open
             if state_value == "CLOSING":
                 # G1 & G3: Queue window for staggered execution instead of immediate eval

@@ -37,6 +37,7 @@ from execution.order_manager import Order, OrderManager, OrderStatus
 from execution.polymarket_client import PolymarketClient
 from execution.risk_manager import RiskManager
 from signals.vpin import VPINCalculator
+from signals.twap_delta import TWAPTracker, TWAPResult
 from signals.window_evaluator import WindowEvaluator, WindowState as EvalWindowState, WindowSignal
 from strategies.base import BaseStrategy
 
@@ -76,6 +77,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         db_client=None,
         on_window_signal: Optional[Callable[[WindowInfo], Awaitable[None]]] = None,
         geoblock_check_fn: Optional[Callable[[], bool]] = None,
+        twap_tracker: Optional[TWAPTracker] = None,
     ) -> None:
         super().__init__(
             name="five_min_vpin",
@@ -90,6 +92,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._claude_eval = claude_evaluator  # Claude Opus 4.6 evaluator  # Per-asset CG feeds: {"BTC": feed, "ETH": feed, ...}
         self._db = db_client            # DBClient for window snapshot persistence (optional)
         self._geoblock_check_fn = geoblock_check_fn  # G6: Callable to check if geoblock is active
+        self._twap = twap_tracker  # v5.7: TWAP-delta direction tracker
         self._evaluator = WindowEvaluator()
         
         # Track last executed window to avoid duplicates
@@ -230,8 +233,27 @@ class FiveMinVPINStrategy(BaseStrategy):
         # Get current VPIN
         current_vpin = self._vpin.current_vpin
         
-        # Evaluate signal
-        signal = self._evaluate_signal(window, current_price, current_vpin, delta_pct)
+        # ── TWAP-Delta evaluation (v5.7) ─────────────────────────────────
+        twap_result: Optional[TWAPResult] = None
+        if self._twap:
+            twap_result = self._twap.evaluate(
+                asset=window.asset,
+                window_ts=window.window_ts,
+                current_price=current_price,
+                gamma_up_price=window.up_price,
+                gamma_down_price=window.down_price,
+            )
+            if twap_result:
+                self._log.info(
+                    "evaluate.twap_result",
+                    asset=window.asset,
+                    summary=twap_result.summary(),
+                )
+            # Cleanup window tracking data after evaluation
+            self._twap.cleanup_window(window.asset, window.window_ts)
+
+        # Evaluate signal (with TWAP override for direction)
+        signal = self._evaluate_signal(window, current_price, current_vpin, delta_pct, twap_result=twap_result)
 
         tf = "15m" if window.duration_secs == 900 else "5m"
 
@@ -295,6 +317,14 @@ class FiveMinVPINStrategy(BaseStrategy):
             "confidence": signal.confidence if signal else None,
             "cg_modifier": signal.cg_modifier if signal else 0.0,
             "trade_placed": signal is not None,
+            # TWAP data (v5.7)
+            "twap_delta_pct": twap_result.twap_delta_pct if twap_result else None,
+            "twap_direction": twap_result.twap_direction if twap_result else None,
+            "twap_gamma_agree": twap_result.twap_gamma_agree if twap_result else None,
+            "twap_agreement_score": twap_result.agreement_score if twap_result else None,
+            "twap_confidence_boost": twap_result.confidence_boost if twap_result else None,
+            "twap_n_ticks": twap_result.n_ticks if twap_result else None,
+            "twap_stability": twap_result.twap_stability if twap_result else None,
             "skip_reason": None if signal else (
                 f"VPIN {current_vpin:.3f} < gate {_runtime.five_min_vpin_gate} — not enough informed trading detected to justify entry"
                 if current_vpin < _runtime.five_min_vpin_gate
@@ -422,6 +452,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         current_price: float,
         current_vpin: float,
         delta_pct: float,
+        twap_result: Optional[TWAPResult] = None,
     ) -> Optional[FiveMinSignal]:
         """
         Evaluate trading signal based on delta, VPIN, and market regime.
@@ -493,6 +524,45 @@ class FiveMinVPINStrategy(BaseStrategy):
             direction = "UP" if delta_pct > 0 else "DOWN"
             regime = "NORMAL"
         
+        # ── TWAP Direction Override (v5.7) ────────────────────────────────
+        # If TWAP-delta computed a direction, use it when agreement is strong.
+        # TWAP is more robust than point delta (smoothed over the window).
+        # 
+        # Rules:
+        #   1. If TWAP + Gamma + point all agree → use that direction (strongest)
+        #   2. If TWAP + Gamma agree but point disagrees → use TWAP (point is noisy)
+        #   3. If TWAP disagrees with both → stick with point delta (TWAP may be lagging)
+        #
+        # The confidence_boost from TWAP is applied AFTER base confidence calculation.
+        _twap_overrode = False
+        if twap_result and twap_result.n_ticks >= 5:
+            if twap_result.all_agree:
+                # All three agree — highest confidence, use recommended direction
+                if twap_result.recommended_direction != direction:
+                    self._log.info(
+                        "evaluate.twap_override",
+                        old_dir=direction,
+                        new_dir=twap_result.recommended_direction,
+                        reason="all_agree",
+                        agreement=f"{twap_result.agreement_score}/3",
+                    )
+                    direction = twap_result.recommended_direction
+                    _twap_overrode = True
+            elif twap_result.twap_gamma_agree and twap_result.gamma_direction:
+                # TWAP + Gamma agree — strong signal, override point delta
+                if twap_result.recommended_direction != direction:
+                    self._log.info(
+                        "evaluate.twap_override",
+                        old_dir=direction,
+                        new_dir=twap_result.recommended_direction,
+                        reason="twap_gamma_agree",
+                        twap_delta=f"{twap_result.twap_delta_pct:+.4f}%",
+                        gamma_skew=f"{twap_result.gamma_skew:.3f}",
+                    )
+                    direction = twap_result.recommended_direction
+                    _twap_overrode = True
+            # If only TWAP disagrees with point+gamma, don't override — point is fresher
+
         # Calculate base confidence from VPIN + delta (primary signals)
         confidence = self._calculate_confidence(delta_pct, current_vpin, direction)
 
@@ -640,6 +710,29 @@ class FiveMinVPINStrategy(BaseStrategy):
             )
             confidence = "MODERATE"
 
+        # ── TWAP Confidence Adjustment (v5.7) ──────────────────────────────
+        # Apply TWAP boost/penalty to confidence level
+        if twap_result and twap_result.n_ticks >= 5:
+            _boost = twap_result.confidence_boost
+            if _boost >= 0.08 and confidence == "LOW":
+                self._log.info(
+                    "evaluate.twap_lift",
+                    from_confidence="LOW",
+                    to_confidence="MODERATE",
+                    boost=f"{_boost:+.2f}",
+                    agreement=f"{twap_result.agreement_score}/3",
+                )
+                confidence = "MODERATE"
+            elif _boost <= -0.10 and confidence == "MODERATE":
+                self._log.info(
+                    "evaluate.twap_suppress",
+                    from_confidence="MODERATE",
+                    to_confidence="LOW",
+                    boost=f"{_boost:+.2f}",
+                    reason="TWAP disagrees or unstable",
+                )
+                confidence = "LOW"
+
         # Block NONE and LOW confidence — only trade MODERATE or HIGH
         if confidence in ("NONE", "LOW"):
             return None
@@ -652,6 +745,9 @@ class FiveMinVPINStrategy(BaseStrategy):
             direction=direction,
             confidence=confidence,
             cg_modifier=f"{cg_confidence_modifier:+.2f}",
+            twap_agree=f"{twap_result.agreement_score}/3" if twap_result else "n/a",
+            twap_boost=f"{twap_result.confidence_boost:+.2f}" if twap_result else "n/a",
+            twap_overrode=_twap_overrode if '_twap_overrode' in dir() else False,
         )
 
         return FiveMinSignal(
