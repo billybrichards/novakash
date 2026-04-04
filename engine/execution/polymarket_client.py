@@ -338,31 +338,39 @@ class PolymarketClient:
             pass  # Fallback to no expiry (GTC)
 
         # v5.5b: FOK (Fill-or-Kill) for instant fills at market price
-        # FOK matches instantly against resting orders, pays actual market price
-        # If no liquidity, immediately cancels (no 30s wait on empty book)
-        # GTD fallback only if FOK is rejected (some markets require it)
+        # Use create_market_order which handles amount precision automatically
         order_type = OrderType.FOK
 
+        from py_clob_client.clob_types import MarketOrderArgs
+        market_order_args = MarketOrderArgs(
+            token_id=token_id,
+            amount=round(stake_usd, 2),  # USD amount to spend
+            price=float(price),
+            side=BUY,
+            order_type=OrderType.FOK,
+        )
+
+        # Also prepare regular args for GTD fallback
         order_args = OrderArgs(
             token_id=token_id,
             price=float(price),
             size=size,
             side=BUY,
+            expiration=expiration,
         )
 
         def _sign_and_submit():
-            signed_order = client.create_order(order_args)
             try:
-                result = client.post_order(signed_order, order_type)
+                # Try FOK market order first
+                signed_order = client.create_market_order(market_order_args)
+                result = client.post_order(signed_order, OrderType.FOK)
                 return result
             except Exception as fok_exc:
-                # FOK rejected — fall back to GTD
-                if "FOK" in str(fok_exc) or "order type" in str(fok_exc).lower():
-                    self._log.info("place_order.fok_rejected_trying_gtd", error=str(fok_exc)[:100])
-                    order_args.expiration = expiration
-                    signed_order_gtd = client.create_order(order_args)
-                    return client.post_order(signed_order_gtd, OrderType.GTD if expiration > 0 else OrderType.GTC)
-                raise
+                fok_err = str(fok_exc)
+                self._log.info("place_order.fok_failed_trying_gtd", error=fok_err[:150])
+                # Fall back to GTD limit
+                signed_order_gtd = client.create_order(order_args)
+                return client.post_order(signed_order_gtd, OrderType.GTD if expiration > 0 else OrderType.GTC)
 
         self._log.info(
             "place_order.order_type",

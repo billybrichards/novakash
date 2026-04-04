@@ -72,6 +72,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         alerter=None,
         cg_enhanced=None,
         cg_feeds=None,
+        claude_evaluator=None,
         db_client=None,
         on_window_signal: Optional[Callable[[WindowInfo], Awaitable[None]]] = None,
         geoblock_check_fn: Optional[Callable[[], bool]] = None,
@@ -85,7 +86,8 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._vpin = vpin_calculator
         self._alerter = alerter
         self._cg_enhanced = cg_enhanced  # CoinGlassEnhancedFeed (optional)
-        self._cg_feeds = cg_feeds or {}  # Per-asset CG feeds: {"BTC": feed, "ETH": feed, ...}
+        self._cg_feeds = cg_feeds or {}
+        self._claude_eval = claude_evaluator  # Claude Opus 4.6 evaluator  # Per-asset CG feeds: {"BTC": feed, "ETH": feed, ...}
         self._db = db_client            # DBClient for window snapshot persistence (optional)
         self._geoblock_check_fn = geoblock_check_fn  # G6: Callable to check if geoblock is active
         self._evaluator = WindowEvaluator()
@@ -379,6 +381,37 @@ class FiveMinVPINStrategy(BaseStrategy):
 
         # Execute trade
         await self._execute_trade(state, signal)
+        
+        # Claude AI evaluation (non-blocking, 1min timeout)
+        if self._claude_eval and signal:
+            try:
+                _cg_dict = {}
+                if cg:
+                    _cg_dict = {
+                        "oi_usd": cg.oi_usd, "oi_delta_pct": cg.oi_delta_pct_1m,
+                        "long_pct": cg.long_pct, "short_pct": cg.short_pct,
+                        "top_short_pct": cg.top_position_short_pct,
+                        "funding_rate": cg.funding_rate,
+                        "taker_buy": cg.taker_buy_volume_1m,
+                        "taker_sell": cg.taker_sell_volume_1m,
+                    }
+                asyncio.create_task(self._claude_eval.evaluate_trade_decision(
+                    asset=window.asset,
+                    timeframe=tf,
+                    direction=signal.direction,
+                    confidence=signal.confidence,
+                    delta_pct=signal.delta_pct,
+                    vpin=signal.current_vpin,
+                    regime=_snap_regime,
+                    cg_snapshot=_cg_dict,
+                    token_price=self._delta_to_token_price(signal.delta_pct),
+                    gamma_bestask=window.up_price if signal.direction == "UP" else (window.down_price or 0.50),
+                    window_open_price=open_price,
+                    current_price=current_price,
+                    trade_placed=True,
+                ))
+            except Exception:
+                pass
         
         # Track executed window
         self._last_executed_window = window_key
@@ -1342,10 +1375,29 @@ class FiveMinVPINStrategy(BaseStrategy):
                 order.metadata["fill_wait_seconds"] = elapsed
 
                 if filled:
+                    # Calculate ACTUAL fill price from matched size and stake
+                    _actual_fill_price = None
+                    try:
+                        _matched_shares = float(size_matched)
+                        if _matched_shares > 0:
+                            _actual_fill_price = round(order.stake_usd / _matched_shares, 4)
+                            order.price = str(_actual_fill_price)
+                            order.metadata["actual_fill_price"] = _actual_fill_price
+                            order.metadata["shares_matched"] = _matched_shares
+                            self._log.info(
+                                "trade.actual_fill_price",
+                                submitted_price=f"${token_price:.4f}",
+                                actual_price=f"${_actual_fill_price:.4f}",
+                                shares=f"{_matched_shares:.2f}",
+                            )
+                    except Exception:
+                        pass
+                    
                     self._log.info(
                         "trade.verified",
                         order_id=order.order_id[:20] + "...",
                         size_matched=size_matched,
+                        actual_price=f"${_actual_fill_price:.4f}" if _actual_fill_price else "n/a",
                         wait=f"{elapsed}s",
                     )
                     if self._alerter:

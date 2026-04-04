@@ -137,8 +137,11 @@ class TelegramAlerter:
             window_open = meta.get("window_open_price")
             data_source = "LIVE execution" if not self._paper_mode else "REAL prices, PAPER execution"
 
-            tp = float(order.price) if order.price else 0.50
-            shares = order.stake_usd / tp if tp > 0 else 0
+            # Use actual fill price if available (FOK fills at market, not cap)
+            _afp = meta.get("actual_fill_price")
+            tp = float(_afp) if _afp else (float(order.price) if order.price else 0.50)
+            _shares_matched = meta.get("shares_matched")
+            shares = float(_shares_matched) if _shares_matched else (order.stake_usd / tp if tp > 0 else 0)
             potential = shares * 1.0 - order.stake_usd
             potential_pct = (potential / order.stake_usd * 100) if order.stake_usd > 0 else 0
 
@@ -146,7 +149,7 @@ class TelegramAlerter:
             score = meta.get("score")
             
             lines = [
-                f"{direction_emoji} *BET PLACED — {asset} {tf}* ({mode_tag})",
+                f"{direction_emoji} *{'✅ FILLED' if meta.get('filled') or meta.get('actual_fill_price') else '⏳ PLACED'} — {asset} {tf}* ({mode_tag})",
                 f"",
                 f"📊 *Signal*",
                 f"Direction: `{order.direction}` {'(UP)' if order.direction == 'YES' else '(DOWN)'}",
@@ -511,6 +514,15 @@ class TelegramAlerter:
 
         except Exception as exc:
             self._log.warning("telegram.send_cascade_alert_failed", error=str(exc))
+
+    async def send_raw_message(self, text: str) -> None:
+        """Send a raw markdown message to Telegram."""
+        if not self.trade_alerts_enabled:
+            return
+        try:
+            await self._send(text)
+        except Exception as exc:
+            self._log.warning("telegram.send_raw_failed", error=str(exc)[:100])
 
     async def send_system_alert(self, message: str, level: str = "info") -> None:
         """

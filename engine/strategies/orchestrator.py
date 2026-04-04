@@ -35,6 +35,7 @@ from data.feeds.binance_ws import BinanceWebSocketFeed
 from data.feeds.chainlink_rpc import ChainlinkRPCFeed
 from data.feeds.coinglass_api import CoinGlassAPIFeed
 from data.feeds.coinglass_enhanced import CoinGlassEnhancedFeed
+from evaluation.claude_evaluator import ClaudeEvaluator
 from data.feeds.polymarket_ws import PolymarketWebSocketFeed
 from data.feeds.polymarket_5min import Polymarket5MinFeed
 from polymarket_browser.service import PlaywrightService
@@ -187,6 +188,16 @@ class Orchestrator:
                     self._cg_enhanced = _feed  # backward compat
             log.info("orchestrator.coinglass_multi_asset", assets=list(self._cg_feeds.keys()))
 
+        # ── Claude Opus 4.6 AI Evaluator ─────────────────────────────────────
+        self._claude_evaluator = None
+        if settings.anthropic_api_key:
+            self._claude_evaluator = ClaudeEvaluator(
+                api_key=settings.anthropic_api_key,
+                alerter=self._alerter,
+                db_client=self._db,
+            )
+            log.info("orchestrator.claude_evaluator_enabled")
+
         # ── Strategies ─────────────────────────────────────────────────────────
         self._arb_strategy = SubDollarArbStrategy(
             order_manager=self._order_manager,
@@ -217,6 +228,7 @@ class Orchestrator:
                 alerter=self._alerter,
                 cg_enhanced=self._cg_enhanced,
                 cg_feeds=self._cg_feeds,
+                claude_evaluator=self._claude_evaluator,
                 db_client=self._db,
                 geoblock_check_fn=lambda: self._geoblock_active,  # G6
             )

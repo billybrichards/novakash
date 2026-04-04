@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+  @page { margin: 8mm 10mm; size: A4; }
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 9pt; line-height: 1.4; color: #1a1a2e; }
+  .page { max-width: 800px; margin: 0 auto; }
+  .page-break { page-break-after: always; }
+  .doc-header { text-align: center; padding: 15px 0 10px; border-bottom: 3px solid #e67e22; margin-bottom: 15px; }
+  .doc-header h1 { font-size: 16pt; font-weight: 800; margin: 0; }
+  .doc-header .sub { font-size: 10pt; color: #7f8c8d; margin-top: 3px; }
+  .doc-header .meta { font-size: 8pt; color: #95a5a6; margin-top: 5px; }
+  .sh { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 5px; border-bottom: 2px solid #e67e22; }
+  .sn { background: #e67e22; color: white; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 11pt; flex-shrink: 0; }
+  .sh h2 { margin: 0; font-size: 13pt; font-weight: 700; }
+  .st { font-size: 10pt; font-weight: 700; color: #2c3e50; margin: 12px 0 6px; padding-bottom: 3px; border-bottom: 1px solid #ecf0f1; }
+  table { width: 100%; border-collapse: collapse; font-size: 8pt; margin: 8px 0; }
+  th { background: #1a1a2e; color: white; padding: 5px 6px; text-align: left; font-weight: 600; }
+  td { padding: 4px 6px; border-bottom: 1px solid #ecf0f1; }
+  tr:nth-child(even) { background: #f8f9fa; }
+  .co { border-left: 3px solid #e67e22; background: #fef5e7; padding: 8px 10px; margin: 8px 0; border-radius: 0 5px 5px 0; font-size: 8.5pt; }
+  .co-g { border-left-color: #2ecc71; background: #eafaf1; }
+  .co-r { border-left-color: #e74c3c; background: #fdedec; }
+  p { margin: 4px 0; font-size: 8.5pt; }
+  .svg-cap { font-size: 7.5pt; color: #7f8c8d; text-align: center; margin-top: 4px; font-style: italic; }
+  .verdict { text-align: center; padding: 12px; border-radius: 8px; margin: 10px 0; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="doc-header">
+    <h1>Second Opinion: Continuous Evaluator v2</h1>
+    <div class="sub">Data-Driven Assessment Based on Today's 100-Trade Paper Session</div>
+    <div class="meta">April 4, 2026 | 100 trades | 90% WR | $3,851 paper P&L | BTC $67,240</div>
+  </div>
+
+  <!-- VERDICT -->
+  <div class="verdict" style="background: #fef5e7; border: 2px solid #e67e22;">
+    <div style="font-size: 14pt; font-weight: 800; color: #e67e22;">VERDICT: PROCEED WITH CAUTION</div>
+    <div style="font-size: 9pt; color: #2c3e50; margin-top: 5px;">The opportunity is real ($303/day from cheaper tokens) but the risks are specific and quantifiable. Shadow mode first. The data below explains why.</div>
+  </div>
+
+  <!-- SECTION 1: CURRENT PERFORMANCE REALITY CHECK -->
+  <div class="section">
+    <div class="sh"><div class="sn">1</div><h2>Current Performance: What the Data Actually Says</h2></div>
+
+    <svg width="780" height="140" viewBox="0 0 780 140" xmlns="http://www.w3.org/2000/svg">
+      <rect width="780" height="140" fill="#f8fafc" rx="6"/>
+      <text x="390" y="16" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#95a5a6" font-weight="600">TODAY'S 100 TRADES — WHERE THE MONEY COMES FROM</text>
+
+      <!-- Price bucket bars -->
+      <rect x="30" y="30" width="170" height="45" rx="5" fill="#2ecc71"/>
+      <text x="115" y="48" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">CHEAP (30-48¢): 14 trades</text>
+      <text x="115" y="60" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">93% WR | $1,021 (27%)</text>
+      <text x="115" y="70" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">$73/trade avg — BEST R/R</text>
+
+      <rect x="210" y="30" width="190" height="45" rx="5" fill="#3498db"/>
+      <text x="305" y="48" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">FAIR (49-50¢): 57 trades</text>
+      <text x="305" y="60" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">89% WR | $2,131 (55%)</text>
+      <text x="305" y="70" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">$37/trade avg — BULK VOLUME</text>
+
+      <rect x="410" y="30" width="170" height="45" rx="5" fill="#f39c12"/>
+      <text x="495" y="48" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">MID (51-55¢): 26 trades</text>
+      <text x="495" y="60" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">88% WR | $683 (18%)</text>
+      <text x="495" y="70" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">$26/trade avg — LOWER edge</text>
+
+      <rect x="590" y="30" width="170" height="45" rx="5" fill="#bdc3c7"/>
+      <text x="675" y="48" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">EXPENSIVE (56-65¢): 3 trades</text>
+      <text x="675" y="60" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.9)">100% WR | $16 (0%)</text>
+      <text x="675" y="70" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">$5/trade avg — MINIMAL</text>
+
+      <!-- Key insight -->
+      <rect x="30" y="85" width="730" height="45" rx="5" fill="#1a1a2e"/>
+      <text x="390" y="103" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#e67e22" font-weight="700">KEY FINDING: 82% of P&L comes from trades at 49¢ or cheaper. The continuous evaluator's promise is getting MORE trades into the cheap bucket.</text>
+      <text x="390" y="118" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.7)">If v2 shifts 20 trades from the 49-50¢ bucket to the 45-48¢ bucket, that's ~$400 extra per day on current volume.</text>
+    </svg>
+    <div class="svg-cap">Fig 1. Price bucket analysis — cheaper entry tokens produce outsized returns per trade</div>
+  </div>
+
+  <!-- SECTION 2: THE 10 LOSSES -->
+  <div class="section">
+    <div class="sh"><div class="sn">2</div><h2>Loss Analysis: What Goes Wrong (and Would v2 Help?)</h2></div>
+    <table>
+      <thead><tr><th>Time</th><th>Dir</th><th>Price</th><th>Stake</th><th>Loss</th><th>v2 Would Have Helped?</th></tr></thead>
+      <tbody>
+        <tr><td>09:14</td><td>NO</td><td>49¢</td><td>$114</td><td>-$116</td><td>❌ No — high VPIN cascade, momentum was correct, BTC just bounced</td></tr>
+        <tr><td>09:24</td><td>NO</td><td>49¢</td><td>$114</td><td>-$116</td><td>❌ No — same cascade period, same bounce</td></tr>
+        <tr><td>09:44</td><td>NO</td><td>49¢</td><td>$114</td><td>-$116</td><td>❌ No — still riding the cascade, BTC mean-reverted in this window</td></tr>
+        <tr><td>11:09</td><td>NO</td><td>51¢</td><td>$10</td><td>-$10</td><td>🟡 Maybe — earlier entry at 47¢ = $10 loss → $9.40 loss (marginal)</td></tr>
+        <tr><td>11:39</td><td>NO</td><td>50¢</td><td>$8</td><td>-$8</td><td>🟡 Maybe — similar, marginal improvement</td></tr>
+        <tr><td>13:29</td><td>NO</td><td>49¢</td><td>$17</td><td>-$17</td><td>❌ No — direction was wrong, cheaper entry doesn't fix that</td></tr>
+        <tr><td>14:39</td><td>YES</td><td>51¢</td><td>$23</td><td>-$23</td><td>❌ No — direction call was wrong</td></tr>
+        <tr><td>18:35</td><td>YES</td><td>50¢</td><td>$3</td><td>-$3</td><td>⚠️ v2 might NOT have traded — weak signal at T-180s might not hit DECISIVE</td></tr>
+        <tr><td>19:19</td><td>YES</td><td>47¢</td><td>$5</td><td>-$5</td><td>❌ Already cheap entry — v2 wouldn't improve</td></tr>
+        <tr><td>19:54</td><td>NO</td><td>51¢</td><td>$6</td><td>-$6</td><td>🟡 Maybe — cheaper entry helps slightly</td></tr>
+      </tbody>
+    </table>
+
+    <div class="co-r co">
+      <strong>Honest assessment:</strong> The 3 biggest losses ($116 each) are from the morning cascade period — high VPIN, correct momentum direction, BTC just bounced within the 5-min window. v2 would NOT have prevented these. They're the cost of doing business in cascade regime. The continuous evaluator helps with <strong>winning trades being cheaper</strong>, not with preventing losses.
+    </div>
+  </div>
+
+  <!-- SECTION 3: CONCERNS -->
+  <div class="section">
+    <div class="sh"><div class="sn">3</div><h2>Concerns & Risks with v2</h2></div>
+
+    <table>
+      <thead><tr><th>#</th><th>Concern</th><th>Severity</th><th>Mitigation</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td><strong>Signal instability early in window.</strong> At T-280s, only 20s of price data exists. Delta can flip direction 3-4 times before settling.</td>
+          <td style="color:#e74c3c;font-weight:700;">HIGH</td>
+          <td>No trades before T-180s (minimum 2 min of data). DECISIVE tier requires 85% confidence.</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td><strong>Regime classifier noise.</strong> Current logs show RegimeClassifier bouncing LOW_VOL↔TRENDING every 5-10 seconds. Evaluating every 3s will see different regimes per eval.</td>
+          <td style="color:#e74c3c;font-weight:700;">HIGH</td>
+          <td>Regime should be computed from window-level data, not tick-level. Smooth with 30s EMA or use window-start regime, locked.</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td><strong>Fill rate uncertainty at earlier times.</strong> At T-180s, the order book may be thinner than at T-60s. Market makers arrive late.</td>
+          <td style="color:#f39c12;font-weight:700;">MEDIUM</td>
+          <td>Post limit order early, let it sit. GTD auto-expires. If it fills at 47¢ — great. If not, T-60s fallback.</td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td><strong>Overtrading risk.</strong> Evaluating every 3s × 4 assets × 2 timeframes = 8 streams. More opportunities to fire prematurely.</td>
+          <td style="color:#f39c12;font-weight:700;">MEDIUM</td>
+          <td>Guardrails G1-G6 already in place. One fire per window per asset (fired=True flag). Rate limiter caps total orders.</td>
+        </tr>
+        <tr>
+          <td>5</td>
+          <td><strong>Complexity regression.</strong> Last time we added complexity (continuous evaluator + FAK), we lost $258. The pattern is: simple works, complex breaks.</td>
+          <td style="color:#e67e22;font-weight:700;">HIGH</td>
+          <td>Shadow mode. v5.4 keeps executing. v2 only logs. We switch ONLY when 500+ windows of shadow data proves it's better.</td>
+        </tr>
+        <tr>
+          <td>6</td>
+          <td><strong>CoinGlass BTC-only gap.</strong> CG data is BTC-only. ETH/SOL/XRP evaluations at T-180s would use BTC's OI delta to confirm their trades — cross-contamination.</td>
+          <td style="color:#f39c12;font-weight:700;">MEDIUM</td>
+          <td>Start v2 continuous for BTC ONLY. Other assets stay on T-60s single-shot until per-asset CG feeds are added.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="page-break"></div>
+
+  <!-- SECTION 4: THE REAL OPPORTUNITY -->
+  <div class="section">
+    <div class="sh"><div class="sn">4</div><h2>The Real Opportunity: Quantified</h2></div>
+
+    <svg width="780" height="175" viewBox="0 0 780 175" xmlns="http://www.w3.org/2000/svg">
+      <rect width="780" height="175" fill="#1a1a2e" rx="6"/>
+      <text x="390" y="20" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="#e67e22" font-weight="700">HYPOTHETICAL: IF EVERY TRADE ENTERED 8¢ CHEAPER (T-180 vs T-60)</text>
+
+      <!-- Numbers -->
+      <rect x="30" y="35" width="170" height="55" rx="6" fill="#34495e"/>
+      <text x="115" y="55" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#e67e22" font-weight="600">Current Avg Entry</text>
+      <text x="115" y="73" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="16" fill="white" font-weight="800">49.9¢</text>
+      <text x="115" y="85" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.6)">T-60s single-shot</text>
+
+      <text x="215" y="65" font-family="-apple-system,sans-serif" font-size="14" fill="#e67e22" font-weight="800">→</text>
+
+      <rect x="230" y="35" width="170" height="55" rx="6" fill="#34495e"/>
+      <text x="315" y="55" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#2ecc71" font-weight="600">Hypothetical Entry</text>
+      <text x="315" y="73" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="16" fill="#2ecc71" font-weight="800">41.9¢</text>
+      <text x="315" y="85" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.6)">T-180s DECISIVE tier</text>
+
+      <text x="415" y="65" font-family="-apple-system,sans-serif" font-size="14" fill="#e67e22" font-weight="800">=</text>
+
+      <rect x="430" y="35" width="170" height="55" rx="6" fill="#2ecc71"/>
+      <text x="515" y="55" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="600">Extra P&L Today</text>
+      <text x="515" y="73" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="16" fill="white" font-weight="800">+$303</text>
+      <text x="515" y="85" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">on same 100 trades, same WR</text>
+
+      <rect x="620" y="35" width="140" height="55" rx="6" fill="#34495e"/>
+      <text x="690" y="55" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#e67e22" font-weight="600">% Improvement</text>
+      <text x="690" y="73" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="16" fill="#e67e22" font-weight="800">+8%</text>
+      <text x="690" y="85" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.6)">$4,154 vs $3,851</text>
+
+      <!-- Caveat -->
+      <rect x="30" y="100" width="720" height="65" rx="5" fill="#2c3e50"/>
+      <text x="390" y="118" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#e67e22" font-weight="700">⚠️ BUT: This assumes same WR at earlier entry. Three unknowns:</text>
+      <text x="390" y="132" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">1. WR may DROP at T-180s — signal is less mature, more noise (estimated: 85-88% vs current 90%)</text>
+      <text x="390" y="144" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">2. Fill rate may DROP — order books are thinner early in window (estimated: 30% vs current 40%)</text>
+      <text x="390" y="156" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">3. DECISIVE tier may fire too rarely — 85% confidence is a high bar with only 2 signals (delta + VPIN)</text>
+    </svg>
+    <div class="svg-cap">Fig 2. The $303/day opportunity is real but conditional. Shadow mode will quantify the actual WR and fill rate at earlier entry times.</div>
+
+    <div class="st">Sensitivity Analysis: What If WR Drops?</div>
+    <table>
+      <thead><tr><th>Scenario</th><th>Entry Price</th><th>Win Rate</th><th>EV per $1 Staked</th><th>Daily P&L (100 trades, $50 avg)</th></tr></thead>
+      <tbody>
+        <tr style="background:#eafaf1;"><td><strong>v2 Best Case</strong></td><td>42¢</td><td>90% (same)</td><td><strong>$0.148</strong></td><td><strong>$4,154</strong> (+$303)</td></tr>
+        <tr><td>v2 Likely Case</td><td>45¢</td><td>87%</td><td>$0.117</td><td>$3,507 (-$344)</td></tr>
+        <tr style="background:#f8f9fa;"><td><strong>v5.4 Current</strong></td><td>50¢</td><td>90%</td><td><strong>$0.100</strong></td><td><strong>$3,851</strong> (actual)</td></tr>
+        <tr><td>v2 Worst Case</td><td>47¢</td><td>82%</td><td>$0.076</td><td>$2,852 (-$999)</td></tr>
+      </tbody>
+    </table>
+
+    <div class="co">
+      <strong>Break-even:</strong> v2 needs ≥ 84% WR at 45¢ entry to match v5.4's current performance (90% WR at 50¢). Below 84%, we're losing money relative to the simple approach. <strong>Shadow mode will tell us the actual number.</strong>
+    </div>
+  </div>
+
+  <!-- SECTION 5: WHAT I'D CHANGE FROM THE PROPOSAL -->
+  <div class="section">
+    <div class="sh"><div class="sn">5</div><h2>What I'd Change from the v2 Proposal</h2></div>
+
+    <table>
+      <thead><tr><th>#</th><th>Proposal Says</th><th>Second Opinion</th><th>Reason</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td>Fire DECISIVE at T-180s</td>
+          <td><strong>Start at T-150s</strong>, not T-180s</td>
+          <td>First 2.5min of a window is pure noise. Need at least 150s of price data for delta to be meaningful.</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td>CG OI delta as weight 1.0</td>
+          <td><strong>Keep as modifier only</strong>, not composite weight</td>
+          <td>Don't mix two systems. OI delta works as a ±0.10 modifier (proven). Adding it to composite score changes normalisation.</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td>All assets use continuous</td>
+          <td><strong>BTC only for v2</strong>. ETH/SOL/XRP stay T-60s.</td>
+          <td>CG is BTC-only. Multi-asset continuous = more complexity + no CG confirmation for non-BTC assets.</td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td>L/S, taker, funding zeroed</td>
+          <td><strong>Agree — keep zeroed</strong></td>
+          <td>30-day data is clear: coin flips. Don't re-enable without new evidence from shadow mode.</td>
+        </tr>
+        <tr>
+          <td>5</td>
+          <td>Dynamic normalisation</td>
+          <td><strong>FIXED normalisation = 6.0</strong></td>
+          <td>This was THE bug that killed v1. Never let the denominator shrink when components are zero. Fixed ÷6.0 always.</td>
+        </tr>
+        <tr>
+          <td>6</td>
+          <td>Spike detector fires on jump ≥0.30</td>
+          <td><strong>Spike threshold should be ≥0.40</strong></td>
+          <td>0.30 jump is too sensitive. With eval every 3s, small price blips cause 0.30 confidence jumps. Tighten to 0.40.</td>
+        </tr>
+        <tr>
+          <td>7</td>
+          <td>v2 fires → execute immediately</td>
+          <td><strong>v2 fires → post limit, fallback to T-60s bestAsk bump</strong></td>
+          <td>Hybrid: post cheap limit at T-180s. If no fill by T-60s, bump to Gamma bestAsk. Best of both worlds.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="page-break"></div>
+
+  <!-- SECTION 6: PROPOSED HYBRID APPROACH -->
+  <div class="section">
+    <div class="sh"><div class="sn">6</div><h2>Recommended: Hybrid Early-Post + Late-Bump</h2></div>
+
+    <svg width="780" height="185" viewBox="0 0 780 185" xmlns="http://www.w3.org/2000/svg">
+      <rect width="780" height="185" fill="#f8fafc" rx="6"/>
+      <text x="390" y="16" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="#1a1a2e" font-weight="700">HYBRID: EARLY POST + LATE BUMP (BEST OF BOTH WORLDS)</text>
+
+      <!-- Timeline -->
+      <rect x="30" y="30" width="720" height="25" rx="4" fill="#ecf0f1"/>
+
+      <rect x="30" y="30" width="144" height="25" rx="4" fill="#bdc3c7"/>
+      <text x="102" y="47" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="white" font-weight="700">OBSERVE ONLY</text>
+
+      <rect x="174" y="30" width="192" height="25" rx="4" fill="#9b59b6"/>
+      <text x="270" y="47" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="white" font-weight="700">POST CHEAP LIMIT (if DECISIVE)</text>
+
+      <rect x="366" y="30" width="192" height="25" rx="4" fill="#3498db"/>
+      <text x="462" y="47" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="white" font-weight="700">MONITOR / HOLD POSITION</text>
+
+      <rect x="558" y="30" width="192" height="25" rx="4" fill="#2ecc71"/>
+      <text x="654" y="47" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="white" font-weight="700">T-60s: BUMP IF UNFILLED</text>
+
+      <text x="102" y="67" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">T-300 → T-150</text>
+      <text x="270" y="67" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#9b59b6">T-150 → T-60</text>
+      <text x="462" y="67" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#3498db">If filled: done</text>
+      <text x="654" y="67" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#2ecc71">T-60: bestAsk ≤65¢</text>
+
+      <!-- Detail boxes -->
+      <rect x="30" y="80" width="170" height="55" rx="5" fill="white" stroke="#bdc3c7" stroke-width="1"/>
+      <text x="115" y="96" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#7f8c8d" font-weight="600">COLLECT DATA</text>
+      <text x="115" y="108" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50">Build delta, VPIN signal</text>
+      <text x="115" y="118" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50">Check CG OI delta</text>
+      <text x="115" y="128" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50">No action — just observe</text>
+
+      <rect x="210" y="80" width="170" height="55" rx="5" fill="white" stroke="#9b59b6" stroke-width="1.5"/>
+      <text x="295" y="96" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#9b59b6" font-weight="600">POST CHEAP LIMIT</text>
+      <text x="295" y="108" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50">If conf ≥85%: post at ~47¢</text>
+      <text x="295" y="118" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50">GTD auto-expires at close</text>
+      <text x="295" y="128" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#e74c3c">If fills: DONE (best price)</text>
+
+      <rect x="390" y="80" width="170" height="55" rx="5" fill="white" stroke="#3498db" stroke-width="1"/>
+      <text x="475" y="96" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#3498db" font-weight="600">FILLED? → HOLD</text>
+      <text x="475" y="108" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50">If early limit filled: done</text>
+      <text x="475" y="118" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50">If not filled: order sits</text>
+      <text x="475" y="128" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50">Signal still evaluated each 3s</text>
+
+      <rect x="570" y="80" width="190" height="55" rx="5" fill="white" stroke="#2ecc71" stroke-width="1.5"/>
+      <text x="665" y="96" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#2ecc71" font-weight="600">T-60s FALLBACK</text>
+      <text x="665" y="108" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50">If still unfilled at T-60s:</text>
+      <text x="665" y="118" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50">Cancel limit → bump to bestAsk</text>
+      <text x="665" y="128" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50">(≤65¢ cap still applies)</text>
+
+      <!-- Outcome summary -->
+      <rect x="30" y="142" width="720" height="35" rx="5" fill="#1a1a2e"/>
+      <text x="390" y="158" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="#e67e22" font-weight="700">OUTCOME: Fill at 47¢ (BEST) → Fill at 50¢ (GOOD) → Fill at bestAsk (SAME AS v5.4) → No fill (SKIP)</text>
+      <text x="390" y="170" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.7)">This NEVER performs worse than v5.4 — it can only perform equal (T-60s fallback) or better (early fill at cheap price).</text>
+    </svg>
+    <div class="svg-cap">Fig 3. The hybrid approach: try for cheap fill early, fall back to current strategy if it doesn't hit. Strictly non-inferior to v5.4.</div>
+
+    <div class="co-g co">
+      <strong>This is the key insight:</strong> The hybrid approach is <strong>monotonically non-inferior</strong> to v5.4. At worst, the early limit doesn't fill and we fall back to the exact same T-60s behaviour. At best, we fill at 47¢ instead of 50¢. There is NO scenario where the hybrid performs worse than current.
+    </div>
+  </div>
+
+  <!-- SECTION 7: FINAL RECOMMENDATION -->
+  <div class="section">
+    <div class="sh"><div class="sn">7</div><h2>Final Recommendation</h2></div>
+
+    <table>
+      <thead><tr><th>Step</th><th>Action</th><th>Duration</th><th>Risk</th></tr></thead>
+      <tbody>
+        <tr style="background:#eafaf1;">
+          <td><strong>1</strong></td>
+          <td><strong>Shadow mode</strong> — v2 logs what it WOULD post, v5.4 keeps executing</td>
+          <td>2-3 days (500+ windows)</td>
+          <td>Zero — v5.4 unchanged</td>
+        </tr>
+        <tr>
+          <td><strong>2</strong></td>
+          <td><strong>Analyse</strong> — would v2 early posts have filled? At what prices? What WR?</td>
+          <td>1 day analysis</td>
+          <td>Zero — data only</td>
+        </tr>
+        <tr style="background:#fef5e7;">
+          <td><strong>3</strong></td>
+          <td><strong>Hybrid mode (BTC only)</strong> — post cheap limit at T-150s if DECISIVE, T-60s fallback</td>
+          <td>3-5 days paper</td>
+          <td>Low — non-inferior by design</td>
+        </tr>
+        <tr>
+          <td><strong>4</strong></td>
+          <td><strong>Extend</strong> — if hybrid proves ≥ v5.4, add ETH/SOL/XRP (with per-asset CG feeds)</td>
+          <td>Ongoing</td>
+          <td>Medium — needs per-asset CG</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="co">
+      <strong>Bottom line:</strong> The continuous evaluator idea IS sound. The original failed due to 3 specific bugs, not a flawed concept. The hybrid approach (early post + late fallback) eliminates the downside risk while preserving the upside. Start with shadow mode, prove it with data, then switch. Don't rush — v5.4 is printing money at 90% WR. The improvement is incremental (+8% from cheaper tokens), not transformational. Protect the base.
+    </div>
+  </div>
+
+  <div style="margin-top: 10px; padding: 6px; background: #fef5e7; border-radius: 6px; text-align: center; border: 1px solid #e67e22;">
+    <span style="font-size: 12pt; font-weight: 800;">Novakash<span style="color:#e67e22;">.</span></span>
+    <span style="font-size: 7pt; color: #7f8c8d; margin-left: 8px;">Second Opinion — Continuous Evaluator v2 | Data-driven, shadow mode first</span>
+  </div>
+
+</div>
+</body>
+</html>

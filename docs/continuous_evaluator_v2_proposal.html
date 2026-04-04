@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+  @page { margin: 8mm 10mm; size: A4; }
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 9pt; line-height: 1.4; color: #1a1a2e; }
+  .page { max-width: 800px; margin: 0 auto; }
+  .page-break { page-break-after: always; }
+  .doc-header { text-align: center; padding: 15px 0 10px; border-bottom: 3px solid #9b59b6; margin-bottom: 15px; }
+  .doc-header h1 { font-size: 17pt; font-weight: 800; margin: 0; }
+  .doc-header .sub { font-size: 10pt; color: #7f8c8d; margin-top: 3px; }
+  .sh { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 5px; border-bottom: 2px solid #9b59b6; }
+  .sn { background: #9b59b6; color: white; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 11pt; flex-shrink: 0; }
+  .sh h2 { margin: 0; font-size: 13pt; font-weight: 700; }
+  .st { font-size: 10pt; font-weight: 700; color: #2c3e50; margin: 12px 0 6px; padding-bottom: 3px; border-bottom: 1px solid #ecf0f1; }
+  table { width: 100%; border-collapse: collapse; font-size: 8pt; margin: 8px 0; }
+  th { background: #1a1a2e; color: white; padding: 5px 6px; text-align: left; font-weight: 600; }
+  td { padding: 4px 6px; border-bottom: 1px solid #ecf0f1; }
+  tr:nth-child(even) { background: #f8f9fa; }
+  .co { border-left: 3px solid #9b59b6; background: #f5eef8; padding: 8px 10px; margin: 8px 0; border-radius: 0 5px 5px 0; font-size: 8.5pt; }
+  .co-g { border-left-color: #2ecc71; background: #eafaf1; }
+  .co-r { border-left-color: #e74c3c; background: #fdedec; }
+  p { margin: 4px 0; font-size: 8.5pt; }
+  code { background: #f0f0f0; padding: 0 3px; border-radius: 2px; font-size: 7.5pt; }
+  .svg-cap { font-size: 7.5pt; color: #7f8c8d; text-align: center; margin-top: 4px; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="doc-header">
+    <h1>Continuous Window Evaluator: Postmortem & v2 Proposal</h1>
+    <div class="sub">Why It Failed, Why the Idea Was Sound, and How to Fix It with CoinGlass</div>
+  </div>
+
+  <!-- SECTION 1: WHAT HAPPENED -->
+  <div class="section">
+    <div class="sh"><div class="sn">1</div><h2>What Happened: The Continuous Evaluator Failure</h2></div>
+
+    <svg width="780" height="190" viewBox="0 0 780 190" xmlns="http://www.w3.org/2000/svg">
+      <rect width="780" height="190" fill="#f8fafc" rx="6"/>
+      <text x="390" y="16" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#95a5a6" font-weight="600">APRIL 2: MORNING (SINGLE-SHOT) vs AFTERNOON (CONTINUOUS EVALUATOR)</text>
+
+      <!-- Morning -->
+      <rect x="15" y="25" width="370" height="155" rx="8" fill="white" stroke="#2ecc71" stroke-width="2"/>
+      <rect x="15" y="25" width="370" height="25" rx="8" fill="#2ecc71"/>
+      <text x="200" y="42" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="white" font-weight="700">✅ MORNING: Single-Shot at T-60s → +$93</text>
+
+      <text x="30" y="65" font-family="-apple-system,sans-serif" font-size="7.5" fill="#2c3e50">• ONE evaluation per window at T-60s</text>
+      <text x="30" y="77" font-family="-apple-system,sans-serif" font-size="7.5" fill="#2c3e50">• Delta 0.03–0.09% + VPIN 0.65–0.93</text>
+      <text x="30" y="89" font-family="-apple-system,sans-serif" font-size="7.5" fill="#2c3e50">• GTC limit at Gamma API price (38–52¢)</text>
+      <text x="30" y="101" font-family="-apple-system,sans-serif" font-size="7.5" fill="#2c3e50">• Confidence: MODERATE (65%)</text>
+      <text x="30" y="113" font-family="-apple-system,sans-serif" font-size="7.5" fill="#2c3e50">• Fill rate: ~40% (but at GREAT prices)</text>
+      <text x="30" y="130" font-family="-apple-system,sans-serif" font-size="8" fill="#2ecc71" font-weight="700">Result: 89% WR, +$93, 6 hours</text>
+      <text x="30" y="145" font-family="-apple-system,sans-serif" font-size="7" fill="#7f8c8d">Simple. Predictable. Profitable.</text>
+
+      <!-- Afternoon -->
+      <rect x="395" y="25" width="370" height="155" rx="8" fill="white" stroke="#e74c3c" stroke-width="2"/>
+      <rect x="395" y="25" width="370" height="25" rx="8" fill="#e74c3c"/>
+      <text x="580" y="42" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="white" font-weight="700">❌ AFTERNOON: Continuous Evaluator → -$258</text>
+
+      <text x="410" y="65" font-family="-apple-system,sans-serif" font-size="7.5" fill="#2c3e50">• Evaluated every 2-3s from T-300s to T-5s</text>
+      <text x="410" y="77" font-family="-apple-system,sans-serif" font-size="7.5" fill="#e74c3c" font-weight="600">✗ Delta weights were 7.0 (should be 3.0) → inflated scores</text>
+      <text x="410" y="89" font-family="-apple-system,sans-serif" font-size="7.5" fill="#e74c3c" font-weight="600">✗ CoinGlass all zeros → normalisation broken (÷7 when max=6)</text>
+      <text x="410" y="101" font-family="-apple-system,sans-serif" font-size="7.5" fill="#e74c3c" font-weight="600">✗ Fired DECISIVE (95%+) on weak 0.05% deltas</text>
+      <text x="410" y="113" font-family="-apple-system,sans-serif" font-size="7.5" fill="#e74c3c" font-weight="600">✗ Traded at window OPEN (T-280s) — max uncertainty</text>
+      <text x="410" y="125" font-family="-apple-system,sans-serif" font-size="7.5" fill="#e74c3c" font-weight="600">✗ Combined with FAK orders → 88-98¢ tokens</text>
+      <text x="410" y="142" font-family="-apple-system,sans-serif" font-size="8" fill="#e74c3c" font-weight="700">Result: Overconfident, bad timing, -$258</text>
+      <text x="410" y="157" font-family="-apple-system,sans-serif" font-size="7" fill="#7f8c8d">Complex. Broken confidence. Combined with pricing disaster.</text>
+    </svg>
+    <div class="svg-cap">Fig 1. The failure was THREE compounding problems: broken weights + broken normalisation + bad pricing. The timing concept itself was sound.</div>
+
+    <div class="co">
+      <strong>Billy's insight is correct:</strong> The continuous evaluator failed because of bad thresholds and broken normalisation, NOT because the idea of monitoring the full window is wrong. The concept — "trade early when signal is strong, get cheaper tokens" — is the best edge available. The morning system only worked at T-60s because VPIN was 0.65-0.93 the WHOLE time (cascade), so waiting didn't matter. In normal conditions, the signal may peak at T-180s and be gone by T-60s.
+    </div>
+  </div>
+
+  <div class="st">Root Cause Analysis: 3 Independent Bugs</div>
+  <table>
+    <thead><tr><th>#</th><th>Bug</th><th>Effect</th><th>Fix in v2</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td><strong>Delta weight 7.0</strong> (should be 3.0 max)</td>
+        <td>A tiny 0.05% delta scored 7.0 out of possible 10 → 70% confidence → DECISIVE tier fires instantly</td>
+        <td>Cap delta weight at 3.0. Equal weighting with VPIN max (3.0). A 0.05% delta should score ~1.5, not 7.0.</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td><strong>CoinGlass all zeros → normalisation broken</strong></td>
+        <td>Dynamic normalisation: <code>active_max = 3 + 0 + 0 + 0 = 3</code>. Score of 3.0/3.0 = 100% confidence on delta alone.</td>
+        <td>Floor normalisation at 6.0 minimum (assumes VPIN always contributes). Now with CG Standard, we have real data.</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td><strong>No minimum time requirement</strong></td>
+        <td>DECISIVE tier could fire at T-290s (10s into window) — maximum uncertainty, price hasn't settled.</td>
+        <td>No trades before T-180s. Minimum 2 minutes of data before ANY tier can fire.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="page-break"></div>
+
+  <!-- SECTION 2: THE OPPORTUNITY -->
+  <div class="section">
+    <div class="sh"><div class="sn">2</div><h2>The Opportunity: Why Earlier Entry = Cheaper Tokens</h2></div>
+
+    <svg width="780" height="200" viewBox="0 0 780 200" xmlns="http://www.w3.org/2000/svg">
+      <rect width="780" height="200" fill="#1a1a2e" rx="6"/>
+      <text x="390" y="18" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="#9b59b6" font-weight="700">TOKEN PRICE vs TIME — THE EARLY ENTRY ADVANTAGE</text>
+
+      <!-- X axis (time) -->
+      <line x1="60" y1="160" x2="740" y2="160" stroke="#555" stroke-width="1"/>
+      <text x="60" y="175" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#7f8c8d">T-300s</text>
+      <text x="195" y="175" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#7f8c8d">T-240s</text>
+      <text x="330" y="175" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#7f8c8d">T-180s</text>
+      <text x="465" y="175" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#7f8c8d">T-120s</text>
+      <text x="600" y="175" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#7f8c8d">T-60s</text>
+      <text x="740" y="175" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#7f8c8d">T-0s</text>
+      <text x="400" y="193" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#555">← Time remaining in window →</text>
+
+      <!-- Y axis (price) -->
+      <line x1="60" y1="30" x2="60" y2="160" stroke="#555" stroke-width="1"/>
+      <text x="50" y="155" text-anchor="end" font-family="-apple-system,sans-serif" font-size="7" fill="#7f8c8d">45¢</text>
+      <text x="50" y="120" text-anchor="end" font-family="-apple-system,sans-serif" font-size="7" fill="#7f8c8d">50¢</text>
+      <text x="50" y="85" text-anchor="end" font-family="-apple-system,sans-serif" font-size="7" fill="#7f8c8d">55¢</text>
+      <text x="50" y="50" text-anchor="end" font-family="-apple-system,sans-serif" font-size="7" fill="#7f8c8d">60¢</text>
+
+      <!-- Token price curve (tokens get more expensive as outcome becomes clearer) -->
+      <path d="M60,150 C120,148 180,145 240,140 C300,132 360,118 420,100 C480,78 540,62 600,50 C660,42 700,38 740,36" fill="none" stroke="#f39c12" stroke-width="2.5"/>
+      <text x="750" y="33" font-family="-apple-system,sans-serif" font-size="7" fill="#f39c12">Token Price</text>
+
+      <!-- Entry points -->
+      <!-- Early entry (v2) -->
+      <circle cx="330" cy="140" r="8" fill="#9b59b6" stroke="white" stroke-width="1.5"/>
+      <text x="330" y="143" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="white" font-weight="800">v2</text>
+      <line x1="330" y1="148" x2="330" y2="160" stroke="#9b59b6" stroke-width="1" stroke-dasharray="3,2"/>
+      <rect x="275" y="100" width="110" height="30" rx="4" fill="#9b59b6"/>
+      <text x="330" y="114" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="white" font-weight="600">EARLY: ~47¢</text>
+      <text x="330" y="124" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.8)">Win +113% | Need 47% WR</text>
+
+      <!-- Current entry (T-60s) -->
+      <circle cx="600" cy="50" r="8" fill="#3498db" stroke="white" stroke-width="1.5"/>
+      <text x="600" y="53" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="white" font-weight="800">v5</text>
+      <line x1="600" y1="58" x2="600" y2="160" stroke="#3498db" stroke-width="1" stroke-dasharray="3,2"/>
+      <rect x="545" y="62" width="110" height="30" rx="4" fill="#3498db"/>
+      <text x="600" y="76" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="white" font-weight="600">CURRENT: ~55¢</text>
+      <text x="600" y="86" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.8)">Win +82% | Need 55% WR</text>
+
+      <!-- Savings arrow -->
+      <line x1="345" y1="140" x2="590" y2="140" stroke="#2ecc71" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <rect x="430" y="130" width="70" height="18" rx="3" fill="#2ecc71"/>
+      <text x="465" y="142" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="white" font-weight="700">8¢ CHEAPER</text>
+    </svg>
+    <div class="svg-cap">Fig 2. Tokens near window open are ~47¢ (near coin-flip). By T-60s they're ~55¢ (outcome partially priced in). Earlier entry = better R/R if signal quality is sufficient.</div>
+
+    <div class="co-g co">
+      <strong>The maths:</strong> At 55¢ (T-60s entry), you need 55% WR to break even. At 47¢ (T-180s entry), you need only 47% WR. With 92% actual WR, the difference is <strong>$0.08 × stake</strong> per trade in pure edge. Over 100 trades at $50 avg stake = <strong>$400 extra profit</strong> from earlier entry alone.
+    </div>
+  </div>
+
+  <!-- SECTION 3: v2 PROPOSAL -->
+  <div class="section">
+    <div class="sh"><div class="sn">3</div><h2>Continuous Evaluator v2: The Fix</h2></div>
+
+    <svg width="780" height="320" viewBox="0 0 780 320" xmlns="http://www.w3.org/2000/svg">
+      <rect width="780" height="320" fill="#f8fafc" rx="6"/>
+      <text x="390" y="16" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="#1a1a2e" font-weight="700">CONTINUOUS EVALUATOR v2 — TIME-TIERED WITH COINGLASS</text>
+
+      <!-- Timeline bar -->
+      <rect x="30" y="30" width="720" height="30" rx="4" fill="#ecf0f1"/>
+      <text x="390" y="23" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#95a5a6">WINDOW TIMELINE (300 seconds)</text>
+
+      <!-- NO TRADE zone -->
+      <rect x="30" y="30" width="144" height="30" rx="4" fill="#bdc3c7"/>
+      <text x="102" y="49" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="white" font-weight="700">🚫 NO TRADE</text>
+      <text x="102" y="24" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">T-300 → T-180</text>
+
+      <!-- DECISIVE zone -->
+      <rect x="174" y="30" width="144" height="30" rx="4" fill="#e74c3c"/>
+      <text x="246" y="49" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="white" font-weight="700">DECISIVE (85%+)</text>
+      <text x="246" y="24" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">T-180 → T-120</text>
+
+      <!-- HIGH zone -->
+      <rect x="318" y="30" width="144" height="30" rx="4" fill="#f39c12"/>
+      <text x="390" y="49" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="white" font-weight="700">HIGH (65%+)</text>
+      <text x="390" y="24" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">T-120 → T-60</text>
+
+      <!-- MODERATE zone -->
+      <rect x="462" y="30" width="144" height="30" rx="4" fill="#2ecc71"/>
+      <text x="534" y="49" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="white" font-weight="700">MODERATE (50%+)</text>
+      <text x="534" y="24" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">T-60 → T-10</text>
+
+      <!-- DEADLINE zone -->
+      <rect x="606" y="30" width="144" height="30" rx="4" fill="#bdc3c7"/>
+      <text x="678" y="49" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7.5" fill="white" font-weight="700">🚫 NO DEADLINE</text>
+      <text x="678" y="24" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">T-10 → T-0</text>
+
+      <!-- Token price annotations -->
+      <text x="102" y="72" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#7f8c8d">Tokens ~46¢</text>
+      <text x="102" y="82" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#95a5a6">Too early, no data</text>
+      <text x="246" y="72" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#e74c3c" font-weight="600">Tokens ~47¢ ★</text>
+      <text x="246" y="82" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#95a5a6">Best price if signal is clear</text>
+      <text x="390" y="72" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#f39c12">Tokens ~50¢</text>
+      <text x="390" y="82" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#95a5a6">Good price, lower bar</text>
+      <text x="534" y="72" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2ecc71">Tokens ~54¢</text>
+      <text x="534" y="82" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#95a5a6">Current T-60s window</text>
+      <text x="678" y="72" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#7f8c8d">Tokens ~58¢</text>
+      <text x="678" y="82" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#95a5a6">Too late, bad R/R</text>
+
+      <!-- Signal composition -->
+      <rect x="30" y="95" width="720" height="215" rx="6" fill="white" stroke="#9b59b6" stroke-width="1.5"/>
+      <text x="390" y="112" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="#9b59b6" font-weight="700">v2 SIGNAL COMPOSITION — WHAT CHANGED FROM v1</text>
+
+      <!-- Component boxes -->
+      <rect x="45" y="120" width="160" height="80" rx="5" fill="#f8f9fa" stroke="#f39c12" stroke-width="1.5"/>
+      <text x="125" y="136" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#f39c12" font-weight="700">① DELTA (max 3.0)</text>
+      <text x="125" y="149" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50">v1: max 7.0 ← THE BUG</text>
+      <text x="125" y="160" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2ecc71" font-weight="600">v2: max 3.0 (equal to VPIN)</text>
+      <text x="125" y="173" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">δ>0.10%: 2.5 | δ>0.05%: 1.5</text>
+      <text x="125" y="184" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">δ>0.02%: 0.8 | δ<0.02%: 0.0</text>
+      <text x="125" y="195" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#e74c3c">Momentum direction only</text>
+
+      <rect x="215" y="120" width="130" height="80" rx="5" fill="#f8f9fa" stroke="#3498db" stroke-width="1.5"/>
+      <text x="280" y="136" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#3498db" font-weight="700">② VPIN (max 3.0)</text>
+      <text x="280" y="149" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50">v1: same (0-3.0)</text>
+      <text x="280" y="160" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2ecc71" font-weight="600">v2: same — proven signal</text>
+      <text x="280" y="173" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">Amplifies delta direction</text>
+      <text x="280" y="184" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">Gate: ≥0.45 required</text>
+
+      <rect x="355" y="120" width="145" height="80" rx="5" fill="#f8f9fa" stroke="#2ecc71" stroke-width="2"/>
+      <text x="427" y="136" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#2ecc71" font-weight="700">③ OI DELTA (max 1.0)</text>
+      <text x="427" y="149" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50">v1: weight 1.0 (no data)</text>
+      <text x="427" y="160" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2ecc71" font-weight="600">v2: REAL CG data now!</text>
+      <text x="427" y="173" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">OI Δ >0.10% = +1.0</text>
+      <text x="427" y="184" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">Only CG signal that proved</text>
+      <text x="427" y="195" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#2ecc71">+2.9% WR lift in backtest</text>
+
+      <rect x="510" y="120" width="225" height="80" rx="5" fill="#f8f9fa" stroke="#9b59b6" stroke-width="2"/>
+      <text x="622" y="136" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#9b59b6" font-weight="700">④ CG MONITORING (weight 0)</text>
+      <text x="622" y="149" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#2c3e50">v1: L/S wt 1.5, Liq wt 2.0, Fund wt 1.0</text>
+      <text x="622" y="160" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#9b59b6" font-weight="600">v2: LOGGED but zeroed (per backtest)</text>
+      <text x="622" y="173" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">Liqs, L/S, Smart Money, Taker, Funding</text>
+      <text x="622" y="184" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">All 1-min data from CG Standard</text>
+      <text x="622" y="195" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="#7f8c8d">Saved for future recalibration</text>
+
+      <!-- Normalisation fix -->
+      <rect x="45" y="210" width="690" height="40" rx="5" fill="#1a1a2e"/>
+      <text x="390" y="226" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#e74c3c" font-weight="700">NORMALISATION FIX — THE CRITICAL CHANGE</text>
+      <text x="390" y="240" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">v1: active_max = Σ(non-zero weights) → CG=0 meant ÷3 instead of ÷10 → inflated confidence</text>
+      <text x="390" y="252" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#2ecc71">v2: FIXED floor at 6.0 minimum. Max = delta(3) + VPIN(3) + OI(1) = 7. Confidence = score / max(active, 6.0)</text>
+
+      <!-- Spike detector -->
+      <rect x="45" y="258" width="690" height="40" rx="5" fill="#f5eef8" stroke="#9b59b6" stroke-width="1"/>
+      <text x="390" y="274" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#9b59b6" font-weight="700">★ NEW: SPIKE DETECTOR — CoinGlass-Enriched</text>
+      <text x="390" y="286" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="#2c3e50">If confidence jumps ≥0.30 in one eval AND delta ≥0.05% AND VPIN ≥0.45 AND OI delta confirms → SPIKE tier fires</text>
+      <text x="390" y="296" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="#7f8c8d">This is how we catch sudden moves mid-window. CG OI delta confirms the spike is real (new positions, not just noise).</text>
+    </svg>
+    <div class="svg-cap">Fig 3. v2 evaluator — fixed weights, fixed normalisation, CoinGlass-enriched, with safety guardrails preventing early overconfidence</div>
+  </div>
+
+  <div class="page-break"></div>
+
+  <!-- SECTION 4: BEFORE vs AFTER -->
+  <div class="section">
+    <div class="sh"><div class="sn">4</div><h2>Before vs After: Side-by-Side Comparison</h2></div>
+
+    <table>
+      <thead><tr><th>Aspect</th><th>v5.4 Current (Single-Shot)</th><th>v6 Proposed (Continuous v2)</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>When we evaluate</strong></td>
+          <td>Once at T-60s</td>
+          <td>Every 3s from T-300s, fire when threshold met</td>
+        </tr>
+        <tr>
+          <td><strong>Earliest possible trade</strong></td>
+          <td>T-60s (fixed)</td>
+          <td>T-180s (DECISIVE tier, 85% confidence required)</td>
+        </tr>
+        <tr>
+          <td><strong>Token price at entry</strong></td>
+          <td>~54¢ (partially priced in)</td>
+          <td>~47¢ (DECISIVE) to ~54¢ (MODERATE) — depends on signal strength</td>
+        </tr>
+        <tr>
+          <td><strong>Break-even WR needed</strong></td>
+          <td>~54%</td>
+          <td>~47% (DECISIVE) to ~54% (MODERATE)</td>
+        </tr>
+        <tr>
+          <td><strong>Can catch mid-window spikes?</strong></td>
+          <td>No — evaluates once, misses intra-window events</td>
+          <td>Yes — SPIKE detector fires on sudden confidence jumps</td>
+        </tr>
+        <tr>
+          <td><strong>CoinGlass role</strong></td>
+          <td>OI delta only (±0.10 modifier post-regime)</td>
+          <td>OI delta as live weight (max 1.0) + monitoring of liqs/L/S/taker</td>
+        </tr>
+        <tr>
+          <td><strong>Signal components</strong></td>
+          <td>Delta + VPIN + CG modifier</td>
+          <td>Delta (3.0) + VPIN (3.0) + OI (1.0) — composite score normalised to 0-7</td>
+        </tr>
+        <tr>
+          <td><strong>Direction</strong></td>
+          <td>ALL momentum</td>
+          <td>ALL momentum (same — proven by 30-day data)</td>
+        </tr>
+        <tr>
+          <td><strong>Pricing strategy</strong></td>
+          <td>Delta-model at ~50¢, bump to bestAsk ≤65¢</td>
+          <td>Same — but now posts earlier when tokens are cheaper</td>
+        </tr>
+        <tr>
+          <td><strong>Risk of overtrading</strong></td>
+          <td>Low — one shot per window</td>
+          <td>Medium — guardrails G1-G6 prevent burst. Rate limit + stagger still apply.</td>
+        </tr>
+        <tr>
+          <td><strong>Complexity</strong></td>
+          <td>Simple (3 checks)</td>
+          <td>Medium (evaluator loop + tier system + spike detection)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="co">
+      <strong>Key trade-off:</strong> v5.4 is simple and proven (92% WR). v2 continuous would trade at better prices but adds complexity. The proposal: run v2 in <strong>shadow mode</strong> — evaluate continuously but only LOG what it would do. Compare v2 decisions against v5.4 actual trades. When v2 shadow proves ≥ v5.4 WR over 500+ windows, switch.
+    </div>
+  </div>
+
+  <!-- SECTION 5: IMPLEMENTATION PLAN -->
+  <div class="section">
+    <div class="sh"><div class="sn">5</div><h2>Implementation Plan: Shadow Mode First</h2></div>
+
+    <svg width="780" height="160" viewBox="0 0 780 160" xmlns="http://www.w3.org/2000/svg">
+      <rect width="780" height="160" fill="#f8fafc" rx="6"/>
+
+      <rect x="15" y="10" width="175" height="70" rx="6" fill="#3498db"/>
+      <text x="102" y="30" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">Phase 1: Shadow Mode</text>
+      <text x="102" y="43" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">v2 evaluates every 3s</text>
+      <text x="102" y="54" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">LOGS what it would trade</text>
+      <text x="102" y="65" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">v5.4 still executes</text>
+      <text x="102" y="75" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.6)">Duration: 500+ windows (~2 days)</text>
+
+      <text x="200" y="45" font-family="-apple-system,sans-serif" font-size="12" fill="#7f8c8d">→</text>
+
+      <rect x="210" y="10" width="175" height="70" rx="6" fill="#f39c12"/>
+      <text x="297" y="30" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">Phase 2: Compare</text>
+      <text x="297" y="43" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">v2 shadow WR vs v5.4 actual WR</text>
+      <text x="297" y="54" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">v2 avg entry price vs v5.4</text>
+      <text x="297" y="65" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">v2 would-have-been P&L</text>
+      <text x="297" y="75" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.6)">Automated comparison report</text>
+
+      <text x="395" y="45" font-family="-apple-system,sans-serif" font-size="12" fill="#7f8c8d">→</text>
+
+      <rect x="405" y="10" width="175" height="70" rx="6" fill="#2ecc71"/>
+      <text x="492" y="30" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">Phase 3: Go Live</text>
+      <text x="492" y="43" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">If v2 WR ≥ v5.4 WR</text>
+      <text x="492" y="54" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">AND v2 avg price < v5.4</text>
+      <text x="492" y="65" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">→ Switch execution to v2</text>
+      <text x="492" y="75" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.6)">ENV: EVALUATOR_MODE=continuous</text>
+
+      <text x="590" y="45" font-family="-apple-system,sans-serif" font-size="12" fill="#7f8c8d">→</text>
+
+      <rect x="600" y="10" width="165" height="70" rx="6" fill="#9b59b6"/>
+      <text x="682" y="30" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">Phase 4: Recalibrate</text>
+      <text x="682" y="43" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">Tune tier thresholds</text>
+      <text x="682" y="54" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">Re-evaluate CG weights</text>
+      <text x="682" y="65" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">with 1000+ window data</text>
+      <text x="682" y="75" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6" fill="rgba(255,255,255,0.6)">Maybe re-enable more CG signals</text>
+
+      <!-- Bottom summary -->
+      <rect x="15" y="90" width="750" height="60" rx="6" fill="#1a1a2e"/>
+      <text x="390" y="108" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#9b59b6" font-weight="700">SAFETY PRINCIPLE: v5.4 keeps trading. v2 runs in shadow. We switch ONLY when data proves v2 is better.</text>
+      <text x="390" y="123" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">v2 Shadow Log: For each window → "v2 would have traded [ASSET] [DIR] at T-[X]s, token price ~[Y]¢, confidence [Z]%"</text>
+      <text x="390" y="137" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">Compare against actual outcome (oracle truth) → build evidence before switching.</text>
+    </svg>
+    <div class="svg-cap">Fig 4. Risk-free rollout: shadow mode logs what v2 would do, v5.4 keeps executing. Switch only when evidence is strong.</div>
+  </div>
+
+  <!-- SECTION 6: EXPECTED GAINS -->
+  <div class="section">
+    <div class="sh"><div class="sn">6</div><h2>Expected Gains from Earlier Entry</h2></div>
+    <table>
+      <thead><tr><th>Scenario</th><th>Entry Time</th><th>Token Price</th><th>Win Return</th><th>Loss Cost</th><th>Break-Even WR</th><th>EV at 92% WR</th></tr></thead>
+      <tbody>
+        <tr style="background:#eafaf1;"><td><strong>v2 DECISIVE</strong></td><td>T-180s</td><td>47¢</td><td>+113%</td><td>-100%</td><td>47%</td><td><strong>+$0.59/trade</strong></td></tr>
+        <tr><td>v2 HIGH</td><td>T-120s</td><td>50¢</td><td>+100%</td><td>-100%</td><td>50%</td><td>+$0.42/trade</td></tr>
+        <tr><td>v5.4 MODERATE</td><td>T-60s</td><td>54¢</td><td>+85%</td><td>-100%</td><td>54%</td><td>+$0.28/trade</td></tr>
+      </tbody>
+    </table>
+    <p>At 100 trades/day with $50 avg stake: DECISIVE entry = <strong>$29.50/day</strong> vs current MODERATE = <strong>$14.00/day</strong>. Potential <strong>2× improvement</strong> from timing alone.</p>
+
+    <div class="co-r co">
+      <strong>Caveat:</strong> These numbers assume same WR at earlier entry. The 30-day backtest should be rerun with time-variable entries to validate. If WR drops from 92% to 85% at T-180s, the advantage is smaller but still positive (85% at 47¢ = $0.41/trade, still better than 92% at 54¢ = $0.28/trade).
+    </div>
+  </div>
+
+  <div style="margin-top: 10px; padding: 6px; background: #f5eef8; border-radius: 6px; text-align: center; border: 1px solid #9b59b6;">
+    <span style="font-size: 12pt; font-weight: 800;">Novakash<span style="color:#9b59b6;">.</span></span>
+    <span style="font-size: 7pt; color: #7f8c8d; margin-left: 8px;">Continuous Evaluator v2 Proposal | April 2026 | Shadow mode first, data-driven switch</span>
+  </div>
+
+</div>
+</body>
+</html>
