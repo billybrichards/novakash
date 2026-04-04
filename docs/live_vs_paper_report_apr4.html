@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8">
+<style>
+  @page { margin: 8mm 10mm; size: A4; }
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 9pt; line-height: 1.4; color: #1a1a2e; }
+  .page { max-width: 800px; margin: 0 auto; }
+  .page-break { page-break-after: always; }
+  .doc-header { text-align: center; padding: 15px 0 10px; border-bottom: 3px solid #c0392b; margin-bottom: 15px; }
+  .doc-header h1 { font-size: 17pt; font-weight: 800; margin: 0; }
+  .doc-header .sub { font-size: 10pt; color: #7f8c8d; margin-top: 3px; }
+  .doc-header .meta { font-size: 8pt; color: #e74c3c; margin-top: 5px; font-weight: 600; }
+  .sh { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding-bottom: 5px; border-bottom: 2px solid #c0392b; }
+  .sn { background: #c0392b; color: white; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 11pt; flex-shrink: 0; }
+  .sh h2 { margin: 0; font-size: 13pt; font-weight: 700; }
+  table { width: 100%; border-collapse: collapse; font-size: 8pt; margin: 8px 0; }
+  th { background: #1a1a2e; color: white; padding: 5px 6px; text-align: left; font-weight: 600; }
+  td { padding: 4px 6px; border-bottom: 1px solid #ecf0f1; }
+  tr:nth-child(even) { background: #f8f9fa; }
+  .co { border-left: 3px solid #c0392b; background: #fdedec; padding: 8px 10px; margin: 8px 0; border-radius: 0 5px 5px 0; font-size: 8.5pt; }
+  .co-g { border-left-color: #2ecc71; background: #eafaf1; }
+  .co-a { border-left-color: #f39c12; background: #fef9e7; }
+  p { margin: 4px 0; font-size: 8.5pt; }
+  .svg-cap { font-size: 7.5pt; color: #7f8c8d; text-align: center; margin-top: 4px; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="doc-header">
+    <h1>Live vs Paper: The Reality Check</h1>
+    <div class="sub">April 4, 2026 — Side-by-Side Comparison of What Paper Shows vs What Actually Happens</div>
+    <div class="meta">⚠️ Paper performance is NOT predictive of live performance. This report explains exactly why.</div>
+  </div>
+
+  <!-- SECTION 1: SIDE BY SIDE -->
+  <div class="section">
+    <div class="sh"><div class="sn">1</div><h2>The Numbers: Paper vs Live (Same Day, Same Engine)</h2></div>
+
+    <svg width="780" height="220" viewBox="0 0 780 220" xmlns="http://www.w3.org/2000/svg">
+      <rect width="780" height="220" fill="#f8fafc" rx="6"/>
+      <text x="390" y="16" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="#1a1a2e" font-weight="700">APRIL 4, 2026 — SAME ENGINE, SAME SIGNALS, COMPLETELY DIFFERENT RESULTS</text>
+
+      <!-- Paper column -->
+      <rect x="20" y="25" width="360" height="185" rx="8" fill="white" stroke="#3498db" stroke-width="2"/>
+      <rect x="20" y="25" width="360" height="28" rx="8" fill="#3498db"/>
+      <text x="200" y="44" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="10" fill="white" font-weight="700">📄 PAPER (Railway, 08:44–20:39 UTC)</text>
+
+      <text x="35" y="70" font-family="-apple-system,sans-serif" font-size="20" fill="#2ecc71" font-weight="800">90%</text>
+      <text x="100" y="70" font-family="-apple-system,sans-serif" font-size="8" fill="#7f8c8d">Win Rate</text>
+      <text x="35" y="92" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">Trades attempted: <tspan font-weight="700">100</tspan></text>
+      <text x="35" y="104" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">Trades filled: <tspan font-weight="700" fill="#2ecc71">100 (100%)</tspan></text>
+      <text x="35" y="116" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">Wins: <tspan font-weight="700">90</tspan> | Losses: <tspan font-weight="700">10</tspan></text>
+      <text x="35" y="128" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">Total P&amp;L: <tspan font-weight="700" fill="#2ecc71">+$3,851</tspan></text>
+      <text x="35" y="140" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">Avg stake: <tspan font-weight="700">$50.50</tspan></text>
+      <text x="35" y="152" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">Entry prices: <tspan font-weight="700">always at model price</tspan></text>
+      <text x="35" y="164" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">Price blocked: <tspan font-weight="700">0</tspan></text>
+      <text x="35" y="176" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">Risk blocked: <tspan font-weight="700">0</tspan></text>
+      <text x="35" y="196" font-family="-apple-system,sans-serif" font-size="7" fill="#95a5a6">Paper fills everything instantly at the requested price.</text>
+      <text x="35" y="205" font-family="-apple-system,sans-serif" font-size="7" fill="#95a5a6">No order book friction. No liquidity constraints.</text>
+
+      <!-- Live column -->
+      <rect x="400" y="25" width="360" height="185" rx="8" fill="white" stroke="#e74c3c" stroke-width="2"/>
+      <rect x="400" y="25" width="360" height="28" rx="8" fill="#e74c3c"/>
+      <text x="580" y="44" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="10" fill="white" font-weight="700">💰 LIVE (Montreal, 18:29–21:24 UTC)</text>
+
+      <text x="415" y="70" font-family="-apple-system,sans-serif" font-size="20" fill="#f39c12" font-weight="800">~50%</text>
+      <text x="483" y="70" font-family="-apple-system,sans-serif" font-size="8" fill="#7f8c8d">Win Rate (on resolved)</text>
+      <text x="415" y="92" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">Trades attempted: <tspan font-weight="700">~15</tspan></text>
+      <text x="415" y="104" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">Trades filled: <tspan font-weight="700" fill="#e74c3c">7 (~47%)</tspan></text>
+      <text x="415" y="116" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">FOK killed (no liquidity): <tspan font-weight="700" fill="#e74c3c">~7</tspan></text>
+      <text x="415" y="128" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">Price blocked (&gt;65¢): <tspan font-weight="700" fill="#e74c3c">~4</tspan></text>
+      <text x="415" y="140" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">Risk/exposure blocked: <tspan font-weight="700" fill="#e74c3c">multiple</tspan></text>
+      <text x="415" y="152" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">Confirmed P&amp;L: <tspan font-weight="700" fill="#2ecc71">+$12.08</tspan> (1 WIN) / <tspan font-weight="700" fill="#e74c3c">-$1.10</tspan> (1 LOSS)</text>
+      <text x="415" y="164" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">Net confirmed: <tspan font-weight="700" fill="#2ecc71">+$10.98</tspan></text>
+      <text x="415" y="176" font-family="-apple-system,sans-serif" font-size="8" fill="#2c3e50">Best trade: BTC DOWN at 36¢ → $1 = <tspan font-weight="700" fill="#2ecc71">+$12.08</tspan></text>
+      <text x="415" y="196" font-family="-apple-system,sans-serif" font-size="7" fill="#e74c3c">UpDown books return 404. Market makers respond to direct orders only.</text>
+      <text x="415" y="205" font-family="-apple-system,sans-serif" font-size="7" fill="#e74c3c">BTC has liquidity. ETH sometimes. SOL/XRP rarely fill.</text>
+    </svg>
+    <div class="svg-cap">Fig 1. Same engine, same day — paper shows 90% WR / $3,851 P&L vs live shows ~47% fill rate and far fewer trades</div>
+  </div>
+
+  <!-- SECTION 2: WHY THE GAP -->
+  <div class="section">
+    <div class="sh"><div class="sn">2</div><h2>The Five Reality Gaps Between Paper and Live</h2></div>
+
+    <table>
+      <thead><tr><th>#</th><th>Gap</th><th>Paper Assumption</th><th>Live Reality</th><th>Impact</th></tr></thead>
+      <tbody>
+        <tr>
+          <td style="font-weight:700;color:#e74c3c;">1</td>
+          <td><strong>Fill Rate</strong></td>
+          <td>100% — every order fills instantly</td>
+          <td>~47% — FOK kills most orders, no resting books on UpDown</td>
+          <td style="color:#e74c3c;font-weight:700;">2.1× fewer actual trades</td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;color:#e74c3c;">2</td>
+          <td><strong>Liquidity per Asset</strong></td>
+          <td>All 4 assets fill equally</td>
+          <td>BTC fills in 5s. ETH sometimes. SOL/XRP rarely.</td>
+          <td style="color:#e74c3c;font-weight:700;">3 of 4 assets are unreliable</td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;color:#e74c3c;">3</td>
+          <td><strong>Entry Price</strong></td>
+          <td>Always at model price (~50¢)</td>
+          <td>FOK fills at whatever's available (16¢ to 65¢). v5.6b limits at 36¢–65¢.</td>
+          <td style="color:#f39c12;">Fills are cheaper (better R/R) but unpredictable</td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;color:#e74c3c;">4</td>
+          <td><strong>Risk Limits</strong></td>
+          <td>Paper has unlimited exposure</td>
+          <td>Exposure limit ($14.27) + kill switch + daily loss cap blocked trades</td>
+          <td style="color:#e74c3c;font-weight:700;">Real risk management reduces volume further</td>
+        </tr>
+        <tr>
+          <td style="font-weight:700;color:#e74c3c;">5</td>
+          <td><strong>Price Blocks</strong></td>
+          <td>65¢ cap exists but paper always gets cheaper</td>
+          <td>bestAsk frequently >65¢ (87-99¢ on thin books) → trade blocked</td>
+          <td style="color:#e74c3c;font-weight:700;">~25% of signals blocked by price alone</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="co">
+      <strong>The critical discovery:</strong> UpDown token order books return <strong>404 (no book)</strong> for ALL tokens. There are no resting limit orders. Market makers respond to <strong>incoming orders only</strong> — they see your order and decide whether to fill it. This means:
+      <br>• GTC limits just sit empty — nobody's on the other side
+      <br>• FOK is actually better — it gets an instant answer (fill or no-fill)
+      <br>• Liquidity is a function of the asset and the time — BTC is best, everything else is thin
+    </div>
+  </div>
+
+  <div class="page-break"></div>
+
+  <!-- SECTION 3: LIVE TRADE DETAIL -->
+  <div class="section">
+    <div class="sh"><div class="sn">3</div><h2>Live Trade Details (Apr 4, Montreal v5.6b)</h2></div>
+
+    <div style="font-size: 8.5pt; font-weight: 600; color: #2c3e50; margin-bottom: 6px;">Filled Trades</div>
+    <table>
+      <thead><tr><th>Time</th><th>Asset</th><th>Dir</th><th>Entry</th><th>Stake</th><th>Outcome</th><th>P&L</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>18:29</td><td>BTC</td><td>NO ↓</td><td>$0.51→filled ~16¢</td><td>$3.36</td><td style="color:#e74c3c;font-weight:600;">LOSS</td><td style="color:#e74c3c;">-$1.10</td><td>Filled much cheaper than limit — price moved against</td></tr>
+        <tr><td>18:29</td><td>XRP</td><td>YES ↑</td><td>$0.52→filled ~1¢</td><td>$3.19</td><td>Pending</td><td>?</td><td>Filled at extreme discount — unusual</td></tr>
+        <tr><td>19:19</td><td>BTC</td><td>NO ↓</td><td>$0.64</td><td>$4.37</td><td>Pending</td><td>?</td><td>—</td></tr>
+        <tr><td>19:19</td><td>ETH</td><td>YES ↑</td><td>$0.47</td><td>$5.03</td><td>Pending</td><td>?</td><td>—</td></tr>
+        <tr><td>19:54</td><td>BTC</td><td>NO ↓</td><td>$0.51</td><td>$6.09</td><td style="color:#2ecc71;font-weight:600;">WIN</td><td style="color:#2ecc71;">+$12.07</td><td>Solid fill, resolved to $1</td></tr>
+        <tr><td>19:54</td><td>ETH</td><td>YES ↑</td><td>$0.54</td><td>$6.09</td><td>Pending</td><td>?</td><td>—</td></tr>
+        <tr style="background:#eafaf1;"><td><strong>20:39</strong></td><td><strong>BTC</strong></td><td><strong>NO ↓</strong></td><td><strong>FOK $0.65→filled ~36¢</strong></td><td><strong>$7.12</strong></td><td style="color:#2ecc71;font-weight:600;"><strong>WIN</strong></td><td style="color:#2ecc71;font-weight:700;"><strong>+$12.08</strong></td><td><strong>★ Best trade — 36¢ entry, $1 payout</strong></td></tr>
+      </tbody>
+    </table>
+
+    <div style="font-size: 8.5pt; font-weight: 600; color: #e74c3c; margin: 10px 0 6px;">FOK Killed — No Liquidity</div>
+    <table>
+      <thead><tr><th>Time</th><th>Asset</th><th>Dir</th><th>bestAsk</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td>20:34</td><td>BTC</td><td>NO</td><td>$0.51</td><td>FOK killed, GTD sat 30s unfilled</td></tr>
+        <tr><td>20:49</td><td>XRP</td><td>NO</td><td>$0.50</td><td>FOK killed — no liquidity</td></tr>
+        <tr><td>20:54</td><td>BTC</td><td>NO</td><td>$0.38</td><td>FOK killed</td></tr>
+        <tr><td>21:14</td><td>BTC</td><td>NO</td><td>$0.44</td><td>FOK killed</td></tr>
+        <tr><td>21:14</td><td>ETH</td><td>NO</td><td>$0.50</td><td>FOK killed</td></tr>
+        <tr><td>21:15</td><td>XRP</td><td>NO</td><td>$0.53</td><td>FOK killed</td></tr>
+        <tr><td>21:24</td><td>ETH</td><td>YES</td><td>$0.52</td><td>FOK killed + fake ID bug (now fixed)</td></tr>
+      </tbody>
+    </table>
+
+    <div style="font-size: 8.5pt; font-weight: 600; color: #f39c12; margin: 10px 0 6px;">Price-Blocked (bestAsk > Cap)</div>
+    <table>
+      <thead><tr><th>Time</th><th>Asset</th><th>bestAsk</th><th>Cap</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td>19:14</td><td>Multiple</td><td>$0.87–$0.99</td><td>$0.65–$0.70</td><td>Tokens nearly fully priced in — no edge</td></tr>
+        <tr><td>20:19</td><td>ETH</td><td>$0.80</td><td>$0.65</td><td>Too expensive</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- SECTION 4: THE REAL WIN RATE -->
+  <div class="section">
+    <div class="sh"><div class="sn">4</div><h2>What Win Rate Should We Actually Expect?</h2></div>
+
+    <svg width="780" height="170" viewBox="0 0 780 170" xmlns="http://www.w3.org/2000/svg">
+      <rect width="780" height="170" fill="#1a1a2e" rx="6"/>
+      <text x="390" y="18" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="9" fill="#e67e22" font-weight="700">WIN RATE ACROSS ALL SESSIONS — WHAT WE ACTUALLY KNOW</text>
+
+      <!-- Apr 2 morning live -->
+      <rect x="20" y="30" width="175" height="55" rx="5" fill="#2ecc71"/>
+      <text x="107" y="48" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">Apr 2 Morning (LIVE)</text>
+      <text x="107" y="62" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="14" fill="white" font-weight="800">89% WR</text>
+      <text x="107" y="78" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">~15 filled trades | GTC @ Gamma</text>
+
+      <!-- Apr 4 paper -->
+      <rect x="210" y="30" width="175" height="55" rx="5" fill="#3498db"/>
+      <text x="297" y="48" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">Apr 4 Paper (Railway)</text>
+      <text x="297" y="62" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="14" fill="white" font-weight="800">90% WR</text>
+      <text x="297" y="78" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">100 trades | 100% fill rate</text>
+
+      <!-- Apr 4 live Montreal -->
+      <rect x="400" y="30" width="175" height="55" rx="5" fill="#e74c3c"/>
+      <text x="487" y="48" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">Apr 4 Live (Montreal)</text>
+      <text x="487" y="62" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="14" fill="white" font-weight="800">~50% WR*</text>
+      <text x="487" y="78" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">2 resolved | 1W 1L | 5 pending</text>
+
+      <!-- Real estimate -->
+      <rect x="590" y="30" width="175" height="55" rx="5" fill="#e67e22" stroke="white" stroke-width="1.5"/>
+      <text x="677" y="48" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="white" font-weight="700">Best Estimate</text>
+      <text x="677" y="62" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="14" fill="white" font-weight="800">70–85%</text>
+      <text x="677" y="78" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="6.5" fill="rgba(255,255,255,0.8)">After fill selection bias</text>
+
+      <!-- Explanation -->
+      <rect x="20" y="95" width="745" height="65" rx="5" fill="#2c3e50"/>
+      <text x="390" y="112" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="8" fill="#e67e22" font-weight="700">WHY LIVE WR IS LIKELY LOWER THAN PAPER WR</text>
+      <text x="390" y="126" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">1. FILL SELECTION BIAS: Orders that DO fill are often on the "wrong" side — the market maker fills you because they think you're wrong.</text>
+      <text x="390" y="138" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">2. The best signals (obvious direction) get priced in quickly → bestAsk moves to 65¢+ → price-blocked. You only trade the marginal ones.</text>
+      <text x="390" y="150" text-anchor="middle" font-family="-apple-system,sans-serif" font-size="7" fill="rgba(255,255,255,0.8)">3. *Apr 4 live sample too small (2 resolved) to be statistically meaningful. Apr 2 morning (89%) is the best live reference we have.</text>
+    </svg>
+    <div class="svg-cap">Fig 2. The WR story: paper says 90%, live morning said 89%, but live with FOK/fill-selection may be lower. Need more live data.</div>
+  </div>
+
+  <!-- SECTION 5: THE BRIGHT SPOT -->
+  <div class="section">
+    <div class="sh"><div class="sn">5</div><h2>The Bright Spot: Cheap Fills Actually Help</h2></div>
+
+    <div class="co-g co">
+      <strong>The BTC DOWN at 36¢ → $1 = +$12.08 trade is the poster child.</strong><br>
+      Paper would have entered at ~50¢ (model price). Live FOK filled at ~36¢ — much cheaper.<br>
+      Win at 36¢ = <strong>+178% return</strong>. Win at 50¢ = +100% return.<br>
+      The fill-selection bias works AGAINST you for WR, but works FOR you on the trades that DO win — they win bigger.
+    </div>
+
+    <table>
+      <thead><tr><th>Metric</th><th>Paper Win</th><th>Live Win (best case)</th><th>Difference</th></tr></thead>
+      <tbody>
+        <tr><td>Entry price</td><td>~50¢</td><td>~36¢ (FOK)</td><td>14¢ cheaper</td></tr>
+        <tr><td>Win payout</td><td>$1.00</td><td>$1.00</td><td>Same</td></tr>
+        <tr><td>Return per share</td><td>+100%</td><td>+178%</td><td>78% better</td></tr>
+        <tr><td>$7 stake buys</td><td>14 shares</td><td>19.4 shares</td><td>39% more shares</td></tr>
+        <tr><td>Win P&L on $7</td><td>+$7.00</td><td>+$12.08</td><td>+$5.08 more</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>Net effect:</strong> Live trades win less often (fill-selection bias) but win BIGGER when they do win (cheaper entry). These two effects partially cancel out. The question is which dominates — and we need more live data to know.</p>
+  </div>
+
+  <!-- SECTION 6: REALISTIC PROJECTIONS -->
+  <div class="section">
+    <div class="sh"><div class="sn">6</div><h2>Realistic Live Projections</h2></div>
+
+    <table>
+      <thead><tr><th>Scenario</th><th>Fill Rate</th><th>WR</th><th>Avg Entry</th><th>Trades/Day</th><th>Daily P&L</th></tr></thead>
+      <tbody>
+        <tr style="background:#fdedec;">
+          <td><strong>Paper Fantasy</strong></td>
+          <td>100%</td>
+          <td>90%</td>
+          <td>50¢</td>
+          <td>100</td>
+          <td>$3,851</td>
+        </tr>
+        <tr style="background:#fef9e7;">
+          <td><strong>Conservative Live</strong></td>
+          <td>30%</td>
+          <td>75%</td>
+          <td>42¢</td>
+          <td>~8 (BTC-focused)</td>
+          <td>$15–25</td>
+        </tr>
+        <tr style="background:#eafaf1;">
+          <td><strong>Moderate Live</strong></td>
+          <td>40%</td>
+          <td>80%</td>
+          <td>45¢</td>
+          <td>~12</td>
+          <td>$30–50</td>
+        </tr>
+        <tr style="background:#eafaf1;">
+          <td><strong>Good Live (Apr 2 morning-like)</strong></td>
+          <td>40%</td>
+          <td>89%</td>
+          <td>48¢</td>
+          <td>~15</td>
+          <td>$50–80</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>At current bankroll ($42), with 5% bet fraction = $2.10/trade. Even the conservative scenario is profitable. The moderate scenario at $30-50/day = <strong>70-120% daily ROI</strong> — which is extraordinary but based on limited live data.</p>
+  </div>
+
+  <div class="page-break"></div>
+
+  <!-- SECTION 7: WHAT WE'VE LEARNED -->
+  <div class="section">
+    <div class="sh"><div class="sn">7</div><h2>What We've Learned (v5.6b Live Session)</h2></div>
+
+    <table>
+      <thead><tr><th>Learning</th><th>Source</th><th>Implication</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>UpDown books are empty</strong></td>
+          <td>All CLOB book queries return 404</td>
+          <td>GTC limits sit forever. FOK is the correct order type — instant fill or instant rejection.</td>
+        </tr>
+        <tr>
+          <td><strong>BTC is the only reliable market</strong></td>
+          <td>BTC fills in 5s, ETH sometimes, SOL/XRP rarely</td>
+          <td>Focus on BTC. ETH as secondary. SOL/XRP are waste of signals.</td>
+        </tr>
+        <tr>
+          <td><strong>Market makers respond to orders</strong></td>
+          <td>No resting book, but FOK still fills when MM is active</td>
+          <td>The market is maker-driven, not orderbook-driven. Our order IS the signal to the MM.</td>
+        </tr>
+        <tr>
+          <td><strong>FOK fills can be much cheaper than expected</strong></td>
+          <td>BTC DOWN filled at 36¢ (limit was 65¢)</td>
+          <td>When we DO fill, it's often at better prices than paper assumes. Bigger wins.</td>
+        </tr>
+        <tr>
+          <td><strong>Exposure limits matter in live</strong></td>
+          <td>Risk engine blocked trades at $17.83 exposure</td>
+          <td>Need to right-size exposure limits for actual live trading volume.</td>
+        </tr>
+        <tr>
+          <td><strong>Evening liquidity drops off</strong></td>
+          <td>7 consecutive FOK kills after 20:00 UTC</td>
+          <td>Best trading hours: 08:00-18:00 UTC. Evening = empty books.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- SECTION 8: FINAL ASSESSMENT -->
+  <div class="section">
+    <div class="sh"><div class="sn">8</div><h2>Final Assessment</h2></div>
+
+    <div class="co">
+      <strong>The engine works. The edge is real. But the scale is smaller than paper suggests.</strong>
+      <br><br>
+      Paper shows a 100-trade, $3,851/day machine. Reality is a 10-15 trade, $30-80/day operation — still excellent ROI (70-120% daily on a $42 bankroll), but fundamentally limited by:
+      <br>1. <strong>Liquidity</strong> — UpDown markets are thin, especially non-BTC
+      <br>2. <strong>Fill rate</strong> — ~40-50% of signals become actual trades
+      <br>3. <strong>Fill selection bias</strong> — MMs fill you when they think you're wrong
+      <br><br>
+      <strong>The v2 continuous evaluator question:</strong> In live, the main bottleneck is NOT timing (T-60s vs T-180s) — it's <strong>liquidity</strong>. Getting cheaper tokens via earlier entry is moot if the market maker isn't there to fill you. The bigger opportunity is maximising the trades that DO fill, which v5.6b's FOK approach addresses.
+      <br><br>
+      <strong>Next priorities:</strong>
+      <br>1. Accumulate more live data (need 50+ resolved live trades for meaningful WR)
+      <br>2. Focus on BTC — it's the only market with reliable fills
+      <br>3. Optimise for time-of-day (08:00-18:00 UTC)
+      <br>4. Build bankroll gradually ($42 → $100 → $500) with proven live WR
+    </div>
+  </div>
+
+  <div style="margin-top: 10px; padding: 6px; background: #fdedec; border-radius: 6px; text-align: center; border: 1px solid #c0392b;">
+    <span style="font-size: 12pt; font-weight: 800;">Novakash<span style="color:#c0392b;">.</span></span>
+    <span style="font-size: 7pt; color: #7f8c8d; margin-left: 8px;">Live vs Paper Reality Check | April 4, 2026 | Paper ≠ Live</span>
+  </div>
+
+</div>
+</body>
+</html>

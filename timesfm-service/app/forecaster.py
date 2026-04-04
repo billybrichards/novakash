@@ -46,20 +46,22 @@ class TimesFMForecaster:
         start = time.time()
 
         try:
+            import torch
             import timesfm
 
-            self._model = timesfm.TimesFm(
-                hparams=timesfm.TimesFmHparams(
-                    backend="pytorch",
-                    per_core_batch_size=32,
-                    horizon_len=self.max_horizon,
-                    num_layers=20,
-                    use_positional_embedding=False,
-                    context_len=self.max_context,
-                ),
-                checkpoint=timesfm.TimesFmCheckpoint(
-                    huggingface_repo_id=self.model_id,
-                ),
+            torch.set_float32_matmul_precision("high")
+
+            self._model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(
+                self.model_id
+            )
+            self._model.compile(
+                timesfm.ForecastConfig(
+                    max_context=self.max_context,
+                    max_horizon=self.max_horizon,
+                    normalize_inputs=self.normalize_inputs,
+                    use_continuous_quantile_head=self.use_continuous_quantile_head,
+                    force_flip_invariance=True,
+                )
             )
 
             elapsed = time.time() - start
@@ -101,12 +103,11 @@ class TimesFMForecaster:
         context = prices[-self.max_context :]
         prices_np = np.array(context, dtype=np.float32)
 
-        # TimesFM expects list of arrays (batch dimension)
-        # frequency_input: 0 = high-frequency (sub-daily)
+        # TimesFM 2.5 API: forecast(horizon, inputs)
         try:
             point_forecast, quantile_forecasts = self._model.forecast(
+                horizon=horizon,
                 inputs=[prices_np],
-                freq=[0],  # 0 = high frequency (e.g. per-second ticks)
             )
         except Exception as e:
             logger.error(f"Forecast failed: {e}", exc_info=True)

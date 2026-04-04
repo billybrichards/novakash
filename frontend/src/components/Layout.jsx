@@ -13,6 +13,8 @@ import { useApi } from '../hooks/useApi.js';
 
 const NAV_ITEMS = [
   { path: '/dashboard',       label: 'Dashboard',  icon: '📊' },
+  { path: '/timesfm',         label: 'TimesFM',    icon: '🔮', highlight: true },
+  { path: '/indicators',      label: 'Indicators', icon: '📈', highlight: true },
   { path: '/paper',           label: 'Paper',      icon: '📄' },
   { path: '/positions',       label: 'Positions',  icon: '📍' },
   { path: '/trades',          label: 'Trades',     icon: '📋' },
@@ -27,11 +29,11 @@ const NAV_ITEMS = [
 
 // Bottom tab bar items (mobile) — 5 most important
 const TAB_ITEMS = [
-  { path: '/dashboard',       label: 'Home',      icon: '📊' },
-  { path: '/paper',           label: 'Paper',     icon: '📄' },
-  { path: '/positions',       label: 'Positions', icon: '📍' },
-  { path: '/risk',            label: 'Risk',      icon: '🛡️' },
-  { path: '/trading-config',  label: 'Config',    icon: '⚙️' },
+  { path: '/dashboard',   label: 'Home',   icon: '📊' },
+  { path: '/timesfm',     label: 'Fcst',   icon: '🔮' },
+  { path: '/indicators',  label: 'Sigs',   icon: '📈' },
+  { path: '/positions',   label: 'Pos',    icon: '📍' },
+  { path: '/risk',        label: 'Risk',   icon: '🛡️' },
 ];
 
 // ── Config Dropdown ──────────────────────────────────────────────────────────
@@ -314,29 +316,50 @@ export default function Layout() {
 
   const isActive = (path) => location.pathname === path;
 
-  const navLink = (item) => (
-    <Link
-      key={item.path}
-      to={item.path}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 10,
-        padding: '10px 14px',
-        borderRadius: 6,
-        textDecoration: 'none',
-        background: isActive(item.path) ? 'rgba(168,85,247,0.1)' : 'transparent',
-        color: isActive(item.path) ? '#a855f7' : 'rgba(255,255,255,0.45)',
-        borderLeft: `2px solid ${isActive(item.path) ? '#a855f7' : 'transparent'}`,
-        transition: 'all 150ms ease-out',
-        fontSize: 13,
-        minHeight: 44,
-      }}
-    >
-      <span style={{ fontSize: 15, lineHeight: 1 }}>{item.icon}</span>
-      <span>{item.label}</span>
-    </Link>
-  );
+  const navLink = (item) => {
+    const active = isActive(item.path);
+    // TimesFM / Indicators get a cyan accent when not active
+    const accentColor = item.highlight ? '#06b6d4' : '#a855f7';
+    return (
+      <Link
+        key={item.path}
+        to={item.path}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          padding: '10px 14px',
+          borderRadius: 6,
+          textDecoration: 'none',
+          background: active
+            ? `${accentColor}18`
+            : item.highlight
+            ? 'rgba(6,182,212,0.04)'
+            : 'transparent',
+          color: active ? accentColor : item.highlight ? 'rgba(6,182,212,0.7)' : 'rgba(255,255,255,0.45)',
+          borderLeft: `2px solid ${active ? accentColor : item.highlight ? 'rgba(6,182,212,0.2)' : 'transparent'}`,
+          transition: 'all 150ms ease-out',
+          fontSize: 13,
+          minHeight: 44,
+        }}
+      >
+        <span style={{ fontSize: 15, lineHeight: 1 }}>{item.icon}</span>
+        <span>{item.label}</span>
+        {item.highlight && !active && (
+          <span style={{
+            marginLeft: 'auto',
+            fontSize: 8,
+            fontFamily: 'IBM Plex Mono, monospace',
+            color: 'rgba(6,182,212,0.4)',
+            letterSpacing: '0.06em',
+            border: '1px solid rgba(6,182,212,0.2)',
+            borderRadius: 3,
+            padding: '1px 4px',
+          }}>NEW</span>
+        )}
+      </Link>
+    );
+  };
 
   return (
     <div style={{ background: 'var(--bg, #07070c)', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>

@@ -18,6 +18,8 @@ import Risk from './pages/Risk.jsx';
 import Learn from './pages/Learn.jsx';
 import Changelog from './pages/Changelog.jsx';
 import PlaywrightDashboard from './pages/PlaywrightDashboard.jsx';
+import TimesFM from './pages/TimesFM.jsx';
+import Indicators from './pages/Indicators.jsx';
 
 export default function App() {
   return (
@@ -52,6 +54,8 @@ export default function App() {
             <Route path="learn" element={<Learn />} />
             <Route path="changelog" element={<Changelog />} />
             <Route path="playwright" element={<PlaywrightDashboard />} />
+            <Route path="timesfm" element={<TimesFM />} />
+            <Route path="indicators" element={<Indicators />} />
           </Route>
 
           {/* 404 fallback */}
