@@ -118,7 +118,7 @@ app.add_middleware(
 
 async def _forecast_refresh_loop() -> None:
     """Refresh the forecast cache every 10 seconds and broadcast to WS clients."""
-    global _forecast_cache
+    global _forecast_cache, _forecast_ws_clients
 
     while True:
         try:
@@ -199,6 +199,7 @@ async def get_forecast() -> ForecastResponse:
     Returns the latest cached forecast (refreshed every 10s).
     Uses live BTC prices from Binance.
     """
+    global _forecast_cache
     async with _forecast_lock:
         cached = _forecast_cache
 
@@ -273,6 +274,7 @@ async def ws_forecast(websocket: WebSocket) -> None:
     WebSocket: streams the latest forecast every 10 seconds.
     Sends the cached value immediately on connect, then updates.
     """
+    global _forecast_cache, _forecast_ws_clients
     await websocket.accept()
     _forecast_ws_clients.add(websocket)
     logger.info(f"WS /forecast client connected. Total: {len(_forecast_ws_clients)}")

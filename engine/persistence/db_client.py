@@ -476,12 +476,34 @@ class DBClient:
                         pnl_usd DOUBLE PRECISION,
                         poly_winner VARCHAR(10),
                         btc_price DOUBLE PRECISION,
+                        -- TWAP data (v5.7)
+                        twap_delta_pct DOUBLE PRECISION,
+                        twap_direction VARCHAR(4),
+                        twap_gamma_agree BOOLEAN,
+                        twap_agreement_score INTEGER,
+                        twap_confidence_boost DOUBLE PRECISION,
+                        twap_n_ticks INTEGER,
+                        twap_stability DOUBLE PRECISION,
                         created_at TIMESTAMPTZ DEFAULT NOW(),
                         UNIQUE(window_ts, asset, timeframe)
                     );
                     CREATE INDEX IF NOT EXISTS idx_ws_ts ON window_snapshots(window_ts);
                     CREATE INDEX IF NOT EXISTS idx_ws_regime ON window_snapshots(regime);
                 """)
+                # Safe migration: add TWAP columns if table already exists (v5.7)
+                for col, col_type in [
+                    ("twap_delta_pct", "DOUBLE PRECISION"),
+                    ("twap_direction", "VARCHAR(4)"),
+                    ("twap_gamma_agree", "BOOLEAN"),
+                    ("twap_agreement_score", "INTEGER"),
+                    ("twap_confidence_boost", "DOUBLE PRECISION"),
+                    ("twap_n_ticks", "INTEGER"),
+                    ("twap_stability", "DOUBLE PRECISION"),
+                ]:
+                    try:
+                        await conn.execute(f"ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS {col} {col_type}")
+                    except Exception:
+                        pass  # Column already exists or not supported
             log.info("db.window_tables_ensured")
         except Exception as exc:
             log.error("db.ensure_window_tables_failed", error=str(exc))
@@ -515,12 +537,16 @@ class DBClient:
                         cg_taker_buy_usd, cg_taker_sell_usd, cg_funding_rate,
                         direction, confidence, cg_modifier,
                         trade_placed, skip_reason,
-                        outcome, pnl_usd, poly_winner, btc_price
+                        outcome, pnl_usd, poly_winner, btc_price,
+                        twap_delta_pct, twap_direction, twap_gamma_agree,
+                        twap_agreement_score, twap_confidence_boost,
+                        twap_n_ticks, twap_stability
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,
                         $9,$10,$11,$12,$13,$14,$15,$16,$17,
                         $18,$19,$20,$21,$22,$23,
-                        $24,$25,$26,$27,$28,$29,$30,$31,$32
+                        $24,$25,$26,$27,$28,$29,$30,$31,$32,
+                        $33,$34,$35,$36,$37,$38,$39
                     )
                     ON CONFLICT (window_ts, asset, timeframe) DO NOTHING
                     """,
@@ -556,6 +582,13 @@ class DBClient:
                     snapshot.get("pnl_usd"),
                     snapshot.get("poly_winner"),
                     snapshot.get("btc_price"),
+                    snapshot.get("twap_delta_pct"),
+                    snapshot.get("twap_direction"),
+                    snapshot.get("twap_gamma_agree"),
+                    snapshot.get("twap_agreement_score"),
+                    snapshot.get("twap_confidence_boost"),
+                    snapshot.get("twap_n_ticks"),
+                    snapshot.get("twap_stability"),
                 )
             log.debug(
                 "db.window_snapshot_written",
