@@ -305,67 +305,69 @@ function WindowTimeline({ windows, selectedTs, onSelect }) {
               title={`Legacy: ${tradeLabel}${w.skip_reason ? ' — ' + w.skip_reason : ''}\nv7.1: ${v71Trade}${w.v71_regime ? ' (' + w.v71_regime + ')' : ''}${w.v71_skip_reason ? ' — ' + w.v71_skip_reason : ''}`}
             >
               {/* Time */}
-              <div style={{ fontSize: 9, color: T.label }}>{time}</div>
+              <div style={{ fontSize: 10, color: T.label, fontWeight: 600 }}>{time}</div>
 
-              {/* Dual decision: legacy / v7.1 */}
+              {/* Signal: our prediction direction */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                <span style={{ fontSize: 7, color: T.label2 }}>SIG</span>
+                {prediction ? (
+                  <span style={{ fontSize: 13, fontWeight: 700, color: directionColor(prediction) }}>
+                    {prediction === 'UP' ? '▲' : '▼'}
+                  </span>
+                ) : (
+                  <span style={{ fontSize: 10, color: T.label }}>—</span>
+                )}
+              </div>
+
+              {/* Outcome: what actually happened */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+                <span style={{ fontSize: 7, color: T.label2 }}>OUT</span>
+                {actualDirection ? (
+                  <span style={{
+                    fontSize: 13, fontWeight: 700,
+                    color: predCorrect ? T.profit : T.loss,
+                  }}>
+                    {actualDirection === 'UP' ? '▲' : '▼'}{predCorrect ? '✓' : '✗'}
+                  </span>
+                ) : (
+                  <span style={{ fontSize: 9, color: T.label }}>…</span>
+                )}
+              </div>
+
+              {/* v7.1 Decision — clear label */}
               <div style={{
-                display: 'flex',
-                gap: 2,
+                padding: '2px 5px',
+                borderRadius: 3,
                 fontSize: 8,
                 fontWeight: 700,
                 letterSpacing: '0.04em',
+                background: w.v71_would_trade 
+                  ? (w.v71_correct === true ? 'rgba(74,222,128,0.2)' : w.v71_correct === false ? 'rgba(248,113,113,0.2)' : 'rgba(168,85,247,0.15)')
+                  : 'rgba(255,255,255,0.05)',
+                color: w.v71_would_trade
+                  ? (w.v71_correct === true ? '#22c55e' : w.v71_correct === false ? '#ef4444' : '#a855f7')
+                  : T.label,
+                border: `1px solid ${w.v71_would_trade ? 'rgba(168,85,247,0.3)' : 'rgba(255,255,255,0.08)'}`,
               }}>
-                <span style={{ color: labelColor }}>{tradeLabel}</span>
-                <span style={{ color: '#999' }}>/</span>
-                <span style={{ color: v71Color }}>{v71Trade}</span>
+                {w.v71_would_trade 
+                  ? (w.v71_correct === true ? '7.1 ✅' : w.v71_correct === false ? '7.1 ❌' : '7.1 📊')
+                  : '7.1 ⏭'}
               </div>
 
-              {/* Regime badge (v7.1 only) */}
-              {w.v71_regime && (
+              {/* Traded badge — did we actually place? */}
+              {w.trade_placed && (
                 <div style={{
-                  fontSize: 7,
-                  fontWeight: 700,
-                  color: w.v71_regime === 'CASCADE' ? T.profit : w.v71_regime === 'TRANSITION' ? T.warning : T.label2,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.04em',
-                  background: 'rgba(168,85,247,0.1)',
                   padding: '1px 4px',
-                  borderRadius: 2,
+                  borderRadius: 3,
+                  fontSize: 7,
+                  fontWeight: 800,
+                  background: 'rgba(34,197,94,0.15)',
+                  color: '#22c55e',
+                  border: '1px solid rgba(34,197,94,0.3)',
+                  letterSpacing: '0.06em',
                 }}>
-                  {w.v71_regime}
+                  💰 TRADED
                 </div>
-              )}
-
-              {/* Prediction direction — prominent */}
-              {prediction ? (
-                <div style={{
-                  fontSize: 14,
-                  fontWeight: 700,
-                  color: directionColor(prediction),
-                  lineHeight: 1,
-                }}>
-                  {prediction === 'UP' ? '▲' : '▼'}
-                </div>
-              ) : (
-                <div style={{ fontSize: 14, color: T.label, lineHeight: 1 }}>—</div>
-              )}
-
-              {/* Actual outcome — colored green/red + emoji */}
-              {actualDirection ? (
-                <div style={{
-                  fontSize: 11,
-                  fontWeight: 700,
-                  color: predCorrect ? T.profit : T.loss,
-                  lineHeight: 1,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 2,
-                }}>
-                  {actualDirection === 'UP' ? '▲' : '▼'}
-                  <span style={{ fontSize: 9 }}>{predCorrect ? '✅' : '❌'}</span>
-                </div>
-              ) : (
-                <div style={{ fontSize: 9, color: T.label }}>pending</div>
               )}
             </button>
           );
