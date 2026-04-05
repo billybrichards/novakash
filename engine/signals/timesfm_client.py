@@ -92,12 +92,16 @@ class TimesFMClient:
         self._consecutive_errors: int = 0
         self._log = log.bind(component="timesfm_client")
 
-    async def get_forecast(self, open_price: float = 0.0) -> TimesFMForecast:
+    async def get_forecast(self, open_price: float = 0.0, seconds_to_close: int = 0) -> TimesFMForecast:
         """
-        Fetch the latest cached forecast from the TimesFM service.
+        Fetch a forecast from the TimesFM service.
 
         Args:
-            open_price: Window open price — used to compute delta_vs_open_pct.
+            open_price:       Window open price — used to compute delta_vs_open_pct.
+            seconds_to_close: Seconds until the 5-min window closes.
+                              If >0, requests a horizon-specific forecast (predicts
+                              price at window close, not 60s from now).
+                              If 0, returns the background-cached forecast.
 
         Returns:
             TimesFMForecast with direction, confidence, etc.
@@ -105,8 +109,8 @@ class TimesFMClient:
         """
         now = time.time()
 
-        # Return cache if fresh
-        if self._cached and (now - self._cached_at) < self._cache_ttl:
+        # Only use cache for default (non-window-specific) requests
+        if seconds_to_close <= 0 and self._cached and (now - self._cached_at) < self._cache_ttl:
             result = self._cached
             result.is_stale = False
             if open_price > 0:
@@ -116,11 +120,15 @@ class TimesFMClient:
                 )
             return result
 
-        # Fetch fresh forecast
+        # Fetch forecast — with horizon if window-specific
         t0 = time.time()
         try:
+            params = {}
+            if seconds_to_close > 0:
+                params["horizon"] = max(1, min(seconds_to_close, 600))
+
             async with aiohttp.ClientSession(timeout=self._timeout) as session:
-                async with session.get(f"{self._base_url}/forecast") as resp:
+                async with session.get(f"{self._base_url}/forecast", params=params) as resp:
                     latency_ms = (time.time() - t0) * 1000
 
                     if resp.status != 200:
@@ -155,8 +163,16 @@ class TimesFMClient:
             if open_price > 0 and predicted_close > 0:
                 delta_vs_open = (predicted_close - open_price) / open_price * 100
 
+            # Direction: use window open price if available (more accurate than
+            # the service's direction which compares against buffer[0] ~34min ago)
+            _svc_direction = data.get("direction", "")
+            if open_price > 0 and predicted_close > 0:
+                _direction = "UP" if predicted_close > open_price else "DOWN"
+            else:
+                _direction = _svc_direction
+
             result = TimesFMForecast(
-                direction=data.get("direction", ""),
+                direction=_direction,
                 confidence=float(data.get("confidence", 0)),
                 predicted_close=predicted_close,
                 spread=spread,

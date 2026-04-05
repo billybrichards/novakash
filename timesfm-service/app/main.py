@@ -131,7 +131,7 @@ async def _forecast_refresh_loop() -> None:
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                None, lambda: _forecaster.forecast(prices, horizon=60)
+                None, lambda: _forecaster.forecast(prices, horizon=300)
             )
 
             async with _forecast_lock:
@@ -194,12 +194,35 @@ async def health() -> HealthResponse:
 
 
 @app.get("/forecast", response_model=ForecastResponse)
-async def get_forecast() -> ForecastResponse:
+async def get_forecast(horizon: int = 0) -> ForecastResponse:
     """
-    Returns the latest cached forecast (refreshed every 10s).
-    Uses live BTC prices from Binance.
+    Returns the latest forecast.
+
+    Args:
+        horizon: Forecast horizon in seconds/steps. If 0 (default), returns
+                 the 1s background cache (horizon=300, full window).
+                 If >0, runs a fresh inference with that exact horizon.
+                 Use this to predict price at a specific window close:
+                   horizon = window_close_ts - now_ts
     """
     global _forecast_cache
+
+    # Custom horizon: run fresh inference (not cached)
+    if horizon > 0:
+        prices = _price_feed.get_prices()
+        if len(prices) < 10:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Not enough price data yet. Buffer has {len(prices)} ticks (need 10+).",
+            )
+        h = max(1, min(horizon, 600))  # clamp to 1-600 steps
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, lambda: _forecaster.forecast(prices, horizon=h)
+        )
+        return _build_forecast_response(result)
+
+    # Default: return background cache
     async with _forecast_lock:
         cached = _forecast_cache
 
@@ -210,10 +233,9 @@ async def get_forecast() -> ForecastResponse:
                 status_code=503,
                 detail=f"Not enough price data yet. Buffer has {len(prices)} ticks (need 10+).",
             )
-        # Run forecast immediately if cache is cold
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, lambda: _forecaster.forecast(prices, horizon=60)
+            None, lambda: _forecaster.forecast(prices, horizon=300)
         )
         async with _forecast_lock:
             _forecast_cache = result

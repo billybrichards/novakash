@@ -270,7 +270,13 @@ class FiveMinVPINStrategy(BaseStrategy):
         timesfm_forecast: Optional[TimesFMForecast] = None
         if self._timesfm:
             try:
-                timesfm_forecast = await self._timesfm.get_forecast(open_price=open_price)
+                # Calculate seconds until this window closes
+                _window_close_ts = window.window_ts + window.duration_secs
+                _seconds_to_close = max(1, int(_window_close_ts - time.time()))
+                timesfm_forecast = await self._timesfm.get_forecast(
+                    open_price=open_price,
+                    seconds_to_close=_seconds_to_close,
+                )
                 if timesfm_forecast and not timesfm_forecast.error:
                     self._log.info(
                         "evaluate.timesfm_forecast",
