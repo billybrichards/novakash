@@ -743,14 +743,28 @@ class Orchestrator:
                 pass
 
     async def _timesfm_forecast_recorder_loop(self) -> None:
-        """Every 1s: fetch fresh TimesFM forecast and record to ticks_timesfm."""
+        """Every 1s: fetch TimesFM forecast with window-relative horizon and record."""
+        import math
         while not self._shutdown_event.is_set():
             try:
-                forecast = await self._timesfm_client.get_forecast()
+                now = time.time()
+                # Calculate current 5-min window context
+                window_ts = int(now // 300) * 300  # current window open (aligned to 300s)
+                window_close_ts = window_ts + 300
+                seconds_to_close = max(1, int(window_close_ts - now))
+
+                # Fetch with window-specific horizon
+                forecast = await self._timesfm_client.get_forecast(
+                    seconds_to_close=seconds_to_close,
+                )
                 if forecast and not forecast.error:
                     asyncio.create_task(
                         self._tick_recorder.record_timesfm_forecast(
-                            forecast, asset="BTC", window_ts=None,
+                            forecast,
+                            asset="BTC",
+                            window_ts=window_ts,
+                            window_close_ts=window_close_ts,
+                            seconds_to_close=seconds_to_close,
                         )
                     )
             except Exception as exc:

@@ -143,6 +143,9 @@ class TickRecorder:
                         ts               TIMESTAMPTZ NOT NULL,
                         asset            VARCHAR(10)  NOT NULL,
                         window_ts        BIGINT,
+                        window_close_ts  BIGINT,
+                        seconds_to_close INTEGER,
+                        horizon          INTEGER,
                         direction        VARCHAR(4),
                         confidence       FLOAT8,
                         predicted_close  FLOAT8,
@@ -159,7 +162,20 @@ class TickRecorder:
                         ON ticks_timesfm (ts DESC);
                     CREATE INDEX IF NOT EXISTS idx_ticks_timesfm_asset_ts
                         ON ticks_timesfm (asset, ts DESC);
+                    CREATE INDEX IF NOT EXISTS idx_ticks_timesfm_window
+                        ON ticks_timesfm (window_ts, seconds_to_close);
                 """)
+
+                # Safe migration: add new columns if table already exists
+                for col, col_type in [
+                    ("window_close_ts", "BIGINT"),
+                    ("seconds_to_close", "INTEGER"),
+                    ("horizon", "INTEGER"),
+                ]:
+                    try:
+                        await conn.execute(f"ALTER TABLE ticks_timesfm ADD COLUMN IF NOT EXISTS {col} {col_type}")
+                    except Exception:
+                        pass
 
             log.info("tick_recorder.tables_ensured")
         except Exception as exc:
@@ -328,6 +344,8 @@ class TickRecorder:
         forecast: Any,
         asset: str = "BTC",
         window_ts: Optional[int] = None,
+        window_close_ts: Optional[int] = None,
+        seconds_to_close: Optional[int] = None,
     ) -> None:
         """
         Write a TimesFM forecast to ticks_timesfm.
@@ -335,29 +353,36 @@ class TickRecorder:
         Fire-and-forget — never blocks or raises.
 
         Args:
-            forecast:  TimesFMForecast dataclass
-            asset:     e.g. "BTC"
-            window_ts: Window Unix timestamp (optional)
+            forecast:         TimesFMForecast dataclass
+            asset:            e.g. "BTC"
+            window_ts:        Window open Unix timestamp
+            window_close_ts:  Window close Unix timestamp
+            seconds_to_close: Seconds remaining until window close (= horizon used)
         """
         if not self._pool:
             return
         try:
             ts = datetime.now(timezone.utc)
+            _horizon = getattr(forecast, "horizon", None) or seconds_to_close
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     """
                     INSERT INTO ticks_timesfm (
-                        ts, asset, window_ts,
+                        ts, asset, window_ts, window_close_ts,
+                        seconds_to_close, horizon,
                         direction, confidence, predicted_close,
                         spread, p10, p50, p90,
                         delta_vs_open, fetch_latency_ms, is_stale
                     ) VALUES (
-                        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
+                        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
                     )
                     """,
                     ts,
                     asset,
                     window_ts,
+                    window_close_ts,
+                    seconds_to_close,
+                    _horizon,
                     getattr(forecast, "direction", None),
                     _fv(forecast, "confidence"),
                     _fv(forecast, "predicted_close"),
