@@ -358,6 +358,11 @@ class FiveMinVPINStrategy(BaseStrategy):
             "twap_gamma_gate": twap_result.gamma_gate if twap_result else None,
             "twap_should_skip": twap_result.should_skip if twap_result else None,
             "twap_skip_reason": twap_result.skip_reason if twap_result else None,
+            # Gamma market prices (from Polymarket token prices)
+            "market_best_bid": window.up_price if window.up_price else None,
+            "market_best_ask": window.down_price if window.down_price else None,
+            "market_mid_price": (window.up_price + window.down_price) / 2 if (window.up_price and window.down_price) else None,
+            "market_spread": abs(window.up_price - window.down_price) if (window.up_price and window.down_price) else None,
             "skip_reason": None if signal else (
                 f"VPIN {current_vpin:.3f} < gate {_runtime.five_min_vpin_gate} — not enough informed trading detected to justify entry"
                 if current_vpin < _runtime.five_min_vpin_gate
