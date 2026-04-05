@@ -139,6 +139,8 @@ class RuntimeConfig:
         self.five_min_min_delta_pct: float = _env_float("FIVE_MIN_MIN_DELTA_PCT", 0.08)
         self.five_min_cascade_min_delta_pct: float = _env_float("FIVE_MIN_CASCADE_MIN_DELTA_PCT", 0.03)
         self.five_min_vpin_gate: float = _env_float("FIVE_MIN_VPIN_GATE", 0.45)
+        self.five_min_max_entry_price: float = _env_float("FIVE_MIN_MAX_ENTRY_PRICE", 0.70)
+        self.fifteen_min_max_entry_price: float = _env_float("FIFTEEN_MIN_MAX_ENTRY_PRICE", 0.70)
 
         # ── Window ────────────────────────────────────────────────────────
         self.poly_window_seconds: int = _env_int("POLY_WINDOW_SECONDS", 300)

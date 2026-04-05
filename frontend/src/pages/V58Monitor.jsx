@@ -302,7 +302,7 @@ function WindowTimeline({ windows, selectedTs, onSelect }) {
                 minWidth: 68,
                 flexShrink: 0,
               }}
-              title={`Legacy: ${tradeLabel} | v7.1: ${v71Trade}${w.v71_regime ? ' (' + w.v71_regime + ')' : ''}`}
+              title={`Legacy: ${tradeLabel}${w.skip_reason ? ' — ' + w.skip_reason : ''}\nv7.1: ${v71Trade}${w.v71_regime ? ' (' + w.v71_regime + ')' : ''}${w.v71_skip_reason ? ' — ' + w.v71_skip_reason : ''}`}
             >
               {/* Time */}
               <div style={{ fontSize: 9, color: T.label }}>{time}</div>
@@ -464,7 +464,37 @@ function SignalSourcesPanel({ window: w }) {
             color: T.label2,
             fontSize: 10,
           }}>
-            Skip: {w.skip_reason}
+            <span style={{ color: '#666', fontWeight: 600 }}>[LEGACY]</span> Skip: {w.skip_reason}
+          </div>
+        )}
+        {w.v71_skip_reason && (
+          <div style={{
+            padding: '4px 10px',
+            borderRadius: 6,
+            background: 'rgba(168,85,247,0.06)',
+            border: '1px solid rgba(168,85,247,0.2)',
+            color: '#c084fc',
+            fontSize: 10,
+          }}>
+            <span style={{ fontWeight: 600 }}>[v7.1]</span> Skip: {w.v71_skip_reason}
+          </div>
+        )}
+        {w.v71_would_trade && !w.v71_skip_reason && (
+          <div style={{
+            padding: '4px 10px',
+            borderRadius: 6,
+            background: 'rgba(168,85,247,0.06)',
+            border: '1px solid rgba(168,85,247,0.2)',
+            color: '#a855f7',
+            fontSize: 10,
+            fontWeight: 600,
+          }}>
+            [v7.1] ✅ TRADE — {w.v71_regime || 'NORMAL'} regime
+            {w.v71_correct !== null && w.v71_correct !== undefined && (
+              <span style={{ color: w.v71_correct ? '#22c55e' : '#ef4444', marginLeft: 8 }}>
+                {w.v71_correct ? '✓ WIN' : '✗ LOSS'}{w.v71_pnl ? ` (${w.v71_pnl > 0 ? '+' : ''}$${w.v71_pnl.toFixed(2)})` : ''}
+              </span>
+            )}
           </div>
         )}
       </div>

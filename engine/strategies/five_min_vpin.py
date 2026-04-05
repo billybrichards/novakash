@@ -1500,7 +1500,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         
         # Use Gamma bestAsk if available and within cap, else model price
         is_15m = "15m" in _slug
-        _max_price = 0.70 if is_15m else 0.65
+        _max_price = runtime.fifteen_min_max_entry_price if is_15m else runtime.five_min_max_entry_price
         
         # FOK PRICING (v5.5b): Buy at whatever the market offers, up to our cap
         # FOK order at cap price → fills at best available (could be much cheaper)
@@ -1594,7 +1594,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             # Calculate size in shares using real market price
             _shares = stake / float(price) if float(price) > 0 else 0
             is_15m = "15m" in market_slug
-            _rfq_cap = 0.70 if is_15m else 0.65
+            _rfq_cap = runtime.fifteen_min_max_entry_price if is_15m else runtime.five_min_max_entry_price
             
             try:
                 rfq_id, rfq_price = await self._poly.place_rfq_order(
