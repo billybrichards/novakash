@@ -1433,7 +1433,7 @@ class Orchestrator:
         log.info("manual_trade_poller.started")
         while not self._shutdown_event.is_set():
             try:
-                await asyncio.sleep(5)  # Poll every 5 seconds
+                await asyncio.sleep(1)  # Poll every 1 second — trades are time-sensitive
                 if not self._db or not self._poly_client:
                     continue
                 

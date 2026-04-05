@@ -777,6 +777,55 @@ async def _fetch_gamma_prices(window_ts: Optional[int]) -> dict:
 
 # ─── Manual Trade Endpoints ───────────────────────────────────────────────────
 
+@router.get("/v58/live-prices")
+async def get_live_prices(
+    window_ts: Optional[int] = None,
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    Fetch real-time Gamma prices for the trade preview.
+    Returns UP/DOWN prices, spread, and what-if P&L at $4 stake.
+    Called by the frontend every 2s to keep the preview fresh.
+    """
+    gamma = await _fetch_gamma_prices(window_ts)
+    up = gamma.get("up_price")
+    down = gamma.get("down_price")
+
+    stake = 4.0
+    fee_mult = 0.98  # 2% Polymarket fee
+
+    result = {
+        "up_price": up,
+        "down_price": down,
+        "spread": round(abs(up - down), 4) if up and down else None,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # What-if for UP bet
+    if up and up > 0:
+        result["up_bet"] = {
+            "entry": round(up, 4),
+            "stake": stake,
+            "shares": round(stake / up, 2),
+            "win_pnl": round((1.0 - up) * stake * fee_mult, 2),
+            "loss_pnl": round(-up * stake, 2),
+            "breakeven_pct": round(up * 100, 1),
+        }
+
+    # What-if for DOWN bet
+    if down and down > 0:
+        result["down_bet"] = {
+            "entry": round(down, 4),
+            "stake": stake,
+            "shares": round(stake / down, 2),
+            "win_pnl": round((1.0 - down) * stake * fee_mult, 2),
+            "loss_pnl": round(-down * stake, 2),
+            "breakeven_pct": round(down * 100, 1),
+        }
+
+    return result
+
+
 @router.post("/v58/manual-trade")
 async def post_manual_trade(
     body: ManualTradeRequest,

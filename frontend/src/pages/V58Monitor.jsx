@@ -1562,16 +1562,41 @@ function SignalSourceCards({ outcome }) {
 
 function TradeButtons({ latestWindow, onTradeSuccess }) {
   const api = useApi();
-  const [placing, setPlacing] = useState(null); // 'paper' | 'live' | null
+  const [placing, setPlacing] = useState(null);
   const [lastResult, setLastResult] = useState(null);
   const [error, setError] = useState(null);
   const [showLiveConfirm, setShowLiveConfirm] = useState(false);
+  const [livePrices, setLivePrices] = useState(null);
+  const [priceAge, setPriceAge] = useState(0);
 
+  // Poll live Gamma prices every 2 seconds
+  useEffect(() => {
+    let interval;
+    const fetchPrices = async () => {
+      try {
+        const ts = latestWindow?.window_ts ? new Date(latestWindow.window_ts).getTime() : null;
+        const r = await api('GET', `/v58/live-prices${ts ? `?window_ts=${ts}` : ''}`);
+        if (r?.data) {
+          setLivePrices(r.data);
+          setPriceAge(0);
+        }
+      } catch {}
+    };
+    fetchPrices();
+    interval = setInterval(fetchPrices, 2000);
+    const ageInterval = setInterval(() => setPriceAge(a => a + 1), 1000);
+    return () => { clearInterval(interval); clearInterval(ageInterval); };
+  }, [latestWindow?.window_ts]);
+
+  // Use live prices if available, fall back to snapshot
+  const gammaUp = livePrices?.up_price ?? latestWindow?.gamma_up_price;
+  const gammaDown = livePrices?.down_price ?? latestWindow?.gamma_down_price;
   const currentDirection = latestWindow?.direction;
-  const gammaUp = latestWindow?.gamma_up_price;
-  const gammaDown = latestWindow?.gamma_down_price;
   const entryPrice = currentDirection === 'UP' ? gammaUp : gammaDown;
   const gammaStr = entryPrice != null ? `@$${entryPrice.toFixed(3)}` : '';
+  const upBet = livePrices?.up_bet;
+  const downBet = livePrices?.down_bet;
+  const activeBet = currentDirection === 'UP' ? upBet : downBet;
 
   // Get window_ts as unix ms
   const getWindowTs = () => {
@@ -1605,48 +1630,121 @@ function TradeButtons({ latestWindow, onTradeSuccess }) {
 
   return (
     <div style={{ fontFamily: T.mono }}>
-      {/* Current signal summary */}
+      {/* Real-time trade preview */}
       <div style={{
-        padding: '10px 14px',
+        padding: '12px 14px',
         borderRadius: 8,
-        background: 'rgba(0,0,0,0.25)',
-        border: `1px solid ${T.border}`,
+        background: 'rgba(0,0,0,0.3)',
+        border: `1px solid ${livePrices ? 'rgba(74,222,128,0.3)' : T.border}`,
         marginBottom: 14,
       }}>
-        <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>
-          Signal for Current Window
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+            ⚡ LIVE TRADE PREVIEW
+          </div>
+          <div style={{
+            fontSize: 9, padding: '2px 6px', borderRadius: 4,
+            background: priceAge <= 3 ? 'rgba(74,222,128,0.2)' : 'rgba(251,191,36,0.2)',
+            color: priceAge <= 3 ? T.profit : T.warning,
+          }}>
+            {priceAge <= 3 ? '🟢 LIVE' : `🟡 ${priceAge}s ago`}
+          </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-          <div>
+
+        {/* Direction + Entry */}
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
+          <div style={{ minWidth: 70 }}>
             <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>Direction</div>
             <div style={{
-              fontSize: 16, fontWeight: 700,
+              fontSize: 18, fontWeight: 700,
               color: currentDirection ? directionColor(currentDirection) : T.label,
             }}>
               {currentDirection ? (currentDirection === 'UP' ? '▲ UP' : '▼ DOWN') : '—'}
             </div>
           </div>
-          {entryPrice != null && (
-            <div>
-              <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>Entry Price</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: '#fff' }}>
-                ${entryPrice.toFixed(3)}
-              </div>
+          <div style={{ minWidth: 70 }}>
+            <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>Entry Price</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: '#fff' }}>
+              {entryPrice != null ? `$${entryPrice.toFixed(3)}` : '—'}
             </div>
-          )}
+          </div>
           <div>
             <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>Stake</div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: T.warning }}>$4.00</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: T.warning }}>$4.00</div>
           </div>
-          {gammaUp != null && gammaDown != null && (
+          {activeBet && (
             <div>
-              <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>Gamma ↑/↓</div>
-              <div style={{ fontSize: 12, color: T.warning }}>
-                ${gammaUp.toFixed(3)} / ${gammaDown.toFixed(3)}
-              </div>
+              <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>Shares</div>
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#fff' }}>{activeBet.shares}</div>
             </div>
           )}
         </div>
+
+        {/* P&L Preview */}
+        {activeBet && (
+          <div style={{
+            display: 'flex', gap: 12, padding: '8px 10px', borderRadius: 6,
+            background: 'rgba(0,0,0,0.3)', border: `1px solid ${T.border}`,
+          }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>IF WIN ✅</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: T.profit }}>
+                +${activeBet.win_pnl.toFixed(2)}
+              </div>
+              <div style={{ fontSize: 9, color: T.label }}>
+                +{((activeBet.win_pnl / 4) * 100).toFixed(0)}% return
+              </div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>IF LOSS ❌</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: T.loss }}>
+                ${activeBet.loss_pnl.toFixed(2)}
+              </div>
+              <div style={{ fontSize: 9, color: T.label }}>
+                -{activeBet.breakeven_pct}% to break even
+              </div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>R:R</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: '#fff' }}>
+                {Math.abs(activeBet.loss_pnl) > 0
+                  ? `1:${(activeBet.win_pnl / Math.abs(activeBet.loss_pnl)).toFixed(1)}`
+                  : '—'}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Gamma prices */}
+        {gammaUp != null && gammaDown != null && (
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <div style={{
+              flex: 1, padding: '4px 8px', borderRadius: 4, fontSize: 10, textAlign: 'center',
+              background: currentDirection === 'UP' ? 'rgba(74,222,128,0.12)' : 'rgba(0,0,0,0.2)',
+              border: currentDirection === 'UP' ? '1px solid rgba(74,222,128,0.3)' : `1px solid ${T.border}`,
+              color: currentDirection === 'UP' ? T.profit : T.label,
+            }}>
+              ▲ UP ${gammaUp.toFixed(3)}
+            </div>
+            <div style={{
+              flex: 1, padding: '4px 8px', borderRadius: 4, fontSize: 10, textAlign: 'center',
+              background: currentDirection === 'DOWN' ? 'rgba(248,113,113,0.12)' : 'rgba(0,0,0,0.2)',
+              border: currentDirection === 'DOWN' ? '1px solid rgba(248,113,113,0.3)' : `1px solid ${T.border}`,
+              color: currentDirection === 'DOWN' ? T.loss : T.label,
+            }}>
+              ▼ DOWN ${gammaDown.toFixed(3)}
+            </div>
+            {livePrices?.spread != null && (
+              <div style={{
+                padding: '4px 8px', borderRadius: 4, fontSize: 10,
+                background: 'rgba(0,0,0,0.2)', border: `1px solid ${T.border}`,
+                color: T.label, textAlign: 'center',
+              }}>
+                Spread: {(livePrices.spread * 100).toFixed(1)}%
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Buttons */}
