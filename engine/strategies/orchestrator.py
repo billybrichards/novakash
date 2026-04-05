@@ -62,6 +62,7 @@ from strategies.sub_dollar_arb import SubDollarArbStrategy
 from strategies.vpin_cascade import VPINCascadeStrategy
 from strategies.five_min_vpin import FiveMinVPINStrategy
 from strategies.timesfm_only import TimesFMOnlyStrategy
+from strategies.timesfm_multi_entry import TimesFMMultiEntryStrategy
 from signals.twap_delta import TWAPTracker
 from signals.timesfm_client import TimesFMClient
 
@@ -90,6 +91,7 @@ class Orchestrator:
         # ── TimesFM Client (v6.0, initialized early for FiveMinVPIN alerts) ──
         self._timesfm_client: Optional[TimesFMClient] = None
         self._timesfm_strategy: Optional[TimesFMOnlyStrategy] = None
+        self._timesfm_multi: Optional[TimesFMMultiEntryStrategy] = None
 
         log.info("orchestrator.init", paper_mode=settings.paper_mode)
 
@@ -300,10 +302,23 @@ class Orchestrator:
                 twap_tracker=self._twap_tracker,
                 min_confidence=timesfm_min_conf,
             )
+            # Multi-entry strategy: forecasts at T-180, T-120, T-60, T-30
+            self._timesfm_multi = TimesFMMultiEntryStrategy(
+                order_manager=self._order_manager,
+                risk_manager=self._risk_manager,
+                poly_client=self._poly_client,
+                timesfm_client=self._timesfm_client,
+                alerter=self._alerter,
+                db_client=self._db,
+                max_bet=32.0,
+                min_confidence=timesfm_min_conf,
+            )
             log.info(
                 "orchestrator.timesfm_v6_enabled",
                 url=timesfm_url,
                 min_confidence=timesfm_min_conf,
+                multi_entry=True,
+                checkpoints="T-180,T-120,T-60,T-30",
             )
         else:
             log.info("orchestrator.timesfm_v6_disabled")
@@ -452,6 +467,11 @@ class Orchestrator:
         # Start v6.0 TimesFM-only strategy if enabled
         if self._timesfm_strategy:
             await self._timesfm_strategy.start()
+        
+        # Start multi-entry TimesFM strategy
+        if self._timesfm_multi:
+            self._timesfm_multi.set_aggregator(self._aggregator)
+            await self._timesfm_multi.start()
 
         if self._fifteen_min_feed:
             self._tasks.append(
@@ -573,6 +593,8 @@ class Orchestrator:
         # Stop v6.0 TimesFM strategy
         if self._timesfm_strategy:
             await self._timesfm_strategy.stop()
+        if self._timesfm_multi:
+            await self._timesfm_multi.stop()
         # Stop 5-min strategy and feed
         if self._five_min_strategy:
             await self._five_min_strategy.stop()
@@ -800,6 +822,10 @@ class Orchestrator:
                     open_price=window.open_price,
                     duration_s=300.0,
                 )
+                # TimesFM multi-entry: schedule checkpoint forecasts on window open
+                if self._timesfm_multi and window.asset == "BTC":
+                    state = await self._aggregator.get_state()
+                    asyncio.create_task(self._timesfm_multi.on_window_open(window, state))
             # Feed non-BTC prices to TWAP from window signals (these arrive every ~1s)
             if window.open_price and window.asset != "BTC":
                 # Use up_price as a proxy for current market price direction
