@@ -37,7 +37,7 @@ _price_feed = PriceFeed(buffer_size=2048)
 _forecaster = TimesFMForecaster(
     model_id="google/timesfm-2.5-200m-pytorch",
     max_context=2048,  # v5.8: Use full buffer — 34 min of 1s ticks for better pattern detection
-    max_horizon=60,
+    max_horizon=300,
     normalize_inputs=True,
     use_continuous_quantile_head=True,
 )
