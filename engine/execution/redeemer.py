@@ -286,7 +286,9 @@ class PositionRedeemer:
 
             # Build redeemPositions calldata
             # indexSets=[1, 2] → redeem both YES (set 1) and NO (set 2)
-            calldata = self._ctf.encodeABI(
+            # web3.py v6+: encode_abi (snake_case), v5: encodeABI (camelCase)
+            _encode = getattr(self._ctf, 'encode_abi', None) or getattr(self._ctf, 'encodeABI')
+            calldata = _encode(
                 fn_name="redeemPositions",
                 args=[
                     Web3.to_checksum_address(USDC_ADDRESS),
