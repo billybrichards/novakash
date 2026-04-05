@@ -419,19 +419,9 @@ class FiveMinVPINStrategy(BaseStrategy):
                 window.up_price if (signal.direction if signal else ("UP" if delta_pct > 0 else "DOWN")) == "UP"
                 else window.down_price
             ) if (window.up_price and window.down_price) else None,
-            "skip_reason": None if signal else (
-                f"VPIN {current_vpin:.3f} < gate {_runtime.five_min_vpin_gate} — not enough informed trading detected to justify entry"
-                if current_vpin < _runtime.five_min_vpin_gate
-                else (
-                    f"delta {abs(delta_pct):.4f}% < cascade threshold {_runtime.five_min_cascade_min_delta_pct}% — price barely moved despite high informed flow"
-                    if current_vpin >= _runtime.vpin_cascade_direction_threshold
-                    else (
-                        f"delta {abs(delta_pct):.4f}% < normal threshold {_runtime.five_min_min_delta_pct:.4f}% — insufficient conviction"
-                        if current_vpin >= _runtime.vpin_informed_threshold
-                        else f"delta {abs(delta_pct):.4f}% < threshold {_runtime.five_min_min_delta_pct}% — price move too small to trade"
-                    )
-                )
-            ),
+            # skip_reason is set AFTER evaluation via _last_skip_reason (accurate)
+            # This field is updated in the post-eval block below
+            "skip_reason": None,
             "engine_version": "v7.1",
         }
 
@@ -443,19 +433,11 @@ class FiveMinVPINStrategy(BaseStrategy):
                 pass
 
         if signal is None:
-            # v7.1: Use CG veto reason if set, else snapshot, else reconstruct
-            _skip_reason = getattr(self, '_last_skip_reason', '') or window_snapshot.get("skip_reason") or ""
+            # v7.1: Use the actual skip reason set at the point of rejection
+            _skip_reason = getattr(self, '_last_skip_reason', '') or ""
             self._last_skip_reason = ""  # Reset after use
             if not _skip_reason:
-                _implied_dir = "UP" if delta_pct > 0 else "DOWN"
-                if current_vpin < _runtime.five_min_vpin_gate:
-                    _skip_reason = f"VPIN {current_vpin:.3f} < gate {_runtime.five_min_vpin_gate} — not enough informed trading detected to justify entry"
-                elif current_vpin >= _runtime.vpin_cascade_direction_threshold:
-                    _skip_reason = f"delta {abs(delta_pct):.4f}% < cascade threshold {_runtime.five_min_cascade_min_delta_pct}% — price barely moved despite high informed flow"
-                elif current_vpin >= _runtime.vpin_informed_threshold:
-                    _skip_reason = f"delta {abs(delta_pct):.4f}% < normal threshold {_runtime.five_min_min_delta_pct:.4f}% — insufficient conviction"
-                else:
-                    _skip_reason = f"delta {abs(delta_pct):.4f}% < threshold {_runtime.five_min_min_delta_pct}% — price move too small to trade"
+                _skip_reason = "Signal evaluation returned None (unknown reason)"
             # Update snapshot with actual reason
             window_snapshot["skip_reason"] = _skip_reason
             if self._db:
@@ -633,6 +615,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 gate=f"{runtime.five_min_vpin_gate:.3f}",
                 reason="VPIN below gate — no informed flow, would be TIMESFM_ONLY regime, skipping",
             )
+            self._last_skip_reason = f"VPIN {current_vpin:.3f} < gate {runtime.five_min_vpin_gate} — TIMESFM_ONLY regime, no informed flow"
             return None
 
         # ── TWAP Gamma Gate (v5.7c) ───────────────────────────────
@@ -647,6 +630,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 twap_delta=f"{twap_result.twap_delta_pct:+.4f}%",
                 asset=window.asset,
             )
+            self._last_skip_reason = f"TWAP GATE: {twap_result.skip_reason or 'market disagrees'} (gate={twap_result.gamma_gate})"
             return None
         
         # ── REGIME-AWARE DIRECTION (v4.1) ──────────────────────────
@@ -675,6 +659,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             else:
                 min_delta = base_min
             if abs(delta_pct) < min_delta:
+                self._last_skip_reason = f"CASCADE: delta {abs(delta_pct):.4f}% < scaled threshold {min_delta:.4f}% (VPIN {current_vpin:.3f})"
                 return None
             direction = "UP" if delta_pct > 0 else "DOWN"
             regime = "CASCADE"
@@ -688,12 +673,14 @@ class FiveMinVPINStrategy(BaseStrategy):
         elif current_vpin >= runtime.vpin_informed_threshold:
             # TRANSITION: v5.1 ALL MOMENTUM (contrarian = coin flip per 30-day data)
             if abs(delta_pct) < runtime.five_min_min_delta_pct:
+                self._last_skip_reason = f"TRANSITION: delta {abs(delta_pct):.4f}% < threshold {runtime.five_min_min_delta_pct:.4f}% (VPIN {current_vpin:.3f})"
                 return None
             direction = "UP" if delta_pct > 0 else "DOWN"
             regime = "TRANSITION"
         else:
             # NORMAL: v5.1 ALL MOMENTUM (contrarian = coin flip per 30-day data)
             if abs(delta_pct) < runtime.five_min_min_delta_pct:
+                self._last_skip_reason = f"NORMAL: delta {abs(delta_pct):.4f}% < threshold {runtime.five_min_min_delta_pct:.4f}% (VPIN {current_vpin:.3f})"
                 return None
             direction = "UP" if delta_pct > 0 else "DOWN"
             regime = "NORMAL"
