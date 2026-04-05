@@ -2228,10 +2228,14 @@ export default function V58Monitor() {
       {/* Inject pulse animations */}
       <style>{`
         @keyframes v58pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
+        @keyframes v58streakpulse { 0%,100%{box-shadow:0 0 12px rgba(74,222,128,0.4)} 50%{box-shadow:0 0 28px rgba(74,222,128,0.9)} }
         @media (max-width: 768px) {
           .v58-grid-2 { grid-template-columns: 1fr !important; }
           .v58-grid-3 { grid-template-columns: 1fr !important; }
           .v58-signal-grid { grid-template-columns: 1fr !important; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .v58-streak-pulse { animation: none !important; }
         }
       `}</style>
 
@@ -2302,6 +2306,65 @@ export default function V58Monitor() {
         )}
       </div>
 
+      {/* ── Win Streak Banner ──────────────────────────────────────────── */}
+      {accuracy && (
+        <div style={{
+          padding: '12px 20px',
+          borderBottom: `1px solid ${T.border}`,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 16,
+          background: accuracy.current_streak > 5
+            ? 'rgba(74,222,128,0.06)'
+            : 'transparent',
+          transition: 'background 0.3s ease',
+        }}>
+          <div
+            className={accuracy.current_streak > 5 ? 'v58-streak-pulse' : ''}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              background: accuracy.current_streak > 0
+                ? 'rgba(74,222,128,0.1)'
+                : 'rgba(255,255,255,0.04)',
+              border: `1px solid ${accuracy.current_streak > 0 ? 'rgba(74,222,128,0.3)' : T.border}`,
+              borderRadius: 10,
+              padding: '8px 20px',
+              animation: accuracy.current_streak > 5 ? 'v58streakpulse 2s ease-in-out infinite' : 'none',
+            }}
+          >
+            <span style={{ fontSize: 22 }}>
+              {accuracy.current_streak > 5 ? '🔥' : accuracy.current_streak > 0 ? '✅' : '—'}
+            </span>
+            <div>
+              <div style={{
+                fontSize: 28,
+                fontWeight: 700,
+                color: accuracy.current_streak > 0 ? T.profit : T.label,
+                lineHeight: 1,
+                letterSpacing: '-0.02em',
+              }}>
+                {accuracy.current_streak}
+              </div>
+              <div style={{ fontSize: 9, color: T.label, textTransform: 'uppercase', letterSpacing: '0.1em', marginTop: 2 }}>
+                {accuracy.current_streak === 1 ? 'WIN STREAK' : 'WIN STREAK'}
+              </div>
+            </div>
+          </div>
+          {accuracy.current_streak > 5 && (
+            <span style={{ fontSize: 11, color: T.profit, letterSpacing: '0.06em', fontWeight: 600 }}>
+              🔥 ON FIRE — {accuracy.current_streak} consecutive wins
+            </span>
+          )}
+          {accuracy.current_streak === 0 && (
+            <span style={{ fontSize: 11, color: T.label, letterSpacing: '0.06em' }}>
+              No active win streak
+            </span>
+          )}
+        </div>
+      )}
+
       {/* ── Body ───────────────────────────────────────────────────────── */}
       <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 20 }}>
 
@@ -2357,6 +2420,32 @@ export default function V58Monitor() {
               <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 14 }}>
                 § CURRENT WINDOW COUNTDOWN
               </div>
+              {/* Quick stats row: VPIN / Regime / Direction / Gamma */}
+              {latestWindow && (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+                  {[
+                    { label: 'VPIN', value: latestWindow.vpin != null ? latestWindow.vpin.toFixed(3) : '—', color: latestWindow.vpin >= 0.65 ? T.profit : latestWindow.vpin >= 0.45 ? T.warning : T.label },
+                    { label: 'REGIME', value: latestWindow.regime ?? '—', color: latestWindow.regime === 'CASCADE' ? T.profit : latestWindow.regime === 'TRANSITION' ? T.warning : T.label2 },
+                    { label: 'DIR', value: latestWindow.direction ?? '—', color: latestWindow.direction === 'UP' ? T.profit : latestWindow.direction === 'DOWN' ? T.loss : T.label },
+                    { label: '↑ GAMMA', value: latestWindow.gamma_up_price != null ? latestWindow.gamma_up_price.toFixed(3) : '—', color: T.cyan },
+                    { label: '↓ GAMMA', value: latestWindow.gamma_down_price != null ? latestWindow.gamma_down_price.toFixed(3) : '—', color: T.purple },
+                  ].map(({ label, value, color }) => (
+                    <div key={label} style={{
+                      background: 'rgba(255,255,255,0.04)',
+                      border: `1px solid ${T.border}`,
+                      borderRadius: 6,
+                      padding: '4px 10px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: 2,
+                    }}>
+                      <span style={{ fontSize: 8, color: T.label, textTransform: 'uppercase', letterSpacing: '0.08em' }}>{label}</span>
+                      <span style={{ fontSize: 13, fontWeight: 700, color }}>{value}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               <CountdownTimer
                 windowTs={latestWindow?.window_ts}
               />

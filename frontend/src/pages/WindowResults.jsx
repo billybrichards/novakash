@@ -246,7 +246,7 @@ function WindowDetail({ windowTs }) {
     );
   }
 
-  const { snapshot, evaluations, price_ticks, what_if } = detail;
+  const { snapshot, evaluations, price_ticks, what_if, entry_timing } = detail;
 
   return (
     <div style={{
@@ -376,6 +376,129 @@ function WindowDetail({ windowTs }) {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ── What-If Entry Timing (v5.8.1) ─────────────────────────────────── */}
+      {/* Shows Gamma prices at each countdown stage (T-240 through T-60)      */}
+      {/* and what the P&L would have been if you entered at each point.       */}
+      {entry_timing && entry_timing.length > 0 && !entry_timing[0]?.error && (
+        <div>
+          <div style={{
+            fontSize: 9, color: T.label, letterSpacing: '0.1em',
+            textTransform: 'uppercase', marginBottom: 10, fontFamily: T.mono,
+          }}>
+            ⏱ What-If Entry Timing
+          </div>
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(5, 1fr)',
+            gap: 6,
+          }}>
+            {entry_timing.map((et, i) => {
+              // Get corresponding what-if data
+              const wifEntry = what_if?.entry_timing?.find(w => w.stage === et.stage);
+              const isBest = wifEntry?.is_best;
+              const correct = wifEntry?.correct;
+              const pnl = wifEntry?.pnl;
+              const entry = wifEntry?.entry;
+
+              let stageBorder = T.border;
+              let stageBg = 'rgba(255,255,255,0.02)';
+              if (isBest) {
+                stageBorder = 'rgba(74,222,128,0.5)';
+                stageBg = 'rgba(74,222,128,0.08)';
+              } else if (correct === true) {
+                stageBorder = 'rgba(74,222,128,0.2)';
+                stageBg = 'rgba(74,222,128,0.03)';
+              } else if (correct === false) {
+                stageBorder = 'rgba(248,113,113,0.2)';
+                stageBg = 'rgba(248,113,113,0.03)';
+              }
+
+              return (
+                <div key={et.stage} style={{
+                  padding: '10px 8px',
+                  borderRadius: 8,
+                  background: stageBg,
+                  border: `1px solid ${stageBorder}`,
+                  fontFamily: T.mono,
+                  textAlign: 'center',
+                  position: 'relative',
+                  transition: 'all 200ms ease-out',
+                }}>
+                  {isBest && (
+                    <div style={{
+                      position: 'absolute',
+                      top: -8,
+                      left: '50%',
+                      transform: 'translateX(-50%)',
+                      fontSize: 8,
+                      color: T.profit,
+                      background: '#07070c',
+                      padding: '0 4px',
+                      letterSpacing: '0.06em',
+                      fontWeight: 700,
+                    }}>
+                      BEST
+                    </div>
+                  )}
+                  {/* Stage label */}
+                  <div style={{ fontSize: 10, fontWeight: 700, color: T.cyan, marginBottom: 6, letterSpacing: '0.04em' }}>
+                    {et.stage}
+                  </div>
+                  {/* Gamma prices at this stage */}
+                  <div style={{ marginBottom: 6 }}>
+                    {et.gamma_up != null ? (
+                      <>
+                        <div style={{ fontSize: 9, color: T.label }}>↑ {et.gamma_up.toFixed(3)}</div>
+                        <div style={{ fontSize: 9, color: T.label }}>↓ {et.gamma_down != null ? et.gamma_down.toFixed(3) : '—'}</div>
+                      </>
+                    ) : (
+                      <div style={{ fontSize: 9, color: T.label }}>No data</div>
+                    )}
+                  </div>
+                  {/* TimesFM direction at this stage */}
+                  {et.timesfm_dir && (
+                    <div style={{
+                      fontSize: 8,
+                      color: et.timesfm_dir === 'UP' ? T.profit : T.loss,
+                      marginBottom: 4,
+                      letterSpacing: '0.04em',
+                    }}>
+                      🔮 {et.timesfm_dir} {et.timesfm_conf != null ? `${Math.round(et.timesfm_conf * 100)}%` : ''}
+                    </div>
+                  )}
+                  {/* Entry + P&L */}
+                  {entry != null && (
+                    <div style={{
+                      fontSize: 9,
+                      color: T.label,
+                      marginBottom: 2,
+                    }}>
+                      entry {entry.toFixed(3)}
+                    </div>
+                  )}
+                  {pnl != null ? (
+                    <div style={{
+                      fontSize: 12,
+                      fontWeight: 700,
+                      color: pnl >= 0 ? T.profit : T.loss,
+                    }}>
+                      {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 10, color: T.label }}>—</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {what_if?.best_entry_stage && (
+            <div style={{ fontSize: 9, color: T.profit, marginTop: 6, fontFamily: T.mono, letterSpacing: '0.06em' }}>
+              ✓ Best entry: {what_if.best_entry_stage}
+            </div>
+          )}
         </div>
       )}
     </div>

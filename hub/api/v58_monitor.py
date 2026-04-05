@@ -1309,9 +1309,94 @@ async def get_window_detail(
     except Exception:
         pass
 
-    # ── 4. What-if P&L for all signal sources ───────────────────────────────
-    # Already computed in snapshot via _calc_outcome_row
-    # But recalculate regardless of gate/skip status
+    # ── 4. Entry timing from market_snapshots (v5.8.1) ──────────────────────
+    # For each countdown stage (T-240, T-180, T-120, T-90, T-60), find the
+    # Gamma market prices closest to that seconds_remaining value.
+    # Also join with ticks_timesfm for TimesFM forecast at each stage.
+    _ENTRY_STAGES = [
+        {"stage": "T-240", "seconds": 240},
+        {"stage": "T-180", "seconds": 180},
+        {"stage": "T-120", "seconds": 120},
+        {"stage": "T-90",  "seconds": 90},
+        {"stage": "T-60",  "seconds": 60},
+    ]
+    entry_timing: list[dict] = []
+    ts_epoch = int(ts_dt.timestamp())
+
+    try:
+        # Fetch all market_snapshots for this window (±5 min of window_ts)
+        ms_q = text("""
+            SELECT
+                seconds_remaining,
+                up_price,
+                down_price,
+                snapshot_at
+            FROM market_snapshots
+            WHERE window_ts >= :ts_epoch - 120
+              AND window_ts <= :ts_epoch + 120
+              AND up_price IS NOT NULL
+              AND down_price IS NOT NULL
+            ORDER BY seconds_remaining DESC
+        """)
+        ms_result = await session.execute(ms_q, {"ts_epoch": ts_epoch})
+        ms_rows = ms_result.mappings().all()
+
+        # Fetch TimesFM ticks for this window
+        tfm_q = text("""
+            SELECT
+                seconds_to_close,
+                direction,
+                confidence
+            FROM ticks_timesfm
+            WHERE window_ts >= :ts_epoch - 120
+              AND window_ts <= :ts_epoch + 120
+            ORDER BY seconds_to_close DESC
+        """)
+        tfm_result = await session.execute(tfm_q, {"ts_epoch": ts_epoch})
+        tfm_rows = tfm_result.mappings().all()
+
+        def _closest_ms(target_secs: int) -> Optional[dict]:
+            """Return market_snapshot row closest to target seconds_remaining."""
+            if not ms_rows:
+                return None
+            best = min(ms_rows, key=lambda r: abs((r.get("seconds_remaining") or 0) - target_secs))
+            gap = abs((best.get("seconds_remaining") or 0) - target_secs)
+            if gap > 60:  # More than 60s off — don't report stale data
+                return None
+            return best
+
+        def _closest_tfm(target_secs: int) -> Optional[dict]:
+            """Return ticks_timesfm row closest to target seconds_to_close."""
+            if not tfm_rows:
+                return None
+            best = min(tfm_rows, key=lambda r: abs((r.get("seconds_to_close") or 0) - target_secs))
+            gap = abs((best.get("seconds_to_close") or 0) - target_secs)
+            if gap > 90:
+                return None
+            return best
+
+        for stage_def in _ENTRY_STAGES:
+            stage_name = stage_def["stage"]
+            stage_secs = stage_def["seconds"]
+            ms = _closest_ms(stage_secs)
+            tfm = _closest_tfm(stage_secs)
+
+            entry_timing.append({
+                "stage": stage_name,
+                "seconds": stage_secs,
+                "gamma_up": _safe_float(ms["up_price"]) if ms else None,
+                "gamma_down": _safe_float(ms["down_price"]) if ms else None,
+                "actual_seconds_remaining": ms.get("seconds_remaining") if ms else None,
+                "timesfm_dir": tfm.get("direction") if tfm else None,
+                "timesfm_conf": _safe_float(tfm.get("confidence")) if tfm else None,
+            })
+
+    except Exception as exc:
+        entry_timing = [{"error": str(exc)}]
+
+    # ── 5. What-if P&L for all signal sources + entry timing ────────────────
+    # Calculate what-if P&L for each countdown stage AND for signal sources.
+    # Always computed regardless of gate/skip status.
     what_if = None
     if snapshot and "actual_direction" in snapshot:
         actual_dir = snapshot.get("actual_direction")
@@ -1319,6 +1404,7 @@ async def get_window_detail(
         gamma_down = snapshot.get("gamma_down_price")
         stake = 4.0
 
+        # Per-source scenarios (v57c, timesfm, twap)
         scenarios = {}
         for src_name, dir_key in [
             ("v57c", "direction"),
@@ -1338,6 +1424,43 @@ async def get_window_detail(
                     "pnl_usd": pnl,
                 }
 
+        # Per-entry-stage what-if (using the shadow direction from the snapshot)
+        shadow_dir = snapshot.get("shadow_trade_direction") or snapshot.get("direction")
+        entry_what_if = []
+        if shadow_dir and actual_dir and entry_timing:
+            best_stage = None
+            best_pnl = None
+            for et in entry_timing:
+                if "error" in et:
+                    continue
+                et_gamma_up = et.get("gamma_up")
+                et_gamma_down = et.get("gamma_down")
+                if et_gamma_up is None or et_gamma_down is None:
+                    entry_what_if.append({
+                        "stage": et["stage"],
+                        "entry": None,
+                        "pnl": None,
+                        "correct": None,
+                    })
+                    continue
+                entry_price = et_gamma_up if shadow_dir == "UP" else et_gamma_down
+                pnl = _calc_what_if_pnl(shadow_dir, actual_dir, et_gamma_up, et_gamma_down, stake)
+                correct = shadow_dir == actual_dir
+                entry_what_if.append({
+                    "stage": et["stage"],
+                    "entry": entry_price,
+                    "pnl": pnl,
+                    "correct": correct,
+                })
+                # Track best entry (highest P&L when correct, least loss when wrong)
+                if best_pnl is None or (pnl is not None and pnl > best_pnl):
+                    best_pnl = pnl
+                    best_stage = et["stage"]
+
+            # Mark best entry stage
+            for ewi in entry_what_if:
+                ewi["is_best"] = ewi["stage"] == best_stage
+
         gate_status = "BLOCKED" if snapshot.get("skip_reason") else "PASSED"
         if not snapshot.get("trade_placed") and not snapshot.get("skip_reason"):
             gate_status = "SKIPPED"
@@ -1347,6 +1470,8 @@ async def get_window_detail(
             "skip_reason": snapshot.get("skip_reason"),
             "trade_placed": snapshot.get("trade_placed"),
             "scenarios": scenarios,
+            "entry_timing": entry_what_if,
+            "best_entry_stage": best_stage if "best_stage" in dir() else None,
             "note": "P&L calculated regardless of gate/skip status",
         }
 
@@ -1355,5 +1480,6 @@ async def get_window_detail(
         "snapshot": snapshot,
         "evaluations": evaluations,
         "price_ticks": price_ticks,
+        "entry_timing": entry_timing,
         "what_if": what_if,
     }

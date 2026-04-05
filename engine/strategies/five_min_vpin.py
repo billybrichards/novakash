@@ -399,6 +399,16 @@ class FiveMinVPINStrategy(BaseStrategy):
             "gamma_down_price": window.down_price if window.down_price else None,
             "gamma_mid_price": (window.up_price + window.down_price) / 2 if (window.up_price and window.down_price) else None,
             "gamma_spread": abs(window.up_price - window.down_price) if (window.up_price and window.down_price) else None,
+            # Shadow trade fields (v5.8.1) — recorded for EVERY window with a signal direction.
+            # Even gated/skipped windows get direction + entry price so what-if P&L
+            # can be computed in the API without re-running the engine.
+            # shadow_trade_direction: implied direction from delta (always set)
+            # shadow_trade_entry_price: Gamma price for the implied direction at evaluation time
+            "shadow_trade_direction": signal.direction if signal else ("UP" if delta_pct > 0 else "DOWN"),
+            "shadow_trade_entry_price": (
+                window.up_price if (signal.direction if signal else ("UP" if delta_pct > 0 else "DOWN")) == "UP"
+                else window.down_price
+            ) if (window.up_price and window.down_price) else None,
             "skip_reason": None if signal else (
                 f"VPIN {current_vpin:.3f} < gate {_runtime.five_min_vpin_gate} — not enough informed trading detected to justify entry"
                 if current_vpin < _runtime.five_min_vpin_gate
@@ -589,7 +599,15 @@ class FiveMinVPINStrategy(BaseStrategy):
         Returns None if no trade should be placed.
         """
         # VPIN gate — core thesis: no informed flow = no trade
+        # When VPIN is 0 or below gate, we'd be relying solely on TimesFM (no informed flow).
+        # TIMESFM_ONLY regime: skip entirely rather than trade on model forecast alone.
         if current_vpin < runtime.five_min_vpin_gate:
+            self._log.info(
+                "evaluate.skip_timesfm_only_regime",
+                vpin=f"{current_vpin:.3f}",
+                gate=f"{runtime.five_min_vpin_gate:.3f}",
+                reason="VPIN below gate — no informed flow, would be TIMESFM_ONLY regime, skipping",
+            )
             return None
 
         # ── TWAP Gamma Gate (v5.7c) ───────────────────────────────
@@ -868,60 +886,42 @@ class FiveMinVPINStrategy(BaseStrategy):
         if confidence in ("NONE", "LOW"):
             return None
 
-        # ── v5.8: TimesFM Agreement Check ─────────────────────────────────
-        # Uses the FRESH forecast fetched in _evaluate_window (passed in).
-        # Agreement → can lift MODERATE to HIGH
-        # Disagreement (high confidence) → SKIP (the core v5.8 gate)
-        # Disagreement (low confidence) → reduce confidence
+        # ── v5.8: TimesFM Agreement Check (DATA-ONLY — NOT A GATE) ───────────
+        # TimesFM is monitored for analysis but does NOT gate, skip, or modify
+        # confidence. All agreement data is recorded in the snapshot for
+        # post-hoc analysis and what-if P&L tracking.
+        #
+        # Previously (pre-v5.8.1):
+        #   - Agree + ≥70% conf → lift MODERATE→HIGH
+        #   - Disagree + ≥70% conf → SKIP (return None)
+        #   - Disagree + <70% conf → suppress HIGH→MODERATE
+        #
+        # NOW: Log for monitoring only. No gating effect whatsoever.
         timesfm_agreement = None  # None = no forecast available
         if timesfm_forecast and not timesfm_forecast.error and timesfm_forecast.direction and window.asset == "BTC":
             _tfm_conf = timesfm_forecast.confidence or 0.0
             if timesfm_forecast.direction == direction:
                 timesfm_agreement = True
-                # Agreement: lift MODERATE → HIGH if TimesFM is confident
-                if _tfm_conf >= 0.70 and confidence == "MODERATE":
-                    self._log.info(
-                        "evaluate.timesfm_lift",
-                        v57c_dir=direction,
-                        tfm_dir=timesfm_forecast.direction,
-                        tfm_conf=f"{_tfm_conf:.2f}",
-                        from_confidence="MODERATE",
-                        to_confidence="HIGH",
-                    )
-                    confidence = "HIGH"
-                else:
-                    self._log.info(
-                        "evaluate.timesfm_agrees",
-                        v57c_dir=direction,
-                        tfm_dir=timesfm_forecast.direction,
-                        tfm_conf=f"{_tfm_conf:.2f}",
-                        confidence=confidence,
-                    )
+                # DATA-ONLY: log agreement for monitoring, do not modify confidence
+                self._log.info(
+                    "evaluate.timesfm_agrees",
+                    v57c_dir=direction,
+                    tfm_dir=timesfm_forecast.direction,
+                    tfm_conf=f"{_tfm_conf:.2f}",
+                    confidence=confidence,
+                    note="TimesFM agrees — data-only, no gate effect",
+                )
             else:
                 timesfm_agreement = False
-                if _tfm_conf >= 0.70:
-                    # High-confidence disagreement → SKIP (core v5.8 gate)
-                    self._log.info(
-                        "evaluate.timesfm_disagree_skip",
-                        v57c_dir=direction,
-                        tfm_dir=timesfm_forecast.direction,
-                        tfm_conf=f"{_tfm_conf:.2f}",
-                        confidence=confidence,
-                        reason="TimesFM strongly disagrees — v5.8 skip",
-                    )
-                    return None
-                else:
-                    # Low-confidence disagreement → suppress HIGH → MODERATE
-                    self._log.info(
-                        "evaluate.timesfm_disagrees_weak",
-                        v57c_dir=direction,
-                        tfm_dir=timesfm_forecast.direction,
-                        tfm_conf=f"{_tfm_conf:.2f}",
-                        confidence=confidence,
-                        note="TimesFM disagrees but with low confidence — proceeding with caution",
-                    )
-                    if confidence == "HIGH":
-                        confidence = "MODERATE"
+                # DATA-ONLY: log disagreement for monitoring, do not skip or suppress
+                self._log.info(
+                    "evaluate.timesfm_disagrees",
+                    v57c_dir=direction,
+                    tfm_dir=timesfm_forecast.direction,
+                    tfm_conf=f"{_tfm_conf:.2f}",
+                    confidence=confidence,
+                    note="TimesFM disagrees — data-only, no gate effect, proceeding",
+                )
 
         self._log.info(
             "evaluate.regime_signal",
