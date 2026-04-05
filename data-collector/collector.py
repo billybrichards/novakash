@@ -34,12 +34,12 @@ DURATIONS = {"5m": 300, "15m": 900}
 
 GAMMA_API = "https://gamma-api.polymarket.com"
 
-# Rate limiting
-MIN_REQUEST_INTERVAL = 1.2  # seconds between Gamma API calls
-BACKOFF_BASE = 5.0          # seconds on 429
-BACKOFF_MAX = 120.0         # max backoff
-POLL_INTERVAL = 10          # seconds between collection cycles
-RESOLUTION_DELAY = 30       # seconds after window close before checking resolution
+# Rate limiting — aggressive but within bounds
+MIN_REQUEST_INTERVAL = 0.25  # 4 req/s to Gamma (they allow ~5/s)
+BACKOFF_BASE = 3.0           # seconds on 429
+BACKOFF_MAX = 60.0           # max backoff
+POLL_INTERVAL = 1            # 1-second collection cycles
+RESOLUTION_DELAY = 30        # seconds after window close before checking resolution
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 # Convert asyncpg URL format
@@ -427,20 +427,23 @@ async def fetch_resolved_market(session: aiohttp.ClientSession, slug: str) -> Op
 
 # ─── Main Loop ────────────────────────────────────────────────────────────────
 
-async def collect_cycle(session: aiohttp.ClientSession, pool: asyncpg.Pool):
-    """One collection cycle: fetch all active markets + resolve old ones."""
+async def collect_cycle(session: aiohttp.ClientSession, pool: asyncpg.Pool,
+                       cycle_num: int):
+    """One collection cycle: fetch all active markets + save snapshots.
+    
+    Every cycle (~1s): fetch prices for all 4 assets (both timeframes per call)
+    Every 60 cycles (~1min): resolve old windows
+    """
     collected = 0
     snapshots = 0
     
     for asset in ASSETS:
+        # Single call per asset gets both 5m and 15m markets
         for tf in TIMEFRAMES:
             markets = await fetch_current_markets(session, asset, tf)
             for mkt in markets:
                 try:
-                    await upsert_market(pool, mkt)
-                    collected += 1
-                    
-                    # Also save a snapshot for price tracking through window
+                    # Always save snapshot (1-second granularity)
                     if mkt.get("up_price") is not None:
                         remaining = None
                         if mkt.get("window_end"):
@@ -448,41 +451,45 @@ async def collect_cycle(session: aiohttp.ClientSession, pool: asyncpg.Pool):
                         mkt["seconds_remaining"] = remaining
                         await save_snapshot(pool, mkt)
                         snapshots += 1
+                    
+                    # Upsert main record (updates latest prices)
+                    await upsert_market(pool, mkt)
+                    collected += 1
                 except Exception as exc:
                     log.error("collect.upsert_failed", error=str(exc)[:100])
     
-    # Resolve old windows
+    # Resolve old windows every 60 cycles (~1 minute)
     resolved = 0
-    unresolved = await get_unresolved(pool)
-    for window in unresolved:
-        slug = window.get("market_slug")
-        if not slug:
-            continue
-        
-        result = await fetch_resolved_market(session, slug)
-        if result:
-            try:
-                # Use open_price + outcome to determine close
-                # If no open_price, we can't calculate — just store outcome
-                await resolve_window(
-                    pool,
-                    window["window_ts"],
-                    window["asset"],
-                    window["timeframe"],
-                    close_price=0.0,  # Will be set from Chainlink if available
-                    outcome=result["outcome"],
-                )
-                resolved += 1
-            except Exception as exc:
-                log.error("resolve.failed", error=str(exc)[:100])
+    if cycle_num % 60 == 0:
+        unresolved = await get_unresolved(pool)
+        for window in unresolved:
+            slug = window.get("market_slug")
+            if not slug:
+                continue
+            
+            result = await fetch_resolved_market(session, slug)
+            if result:
+                try:
+                    await resolve_window(
+                        pool,
+                        window["window_ts"],
+                        window["asset"],
+                        window["timeframe"],
+                        close_price=0.0,
+                        outcome=result["outcome"],
+                    )
+                    resolved += 1
+                except Exception as exc:
+                    log.error("resolve.failed", error=str(exc)[:100])
     
-    log.info(
-        "cycle.complete",
-        markets_collected=collected,
-        snapshots=snapshots,
-        resolved=resolved,
-        unresolved_remaining=len(unresolved) - resolved,
-    )
+    if cycle_num % 30 == 0:  # Log every 30s
+        log.info(
+            "cycle.stats",
+            cycle=cycle_num,
+            collected=collected,
+            snapshots=snapshots,
+            resolved=resolved,
+        )
 
 
 async def main():
@@ -503,25 +510,34 @@ async def main():
     
     async with aiohttp.ClientSession(headers=headers) as session:
         cycle = 0
+        log.info("collector.collecting", interval=f"{POLL_INTERVAL}s", assets=ASSETS)
         while True:
             try:
                 cycle += 1
-                await collect_cycle(session, pool)
+                t0 = time.time()
+                await collect_cycle(session, pool, cycle)
+                elapsed = time.time() - t0
                 
-                if cycle % 60 == 0:  # Every ~10 minutes
+                # DB stats every 5 minutes
+                if cycle % 300 == 0:
                     async with pool.acquire() as conn:
                         total = await conn.fetchval("SELECT COUNT(*) FROM market_data")
                         unresolved = await conn.fetchval("SELECT COUNT(*) FROM market_data WHERE resolved = FALSE")
                         snaps = await conn.fetchval("SELECT COUNT(*) FROM market_snapshots")
-                        log.info("collector.stats", total_markets=total, unresolved=unresolved, total_snapshots=snaps)
+                        log.info("collector.db_stats", total_markets=total, unresolved=unresolved,
+                                 total_snapshots=snaps, cycle=cycle,
+                                 snapshots_per_min=round(snaps / max(cycle, 1) * 60, 0))
                 
-                await asyncio.sleep(POLL_INTERVAL)
+                # Sleep remainder of interval
+                sleep_time = max(0, POLL_INTERVAL - elapsed)
+                if sleep_time > 0:
+                    await asyncio.sleep(sleep_time)
                 
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 log.error("collector.cycle_error", error=str(exc)[:200])
-                await asyncio.sleep(30)
+                await asyncio.sleep(5)
     
     await pool.close()
     log.info("collector.stopped")
