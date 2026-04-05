@@ -842,74 +842,71 @@ class TelegramAlerter:
             if timesfm_forecast is not None and not getattr(_tfm, 'error', ''):
                 _tfm_dir = getattr(_tfm, 'direction', '?')
                 _tfm_conf = getattr(_tfm, 'confidence', 0)
-                _tfm_close = getattr(_tfm, 'predicted_close', 0)
 
                 gamma_bid_safe = gamma_bid if (gamma_bid and gamma_bid > 0) else 0.50
                 gamma_ask_safe = gamma_ask if (gamma_ask and gamma_ask > 0) else 0.50
+                
+                # Check if TimesFM prediction matches actual direction
+                actual_direction = "UP" if (delta_pct > 0) else "DOWN"
+                tfm_prediction_correct = (_tfm_dir == actual_direction)
+                
                 if True:  # Always calculate
                     gamma_mid = (gamma_bid_safe + gamma_ask_safe) / 2
                     _entry_price = gamma_mid
-                    _exit_price = _tfm_close if _tfm_close > 0 else _entry_price
                     
-                    # Assuming binary: if direction is DOWN, bet on NO (price goes down); if UP, bet on YES
-                    if _tfm_dir == "DOWN":
-                        # Bet NO, entry at ask (gamma_ask), exit if price falls to _tfm_close
-                        _raw_pnl = ((_entry_price - _exit_price) * max_bet)
-                        _fee_pct = 0.02  # ~2% fee on win
-                        _net_pnl = _raw_pnl * (1 - _fee_pct)
-                    elif _tfm_dir == "UP":
-                        # Bet YES, entry at bid (gamma_bid), exit if price rises to _tfm_close
-                        _raw_pnl = ((_exit_price - _entry_price) * max_bet)
-                        _fee_pct = 0.02
-                        _net_pnl = _raw_pnl * (1 - _fee_pct)
-                    else:
-                        _raw_pnl = 0
-                        _net_pnl = 0
-
+                    # Reasonable exit prices: 0.90 if prediction correct, 0.10 if wrong
+                    _exit_price = 0.90 if tfm_prediction_correct else 0.10
                     _dir_label = "NO" if _tfm_dir == "DOWN" else "YES"
+                    
+                    # P&L: (exit - entry) * bet_size
+                    _raw_pnl = ((_exit_price - _entry_price) * max_bet)
+                    _fee_pct = 0.02
+                    _net_pnl = _raw_pnl * (1 - _fee_pct)
+                    
                     _pnl_emoji = "📈" if _net_pnl > 0 else ("📉" if _net_pnl < 0 else "➖")
+                    _outcome_text = "✅ CORRECT" if tfm_prediction_correct else "❌ WRONG"
                     
                     lines += [
-                        f"*TimesFM-Only Strategy*",
+                        f"*TimesFM Strategy*",
                         f"  → Bet `{_dir_label}` at `${_entry_price:.4f}` (Gamma mid)",
-                        f"  → Exit at `${_exit_price:.4f}` (predicted close)",
-                        f"  → Raw P&L: {_pnl_emoji} `${_raw_pnl:+.2f}` | After 2% fee: `${_net_pnl:+.2f}`",
+                        f"  → Outcome: {_outcome_text} (actual: {actual_direction}) | Conf: {_tfm_conf*100:.0f}%",
+                        f"  → Exit: `${_exit_price:.4f}` | P&L: {_pnl_emoji} `${_net_pnl:+.2f}` (after 2% fee)",
                         f"",
                     ]
 
             # v5.7c P&L scenario
             if twap_result is not None and not _should_skip:
                 _v57_dir = _gamma_dir  # Use gamma direction as the signal
-                _v57_conf = 0.90  # Assumption: high confidence if all agree
 
                 gamma_bid_safe = gamma_bid if (gamma_bid and gamma_bid > 0) else 0.50
                 gamma_ask_safe = gamma_ask if (gamma_ask and gamma_ask > 0) else 0.50
+                
+                # For binary options, use reasonable exit prices based on direction
+                # If prediction correct: exit at 0.90 (won); if wrong: exit at 0.10 (lost)
+                # This is a reasonable assumption for Polymarket pricing at resolution
+                actual_direction = "UP" if (delta_pct > 0) else "DOWN"
+                prediction_correct = (_v57_dir == actual_direction)
+                
                 if True:  # Always calculate
                     _entry_price = gamma_bid_safe if _v57_dir == "UP" else gamma_ask_safe
                     
-                    # What would be a realistic exit? Use close price as proxy
-                    _exit_price = close_price if (close_price and close_price > 0) else _entry_price
-
-                    if _v57_dir == "DOWN":
-                        _raw_pnl = ((_entry_price - _exit_price) * max_bet)
-                        _fee_pct = 0.02
-                        _net_pnl = _raw_pnl * (1 - _fee_pct)
-                    elif _v57_dir == "UP":
-                        _raw_pnl = ((_exit_price - _entry_price) * max_bet)
-                        _fee_pct = 0.02
-                        _net_pnl = _raw_pnl * (1 - _fee_pct)
-                    else:
-                        _raw_pnl = 0
-                        _net_pnl = 0
-
+                    # Reasonable exit prices: 0.90 if won, 0.10 if lost
+                    _exit_price = 0.90 if prediction_correct else 0.10
                     _dir_label = "NO" if _v57_dir == "DOWN" else "YES"
+                    
+                    # P&L: (exit - entry) * bet_size
+                    _raw_pnl = ((_exit_price - _entry_price) * max_bet)
+                    _fee_pct = 0.02
+                    _net_pnl = _raw_pnl * (1 - _fee_pct)
+                    
                     _pnl_emoji = "📈" if _net_pnl > 0 else ("📉" if _net_pnl < 0 else "➖")
+                    _outcome_text = "✅ CORRECT" if prediction_correct else "❌ WRONG"
 
                     lines += [
-                        f"*v5.7c (Multi-Indicator) Strategy*",
+                        f"*v5.7c (Multi) Strategy*",
                         f"  → Bet `{_dir_label}` at `${_entry_price:.4f}` (Gamma {('bid' if _v57_dir == 'UP' else 'ask')})",
-                        f"  → Realistic exit: `${_exit_price:.4f}` (window close)",
-                        f"  → Raw P&L: {_pnl_emoji} `${_raw_pnl:+.2f}` | After 2% fee: `${_net_pnl:+.2f}`",
+                        f"  → Outcome: {_outcome_text} (actual: {actual_direction})",
+                        f"  → Exit: `${_exit_price:.4f}` | P&L: {_pnl_emoji} `${_net_pnl:+.2f}` (after 2% fee)",
                         f"",
                     ]
 
