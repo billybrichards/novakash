@@ -31,6 +31,7 @@ from api.forecast import router as forecast_router
 from ws.live_feed import router as ws_router
 from api.playwright import router as playwright_router
 from api.v58_monitor import router as v58_router
+from api.analysis import router as analysis_router
 
 log = structlog.get_logger(__name__)
 
@@ -113,6 +114,7 @@ app.include_router(forecast_router, prefix="/api", tags=["forecast"])
 app.include_router(ws_router, tags=["websocket"])
 app.include_router(playwright_router, prefix="/api", tags=["playwright"])
 app.include_router(v58_router, prefix="/api", tags=["v58-monitor"])
+app.include_router(analysis_router, prefix="/api", tags=["analysis"])
 
 
 @app.get("/health", tags=["health"])
