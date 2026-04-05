@@ -107,6 +107,8 @@ def _row_to_window(row: Any) -> dict:
         # Gamma
         "gamma_up_price": _safe_float(row.get("gamma_up_price")),
         "gamma_down_price": _safe_float(row.get("gamma_down_price")),
+        # Engine version
+        "engine_version": row.get("engine_version"),
     }
 
 
@@ -134,7 +136,7 @@ async def get_windows(
                     trade_placed, skip_reason,
                     twap_direction, twap_agreement_score, twap_gamma_gate,
                     timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
-                    gamma_up_price, gamma_down_price
+                    gamma_up_price, gamma_down_price, engine_version
                 FROM window_snapshots
                 WHERE asset = :asset
                 ORDER BY window_ts DESC
@@ -150,7 +152,7 @@ async def get_windows(
                     trade_placed, skip_reason,
                     twap_direction, twap_agreement_score, twap_gamma_gate,
                     timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
-                    gamma_up_price, gamma_down_price
+                    gamma_up_price, gamma_down_price, engine_version
                 FROM window_snapshots
                 ORDER BY window_ts DESC
                 LIMIT :limit
@@ -582,7 +584,7 @@ async def get_outcomes(
                 direction, trade_placed, skip_reason,
                 timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
                 twap_direction, twap_agreement_score, twap_gamma_gate,
-                gamma_up_price, gamma_down_price,
+                gamma_up_price, gamma_down_price, engine_version,
                 vpin, regime, confidence
             FROM window_snapshots
             WHERE (CAST(:asset AS VARCHAR) IS NULL OR asset = :asset)
@@ -619,7 +621,7 @@ async def get_accuracy(
                 direction, trade_placed, skip_reason,
                 timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
                 twap_direction, twap_agreement_score, twap_gamma_gate,
-                gamma_up_price, gamma_down_price,
+                gamma_up_price, gamma_down_price, engine_version,
                 vpin, regime, confidence
             FROM window_snapshots
             WHERE (CAST(:asset AS VARCHAR) IS NULL OR asset = :asset)
@@ -898,7 +900,7 @@ async def post_manual_trade(
             ts_s = body.window_ts // 1000 if body.window_ts > 1e10 else body.window_ts
             ts_dt = datetime.fromtimestamp(ts_s, tz=timezone.utc)
             q = text("""
-                SELECT gamma_up_price, gamma_down_price
+                SELECT gamma_up_price, gamma_down_price, engine_version
                 FROM window_snapshots
                 WHERE window_ts >= :ts_epoch - 600
                   AND window_ts <= :ts_epoch + 600
