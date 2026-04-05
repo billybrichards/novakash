@@ -16,8 +16,12 @@ export function useApi() {
   const { token, logout } = useAuth();
 
   return useMemo(() => {
+    const apiBase = import.meta.env.VITE_API_URL
+      ? `${import.meta.env.VITE_API_URL}/api`
+      : '/api';
+    
     const instance = axios.create({
-      baseURL: '/api',
+      baseURL: apiBase,
       headers: {
         Authorization: `Bearer ${token}`,
       },
