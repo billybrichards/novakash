@@ -479,60 +479,51 @@ class FiveMinVPINStrategy(BaseStrategy):
 
                     async def _send_skip_alert():
                         try:
-                            await self._alerter.send_window_report(
-                                window_ts=window.window_ts,
-                                asset=window.asset,
-                                timeframe=tf,
-                                open_price=open_price,
-                                close_price=current_price,
-                                delta_pct=delta_pct,
-                                vpin=current_vpin,
-                                regime=_snap_regime,
-                                cg_snapshot=cg,
-                                direction=_implied_dir,
-                                confidence=None,
-                                trade_placed=False,
-                                skip_reason=_skip_reason,
-                                cg_modifier=0.0,
-                                twap_result=twap_result,
-                                timesfm_forecast=timesfm_forecast,
-                                gamma_up_price=window.up_price,
-                                gamma_down_price=window.down_price,
+                            window_id = f"{window.asset}-{window.window_ts}"
+                            signal_dict = {
+                                "direction": _implied_dir,
+                                "delta_pct": delta_pct,
+                                "vpin": current_vpin,
+                                "regime": _snap_regime,
+                            }
+                            
+                            # Send skip decision (no AI analysis for skipped trades)
+                            await self._alerter.send_trade_decision_detailed(
+                                window_id=window_id,
+                                signal=signal_dict,
+                                decision="SKIP",
+                                reason=_skip_reason[:100],
                             )
                         except Exception as alert_exc:
-                            self._log.error("alert.skip_report_failed", error=str(alert_exc), window_ts=window.window_ts)
+                            self._log.error("alert.skip_decision_failed", error=str(alert_exc), window_ts=window.window_ts)
 
                     asyncio.create_task(_send_skip_alert())
                 except Exception:
                     pass
             return
 
-        # ── Send window report (non-blocking) ────────────────────────────────
+        # ── Send trade decision + dual-AI analysis (non-blocking) ──────────────
         if self._alerter:
             async def _send_trade_alert():
                 try:
-                    await self._alerter.send_window_report(
-                        window_ts=window.window_ts,
-                        asset=window.asset,
-                        timeframe=tf,
-                        open_price=open_price,
-                        close_price=current_price,
-                        delta_pct=delta_pct,
-                        vpin=current_vpin,
-                        regime=_snap_regime,
-                        cg_snapshot=cg,
-                        direction=signal.direction,
-                        confidence=signal.confidence,
-                        trade_placed=True,
-                        skip_reason=None,
-                        cg_modifier=signal.cg_modifier,
-                        twap_result=twap_result,
-                        timesfm_forecast=timesfm_forecast,
-                        gamma_up_price=window.up_price,
-                        gamma_down_price=window.down_price,
+                    window_id = f"{window.asset}-{window.window_ts}"
+                    signal_dict = {
+                        "direction": signal.direction,
+                        "delta_pct": delta_pct,
+                        "vpin": current_vpin,
+                        "regime": _snap_regime,
+                    }
+                    reason = f"VPIN {current_vpin:.3f} ({_snap_regime}), delta {delta_pct:+.4f}%"
+                    
+                    # Send decision + AI analysis (separated for timeout resilience)
+                    await self._alerter.send_trade_decision_detailed(
+                        window_id=window_id,
+                        signal=signal_dict,
+                        decision="TRADE",
+                        reason=reason,
                     )
                 except Exception as alert_exc:
-                    self._log.error("alert.trade_report_failed", error=str(alert_exc), window_ts=window.window_ts)
+                    self._log.error("alert.trade_decision_failed", error=str(alert_exc), window_ts=window.window_ts)
             asyncio.create_task(_send_trade_alert())
 
         # Execute trade

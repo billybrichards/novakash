@@ -1254,6 +1254,20 @@ class Orchestrator:
                             win_streak=_streak_w,
                             loss_streak=_streak_l,
                         )
+                        
+                        # NEW: Dual-AI outcome analysis (separated for timeout resilience)
+                        if order.outcome in ("WIN", "LOSS"):
+                            try:
+                                await self._alerter.send_outcome_with_analysis(
+                                    window_id=_window_id,
+                                    decision=_direction,
+                                    entry_price=float(order.price or 0.50),
+                                    outcome=order.outcome,
+                                    pnl_usd=order.pnl_usd or 0,
+                                )
+                            except Exception as exc:
+                                log.error("outcome_analysis_failed", order_id=order.order_id[:20], error=str(exc))
+                        
                         log.info("resolution.alert_sent", order_id=order.order_id[:20])
                     except Exception as exc:
                         log.error("resolution.alert_failed", order_id=order.order_id[:20], error=str(exc))
