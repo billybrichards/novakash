@@ -426,7 +426,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                     f"delta {abs(delta_pct):.4f}% < cascade threshold {_runtime.five_min_cascade_min_delta_pct}% — price barely moved despite high informed flow"
                     if current_vpin >= _runtime.vpin_cascade_direction_threshold
                     else (
-                        f"delta {abs(delta_pct):.4f}% < transition threshold 0.12% — not enough price conviction in transition zone"
+                        f"delta {abs(delta_pct):.4f}% < normal threshold {_runtime.five_min_min_delta_pct:.4f}% — insufficient conviction"
                         if current_vpin >= _runtime.vpin_informed_threshold
                         else f"delta {abs(delta_pct):.4f}% < threshold {_runtime.five_min_min_delta_pct}% — price move too small to trade"
                     )
@@ -453,7 +453,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 elif current_vpin >= _runtime.vpin_cascade_direction_threshold:
                     _skip_reason = f"delta {abs(delta_pct):.4f}% < cascade threshold {_runtime.five_min_cascade_min_delta_pct}% — price barely moved despite high informed flow"
                 elif current_vpin >= _runtime.vpin_informed_threshold:
-                    _skip_reason = f"delta {abs(delta_pct):.4f}% < transition threshold 0.12% — not enough price conviction in transition zone"
+                    _skip_reason = f"delta {abs(delta_pct):.4f}% < normal threshold {_runtime.five_min_min_delta_pct:.4f}% — insufficient conviction"
                 else:
                     _skip_reason = f"delta {abs(delta_pct):.4f}% < threshold {_runtime.five_min_min_delta_pct}% — price move too small to trade"
             # Update snapshot with actual reason
