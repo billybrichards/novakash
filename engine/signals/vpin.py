@@ -134,7 +134,7 @@ class VPINCalculator:
                     SELECT price, quantity, is_buyer_maker
                     FROM ticks_binance
                     WHERE ts > NOW() - INTERVAL '30 minutes'
-                      AND symbol = 'BTCUSDT'
+                      AND asset = 'BTC'
                     ORDER BY ts ASC
                 """)
             
