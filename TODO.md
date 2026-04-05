@@ -1,19 +1,18 @@
 # TODO — Novakash Frontend/Engine
 
-## 🔴 HIGH PRIORITY
+## ✅ COMPLETED (2026-04-05 19:31 UTC)
 
-### Orchestrator Notification Wiring (BLOCKING)
-**Status:** Dual-AI system built, NOT YET WIRED INTO ORCHESTRATOR
-**Files:** `engine/strategies/orchestrator.py`
-**Lines:** ~1220 (trade decision), ~1260 (trade resolution)
+### Orchestrator Notification Wiring
+**Status:** DONE — Dual-AI notifications live in production
+**Commits:** c0c48f7, d22c3a5
+**Files Updated:**
+- `engine/strategies/five_min_vpin.py` — TRADE/SKIP decisions call `send_trade_decision_detailed()`
+- `engine/strategies/orchestrator.py` — Trade resolution calls `send_outcome_with_analysis()`
 
-**What:** Replace old `send_window_report` calls with new dual-AI methods:
-- `send_trade_decision_detailed()` — separated decision + AI prediction
-- `send_outcome_with_analysis()` — separated outcome + AI analysis
-
-**Why:** Ensure raw trade data never blocks on Claude API timeouts (Qwen fallback active)
-
-**Effort:** ~20 lines, straightforward replacement
+**What's live:**
+- Every trade decision generates: decision message (mandatory) + AI prediction (separate)
+- Every trade outcome generates: outcome message (mandatory) + AI analysis (separate)
+- Claude primary, Qwen122b fallback, no data loss on timeout
 
 ---
 
