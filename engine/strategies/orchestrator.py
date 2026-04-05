@@ -54,6 +54,7 @@ from execution.order_manager import OrderManager
 from execution.polymarket_client import PolymarketClient
 from execution.risk_manager import RiskManager
 from persistence.db_client import DBClient
+from persistence.tick_recorder import TickRecorder
 from signals.arb_scanner import ArbScanner
 from signals.cascade_detector import CascadeDetector
 from signals.regime_classifier import RegimeClassifier
@@ -97,6 +98,8 @@ class Orchestrator:
 
         # ── Persistence ────────────────────────────────────────────────────────
         self._db = DBClient(settings=settings)
+        # TickRecorder is wired to the pool after connect() in start()
+        self._tick_recorder: Optional[TickRecorder] = None
 
         # ── Aggregator ─────────────────────────────────────────────────────────
         self._aggregator = MarketAggregator()
@@ -309,6 +312,9 @@ class Orchestrator:
             self._five_min_strategy._timesfm = self._timesfm_client
             log.info("orchestrator.timesfm_injected_into_five_min")
 
+        # TickRecorder is not yet available at __init__ (pool not connected)
+        # It is injected in start() after pool is live.
+
         # 15-minute Polymarket strategy (uses same strategy, different feed)
         self._fifteen_min_feed = None
         fifteen_min_enabled = os.environ.get("FIFTEEN_MIN_ENABLED", "false").lower() == "true"
@@ -424,6 +430,19 @@ class Orchestrator:
         except Exception as exc:
             log.warning("orchestrator.ensure_window_tables_failed", error=str(exc))
 
+        # ── TickRecorder: initialise now that pool is live ──────────────────
+        try:
+            self._tick_recorder = TickRecorder(pool=self._db._pool)
+            await self._tick_recorder.ensure_tables()
+            await self._tick_recorder.start()
+            # Inject into five_min_strategy so it can record TimesFM forecasts
+            if self._five_min_strategy:
+                self._five_min_strategy._tick_recorder = self._tick_recorder
+            log.info("orchestrator.tick_recorder_started")
+        except Exception as exc:
+            log.warning("orchestrator.tick_recorder_start_failed", error=str(exc))
+            self._tick_recorder = None
+
         # 2. Connect exchange clients
         try:
             await self._poly_client.connect()
@@ -488,6 +507,15 @@ class Orchestrator:
         self._tasks.append(
             asyncio.create_task(self._polymarket_feed.start(), name="feed:polymarket")
         )
+
+        # 5a. CoinGlass snapshot recorder (every 10s)
+        if self._tick_recorder and self._cg_feeds:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._coinglass_snapshot_recorder_loop(),
+                    name="tick_recorder:coinglass",
+                )
+            )
 
         # 5. Heartbeat task (every 10s)
         self._tasks.append(
@@ -616,6 +644,13 @@ class Orchestrator:
         except Exception as exc:
             log.warning("orchestrator.opinion_disconnect_error", error=str(exc))
 
+        # Stop TickRecorder
+        if self._tick_recorder:
+            try:
+                await self._tick_recorder.stop()
+            except Exception as exc:
+                log.warning("orchestrator.tick_recorder_stop_error", error=str(exc))
+
         # Close DB
         try:
             await self._db.close()
@@ -641,6 +676,12 @@ class Orchestrator:
 
         # Update order manager BTC price for paper resolution
         self._order_manager.update_btc_price(trade.price)
+
+        # ── TickRecorder: buffer this tick (non-blocking) ─────────────────
+        if self._tick_recorder:
+            self._tick_recorder.record_binance_tick(
+                trade, vpin=self._vpin_calc.current_vpin
+            )
 
         # Feed VPIN calculator (triggers on_vpin_signal when bucket fills)
         await self._vpin_calc.on_trade(trade)
@@ -670,6 +711,27 @@ class Orchestrator:
         await asyncio.sleep(_delay)
         log.info("coinglass.starting_feed", symbol=symbol, delay=f"{_delay:.1f}s")
         await feed.start()
+
+    async def _coinglass_snapshot_recorder_loop(self) -> None:
+        """Every 10s: record CoinGlass snapshots for all assets to ticks_coinglass."""
+        while not self._shutdown_event.is_set():
+            try:
+                for asset, feed in self._cg_feeds.items():
+                    snap = feed.snapshot
+                    if snap and snap.connected:
+                        asyncio.create_task(
+                            self._tick_recorder.record_coinglass_snapshot(asset, snap)
+                        )
+            except Exception as exc:
+                log.debug("tick_recorder.coinglass_loop.error", error=str(exc))
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=10.0,
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
 
     async def _on_oi_update(self, oi: OpenInterestSnapshot) -> None:
         """CoinGlass OI → aggregator + cascade detector update."""
@@ -798,6 +860,10 @@ class Orchestrator:
             down_price=window.down_price,
             state=state_value,
         )
+        # ── TickRecorder: record Gamma prices on every window signal ─────────
+        if self._tick_recorder and window.up_price is not None:
+            asyncio.create_task(self._tick_recorder.record_gamma_price(window))
+
         # Forward to strategy — store for token ID lookup
         if self._five_min_strategy:
             self._five_min_strategy._pending_windows.append(window)
@@ -966,6 +1032,10 @@ class Orchestrator:
             duration=900,
             state=state_value,
         )
+        # ── TickRecorder: record Gamma prices on every 15m window signal ────
+        if self._tick_recorder and window.up_price is not None:
+            asyncio.create_task(self._tick_recorder.record_gamma_price(window))
+
         # Reuse the same 5-min strategy for evaluation + token ID lookup
         if self._five_min_strategy:
             self._five_min_strategy._pending_windows.append(window)

@@ -97,6 +97,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._geoblock_check_fn = geoblock_check_fn  # G6: Callable to check if geoblock is active
         self._twap = twap_tracker  # v5.7: TWAP-delta direction tracker
         self._timesfm = timesfm_client  # v6.0: TimesFM forecast client (for comparison alerts)
+        self._tick_recorder = None  # TickRecorder injected by orchestrator after start
         self._evaluator = WindowEvaluator()
         
         # Track last executed window to avoid duplicates
@@ -278,6 +279,15 @@ class FiveMinVPINStrategy(BaseStrategy):
                         confidence=f"{timesfm_forecast.confidence:.2f}",
                         predicted_close=f"${timesfm_forecast.predicted_close:,.2f}",
                     )
+                    # ── TickRecorder: passive recording only ──────────────
+                    if self._tick_recorder:
+                        asyncio.create_task(
+                            self._tick_recorder.record_timesfm_forecast(
+                                timesfm_forecast,
+                                asset=window.asset,
+                                window_ts=int(window.window_ts),
+                            )
+                        )
             except Exception as exc:
                 self._log.debug("evaluate.timesfm_fetch_failed", error=str(exc))
 
