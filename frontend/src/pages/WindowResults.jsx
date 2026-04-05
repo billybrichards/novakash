@@ -393,6 +393,7 @@ function WindowCard({ outcome, isExpanded, onToggle }) {
     gamma_up_price, gamma_down_price, gamma_correct,
     vpin, confidence,
     v58_would_trade, v58_correct, v58_pnl,
+    v58_skip_reason, tfm_v57c_agree,
     engine_version,
   } = outcome;
 

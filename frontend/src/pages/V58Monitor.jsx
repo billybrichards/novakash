@@ -1068,15 +1068,19 @@ function OutcomeHistoryTable({ outcomes, selectedTs, onSelectWindow }) {
                       {o.v58_correct ? '✓ WIN' : '✗ LOSS'}
                     </span>
                   ) : (
-                    <span style={{
-                      padding: '2px 7px',
-                      borderRadius: 4,
-                      background: 'rgba(255,255,255,0.04)',
-                      color: T.label,
-                      fontSize: 9,
-                      letterSpacing: '0.04em',
-                    }}>
-                      SKIP
+                    <span
+                      title={o.v58_skip_reason || o.skip_reason || 'No trade signal'}
+                      style={{
+                        padding: '2px 7px',
+                        borderRadius: 4,
+                        background: o.tfm_v57c_agree === false ? 'rgba(248,113,113,0.08)' : 'rgba(255,255,255,0.04)',
+                        color: o.tfm_v57c_agree === false ? T.loss : T.label,
+                        fontSize: 9,
+                        letterSpacing: '0.04em',
+                        cursor: 'help',
+                        borderBottom: '1px dotted rgba(255,255,255,0.15)',
+                      }}>
+                      {o.tfm_v57c_agree === false ? 'DISAGREE' : 'SKIP'}
                     </span>
                   )}
                 </td>

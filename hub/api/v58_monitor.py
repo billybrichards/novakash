@@ -529,15 +529,29 @@ def _calc_outcome_row(row: Any) -> dict:
     v57c_pnl = _calc_what_if_pnl(direction, actual_direction, gamma_up, gamma_down) if actual_direction else None
     twap_pnl = _calc_what_if_pnl(twap_dir, actual_direction, gamma_up, gamma_down) if actual_direction else None
 
-    # v5.8 decision: would trade if timesfm_agreement=True
-    timesfm_agreement = row.get("timesfm_agreement")
+    # v5.8 decision: would trade if TimesFM agrees with v5.7c direction
+    # Compute agreement from actual columns (timesfm_agreement column is not populated)
     trade_placed = bool(row.get("trade_placed")) if row.get("trade_placed") is not None else False
-    v58_would_trade = bool(timesfm_agreement) and trade_placed
+    skip_reason = row.get("skip_reason")
+    tfm_v57c_agree = (timesfm_dir == direction) if (timesfm_dir and direction) else None
+    
+    # v5.8 would trade if: TimesFM agrees with v5.7c AND v5.7c didn't skip on thresholds
+    v58_would_trade = bool(tfm_v57c_agree) and not skip_reason
     v58_pnl: Optional[float] = None
     v58_correct: Optional[bool] = None
+    v58_skip_reason: Optional[str] = None
+
+    if not tfm_v57c_agree and timesfm_dir and direction:
+        v58_skip_reason = f"DISAGREE: TimesFM={timesfm_dir} vs v5.7c={direction}"
+    elif skip_reason:
+        v58_skip_reason = skip_reason
+    elif not timesfm_dir:
+        v58_skip_reason = "No TimesFM forecast"
+    elif not direction:
+        v58_skip_reason = "No v5.7c signal"
 
     if v58_would_trade and actual_direction:
-        v58_correct = v57c_correct  # v5.8 follows v5.7c direction when agreed
+        v58_correct = v57c_correct
         v58_pnl = _calc_what_if_pnl(direction, actual_direction, gamma_up, gamma_down)
 
     base = _row_to_window(row)
@@ -552,6 +566,8 @@ def _calc_outcome_row(row: Any) -> dict:
         "v57c_pnl": v57c_pnl,
         "twap_pnl": twap_pnl,
         "v58_would_trade": v58_would_trade,
+        "v58_skip_reason": v58_skip_reason,
+        "tfm_v57c_agree": tfm_v57c_agree,
         "v58_correct": v58_correct,
         "v58_pnl": v58_pnl,
     })
