@@ -504,6 +504,11 @@ class Orchestrator:
             asyncio.create_task(self._market_state_loop(), name="market_state_loop")
         )
 
+        # 7b. Manual trade queue poller (v5.8 dashboard live trades)
+        self._tasks.append(
+            asyncio.create_task(self._manual_trade_poller(), name="manual_trade_poller")
+        )
+
         # 8. Builder Relayer redeemer (live mode only)
         if not self._settings.paper_mode:
             try:
@@ -1417,6 +1422,101 @@ class Orchestrator:
             pass
         except Exception as exc:
             log.error("orchestrator.market_state_loop_error", error=str(exc))
+
+    async def _manual_trade_poller(self) -> None:
+        """Poll DB for manual 'pending_live' trades from the dashboard and execute them.
+        
+        The hub API writes trades with status='pending_live' when Billy clicks
+        the Live Trade button. This poller picks them up and submits FOK orders
+        to Polymarket via the poly_client.
+        """
+        log.info("manual_trade_poller.started")
+        while not self._shutdown_event.is_set():
+            try:
+                await asyncio.sleep(5)  # Poll every 5 seconds
+                if not self._db or not self._poly_client:
+                    continue
+                
+                pending = await self._db.poll_pending_live_trades()
+                for trade in pending:
+                    trade_id = trade["trade_id"]
+                    direction_raw = trade["direction"]  # "UP" or "DOWN"
+                    direction = "YES" if direction_raw == "UP" else "NO"
+                    entry_price = trade["entry_price"]
+                    stake = trade["stake_usd"] or 4.0
+                    window_ts = trade["window_ts"]
+                    asset = trade.get("asset", "BTC")
+                    
+                    log.info(
+                        "manual_trade.executing",
+                        trade_id=trade_id,
+                        direction=direction,
+                        entry_price=f"${entry_price:.4f}",
+                        stake=f"${stake:.2f}",
+                    )
+                    
+                    # Update status to 'executing'
+                    await self._db.update_manual_trade_status(trade_id, "executing")
+                    
+                    try:
+                        # Build market slug
+                        tf = "5m"  # Manual trades default to 5m
+                        market_slug = f"{asset.lower()}-updown-{tf}-{window_ts}"
+                        
+                        # Get token ID from recent windows
+                        token_id = None
+                        if self._five_min_strategy and hasattr(self._five_min_strategy, '_recent_windows'):
+                            for w in reversed(self._five_min_strategy._recent_windows):
+                                if w.window_ts == window_ts:
+                                    token_id = w.up_token_id if direction == "YES" else w.down_token_id
+                                    break
+                        
+                        if not token_id:
+                            log.warning("manual_trade.no_token_id", trade_id=trade_id)
+                            await self._db.update_manual_trade_status(trade_id, "failed_no_token")
+                            continue
+                        
+                        if self._poly_client.paper_mode:
+                            # Paper mode — simulate fill
+                            clob_id = f"manual-paper-{trade_id[:12]}"
+                            await self._db.update_manual_trade_status(trade_id, "open")
+                            log.info("manual_trade.paper_filled", trade_id=trade_id, clob_id=clob_id)
+                        else:
+                            # Live — submit FOK to CLOB
+                            from decimal import Decimal
+                            clob_id = await self._poly_client.place_order(
+                                market_slug=market_slug,
+                                direction=direction,
+                                price=Decimal(str(round(min(entry_price + 0.02, 0.65), 4))),  # Slight buffer above entry
+                                stake_usd=stake,
+                                token_id=token_id,
+                            )
+                            await self._db.update_manual_trade_status(trade_id, "open")
+                            log.info("manual_trade.live_submitted", trade_id=trade_id, clob_id=str(clob_id)[:20])
+                        
+                        # Alert on Telegram
+                        if self._alerter:
+                            _mode = "📄 PAPER" if self._poly_client.paper_mode else "🔴 LIVE"
+                            await self._alerter.send_system_alert(
+                                f"👆 Manual Trade Executed ({_mode})\n"
+                                f"Direction: {direction_raw}\n"
+                                f"Entry: ${entry_price:.4f}\n"
+                                f"Stake: ${stake:.2f}\n"
+                                f"Trade ID: {trade_id[:16]}",
+                                level="info",
+                            )
+                    
+                    except Exception as exc:
+                        log.error("manual_trade.execution_failed", trade_id=trade_id, error=str(exc))
+                        await self._db.update_manual_trade_status(trade_id, f"failed: {str(exc)[:50]}")
+                        
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                log.error("manual_trade_poller.error", error=str(exc))
+                await asyncio.sleep(30)
+        
+        log.info("manual_trade_poller.stopped")
 
     async def _position_monitor_loop(self) -> None:
         """Every 30s: check Polymarket positions API for resolved trades.

@@ -715,3 +715,47 @@ class DBClient:
         async with self._pool.acquire() as conn:
             row = await conn.fetchval(query, target)
         return float(row or 0)
+
+    # ─── Manual Trade Queue (v5.8 Dashboard) ─────────────────────────────
+
+    async def poll_pending_live_trades(self) -> list:
+        """Fetch manual trades with status='pending_live' for engine execution."""
+        if not self._pool:
+            return []
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT trade_id, window_ts, asset, direction, entry_price,
+                           gamma_up_price, gamma_down_price, stake_usd
+                    FROM manual_trades
+                    WHERE status = 'pending_live'
+                    ORDER BY created_at ASC
+                    LIMIT 5
+                """)
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            log.debug("db.poll_pending_live_failed", error=str(exc))
+            return []
+
+    async def update_manual_trade_status(
+        self, trade_id: str, status: str, pnl_usd: float = None,
+        outcome_direction: str = None, clob_order_id: str = None,
+    ) -> None:
+        """Update a manual trade after execution or resolution."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                if pnl_usd is not None:
+                    await conn.execute("""
+                        UPDATE manual_trades
+                        SET status = $1, pnl_usd = $2, outcome_direction = $3, resolved_at = NOW()
+                        WHERE trade_id = $4
+                    """, status, pnl_usd, outcome_direction, trade_id)
+                else:
+                    await conn.execute("""
+                        UPDATE manual_trades SET status = $1 WHERE trade_id = $2
+                    """, status, trade_id)
+            log.info("db.manual_trade_updated", trade_id=trade_id, status=status)
+        except Exception as exc:
+            log.error("db.manual_trade_update_failed", error=str(exc))
