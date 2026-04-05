@@ -1706,3 +1706,116 @@ async def get_window_detail(
         "entry_timing": entry_timing,
         "what_if": what_if,
     }
+
+
+# ─── Gate Analysis endpoint ──────────────────────────────────────────────────
+
+@router.get("/v58/gate-analysis")
+async def get_gate_analysis(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    Win rate at different VPIN gate levels + AI suggestion.
+    Shows the tradeoff between gate strictness and win rate.
+    """
+    try:
+        q = text("""
+            SELECT 
+                vpin_bucket,
+                COUNT(*) as eligible,
+                COUNT(*) FILTER (WHERE v71_correct = true) as wins,
+                COUNT(*) FILTER (WHERE v71_correct = false) as losses,
+                ROUND(AVG(CASE WHEN v71_correct IS NOT NULL THEN CASE WHEN v71_correct THEN 1.0 ELSE 0.0 END END) * 100, 1) as wr_pct,
+                ROUND(SUM(COALESCE(v71_pnl, 0))::numeric, 2) as total_pnl
+            FROM (
+                SELECT 
+                    CASE 
+                        WHEN vpin >= 0.65 THEN '0.65+'
+                        WHEN vpin >= 0.55 THEN '0.55-0.65'
+                        WHEN vpin >= 0.45 THEN '0.45-0.55'
+                        WHEN vpin >= 0.35 THEN '0.35-0.45'
+                        ELSE '<0.35'
+                    END as vpin_bucket,
+                    v71_correct,
+                    v71_pnl
+                FROM window_snapshots
+                WHERE timeframe = '5m' AND v71_would_trade = true AND v71_correct IS NOT NULL
+            ) x
+            GROUP BY vpin_bucket ORDER BY vpin_bucket
+        """)
+        result = await session.execute(q)
+        rows = result.mappings().all()
+        
+        buckets = []
+        total_wins = 0
+        total_losses = 0
+        total_pnl = 0.0
+        for r in rows:
+            wins = int(r["wins"] or 0)
+            losses = int(r["losses"] or 0)
+            total_wins += wins
+            total_losses += losses
+            pnl = float(r["total_pnl"] or 0)
+            total_pnl += pnl
+            buckets.append({
+                "vpin_range": r["vpin_bucket"],
+                "eligible": int(r["eligible"] or 0),
+                "wins": wins,
+                "losses": losses,
+                "wr_pct": float(r["wr_pct"] or 0),
+                "pnl": pnl,
+            })
+        
+        overall_wr = round(total_wins / (total_wins + total_losses) * 100, 1) if (total_wins + total_losses) > 0 else 0.0
+        
+        # Cumulative WR at each gate level (from strictest to loosest)
+        cumulative = []
+        cum_wins = 0
+        cum_losses = 0
+        cum_pnl = 0.0
+        for b in reversed(buckets):
+            cum_wins += b["wins"]
+            cum_losses += b["losses"]
+            cum_pnl += b["pnl"]
+            cum_total = cum_wins + cum_losses
+            cumulative.append({
+                "gate_at": b["vpin_range"],
+                "total_trades": cum_total,
+                "wins": cum_wins,
+                "losses": cum_losses,
+                "wr_pct": round(cum_wins / cum_total * 100, 1) if cum_total > 0 else 0.0,
+                "pnl": round(cum_pnl, 2),
+            })
+        cumulative.reverse()
+        
+        # Find the optimal gate (best WR with >= 20 trades)
+        best_gate = None
+        for c in cumulative:
+            if c["total_trades"] >= 20 and (best_gate is None or c["wr_pct"] > best_gate["wr_pct"]):
+                best_gate = c
+        
+        # AI suggestion
+        current_gate = 0.45
+        suggestion = ""
+        if best_gate:
+            if best_gate["wr_pct"] > overall_wr + 3:
+                suggestion = f"Tighten gate to {best_gate['gate_at']} — WR improves to {best_gate['wr_pct']}% ({best_gate['total_trades']} trades) vs current {overall_wr}%"
+            elif overall_wr >= 70:
+                suggestion = f"Current gate is performing well at {overall_wr}% WR. No change recommended."
+            else:
+                suggestion = f"WR is {overall_wr}%. Consider tightening VPIN gate above 0.55 if WR drops below 65%."
+        
+        return {
+            "buckets": buckets,
+            "cumulative": cumulative,
+            "overall_wr": overall_wr,
+            "total_wins": total_wins,
+            "total_losses": total_losses,
+            "total_pnl": round(total_pnl, 2),
+            "current_gate": current_gate,
+            "best_gate": best_gate,
+            "suggestion": suggestion,
+        }
+    except Exception as exc:
+        return {"buckets": [], "cumulative": [], "error": str(exc)}

@@ -2281,6 +2281,7 @@ export default function V58Monitor() {
   const [wsStatus, setWsStatus] = useState('OFFLINE');
   const [outcomes, setOutcomes] = useState([]);
   const [accuracy, setAccuracy] = useState(null);
+  const [gateAnalysis, setGateAnalysis] = useState(null);
   const [selectedOutcomeTs, setSelectedOutcomeTs] = useState(null);
   const [manualTrades, setManualTrades] = useState([]);
   const [manualTotalPnl, setManualTotalPnl] = useState(0);
@@ -2309,12 +2310,13 @@ export default function V58Monitor() {
   // ── Fetch ───────────────────────────────────────────────────────────────────
   const fetchAll = useCallback(async () => {
     try {
-      const [windowsRes, statsRes, priceRes, outcomesRes, accuracyRes] = await Promise.allSettled([
+      const [windowsRes, statsRes, priceRes, outcomesRes, accuracyRes, gateRes] = await Promise.allSettled([
         api('GET', '/v58/windows?limit=50'),
         api('GET', '/v58/stats?days=7'),
         api('GET', '/v58/price-history?minutes=60'),
         api('GET', '/v58/outcomes?limit=100'),
         api('GET', '/v58/accuracy?limit=100'),
+        api('GET', '/v58/gate-analysis'),
       ]);
 
       if (windowsRes.status === 'fulfilled') {
@@ -2339,6 +2341,10 @@ export default function V58Monitor() {
 
       if (accuracyRes.status === 'fulfilled') {
         setAccuracy(accuracyRes.value?.data ?? null);
+      }
+
+      if (gateRes.status === 'fulfilled') {
+        setGateAnalysis(gateRes.value?.data ?? null);
       }
 
       setLastRefresh(new Date());
@@ -2911,6 +2917,105 @@ export default function V58Monitor() {
             <AccuracyScoreboard accuracy={accuracy} />
           </div>
         </section>
+
+        {/* § GATE vs WIN RATE ANALYSIS */}
+        {gateAnalysis && gateAnalysis.buckets?.length > 0 && (
+          <section>
+            <SectionHeader>GATE vs WIN RATE — v7.1 Analysis</SectionHeader>
+            <div style={{
+              background: 'rgba(168,85,247,0.04)',
+              border: '1px solid rgba(168,85,247,0.2)',
+              borderRadius: 12,
+              padding: '20px',
+            }}>
+              {/* Bar chart of WR by VPIN bucket */}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', height: 120, marginBottom: 16 }}>
+                {gateAnalysis.buckets.map((b) => {
+                  const maxH = 100;
+                  const barH = Math.max(4, (b.wr_pct / 100) * maxH);
+                  const barColor = b.wr_pct >= 75 ? '#22c55e' : b.wr_pct >= 65 ? '#eab308' : '#ef4444';
+                  return (
+                    <div key={b.vpin_range} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: barColor, fontFamily: T.mono }}>{b.wr_pct}%</div>
+                      <div style={{
+                        width: '100%',
+                        height: barH,
+                        background: barColor,
+                        borderRadius: '4px 4px 0 0',
+                        opacity: 0.8,
+                        transition: 'height 300ms ease-out',
+                      }} />
+                      <div style={{ fontSize: 8, color: T.label, fontFamily: T.mono, textAlign: 'center' }}>{b.vpin_range}</div>
+                      <div style={{ fontSize: 8, color: T.label2, fontFamily: T.mono }}>{b.wins}W/{b.losses}L</div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Cumulative gate table */}
+              <div style={{ fontSize: 9, color: T.label, marginBottom: 8, fontWeight: 600, letterSpacing: '0.08em' }}>
+                CUMULATIVE WR (if gate set at each level)
+              </div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontFamily: T.mono, fontSize: 10 }}>
+                <thead>
+                  <tr style={{ borderBottom: `1px solid ${T.border}` }}>
+                    {['Gate ≥', 'Trades', 'W/L', 'WR%', 'P&L'].map(h => (
+                      <th key={h} style={{ padding: '4px 8px', textAlign: 'left', color: T.label, fontSize: 9, fontWeight: 600 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {gateAnalysis.cumulative?.map((c) => {
+                    const isCurrent = c.gate_at === '0.45-0.55' || c.gate_at === '<0.35' || c.gate_at === '0.35-0.45';
+                    const isHighlight = gateAnalysis.best_gate && c.gate_at === gateAnalysis.best_gate.gate_at;
+                    return (
+                      <tr key={c.gate_at} style={{
+                        borderBottom: `1px solid ${T.border}`,
+                        background: isHighlight ? 'rgba(168,85,247,0.1)' : 'transparent',
+                      }}>
+                        <td style={{ padding: '4px 8px', color: isHighlight ? '#a855f7' : '#fff', fontWeight: isHighlight ? 700 : 400 }}>
+                          {c.gate_at} {isHighlight && '★'}
+                        </td>
+                        <td style={{ padding: '4px 8px' }}>{c.total_trades}</td>
+                        <td style={{ padding: '4px 8px' }}>{c.wins}/{c.losses}</td>
+                        <td style={{ padding: '4px 8px', color: c.wr_pct >= 75 ? '#22c55e' : c.wr_pct >= 65 ? '#eab308' : '#ef4444', fontWeight: 700 }}>
+                          {c.wr_pct}%
+                        </td>
+                        <td style={{ padding: '4px 8px', color: c.pnl >= 0 ? '#22c55e' : '#ef4444' }}>
+                          {c.pnl >= 0 ? '+' : ''}${c.pnl.toFixed(2)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+
+              {/* AI Suggestion */}
+              {gateAnalysis.suggestion && (
+                <div style={{
+                  marginTop: 12,
+                  padding: '10px 14px',
+                  borderRadius: 8,
+                  background: 'rgba(168,85,247,0.08)',
+                  border: '1px solid rgba(168,85,247,0.25)',
+                  fontSize: 10,
+                  color: '#c084fc',
+                  fontFamily: T.mono,
+                  lineHeight: 1.5,
+                }}>
+                  🤖 <span style={{ fontWeight: 700 }}>AI Gate Suggestion:</span> {gateAnalysis.suggestion}
+                </div>
+              )}
+
+              {/* Overall stats */}
+              <div style={{ marginTop: 10, display: 'flex', gap: 16, fontSize: 9, color: T.label2, fontFamily: T.mono }}>
+                <span>Overall: <strong style={{ color: '#a855f7' }}>{gateAnalysis.overall_wr}%</strong> ({gateAnalysis.total_wins}W/{gateAnalysis.total_losses}L)</span>
+                <span>P&L: <strong style={{ color: gateAnalysis.total_pnl >= 0 ? '#22c55e' : '#ef4444' }}>{gateAnalysis.total_pnl >= 0 ? '+' : ''}${gateAnalysis.total_pnl.toFixed(2)}</strong></span>
+                <span>Current Gate: <strong style={{ color: '#a855f7' }}>≥{gateAnalysis.current_gate}</strong></span>
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* § OUTCOME HISTORY TABLE */}
         <section>
