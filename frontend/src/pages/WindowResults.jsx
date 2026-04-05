@@ -393,6 +393,7 @@ function WindowCard({ outcome, isExpanded, onToggle }) {
     gamma_up_price, gamma_down_price, gamma_correct,
     vpin, confidence,
     v58_would_trade, v58_correct, v58_pnl,
+    engine_version,
   } = outcome;
 
   const time = window_ts
@@ -441,9 +442,19 @@ function WindowCard({ outcome, isExpanded, onToggle }) {
           alignItems: 'center',
         }}
       >
-        {/* Time */}
+        {/* Time + Version */}
         <div style={{ fontFamily: T.mono, minWidth: 120 }}>
-          <div style={{ fontSize: 11, color: '#fff' }}>{time}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 11, color: '#fff' }}>{time}</span>
+            {engine_version && (
+              <span style={{
+                fontSize: 8, padding: '1px 4px', borderRadius: 3,
+                background: engine_version === 'v5.8' ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.06)',
+                color: engine_version === 'v5.8' ? '#4ade80' : T.label,
+                fontWeight: 600,
+              }}>{engine_version}</span>
+            )}
+          </div>
           <div style={{ fontSize: 9, color: T.label, marginTop: 2 }}>
             {window_ts ? new Date(window_ts).toLocaleTimeString('en-GB') : ''}
           </div>
@@ -563,7 +574,7 @@ function WindowCard({ outcome, isExpanded, onToggle }) {
 }
 
 // ─── Filter / Sort bar ────────────────────────────────────────────────────────
-function FilterBar({ filter, onFilter, sortBy, onSort, count }) {
+function FilterBar({ filter, onFilter, sortBy, onSort, count, versionFilter, setVersionFilter }) {
   const btnStyle = (active) => ({
     padding: '4px 12px',
     borderRadius: 6,
@@ -590,6 +601,15 @@ function FilterBar({ filter, onFilter, sortBy, onSort, count }) {
           <button key={f} style={btnStyle(filter === f)} onClick={() => onFilter(f)}>{f}</button>
         ))}
       </div>
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+        <span style={{ fontSize: 9, color: T.label, fontFamily: T.mono }}>Version:</span>
+        {['ALL', 'v5.8', 'v5.7c', 'v5.7', 'v5.0'].map(v => (
+          <button key={v} style={{
+            ...btnStyle(versionFilter === v),
+            ...(v === 'v5.8' && versionFilter !== v ? { borderColor: 'rgba(74,222,128,0.3)' } : {}),
+          }} onClick={() => setVersionFilter(v)}>{v}</button>
+        ))}
+      </div>
       <div style={{ marginLeft: 'auto', display: 'flex', gap: 4, alignItems: 'center' }}>
         <span style={{ fontSize: 9, color: T.label, fontFamily: T.mono }}>Sort:</span>
         {['newest', 'oldest'].map(s => (
@@ -608,6 +628,7 @@ export default function WindowResults() {
   const [lastRefresh, setLastRefresh] = useState(null);
   const [expandedTs, setExpandedTs] = useState(null);
   const [filter, setFilter] = useState('ALL');
+  const [versionFilter, setVersionFilter] = useState('ALL');
   const [sortBy, setSortBy] = useState('newest');
 
   const fetchData = useCallback(async () => {
@@ -632,6 +653,11 @@ export default function WindowResults() {
   const filtered = useMemo(() => {
     let items = [...outcomes];
 
+    // Version filter
+    if (versionFilter !== 'ALL') {
+      items = items.filter(o => o.engine_version === versionFilter);
+    }
+
     if (filter === 'WINS') {
       items = items.filter(o => o.v57c_correct === true || o.v58_correct === true);
     } else if (filter === 'LOSSES') {
@@ -647,7 +673,7 @@ export default function WindowResults() {
     }
 
     return items;
-  }, [outcomes, filter, sortBy]);
+  }, [outcomes, filter, versionFilter, sortBy]);
 
   // Summary stats
   const stats = useMemo(() => {
@@ -739,6 +765,8 @@ export default function WindowResults() {
           sortBy={sortBy}
           onSort={setSortBy}
           count={filtered.length}
+          versionFilter={versionFilter}
+          setVersionFilter={setVersionFilter}
         />
 
         {loading && !outcomes.length ? (
