@@ -879,12 +879,48 @@ function AccuracyScoreboard({ accuracy }) {
           padding: '12px 14px',
         }}>
           <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 6 }}>
-            Cumulative P&L
+            v5.8 P&L (gated)
           </div>
           <div style={{ fontSize: 20, fontWeight: 700, color: pnlColor }}>
             {accuracy.cumulative_pnl >= 0 ? '+' : ''}${accuracy.cumulative_pnl.toFixed(2)}
           </div>
-          <div style={{ fontSize: 10, color: T.label }}>$4 bets · v5.8 only</div>
+          <div style={{ fontSize: 10, color: T.label }}>{accuracy.v58_trades_count || 0} trades</div>
+        </div>
+
+        {/* Ungated P&L */}
+        <div style={{
+          background: T.card,
+          border: `1px solid ${T.border}`,
+          borderRadius: 10,
+          padding: '12px 14px',
+        }}>
+          <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 6 }}>
+            Ungated P&L (all signals)
+          </div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: (accuracy.ungated_pnl || 0) >= 0 ? T.profit : T.loss }}>
+            {(accuracy.ungated_pnl || 0) >= 0 ? '+' : ''}${(accuracy.ungated_pnl || 0).toFixed(2)}
+          </div>
+          <div style={{ fontSize: 10, color: T.label }}>
+            {accuracy.ungated_wins || 0}W / {accuracy.ungated_losses || 0}L ({accuracy.ungated_accuracy || 0}%)
+          </div>
+        </div>
+
+        {/* Gate Value */}
+        <div style={{
+          background: T.card,
+          border: `1px solid ${(accuracy.gate_value || 0) > 0 ? 'rgba(74,222,128,0.2)' : 'rgba(248,113,113,0.2)'}`,
+          borderRadius: 10,
+          padding: '12px 14px',
+        }}>
+          <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 6 }}>
+            Gate Value
+          </div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: (accuracy.gate_value || 0) > 0 ? T.loss : T.profit }}>
+            {(accuracy.gate_value || 0) > 0 ? 'COST ' : 'SAVED '}${Math.abs(accuracy.gate_value || 0).toFixed(2)}
+          </div>
+          <div style={{ fontSize: 10, color: T.label }}>
+            {(accuracy.gate_value || 0) > 0 ? 'Gate too tight — missed profits' : 'Gate saved you from losses'}
+          </div>
         </div>
 
         {/* Win streak */}
@@ -957,7 +993,7 @@ function OutcomeHistoryTable({ outcomes, selectedTs, onSelectWindow }) {
       }}>
         <thead>
           <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-            {['Time', 'Open→Close', 'Actual', 'TimesFM', 'TWAP', 'Gamma', 'v5.7c', 'v5.8', 'v5.8 P&L'].map(h => (
+            {['Time', 'Open→Close', 'Actual', 'TimesFM', 'TWAP', 'Gamma', 'v5.7c', 'v5.8', 'If Traded'].map(h => (
               <th key={h} style={{
                 padding: '6px 10px',
                 textAlign: 'left',
@@ -1085,7 +1121,7 @@ function OutcomeHistoryTable({ outcomes, selectedTs, onSelectWindow }) {
                   )}
                 </td>
                 <td style={{ padding: '7px 10px' }}>
-                  <PnlBadge pnl={o.v58_pnl} />
+                  <PnlBadge pnl={o.ungated_pnl != null ? o.ungated_pnl : o.v57c_pnl} />
                 </td>
               </tr>
             );

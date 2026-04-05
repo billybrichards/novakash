@@ -554,6 +554,15 @@ def _calc_outcome_row(row: Any) -> dict:
         v58_correct = v57c_correct
         v58_pnl = _calc_what_if_pnl(direction, actual_direction, gamma_up, gamma_down)
 
+    # Always compute "ungated" P&L — what if we followed v5.7c regardless of gate?
+    ungated_pnl = v57c_pnl  # already computed above for all windows with direction + prices
+    ungated_correct = v57c_correct
+
+    # Gate value: positive = gate saved us, negative = gate cost us profit
+    gate_value: Optional[float] = None
+    if ungated_pnl is not None and not v58_would_trade:
+        gate_value = round(-ungated_pnl, 4)  # saved us from loss (positive) or blocked profit (negative)
+
     base = _row_to_window(row)
     base.update({
         "actual_direction": actual_direction,
@@ -565,6 +574,9 @@ def _calc_outcome_row(row: Any) -> dict:
         "timesfm_pnl": timesfm_pnl,
         "v57c_pnl": v57c_pnl,
         "twap_pnl": twap_pnl,
+        "ungated_pnl": ungated_pnl,
+        "ungated_correct": ungated_correct,
+        "gate_value": gate_value,
         "v58_would_trade": v58_would_trade,
         "v58_skip_reason": v58_skip_reason,
         "tfm_v57c_agree": tfm_v57c_agree,
@@ -682,9 +694,18 @@ async def get_accuracy(
             (agreed_count / len(agreement_windows) * 100) if agreement_windows else 0.0, 1
         )
 
-        # Cumulative P&L (v5.8 trades only, newest-first → reverse for running total)
-        pnls = [o["v58_pnl"] for o in reversed(outcomes) if o["v58_pnl"] is not None]
-        cumulative_pnl = round(sum(pnls), 4)
+        # Cumulative P&L — gated (v5.8 only) vs ungated (every v5.7c signal)
+        gated_pnls = [o["v58_pnl"] for o in reversed(outcomes) if o["v58_pnl"] is not None]
+        cumulative_pnl = round(sum(gated_pnls), 4)
+
+        ungated_pnls = [o["ungated_pnl"] for o in reversed(outcomes) if o["ungated_pnl"] is not None]
+        ungated_cumulative = round(sum(ungated_pnls), 4)
+        ungated_wins = sum(1 for o in outcomes if o.get("ungated_correct") is True)
+        ungated_losses = sum(1 for o in outcomes if o.get("ungated_correct") is False)
+        ungated_accuracy = round(ungated_wins / (ungated_wins + ungated_losses) * 100, 1) if (ungated_wins + ungated_losses) > 0 else 0.0
+
+        # Gate value: how much did gating save/cost?
+        gate_total = round(ungated_cumulative - cumulative_pnl, 4)
 
         # Current win streak (from most recent backwards)
         streak = 0
@@ -696,16 +717,24 @@ async def get_accuracy(
             elif o["v58_correct"] is False:
                 break
 
-        # Cumulative P&L timeline for charting (newest-first from API, reversed for chart)
+        # Cumulative P&L timeline — both gated and ungated
         pnl_timeline = []
-        running = 0.0
+        running_gated = 0.0
+        running_ungated = 0.0
         for o in reversed(outcomes):
-            if o["v58_pnl"] is not None:
-                running += o["v58_pnl"]
+            ungated_p = o.get("ungated_pnl")
+            gated_p = o.get("v58_pnl")
+            if ungated_p is not None:
+                running_ungated += ungated_p
+            if gated_p is not None:
+                running_gated += gated_p
+            if ungated_p is not None or gated_p is not None:
                 pnl_timeline.append({
                     "window_ts": o["window_ts"],
-                    "pnl": round(o["v58_pnl"], 4),
-                    "cumulative": round(running, 4),
+                    "gated_pnl": round(gated_p, 4) if gated_p is not None else None,
+                    "ungated_pnl": round(ungated_p, 4) if ungated_p is not None else None,
+                    "gated_cumulative": round(running_gated, 4),
+                    "ungated_cumulative": round(running_ungated, 4),
                 })
 
         return {
@@ -718,6 +747,11 @@ async def get_accuracy(
             "v58_trades_count": len(v58_trades),
             "agreement_rate": agreement_rate,
             "cumulative_pnl": cumulative_pnl,
+            "ungated_pnl": ungated_cumulative,
+            "ungated_accuracy": ungated_accuracy,
+            "ungated_wins": ungated_wins,
+            "ungated_losses": ungated_losses,
+            "gate_value": gate_total,
             "current_streak": streak,
             "pnl_timeline": pnl_timeline,
         }
@@ -736,6 +770,11 @@ def _empty_accuracy() -> dict:
         "v58_trades_count": 0,
         "agreement_rate": 0.0,
         "cumulative_pnl": 0.0,
+        "ungated_pnl": 0.0,
+        "ungated_accuracy": 0.0,
+        "ungated_wins": 0,
+        "ungated_losses": 0,
+        "gate_value": 0.0,
         "current_streak": 0,
         "pnl_timeline": [],
     }
