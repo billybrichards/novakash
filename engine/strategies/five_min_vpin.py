@@ -1533,22 +1533,67 @@ class FiveMinVPINStrategy(BaseStrategy):
             token_price = _fresh_best_ask  # Record REAL market price
             _price_source = f"market={_fresh_best_ask:.4f}(fok_limit={_max_price})"
         elif _fresh_best_ask is not None and _fresh_best_ask > _max_price:
+            _skip_msg = f"PRICE CAP: entry ${_fresh_best_ask:.3f} > cap ${_max_price:.2f} — too expensive, bad R/R"
             self._log.warning(
                 "execute.price_above_cap",
                 bestask=f"${_fresh_best_ask:.4f}",
                 cap=f"${_max_price:.2f}",
             )
+            # Telegram notification for cap-blocked trade
+            if self._alerter:
+                try:
+                    _mode = "📄 PAPER" if self._poly.paper_mode else "🔴 LIVE"
+                    asyncio.create_task(self._alerter._send_with_id(
+                        f"🚫 *TRADE BLOCKED — PRICE CAP*  {_mode}\n"
+                        f"`{signal.asset}-{signal.window_ts}`\n\n"
+                        f"Direction: `{direction}`\n"
+                        f"Entry price: `${_fresh_best_ask:.3f}` ← above cap\n"
+                        f"Cap: `${_max_price:.2f}`\n"
+                        f"R/R: risk `${_fresh_best_ask:.2f}` to win `${1-_fresh_best_ask:.2f}` ({((1-_fresh_best_ask)/_fresh_best_ask*100):.0f}% return)\n\n"
+                        f"_Trade would have proceeded if price ≤ ${_max_price:.2f}_"
+                    ))
+                except Exception:
+                    pass
+            # Record in DB
+            if self._db:
+                try:
+                    asyncio.create_task(self._db.update_window_skip_reason(
+                        signal.window_ts, signal.asset, "5m", _skip_msg
+                    ))
+                except Exception:
+                    pass
             return
         elif _model_price <= _max_price and _model_price >= 0.30:
             token_price = min(_model_price, _max_price)  # Best estimate
             _price_source = f"model={_model_price:.4f}(fok_limit={_max_price})"
         else:
+            _skip_msg = f"PRICE OUT OF RANGE: model=${_model_price:.4f}, bestask=${_fresh_best_ask:.4f if _fresh_best_ask else 'n/a'}, cap=${_max_price:.2f}"
             self._log.warning(
                 "execute.price_out_of_range",
                 model=f"${_model_price:.4f}",
                 bestask=f"${_fresh_best_ask:.4f}" if _fresh_best_ask else "n/a",
                 cap=f"${_max_price:.2f}",
             )
+            # Telegram notification
+            if self._alerter:
+                try:
+                    _mode = "📄 PAPER" if self._poly.paper_mode else "🔴 LIVE"
+                    asyncio.create_task(self._alerter._send_with_id(
+                        f"🚫 *TRADE BLOCKED — PRICE OUT OF RANGE*  {_mode}\n"
+                        f"`{signal.asset}-{signal.window_ts}`\n\n"
+                        f"Model: `${_model_price:.4f}` | BestAsk: `${_fresh_best_ask:.4f if _fresh_best_ask else 'n/a'}`\n"
+                        f"Cap: `${_max_price:.2f}`\n\n"
+                        f"_No valid entry price found_"
+                    ))
+                except Exception:
+                    pass
+            if self._db:
+                try:
+                    asyncio.create_task(self._db.update_window_skip_reason(
+                        signal.window_ts, signal.asset, "5m", _skip_msg
+                    ))
+                except Exception:
+                    pass
             return
         
         self._log.info(
