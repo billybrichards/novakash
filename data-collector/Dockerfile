@@ -9,4 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "-u", "collector.py"]
+# MODE env var: "collect" (default) or "backfill"
+# collect = continuous live collection
+# backfill = fetch 30 days history then exit
+CMD ["sh", "-c", "if [ \"$MODE\" = 'backfill' ]; then python -u backfill.py; else python -u collector.py; fi"]
