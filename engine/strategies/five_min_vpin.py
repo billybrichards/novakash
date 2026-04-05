@@ -1500,6 +1500,15 @@ class FiveMinVPINStrategy(BaseStrategy):
                                     direction=direction,
                                     using=f"${_fresh_best_ask:.4f}",
                                 )
+                                # Store fresh T-60 gamma prices to snapshot
+                                if self._db:
+                                    try:
+                                        asyncio.create_task(self._db.update_gamma_prices(
+                                            window_ts=signal.window_ts, asset=signal.asset, timeframe="5m",
+                                            gamma_up=_fresh_up, gamma_down=_fresh_down,
+                                        ))
+                                    except Exception:
+                                        pass
         except Exception as _exc:
             self._log.debug("execute.gamma_fetch_error", error=str(_exc))
         

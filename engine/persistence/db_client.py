@@ -249,6 +249,19 @@ class DBClient:
             log.error("db.update_heartbeat_failed", error=str(exc))
             # Don't re-raise — heartbeat failure is not fatal
 
+    async def update_gamma_prices(self, window_ts: int, asset: str, timeframe: str, gamma_up: float, gamma_down: float) -> None:
+        """Store fresh T-60 Gamma prices to window_snapshot."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE window_snapshots SET gamma_up_price = $1, gamma_down_price = $2 WHERE window_ts = $3 AND asset = $4 AND timeframe = $5",
+                    gamma_up, gamma_down, window_ts, asset, timeframe
+                )
+        except Exception:
+            pass
+
     async def get_mode_toggles(self) -> dict | None:
         """Read paper_enabled / live_enabled from system_state (set by frontend toggle)."""
         if not self._pool:
