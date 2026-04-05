@@ -854,14 +854,14 @@ class TelegramAlerter:
                     gamma_mid = (gamma_bid_safe + gamma_ask_safe) / 2
                     _entry_price = gamma_mid
                     
-                    # Reasonable exit prices: 0.90 if prediction correct, 0.10 if wrong
-                    _exit_price = 0.90 if tfm_prediction_correct else 0.10
+                    # Binary tokens resolve to $1.00 (correct) or $0.00 (wrong)
+                    _exit_price = 1.00 if tfm_prediction_correct else 0.00
                     _dir_label = "NO" if _tfm_dir == "DOWN" else "YES"
                     
                     # P&L: (exit - entry) * bet_size
                     _raw_pnl = ((_exit_price - _entry_price) * max_bet)
                     _fee_pct = 0.02
-                    _net_pnl = _raw_pnl * (1 - _fee_pct)
+                    _net_pnl = _raw_pnl * (1 - _fee_pct) if _raw_pnl > 0 else _raw_pnl
                     
                     _pnl_emoji = "📈" if _net_pnl > 0 else ("📉" if _net_pnl < 0 else "➖")
                     _outcome_text = "✅ CORRECT" if tfm_prediction_correct else "❌ WRONG"
@@ -870,7 +870,7 @@ class TelegramAlerter:
                         f"*TimesFM Strategy*",
                         f"  → Bet `{_dir_label}` at `${_entry_price:.4f}` (Gamma mid)",
                         f"  → Outcome: {_outcome_text} (actual: {actual_direction}) | Conf: {_tfm_conf*100:.0f}%",
-                        f"  → Exit: `${_exit_price:.4f}` | P&L: {_pnl_emoji} `${_net_pnl:+.2f}` (after 2% fee)",
+                        f"  → P&L: {_pnl_emoji} `${_net_pnl:+.2f}` {'(after 2% fee)' if _net_pnl > 0 else '(total loss)'}",
                         f"",
                     ]
 
@@ -881,23 +881,21 @@ class TelegramAlerter:
                 gamma_bid_safe = gamma_bid if (gamma_bid and gamma_bid > 0) else 0.50
                 gamma_ask_safe = gamma_ask if (gamma_ask and gamma_ask > 0) else 0.50
                 
-                # For binary options, use reasonable exit prices based on direction
-                # If prediction correct: exit at 0.90 (won); if wrong: exit at 0.10 (lost)
-                # This is a reasonable assumption for Polymarket pricing at resolution
+                # Binary tokens resolve to $1.00 (correct) or $0.00 (wrong)
                 actual_direction = "UP" if (delta_pct > 0) else "DOWN"
                 prediction_correct = (_v57_dir == actual_direction)
                 
                 if True:  # Always calculate
                     _entry_price = gamma_bid_safe if _v57_dir == "UP" else gamma_ask_safe
                     
-                    # Reasonable exit prices: 0.90 if won, 0.10 if lost
-                    _exit_price = 0.90 if prediction_correct else 0.10
+                    # Binary resolution: $1.00 if correct, $0.00 if wrong
+                    _exit_price = 1.00 if prediction_correct else 0.00
                     _dir_label = "NO" if _v57_dir == "DOWN" else "YES"
                     
-                    # P&L: (exit - entry) * bet_size
+                    # P&L: (exit - entry) * bet_size; fee only on winnings
                     _raw_pnl = ((_exit_price - _entry_price) * max_bet)
                     _fee_pct = 0.02
-                    _net_pnl = _raw_pnl * (1 - _fee_pct)
+                    _net_pnl = _raw_pnl * (1 - _fee_pct) if _raw_pnl > 0 else _raw_pnl
                     
                     _pnl_emoji = "📈" if _net_pnl > 0 else ("📉" if _net_pnl < 0 else "➖")
                     _outcome_text = "✅ CORRECT" if prediction_correct else "❌ WRONG"
@@ -906,7 +904,7 @@ class TelegramAlerter:
                         f"*v5.7c (Multi) Strategy*",
                         f"  → Bet `{_dir_label}` at `${_entry_price:.4f}` (Gamma {('bid' if _v57_dir == 'UP' else 'ask')})",
                         f"  → Outcome: {_outcome_text} (actual: {actual_direction})",
-                        f"  → Exit: `${_exit_price:.4f}` | P&L: {_pnl_emoji} `${_net_pnl:+.2f}` (after 2% fee)",
+                        f"  → P&L: {_pnl_emoji} `${_net_pnl:+.2f}` {'(after 2% fee)' if _net_pnl > 0 else '(total loss)'}",
                         f"",
                     ]
 
