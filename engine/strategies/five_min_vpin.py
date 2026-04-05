@@ -443,12 +443,12 @@ class FiveMinVPINStrategy(BaseStrategy):
             ),
         }
 
-        # ── Non-blocking DB write ────────────────────────────────────────────
+        # ── DB write (AWAIT so row exists before trade_placed update) ─────────
         if self._db is not None:
             try:
-                asyncio.create_task(self._db.write_window_snapshot(window_snapshot))
-            except Exception:
-                pass
+                await self._db.write_window_snapshot(window_snapshot)
+            except Exception as exc:
+                self._log.warning("db.snapshot_write_failed", error=str(exc)[:80])
 
         if signal is None:
             # v7.1: Use the actual skip reason set at the point of rejection
