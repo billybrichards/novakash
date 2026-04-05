@@ -315,6 +315,20 @@ class FiveMinVPINStrategy(BaseStrategy):
             cg = self._cg_enhanced.snapshot
 
         # ── Build window snapshot dict ───────────────────────────────────────
+        # TimesFM data for DB
+        _tfm_direction = None
+        _tfm_confidence = None
+        _tfm_predicted_close = None
+        _tfm_agreement = None
+        if timesfm_forecast and not getattr(timesfm_forecast, 'error', ''):
+            _tfm_direction = getattr(timesfm_forecast, 'direction', None)
+            _tfm_confidence = getattr(timesfm_forecast, 'confidence', None)
+            _tfm_predicted_close = getattr(timesfm_forecast, 'predicted_close', None)
+            # Check agreement with v5.7c direction
+            _implied_dir = "UP" if delta_pct > 0 else "DOWN"
+            _v57c_dir = signal.direction if signal else _implied_dir
+            _tfm_agreement = (_tfm_direction == _v57c_dir) if _tfm_direction else None
+
         window_snapshot = {
             "window_ts": window.window_ts,
             "asset": window.asset,
@@ -341,11 +355,16 @@ class FiveMinVPINStrategy(BaseStrategy):
             "cg_taker_buy_usd": cg.taker_buy_volume_1m if cg else None,
             "cg_taker_sell_usd": cg.taker_sell_volume_1m if cg else None,
             "cg_funding_rate": cg.funding_rate if cg else None,
-            # Signal — always show implied direction from delta, even on skips
-            "direction": signal.direction if signal else None,  # Only record direction when we actually have a signal/prediction
+            # Signal
+            "direction": signal.direction if signal else ("UP" if delta_pct > 0 else "DOWN"),
             "confidence": signal.confidence if signal else None,
             "cg_modifier": signal.cg_modifier if signal else 0.0,
-            "trade_placed": signal is not None,
+            "trade_placed": False,  # Updated to True downstream if order succeeds
+            # TimesFM (v5.8)
+            "timesfm_direction": _tfm_direction,
+            "timesfm_confidence": _tfm_confidence,
+            "timesfm_predicted_close": _tfm_predicted_close,
+            "timesfm_agreement": _tfm_agreement,
             # TWAP data (v5.7)
             "twap_delta_pct": twap_result.twap_delta_pct if twap_result else None,
             "twap_direction": twap_result.twap_direction if twap_result else None,
@@ -359,11 +378,11 @@ class FiveMinVPINStrategy(BaseStrategy):
             "twap_gamma_gate": twap_result.gamma_gate if twap_result else None,
             "twap_should_skip": twap_result.should_skip if twap_result else None,
             "twap_skip_reason": twap_result.skip_reason if twap_result else None,
-            # Gamma market prices (from Polymarket token prices)
-            "market_best_bid": window.up_price if window.up_price else None,
-            "market_best_ask": window.down_price if window.down_price else None,
-            "market_mid_price": (window.up_price + window.down_price) / 2 if (window.up_price and window.down_price) else None,
-            "market_spread": abs(window.up_price - window.down_price) if (window.up_price and window.down_price) else None,
+            # Gamma market prices (Polymarket token prices)
+            "gamma_up_price": window.up_price if window.up_price else None,
+            "gamma_down_price": window.down_price if window.down_price else None,
+            "gamma_mid_price": (window.up_price + window.down_price) / 2 if (window.up_price and window.down_price) else None,
+            "gamma_spread": abs(window.up_price - window.down_price) if (window.up_price and window.down_price) else None,
             "skip_reason": None if signal else (
                 f"VPIN {current_vpin:.3f} < gate {_runtime.five_min_vpin_gate} — not enough informed trading detected to justify entry"
                 if current_vpin < _runtime.five_min_vpin_gate

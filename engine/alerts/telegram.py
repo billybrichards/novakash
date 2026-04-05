@@ -708,150 +708,118 @@ class TelegramAlerter:
         bankroll: float = 160.0,
         max_bet: float = 32.0,
         price_source: str = "unknown",
+        stake_usd: float | None = None,
+        token_price: float | None = None,
     ) -> None:
         """
-        Enhanced window report with P&L scenarios and clear market prices.
+        v5.8 Window Report — clear, value-first format.
 
-        Shows what would happen if we followed TimesFM vs v5.7c, including realistic
-        fill prices from Gamma API and post-fee P&L.
-
-        Args:
-            gamma_bid, gamma_ask:  Real Gamma market prices (bid/ask)
-            bankroll:              Paper bankroll in USD
-            max_bet:               Max bet per trade in USD
-            price_source:          "gamma_api", "synthetic", "stale_gamma"
+        Shows actual values for each signal source, the v5.8 agreement
+        decision, and real P&L if trade is placed.
         """
         try:
             from datetime import datetime, timezone
             ts_str = datetime.fromtimestamp(window_ts, tz=timezone.utc).strftime("%H:%M UTC")
-
-            delta_sign = "+" if delta_pct >= 0 else ""
-            _current_dir = "UP" if delta_pct > 0 else "DOWN"
-            _current_emoji = "📈" if _current_dir == "UP" else "📉"
-
-            regime_emoji = {
-                "CASCADE": "🌊", "TRANSITION": "🔄", "NORMAL": "📊",
-                "CALM": "😴", "LOW_VOL": "😴", "TRENDING": "📈",
-            }.get(regime, "❓")
-
-            # Price source tag
-            _src_tag = {"gamma_api": "LIVE", "gamma_api_fresh": "LIVE", "synthetic": "SYN", "stale_gamma": "STALE"}.get(price_source, "?")
-
-            # Safe gamma values
-            gamma_bid_safe = gamma_bid if (gamma_bid and gamma_bid > 0) else 0.50
-            gamma_ask_safe = gamma_ask if (gamma_ask and gamma_ask > 0) else 0.50
-            gamma_up = gamma_bid_safe   # UP token price (what you pay to bet UP)
-            gamma_down = gamma_ask_safe  # DOWN token price (what you pay to bet DOWN)
+            _paper_tag = "📄 PAPER" if not getattr(self, '_live_mode', False) else "🔴 LIVE"
 
             # ━━━━━ HEADER ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            _dir_emoji = "📈" if delta_pct > 0 else "📉"
+            gamma_up = gamma_bid if (gamma_bid and gamma_bid > 0) else 0.50
+            gamma_down = gamma_ask if (gamma_ask and gamma_ask > 0) else 0.50
+
             lines = [
-                f"🎯 *{asset} {timeframe}* — {ts_str}",
-                f"`${open_price:,.2f}` → `${close_price:,.2f}` | Δ `{delta_sign}{delta_pct:+.4f}%` {_current_emoji}",
-                f"VPIN `{vpin:.4f}` | {regime_emoji} `{regime}`",
+                f"{'⚡' if trade_placed else '⏭️'} *{asset} {timeframe}* — {ts_str} ({_paper_tag})",
+                "",
             ]
 
-            # ━━━━━ GAMMA PRICES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            if gamma_bid is not None and gamma_ask is not None and gamma_bid > 0 and gamma_ask > 0:
-                lines.append(f"UP `${gamma_up:.2f}` / DOWN `${gamma_down:.2f}` [{_src_tag}]")
+            # ━━━━━ SIGNAL SOURCES (the actual values) ━━━━━━
+            lines.append("*📊 Signal Sources*")
+            lines.append("```")
+
+            # Point delta
+            _point_dir = "UP" if delta_pct > 0 else "DOWN"
+            lines.append(f"Point    {_point_dir:>4}  δ{delta_pct:+.4f}%")
+            lines.append(f"         ${open_price:,.2f}→${close_price:,.2f}")
+
+            # TWAP
+            _twap_dir = "?"
+            _twap_delta = 0.0
+            if twap_result:
+                _twap_dir = getattr(twap_result, 'twap_direction', '?')
+                _twap_delta = getattr(twap_result, 'twap_delta_pct', 0.0)
+                _twap_agree = getattr(twap_result, 'agreement_score', 0)
+                _twap_ticks = getattr(twap_result, 'n_ticks', 0)
+                lines.append(f"TWAP     {_twap_dir:>4}  δ{_twap_delta:+.4f}% ({_twap_ticks} ticks)")
             else:
-                lines.append(f"Gamma: unavailable [{_src_tag}]")
+                lines.append(f"TWAP        ?  no data")
 
-            lines.append("")
+            # Gamma (market opinion)
+            _gamma_dir = "?"
+            if twap_result:
+                _gamma_dir = getattr(twap_result, 'gamma_direction', '?')
+            lines.append(f"Gamma    {_gamma_dir:>4}  UP ${gamma_up:.2f} / DOWN ${gamma_down:.2f}")
 
-            # ━━━━━ TIMESFM FORECAST (prominent) ━━━━━━━━━━━━
+            # TimesFM
             _tfm_dir = "?"
-            if timesfm_forecast is not None and not getattr(timesfm_forecast, 'error', ''):
+            _tfm_conf = 0
+            _tfm_close = 0
+            if timesfm_forecast and not getattr(timesfm_forecast, 'error', ''):
                 _tfm_dir = getattr(timesfm_forecast, 'direction', '?')
                 _tfm_conf = getattr(timesfm_forecast, 'confidence', 0)
                 _tfm_close = getattr(timesfm_forecast, 'predicted_close', 0)
-                _tfm_emoji = "📈" if _tfm_dir == "UP" else "📉"
-                _conf_bar_filled = int(_tfm_conf * 10)
-                _conf_bar = "█" * _conf_bar_filled + "░" * (10 - _conf_bar_filled)
-
-                lines += [
-                    f"🧠 *TimesFM*: {_tfm_emoji} *{_tfm_dir}* `[{_conf_bar}]` {_tfm_conf*100:.0f}%",
-                    f"Predicted close: `${_tfm_close:,.2f}`",
-                    f"",
-                ]
-            elif timesfm_forecast is not None and getattr(timesfm_forecast, 'error', ''):
-                lines += [f"🧠 *TimesFM*: ❌ `{getattr(timesfm_forecast, 'error', '')[:60]}`", ""]
-            elif asset != "BTC":
-                pass  # Don't show TimesFM line for non-BTC (it only supports BTC)
+                lines.append(f"TimesFM  {_tfm_dir:>4}  {_tfm_conf:.0%} → ${_tfm_close:,.2f}")
+            elif timesfm_forecast and getattr(timesfm_forecast, 'error', ''):
+                lines.append(f"TimesFM     ?  error")
             else:
-                lines += [f"🧠 *TimesFM*: not available", ""]
+                lines.append(f"TimesFM     ?  not available")
 
-            # ━━━━━ DIRECTION AGREEMENT MATRIX ━━━━━━━━━━━━━━
-            point_dir = "UP" if delta_pct > 0 else ("DOWN" if delta_pct < 0 else "—")
-            twap_dir = getattr(twap_result, 'twap_direction', '?') if twap_result else "?"
-            gamma_dir = getattr(twap_result, 'gamma_direction', '?') if twap_result else "?"
-            _should_skip = getattr(twap_result, 'should_skip', False) if twap_result else False
-
-            def _dot(a, b):
-                if a == "?" or b == "?" or a == "—" or b == "—":
-                    return "⚫"
-                return "🟢" if a == b else "🔴"
-
-            # Build compact matrix
-            lines.append("*Direction Agreement*")
             lines.append("```")
-            lines.append(f"TimesFM {_tfm_dir:>4}  {_dot(_tfm_dir, point_dir)}Pt {_dot(_tfm_dir, twap_dir)}TW {_dot(_tfm_dir, gamma_dir)}Gm")
-            lines.append(f"Point   {point_dir:>4}       {_dot(point_dir, twap_dir)}TW {_dot(point_dir, gamma_dir)}Gm")
-            lines.append(f"TWAP    {twap_dir:>4}            {_dot(twap_dir, gamma_dir)}Gm")
-            lines.append(f"Gamma   {gamma_dir:>4}")
-            lines.append("```")
+
+            # ━━━━━ VPIN + REGIME ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            _regime_emoji = {"CASCADE": "🌊", "TRANSITION": "🔄", "NORMAL": "📊", "CALM": "😴"}.get(regime, "❓")
+            lines.append(f"🔬 VPIN `{vpin:.3f}` {_regime_emoji} `{regime}`")
             lines.append("")
 
-            # ━━━━━ v5.8 AGREEMENT DECISION ━━━━━━━━━━━━━━━━━
-            if twap_result is not None:
+            # ━━━━━ v5.8 AGREEMENT CHECK ━━━━━━━━━━━━━━━━━━━━
+            # v5.7c direction (what Point+TWAP+Gamma say)
+            _v57c_dir = direction or _point_dir
+            
+            # TimesFM agreement with v5.7c
+            if _tfm_dir != "?" and _v57c_dir:
+                _agrees = (_tfm_dir == _v57c_dir)
+                if _agrees:
+                    lines.append(f"✅ *v5.8 AGREE* — both say *{_v57c_dir}*")
+                else:
+                    lines.append(f"❌ *v5.8 DISAGREE* — TimesFM={_tfm_dir} vs v5.7c={_v57c_dir}")
+            else:
+                lines.append(f"⚫ *v5.8* — TimesFM unavailable, v5.7c alone")
+
+            # v5.7c internal agreement
+            if twap_result:
                 _agree_score = getattr(twap_result, 'agreement_score', 0)
                 _gamma_gate = getattr(twap_result, 'gamma_gate', 'OK')
-                _gate_emoji = {"BLOCK": "🚫", "SKIP": "⚠️", "REDUCE": "🔻", "OK": "✅", "PRICED_IN": "💸"}.get(_gamma_gate, "❓")
+                _should_skip = getattr(twap_result, 'should_skip', False)
                 _agree_dots = "🟢" * _agree_score + "⚫" * (3 - _agree_score)
-                _boost = getattr(twap_result, 'confidence_boost', 0)
-
-                if _should_skip:
-                    _skip_r = getattr(twap_result, 'skip_reason', 'unknown')
-                    lines.append(f"⛔ *DISAGREE → Skip* | {_agree_dots} {_agree_score}/3 | {_gate_emoji} `{_gamma_gate}`")
-                    lines.append(f"`{_skip_r[:70]}`")
-                else:
-                    lines.append(f"✅ *AGREE → Trade {gamma_dir}* | {_agree_dots} {_agree_score}/3 | {_gate_emoji} `{_gamma_gate}` | boost `{_boost:+.2f}`")
-
-                lines.append("")
-
-            # ━━━━━ COINGLASS (compact) ━━━━━━━━━━━━━━━━━━━━━
-            if cg_snapshot is not None:
-                lines.append(self.format_coinglass_block(cg_snapshot))
-                lines.append("")
-
-            # ━━━━━ P&L SCENARIOS ━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            lines.append("💰 *If we bet:*")
-
-            # TimesFM P&L
-            if timesfm_forecast is not None and not getattr(timesfm_forecast, 'error', '') and _tfm_dir != "?":
-                _tfm_token = "YES" if _tfm_dir == "UP" else "NO"
-                _tfm_entry = gamma_up if _tfm_dir == "UP" else gamma_down
-                _tfm_win = (1.00 - _tfm_entry) * max_bet * 0.98
-                _tfm_loss = _tfm_entry * max_bet
-                lines.append(f"TimesFM {_tfm_token} @`${_tfm_entry:.2f}`: ✅+`${_tfm_win:.2f}` / ❌-`${_tfm_loss:.2f}`")
-
-            # v5.7c P&L
-            if twap_result is not None and not _should_skip:
-                _v57_token = "YES" if gamma_dir == "UP" else "NO"
-                _v57_entry = gamma_up if gamma_dir == "UP" else gamma_down
-                _v57_win = (1.00 - _v57_entry) * max_bet * 0.98
-                _v57_loss = _v57_entry * max_bet
-                lines.append(f"v5.7c {_v57_token} @`${_v57_entry:.2f}`: ✅+`${_v57_win:.2f}` / ❌-`${_v57_loss:.2f}`")
-            elif twap_result is not None and _should_skip:
-                lines.append(f"v5.7c: SKIP")
+                lines.append(f"v5.7c: {_agree_dots} {_agree_score}/3 | Gate: `{_gamma_gate}`")
 
             lines.append("")
 
-            # ━━━━━ DECISION ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            # ━━━━━ TRADE / SKIP ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             if trade_placed:
-                lines.append(f"⚡ *PLACED* ✅ | Bankroll `${bankroll:.0f}` | Bet `${max_bet:.0f}`")
+                _actual_stake = stake_usd or max_bet
+                _actual_price = token_price or (gamma_down if _v57c_dir == "DOWN" else gamma_up)
+                _shares = _actual_stake / _actual_price if _actual_price > 0 else 0
+                _win = (1.0 - _actual_price) * _actual_stake * 0.98
+                _loss = _actual_stake
+                _token = "NO" if _v57c_dir == "DOWN" else "YES"
+
+                lines.append(f"⚡ *PLACED {_token} @ ${_actual_price:.2f}*")
+                lines.append(f"Stake: `${_actual_stake:.2f}` | Shares: `{_shares:.2f}`")
+                lines.append(f"Win: `+${_win:.2f}` | Loss: `-${_loss:.2f}`")
+                lines.append(f"Bankroll: `${bankroll:.2f}`")
             else:
-                _reason = f" — `{skip_reason}`" if skip_reason else ""
-                lines.append(f"⏭️ *SKIPPED*{_reason}")
+                _reason = skip_reason or "unknown"
+                lines.append(f"⏭️ *SKIP* — `{_reason[:80]}`")
 
             await self._send("\n".join(lines))
         except Exception as exc:
