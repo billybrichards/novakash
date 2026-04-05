@@ -831,8 +831,10 @@ class Orchestrator:
                 if _wkey not in self._countdown_sent:
                     self._countdown_sent[_wkey] = set()
                 
+                log.info("five_min.countdown_check", remaining=f"{_remaining:.1f}s", sent=str(self._countdown_sent.get(_wkey, set())))
+                
                 # T-180s: TimesFM pre-fetch + initial outlook
-                if 178 <= _remaining <= 182 and "T-180" not in self._countdown_sent[_wkey]:
+                if _remaining <= 182 and _remaining >= 160 and "T-180" not in self._countdown_sent[_wkey]:
                     self._countdown_sent[_wkey].add("T-180")
                     _vpin = self._five_min_strategy._vpin.current_vpin if self._five_min_strategy._vpin else 0.0
                     _btc_price = float(self._aggregator.btc_price) if self._aggregator.btc_price else 0.0
@@ -864,7 +866,7 @@ class Orchestrator:
                         )
                 
                 # T-120s: VPIN + TWAP snapshot
-                if 118 <= _remaining <= 122 and "T-120" not in self._countdown_sent[_wkey]:
+                if _remaining <= 122 and _remaining >= 100 and "T-120" not in self._countdown_sent[_wkey]:
                     self._countdown_sent[_wkey].add("T-120")
                     _vpin = self._five_min_strategy._vpin.current_vpin if self._five_min_strategy._vpin else 0.0
                     _btc_price = float(self._aggregator.btc_price) if self._aggregator.btc_price else 0.0
@@ -896,7 +898,7 @@ class Orchestrator:
                         )
                 
                 # T-90s: Agreement preview
-                if 88 <= _remaining <= 92 and "T-90" not in self._countdown_sent[_wkey]:
+                if _remaining <= 92 and _remaining >= 70 and "T-90" not in self._countdown_sent[_wkey]:
                     self._countdown_sent[_wkey].add("T-90")
                     _vpin = self._five_min_strategy._vpin.current_vpin if self._five_min_strategy._vpin else 0.0
                     _btc_price = float(self._aggregator.btc_price) if self._aggregator.btc_price else 0.0
