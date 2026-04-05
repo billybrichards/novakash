@@ -304,6 +304,11 @@ class Orchestrator:
         else:
             log.info("orchestrator.timesfm_v6_disabled")
 
+        # v5.8: Inject TimesFM client into five_min_strategy (created before client was initialized)
+        if self._timesfm_client and self._five_min_strategy:
+            self._five_min_strategy._timesfm = self._timesfm_client
+            log.info("orchestrator.timesfm_injected_into_five_min")
+
         # 15-minute Polymarket strategy (uses same strategy, different feed)
         self._fifteen_min_feed = None
         fifteen_min_enabled = os.environ.get("FIFTEEN_MIN_ENABLED", "false").lower() == "true"
