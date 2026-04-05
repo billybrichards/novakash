@@ -89,6 +89,16 @@ class PolymarketClient:
         if not paper_mode:
             live_enabled = os.environ.get("LIVE_TRADING_ENABLED", "").strip().lower()
             if live_enabled != "true":
+                # Fallback: check .env file
+                from pathlib import Path
+                _env_file = Path(__file__).parent.parent / ".env"
+                if _env_file.exists():
+                    with open(_env_file) as f:
+                        for line in f:
+                            if line.startswith("LIVE_TRADING_ENABLED="):
+                                live_enabled = line.split("=", 1)[1].strip().lower()
+                                break
+            if live_enabled != "true":
                 raise EnvironmentError(
                     "Live trading requires LIVE_TRADING_ENABLED=true environment variable. "
                     "Set this explicitly to confirm intent before enabling live mode."
