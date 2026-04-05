@@ -197,12 +197,86 @@ function LivePricePill({ price }) {
   );
 }
 
+// ── Cascade Regime Banner ──────────────────────────────────────────────────────
+
+function CascadeBanner({ vpin, cascadeSignal }) {
+  if (!vpin) return null;
+  const regime = vpin.regime;
+  const isCascade = regime === 'CASCADE';
+  const isInformed = regime === 'INFORMED';
+  if (!isCascade && !isInformed) return null;
+
+  const bgColor = isCascade ? 'rgba(248,113,113,0.08)' : 'rgba(245,158,11,0.06)';
+  const borderColor = isCascade ? 'rgba(248,113,113,0.4)' : 'rgba(245,158,11,0.3)';
+  const accentColor = isCascade ? T.loss : T.warning;
+  const icon = isCascade ? '🎯' : '⚠️';
+  const label = isCascade ? 'CASCADE BET SIGNAL' : 'INFORMED FLOW DETECTED';
+
+  const direction = cascadeSignal?.direction;
+  const dirEmoji = direction === 'down' || direction === 'DOWN' ? '📉' : direction === 'up' || direction === 'UP' ? '📈' : '—';
+  const oiDelta = cascadeSignal?.oi_delta_pct;
+  const liqVol = cascadeSignal?.liq_volume_usd;
+
+  return (
+    <div style={{
+      margin: '0 20px', marginTop: 8,
+      padding: '10px 16px',
+      background: bgColor,
+      border: `1px solid ${borderColor}`,
+      borderRadius: 10,
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      flexShrink: 0,
+      animation: isCascade ? 'cascadePulse 2s ease-in-out infinite' : undefined,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <span style={{ fontSize: 20 }}>{icon}</span>
+        <div>
+          <div style={{ fontSize: 12, fontFamily: T.mono, fontWeight: 700, color: accentColor, letterSpacing: '0.08em' }}>
+            {label}
+          </div>
+          {direction && (
+            <div style={{ fontSize: 13, fontFamily: T.mono, color: T.text, marginTop: 2 }}>
+              Direction: {dirEmoji} <span style={{ fontWeight: 700 }}>{(direction || '').toUpperCase()}</span>
+            </div>
+          )}
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: 20, alignItems: 'center' }}>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontSize: 9, fontFamily: T.mono, color: T.textMut, letterSpacing: '0.1em' }}>VPIN</div>
+          <div style={{ fontSize: 14, fontFamily: T.mono, fontWeight: 700, color: accentColor }}>{vpin.value.toFixed(4)}</div>
+        </div>
+        {oiDelta != null && (
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 9, fontFamily: T.mono, color: T.textMut, letterSpacing: '0.1em' }}>OI Δ</div>
+            <div style={{ fontSize: 14, fontFamily: T.mono, fontWeight: 700, color: T.text }}>{typeof oiDelta === 'number' ? `${oiDelta.toFixed(2)}%` : oiDelta}</div>
+          </div>
+        )}
+        {liqVol != null && (
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 9, fontFamily: T.mono, color: T.textMut, letterSpacing: '0.1em' }}>LIQ 5m</div>
+            <div style={{ fontSize: 14, fontFamily: T.mono, fontWeight: 700, color: T.text }}>{typeof liqVol === 'number' ? `$${(liqVol / 1e6).toFixed(2)}M` : liqVol}</div>
+          </div>
+        )}
+        <div style={{
+          padding: '4px 12px', borderRadius: 20,
+          background: `${accentColor}15`, border: `1px solid ${accentColor}44`,
+          fontSize: 11, fontFamily: T.mono, fontWeight: 700, color: accentColor,
+        }}>
+          {regime}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function Indicators() {
   const [twapSeries, setTwapSeries] = useState(() => generateTWAPDeltaSeries(60));
   const [signalData, setSignalData] = useState(null);
   const [vpin, setVpin] = useState(null);
+  const [cascadeSignal, setCascadeSignal] = useState(null);
   const [btcPrice, setBtcPrice] = useState(67300);
   const tickRef = useRef(null);
   const refreshRef = useRef(null);
@@ -251,7 +325,7 @@ export default function Indicators() {
       });
     }, 2000);
 
-    // Signal refresh (every 10s)
+    // Signal refresh (every 10s) — also fetch cascade signal from API
     refreshRef.current = setInterval(() => {
       setVpin(prev => {
         const vp = generateVPIN();
@@ -261,6 +335,16 @@ export default function Indicators() {
         });
         return vp;
       });
+      // Fetch latest cascade signal from API
+      const token = localStorage.getItem('token');
+      if (token) {
+        fetch('/api/signals/cascade?limit=1', { headers: { Authorization: `Bearer ${token}` } })
+          .then(r => r.ok ? r.json() : null)
+          .then(data => {
+            if (data?.signals?.length > 0) setCascadeSignal(data.signals[0]);
+          })
+          .catch(() => {});
+      }
     }, 10000);
 
     return () => {
@@ -297,6 +381,9 @@ export default function Indicators() {
         </div>
         <LivePricePill price={btcPrice} />
       </div>
+
+      {/* ── Cascade / Informed Banner ───────────────────────────────────────── */}
+      <CascadeBanner vpin={vpin} cascadeSignal={cascadeSignal} />
 
       {/* ── Split layout ────────────────────────────────────────────────────── */}
       <div style={{
@@ -384,6 +471,10 @@ export default function Indicators() {
         @keyframes pulseDot {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.3; }
+        }
+        @keyframes cascadePulse {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(248,113,113,0); }
+          50% { box-shadow: 0 0 12px 2px rgba(248,113,113,0.15); }
         }
       `}</style>
     </div>
