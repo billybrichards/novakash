@@ -22,7 +22,7 @@ class TimesFMForecaster:
     def __init__(
         self,
         model_id: str = "google/timesfm-2.5-200m-pytorch",
-        max_context: int = 1024,
+        max_context: int = 2048,  # v5.8: full 34-min context for better predictions
         max_horizon: int = 60,
         normalize_inputs: bool = True,
         use_continuous_quantile_head: bool = True,
