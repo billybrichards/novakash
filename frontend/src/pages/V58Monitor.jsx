@@ -2585,6 +2585,22 @@ export default function V58Monitor() {
               selectedTs={selectedTs ?? latestWindow?.window_ts}
               onSelect={setSelectedTs}
             />
+            {/* Legend */}
+            <div style={{
+              display: 'flex', gap: 16, flexWrap: 'wrap',
+              marginTop: 10, padding: '8px 12px',
+              background: 'rgba(0,0,0,0.2)', borderRadius: 6,
+              fontSize: 9, fontFamily: T.mono, color: T.label2,
+            }}>
+              <span><strong style={{ color: '#fff' }}>SIG</strong> ▲▼ = Our signal direction at T-60</span>
+              <span><strong style={{ color: T.profit }}>WIN ✓</strong> / <strong style={{ color: T.loss }}>LOSS ✗</strong> = Polymarket resolved outcome</span>
+              <span><strong style={{ color: T.label2 }}>OUT ▼</strong> = Awaiting oracle (~4min after close)</span>
+              <span style={{ color: '#a855f7' }}><strong>7.1 ✅</strong> = v7.1 would trade + won</span>
+              <span style={{ color: '#ef4444' }}><strong>7.1 ❌</strong> = v7.1 would trade + lost</span>
+              <span style={{ color: '#a855f7' }}><strong>7.1 📊</strong> = v7.1 would trade, pending</span>
+              <span><strong>7.1 ⏭</strong> = v7.1 would skip</span>
+              <span style={{ color: '#22c55e' }}><strong>💰 TRADED</strong> = Actual trade placed</span>
+            </div>
           </div>
         </section>
 
