@@ -1428,6 +1428,7 @@ class Orchestrator:
                             # Start redeemer if switching TO live
                             if not want_paper and self._redeemer:
                                 try:
+                                    self._redeemer._paper_mode = False
                                     await self._redeemer.connect()
                                     self._tasks.append(
                                         asyncio.create_task(
