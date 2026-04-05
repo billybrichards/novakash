@@ -279,7 +279,10 @@ class OrderManager:
                 if order.status not in {OrderStatus.OPEN, OrderStatus.FILLED}:
                     continue
                 age = now - order.created_at
-                if age >= order.window_seconds:
+                # Check for resolution after 240s (oracle resolves ~4min post-open)
+                # instead of waiting for full window_seconds (300s)
+                resolve_after = min(order.window_seconds, 240)
+                if age >= resolve_after:
                     expired.append(order)
 
         for order in expired:

@@ -1605,6 +1605,27 @@ class Orchestrator:
 
                 result = await self._redeemer.redeem_all()
 
+                # Always notify on sweep results
+                if self._alerter:
+                    try:
+                        redeemed = result.get("redeemed", 0)
+                        failed = result.get("failed", 0)
+                        total = result.get("total_positions", 0)
+                        wins = result.get("wins", 0)
+                        losses = result.get("losses", 0)
+                        pnl = result.get("total_pnl", 0)
+                        usdc = result.get("usdc_change", 0)
+                        
+                        if redeemed > 0 or failed > 0:
+                            await self._alerter._send_with_id(
+                                f"🔄 *REDEMPTION SWEEP* 🔴 LIVE\n\n"
+                                f"Positions: `{total}` | Redeemed: `{redeemed}` | Failed: `{failed}`\n"
+                                f"Wins: `{wins}` | Losses: `{losses}`\n"
+                                f"P&L: `${pnl:+.2f}` | USDC change: `${usdc:+.2f}`\n"
+                            )
+                    except Exception:
+                        pass
+
                 if result.get("redeemed", 0) > 0:
                     try:
                         await self._db.write_redeem_event(result)
