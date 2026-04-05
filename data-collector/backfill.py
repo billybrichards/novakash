@@ -25,9 +25,10 @@ log = structlog.get_logger()
 ASSETS = ["BTC", "ETH", "SOL", "XRP"]
 TIMEFRAMES = {"5m": 300, "15m": 900}
 GAMMA_API = "https://gamma-api.polymarket.com"
-MIN_REQUEST_INTERVAL = 1.2
+CONCURRENCY = 10          # 10 parallel requests
+BATCH_DELAY = 0.3         # 300ms between batches (= ~33 req/s peak)
 BACKOFF_BASE = 5.0
-BACKOFF_MAX = 120.0
+BACKOFF_MAX = 60.0
 DAYS_BACK = 30
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -105,7 +106,6 @@ async def get_existing_windows(pool, asset, timeframe):
 
 async def fetch_window(session, limiter, asset, timeframe, window_ts):
     """Fetch a single resolved window from Gamma API."""
-    await limiter.wait()
     
     slug = f"{asset.lower()}-updown-{timeframe}-{window_ts}"
     url = f"{GAMMA_API}/events?slug={slug}"
@@ -224,47 +224,57 @@ async def store_window(pool, data):
 
 
 async def backfill_asset(session, pool, limiter, asset, timeframe, duration):
-    """Backfill all windows for one asset+timeframe."""
+    """Backfill all windows for one asset+timeframe using concurrent requests."""
     now = int(time.time())
     start = now - (DAYS_BACK * 86400)
-    
-    # Align to window boundary
     start = (start // duration) * duration
     
-    # Get existing to skip
     existing = await get_existing_windows(pool, asset, timeframe)
     
-    # Generate all window timestamps
     all_windows = []
     ts = start
-    while ts < now - duration:  # Don't fetch still-active windows
+    while ts < now - duration:
         if ts not in existing:
             all_windows.append(ts)
         ts += duration
     
     total = len(all_windows)
     skipped = (now - start) // duration - total
+    est_min = round(total / CONCURRENCY * BATCH_DELAY / 60 + total * 0.05 / 60, 1)
     log.info("backfill.start", asset=asset, timeframe=timeframe,
-             total=total, skipped=skipped, 
-             est_minutes=round(total * MIN_REQUEST_INTERVAL / 60, 1))
+             total=total, skipped=skipped, concurrency=CONCURRENCY,
+             est_minutes=est_min)
     
     fetched = 0
     errors = 0
+    _429_count = 0
     
-    for i, window_ts in enumerate(all_windows):
-        data = await fetch_window(session, limiter, asset, timeframe, window_ts)
+    # Process in batches of CONCURRENCY
+    for batch_start in range(0, total, CONCURRENCY):
+        batch = all_windows[batch_start:batch_start + CONCURRENCY]
         
-        if data:
-            await store_window(pool, data)
-            fetched += 1
-        else:
-            errors += 1
+        # Fire all requests concurrently
+        tasks = [fetch_window(session, limiter, asset, timeframe, wts) for wts in batch]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        if (i + 1) % 100 == 0:
-            pct = (i + 1) / total * 100
+        for data in results:
+            if isinstance(data, Exception):
+                errors += 1
+            elif data:
+                await store_window(pool, data)
+                fetched += 1
+            else:
+                errors += 1
+        
+        done = min(batch_start + CONCURRENCY, total)
+        if done % 200 == 0 or done == total:
+            pct = done / total * 100
             log.info("backfill.progress", asset=asset, timeframe=timeframe,
-                     done=i+1, total=total, pct=f"{pct:.1f}%",
+                     done=done, total=total, pct=f"{pct:.1f}%",
                      fetched=fetched, errors=errors)
+        
+        # Small delay between batches
+        await asyncio.sleep(BATCH_DELAY)
     
     log.info("backfill.complete", asset=asset, timeframe=timeframe,
              fetched=fetched, errors=errors, total=total)
