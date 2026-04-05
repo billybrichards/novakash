@@ -286,17 +286,15 @@ class PositionRedeemer:
 
             # Build redeemPositions calldata
             # indexSets=[1, 2] → redeem both YES (set 1) and NO (set 2)
-            # web3.py v6+: encode_abi (snake_case), v5: encodeABI (camelCase)
-            _encode = getattr(self._ctf, 'encode_abi', None) or getattr(self._ctf, 'encodeABI')
-            calldata = _encode(
-                fn_name="redeemPositions",
-                args=[
-                    Web3.to_checksum_address(USDC_ADDRESS),
-                    zero_bytes32,   # parentCollectionId (0 for root collection)
-                    cid_bytes,      # conditionId
-                    [1, 2],         # indexSets: YES=1, NO=2
-                ],
+            # Build calldata using web3 contract function selector + ABI encoding
+            fn = self._ctf.functions.redeemPositions(
+                Web3.to_checksum_address(USDC_ADDRESS),
+                zero_bytes32,   # parentCollectionId (0 for root collection)
+                cid_bytes,      # conditionId
+                [1, 2],         # indexSets: YES=1, NO=2
             )
+            # Get raw calldata (selector + encoded args) without building full tx
+            calldata = fn._encode_transaction_data()
 
             txn = SafeTransaction(
                 to=CTF_ADDRESS,
