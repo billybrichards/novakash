@@ -68,9 +68,22 @@ export default function StrategyAnalysis() {
         <SectionHeader>OVERVIEW — Real Performance</SectionHeader>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
           <StatCard label="Real Trades" value={real_trades.trades} sub={`${real_trades.wins}W / ${real_trades.losses}L`} />
-          <StatCard label="Win Rate" value={`${real_trades.wr}%`} color={real_trades.wr >= 70 ? T.profit : real_trades.wr >= 60 ? T.warning : T.loss} sub="Polymarket outcomes" />
+          <StatCard label="💰 Polymarket WR" value={`${real_trades.wr}%`} color={real_trades.wr >= 70 ? T.profit : real_trades.wr >= 60 ? T.warning : T.loss} sub="Actual trade profit/loss" />
           <StatCard label="Total P&L" value={`$${real_trades.pnl.toLocaleString()}`} color={real_trades.pnl >= 0 ? T.profit : T.loss} sub={`Avg entry: $${real_trades.avg_entry}`} />
-          <StatCard label="v7.1 WR" value={`${v71.wr}%`} color={v71.wr >= 70 ? T.profit : v71.wr >= 60 ? T.warning : T.loss} sub={`${v71.wins}W / ${v71.losses}L (${v71.resolved} resolved)`} />
+          <StatCard label="🧭 Directional WR" value={`${v71.wr}%`} color={v71.wr >= 70 ? T.profit : v71.wr >= 60 ? T.warning : T.loss} sub={`${v71.wins}W / ${v71.losses}L (${v71.resolved} resolved)`} />
+        </div>
+      </section>
+
+      {/* ═══ WR EXPLAINER ═══ */}
+      <section style={{ marginBottom: 28 }}>
+        <div style={{
+          background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.2)',
+          borderRadius: 10, padding: '14px 16px', fontSize: 10, lineHeight: 1.8, color: T.label2,
+        }}>
+          <div style={{ fontWeight: 700, color: '#a855f7', marginBottom: 6, fontSize: 11 }}>⚠️ Why two different win rates?</div>
+          <div><strong style={{ color: T.profit }}>💰 Polymarket WR ({real_trades.wr}%)</strong> — Did we actually <em>make money</em>? Based on {real_trades.trades} real trades where Polymarket oracle resolved WIN or LOSS. <strong>This is what matters for your bankroll.</strong></div>
+          <div><strong style={{ color: '#a855f7' }}>🧭 Directional WR ({v71.wr}%)</strong> — Did BTC move in our predicted direction? Based on {v71.resolved} windows comparing open→close price. This is inflated (~96%) because we follow the delta — of course BTC goes the way it was already going.</div>
+          <div style={{ marginTop: 4, color: T.warning }}>The gap ({(v71.wr - real_trades.wr).toFixed(1)}pp) exists because: entry price spread, oracle timing (~4min delay), and price reversions between T-0 and oracle resolution.</div>
         </div>
       </section>
 

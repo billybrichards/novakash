@@ -310,6 +310,101 @@ function WindowDetail({ windowTs }) {
         </div>
       </div>
 
+      {/* ── Decision Reasoning Panel ─────────────────────────────────────── */}
+      {snapshot && (
+        <div style={{
+          background: 'rgba(168,85,247,0.04)', border: '1px solid rgba(168,85,247,0.15)',
+          borderRadius: 10, padding: '12px 16px',
+        }}>
+          <div style={{ fontSize: 9, color: '#a855f7', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10, fontWeight: 700, fontFamily: T.mono }}>
+            DECISION REASONING
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 10 }}>
+            {/* VPIN */}
+            <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 6, padding: '8px 10px' }}>
+              <div style={{ fontSize: 8, color: T.label }}>VPIN</div>
+              <div style={{
+                fontSize: 16, fontWeight: 800, fontFamily: T.mono,
+                color: (snapshot.vpin || 0) >= 0.45 ? T.profit : T.loss,
+              }}>
+                {(snapshot.vpin || 0).toFixed(3)}
+              </div>
+              <div style={{ fontSize: 8, color: T.label2 }}>
+                {(snapshot.vpin || 0) >= 0.65 ? '🔴 CASCADE' : (snapshot.vpin || 0) >= 0.55 ? '🟡 TRANSITION' : (snapshot.vpin || 0) >= 0.45 ? '🟢 NORMAL' : '⛔ BELOW GATE'}
+              </div>
+            </div>
+            {/* Delta */}
+            <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 6, padding: '8px 10px' }}>
+              <div style={{ fontSize: 8, color: T.label }}>Delta (T-60)</div>
+              <div style={{
+                fontSize: 16, fontWeight: 800, fontFamily: T.mono,
+                color: Math.abs(snapshot.delta_pct || 0) >= 0.02 ? T.profit : T.loss,
+              }}>
+                {(snapshot.delta_pct || 0) >= 0 ? '+' : ''}{(snapshot.delta_pct || 0).toFixed(4)}%
+              </div>
+              <div style={{ fontSize: 8, color: T.label2 }}>
+                {Math.abs(snapshot.delta_pct || 0) >= 0.02 ? '✓ above threshold' : '✗ below 0.02%'}
+              </div>
+            </div>
+            {/* Gamma */}
+            <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: 6, padding: '8px 10px' }}>
+              <div style={{ fontSize: 8, color: T.label }}>Gamma Prices</div>
+              <div style={{ fontSize: 12, fontWeight: 700, fontFamily: T.mono, color: '#fff' }}>
+                ↑${(snapshot.gamma_up_price || 0).toFixed(2)} ↓${(snapshot.gamma_down_price || 0).toFixed(2)}
+              </div>
+              <div style={{ fontSize: 8, color: T.label2 }}>
+                Spread: {snapshot.gamma_up_price && snapshot.gamma_down_price
+                  ? `${Math.abs(snapshot.gamma_up_price - snapshot.gamma_down_price).toFixed(2)}¢`
+                  : '—'}
+              </div>
+            </div>
+            {/* v7.1 Decision */}
+            <div style={{
+              background: snapshot.v71_would_trade ? 'rgba(74,222,128,0.08)' : 'rgba(248,113,113,0.08)',
+              borderRadius: 6, padding: '8px 10px',
+              border: `1px solid ${snapshot.v71_would_trade ? 'rgba(74,222,128,0.2)' : 'rgba(248,113,113,0.2)'}`,
+            }}>
+              <div style={{ fontSize: 8, color: T.label }}>v7.1</div>
+              <div style={{
+                fontSize: 14, fontWeight: 800, fontFamily: T.mono,
+                color: snapshot.v71_would_trade ? T.profit : T.loss,
+              }}>
+                {snapshot.v71_would_trade ? '✅ TRADE' : '🚫 SKIP'}
+              </div>
+              <div style={{ fontSize: 8, color: T.label2 }}>
+                {snapshot.v71_skip_reason || (snapshot.v71_regime ? `${snapshot.v71_regime} regime` : '')}
+              </div>
+            </div>
+          </div>
+
+          {/* Skip reason / CG veto */}
+          {snapshot.skip_reason && (
+            <div style={{
+              padding: '6px 10px', borderRadius: 6, marginBottom: 6,
+              background: snapshot.skip_reason.includes('CG VETO') ? 'rgba(234,179,8,0.08)' : 'rgba(248,113,113,0.06)',
+              border: `1px solid ${snapshot.skip_reason.includes('CG VETO') ? 'rgba(234,179,8,0.2)' : 'rgba(248,113,113,0.15)'}`,
+              fontSize: 9, color: snapshot.skip_reason.includes('CG VETO') ? T.warning : T.label2, fontFamily: T.mono,
+            }}>
+              {snapshot.skip_reason.includes('CG VETO') ? '🛡️ ' : '⏭ '}{snapshot.skip_reason}
+            </div>
+          )}
+
+          {/* Trade outcome if traded */}
+          {snapshot.trade_placed && snapshot.poly_outcome && (
+            <div style={{
+              padding: '6px 10px', borderRadius: 6,
+              background: snapshot.poly_outcome === 'WIN' ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)',
+              border: `1px solid ${snapshot.poly_outcome === 'WIN' ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}`,
+              fontSize: 10, fontWeight: 700, fontFamily: T.mono,
+              color: snapshot.poly_outcome === 'WIN' ? T.profit : T.loss,
+            }}>
+              {snapshot.poly_outcome === 'WIN' ? '✅' : '❌'} Polymarket: {snapshot.poly_outcome}
+              {snapshot.v58_pnl != null && ` — P&L: ${snapshot.v58_pnl >= 0 ? '+' : ''}$${snapshot.v58_pnl.toFixed(2)}`}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* What-if P&L */}
       {what_if && (
         <div>
