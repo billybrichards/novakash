@@ -780,12 +780,15 @@ class DBClient:
             return
         try:
             async with self._pool.acquire() as conn:
-                await conn.execute(
+                result = await conn.execute(
                     "UPDATE window_snapshots SET trade_placed = TRUE WHERE window_ts = $1 AND asset = $2 AND timeframe = $3",
                     window_ts, asset, timeframe
                 )
-        except Exception:
-            pass
+                import structlog
+                structlog.get_logger().info("db.trade_placed_updated", window_ts=window_ts, asset=asset, result=result)
+        except Exception as exc:
+            import structlog
+            structlog.get_logger().error("db.trade_placed_update_failed", window_ts=window_ts, asset=asset, error=str(exc))
 
     async def update_window_skip_reason(self, window_ts: int, asset: str, timeframe: str, skip_reason: str) -> None:
         """Update skip_reason on a window_snapshot after evaluation."""
