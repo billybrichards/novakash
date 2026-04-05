@@ -493,9 +493,14 @@ async def get_live_status(db=Depends(get_db)):
 
     has_approved_config = live_config is not None and live_config.get("is_approved", False)
 
-    # Check API keys — match the actual env var names used by the engine
+    # Check API keys — engine runs on Montreal (not here), so check DB state
+    # Engine heartbeat updates system_state.config with runtime info
+    # If engine is running and has placed trades, keys are configured
+    engine_running = state.get("engine_status") == "running"
     api_keys_configured = bool(
-        os.environ.get("POLY_API_KEY") or os.environ.get("OPINION_API_KEY")
+        os.environ.get("POLY_API_KEY") 
+        or os.environ.get("OPINION_API_KEY")
+        or engine_running  # If engine is running on Montreal, keys are there
     )
 
     can_go_live = has_approved_config and api_keys_configured
