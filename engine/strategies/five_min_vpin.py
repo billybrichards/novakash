@@ -829,6 +829,48 @@ class FiveMinVPINStrategy(BaseStrategy):
         if confidence in ("NONE", "LOW"):
             return None
 
+        # ── v5.8: TimesFM Agreement Check ─────────────────────────────────
+        # If TimesFM is available, check if it agrees with our direction.
+        # Agreement → boost confidence (+0.15)
+        # Disagreement → penalty (-0.10), may cause skip
+        timesfm_agreement = None  # None = no forecast available
+        if self._timesfm_client and window.asset == "BTC":
+            try:
+                tfm_forecast = await self._timesfm_client.get_forecast(open_price=open_price)
+                if not tfm_forecast.error and tfm_forecast.direction:
+                    if tfm_forecast.direction == direction:
+                        timesfm_agreement = True
+                        confidence += 0.15  # Agreement boost
+                        self._log.info(
+                            "evaluate.timesfm_agrees",
+                            v57c_dir=direction,
+                            tfm_dir=tfm_forecast.direction,
+                            tfm_conf=f"{tfm_forecast.confidence:.2f}",
+                            new_confidence=f"{confidence:.2f}",
+                            boost="+0.15",
+                        )
+                    else:
+                        timesfm_agreement = False
+                        confidence -= 0.10  # Disagreement penalty
+                        self._log.info(
+                            "evaluate.timesfm_disagrees",
+                            v57c_dir=direction,
+                            tfm_dir=tfm_forecast.direction,
+                            tfm_conf=f"{tfm_forecast.confidence:.2f}",
+                            new_confidence=f"{confidence:.2f}",
+                            penalty="-0.10",
+                        )
+                        # If confidence drops too low after disagreement, skip
+                        if confidence < 0.30:
+                            self._log.info(
+                                "evaluate.timesfm_disagree_skip",
+                                confidence=f"{confidence:.2f}",
+                                reason="confidence too low after TimesFM disagreement",
+                            )
+                            return None
+            except Exception as exc:
+                self._log.debug("evaluate.timesfm_check_failed", error=str(exc))
+
         self._log.info(
             "evaluate.regime_signal",
             regime=regime,
@@ -840,6 +882,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             twap_agree=f"{twap_result.agreement_score}/3" if twap_result else "n/a",
             twap_boost=f"{twap_result.confidence_boost:+.2f}" if twap_result else "n/a",
             twap_overrode=_twap_overrode if '_twap_overrode' in dir() else False,
+            timesfm_agreement=timesfm_agreement,
         )
 
         return FiveMinSignal(
@@ -1849,18 +1892,20 @@ class FiveMinVPINStrategy(BaseStrategy):
         max_stake = bankroll * runtime.bet_fraction
         adjusted_stake = min(adjusted_stake, max_stake * 0.95)
         
-        # HARD MAX: Never exceed max_position_usd from config (default $50)
-        # If calculated stake exceeds hard max, scale down to stay below
-        hard_max = runtime.max_position_usd
-        if adjusted_stake > hard_max:
-            adjusted_stake = hard_max * 0.95  # Scale to 95% of hard max
-            self._log.warning(
-                "stake.hard_max_exceeded",
-                original=f"${adjusted_stake / 0.95:.2f}",
-                scaled=f"${adjusted_stake:.2f}",
-                hard_max=f"${hard_max:.2f}",
-                reason="Scaling bet to stay under max_position_usd",
+        # ABSOLUTE HARD CAP: $32 max bet (v5.8) — never exceed regardless of bankroll
+        ABSOLUTE_MAX_BET = 32.0
+        if adjusted_stake > ABSOLUTE_MAX_BET:
+            self._log.info(
+                "stake.absolute_cap",
+                original=f"${adjusted_stake:.2f}",
+                capped=f"${ABSOLUTE_MAX_BET:.2f}",
             )
+            adjusted_stake = ABSOLUTE_MAX_BET
+        
+        # Also respect max_position_usd from config
+        hard_max = min(runtime.max_position_usd, ABSOLUTE_MAX_BET)
+        if adjusted_stake > hard_max:
+            adjusted_stake = hard_max * 0.95
 
         # G2: Stake humanisation — round to 2 decimal places
         # Avoids bot-like precision that can flag suspicious order sizes
