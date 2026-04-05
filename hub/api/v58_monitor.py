@@ -668,12 +668,19 @@ def _calc_outcome_row(row: Any) -> dict:
     # v7.1 Retroactive decision (how current config would have performed on old windows)
     v71_ret = _calc_v71_retroactive_decision(row)
     v71_would_trade = v71_ret.get("v71_would_trade", False)
-    v71_correct: Optional[bool] = None
-    v71_pnl: Optional[float] = None
-    if v71_would_trade and actual_direction:
+    # v71_correct should only be set from actual Polymarket outcomes (DB),
+    # NOT from directional match (which is misleading — 99%+ accuracy but only 76% WR)
+    v71_correct_fallback: Optional[bool] = None
+    v71_pnl_fallback: Optional[float] = None
+    # Only use directional fallback if no DB value AND there's a trade outcome  
+    if v71_would_trade and actual_direction and row.get("poly_outcome"):
         v71_direction = v71_ret.get("v71_direction")
-        v71_correct = (v71_direction == actual_direction) if v71_direction else None
-        v71_pnl = _calc_what_if_pnl(v71_direction, actual_direction, gamma_up, gamma_down)
+        poly_outcome_str = str(row.get("poly_outcome") or "")
+        v71_correct_fallback = poly_outcome_str == "WIN" if poly_outcome_str in ("WIN", "LOSS") else None
+    elif v71_would_trade and actual_direction:
+        # Shadow: use what-if P&L for windows that weren't traded
+        v71_direction = v71_ret.get("v71_direction")
+        v71_pnl_fallback = _calc_what_if_pnl(v71_direction, actual_direction, gamma_up, gamma_down)
     
     # v7.1: Use DB columns if backfilled, else fall back to calculation
     db_v71_would_trade = row.get("v71_would_trade")
@@ -686,8 +693,8 @@ def _calc_outcome_row(row: Any) -> dict:
     final_v71_would_trade = db_v71_would_trade if db_v71_would_trade is not None else v71_would_trade
     final_v71_skip_reason = db_v71_skip_reason if db_v71_skip_reason is not None else v71_ret.get("v71_skip_reason")
     final_v71_regime = db_v71_regime if db_v71_regime is not None else v71_ret.get("v71_regime")
-    final_v71_correct = db_v71_correct if db_v71_correct is not None else v71_correct
-    final_v71_pnl = db_v71_pnl if db_v71_pnl is not None else v71_pnl
+    final_v71_correct = db_v71_correct if db_v71_correct is not None else v71_correct_fallback
+    final_v71_pnl = db_v71_pnl if db_v71_pnl is not None else v71_pnl_fallback
     
     base.update({
         "actual_direction": actual_direction,
