@@ -823,6 +823,15 @@ export default function WindowResults() {
       .map(o => o.v58_pnl)
       .filter(p => p != null)
       .reduce((a, b) => a + b, 0);
+    
+    // v7.1 Retroactive analysis
+    const v71eligible = base.filter(o => o.v71_would_trade === true);
+    const v71wins = v71eligible.filter(o => o.v71_correct === true).length;
+    const v71pnl = v71eligible
+      .map(o => o.v71_pnl)
+      .filter(p => p != null)
+      .reduce((a, b) => a + b, 0);
+    
     const v71count = base.filter(o => o.engine_version === 'v7.1').length;
     return {
       total: base.length,
@@ -832,6 +841,9 @@ export default function WindowResults() {
       totalPnl: realPnl,
       shadowPnl,
       v71count,
+      v71eligible: v71eligible.length,
+      v71wins,
+      v71pnl,
     };
   }, [filtered]);
 
@@ -888,15 +900,16 @@ export default function WindowResults() {
             value: stats.shadowPnl !== 0 ? (stats.shadowPnl >= 0 ? `+$${stats.shadowPnl.toFixed(2)}` : `-$${Math.abs(stats.shadowPnl).toFixed(2)}`) : '—',
             color: stats.shadowPnl >= 0 ? 'rgba(74,222,128,0.6)' : T.loss,
           },
-          ...(stats.v71count > 0 ? [{
-            label: 'v7.1',
-            value: `${stats.v71count} windows`,
-            color: 'rgba(168,85,247,0.9)',
+          ...(stats.v71eligible > 0 ? [{
+            label: 'v7.1 Retroactive WR',
+            title: 'How v7.1 config would have performed on historical windows',
+            value: `${Math.round(stats.v71wins / stats.v71eligible * 100)}% (${stats.v71wins}/${stats.v71eligible})`,
+            color: stats.v71wins / stats.v71eligible >= 0.7 ? T.profit : T.loss,
           }] : []),
         ].map(({ label, value, color, title }) => (
           <div key={label} title={title || ''} style={{
-            background: label === 'v7.1' ? 'rgba(168,85,247,0.08)' : T.card,
-            border: `1px solid ${label === 'v7.1' ? 'rgba(168,85,247,0.3)' : T.border}`,
+            background: label.includes('v7.1') ? 'rgba(168,85,247,0.08)' : T.card,
+            border: `1px solid ${label.includes('v7.1') ? 'rgba(168,85,247,0.3)' : T.border}`,
             borderRadius: 6,
             padding: '4px 12px',
             display: 'flex',
