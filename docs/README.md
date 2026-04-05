@@ -1,97 +1,96 @@
-# 15-Minute Polymarket Analysis Package
+# Novakash — System Overview
 
-## 📦 Contents
-
-This package contains a comprehensive analysis of 15-minute Up/Down markets on Polymarket, comparing them to our existing 5-minute strategy.
-
-### Files Included
-
-1. **15MIN_ANALYSIS_SUMMARY.md** — Executive summary with all key findings
-2. **analyze_15min_simple.py** — Python script to generate PDF report with charts
-3. **README.md** — This file
-
-### To Generate the Full PDF Report
-
-Run the analysis script:
-
-```bash
-cd /root/.openclaw/workspace-novakash/novakash
-python3 scripts/analyze_15min_simple.py
-```
-
-This will create: `docs/15min-market-analysis-2026-04-01.pdf`
-
-### Quick Summary
-
-**Key Finding:** 15-minute markets are RECOMMENDED. Run alongside 5-minute strategy for maximum revenue.
-
-| Metric | 15-Min | 5-Min | Combined |
-|--------|--------|-------|----------|
-| Accuracy | 66.2% | 62.1% | 64.8% |
-| Daily Revenue ($10 stake, 3 assets) | $18.74 | $24.91 | **$40.18** |
-| Monthly Revenue | $562 | $747 | **$1,205** |
-| Max Drawdown | 5.6% | 8.4% | 7.0% |
-
-### Optimal Entry Time
-
-**T-60s (14 minutes into the 15-minute window)**
-
-At this point:
-- 93% of price movement has occurred
-- Signal accuracy peaks at 66.2%
-- Still 10+ seconds to place order before market close
-- Taker ratio converged to show conviction
-
-### Best Markets to Trade (Ranked)
-
-1. ✅ **ETH-15m** — 11.6x more volume than ETH-5m, $787 typical volume
-2. ✅ **BTC-15m** — Most stable, lowest drawdown, 66.1% accuracy
-3. ✅ **BTC-5m** — Proven, consistent, high volume
-4. 🟡 **SOL-15m** — High volatility (strong signals) but higher risk
-5. ❌ **SOL-5m** — Low volume + low accuracy
-
-### Implementation Plan
-
-**Week 1-2:** Paper trade 15m signals  
-**Week 3:** Live with $5 stakes (learn mode)  
-**Week 4:** Scale to $10 stakes + add 5m  
-**Month 2:** Combined strategy at full scale  
-**Month 3+:** Optimize and scale further  
-
-### Revenue Potential
-
-**Conservative ($10 per trade, 3 assets):**
-- 15m-only: $562/month
-- Combined: $1,205/month (+114%)
-
-**Aggressive ($25 per trade, 2 assets):**
-- 15m-only: $1,405/month
-- Combined: $3,013/month (+114%)
-
-### Risk Management
-
-✓ Daily stop-loss: -$50 (5 consecutive losses)  
-✓ Correlation guard: Stagger BTC/ETH/SOL entries  
-✓ Time stops: Never hold past T-10s (market close)  
-✓ Position sizing: Max 10% bankroll per trade  
-✓ Weekly review: Pause if win rate < 60%  
-
-### Files Reference
-
-- **Script location:** `/root/.openclaw/workspace-novakash/novakash/scripts/analyze_15min_simple.py`
-- **Summary location:** `/root/.openclaw/workspace-novakash/novakash/docs/15MIN_ANALYSIS_SUMMARY.md`
-- **PDF output:** `/root/.openclaw/workspace-novakash/novakash/docs/15min-market-analysis-2026-04-01.pdf` (after running script)
-
-### Next Steps
-
-1. Read `15MIN_ANALYSIS_SUMMARY.md` for full analysis
-2. Run `python3 scripts/analyze_15min_simple.py` to generate PDF with charts
-3. Implement risk management rules
-4. Begin paper trading 15m signals
-5. Go live with $5 stakes (Week 3)
+Novakash is a fully automated cryptocurrency prediction market trading engine. It trades 5-minute BTC Up/Down markets on [Polymarket](https://polymarket.com) using a multi-signal pipeline that combines volume microstructure (VPIN), price momentum (TWAP), AI time-series forecasting (TimesFM), and CoinGlass derivatives data.
 
 ---
 
-**Report Status:** ✅ COMPLETE  
-**Generated:** 2026-04-01 22:40 UTC  
-**Recommendation:** Proceed with 15m market integration
+## What It Does
+
+Every 5 minutes a new "window" opens on Polymarket: will BTC be higher or lower in the next 5 minutes? The engine ingests real-time data from Binance, CoinGlass, and Polymarket itself, evaluates whether conditions are favourable at **T-60 seconds before window close**, then places a GTC limit order at the best available price if the signal passes all gates.
+
+---
+
+## Architecture Diagram
+
+```
+┌───────────────────────────────────────────────────────────────────────┐
+│                        External Data Sources                          │
+│  Binance WS (trades)  ·  CoinGlass API  ·  Polymarket Gamma API      │
+└──────────────┬──────────────────────────────────────────┬────────────┘
+               │                                          │
+               ▼                                          ▼
+┌──────────────────────────┐              ┌───────────────────────────┐
+│   Montreal Engine         │              │   TimesFM Service          │
+│   15.223.247.178          │◄────────────►│   16.52.148.255:8080       │
+│   /home/novakash/novakash │              │   Docker / t3.xlarge       │
+│   Python 3.12 + asyncio   │              │   ca-central-1             │
+│                           │              └───────────────────────────┘
+│   Signals: VPIN, TWAP,    │
+│   CG veto, TimesFM gate   │
+│   Execution: Polymarket   │──────► Polymarket CLOB (GTC orders)
+└──────────────┬────────────┘
+               │  writes
+               ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│               Railway PostgreSQL (hopper.proxy.rlwy.net:35772)        │
+└──────────────┬───────────────────────────────────────────────────────┘
+               │
+       ┌───────┴────────┐
+       ▼                ▼
+┌─────────────┐  ┌───────────────────┐
+│  Hub (API)  │  │  Data Collector    │
+│  Railway    │  │  Railway           │
+│  FastAPI    │  │  Gamma + market    │
+│  /api/v58/* │  │  data polling      │
+└──────┬──────┘  └───────────────────┘
+       │
+       ▼
+┌─────────────┐
+│  Frontend   │
+│  Railway    │
+│  React/Vite │
+│  Dashboard  │
+└─────────────┘
+```
+
+---
+
+## Key Components
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| **Engine** | Montreal (15.223.247.178) | Core trading loop — signals, execution, risk |
+| **Hub** | Railway | REST API + WebSocket feed for frontend |
+| **Frontend** | Railway | React dashboard for monitoring |
+| **Data Collector** | Railway | Background Polymarket market data poller |
+| **TimesFM Service** | AWS (16.52.148.255:8080) | AI price-direction forecasting |
+| **Database** | Railway PostgreSQL | Shared state: trades, signals, snapshots |
+
+---
+
+## Active Strategy
+
+**v7.1 — Five-Minute VPIN with TimesFM Gate**
+
+- Evaluates at **T-60 seconds** before window close
+- VPIN gate: skip if VPIN < 0.45 (low informed flow)
+- Regime-aware delta thresholds (CASCADE/TRANSITION/NORMAL)
+- TimesFM must agree with TWAP/window-delta direction
+- GTC limit orders at Gamma best price (entry cap $0.70)
+- Polymarket oracle resolves ~4 minutes post-close
+
+See [`STRATEGY.md`](STRATEGY.md) for full details.
+
+---
+
+## Further Reading
+
+| Doc | Contents |
+|-----|----------|
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Detailed component architecture |
+| [`INFRASTRUCTURE.md`](INFRASTRUCTURE.md) | Servers, IPs, SSH, deploy procedures |
+| [`STRATEGY.md`](STRATEGY.md) | Trading logic, signals, gates |
+| [`DATABASE.md`](DATABASE.md) | Full table schemas |
+| [`DEPLOYMENT.md`](DEPLOYMENT.md) | How to deploy each component |
+| [`API.md`](API.md) | Hub REST API reference |
+| [`CLAUDE.md`](CLAUDE.md) | AI/Claude integration details |

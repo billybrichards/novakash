@@ -1826,3 +1826,140 @@ async def get_gate_analysis(
         }
     except Exception as exc:
         return {"buckets": [], "cumulative": [], "error": str(exc)}
+
+
+# ─── Strategy Analysis endpoint ──────────────────────────────────────────────
+
+@router.get("/v58/strategy-analysis")
+async def get_strategy_analysis(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """30-day backtest of v7.1 strategy against real Polymarket outcomes."""
+    try:
+        # 1. Base rate: UP vs DOWN over 30 days
+        base_q = text("""
+            SELECT 
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE outcome = 'UP') as up_count,
+                COUNT(*) FILTER (WHERE outcome = 'DOWN') as down_count
+            FROM market_data
+            WHERE asset = 'BTC' AND timeframe = '5m' AND resolved AND outcome IS NOT NULL
+        """)
+        base = (await session.execute(base_q)).mappings().first()
+        
+        # 2. Daily breakdown
+        daily_q = text("""
+            SELECT 
+                DATE(to_timestamp(window_ts) AT TIME ZONE 'UTC') as day,
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE outcome = 'UP') as up,
+                COUNT(*) FILTER (WHERE outcome = 'DOWN') as down
+            FROM market_data
+            WHERE asset = 'BTC' AND timeframe = '5m' AND resolved AND outcome IS NOT NULL
+            GROUP BY 1 ORDER BY 1
+        """)
+        daily_rows = (await session.execute(daily_q)).mappings().all()
+        
+        # 3. Hourly pattern
+        hourly_q = text("""
+            SELECT 
+                EXTRACT(HOUR FROM to_timestamp(window_ts) AT TIME ZONE 'UTC')::int as hour,
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE outcome = 'UP') as up,
+                COUNT(*) FILTER (WHERE outcome = 'DOWN') as down,
+                ROUND(COUNT(*) FILTER (WHERE outcome = 'DOWN')::numeric / COUNT(*) * 100, 1) as down_pct
+            FROM market_data
+            WHERE asset = 'BTC' AND timeframe = '5m' AND resolved AND outcome IS NOT NULL
+            GROUP BY 1 ORDER BY 1
+        """)
+        hourly_rows = (await session.execute(hourly_q)).mappings().all()
+        
+        # 4. Real trade performance (from trades table)
+        real_q = text("""
+            SELECT 
+                COUNT(*) as trades,
+                COUNT(*) FILTER (WHERE outcome = 'WIN') as wins,
+                COUNT(*) FILTER (WHERE outcome = 'LOSS') as losses,
+                ROUND(COUNT(*) FILTER (WHERE outcome = 'WIN')::numeric / 
+                    NULLIF(COUNT(*) FILTER (WHERE outcome IS NOT NULL), 0) * 100, 1) as wr,
+                ROUND(SUM(pnl_usd)::numeric, 2) as pnl,
+                ROUND(AVG(entry_price)::numeric, 4) as avg_entry,
+                MIN(created_at AT TIME ZONE 'UTC') as first_trade,
+                MAX(created_at AT TIME ZONE 'UTC') as last_trade
+            FROM trades WHERE strategy = 'five_min_vpin' AND outcome IS NOT NULL
+        """)
+        real = (await session.execute(real_q)).mappings().first()
+        
+        # 5. v7.1 performance from window_snapshots
+        v71_q = text("""
+            SELECT 
+                COUNT(*) FILTER (WHERE v71_would_trade) as eligible,
+                COUNT(*) FILTER (WHERE v71_correct = true) as wins,
+                COUNT(*) FILTER (WHERE v71_correct = false) as losses,
+                COUNT(*) FILTER (WHERE v71_correct IS NOT NULL) as resolved,
+                ROUND(COUNT(*) FILTER (WHERE v71_correct = true)::numeric / 
+                    NULLIF(COUNT(*) FILTER (WHERE v71_correct IS NOT NULL), 0) * 100, 1) as wr,
+                ROUND(SUM(CASE WHEN v71_pnl IS NOT NULL THEN v71_pnl ELSE 0 END)::numeric, 2) as pnl
+            FROM window_snapshots WHERE timeframe = '5m'
+        """)
+        v71 = (await session.execute(v71_q)).mappings().first()
+        
+        # 6. v7.1 by regime
+        regime_q = text("""
+            SELECT v71_regime,
+                COUNT(*) as eligible,
+                COUNT(*) FILTER (WHERE v71_correct = true) as wins,
+                COUNT(*) FILTER (WHERE v71_correct = false) as losses,
+                ROUND(COUNT(*) FILTER (WHERE v71_correct = true)::numeric / 
+                    NULLIF(COUNT(*) FILTER (WHERE v71_correct IS NOT NULL), 0) * 100, 1) as wr
+            FROM window_snapshots 
+            WHERE timeframe = '5m' AND v71_would_trade = true AND v71_correct IS NOT NULL
+            GROUP BY v71_regime ORDER BY v71_regime
+        """)
+        regime_rows = (await session.execute(regime_q)).mappings().all()
+        
+        # 7. Multi-asset comparison
+        multi_q = text("""
+            SELECT asset,
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE outcome = 'UP') as up,
+                COUNT(*) FILTER (WHERE outcome = 'DOWN') as down,
+                ROUND(COUNT(*) FILTER (WHERE outcome = 'DOWN')::numeric / COUNT(*) * 100, 1) as down_pct
+            FROM market_data
+            WHERE timeframe = '5m' AND resolved AND outcome IS NOT NULL
+            GROUP BY asset ORDER BY asset
+        """)
+        multi_rows = (await session.execute(multi_q)).mappings().all()
+        
+        return {
+            "base_rate": {
+                "total": int(base["total"]),
+                "up": int(base["up_count"]),
+                "down": int(base["down_count"]),
+                "up_pct": round(int(base["up_count"]) / int(base["total"]) * 100, 1) if base["total"] else 0,
+                "down_pct": round(int(base["down_count"]) / int(base["total"]) * 100, 1) if base["total"] else 0,
+            },
+            "daily": [{"day": str(r["day"]), "total": int(r["total"]), "up": int(r["up"]), "down": int(r["down"])} for r in daily_rows],
+            "hourly": [{"hour": int(r["hour"]), "total": int(r["total"]), "up": int(r["up"]), "down": int(r["down"]), "down_pct": float(r["down_pct"] or 0)} for r in hourly_rows],
+            "real_trades": {
+                "trades": int(real["trades"] or 0),
+                "wins": int(real["wins"] or 0),
+                "losses": int(real["losses"] or 0),
+                "wr": float(real["wr"] or 0),
+                "pnl": float(real["pnl"] or 0),
+                "avg_entry": float(real["avg_entry"] or 0),
+            },
+            "v71": {
+                "eligible": int(v71["eligible"] or 0),
+                "resolved": int(v71["resolved"] or 0),
+                "wins": int(v71["wins"] or 0),
+                "losses": int(v71["losses"] or 0),
+                "wr": float(v71["wr"] or 0),
+                "pnl": float(v71["pnl"] or 0),
+            },
+            "v71_by_regime": [{"regime": r["v71_regime"], "eligible": int(r["eligible"]), "wins": int(r["wins"]), "losses": int(r["losses"]), "wr": float(r["wr"] or 0)} for r in regime_rows],
+            "multi_asset": [{"asset": r["asset"], "total": int(r["total"]), "up": int(r["up"]), "down": int(r["down"]), "down_pct": float(r["down_pct"] or 0)} for r in multi_rows],
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
