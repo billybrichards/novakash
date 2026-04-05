@@ -224,7 +224,7 @@ export default function AnalysisLibrary() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
+    const token = localStorage.getItem('access_token');
     if (!token) return;
     fetch('/api/analysis', { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.json())
@@ -238,7 +238,7 @@ export default function AnalysisLibrary() {
   }, []);
 
   const loadDoc = (docId) => {
-    const token = localStorage.getItem('token');
+    const token = localStorage.getItem('access_token');
     fetch(`/api/analysis/${docId}`, { headers: { Authorization: `Bearer ${token}` } })
       .then(r => r.json())
       .then(data => setSelected(data))

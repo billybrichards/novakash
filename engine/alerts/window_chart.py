@@ -244,7 +244,7 @@ def window_snapshot_chart(
             ax_sig.text(0.5, 0.02, 'SIGNAL CONFLICT',
                         ha='center', color=AMBER, fontsize=7.5,
                         fontweight='bold', transform=ax_sig.transAxes,
-                        bbox=dict(boxstyle='round,pad=0.2', facecolor='rgba(245,158,11,0.1)',
+                        bbox=dict(boxstyle='round,pad=0.2', facecolor=(0.96, 0.62, 0.04, 0.1),
                                   edgecolor=AMBER, linewidth=0.8))
 
         # ── P&L table ─────────────────────────────────────────────────────
@@ -261,8 +261,7 @@ def window_snapshot_chart(
         for cx, h, ca in zip(col_x, cols, col_align):
             ax_table.text(cx, 0.88, h, color=MUTED, fontsize=6.5,
                           fontweight='bold', transform=ax_table.transAxes, ha=ca)
-        ax_table.axhline(0.78, color=BORDER, linewidth=0.8,
-                         transform=ax_table.transAxes, xmin=0, xmax=1)
+        ax_table.axhline(0.78, color=BORDER, linewidth=0.8, xmin=0, xmax=1)
 
         # Data rows
         row_labels = ['T-240', 'T-180', 'T-120', 'T-90', 'T-60']

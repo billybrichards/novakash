@@ -127,6 +127,238 @@ class TelegramAlerter:
     def trade_alerts_enabled(self) -> bool:
         return self._alerts_paper if self._paper_mode else self._alerts_live
 
+    # ── Location / identity ────────────────────────────────────────────────────
+
+    _location: str = "MTL"
+    _engine_version: str = "v7.1"
+    _db_client = None  # injected after construction
+
+    def set_location(self, location: str, version: str = "v7.1") -> None:
+        self._location = location
+        self._engine_version = version
+
+    def set_db_client(self, db) -> None:
+        """Inject DB client for notification logging."""
+        self._db_client = db
+
+    def _footer(self, window_id: Optional[str] = None) -> str:
+        parts = [f"📍 {self._location}", self._engine_version, self._mode_tag()]
+        if window_id:
+            parts.insert(1, f"`{window_id}`")
+        return "  ".join(parts)
+
+    async def _log_notification(
+        self,
+        notification_type: str,
+        message_text: str,
+        window_id: Optional[str] = None,
+        has_chart: bool = False,
+        telegram_message_id: Optional[int] = None,
+    ) -> None:
+        """Persist every sent notification to telegram_notifications table."""
+        if not self._db_client:
+            return
+        try:
+            from sqlalchemy import text as _text
+            async with self._db_client._pool.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO telegram_notifications
+                       (bot_id, location, window_id, notification_type,
+                        message_text, has_chart, engine_version, telegram_message_id)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
+                    "novakash", self._location, window_id, notification_type,
+                    message_text[:4000], has_chart, self._engine_version,
+                    telegram_message_id,
+                )
+        except Exception as exc:
+            self._log.debug("telegram.log_notification_failed", error=str(exc)[:80])
+
+    # ── Window lifecycle notifications ─────────────────────────────────────────
+
+    async def send_window_open(
+        self,
+        window_id: str,
+        asset: str,
+        timeframe: str,
+        open_price: float,
+        gamma_up: float,
+        gamma_down: float,
+    ) -> None:
+        """Sent once when a new window opens."""
+        mode = self._mode_tag()
+        g_skew = "BALANCED" if abs(gamma_up - gamma_down) < 0.03 else ("UP leaning" if gamma_up > gamma_down else "DOWN leaning")
+        text = (
+            f"🪟 *WINDOW OPEN — {asset} {timeframe}*  {mode}\n"
+            f"`{window_id}`\n"
+            f"\n"
+            f"Open: `${open_price:,.2f}`\n"
+            f"Gamma: UP `${gamma_up:.3f}` / DOWN `${gamma_down:.3f}`  `{g_skew}`\n"
+            f"\n"
+            f"{self._footer(window_id)}"
+        )
+        msg_id = await self._send_with_id(text)
+        await self._log_notification("window_open", text, window_id, telegram_message_id=msg_id)
+
+    async def send_window_snapshot(
+        self,
+        window_id: str,
+        t_label: str,
+        elapsed_s: int,
+        price_ticks: list,
+        open_price: float,
+        current_price: float,
+        delta_pct: float,
+        vpin: float,
+        vpin_regime: str,
+        twap_direction: Optional[str],
+        twap_agreement: int,
+        timesfm_direction: Optional[str],
+        timesfm_confidence: float,
+        timesfm_predicted: float,
+        gamma_up: float,
+        gamma_down: float,
+        cg_taker_buy_pct: float = 50.0,
+        cg_funding_annual: float = 0.0,
+        entry_prices: Optional[dict] = None,
+        stake_usd: float = 4.0,
+        ai_commentary: Optional[str] = None,
+    ) -> None:
+        """Send snapshot chart + text card at T-240/T-180/T-120/T-90."""
+        from alerts.window_chart import window_snapshot_chart
+
+        delta_sign = "+" if delta_pct >= 0 else ""
+        dirs = [d for d in [twap_direction, timesfm_direction,
+                             "UP" if delta_pct > 0 else "DOWN"] if d]
+        conflict = len(set(dirs)) > 1
+
+        caption_lines = [
+            f"⏱ *{t_label}* — {window_id}",
+            f"",
+            f"{'▲' if delta_pct > 0 else '▼'} `{delta_sign}{delta_pct:.4f}%`  |  VPIN `{vpin:.3f}` `{vpin_regime}`",
+        ]
+        if twap_direction:
+            caption_lines.append(f"TWAP `{twap_direction}` {twap_agreement}/3  |  Gamma UP `${gamma_up:.3f}` / DN `${gamma_down:.3f}`")
+        if timesfm_direction:
+            caption_lines.append(f"TimesFM `{timesfm_direction}` {timesfm_confidence:.0%}")
+        if conflict:
+            caption_lines.append(f"⚠ SIGNAL CONFLICT")
+        if ai_commentary:
+            caption_lines.append(f"")
+            caption_lines.append(f"🤖 _{ai_commentary}_")
+        caption_lines.append(f"")
+        caption_lines.append(self._footer(window_id))
+
+        caption = "\n".join(caption_lines)
+
+        # Generate chart
+        chart_bytes = window_snapshot_chart(
+            price_ticks=price_ticks or [open_price, current_price],
+            open_price=open_price,
+            current_price=current_price,
+            window_id=window_id,
+            t_label=t_label,
+            elapsed_s=elapsed_s,
+            vpin=vpin,
+            vpin_regime=vpin_regime,
+            twap_direction=twap_direction,
+            twap_agreement=twap_agreement,
+            timesfm_direction=timesfm_direction,
+            timesfm_confidence=timesfm_confidence,
+            timesfm_predicted=timesfm_predicted,
+            gamma_up=gamma_up,
+            gamma_down=gamma_down,
+            delta_pct=delta_pct,
+            cg_taker_buy_pct=cg_taker_buy_pct,
+            cg_funding_annual=cg_funding_annual,
+            entry_prices=entry_prices or {},
+            stake_usd=stake_usd,
+            location=self._location,
+            engine_version=self._engine_version,
+        )
+
+        if chart_bytes:
+            msg_id = await self._send_photo_with_id(chart_bytes, caption)
+        else:
+            # Fallback to text only
+            msg_id = await self._send_with_id(caption)
+        await self._log_notification(
+            f"snapshot_{t_label}", caption, window_id,
+            has_chart=bool(chart_bytes), telegram_message_id=msg_id,
+        )
+
+    async def send_window_resolution(
+        self,
+        window_id: str,
+        asset: str,
+        timeframe: str,
+        outcome: str,                   # "WIN" or "LOSS"
+        direction: str,                 # "UP" or "DOWN" (our bet)
+        actual_direction: str,          # "UP" or "DOWN" (what happened)
+        entry_price: float,             # actual token entry price
+        pnl_usd: float,
+        open_price: float,
+        close_price: float,
+        delta_pct: float,
+        vpin: float,
+        regime: str,
+        twap_result=None,
+        # What-if at each T-point
+        entry_prices: Optional[dict] = None,  # {"T-240": 0.48, ...}
+        stake_usd: float = 4.0,
+        win_streak: int = 0,
+        loss_streak: int = 0,
+        ai_commentary: Optional[str] = None,
+    ) -> None:
+        """Full resolution report with what-if P&L table at each T-point."""
+        result_e = "✅" if outcome == "WIN" else "❌"
+        arrow = "▲" if actual_direction == "UP" else "▼"
+        correct = actual_direction == direction
+        confirm = "✓" if correct else "✗"
+        pnl_sign = "+" if pnl_usd >= 0 else ""
+        streak_str = (f"  Streak: `{win_streak}W`" if win_streak > 0
+                      else f"  Streak: `{loss_streak}L`" if loss_streak > 0 else "")
+
+        lines = [
+            f"{result_e} *{outcome} — {asset} {timeframe}*  {self._mode_tag()}",
+            f"`{window_id}`",
+            f"",
+            f"{arrow} {direction} @ `${entry_price:.3f}` → resolved {actual_direction} {confirm}",
+            f"P&L: `{pnl_sign}${pnl_usd:.2f}`{streak_str}",
+            f"",
+            f"*What-if P&L at each entry point:*",
+        ]
+
+        # What-if table
+        ep = entry_prices or {}
+        for label in ["T-240", "T-180", "T-120", "T-90", "T-60"]:
+            ep_price = ep.get(label)
+            if not ep_price:
+                continue
+            fee = 0.035 * min(ep_price, 1 - ep_price)
+            shares = stake_usd / ep_price
+            net_win = shares * (1 - fee) - stake_usd
+            net_loss = -stake_usd
+            actual_pnl = net_win if correct else net_loss
+            pnl_e = "✅" if actual_pnl > 0 else "❌"
+            actual_sign = "+" if actual_pnl > 0 else ""
+            marker = " ← actual" if label == "T-60" else ""
+            lines.append(f"`{label}`  `${ep_price:.3f}`  →  `{actual_sign}${actual_pnl:.2f}` {pnl_e}{marker}")
+
+        if ai_commentary:
+            lines += ["", f"🤖 _{ai_commentary}_"]
+
+        pf = self._portfolio_line()
+        if pf:
+            lines += ["", pf]
+        lines += ["", self._footer(window_id)]
+
+        text = "\n".join(lines)
+        msg_id = await self._send_with_id(text)
+        await self._log_notification(
+            "resolution", text, window_id,
+            has_chart=False, telegram_message_id=msg_id,
+        )
+
     # ── Portfolio footer ───────────────────────────────────────────────────────
 
     def _portfolio_line(self) -> str:
@@ -633,7 +865,64 @@ class TelegramAlerter:
         except Exception:
             return "🔬 CoinGlass: ⚠️"
 
-    # ── Internal send ──────────────────────────────────────────────────────────
+    # ── Internal send helpers ──────────────────────────────────────────────────
+
+    async def _send_with_id(self, text: str) -> Optional[int]:
+        """Send text and return Telegram message_id (for logging)."""
+        if not self._bot_token or not self._chat_id:
+            return None
+        payload = {
+            "chat_id": self._chat_id,
+            "text": text,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": True,
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self._url, json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data.get("result", {}).get("message_id")
+                    body = await resp.text()
+                    if "can't parse entities" in body:
+                        plain = dict(payload)
+                        del plain["parse_mode"]
+                        async with session.post(self._url, json=plain,
+                                                timeout=aiohttp.ClientTimeout(total=10)) as r2:
+                            if r2.status == 200:
+                                d2 = await r2.json()
+                                return d2.get("result", {}).get("message_id")
+        except Exception as exc:
+            self._log.warning("telegram.send_error", error=str(exc))
+        return None
+
+    async def _send_photo_with_id(self, photo_bytes: bytes, caption: str = "") -> Optional[int]:
+        """Send photo and return Telegram message_id."""
+        if not self._bot_token or not self._chat_id or not photo_bytes:
+            return None
+        try:
+            form = aiohttp.FormData()
+            form.add_field("chat_id", str(self._chat_id))
+            form.add_field("photo", photo_bytes, content_type="image/png", filename="chart.png")
+            if caption:
+                form.add_field("caption", caption[:1024])
+                form.add_field("parse_mode", "Markdown")
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self._photo_url, data=form,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data.get("result", {}).get("message_id")
+                    body = await resp.text()
+                    self._log.warning("telegram.photo_failed", status=resp.status, body=body[:100])
+        except Exception as exc:
+            self._log.warning("telegram.photo_error", error=str(exc))
+        return None
 
     async def _send(self, text: str) -> None:
         if not self._bot_token or not self._chat_id:

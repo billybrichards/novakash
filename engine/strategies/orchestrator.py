@@ -170,6 +170,7 @@ class Orchestrator:
         # Wire alerter references now that risk_manager and poly_client exist
         self._alerter.set_risk_manager(self._risk_manager)
         self._alerter.set_poly_client(self._poly_client)
+        self._alerter.set_location("MTL", self._settings.engine_version if hasattr(self._settings, "engine_version") else "v7.1")
 
         # ── Builder Relayer Redeemer ──────────────────────────────────────────
         from execution.redeemer import PositionRedeemer
@@ -421,6 +422,8 @@ class Orchestrator:
         # 1. Connect DB
         try:
             await self._db.connect()
+            # Wire DB to alerter for notification logging
+            self._alerter.set_db_client(self._db)
         except Exception as exc:
             log.error("orchestrator.db_connect_failed", error=str(exc))
             raise
@@ -940,40 +943,59 @@ class Orchestrator:
                     _proxy_price = window.open_price * (1 + _implied_delta)
                 self._twap_tracker.add_tick(window.asset, window.window_ts, _proxy_price)
 
-            # ── v5.8 Countdown Alerts (T-180, T-120, T-90) ─────────────
+            # ── Window-centric notification system (v7.2) ────────────────
+            # Each window gets: OPEN card → T-240/180/120/90 snapshots →
+            # T-60 trade decision → RESOLUTION with what-if table.
+            # All messages tagged with window_id + location + version.
             if state_value == "ACTIVE" and window.open_price:
                 import time as _time
                 _elapsed = _time.time() - window.window_ts
                 _remaining = window.duration_secs - _elapsed
                 _wkey = f"{window.asset}-{window.window_ts}"
-                
-                # Track which countdown stages we've sent
+                _window_id = f"{window.asset}-{window.window_ts}"
+                _tf = "15m" if window.duration_secs == 900 else "5m"
+
+                # Track which stages we've sent for this window
                 if not hasattr(self, '_countdown_sent'):
                     self._countdown_sent = {}
                 if _wkey not in self._countdown_sent:
                     self._countdown_sent[_wkey] = set()
-                
-                log.info("five_min.countdown_check", remaining=f"{_remaining:.1f}s", sent=str(self._countdown_sent.get(_wkey, set())))
-                
-                # Helper: get current snapshot values
-                async def _get_snapshot():
+                    # WINDOW OPEN card — fires once at T-300 (window just opened)
+                    if self._alerter and _remaining >= 270:
+                        asyncio.create_task(self._alerter.send_window_open(
+                            window_id=_window_id,
+                            asset=window.asset,
+                            timeframe=_tf,
+                            open_price=window.open_price,
+                            gamma_up=window.up_price or 0.50,
+                            gamma_down=window.down_price or 0.50,
+                        ))
+
+                log.info("five_min.countdown_check", remaining=f"{_remaining:.1f}s",
+                         sent=str(self._countdown_sent.get(_wkey, set())))
+
+                # ── Helper: get full signal snapshot ────────────────────
+                async def _get_full_snapshot(t_label: str, elapsed: int):
                     _vpin = self._five_min_strategy._vpin.current_vpin if self._five_min_strategy._vpin else 0.0
                     _btc = float(self._aggregator._state.btc_price) if self._aggregator._state.btc_price else 0.0
                     _d = (_btc - window.open_price) / window.open_price * 100 if window.open_price and _btc else 0.0
-                    _regime = "CASCADE" if _vpin >= 0.65 else "TRANSITION" if _vpin >= 0.55 else "NORMAL"
+                    _regime = ("CASCADE" if _vpin >= 0.65 else "TRANSITION" if _vpin >= 0.55
+                               else "NORMAL" if _vpin >= 0.45 else "CALM")
                     # TimesFM
-                    _tsf_str = "⏳ unavailable"
-                    _tsf_dir = None
+                    _tsf_dir, _tsf_conf, _tsf_pred = None, 0.0, 0.0
                     if self._five_min_strategy._timesfm:
                         try:
-                            _tsf = await self._five_min_strategy._timesfm.get_forecast(open_price=window.open_price)
+                            _secs = max(1, int((window.window_ts + window.duration_secs) - _time.time()))
+                            _tsf = await self._five_min_strategy._timesfm.get_forecast(
+                                open_price=window.open_price, seconds_to_close=_secs)
                             if _tsf and not _tsf.error:
                                 _tsf_dir = _tsf.direction
-                                _tsf_str = f"{_tsf.direction} ({_tsf.confidence:.0%}) → ${_tsf.predicted_close:,.2f}"
+                                _tsf_conf = _tsf.confidence
+                                _tsf_pred = _tsf.predicted_close
                         except Exception:
                             pass
                     # TWAP
-                    _twap_str = "—"
+                    _tw_dir, _tw_agree = None, 0
                     if self._twap_tracker:
                         _tw = self._twap_tracker.evaluate(
                             asset=window.asset, window_ts=window.window_ts,
@@ -981,68 +1003,96 @@ class Orchestrator:
                             gamma_up_price=window.up_price, gamma_down_price=window.down_price,
                         )
                         if _tw:
-                            _twap_str = f"{_tw.recommended_direction} ({_tw.agreement_score}/3)"
-                    return _vpin, _btc, _d, _regime, _tsf_str, _tsf_dir, _twap_str
+                            _tw_dir = _tw.recommended_direction
+                            _tw_agree = _tw.agreement_score
+                    # CoinGlass
+                    _cg_taker = 50.0
+                    _cg_fund = 0.0
+                    try:
+                        _cg = self._cg_enhanced.snapshot if self._cg_enhanced else None
+                        if _cg and _cg.connected:
+                            _tot = _cg.taker_buy_volume_1m + _cg.taker_sell_volume_1m
+                            if _tot > 0:
+                                _cg_taker = _cg.taker_buy_volume_1m / _tot * 100
+                            _cg_fund = _cg.funding_rate * 3 * 365
+                    except Exception:
+                        pass
+                    # Collect price ticks from TWAP tracker
+                    _ticks = []
+                    try:
+                        _tw_state = self._twap_tracker._windows.get(
+                            f"{window.asset}-{window.window_ts}", None)
+                        if _tw_state and hasattr(_tw_state, 'ticks'):
+                            _ticks = [t[1] for t in _tw_state.ticks[-300:]]
+                    except Exception:
+                        _ticks = [window.open_price, _btc]
+                    # AI commentary (non-blocking, best-effort)
+                    _ai = None
+                    if self._alerter._anthropic_api_key:
+                        try:
+                            _prompt = (
+                                f"BTC 5m window {t_label}: "
+                                f"VPIN {_vpin:.3f} ({_regime}), delta {_d:+.4f}%, "
+                                f"TWAP {_tw_dir or '?'} {_tw_agree}/3, "
+                                f"TimesFM {_tsf_dir or '?'} {_tsf_conf:.0%}, "
+                                f"CG taker {_cg_taker:.0f}% buy, funding {_cg_fund:.0f}%/yr. "
+                                f"1 sentence: what does this signal suggest about the next {int(_remaining):.0f}s?"
+                            )
+                            import aiohttp as _ah
+                            async with _ah.ClientSession() as _sess:
+                                async with _sess.post(
+                                    "https://api.anthropic.com/v1/messages",
+                                    json={"model": "claude-haiku-4-5", "max_tokens": 80,
+                                          "messages": [{"role": "user", "content": _prompt}]},
+                                    headers={"x-api-key": self._alerter._anthropic_api_key,
+                                             "anthropic-version": "2023-06-01"},
+                                    timeout=_ah.ClientTimeout(total=8),
+                                ) as _r:
+                                    if _r.status == 200:
+                                        _d2 = await _r.json()
+                                        _ai = _d2.get("content", [{}])[0].get("text", "").strip()
+                        except Exception:
+                            pass
+                    return _vpin, _btc, _d, _regime, _tsf_dir, _tsf_conf, _tsf_pred, _tw_dir, _tw_agree, _cg_taker, _cg_fund, _ticks, _ai
 
-                _tf = "15m" if window.duration_secs == 900 else "5m"
+                # Snapshot windows: T-240, T-180, T-120, T-90
+                _snapshot_windows = [
+                    ("T-240", 242, 220),
+                    ("T-180", 182, 160),
+                    ("T-120", 122, 100),
+                    ("T-90", 92, 70),
+                ]
+                for _t_lbl, _hi, _lo in _snapshot_windows:
+                    if _remaining <= _hi and _remaining >= _lo and _t_lbl not in self._countdown_sent[_wkey]:
+                        self._countdown_sent[_wkey].add(_t_lbl)
+                        _elapsed_now = int(window.duration_secs - _remaining)
+                        (_vpin, _btc, _d, _regime, _tsf_dir, _tsf_conf, _tsf_pred,
+                         _tw_dir, _tw_agree, _cg_taker, _cg_fund, _ticks, _ai) = await _get_full_snapshot(_t_lbl, _elapsed_now)
+                        if self._alerter:
+                            asyncio.create_task(self._alerter.send_window_snapshot(
+                                window_id=_window_id,
+                                t_label=_t_lbl,
+                                elapsed_s=_elapsed_now,
+                                price_ticks=_ticks or [window.open_price, _btc],
+                                open_price=window.open_price,
+                                current_price=_btc,
+                                delta_pct=_d,
+                                vpin=_vpin,
+                                vpin_regime=_regime,
+                                twap_direction=_tw_dir,
+                                twap_agreement=_tw_agree,
+                                timesfm_direction=_tsf_dir,
+                                timesfm_confidence=_tsf_conf,
+                                timesfm_predicted=_tsf_pred,
+                                gamma_up=window.up_price or 0.50,
+                                gamma_down=window.down_price or 0.50,
+                                cg_taker_buy_pct=_cg_taker,
+                                cg_funding_annual=_cg_fund,
+                                stake_usd=4.0,
+                                ai_commentary=_ai,
+                            ))
 
-                # T-180s: First look — TimesFM + initial signals
-                if _remaining <= 182 and _remaining >= 160 and "T-180" not in self._countdown_sent[_wkey]:
-                    self._countdown_sent[_wkey].add("T-180")
-                    _vpin, _btc, _d, _regime, _tsf_str, _tsf_dir, _twap_str = await _get_snapshot()
-                    if self._alerter:
-                        await self._alerter.send_system_alert(
-                            f"⏱️ T-180s | {window.asset} {_tf}\n"
-                            f"🧠 TimesFM: {_tsf_str}\n"
-                            f"🔬 VPIN: {_vpin:.3f} ({_regime})\n"
-                            f"📈 Delta: {_d:+.4f}%\n"
-                            f"💰 Gamma: UP ${window.up_price:.2f} / DOWN ${window.down_price:.2f}\n"
-                            f"Open: ${window.open_price:,.2f} | Now: ${_btc:,.2f}",
-                            level="info",
-                        )
-
-                # T-120s: All signals snapshot
-                if _remaining <= 122 and _remaining >= 100 and "T-120" not in self._countdown_sent[_wkey]:
-                    self._countdown_sent[_wkey].add("T-120")
-                    _vpin, _btc, _d, _regime, _tsf_str, _tsf_dir, _twap_str = await _get_snapshot()
-                    _point_dir = "UP" if _d > 0 else "DOWN"
-                    if self._alerter:
-                        await self._alerter.send_system_alert(
-                            f"⏱️ T-120s | {window.asset} {_tf}\n"
-                            f"🧠 TimesFM: {_tsf_str}\n"
-                            f"📊 TWAP: {_twap_str}\n"
-                            f"📈 Point: {_point_dir} (δ{_d:+.4f}%)\n"
-                            f"🔬 VPIN: {_vpin:.3f} ({_regime})\n"
-                            f"💰 Gamma: UP ${window.up_price:.2f} / DOWN ${window.down_price:.2f}",
-                            level="info",
-                        )
-
-                # T-90s: Agreement preview + trade outlook
-                if _remaining <= 92 and _remaining >= 70 and "T-90" not in self._countdown_sent[_wkey]:
-                    self._countdown_sent[_wkey].add("T-90")
-                    _vpin, _btc, _d, _regime, _tsf_str, _tsf_dir, _twap_str = await _get_snapshot()
-                    _point_dir = "UP" if _d > 0 else "DOWN"
-                    # Agreement preview
-                    if _tsf_dir:
-                        _agree_str = f"✅ AGREE ({_tsf_dir})" if _tsf_dir == _point_dir else f"❌ DISAGREE (TFM={_tsf_dir} vs Price={_point_dir})"
-                    else:
-                        _agree_str = "⚫ TimesFM unavailable"
-                    _will_trade = "🟢 LIKELY" if _vpin >= 0.55 else "🔴 UNLIKELY (VPIN too low)"
-                    if self._alerter:
-                        await self._alerter.send_system_alert(
-                            f"⏱️ T-90s | {window.asset} {_tf}\n"
-                            f"🧠 TimesFM: {_tsf_str}\n"
-                            f"🎯 v5.8: {_agree_str}\n"
-                            f"🔬 VPIN: {_vpin:.3f} ({_regime})\n"
-                            f"📋 Trade outlook: {_will_trade}\n"
-                            f"⏳ Final evaluation in 30s...",
-                            level="info",
-                        )
-                
-                # Clean old countdown tracking
-                _old_keys = [k for k in self._countdown_sent if k != _wkey]
-                for k in _old_keys[-10:]:  # Keep last 10
-                    pass
+                # Clean up old window tracking
                 if len(self._countdown_sent) > 20:
                     _oldest = sorted(self._countdown_sent.keys())[:-10]
                     for k in _oldest:
@@ -1168,8 +1218,42 @@ class Orchestrator:
                 
                 if filled or is_paper_mode:
                     try:
-                        cg_snap = self._cg_enhanced.snapshot if self._cg_enhanced else None
-                        await self._alerter.send_trade_alert(order, cg_snapshot=cg_snap)
+                        meta = order.metadata or {}
+                        _window_id = f"{meta.get('asset', 'BTC')}-{int(meta.get('window_ts', 0))}"
+                        _direction = "UP" if order.direction == "YES" else "DOWN"
+                        _open_p = meta.get("window_open_price", 0) or 0
+                        _close_p = float(self._order_manager._current_btc_price or 0)
+                        _actual = "UP" if _close_p >= _open_p else "DOWN"
+                        _delta = (_close_p - _open_p) / _open_p * 100 if _open_p else 0
+                        _vpin = self._five_min_strategy._vpin.current_vpin if self._five_min_strategy and self._five_min_strategy._vpin else 0
+                        # Win streak from risk manager
+                        _rs = self._risk_manager.get_status()
+                        _streak_w = _rs.get("win_streak", 0) if order.outcome == "WIN" else 0
+                        _streak_l = _rs.get("loss_streak", 0) if order.outcome != "WIN" else 0
+                        # Entry prices at each T- point (stored in window's countdown_sent data if available)
+                        _entry_prices = meta.get("entry_prices_by_t", {})
+                        if not _entry_prices:
+                            _gamma_p = float(order.price or 0.50)
+                            _entry_prices = {"T-60": _gamma_p}
+                        await self._alerter.send_window_resolution(
+                            window_id=_window_id,
+                            asset=meta.get("asset", "BTC"),
+                            timeframe=meta.get("timeframe", "5m"),
+                            outcome=order.outcome or "UNKNOWN",
+                            direction=_direction,
+                            actual_direction=_actual,
+                            entry_price=float(order.price or 0.50),
+                            pnl_usd=order.pnl_usd or 0,
+                            open_price=_open_p,
+                            close_price=_close_p,
+                            delta_pct=_delta,
+                            vpin=_vpin,
+                            regime=meta.get("regime", "UNKNOWN"),
+                            entry_prices=_entry_prices,
+                            stake_usd=order.stake_usd,
+                            win_streak=_streak_w,
+                            loss_streak=_streak_l,
+                        )
                         log.info("resolution.alert_sent", order_id=order.order_id[:20])
                     except Exception as exc:
                         log.error("resolution.alert_failed", order_id=order.order_id[:20], error=str(exc))
