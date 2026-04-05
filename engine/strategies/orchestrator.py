@@ -447,6 +447,15 @@ class Orchestrator:
             log.warning("orchestrator.tick_recorder_start_failed", error=str(exc))
             self._tick_recorder = None
 
+        # ── VPIN Warm Start: replay recent ticks to avoid cold-start ──────────
+        try:
+            if self._db and self._db._pool:
+                ticks = await self._vpin_calc.warm_start(self._db._pool)
+                if ticks > 0:
+                    log.info("orchestrator.vpin_warm_start", ticks=ticks, vpin=f"{self._vpin_calc.current_vpin:.4f}")
+        except Exception as exc:
+            log.warning("orchestrator.vpin_warm_start_failed", error=str(exc))
+
         # 2. Connect exchange clients
         try:
             await self._poly_client.connect()

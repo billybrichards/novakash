@@ -117,6 +117,71 @@ class VPINCalculator:
         """Total number of completed buckets (capped at lookback_buckets)."""
         return len(self._bucket_imbalances)
 
+    async def warm_start(self, db_pool) -> int:
+        """
+        Pre-fill VPIN buckets from recent ticks_binance data.
+        
+        Called on engine startup to avoid cold-start period where VPIN = 0.
+        Replays last 30 minutes of trades through the bucket algorithm.
+        
+        Returns number of ticks replayed.
+        """
+        if not db_pool:
+            return 0
+        try:
+            async with db_pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT price, quantity, is_buyer_maker
+                    FROM ticks_binance
+                    WHERE ts > NOW() - INTERVAL '30 minutes'
+                      AND symbol = 'BTCUSDT'
+                    ORDER BY ts ASC
+                """)
+            
+            if not rows:
+                self._log.info("vpin.warm_start.no_data")
+                return 0
+            
+            count = 0
+            for row in rows:
+                price = float(row["price"])
+                qty = float(row["quantity"])
+                notional = price * qty
+                
+                if row["is_buyer_maker"]:
+                    self._bucket_sell_usd += notional
+                else:
+                    self._bucket_buy_usd += notional
+                
+                self._bucket_total_usd += notional
+                
+                while self._bucket_total_usd >= self._bucket_size_usd:
+                    # Close bucket without triggering signal callbacks
+                    total = self._bucket_buy_usd + self._bucket_sell_usd
+                    imbalance = abs(self._bucket_buy_usd - self._bucket_sell_usd) / total if total > 0 else 0.0
+                    self._bucket_imbalances.append(imbalance)
+                    
+                    overflow = self._bucket_total_usd - self._bucket_size_usd
+                    self._bucket_buy_usd = overflow * (self._bucket_buy_usd / self._bucket_total_usd) if self._bucket_total_usd > 0 else 0
+                    self._bucket_sell_usd = overflow * (self._bucket_sell_usd / self._bucket_total_usd) if self._bucket_total_usd > 0 else 0
+                    self._bucket_total_usd = overflow
+                    
+                    if self._bucket_imbalances:
+                        self._current_vpin = sum(self._bucket_imbalances) / len(self._bucket_imbalances)
+                
+                count += 1
+            
+            self._log.info(
+                "vpin.warm_start.complete",
+                ticks_replayed=count,
+                buckets_filled=len(self._bucket_imbalances),
+                vpin=f"{self._current_vpin:.4f}",
+            )
+            return count
+        except Exception as exc:
+            self._log.warning("vpin.warm_start.failed", error=str(exc)[:100])
+            return 0
+
     def get_history(self, n: int) -> list[float]:
         """
         Return the last *n* completed VPIN bucket imbalance readings.

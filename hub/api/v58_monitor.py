@@ -485,7 +485,7 @@ def _aggregate_ticks_to_candles(rows: list, interval_seconds: int = 60) -> list:
 
 def _calc_what_if_pnl(direction: Optional[str], actual_direction: str,
                        gamma_up: Optional[float], gamma_down: Optional[float],
-                       stake: float = 4.0, fee: float = 0.02) -> Optional[float]:
+                       stake: float = 10.0, fee: float = 0.02) -> Optional[float]:
     """
     Calculate what-if P&L for a $stake bet using Polymarket prices.
 
@@ -1738,16 +1738,18 @@ async def get_gate_analysis(
             FROM (
                 SELECT 
                     CASE 
-                        WHEN vpin >= 0.65 THEN '0.65+'
-                        WHEN vpin >= 0.55 THEN '0.55-0.65'
-                        WHEN vpin >= 0.45 THEN '0.45-0.55'
-                        WHEN vpin >= 0.35 THEN '0.35-0.45'
+                        WHEN ws.vpin >= 0.65 THEN '0.65+'
+                        WHEN ws.vpin >= 0.55 THEN '0.55-0.65'
+                        WHEN ws.vpin >= 0.45 THEN '0.45-0.55'
+                        WHEN ws.vpin >= 0.35 THEN '0.35-0.45'
                         ELSE '<0.35'
                     END as vpin_bucket,
-                    v71_correct,
-                    v71_pnl
-                FROM window_snapshots
-                WHERE timeframe = '5m' AND v71_would_trade = true AND v71_correct IS NOT NULL
+                    CASE WHEN t.outcome = 'WIN' THEN TRUE ELSE FALSE END as v71_correct,
+                    t.pnl_usd as v71_pnl
+                FROM window_snapshots ws
+                JOIN trades t ON (t.metadata::json->>'window_ts')::bigint = ws.window_ts
+                    AND t.strategy = 'five_min_vpin' AND t.outcome IS NOT NULL
+                WHERE ws.timeframe = '5m' AND ws.v71_would_trade = true
             ) x
             GROUP BY vpin_bucket ORDER BY vpin_bucket
         """)
