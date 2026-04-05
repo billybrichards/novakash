@@ -15,6 +15,7 @@ const NAV_ITEMS = [
   { path: '/dashboard',       label: 'Dashboard',  icon: '📊' },
   { path: '/timesfm',         label: 'TimesFM',    icon: '🔮', highlight: true },
   { path: '/indicators',      label: 'Indicators', icon: '📈', highlight: true },
+  { path: '/v58',             label: 'v5.8 Monitor', icon: '🎯', highlight: true },
   { path: '/paper',           label: 'Paper',      icon: '📄' },
   { path: '/positions',       label: 'Positions',  icon: '📍' },
   { path: '/trades',          label: 'Trades',     icon: '📋' },
