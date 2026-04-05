@@ -665,6 +665,20 @@ def _calc_outcome_row(row: Any) -> dict:
         v71_correct = (v71_direction == actual_direction) if v71_direction else None
         v71_pnl = _calc_what_if_pnl(v71_direction, actual_direction, gamma_up, gamma_down)
     
+    # v7.1: Use DB columns if backfilled, else fall back to calculation
+    db_v71_would_trade = row.get("v71_would_trade")
+    db_v71_skip_reason = row.get("v71_skip_reason")
+    db_v71_regime = row.get("v71_regime")
+    db_v71_correct = row.get("v71_correct")
+    db_v71_pnl = _safe_float(row.get("v71_pnl"))
+    
+    # Use DB values if available, else use calculated
+    final_v71_would_trade = db_v71_would_trade if db_v71_would_trade is not None else v71_would_trade
+    final_v71_skip_reason = db_v71_skip_reason if db_v71_skip_reason is not None else v71_ret.get("v71_skip_reason")
+    final_v71_regime = db_v71_regime if db_v71_regime is not None else v71_ret.get("v71_regime")
+    final_v71_correct = db_v71_correct if db_v71_correct is not None else v71_correct
+    final_v71_pnl = db_v71_pnl if db_v71_pnl is not None else v71_pnl
+    
     base.update({
         "actual_direction": actual_direction,
         "gamma_implied_direction": gamma_implied,
@@ -683,11 +697,11 @@ def _calc_outcome_row(row: Any) -> dict:
         "tfm_v57c_agree": tfm_v57c_agree,
         "v58_correct": v58_correct,
         "v58_pnl": v58_pnl,
-        "v71_would_trade": v71_would_trade,
-        "v71_skip_reason": v71_ret.get("v71_skip_reason"),
-        "v71_regime": v71_ret.get("v71_regime"),
-        "v71_correct": v71_correct,
-        "v71_pnl": v71_pnl,
+        "v71_would_trade": final_v71_would_trade,
+        "v71_skip_reason": final_v71_skip_reason,
+        "v71_regime": final_v71_regime,
+        "v71_correct": final_v71_correct,
+        "v71_pnl": final_v71_pnl,
         "poly_outcome": poly_outcome,
         "resolution_source": "polymarket" if poly_outcome else "binance_t60",
     })
@@ -724,6 +738,7 @@ async def get_outcomes(
                 COALESCE(ws.gamma_down_price, ms.down_price) as gamma_down_price,
                 ws.engine_version,
                 ws.vpin, ws.regime, ws.confidence,
+                ws.v71_would_trade, ws.v71_skip_reason, ws.v71_regime, ws.v71_correct, ws.v71_pnl,
                 t.outcome AS poly_outcome,
                 t.direction AS trade_direction
             FROM window_snapshots ws
