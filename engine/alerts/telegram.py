@@ -751,7 +751,7 @@ class TelegramAlerter:
             ]
 
             # Real Gamma prices (critical info)
-            if gamma_bid is not None and gamma_ask is not None:
+            if gamma_bid is not None and gamma_ask is not None and gamma_bid > 0 and gamma_ask > 0:
                 gamma_mid = (gamma_bid + gamma_ask) / 2
                 gamma_spread = gamma_ask - gamma_bid
                 lines += [
@@ -844,9 +844,12 @@ class TelegramAlerter:
                 _tfm_conf = getattr(_tfm, 'confidence', 0)
                 _tfm_close = getattr(_tfm, 'predicted_close', 0)
 
-                if gamma_mid := ((gamma_bid or 0.50) + (gamma_ask or 0.50)) / 2:
+                gamma_bid_safe = gamma_bid if (gamma_bid and gamma_bid > 0) else 0.50
+                gamma_ask_safe = gamma_ask if (gamma_ask and gamma_ask > 0) else 0.50
+                if True:  # Always calculate
+                    gamma_mid = (gamma_bid_safe + gamma_ask_safe) / 2
                     _entry_price = gamma_mid
-                    _exit_price = _tfm_close
+                    _exit_price = _tfm_close if _tfm_close > 0 else _entry_price
                     
                     # Assuming binary: if direction is DOWN, bet on NO (price goes down); if UP, bet on YES
                     if _tfm_dir == "DOWN":
@@ -879,11 +882,13 @@ class TelegramAlerter:
                 _v57_dir = _gamma_dir  # Use gamma direction as the signal
                 _v57_conf = 0.90  # Assumption: high confidence if all agree
 
-                if gamma_mid := ((gamma_bid or 0.50) + (gamma_ask or 0.50)) / 2:
-                    _entry_price = gamma_bid if _v57_dir == "UP" else gamma_ask
+                gamma_bid_safe = gamma_bid if (gamma_bid and gamma_bid > 0) else 0.50
+                gamma_ask_safe = gamma_ask if (gamma_ask and gamma_ask > 0) else 0.50
+                if True:  # Always calculate
+                    _entry_price = gamma_bid_safe if _v57_dir == "UP" else gamma_ask_safe
                     
                     # What would be a realistic exit? Use close price as proxy
-                    _exit_price = close_price if close_price > 0 else _entry_price
+                    _exit_price = close_price if (close_price and close_price > 0) else _entry_price
 
                     if _v57_dir == "DOWN":
                         _raw_pnl = ((_entry_price - _exit_price) * max_bet)
