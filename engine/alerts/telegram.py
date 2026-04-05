@@ -107,6 +107,14 @@ class TelegramAlerter:
                 pass
 
         self._log = log.bind(component="TelegramAlerter")
+        
+        # Dual AI system: Claude primary, Qwen122b fallback
+        self._ai = DualAIAssessment(
+            anthropic_key=self._anthropic_api_key,
+            qwen_host=os.environ.get("QWEN_HOST", "ollama-ssh1"),
+            qwen_port=int(os.environ.get("QWEN_PORT", "11434")),
+            log=self._log,
+        )
 
         if not bot_token or not chat_id:
             self._log.warning("telegram.not_configured")
@@ -1003,3 +1011,233 @@ class TelegramAlerter:
 # Helper (module-level to avoid closure issues)
 def _agree_bar_fn(n: int, total: int = 3) -> str:
     return "🟢" * n + "⚫" * (total - n)
+
+
+# ─── Dual AI Fallback System ────────────────────────────────────────────────
+class DualAIAssessment:
+    """Claude primary, Qwen122b fallback for redundancy."""
+    
+    def __init__(self, anthropic_key: str, qwen_host: str = "ollama-ssh1", qwen_port: int = 11434, log=None):
+        self.anthropic_key = anthropic_key
+        self.qwen_host = qwen_host
+        self.qwen_port = qwen_port
+        self.log = log
+    
+    async def assess(self, prompt: str, timeout_s: int = 8) -> tuple[str, str]:
+        """
+        Get AI assessment with fallback.
+        Returns (text, source) where source = "claude" | "qwen" | "timeout" | "error"
+        """
+        # Try Claude first (if key available)
+        if self.anthropic_key:
+            try:
+                text = await self._claude(prompt, timeout_s=timeout_s)
+                return text, "claude"
+            except asyncio.TimeoutError:
+                if self.log:
+                    self.log.warning("ai.claude_timeout")
+            except Exception as e:
+                if self.log:
+                    self.log.warning("ai.claude_error", error=str(e)[:100])
+        
+        # Fallback: Qwen122b
+        try:
+            text = await self._qwen(prompt, timeout_s=timeout_s)
+            return text, "qwen"
+        except asyncio.TimeoutError:
+            if self.log:
+                self.log.warning("ai.qwen_timeout")
+            return "[AI analysis timeout - see trade decision above]", "timeout"
+        except Exception as e:
+            if self.log:
+                self.log.warning("ai.qwen_error", error=str(e)[:100])
+            return "[AI analysis unavailable - see trade decision above]", "error"
+    
+    async def _claude(self, prompt: str, timeout_s: int = 8) -> str:
+        """Call Claude via Anthropic API."""
+        url = "https://api.anthropic.com/v1/messages"
+        headers = {
+            "x-api-key": self.anthropic_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        payload = {
+            "model": "claude-opus-4-6",
+            "max_tokens": 200,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers,
+                                   timeout=aiohttp.ClientTimeout(total=timeout_s)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data["content"][0]["text"]
+                raise Exception(f"Status {resp.status}")
+    
+    async def _qwen(self, prompt: str, timeout_s: int = 8) -> str:
+        """Call Qwen122b via Ollama (ssh6 node)."""
+        url = f"http://{self.qwen_host}:{self.qwen_port}/api/generate"
+        payload = {
+            "model": "qwen35-122b-abliterated:latest",
+            "prompt": prompt,
+            "stream": False,
+            "temperature": 0.3,
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload,
+                                   timeout=aiohttp.ClientTimeout(total=timeout_s)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data["response"][:200]
+                raise Exception(f"Status {resp.status}")
+
+    async def send_trade_decision_detailed(
+        self,
+        window_id: str,
+        signal: dict,
+        decision: str,  # "TRADE" or "SKIP"
+        reason: str = "",
+    ) -> tuple[Optional[int], Optional[int]]:
+        """
+        Send MANDATORY trade decision notification + optional AI analysis.
+        Returns (decision_msg_id, analysis_msg_id)
+        
+        This separates raw data (always sent) from AI (sent separately, can timeout).
+        """
+        from datetime import datetime, timezone
+        
+        # Extract window time
+        window_time = "?"
+        try:
+            ts = int(window_id.split('-')[1])
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            window_time = dt.strftime('%H:%M UTC')
+        except:
+            pass
+        
+        # ── PART 1: RAW TRADE DECISION (MANDATORY) ────────────────────
+        direction = signal.get("direction", "?")
+        delta = signal.get("delta_pct", 0)
+        vpin = signal.get("vpin", 0)
+        regime = signal.get("regime", "?")
+        
+        decision_text = (
+            f"{'🎯' if decision == 'TRADE' else '⏭'} *{decision}* — {window_id}\n"
+            f"`{window_time}`\n"
+            f"\n"
+            f"Direction: `{direction}`\n"
+            f"Delta: `{delta:+.4f}%`\n"
+            f"VPIN: `{vpin:.3f}` — `{regime}`\n"
+        )
+        
+        if reason:
+            decision_text += f"Reason: _{reason}_\n"
+        
+        decision_text += f"\n{self._footer(window_id)}"
+        
+        decision_msg_id = await self._send_with_id(decision_text)
+        await self._log_notification(
+            "trade_decision", decision_text, window_id,
+            telegram_message_id=decision_msg_id
+        )
+        
+        # ── PART 2: AI ANALYSIS (SEPARATE, CAN TIMEOUT) ────────────────
+        analysis_msg_id = None
+        
+        if decision == "TRADE":
+            # Only analyze trades, not skips
+            prompt = (
+                f"BTC 5-min trade decision. "
+                f"Direction: {direction}. "
+                f"Delta: {delta:+.4f}%. "
+                f"VPIN: {vpin:.3f} ({regime}). "
+                f"In 1-2 sentences: likelihood of win, key risks?"
+            )
+            
+            ai_text, ai_source = await self._ai.assess(prompt, timeout_s=8)
+            
+            analysis_card = (
+                f"🤖 *AI Assessment* — `{ai_source.upper()}`\n"
+                f"_{ai_text}_\n"
+                f"\n"
+                f"{self._footer(window_id)}"
+            )
+            
+            analysis_msg_id = await self._send_with_id(analysis_card)
+            await self._log_notification(
+                f"trade_analysis_{ai_source}", analysis_card, window_id,
+                telegram_message_id=analysis_msg_id
+            )
+        
+        return decision_msg_id, analysis_msg_id
+
+    async def send_outcome_with_analysis(
+        self,
+        window_id: str,
+        decision: str,
+        entry_price: float,
+        outcome: str,  # "WIN" or "LOSS"
+        pnl_usd: float,
+    ) -> tuple[Optional[int], Optional[int]]:
+        """
+        Send MANDATORY outcome + optional AI analysis.
+        Returns (outcome_msg_id, analysis_msg_id)
+        """
+        from datetime import datetime, timezone
+        
+        # Extract window time
+        window_time = "?"
+        try:
+            ts = int(window_id.split('-')[1])
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            window_time = dt.strftime('%H:%M UTC')
+        except:
+            pass
+        
+        # ── PART 1: OUTCOME (MANDATORY) ────────────────────────────────
+        emoji = "✅" if outcome == "WIN" else "❌"
+        pnl_sign = "+" if pnl_usd >= 0 else ""
+        
+        outcome_text = (
+            f"{emoji} *{outcome}* — {window_id}\n"
+            f"`{window_time}`\n"
+            f"\n"
+            f"Entry: `${entry_price:.3f}`\n"
+            f"P&L: `{pnl_sign}${pnl_usd:.2f}`\n"
+            f"\n"
+            f"{self._footer(window_id)}"
+        )
+        
+        outcome_msg_id = await self._send_with_id(outcome_text)
+        await self._log_notification(
+            "trade_outcome", outcome_text, window_id,
+            telegram_message_id=outcome_msg_id
+        )
+        
+        # ── PART 2: AI ANALYSIS (SEPARATE, CAN TIMEOUT) ────────────────
+        analysis_msg_id = None
+        
+        prompt = (
+            f"Trading outcome: {decision} → {outcome} (P&L: ${pnl_usd:.2f}). "
+            f"Entry price: ${entry_price:.3f}. "
+            f"In 1 sentence: what went right/wrong?"
+        )
+        
+        ai_text, ai_source = await self._ai.assess(prompt, timeout_s=8)
+        
+        analysis_card = (
+            f"📊 *Post-Trade Analysis* — `{ai_source.upper()}`\n"
+            f"_{ai_text}_\n"
+            f"\n"
+            f"{self._footer(window_id)}"
+        )
+        
+        analysis_msg_id = await self._send_with_id(analysis_card)
+        await self._log_notification(
+            f"outcome_analysis_{ai_source}", analysis_card, window_id,
+            telegram_message_id=analysis_msg_id
+        )
+        
+        return outcome_msg_id, analysis_msg_id
