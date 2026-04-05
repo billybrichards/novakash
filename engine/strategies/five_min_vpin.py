@@ -423,6 +423,24 @@ class FiveMinVPINStrategy(BaseStrategy):
             # This field is updated in the post-eval block below
             "skip_reason": None,
             "engine_version": "v7.1",
+            # v7.1 retroactive: would this window pass v7.1 VPIN+delta gate?
+            "v71_would_trade": (
+                current_vpin >= 0.45 and abs(delta_pct) >= (
+                    0.01 if current_vpin >= _runtime.vpin_cascade_direction_threshold else 0.02
+                )
+            ),
+            "v71_skip_reason": (
+                None if (current_vpin >= 0.45 and abs(delta_pct) >= (0.01 if current_vpin >= _runtime.vpin_cascade_direction_threshold else 0.02))
+                else (
+                    f"VPIN {current_vpin:.3f} < gate 0.45" if current_vpin < 0.45
+                    else f"delta {abs(delta_pct):.4f}% < {'0.01' if current_vpin >= _runtime.vpin_cascade_direction_threshold else '0.02'}%"
+                )
+            ),
+            "v71_regime": (
+                "CASCADE" if current_vpin >= 0.65
+                else "TRANSITION" if current_vpin >= 0.55
+                else "NORMAL"
+            ),
         }
 
         # ── Non-blocking DB write ────────────────────────────────────────────

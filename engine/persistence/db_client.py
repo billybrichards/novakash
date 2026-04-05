@@ -570,7 +570,8 @@ class DBClient:
                         timesfm_spread, timesfm_p10, timesfm_p50, timesfm_p90,
                         market_best_bid, market_best_ask,
                         market_spread, market_mid_price,
-                        market_volume, market_liquidity
+                        market_volume, market_liquidity,
+                        v71_would_trade, v71_skip_reason, v71_regime
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,
                         $9,$10,$11,$12,$13,$14,$15,$16,$17,
@@ -579,7 +580,8 @@ class DBClient:
                         $33,$34,$35,$36,$37,$38,$39,
                         $40,$41,$42,$43,$44,
                         $45,$46,$47,$48,$49,$50,$51,$52,
-                        $53,$54,$55,$56,$57,$58
+                        $53,$54,$55,$56,$57,$58,
+                        $59,$60,$61
                     )
                     ON CONFLICT (window_ts, asset, timeframe) DO NOTHING
                     """,
@@ -644,6 +646,9 @@ class DBClient:
                     snapshot.get("market_mid_price"),
                     snapshot.get("market_volume"),
                     snapshot.get("market_liquidity"),
+                    snapshot.get("v71_would_trade"),
+                    snapshot.get("v71_skip_reason"),
+                    snapshot.get("v71_regime"),
                 )
             log.debug(
                 "db.window_snapshot_written",
