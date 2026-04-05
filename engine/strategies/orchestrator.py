@@ -292,33 +292,14 @@ class Orchestrator:
                 base_url=timesfm_url,
                 timeout_seconds=10.0,
             )
-            self._timesfm_strategy = TimesFMOnlyStrategy(
-                order_manager=self._order_manager,
-                risk_manager=self._risk_manager,
-                poly_client=self._poly_client,
-                timesfm_client=self._timesfm_client,
-                alerter=self._alerter,
-                db_client=self._db,
-                twap_tracker=self._twap_tracker,
-                min_confidence=timesfm_min_conf,
-            )
-            # Multi-entry strategy: forecasts at T-180, T-120, T-60, T-30
-            self._timesfm_multi = TimesFMMultiEntryStrategy(
-                order_manager=self._order_manager,
-                risk_manager=self._risk_manager,
-                poly_client=self._poly_client,
-                timesfm_client=self._timesfm_client,
-                alerter=self._alerter,
-                db_client=self._db,
-                max_bet=32.0,
-                min_confidence=timesfm_min_conf,
-            )
+            # v5.8: Only the CLIENT is created. No standalone strategies.
+            # TimesFM is used ONLY as an agreement signal inside v5.7c.
             log.info(
-                "orchestrator.timesfm_v6_enabled",
+                "orchestrator.timesfm_v58_mode",
                 url=timesfm_url,
                 min_confidence=timesfm_min_conf,
-                multi_entry=True,
-                checkpoints="T-180,T-120,T-60,T-30",
+                mode="agreement_only",
+                note="TimesFM used as v5.8 agreement signal, not standalone",
             )
         else:
             log.info("orchestrator.timesfm_v6_disabled")
@@ -822,10 +803,7 @@ class Orchestrator:
                     open_price=window.open_price,
                     duration_s=300.0,
                 )
-                # TimesFM multi-entry: schedule checkpoint forecasts on window open
-                if self._timesfm_multi and window.asset == "BTC":
-                    state = await self._aggregator.get_state()
-                    asyncio.create_task(self._timesfm_multi.on_window_open(window, state))
+                # v5.8: No standalone multi-entry — TimesFM is agreement-only
             # Feed non-BTC prices to TWAP from window signals (these arrive every ~1s)
             if window.open_price and window.asset != "BTC":
                 # Use up_price as a proxy for current market price direction
@@ -846,9 +824,8 @@ class Orchestrator:
                 # G1 & G3: Queue window for staggered execution (v5.7c)
                 await self._execution_queue.put((window, self._aggregator))
 
-                # v6.0: Also evaluate with TimesFM-only strategy (parallel, independent)
-                if self._timesfm_strategy:
-                    asyncio.create_task(self._evaluate_timesfm_window(window))
+                # v5.8: TimesFM is checked INSIDE v5.7c's _evaluate_signal (agreement check)
+                # No standalone TimesFM evaluation needed here
             else:
                 log.info("five_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
             if len(self._five_min_strategy._recent_windows) > 20:
@@ -900,9 +877,7 @@ class Orchestrator:
                 # G1 & G3: Queue window for staggered execution instead of immediate eval
                 await self._execution_queue.put((window, self._aggregator))
 
-                # v6.0: Also evaluate with TimesFM-only strategy
-                if self._timesfm_strategy:
-                    asyncio.create_task(self._evaluate_timesfm_window(window))
+                # v5.8: TimesFM checked inside v5.7c agreement (no standalone)
             else:
                 log.info("fifteen_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
             if len(self._five_min_strategy._recent_windows) > 20:
