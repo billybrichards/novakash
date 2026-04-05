@@ -1292,11 +1292,22 @@ async def get_window_detail(
     snapshot = None
     try:
         q = text("""
-            SELECT *
-            FROM window_snapshots
-            WHERE window_ts >= :ts_epoch - 120
-              AND window_ts <= :ts_epoch + 120
-            ORDER BY ABS(window_ts - :ts_epoch)
+            SELECT ws.*,
+              t.outcome AS poly_outcome,
+              t.direction AS trade_direction
+            FROM window_snapshots ws
+            LEFT JOIN LATERAL (
+                SELECT outcome, direction
+                FROM trades
+                WHERE strategy = 'five_min_vpin'
+                  AND (metadata::json->>'window_ts')::bigint = ws.window_ts
+                  AND outcome IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) t ON true
+            WHERE ws.window_ts >= :ts_epoch - 120
+              AND ws.window_ts <= :ts_epoch + 120
+            ORDER BY ABS(ws.window_ts - :ts_epoch)
             LIMIT 1
         """)
         result = await session.execute(q, {"ts": ts_dt, "ts_epoch": int(ts_dt.timestamp())})

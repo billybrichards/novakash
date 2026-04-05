@@ -1278,6 +1278,19 @@ function WhatIfAnalysis({ outcome }) {
             }}>
               {outcome.actual_direction === 'UP' ? '▲ WENT UP' : '▼ WENT DOWN'}
             </span>
+            {outcome.resolution_source && (
+              <span style={{
+                marginLeft: 6,
+                padding: '2px 6px',
+                borderRadius: 4,
+                background: outcome.resolution_source === 'polymarket' ? 'rgba(99,102,241,0.12)' : 'rgba(156,163,175,0.12)',
+                color: outcome.resolution_source === 'polymarket' ? '#6366f1' : '#9ca3af',
+                fontSize: 9,
+                fontWeight: 600,
+              }}>
+                {outcome.resolution_source === 'polymarket' ? '⛓ POLYMARKET' : '📊 BINANCE T-60'}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -1378,9 +1391,14 @@ function WhatIfAnalysis({ outcome }) {
               )}
             </>
           )}
-          {!outcome.v58_would_trade && outcome.skip_reason && (
-            <span style={{ fontSize: 10, color: T.label }}>
-              Skip reason: {outcome.skip_reason}
+          {!outcome.v58_would_trade && (outcome.skip_reason || outcome.v58_skip_reason) && (
+            <span style={{ 
+              fontSize: 10, 
+              color: (outcome.skip_reason || '').includes('CG VETO') ? '#f59e0b' : T.label,
+              fontWeight: (outcome.skip_reason || '').includes('CG VETO') ? 600 : 400,
+            }}>
+              {(outcome.skip_reason || '').includes('CG VETO') ? '🛡️ ' : '⏭ '}
+              {outcome.skip_reason || outcome.v58_skip_reason}
             </span>
           )}
         </div>

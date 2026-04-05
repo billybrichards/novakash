@@ -443,25 +443,39 @@ class FiveMinVPINStrategy(BaseStrategy):
                 pass
 
         if signal is None:
+            # v7.1: Use CG veto reason if set, else snapshot, else reconstruct
+            _skip_reason = getattr(self, '_last_skip_reason', '') or window_snapshot.get("skip_reason") or ""
+            self._last_skip_reason = ""  # Reset after use
+            if not _skip_reason:
+                _implied_dir = "UP" if delta_pct > 0 else "DOWN"
+                if current_vpin < _runtime.five_min_vpin_gate:
+                    _skip_reason = f"VPIN {current_vpin:.3f} < gate {_runtime.five_min_vpin_gate} — not enough informed trading detected to justify entry"
+                elif current_vpin >= _runtime.vpin_cascade_direction_threshold:
+                    _skip_reason = f"delta {abs(delta_pct):.4f}% < cascade threshold {_runtime.five_min_cascade_min_delta_pct}% — price barely moved despite high informed flow"
+                elif current_vpin >= _runtime.vpin_informed_threshold:
+                    _skip_reason = f"delta {abs(delta_pct):.4f}% < transition threshold 0.12% — not enough price conviction in transition zone"
+                else:
+                    _skip_reason = f"delta {abs(delta_pct):.4f}% < threshold {_runtime.five_min_min_delta_pct}% — price move too small to trade"
+            # Update snapshot with actual reason
+            window_snapshot["skip_reason"] = _skip_reason
+            if self._db:
+                try:
+                    asyncio.create_task(self._db.update_window_skip_reason(
+                        window.window_ts, window.asset, "5m", _skip_reason
+                    ))
+                except Exception:
+                    pass
             self._log.info(
                 "evaluate.skip",
                 asset=window.asset,
                 window_ts=window.window_ts,
                 delta_pct=f"{delta_pct:.4f}%",
-                reason="no edge",
+                reason=_skip_reason[:80],
                 entry=f"T-{FIVE_MIN_ENTRY_OFFSET}s",
             )
             if self._alerter:
                 try:
                     _implied_dir = "UP" if delta_pct > 0 else "DOWN"
-                    if current_vpin < _runtime.five_min_vpin_gate:
-                        _skip_reason = f"VPIN {current_vpin:.3f} < gate {_runtime.five_min_vpin_gate} — not enough informed trading detected to justify entry"
-                    elif current_vpin >= _runtime.vpin_cascade_direction_threshold:
-                        _skip_reason = f"delta {abs(delta_pct):.4f}% < cascade threshold {_runtime.five_min_cascade_min_delta_pct}% — price barely moved despite high informed flow"
-                    elif current_vpin >= _runtime.vpin_informed_threshold:
-                        _skip_reason = f"delta {abs(delta_pct):.4f}% < transition threshold 0.12% — not enough price conviction in transition zone"
-                    else:
-                        _skip_reason = f"delta {abs(delta_pct):.4f}% < threshold {_runtime.five_min_min_delta_pct}% — price move too small to trade"
                     asyncio.create_task(self._alerter.send_window_report(
                         window_ts=window.window_ts,
                         asset=window.asset,
@@ -842,6 +856,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                     reasons=", ".join(_veto_reasons),
                     asset=window.asset,
                 )
+                self._last_skip_reason = f"CG VETO ({_veto_count} signals): {', '.join(_veto_reasons)}"
                 return None
             
             # Log "would have blocked" for tracking — even when not vetoing
@@ -1194,6 +1209,15 @@ class FiveMinVPINStrategy(BaseStrategy):
             seconds_to_close=f"{signal.seconds_to_close:.0f}",
             entry_reason=signal.entry_reason,
         )
+
+        # v7.1: Update window_snapshot with trade_placed = True
+        if self._db is not None:
+            try:
+                asyncio.create_task(self._db.update_window_trade_placed(
+                    window_ts=signal.window_ts, asset=signal.asset, timeframe="5m"
+                ))
+            except Exception:
+                pass
 
         # Post-trade fill verification (v5.3: faster poll + dynamic bump + GTD)
         if not self._poly.paper_mode and order.order_id.startswith("0x"):

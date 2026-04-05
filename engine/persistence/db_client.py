@@ -773,3 +773,29 @@ class DBClient:
                 return float(row) if row else 0.0
         except Exception:
             return 0.0
+
+    async def update_window_trade_placed(self, window_ts: int, asset: str, timeframe: str) -> None:
+        """Mark a window_snapshot as having a trade placed."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE window_snapshots SET trade_placed = TRUE WHERE window_ts = $1 AND asset = $2 AND timeframe = $3",
+                    window_ts, asset, timeframe
+                )
+        except Exception:
+            pass
+
+    async def update_window_skip_reason(self, window_ts: int, asset: str, timeframe: str, skip_reason: str) -> None:
+        """Update skip_reason on a window_snapshot after evaluation."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE window_snapshots SET skip_reason = $1 WHERE window_ts = $2 AND asset = $3 AND timeframe = $4",
+                    skip_reason, window_ts, asset, timeframe
+                )
+        except Exception:
+            pass
