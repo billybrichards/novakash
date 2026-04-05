@@ -22,6 +22,17 @@
 **Risk:** V2 model is still smoke-test (53 training rows). Monitor false block rate.
 **Files:** `engine/strategies/five_min_vpin.py` (add v2 call at T-60 eval)
 
+### VPIN Warm Start on Engine Restart
+**Status:** TODO — avoids missing 3-4 trades on each restart
+**What:** On engine startup, load last N ticks from `ticks_binance` table to pre-fill VPIN buckets
+- VPIN needs ~500 volume buckets (VPIN_BUCKET_SIZE_USD=500000)
+- Currently takes 3-5 minutes of live data to warm up
+- During warm-up, VPIN reads 0 → all trades gated → missed opportunities
+
+**Fix:** In VPIN calculator `__init__`, query `ticks_binance` for last 30 minutes of data and replay through the bucket algorithm. VPIN will be warm within seconds of startup.
+
+**Files:** `engine/signals/vpin.py` (add `warm_start(db)` method)
+
 ### V1 TimesFM Disagreement Gate
 **Status:** TODO — proven by data analysis
 **What:** Block trades when v1 TimesFM strongly disagrees (>90% confidence in opposite direction)
