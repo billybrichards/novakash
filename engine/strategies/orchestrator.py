@@ -1255,18 +1255,21 @@ class Orchestrator:
                             loss_streak=_streak_l,
                         )
                         
-                        # NEW: Dual-AI outcome analysis (separated for timeout resilience)
+                        # NEW: Dual-AI outcome analysis (non-blocking task)
                         if order.outcome in ("WIN", "LOSS"):
-                            try:
-                                await self._alerter.send_outcome_with_analysis(
-                                    window_id=_window_id,
-                                    decision=_direction,
-                                    entry_price=float(order.price or 0.50),
-                                    outcome=order.outcome,
-                                    pnl_usd=order.pnl_usd or 0,
-                                )
-                            except Exception as exc:
-                                log.error("outcome_analysis_failed", order_id=order.order_id[:20], error=str(exc))
+                            async def _send_outcome_ai():
+                                try:
+                                    await self._alerter.send_outcome_with_analysis(
+                                        window_id=_window_id,
+                                        decision=_direction,
+                                        entry_price=float(order.price or 0.50),
+                                        outcome=order.outcome,
+                                        pnl_usd=order.pnl_usd or 0,
+                                    )
+                                except Exception as exc:
+                                    log.error("outcome_analysis_failed", order_id=order.order_id[:20], error=str(exc))
+                            
+                            asyncio.create_task(_send_outcome_ai())
                         
                         log.info("resolution.alert_sent", order_id=order.order_id[:20])
                     except Exception as exc:
