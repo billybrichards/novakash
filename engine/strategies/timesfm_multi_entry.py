@@ -303,7 +303,7 @@ class TimesFMMultiEntryStrategy:
             },
         )
         
-        self._order_manager.track(order)
+        await self._order_manager.register_order(order)
         wf.trade_placed = True
         wf.trade_checkpoint = cp.checkpoint_s
         wf.trade_direction = cp.direction
