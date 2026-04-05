@@ -759,7 +759,7 @@ class TelegramAlerter:
                 _gamma_dir = getattr(twap_result, 'gamma_direction', '?')
             lines.append(f"Gamma    {_gamma_dir:>4}  UP ${gamma_up:.2f} / DOWN ${gamma_down:.2f}")
 
-            # TimesFM
+            # TimesFM (with confidence emphasis)
             _tfm_dir = "?"
             _tfm_conf = 0
             _tfm_close = 0
@@ -767,7 +767,11 @@ class TelegramAlerter:
                 _tfm_dir = getattr(timesfm_forecast, 'direction', '?')
                 _tfm_conf = getattr(timesfm_forecast, 'confidence', 0)
                 _tfm_close = getattr(timesfm_forecast, 'predicted_close', 0)
-                lines.append(f"TimesFM  {_tfm_dir:>4}  {_tfm_conf:.0%} → ${_tfm_close:,.2f}")
+                _tfm_delta = ((_tfm_close - open_price) / open_price * 100) if open_price > 0 else 0
+                _conf_bar = "█" * int(_tfm_conf * 5) + "░" * (5 - int(_tfm_conf * 5))
+                _conf_tag = "STRONG" if _tfm_conf >= 0.90 else ("GOOD" if _tfm_conf >= 0.70 else "WEAK")
+                lines.append(f"TimesFM  {_tfm_dir:>4}  [{_conf_bar}] {_tfm_conf:.0%}")
+                lines.append(f"         ${_tfm_close:,.2f} (δ{_tfm_delta:+.3f}%) {_conf_tag}")
             elif timesfm_forecast and getattr(timesfm_forecast, 'error', ''):
                 lines.append(f"TimesFM     ?  error")
             else:
@@ -784,13 +788,19 @@ class TelegramAlerter:
             # v5.7c direction (what Point+TWAP+Gamma say)
             _v57c_dir = direction or _point_dir
             
-            # TimesFM agreement with v5.7c
+            # TimesFM agreement with v5.7c (confidence-weighted)
             if _tfm_dir != "?" and _v57c_dir:
                 _agrees = (_tfm_dir == _v57c_dir)
                 if _agrees:
-                    lines.append(f"✅ *v5.8 AGREE* — both say *{_v57c_dir}*")
+                    if _tfm_conf >= 0.70:
+                        lines.append(f"✅ *v5.8 AGREE* — both say *{_v57c_dir}* (TimesFM {_tfm_conf:.0%} confident)")
+                    else:
+                        lines.append(f"✅ *v5.8 AGREE* — both say *{_v57c_dir}* ⚠️ (TimesFM only {_tfm_conf:.0%})")
                 else:
-                    lines.append(f"❌ *v5.8 DISAGREE* — TimesFM={_tfm_dir} vs v5.7c={_v57c_dir}")
+                    if _tfm_conf >= 0.70:
+                        lines.append(f"❌ *v5.8 DISAGREE → SKIP* — TimesFM={_tfm_dir} ({_tfm_conf:.0%}) vs v5.7c={_v57c_dir}")
+                    else:
+                        lines.append(f"⚠️ *v5.8 DISAGREE (weak)* — TimesFM={_tfm_dir} ({_tfm_conf:.0%}) vs v5.7c={_v57c_dir}")
             else:
                 lines.append(f"⚫ *v5.8* — TimesFM unavailable, v5.7c alone")
 

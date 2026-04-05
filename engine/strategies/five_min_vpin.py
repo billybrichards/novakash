@@ -854,43 +854,58 @@ class FiveMinVPINStrategy(BaseStrategy):
 
         # ── v5.8: TimesFM Agreement Check ─────────────────────────────────
         # Uses the FRESH forecast fetched in _evaluate_window (passed in).
-        # Agreement → boost confidence (+0.15)
-        # Disagreement → penalty (-0.10), may cause skip
+        # Agreement → can lift MODERATE to HIGH
+        # Disagreement (high confidence) → SKIP (the core v5.8 gate)
+        # Disagreement (low confidence) → reduce confidence
         timesfm_agreement = None  # None = no forecast available
         if timesfm_forecast and not timesfm_forecast.error and timesfm_forecast.direction and window.asset == "BTC":
-            try:
-                if timesfm_forecast.direction == direction:
-                    timesfm_agreement = True
-                    confidence += 0.15  # Agreement boost
+            _tfm_conf = timesfm_forecast.confidence or 0.0
+            if timesfm_forecast.direction == direction:
+                timesfm_agreement = True
+                # Agreement: lift MODERATE → HIGH if TimesFM is confident
+                if _tfm_conf >= 0.70 and confidence == "MODERATE":
+                    self._log.info(
+                        "evaluate.timesfm_lift",
+                        v57c_dir=direction,
+                        tfm_dir=timesfm_forecast.direction,
+                        tfm_conf=f"{_tfm_conf:.2f}",
+                        from_confidence="MODERATE",
+                        to_confidence="HIGH",
+                    )
+                    confidence = "HIGH"
+                else:
                     self._log.info(
                         "evaluate.timesfm_agrees",
                         v57c_dir=direction,
                         tfm_dir=timesfm_forecast.direction,
-                        tfm_conf=f"{timesfm_forecast.confidence:.2f}",
-                        new_confidence=f"{confidence:.2f}",
-                        boost="+0.15",
+                        tfm_conf=f"{_tfm_conf:.2f}",
+                        confidence=confidence,
                     )
-                else:
-                    timesfm_agreement = False
-                    confidence -= 0.10  # Disagreement penalty
+            else:
+                timesfm_agreement = False
+                if _tfm_conf >= 0.70:
+                    # High-confidence disagreement → SKIP (core v5.8 gate)
                     self._log.info(
-                        "evaluate.timesfm_disagrees",
+                        "evaluate.timesfm_disagree_skip",
                         v57c_dir=direction,
                         tfm_dir=timesfm_forecast.direction,
-                        tfm_conf=f"{timesfm_forecast.confidence:.2f}",
-                        new_confidence=f"{confidence:.2f}",
-                        penalty="-0.10",
+                        tfm_conf=f"{_tfm_conf:.2f}",
+                        confidence=confidence,
+                        reason="TimesFM strongly disagrees — v5.8 skip",
                     )
-                    # If confidence drops too low after disagreement, skip
-                    if confidence < 0.30:
-                        self._log.info(
-                            "evaluate.timesfm_disagree_skip",
-                            confidence=f"{confidence:.2f}",
-                            reason="confidence too low after TimesFM disagreement",
-                        )
-                        return None
-            except Exception as exc:
-                self._log.debug("evaluate.timesfm_check_failed", error=str(exc))
+                    return None
+                else:
+                    # Low-confidence disagreement → suppress HIGH → MODERATE
+                    self._log.info(
+                        "evaluate.timesfm_disagrees_weak",
+                        v57c_dir=direction,
+                        tfm_dir=timesfm_forecast.direction,
+                        tfm_conf=f"{_tfm_conf:.2f}",
+                        confidence=confidence,
+                        note="TimesFM disagrees but with low confidence — proceeding with caution",
+                    )
+                    if confidence == "HIGH":
+                        confidence = "MODERATE"
 
         self._log.info(
             "evaluate.regime_signal",
