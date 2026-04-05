@@ -837,79 +837,53 @@ class TelegramAlerter:
             
             lines.append("")
 
-            # P&L SCENARIOS SECTION
-            lines.append("💡 *What If We Followed Each Strategy?*")
+            # P&L SCENARIOS — show entry prices and potential outcomes
+            lines.append("💰 *Trade Economics*")
             lines.append("")
 
-            # TimesFM P&L scenario
-            if timesfm_forecast is not None and not getattr(_tfm, 'error', ''):
+            # Current price direction (at eval time, not final!)
+            _current_dir = "UP" if delta_pct > 0 else "DOWN"
+
+            # TimesFM scenario
+            if asset == "BTC" and timesfm_forecast is not None and not getattr(_tfm, 'error', ''):
                 _tfm_dir = getattr(_tfm, 'direction', '?')
                 _tfm_conf = getattr(_tfm, 'confidence', 0)
+                gamma_bid_safe = gamma_bid if (gamma_bid and gamma_bid > 0) else 0.50
+                gamma_ask_safe = gamma_ask if (gamma_ask and gamma_ask > 0) else 0.50
+                gamma_mid = (gamma_bid_safe + gamma_ask_safe) / 2
+                
+                _dir_label = "NO" if _tfm_dir == "DOWN" else "YES"
+                _win_pnl = (1.00 - gamma_mid) * max_bet * 0.98
+                _loss_pnl = -gamma_mid * max_bet
+                
+                lines += [
+                    f"*TimesFM:* Bet {_dir_label} at ${gamma_mid:.4f}",
+                    f"  If correct: +${_win_pnl:.2f} | If wrong: ${_loss_pnl:.2f}",
+                    f"  Current trend ({_current_dir}) {'agrees' if _tfm_dir == _current_dir else 'DISAGREES'}",
+                    f"",
+                ]
 
+            # v5.7c scenario
+            if twap_result is not None:
                 gamma_bid_safe = gamma_bid if (gamma_bid and gamma_bid > 0) else 0.50
                 gamma_ask_safe = gamma_ask if (gamma_ask and gamma_ask > 0) else 0.50
                 
-                # Check if TimesFM prediction matches actual direction
-                actual_direction = "UP" if (delta_pct > 0) else "DOWN"
-                tfm_prediction_correct = (_tfm_dir == actual_direction)
-                
-                if True:  # Always calculate
-                    gamma_mid = (gamma_bid_safe + gamma_ask_safe) / 2
-                    _entry_price = gamma_mid
-                    
-                    # Binary tokens resolve to $1.00 (correct) or $0.00 (wrong)
-                    _exit_price = 1.00 if tfm_prediction_correct else 0.00
-                    _dir_label = "NO" if _tfm_dir == "DOWN" else "YES"
-                    
-                    # P&L: (exit - entry) * bet_size
-                    _raw_pnl = ((_exit_price - _entry_price) * max_bet)
-                    _fee_pct = 0.02
-                    _net_pnl = _raw_pnl * (1 - _fee_pct) if _raw_pnl > 0 else _raw_pnl
-                    
-                    _pnl_emoji = "📈" if _net_pnl > 0 else ("📉" if _net_pnl < 0 else "➖")
-                    _outcome_text = "✅ CORRECT" if tfm_prediction_correct else "❌ WRONG"
+                if not _should_skip:
+                    _entry = gamma_bid_safe if _gamma_dir == "UP" else gamma_ask_safe
+                    _dir_label = "YES" if _gamma_dir == "UP" else "NO"
+                    _win_pnl = (1.00 - _entry) * max_bet * 0.98
+                    _loss_pnl = -_entry * max_bet
                     
                     lines += [
-                        f"*TimesFM Strategy*",
-                        f"  → Bet `{_dir_label}` at `${_entry_price:.4f}` (Gamma mid)",
-                        f"  → Outcome: {_outcome_text} (actual: {actual_direction}) | Conf: {_tfm_conf*100:.0f}%",
-                        f"  → P&L: {_pnl_emoji} `${_net_pnl:+.2f}` {'(after 2% fee)' if _net_pnl > 0 else '(total loss)'}",
+                        f"*v5.7c:* Bet {_dir_label} at ${_entry:.4f}",
+                        f"  If correct: +${_win_pnl:.2f} | If wrong: ${_loss_pnl:.2f}",
+                        f"  Current trend ({_current_dir}) {'agrees' if _gamma_dir == _current_dir else 'DISAGREES'}",
                         f"",
                     ]
-
-            # v5.7c P&L scenario
-            if twap_result is not None and not _should_skip:
-                _v57_dir = _gamma_dir  # Use gamma direction as the signal
-
-                gamma_bid_safe = gamma_bid if (gamma_bid and gamma_bid > 0) else 0.50
-                gamma_ask_safe = gamma_ask if (gamma_ask and gamma_ask > 0) else 0.50
-                
-                # Binary tokens resolve to $1.00 (correct) or $0.00 (wrong)
-                actual_direction = "UP" if (delta_pct > 0) else "DOWN"
-                prediction_correct = (_v57_dir == actual_direction)
-                
-                if True:  # Always calculate
-                    _entry_price = gamma_bid_safe if _v57_dir == "UP" else gamma_ask_safe
-                    
-                    # Binary resolution: $1.00 if correct, $0.00 if wrong
-                    _exit_price = 1.00 if prediction_correct else 0.00
-                    _dir_label = "NO" if _v57_dir == "DOWN" else "YES"
-                    
-                    # P&L: (exit - entry) * bet_size; fee only on winnings
-                    _raw_pnl = ((_exit_price - _entry_price) * max_bet)
-                    _fee_pct = 0.02
-                    _net_pnl = _raw_pnl * (1 - _fee_pct) if _raw_pnl > 0 else _raw_pnl
-                    
-                    _pnl_emoji = "📈" if _net_pnl > 0 else ("📉" if _net_pnl < 0 else "➖")
-                    _outcome_text = "✅ CORRECT" if prediction_correct else "❌ WRONG"
-
-                    lines += [
-                        f"*v5.7c (Multi) Strategy*",
-                        f"  → Bet `{_dir_label}` at `${_entry_price:.4f}` (Gamma {('bid' if _v57_dir == 'UP' else 'ask')})",
-                        f"  → Outcome: {_outcome_text} (actual: {actual_direction})",
-                        f"  → P&L: {_pnl_emoji} `${_net_pnl:+.2f}` {'(after 2% fee)' if _net_pnl > 0 else '(total loss)'}",
-                        f"",
-                    ]
+                else:
+                    _skip_reason = getattr(twap_result, 'skip_reason', '')
+                    lines.append(f"*v5.7c:* SKIP — {_skip_reason[:60]}")
+                    lines.append(f"")
 
             # DECISION SECTION
             lines += [

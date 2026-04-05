@@ -233,34 +233,46 @@ class TimesFMMultiEntryStrategy:
                 gamma_down=f"${gamma_down:.4f}",
             )
             
-            # TRADE DECISION — immediate, no queue
-            # Only trade if:
-            # 1. Confidence >= min threshold
-            # 2. Haven't already traded this window
-            # 3. Would be profitable after fees (Gamma mid not too extreme)
-            if (
-                forecast.confidence >= self._min_confidence
-                and not wf.trade_placed
-                and 0.10 < gamma_mid < 0.90  # Don't trade when market already decided
-            ):
-                # Check profitability: entry at gamma_mid, fee ~2%
-                # If correct: payout ~$0.90, profit = (0.90 - entry) * bet * 0.98
-                # Break-even: entry must be < ~0.88 for profit on correct prediction
-                entry_price = gamma_mid
-                potential_profit = (0.90 - entry_price) * self._max_bet * 0.98
-                potential_loss = (0.10 - entry_price) * self._max_bet * 0.98
-                
-                if potential_profit > 0:
-                    # PLACE TRADE IMMEDIATELY
-                    await self._place_trade(wf, cp, forecast)
-                else:
-                    self._log.info(
-                        "checkpoint.skip_no_profit",
-                        window_ts=window_ts,
-                        checkpoint=f"T-{checkpoint_s}s",
-                        gamma_mid=f"${gamma_mid:.4f}",
-                        potential_profit=f"${potential_profit:.2f}",
+            # TRADE DECISION — ONLY at T-60s checkpoint
+            # Earlier checkpoints (T-180, T-120) are forecast-only for analysis.
+            # T-30s is too late (not enough fill time).
+            # T-60s is the sweet spot: good prediction + enough time for FOK.
+            TRADE_CHECKPOINT = 60  # Only place orders at T-60s
+            
+            if checkpoint_s == TRADE_CHECKPOINT:
+                if (
+                    forecast.confidence >= self._min_confidence
+                    and not wf.trade_placed
+                    and 0.10 < gamma_mid < 0.90  # Don't trade when market already decided
+                ):
+                    entry_price = gamma_mid
+                    potential_profit = (0.90 - entry_price) * self._max_bet * 0.98
+                    
+                    if potential_profit > 0:
+                        await self._place_trade(wf, cp, forecast)
+                    else:
+                        self._log.info(
+                            "checkpoint.skip_no_profit",
+                            window_ts=window_ts,
+                            checkpoint=f"T-{checkpoint_s}s",
+                            gamma_mid=f"${gamma_mid:.4f}",
+                            potential_profit=f"${potential_profit:.2f}",
+                        )
+                elif not wf.trade_placed:
+                    reason = (
+                        f"confidence {forecast.confidence:.2f} < {self._min_confidence:.2f}"
+                        if forecast.confidence < self._min_confidence
+                        else f"market decided (mid=${gamma_mid:.4f})"
                     )
+                    self._log.info("checkpoint.skip_at_trade_time", window_ts=window_ts, reason=reason)
+            else:
+                self._log.info(
+                    "checkpoint.forecast_only",
+                    window_ts=window_ts,
+                    checkpoint=f"T-{checkpoint_s}s",
+                    direction=forecast.direction,
+                    note="recording forecast, trade only at T-60s",
+                )
             
             # Send Telegram alert for this checkpoint
             if self._alerter:

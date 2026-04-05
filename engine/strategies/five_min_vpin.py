@@ -341,7 +341,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             "cg_taker_sell_usd": cg.taker_sell_volume_1m if cg else None,
             "cg_funding_rate": cg.funding_rate if cg else None,
             # Signal — always show implied direction from delta, even on skips
-            "direction": signal.direction if signal else ("UP" if delta_pct > 0 else "DOWN"),
+            "direction": signal.direction if signal else None,  # Only record direction when we actually have a signal/prediction
             "confidence": signal.confidence if signal else None,
             "cg_modifier": signal.cg_modifier if signal else 0.0,
             "trade_placed": signal is not None,
