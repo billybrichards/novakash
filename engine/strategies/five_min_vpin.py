@@ -1338,6 +1338,8 @@ class FiveMinVPINStrategy(BaseStrategy):
         _fresh_best_ask = None
         _tf_str = "15m" if window.duration_secs == 900 else "5m"
         _slug = f"{window.asset.lower()}-updown-{_tf_str}-{window.window_ts}"
+        _fresh_up = None
+        _fresh_down = None
         try:
             import aiohttp as _aiohttp
             async with _aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as _sess:
@@ -1347,13 +1349,30 @@ class FiveMinVPINStrategy(BaseStrategy):
                         _data = await _resp.json()
                         if _data and isinstance(_data, list) and _data[0].get("markets"):
                             _mkt = _data[0]["markets"][0]
-                            _ba = _mkt.get("bestAsk")
-                            if _ba is not None:
-                                _fresh_up = float(_ba)
-                                _fresh_down = round(1.0 - _fresh_up, 4)
+                            _up_ask = _mkt.get("bestAsk")     # UP token ask price
+                            _up_bid = _mkt.get("bestBid")     # UP token bid price
+                            _outcome_prices = _mkt.get("outcomePrices", [])
+                            
+                            if _outcome_prices and len(_outcome_prices) >= 2:
+                                # Use outcome prices directly — most accurate
+                                _fresh_up = float(_outcome_prices[0])    # UP price
+                                _fresh_down = float(_outcome_prices[1])  # DOWN price
+                            elif _up_ask is not None and _up_bid is not None:
+                                _fresh_up = float(_up_ask)
+                                # DOWN effective ask = 1 - UP bid (buying NO = selling YES at bid)
+                                _fresh_down = round(1.0 - float(_up_bid), 4)
+                            
+                            if _fresh_up is not None and _fresh_down is not None:
                                 _fresh_best_ask = _fresh_up if direction == "YES" else _fresh_down
-        except Exception:
-            pass
+                                self._log.info(
+                                    "execute.gamma_prices",
+                                    up_price=f"${_fresh_up:.4f}",
+                                    down_price=f"${_fresh_down:.4f}",
+                                    direction=direction,
+                                    using=f"${_fresh_best_ask:.4f}",
+                                )
+        except Exception as _exc:
+            self._log.debug("execute.gamma_fetch_error", error=str(_exc))
         
         # Use Gamma bestAsk if available and within cap, else model price
         is_15m = "15m" in _slug
