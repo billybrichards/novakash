@@ -108,7 +108,18 @@ class RuntimeConfig:
         self.preferred_venue: str = os.environ.get("PREFERRED_VENUE", "opinion")
 
         # ── 5-Min (these stay env-only for now — structural, not tunable) ─
-        self.five_min_enabled: bool = os.environ.get("FIVE_MIN_ENABLED", "false").lower() == "true"
+        # Read from env first, then .env file fallback
+        _five_min_env = os.environ.get("FIVE_MIN_ENABLED", "")
+        if not _five_min_env:
+            from pathlib import Path
+            _env_file = Path(__file__).parent.parent / ".env"
+            if _env_file.exists():
+                with open(_env_file) as f:
+                    for line in f:
+                        if line.startswith("FIVE_MIN_ENABLED="):
+                            _five_min_env = line.split("=", 1)[1].strip()
+                            break
+        self.five_min_enabled: bool = _five_min_env.lower() == "true"
         self.five_min_assets: list[str] = os.environ.get("FIVE_MIN_ASSETS", "BTC").split(",")
         self.five_min_mode: str = os.environ.get("FIVE_MIN_MODE", "safe")
         self.five_min_entry_offset: int = _env_int("FIVE_MIN_ENTRY_OFFSET", 10)
