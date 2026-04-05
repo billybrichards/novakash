@@ -65,6 +65,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await session.execute(text("ALTER TABLE system_state ADD COLUMN IF NOT EXISTS active_live_config_id INTEGER"))
             await session.commit()
             log.info("hub.migrations_applied")
+            # Ensure manual_trades table exists
+            try:
+                from api.v58_monitor import ensure_manual_trades_table
+                await ensure_manual_trades_table(session)
+            except Exception as mt_exc:
+                log.warning("hub.manual_trades_migration_error", error=str(mt_exc))
             break
     except Exception as exc:
         log.warning("hub.migration_error", error=str(exc))

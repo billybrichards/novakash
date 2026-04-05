@@ -4,18 +4,26 @@ v5.8 Monitor API
 Endpoints for the v5.8 BTC trading strategy monitor dashboard.
 Uses window_snapshots table (raw SQL — no ORM model yet).
 
-GET /api/v58/windows         — last 50 window snapshots with all v5.8 fields
-GET /api/v58/countdown/{ts}  — countdown evaluation stages for a specific window
-GET /api/v58/stats           — win/loss/skip stats + agreement accuracy
-GET /api/v58/price-history   — BTC price history for chart (last 1h from trades/signals)
+GET  /api/v58/windows              — last 50 window snapshots with all v5.8 fields
+GET  /api/v58/countdown/{ts}       — countdown evaluation stages for a specific window
+GET  /api/v58/stats                — win/loss/skip stats + agreement accuracy
+GET  /api/v58/price-history        — BTC price history for chart (last 1h from trades/signals)
+GET  /api/v58/outcomes             — per-window outcome + what-if P&L analysis
+GET  /api/v58/accuracy             — rolling accuracy stats
+POST /api/v58/manual-trade         — place a paper or live manual trade
+GET  /api/v58/manual-trades        — list all manual trades with outcomes
+GET  /api/v58/window-detail/{ts}   — detailed window data for a specific timestamp
 """
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +32,32 @@ from auth.middleware import get_current_user
 from db.database import get_session
 
 router = APIRouter()
+
+
+# ─── DB Migration helper (called from main.py lifespan) ─────────────────────
+
+async def ensure_manual_trades_table(session: AsyncSession) -> None:
+    """Create manual_trades table if it doesn't exist."""
+    await session.execute(text("""
+        CREATE TABLE IF NOT EXISTS manual_trades (
+            id SERIAL PRIMARY KEY,
+            trade_id VARCHAR(64) UNIQUE NOT NULL,
+            window_ts BIGINT,
+            asset VARCHAR(10) DEFAULT 'BTC',
+            direction VARCHAR(4) NOT NULL,
+            mode VARCHAR(10) NOT NULL,
+            entry_price DOUBLE PRECISION NOT NULL,
+            gamma_up_price DOUBLE PRECISION,
+            gamma_down_price DOUBLE PRECISION,
+            stake_usd DOUBLE PRECISION DEFAULT 4.0,
+            status VARCHAR(20) DEFAULT 'open',
+            outcome_direction VARCHAR(4),
+            pnl_usd DOUBLE PRECISION,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            resolved_at TIMESTAMPTZ
+        )
+    """))
+    await session.commit()
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -660,4 +694,528 @@ def _empty_accuracy() -> dict:
         "cumulative_pnl": 0.0,
         "current_streak": 0,
         "pnl_timeline": [],
+    }
+
+
+# ─── Manual Trade Schemas ─────────────────────────────────────────────────────
+
+class ManualTradeRequest(BaseModel):
+    asset: str = "BTC"
+    direction: str          # "UP" or "DOWN"
+    mode: str               # "paper" or "live"
+    window_ts: Optional[int] = None   # unix timestamp (ms or s)
+
+
+# ─── Gamma price helper ───────────────────────────────────────────────────────
+
+async def _fetch_gamma_prices(window_ts: Optional[int]) -> dict:
+    """
+    Fetch current UP/DOWN prices from Polymarket Gamma API.
+    Returns {"up_price": float|None, "down_price": float|None, "raw": dict}
+    """
+    try:
+        # Build the slug — window_ts might be seconds or ms
+        if window_ts:
+            ts_s = window_ts // 1000 if window_ts > 1e10 else window_ts
+            # Format: btc-updown-5m-{ts} — try standard slug
+            slug = f"btc-updown-5m-{ts_s}"
+        else:
+            slug = "btc-updown-5m"
+
+        url = f"https://gamma-api.polymarket.com/events?slug={slug}"
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            events = resp.json()
+
+        if not events:
+            return {"up_price": None, "down_price": None, "raw": {}}
+
+        event = events[0] if isinstance(events, list) else events
+        markets = event.get("markets", [])
+
+        up_price = None
+        down_price = None
+
+        for market in markets:
+            outcome_prices_raw = market.get("outcomePrices", "[]")
+            outcomes = market.get("outcomes", "[]")
+
+            # outcomePrices can be a JSON string or list
+            if isinstance(outcome_prices_raw, str):
+                import json as _json
+                try:
+                    prices = _json.loads(outcome_prices_raw)
+                except Exception:
+                    prices = []
+            else:
+                prices = outcome_prices_raw
+
+            if isinstance(outcomes, str):
+                import json as _json
+                try:
+                    outcomes = _json.loads(outcomes)
+                except Exception:
+                    outcomes = []
+
+            for i, outcome_name in enumerate(outcomes):
+                try:
+                    price = float(prices[i])
+                except (IndexError, TypeError, ValueError):
+                    continue
+                name_upper = str(outcome_name).upper()
+                if "UP" in name_upper or "YES" in name_upper:
+                    up_price = price
+                elif "DOWN" in name_upper or "NO" in name_upper:
+                    down_price = price
+
+        return {"up_price": up_price, "down_price": down_price, "raw": event}
+
+    except Exception as exc:
+        return {"up_price": None, "down_price": None, "raw": {}, "error": str(exc)}
+
+
+# ─── Manual Trade Endpoints ───────────────────────────────────────────────────
+
+@router.post("/v58/manual-trade")
+async def post_manual_trade(
+    body: ManualTradeRequest,
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    Place a manual paper or live trade for the current window.
+
+    - Fetches real Gamma prices from Polymarket
+    - Calculates entry_price based on direction
+    - Records in manual_trades table
+    - For live mode: records with status='pending_live' for engine pickup
+    """
+    # Validate direction
+    direction = body.direction.upper()
+    if direction not in ("UP", "DOWN"):
+        raise HTTPException(status_code=422, detail="direction must be 'UP' or 'DOWN'")
+
+    mode = body.mode.lower()
+    if mode not in ("paper", "live"):
+        raise HTTPException(status_code=422, detail="mode must be 'paper' or 'live'")
+
+    # Ensure table exists
+    await ensure_manual_trades_table(session)
+
+    # Fetch Gamma prices
+    gamma = await _fetch_gamma_prices(body.window_ts)
+    up_price = gamma.get("up_price")
+    down_price = gamma.get("down_price")
+
+    # Determine entry price for chosen direction
+    entry_price = up_price if direction == "UP" else down_price
+
+    # Fallback: try to get from window_snapshots if Gamma API failed
+    if entry_price is None and body.window_ts:
+        try:
+            ts_s = body.window_ts // 1000 if body.window_ts > 1e10 else body.window_ts
+            ts_dt = datetime.fromtimestamp(ts_s, tz=timezone.utc)
+            q = text("""
+                SELECT gamma_up_price, gamma_down_price
+                FROM window_snapshots
+                WHERE window_ts >= :ts - INTERVAL '10 minutes'
+                  AND window_ts <= :ts + INTERVAL '10 minutes'
+                ORDER BY ABS(EXTRACT(EPOCH FROM (window_ts - :ts)))
+                LIMIT 1
+            """)
+            result = await session.execute(q, {"ts": ts_dt})
+            row = result.mappings().first()
+            if row:
+                up_price = _safe_float(row.get("gamma_up_price")) or up_price
+                down_price = _safe_float(row.get("gamma_down_price")) or down_price
+                entry_price = up_price if direction == "UP" else down_price
+        except Exception:
+            pass
+
+    if entry_price is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not fetch Gamma prices — Polymarket API unavailable and no cached prices found"
+        )
+
+    # Generate trade ID
+    trade_id = f"manual_{uuid.uuid4().hex[:16]}"
+    stake = 4.0
+    status = "open" if mode == "paper" else "pending_live"
+
+    # Store in DB
+    await session.execute(text("""
+        INSERT INTO manual_trades
+            (trade_id, window_ts, asset, direction, mode,
+             entry_price, gamma_up_price, gamma_down_price,
+             stake_usd, status, created_at)
+        VALUES
+            (:trade_id, :window_ts, :asset, :direction, :mode,
+             :entry_price, :gamma_up_price, :gamma_down_price,
+             :stake_usd, :status, NOW())
+    """), {
+        "trade_id": trade_id,
+        "window_ts": body.window_ts,
+        "asset": body.asset,
+        "direction": direction,
+        "mode": mode,
+        "entry_price": entry_price,
+        "gamma_up_price": up_price,
+        "gamma_down_price": down_price,
+        "stake_usd": stake,
+        "status": status,
+    })
+    await session.commit()
+
+    return {
+        "trade_id": trade_id,
+        "direction": direction,
+        "entry_price": entry_price,
+        "gamma_up_price": up_price,
+        "gamma_down_price": down_price,
+        "stake": stake,
+        "mode": mode,
+        "status": status,
+        "asset": body.asset,
+        "window_ts": body.window_ts,
+    }
+
+
+@router.get("/v58/manual-trades")
+async def get_manual_trades(
+    limit: int = Query(100, ge=1, le=500),
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    Return all manual trades with their current outcomes.
+
+    Also attempts to resolve open trades against window_snapshots data.
+    """
+    await ensure_manual_trades_table(session)
+
+    try:
+        # Resolve any open trades that now have window outcome data
+        await _resolve_open_trades(session)
+
+        q = text("""
+            SELECT
+                mt.trade_id, mt.window_ts, mt.asset, mt.direction, mt.mode,
+                mt.entry_price, mt.gamma_up_price, mt.gamma_down_price,
+                mt.stake_usd, mt.status, mt.outcome_direction, mt.pnl_usd,
+                mt.created_at, mt.resolved_at,
+                ws.open_price, ws.close_price, ws.delta_pct, ws.direction AS signal_direction
+            FROM manual_trades mt
+            LEFT JOIN window_snapshots ws ON (
+                mt.window_ts IS NOT NULL
+                AND ws.window_ts >= to_timestamp(
+                    CASE WHEN mt.window_ts > 1e12::bigint
+                         THEN mt.window_ts / 1000
+                         ELSE mt.window_ts
+                    END
+                ) - INTERVAL '5 minutes'
+                AND ws.window_ts <= to_timestamp(
+                    CASE WHEN mt.window_ts > 1e12::bigint
+                         THEN mt.window_ts / 1000
+                         ELSE mt.window_ts
+                    END
+                ) + INTERVAL '5 minutes'
+            )
+            ORDER BY mt.created_at DESC
+            LIMIT :limit
+        """)
+        result = await session.execute(q, {"limit": limit})
+        rows = result.mappings().all()
+
+        trades = []
+        for r in rows:
+            trades.append({
+                "trade_id": r["trade_id"],
+                "window_ts": r["window_ts"],
+                "asset": r["asset"],
+                "direction": r["direction"],
+                "mode": r["mode"],
+                "entry_price": _safe_float(r["entry_price"]),
+                "gamma_up_price": _safe_float(r["gamma_up_price"]),
+                "gamma_down_price": _safe_float(r["gamma_down_price"]),
+                "stake_usd": _safe_float(r["stake_usd"]) or 4.0,
+                "status": r["status"],
+                "outcome_direction": r["outcome_direction"],
+                "pnl_usd": _safe_float(r["pnl_usd"]),
+                "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+                "resolved_at": r["resolved_at"].isoformat() if r.get("resolved_at") else None,
+                # Window context from join
+                "open_price": _safe_float(r.get("open_price")),
+                "close_price": _safe_float(r.get("close_price")),
+                "delta_pct": _safe_float(r.get("delta_pct")),
+                "signal_direction": r.get("signal_direction"),
+            })
+
+        # Compute running total
+        resolved = [t for t in trades if t["pnl_usd"] is not None]
+        total_pnl = round(sum(t["pnl_usd"] for t in resolved), 4)
+
+        return {
+            "trades": trades,
+            "count": len(trades),
+            "total_pnl": total_pnl,
+            "resolved_count": len(resolved),
+        }
+
+    except Exception as exc:
+        return {"trades": [], "count": 0, "total_pnl": 0.0, "resolved_count": 0, "error": str(exc)}
+
+
+async def _resolve_open_trades(session: AsyncSession) -> None:
+    """
+    Attempt to resolve open manual trades that now have window outcome data.
+    Looks up the matching window_snapshot and calculates P&L.
+    """
+    try:
+        open_trades_q = text("""
+            SELECT trade_id, window_ts, direction, entry_price, gamma_up_price, gamma_down_price, stake_usd
+            FROM manual_trades
+            WHERE status = 'open'
+            LIMIT 50
+        """)
+        result = await session.execute(open_trades_q)
+        open_trades = result.mappings().all()
+
+        for t in open_trades:
+            window_ts = t["window_ts"]
+            if not window_ts:
+                continue
+
+            ts_s = window_ts // 1000 if window_ts > 1e12 else window_ts
+            ts_dt = datetime.fromtimestamp(ts_s, tz=timezone.utc)
+
+            # Window must have been closed — add 6min buffer
+            if datetime.now(timezone.utc) < ts_dt + timedelta(minutes=6):
+                continue
+
+            # Look for matching snapshot with close price
+            ws_q = text("""
+                SELECT open_price, close_price, direction
+                FROM window_snapshots
+                WHERE window_ts >= :ts - INTERVAL '5 minutes'
+                  AND window_ts <= :ts + INTERVAL '5 minutes'
+                  AND close_price IS NOT NULL
+                ORDER BY ABS(EXTRACT(EPOCH FROM (window_ts - :ts)))
+                LIMIT 1
+            """)
+            ws_result = await session.execute(ws_q, {"ts": ts_dt})
+            ws_row = ws_result.mappings().first()
+
+            if not ws_row:
+                continue
+
+            open_p = _safe_float(ws_row.get("open_price"))
+            close_p = _safe_float(ws_row.get("close_price"))
+            if open_p is None or close_p is None:
+                continue
+
+            actual_dir = "UP" if close_p > open_p else "DOWN"
+            trade_dir = t["direction"]
+            gamma_up = _safe_float(t.get("gamma_up_price"))
+            gamma_down = _safe_float(t.get("gamma_down_price"))
+            stake = _safe_float(t.get("stake_usd")) or 4.0
+
+            pnl = _calc_what_if_pnl(trade_dir, actual_dir, gamma_up, gamma_down, stake)
+            status = "won" if (pnl is not None and pnl > 0) else "lost"
+
+            await session.execute(text("""
+                UPDATE manual_trades
+                SET status = :status,
+                    outcome_direction = :outcome_dir,
+                    pnl_usd = :pnl,
+                    resolved_at = NOW()
+                WHERE trade_id = :trade_id
+            """), {
+                "status": status,
+                "outcome_dir": actual_dir,
+                "pnl": pnl,
+                "trade_id": t["trade_id"],
+            })
+
+        await session.commit()
+    except Exception:
+        pass  # Non-critical — don't fail the main request
+
+
+@router.get("/v58/window-detail/{window_ts}")
+async def get_window_detail(
+    window_ts: str,
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    Return detailed window data for a specific timestamp.
+
+    Includes:
+    - Full snapshot row with all signals
+    - Signal values at T-180/T-120/T-90/T-60 (from countdown_evaluations or signals table)
+    - Price ticks through the window
+    - What-if P&L calculation regardless of gate status
+    - Resolution data (actual direction, actual P&L)
+    """
+    # Parse the timestamp — accept ISO string or unix seconds/ms
+    ts_dt: Optional[datetime] = None
+    try:
+        # Try ISO first
+        ts_dt = datetime.fromisoformat(window_ts.replace("Z", "+00:00"))
+    except ValueError:
+        # Try as unix timestamp
+        try:
+            ts_i = int(window_ts)
+            ts_s = ts_i // 1000 if ts_i > 1e10 else ts_i
+            ts_dt = datetime.fromtimestamp(ts_s, tz=timezone.utc)
+        except (ValueError, OverflowError):
+            raise HTTPException(status_code=422, detail="Invalid window_ts — use ISO 8601 or unix timestamp")
+
+    # ── 1. Main snapshot row ─────────────────────────────────────────────────
+    snapshot = None
+    try:
+        q = text("""
+            SELECT *
+            FROM window_snapshots
+            WHERE window_ts >= :ts - INTERVAL '2 minutes'
+              AND window_ts <= :ts + INTERVAL '2 minutes'
+            ORDER BY ABS(EXTRACT(EPOCH FROM (window_ts - :ts)))
+            LIMIT 1
+        """)
+        result = await session.execute(q, {"ts": ts_dt})
+        row = result.mappings().first()
+        if row:
+            snapshot = _calc_outcome_row(row)
+    except Exception as exc:
+        snapshot = {"error": str(exc)}
+
+    # ── 2. Countdown evaluations (T-180/T-120/T-90/T-60) ───────────────────
+    evaluations = []
+    try:
+        # Try countdown_evaluations table first
+        ce_q = text("""
+            SELECT stage, evaluated_at, direction, confidence, agreement, action, notes
+            FROM countdown_evaluations
+            WHERE window_ts >= :ts - INTERVAL '2 minutes'
+              AND window_ts <= :ts + INTERVAL '2 minutes'
+            ORDER BY evaluated_at ASC
+        """)
+        ce_result = await session.execute(ce_q, {"ts": ts_dt})
+        ce_rows = ce_result.mappings().all()
+        evaluations = [
+            {
+                "stage": r["stage"],
+                "evaluated_at": r["evaluated_at"].isoformat() if r.get("evaluated_at") else None,
+                "direction": r.get("direction"),
+                "confidence": _safe_float(r.get("confidence")),
+                "agreement": bool(r.get("agreement")) if r.get("agreement") is not None else None,
+                "action": r.get("action"),
+                "notes": r.get("notes"),
+            }
+            for r in ce_rows
+        ]
+    except Exception:
+        pass
+
+    if not evaluations:
+        # Fallback: signals table
+        try:
+            ts_str = ts_dt.isoformat()
+            sig_q = text("""
+                SELECT signal_type, payload, created_at
+                FROM signals
+                WHERE signal_type LIKE 'countdown%'
+                  AND (
+                      payload->>'window_ts' = :ts_str
+                      OR created_at BETWEEN :ts - INTERVAL '6 minutes' AND :ts + INTERVAL '1 minute'
+                  )
+                ORDER BY created_at ASC
+                LIMIT 10
+            """)
+            sig_result = await session.execute(sig_q, {"ts_str": ts_str, "ts": ts_dt})
+            sig_rows = sig_result.mappings().all()
+            evaluations = [
+                {
+                    "stage": r["signal_type"],
+                    "evaluated_at": r["created_at"].isoformat() if r.get("created_at") else None,
+                    **(r["payload"] if isinstance(r.get("payload"), dict) else {}),
+                }
+                for r in sig_rows
+            ]
+        except Exception:
+            pass
+
+    # ── 3. Price ticks through the window ───────────────────────────────────
+    price_ticks = []
+    try:
+        tick_q = text("""
+            SELECT created_at, payload->>'btc_price' AS price
+            FROM signals
+            WHERE signal_type = 'tick'
+              AND created_at BETWEEN :ts - INTERVAL '5 minutes' AND :ts + INTERVAL '5 minutes'
+              AND payload->>'btc_price' IS NOT NULL
+            ORDER BY created_at ASC
+            LIMIT 200
+        """)
+        tick_result = await session.execute(tick_q, {"ts": ts_dt})
+        tick_rows = tick_result.mappings().all()
+        price_ticks = [
+            {
+                "time": int(r["created_at"].timestamp()) if r.get("created_at") else None,
+                "price": _safe_float(r.get("price")),
+            }
+            for r in tick_rows
+        ]
+    except Exception:
+        pass
+
+    # ── 4. What-if P&L for all signal sources ───────────────────────────────
+    # Already computed in snapshot via _calc_outcome_row
+    # But recalculate regardless of gate/skip status
+    what_if = None
+    if snapshot and "actual_direction" in snapshot:
+        actual_dir = snapshot.get("actual_direction")
+        gamma_up = snapshot.get("gamma_up_price")
+        gamma_down = snapshot.get("gamma_down_price")
+        stake = 4.0
+
+        scenarios = {}
+        for src_name, dir_key in [
+            ("v57c", "direction"),
+            ("timesfm", "timesfm_direction"),
+            ("twap", "twap_direction"),
+        ]:
+            src_dir = snapshot.get(dir_key)
+            if src_dir and actual_dir:
+                pnl = _calc_what_if_pnl(src_dir, actual_dir, gamma_up, gamma_down, stake)
+                entry = gamma_up if src_dir == "UP" else gamma_down
+                scenarios[src_name] = {
+                    "direction": src_dir,
+                    "entry_price": entry,
+                    "stake": stake,
+                    "actual_direction": actual_dir,
+                    "correct": src_dir == actual_dir,
+                    "pnl_usd": pnl,
+                }
+
+        gate_status = "BLOCKED" if snapshot.get("skip_reason") else "PASSED"
+        if not snapshot.get("trade_placed") and not snapshot.get("skip_reason"):
+            gate_status = "SKIPPED"
+
+        what_if = {
+            "gate_status": gate_status,
+            "skip_reason": snapshot.get("skip_reason"),
+            "trade_placed": snapshot.get("trade_placed"),
+            "scenarios": scenarios,
+            "note": "P&L calculated regardless of gate/skip status",
+        }
+
+    return {
+        "window_ts": window_ts,
+        "snapshot": snapshot,
+        "evaluations": evaluations,
+        "price_ticks": price_ticks,
+        "what_if": what_if,
     }

@@ -21,6 +21,7 @@ import PlaywrightDashboard from './pages/PlaywrightDashboard.jsx';
 import TimesFM from './pages/TimesFM.jsx';
 import Indicators from './pages/Indicators.jsx';
 import V58Monitor from './pages/V58Monitor.jsx';
+import WindowResults from './pages/WindowResults.jsx';
 
 export default function App() {
   return (
@@ -58,6 +59,7 @@ export default function App() {
             <Route path="timesfm" element={<TimesFM />} />
             <Route path="indicators" element={<Indicators />} />
             <Route path="v58" element={<V58Monitor />} />
+            <Route path="windows" element={<WindowResults />} />
           </Route>
 
           {/* 404 fallback */}

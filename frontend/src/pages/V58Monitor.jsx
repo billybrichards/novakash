@@ -1557,6 +1557,391 @@ function SignalSourceCards({ outcome }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// E. Trade Buttons (Paper + Live)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function TradeButtons({ latestWindow, onTradeSuccess }) {
+  const api = useApi();
+  const [placing, setPlacing] = useState(null); // 'paper' | 'live' | null
+  const [lastResult, setLastResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [showLiveConfirm, setShowLiveConfirm] = useState(false);
+
+  const currentDirection = latestWindow?.direction;
+  const gammaUp = latestWindow?.gamma_up_price;
+  const gammaDown = latestWindow?.gamma_down_price;
+  const entryPrice = currentDirection === 'UP' ? gammaUp : gammaDown;
+  const gammaStr = entryPrice != null ? `@$${entryPrice.toFixed(3)}` : '';
+
+  // Get window_ts as unix ms
+  const getWindowTs = () => {
+    if (!latestWindow?.window_ts) return null;
+    const d = new Date(latestWindow.window_ts);
+    return d.getTime(); // ms
+  };
+
+  const placeTrade = async (mode) => {
+    setPlacing(mode);
+    setError(null);
+    setLastResult(null);
+    try {
+      const r = await api('POST', '/v58/manual-trade', {
+        asset: latestWindow?.asset || 'BTC',
+        direction: currentDirection || 'UP',
+        mode,
+        window_ts: getWindowTs(),
+      });
+      setLastResult(r?.data ?? null);
+      onTradeSuccess?.();
+    } catch (err) {
+      setError(err?.response?.data?.detail || err?.message || 'Trade failed');
+    } finally {
+      setPlacing(null);
+      setShowLiveConfirm(false);
+    }
+  };
+
+  const disabled = !latestWindow || !currentDirection;
+
+  return (
+    <div style={{ fontFamily: T.mono }}>
+      {/* Current signal summary */}
+      <div style={{
+        padding: '10px 14px',
+        borderRadius: 8,
+        background: 'rgba(0,0,0,0.25)',
+        border: `1px solid ${T.border}`,
+        marginBottom: 14,
+      }}>
+        <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>
+          Signal for Current Window
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>Direction</div>
+            <div style={{
+              fontSize: 16, fontWeight: 700,
+              color: currentDirection ? directionColor(currentDirection) : T.label,
+            }}>
+              {currentDirection ? (currentDirection === 'UP' ? '▲ UP' : '▼ DOWN') : '—'}
+            </div>
+          </div>
+          {entryPrice != null && (
+            <div>
+              <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>Entry Price</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: '#fff' }}>
+                ${entryPrice.toFixed(3)}
+              </div>
+            </div>
+          )}
+          <div>
+            <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>Stake</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: T.warning }}>$4.00</div>
+          </div>
+          {gammaUp != null && gammaDown != null && (
+            <div>
+              <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>Gamma ↑/↓</div>
+              <div style={{ fontSize: 12, color: T.warning }}>
+                ${gammaUp.toFixed(3)} / ${gammaDown.toFixed(3)}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Buttons */}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <button
+          disabled={disabled || placing !== null}
+          onClick={() => placeTrade('paper')}
+          style={{
+            flex: 1,
+            padding: '12px 16px',
+            borderRadius: 8,
+            border: '1px solid rgba(74,222,128,0.4)',
+            background: disabled ? 'rgba(255,255,255,0.04)' : 'rgba(74,222,128,0.12)',
+            color: disabled ? T.label : T.profit,
+            fontSize: 12,
+            fontWeight: 700,
+            cursor: disabled ? 'not-allowed' : 'pointer',
+            fontFamily: T.mono,
+            transition: 'all 200ms ease-out',
+            opacity: disabled ? 0.5 : 1,
+          }}
+        >
+          {placing === 'paper' ? '⏳ Placing…' : `📄 Paper Trade ${gammaStr}`}
+        </button>
+
+        {!showLiveConfirm ? (
+          <button
+            disabled={disabled || placing !== null}
+            onClick={() => setShowLiveConfirm(true)}
+            style={{
+              flex: 1,
+              padding: '12px 16px',
+              borderRadius: 8,
+              border: '1px solid rgba(248,113,113,0.4)',
+              background: disabled ? 'rgba(255,255,255,0.04)' : 'rgba(248,113,113,0.1)',
+              color: disabled ? T.label : T.loss,
+              fontSize: 12,
+              fontWeight: 700,
+              cursor: disabled ? 'not-allowed' : 'pointer',
+              fontFamily: T.mono,
+              transition: 'all 200ms ease-out',
+              opacity: disabled ? 0.5 : 1,
+            }}
+          >
+            🔴 Live Trade {gammaStr}
+          </button>
+        ) : (
+          <div style={{
+            flex: 1,
+            display: 'flex',
+            gap: 8,
+            padding: '8px 12px',
+            borderRadius: 8,
+            background: 'rgba(248,113,113,0.08)',
+            border: '1px solid rgba(248,113,113,0.3)',
+            alignItems: 'center',
+          }}>
+            <span style={{ fontSize: 10, color: T.loss, flex: 1 }}>
+              Confirm live trade: {currentDirection} {gammaStr} · $4 stake
+            </span>
+            <button
+              onClick={() => placeTrade('live')}
+              disabled={placing !== null}
+              style={{
+                padding: '6px 12px',
+                borderRadius: 6,
+                border: '1px solid rgba(248,113,113,0.5)',
+                background: 'rgba(248,113,113,0.2)',
+                color: T.loss,
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: 'pointer',
+                fontFamily: T.mono,
+              }}
+            >
+              {placing === 'live' ? '⏳' : '✓ Confirm'}
+            </button>
+            <button
+              onClick={() => setShowLiveConfirm(false)}
+              style={{
+                padding: '6px 10px',
+                borderRadius: 6,
+                border: `1px solid ${T.border}`,
+                background: 'transparent',
+                color: T.label,
+                fontSize: 11,
+                cursor: 'pointer',
+                fontFamily: T.mono,
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Result */}
+      {lastResult && (
+        <div style={{
+          marginTop: 12,
+          padding: '10px 14px',
+          borderRadius: 8,
+          background: 'rgba(74,222,128,0.07)',
+          border: '1px solid rgba(74,222,128,0.25)',
+        }}>
+          <div style={{ fontSize: 10, color: T.profit, fontWeight: 700, marginBottom: 4 }}>
+            ✅ Trade Placed!
+          </div>
+          <div style={{ fontSize: 10, color: T.label }}>
+            ID: <span style={{ color: '#fff' }}>{lastResult.trade_id}</span>
+            {' · '}
+            Mode: <span style={{ color: lastResult.mode === 'paper' ? T.cyan : T.loss }}>
+              {lastResult.mode.toUpperCase()}
+            </span>
+            {' · '}
+            Entry: <span style={{ color: T.warning }}>${lastResult.entry_price?.toFixed(3)}</span>
+            {' · '}
+            Status: <span style={{ color: T.profit }}>{lastResult.status}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Error */}
+      {error && (
+        <div style={{
+          marginTop: 12,
+          padding: '10px 14px',
+          borderRadius: 8,
+          background: 'rgba(248,113,113,0.07)',
+          border: '1px solid rgba(248,113,113,0.25)',
+          fontSize: 10,
+          color: T.loss,
+        }}>
+          ❌ {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// F. My Trades Panel
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function MyTradesPanel({ trades, totalPnl, loading }) {
+  if (loading) {
+    return (
+      <div style={{ color: T.label, fontSize: 11, fontFamily: T.mono, padding: 16 }}>
+        Loading trades…
+      </div>
+    );
+  }
+
+  if (!trades?.length) {
+    return (
+      <div style={{ color: T.label, fontSize: 11, fontFamily: T.mono, padding: 16 }}>
+        No manual trades yet. Use the buttons above to place your first trade.
+      </div>
+    );
+  }
+
+  const pnlColor = totalPnl >= 0 ? T.profit : T.loss;
+
+  return (
+    <div style={{ fontFamily: T.mono }}>
+      {/* Running total */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginBottom: 14,
+        padding: '10px 14px',
+        borderRadius: 8,
+        background: `${pnlColor}08`,
+        border: `1px solid ${pnlColor}25`,
+      }}>
+        <span style={{ fontSize: 10, color: T.label }}>Running Total P&L</span>
+        <span style={{ fontSize: 18, fontWeight: 700, color: pnlColor }}>
+          {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}
+        </span>
+      </div>
+
+      {/* Table */}
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{
+          width: '100%',
+          borderCollapse: 'collapse',
+          fontSize: 10,
+          minWidth: 560,
+        }}>
+          <thead>
+            <tr style={{ borderBottom: `1px solid ${T.border}` }}>
+              {['Time', 'Direction', 'Entry', 'Mode', 'Status', 'P&L'].map(h => (
+                <th key={h} style={{
+                  padding: '6px 10px',
+                  textAlign: 'left',
+                  color: T.label,
+                  fontWeight: 600,
+                  fontSize: 9,
+                  letterSpacing: '0.08em',
+                }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {trades.map(t => {
+              const time = t.created_at
+                ? new Date(t.created_at).toLocaleString('en-GB', {
+                    month: 'short', day: 'numeric',
+                    hour: '2-digit', minute: '2-digit',
+                  })
+                : '—';
+
+              const modeColor = t.mode === 'paper' ? T.cyan : T.loss;
+              const statusColor = {
+                won: T.profit,
+                lost: T.loss,
+                open: T.warning,
+                pending_live: '#e879f9',
+                expired: T.label,
+              }[t.status] ?? T.label;
+
+              let rowBg = 'transparent';
+              if (t.status === 'won') rowBg = 'rgba(74,222,128,0.04)';
+              else if (t.status === 'lost') rowBg = 'rgba(248,113,113,0.04)';
+
+              return (
+                <tr
+                  key={t.trade_id}
+                  style={{
+                    background: rowBg,
+                    borderBottom: `1px solid rgba(255,255,255,0.025)`,
+                  }}
+                >
+                  <td style={{ padding: '7px 10px', color: T.label }}>{time}</td>
+                  <td style={{ padding: '7px 10px' }}>
+                    <span style={{
+                      color: directionColor(t.direction),
+                      fontWeight: 700,
+                    }}>
+                      {t.direction === 'UP' ? '▲ UP' : '▼ DOWN'}
+                    </span>
+                  </td>
+                  <td style={{ padding: '7px 10px', color: '#fff' }}>
+                    ${t.entry_price?.toFixed(3) ?? '—'}
+                  </td>
+                  <td style={{ padding: '7px 10px' }}>
+                    <span style={{
+                      padding: '2px 8px',
+                      borderRadius: 4,
+                      background: `${modeColor}18`,
+                      border: `1px solid ${modeColor}30`,
+                      color: modeColor,
+                      fontSize: 9,
+                      fontWeight: 700,
+                    }}>
+                      {t.mode.toUpperCase()}
+                    </span>
+                  </td>
+                  <td style={{ padding: '7px 10px' }}>
+                    <span style={{
+                      padding: '2px 8px',
+                      borderRadius: 4,
+                      background: `${statusColor}10`,
+                      color: statusColor,
+                      fontSize: 9,
+                      fontWeight: 700,
+                      letterSpacing: '0.04em',
+                    }}>
+                      {t.status.toUpperCase()}
+                    </span>
+                  </td>
+                  <td style={{ padding: '7px 10px' }}>
+                    {t.pnl_usd != null ? (
+                      <span style={{
+                        fontWeight: 700,
+                        color: t.pnl_usd >= 0 ? T.profit : T.loss,
+                      }}>
+                        {t.pnl_usd >= 0 ? '+' : ''}${t.pnl_usd.toFixed(2)}
+                      </span>
+                    ) : (
+                      <span style={{ color: T.label }}>pending</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function V58Monitor() {
@@ -1572,6 +1957,9 @@ export default function V58Monitor() {
   const [outcomes, setOutcomes] = useState([]);
   const [accuracy, setAccuracy] = useState(null);
   const [selectedOutcomeTs, setSelectedOutcomeTs] = useState(null);
+  const [manualTrades, setManualTrades] = useState([]);
+  const [manualTotalPnl, setManualTotalPnl] = useState(0);
+  const [manualLoading, setManualLoading] = useState(false);
 
   // Derived: the selected window object
   const selectedWindow = useMemo(
@@ -1581,6 +1969,17 @@ export default function V58Monitor() {
 
   // Latest (most recent) window = first in the array (API returns newest-first)
   const latestWindow = windows[0] ?? null;
+
+  // ── Fetch manual trades ─────────────────────────────────────────────────────
+  const fetchManualTrades = useCallback(async () => {
+    setManualLoading(true);
+    try {
+      const r = await api('GET', '/v58/manual-trades');
+      setManualTrades(r?.data?.trades ?? []);
+      setManualTotalPnl(r?.data?.total_pnl ?? 0);
+    } catch (_) {}
+    finally { setManualLoading(false); }
+  }, [api]);
 
   // ── Fetch ───────────────────────────────────────────────────────────────────
   const fetchAll = useCallback(async () => {
@@ -1627,9 +2026,11 @@ export default function V58Monitor() {
 
   useEffect(() => {
     fetchAll();
+    fetchManualTrades();
     const id = setInterval(fetchAll, 15000); // refresh every 15s
-    return () => clearInterval(id);
-  }, [fetchAll]);
+    const id2 = setInterval(fetchManualTrades, 30000); // refresh trades every 30s
+    return () => { clearInterval(id); clearInterval(id2); };
+  }, [fetchAll, fetchManualTrades]);
 
   // ── Live WebSocket ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1822,6 +2223,60 @@ export default function V58Monitor() {
                 windowTs={latestWindow?.window_ts}
               />
             </div>
+          </div>
+        </section>
+
+        {/* § TRADE BUTTONS */}
+        <section>
+          <SectionHeader>MANUAL TRADING — place a $4 bet</SectionHeader>
+          <div
+            className="v58-grid-2"
+            style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}
+          >
+            {/* Trade buttons */}
+            <div style={{
+              background: T.card,
+              border: `1px solid ${T.border}`,
+              borderRadius: 12,
+              padding: '20px',
+            }}>
+              <TradeButtons
+                latestWindow={latestWindow}
+                onTradeSuccess={fetchManualTrades}
+              />
+            </div>
+
+            {/* Current countdown (duplicate for trade context) */}
+            <div style={{
+              background: T.card,
+              border: `1px solid ${T.border}`,
+              borderRadius: 12,
+              padding: '20px',
+              display: 'flex',
+              flexDirection: 'column',
+            }}>
+              <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 14 }}>
+                § WINDOW TIMING
+              </div>
+              <CountdownTimer windowTs={latestWindow?.window_ts} />
+            </div>
+          </div>
+        </section>
+
+        {/* § MY TRADES */}
+        <section>
+          <SectionHeader>MY TRADES — manual paper & live bets</SectionHeader>
+          <div style={{
+            background: T.card,
+            border: `1px solid ${T.border}`,
+            borderRadius: 12,
+            padding: '20px',
+          }}>
+            <MyTradesPanel
+              trades={manualTrades}
+              totalPnl={manualTotalPnl}
+              loading={manualLoading}
+            />
           </div>
         </section>
 
