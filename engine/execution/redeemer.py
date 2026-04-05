@@ -153,10 +153,14 @@ class PositionRedeemer:
                 self._log.warning("redeemer.no_builder_key", hint="Set BUILDER_KEY env var")
                 return
 
-            config = BuilderConfig(
-                api_key=self._builder_key,
+            from py_builder_signing_sdk.sdk_types import BuilderApiKeyCreds
+            creds = BuilderApiKeyCreds(
+                key=self._builder_key,
                 secret=self._builder_secret,
                 passphrase=self._builder_passphrase,
+            )
+            config = BuilderConfig(
+                local_builder_creds=creds,
             )
             self._relay_client = RelayClient(
                 relayer_url="https://relayer-v2.polymarket.com",
