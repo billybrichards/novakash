@@ -1264,7 +1264,7 @@ class Orchestrator:
                             loss_streak=_streak_l,
                         )
                         
-                        # NEW: Dual-AI outcome analysis (non-blocking, fully isolated)
+                        # Dual-AI outcome analysis with full window context (non-blocking)
                         if order.outcome in ("WIN", "LOSS") and self._alerter:
                             try:
                                 _oid = order.order_id[:20]
@@ -1273,11 +1273,26 @@ class Orchestrator:
                                 _ep = float(order.price or 0.50)
                                 _oc = order.outcome
                                 _pnl = order.pnl_usd or 0
-                                async def _send_outcome_ai(_wid=_wid, _dir=_dir, _ep=_ep, _oc=_oc, _pnl=_pnl, _oid=_oid):
+                                _wd = {
+                                    "vpin": _vpin,
+                                    "delta_pct": _delta,
+                                    "regime": meta.get("regime"),
+                                    "open_price": _open_p,
+                                    "close_price": _close_p,
+                                    "timesfm_direction": meta.get("timesfm_direction"),
+                                    "timesfm_confidence": meta.get("timesfm_confidence", 0),
+                                    "twap_direction": meta.get("twap_direction"),
+                                    "twap_agreement": meta.get("twap_agreement_score"),
+                                    "gamma_up": meta.get("gamma_up_price"),
+                                    "gamma_down": meta.get("gamma_down_price"),
+                                    "cg_data": meta.get("cg_modifier_reason", ""),
+                                }
+                                async def _send_outcome_ai(_wid=_wid, _dir=_dir, _ep=_ep, _oc=_oc, _pnl=_pnl, _oid=_oid, _wd=_wd):
                                     try:
                                         result = await self._alerter.send_outcome_with_analysis(
                                             window_id=_wid, decision=_dir,
                                             entry_price=_ep, outcome=_oc, pnl_usd=_pnl,
+                                            window_data=_wd,
                                         )
                                         log.debug("outcome_ai.sent", order_id=_oid, result_type=type(result).__name__)
                                     except Exception as exc:
