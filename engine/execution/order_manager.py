@@ -437,7 +437,7 @@ class OrderManager:
             self._log.debug("polymarket_resolution.failed", error=str(exc))
             return None
 
-    def _determine_paper_outcome(
+    async def _determine_paper_outcome(
         self, order: Order, current_btc_price: float
     ) -> tuple[str, float]:
         """Determine WIN/LOSS and payout for an expired paper order (FALLBACK only).
@@ -484,17 +484,19 @@ class OrderManager:
                 return outcome, payout
 
             # Did BTC go up or down from window open to close?
-            # v7.1: Use actual window close from DB if available (not live price)
+            # v7.1: Use window close from window_snapshots if available
             actual_close = current_btc_price  # default to live
             window_ts = order.metadata.get("window_ts")
-            if self._db and window_ts:
+            if self._db and window_ts and hasattr(self._db, '_pool') and self._db._pool:
                 try:
-                    close_from_db = await self._db.get_window_close(window_ts, "BTC", "5m")
-                    if close_from_db and close_from_db > 0:
-                        actual_close = close_from_db
-                        self._log.debug("resolution.using_db_close", window_ts=window_ts, close=actual_close)
+                    import asyncio
+                    close_from_db = asyncio.get_event_loop().run_until_complete(
+                        self._db.get_window_close(window_ts, "BTC", "5m")
+                    ) if not asyncio.get_event_loop().is_running() else 0.0
                 except Exception:
-                    pass  # Fall back to live price
+                    close_from_db = 0.0
+                if close_from_db and close_from_db > 0:
+                    actual_close = close_from_db
             
             btc_went_up = actual_close >= window_open
 
