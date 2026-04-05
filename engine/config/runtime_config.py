@@ -19,8 +19,20 @@ import json
 import os
 from dataclasses import dataclass, field
 from typing import Any, Optional
+from pathlib import Path
 
 import structlog
+
+# Load .env into os.environ here (at module import time, before RuntimeConfig() singleton)
+# pydantic-settings loads .env into settings.* but NOT os.environ.
+# runtime_config uses os.environ.get() directly — so we must load it ourselves.
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _env_path = Path(__file__).parent.parent / ".env"
+    if _env_path.exists():
+        _load_dotenv(dotenv_path=str(_env_path), override=False)  # override=False: don't clobber existing env
+except ImportError:
+    pass
 
 log = structlog.get_logger(__name__)
 
