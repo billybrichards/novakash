@@ -607,17 +607,27 @@ async def get_outcomes(
     try:
         q = text("""
             SELECT
-                window_ts, asset, timeframe,
-                open_price, close_price, delta_pct,
-                direction, trade_placed, skip_reason,
-                timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
-                twap_direction, twap_agreement_score, twap_gamma_gate,
-                gamma_up_price, gamma_down_price, engine_version,
-                vpin, regime, confidence
-            FROM window_snapshots
-            WHERE (CAST(:asset AS VARCHAR) IS NULL OR asset = :asset)
-              AND close_price IS NOT NULL
-            ORDER BY window_ts DESC
+                ws.window_ts, ws.asset, ws.timeframe,
+                ws.open_price, ws.close_price, ws.delta_pct,
+                ws.direction, ws.trade_placed, ws.skip_reason,
+                ws.timesfm_direction, ws.timesfm_confidence, ws.timesfm_predicted_close, ws.timesfm_agreement,
+                ws.twap_direction, ws.twap_agreement_score, ws.twap_gamma_gate,
+                COALESCE(ws.gamma_up_price, ms.up_price) as gamma_up_price,
+                COALESCE(ws.gamma_down_price, ms.down_price) as gamma_down_price,
+                ws.engine_version,
+                ws.vpin, ws.regime, ws.confidence
+            FROM window_snapshots ws
+            LEFT JOIN LATERAL (
+                SELECT up_price, down_price
+                FROM market_snapshots
+                WHERE window_ts = ws.window_ts AND asset = ws.asset AND timeframe = ws.timeframe
+                  AND up_price > 0.01 AND up_price < 0.99
+                ORDER BY ABS(seconds_remaining - 60) NULLS LAST
+                LIMIT 1
+            ) ms ON true
+            WHERE (CAST(:asset AS VARCHAR) IS NULL OR ws.asset = :asset)
+              AND ws.close_price IS NOT NULL
+            ORDER BY ws.window_ts DESC
             LIMIT :limit
         """)
         result = await session.execute(q, {"limit": limit, "asset": asset})

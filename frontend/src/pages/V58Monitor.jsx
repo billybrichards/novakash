@@ -1,5 +1,5 @@
 /**
- * V58Monitor.jsx — v5.8 BTC Trading Strategy Monitor
+ * V58Monitor.jsx — v7 BTC Trading Strategy Monitor
  *
  * Panels:
  *  1. Live BTC price chart (lightweight-charts candlestick)
