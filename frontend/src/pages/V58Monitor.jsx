@@ -269,10 +269,11 @@ function WindowTimeline({ windows, selectedTs, onSelect }) {
             actualDirection = w.close_price > w.open_price ? 'UP' : 'DOWN';
           }
 
-          // Was prediction correct?
-          const predCorrect = prediction && actualDirection
-            ? prediction === actualDirection
-            : null;
+          // Was prediction correct? Use v71_correct (actual trade outcome) if available,
+          // otherwise fall back to directional match
+          const predCorrect = w.v71_correct !== null && w.v71_correct !== undefined
+            ? w.v71_correct
+            : (prediction && actualDirection ? prediction === actualDirection : null);
 
           // Legacy decision (what actually happened)
           const tradeLabel = w.trade_placed ? 'TRADE' : 'SKIP';
@@ -319,15 +320,16 @@ function WindowTimeline({ windows, selectedTs, onSelect }) {
                 )}
               </div>
 
-              {/* Outcome: what actually happened */}
+              {/* Outcome: what actually happened — WIN or LOSS */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
                 <span style={{ fontSize: 7, color: T.label2 }}>OUT</span>
-                {actualDirection ? (
-                  <span style={{
-                    fontSize: 13, fontWeight: 700,
-                    color: predCorrect ? T.profit : T.loss,
-                  }}>
-                    {actualDirection === 'UP' ? '▲' : '▼'}{predCorrect ? '✓' : '✗'}
+                {w.v71_correct === true ? (
+                  <span style={{ fontSize: 11, fontWeight: 800, color: T.profit }}>WIN ✓</span>
+                ) : w.v71_correct === false ? (
+                  <span style={{ fontSize: 11, fontWeight: 800, color: T.loss }}>LOSS ✗</span>
+                ) : actualDirection ? (
+                  <span style={{ fontSize: 12, fontWeight: 700, color: T.label2 }}>
+                    {actualDirection === 'UP' ? '▲' : '▼'}
                   </span>
                 ) : (
                   <span style={{ fontSize: 9, color: T.label }}>…</span>
