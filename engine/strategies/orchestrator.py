@@ -1425,6 +1425,14 @@ class Orchestrator:
                                 paper_mode=want_paper,
                             )
                             
+                            # Connect CLOB client if switching TO live
+                            if not want_paper:
+                                try:
+                                    await self._poly_client.connect()
+                                    log.info("mode_switch.clob_connected")
+                                except Exception as exc:
+                                    log.error("mode_switch.clob_connect_failed", error=str(exc)[:100])
+                            
                             # Start redeemer if switching TO live
                             if not want_paper and self._redeemer:
                                 try:
