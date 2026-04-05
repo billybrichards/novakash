@@ -837,7 +837,7 @@ class Orchestrator:
                 if _remaining <= 182 and _remaining >= 160 and "T-180" not in self._countdown_sent[_wkey]:
                     self._countdown_sent[_wkey].add("T-180")
                     _vpin = self._five_min_strategy._vpin.current_vpin if self._five_min_strategy._vpin else 0.0
-                    _btc_price = float(self._aggregator.btc_price) if self._aggregator.btc_price else 0.0
+                    _btc_price = float(self._aggregator._state.btc_price) if self._aggregator._state.btc_price else 0.0
                     _delta = (_btc_price - window.open_price) / window.open_price * 100 if window.open_price and _btc_price else 0.0
                     
                     # Fetch TimesFM early
@@ -869,7 +869,7 @@ class Orchestrator:
                 if _remaining <= 122 and _remaining >= 100 and "T-120" not in self._countdown_sent[_wkey]:
                     self._countdown_sent[_wkey].add("T-120")
                     _vpin = self._five_min_strategy._vpin.current_vpin if self._five_min_strategy._vpin else 0.0
-                    _btc_price = float(self._aggregator.btc_price) if self._aggregator.btc_price else 0.0
+                    _btc_price = float(self._aggregator._state.btc_price) if self._aggregator._state.btc_price else 0.0
                     _delta = (_btc_price - window.open_price) / window.open_price * 100 if window.open_price and _btc_price else 0.0
                     
                     # Quick TWAP check
@@ -901,7 +901,7 @@ class Orchestrator:
                 if _remaining <= 92 and _remaining >= 70 and "T-90" not in self._countdown_sent[_wkey]:
                     self._countdown_sent[_wkey].add("T-90")
                     _vpin = self._five_min_strategy._vpin.current_vpin if self._five_min_strategy._vpin else 0.0
-                    _btc_price = float(self._aggregator.btc_price) if self._aggregator.btc_price else 0.0
+                    _btc_price = float(self._aggregator._state.btc_price) if self._aggregator._state.btc_price else 0.0
                     _delta = (_btc_price - window.open_price) / window.open_price * 100 if window.open_price and _btc_price else 0.0
                     _implied_dir = "UP" if _delta > 0 else "DOWN"
                     
