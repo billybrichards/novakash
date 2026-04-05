@@ -206,12 +206,22 @@ class FiveMinVPINStrategy(BaseStrategy):
 
     async def _evaluate_window(self, window: WindowInfo, state: MarketState) -> None:
         """
-        Legacy: evaluate a window from the T-offset signal.
-        Now just registers the window for continuous monitoring.
+        Evaluate a window at the T-offset signal.
+
+        Multi-offset support (v5.9): fires at each configured FIVE_MIN_EVAL_OFFSETS
+        (e.g. T-90s, then T-60s). Deduplicates: won't trade the same window twice,
+        but will still record the window snapshot and send alerts for all offsets.
         """
         window_key = f"{window.asset}-{window.window_ts}"
+        eval_offset = getattr(window, "eval_offset", None)
+
+        # Already TRADED this window — skip evaluation entirely
         if self._last_executed_window == window_key:
-            self._log.debug("window.already_executed", window=window_key)
+            self._log.debug(
+                "window.already_traded",
+                window=window_key,
+                eval_offset=eval_offset,
+            )
             return
         
         # Get current price for this asset

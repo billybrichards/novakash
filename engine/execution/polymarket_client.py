@@ -347,44 +347,41 @@ class PolymarketClient:
         except (ValueError, IndexError):
             pass  # Fallback to no expiry (GTC)
 
-        # v5.5b: FOK (Fill-or-Kill) for instant fills at market price
-        # Use create_market_order which handles amount precision automatically
-        order_type = OrderType.FOK
+        # ── Pure GTD limit order at Gamma price — DO NOT use FOK/market orders ──
+        #
+        # History:
+        #   v5.5b attempted FOK with GTD fallback — wrong, FOK hits market ask
+        #   Apr 2 afternoon: FAK/market orders → avg entry 88¢, -$258 loss
+        #   Apr 2 morning:   GTD limit orders  → avg entry 42¢, +$218 profit
+        #   Apr 5 audit:     Confirmed FOK still firing first → FIXED here
+        #
+        # Why GTD-only:
+        #   FOK = taker = hits best ask on Polymarket's thin book = 85-98¢ fills
+        #   GTD limit = maker = posts at our Gamma price (38-55¢)
+        #     → market maker fills us at Gamma price OR order expires (free)
+        #     → ~40-60% fill rate, but every fill has good risk/reward
+        #     → at 55¢ entry, correct prediction pays (1-0.55)*stake*0.98 = +$1.75 on $4 stake
+        #     → at 95¢ entry, correct prediction pays only $0.18 on $4 stake — not worth it
+        #
+        # DO NOT revert this to FOK. The data shows GTD is correct.
 
-        from py_clob_client.clob_types import MarketOrderArgs
-        market_order_args = MarketOrderArgs(
-            token_id=token_id,
-            amount=round(stake_usd, 2),  # USD amount to spend
-            price=float(price),
-            side=BUY,
-            order_type=OrderType.FOK,
-        )
-
-        # Also prepare regular args for GTD fallback
         order_args = OrderArgs(
             token_id=token_id,
-            price=float(price),
+            price=float(price),      # Gamma API price — our limit
             size=size,
             side=BUY,
-            expiration=expiration,
+            expiration=expiration,   # Auto-expires when window closes (+2min buffer)
         )
 
+        _order_type_final = OrderType.GTD if expiration > 0 else OrderType.GTC
+
         def _sign_and_submit():
-            try:
-                # Try FOK market order first
-                signed_order = client.create_market_order(market_order_args)
-                result = client.post_order(signed_order, OrderType.FOK)
-                return result
-            except Exception as fok_exc:
-                fok_err = str(fok_exc)
-                self._log.info("place_order.fok_failed_trying_gtd", error=fok_err[:150])
-                # Fall back to GTD limit
-                signed_order_gtd = client.create_order(order_args)
-                return client.post_order(signed_order_gtd, OrderType.GTD if expiration > 0 else OrderType.GTC)
+            signed_order = client.create_order(order_args)
+            return client.post_order(signed_order, _order_type_final)
 
         self._log.info(
             "place_order.order_type",
-            order_type="FOK",
+            order_type="GTD" if expiration > 0 else "GTC",
             price=str(price),
             size=f"{size:.2f}",
             seconds_to_expiry=expiration - int(time.time()) if expiration > 0 else "none",

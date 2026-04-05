@@ -1047,14 +1047,19 @@ class Orchestrator:
                     for k in _oldest:
                         del self._countdown_sent[k]
 
-            # Evaluate at CLOSING state (T-{FIVE_MIN_ENTRY_OFFSET}s before close)
-            # Now set to T-60s for real prediction testing (was T-10s)
+            # ── Multi-offset evaluation (v5.9) ───────────────────────────
+            # CLOSING fires at each configured T-offset (e.g. T-90, T-60).
+            # Strategy deduplicates: won't trade the same window twice.
             if state_value == "CLOSING":
-                # G1 & G3: Queue window for staggered execution (v5.7c)
+                eval_offset = getattr(window, "eval_offset", None)
+                window_key = f"{window.asset}-{window.window_ts}"
+                log.info(
+                    "five_min.closing_signal",
+                    window_key=window_key,
+                    eval_offset=eval_offset,
+                )
+                # G1 & G3: Queue window for staggered execution
                 await self._execution_queue.put((window, self._aggregator))
-
-                # v5.8: TimesFM is checked INSIDE v5.7c's _evaluate_signal (agreement check)
-                # No standalone TimesFM evaluation needed here
             elif state_value != "ACTIVE":
                 log.info("five_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
             if len(self._five_min_strategy._recent_windows) > 20:

@@ -49,6 +49,16 @@ ARB_MAX_EXECUTION_MS: int = _env_int("ARB_MAX_EXECUTION_MS", 500)
 FIVE_MIN_ENABLED: bool = os.environ.get("FIVE_MIN_ENABLED", "false").lower() == "true"
 FIVE_MIN_ASSETS: list[str] = os.environ.get("FIVE_MIN_ASSETS", "BTC").split(",")
 FIVE_MIN_MODE: str = os.environ.get("FIVE_MIN_MODE", "safe")
-FIVE_MIN_ENTRY_OFFSET: int = _env_int("FIVE_MIN_ENTRY_OFFSET", 60)  # seconds before close (was 10, now 60 for real prediction testing)
+FIVE_MIN_ENTRY_OFFSET: int = _env_int("FIVE_MIN_ENTRY_OFFSET", 60)  # seconds before close (legacy — use FIVE_MIN_EVAL_OFFSETS for multi-window)
+
+# Multi-offset evaluation: comma-separated list of T-minus values
+# Default: "60" → only T-60s (current behaviour)
+# Example: "90,60" → evaluate at T-90s first, then T-60s (skip if already traded)
+# Example: "120,90,60" → evaluate at T-120s, T-90s, T-60s
+_eval_offsets_raw = os.environ.get("FIVE_MIN_EVAL_OFFSETS", str(FIVE_MIN_ENTRY_OFFSET))
+FIVE_MIN_EVAL_OFFSETS: list[int] = sorted(
+    [int(x.strip()) for x in _eval_offsets_raw.split(",") if x.strip().isdigit()],
+    reverse=True,  # largest offset first (earliest in window)
+)
 FIVE_MIN_MIN_CONFIDENCE: float = _env_float("FIVE_MIN_MIN_CONFIDENCE", 0.30)
 FIVE_MIN_MIN_DELTA_PCT: float = _env_float("FIVE_MIN_MIN_DELTA_PCT", 0.001)  # skip below this (matches backtest)

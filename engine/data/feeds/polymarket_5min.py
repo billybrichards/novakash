@@ -272,14 +272,30 @@ class Polymarket5MinFeed:
                     await self._emit_window_signal(window)
                     break  # Only one per tick
             
-            # Check for T-offset signal (re-emit with updated prices)
-            if remaining <= self._signal_offset and remaining > 0:
-                window.state = WindowState.CLOSING
-                await self._emit_state_change(window.asset, window.window_ts, window.state)
-                await self._emit_window_signal(window)
-            
+            # ── Multi-offset evaluation signals ──────────────────────────
+            # Emit CLOSING signal at each configured eval offset (T-90, T-60, etc.)
+            # Allows strategy to evaluate (and optionally trade) at multiple points.
+            # Each offset fires exactly once per window.
+            try:
+                from config.constants import FIVE_MIN_EVAL_OFFSETS as _eval_offsets
+            except ImportError:
+                _eval_offsets = [self._signal_offset]
+
+            if not hasattr(window, '_eval_offsets_emitted'):
+                window._eval_offsets_emitted = set()
+
+            for _offset in _eval_offsets:
+                if remaining <= _offset and _offset not in window._eval_offsets_emitted:
+                    window._eval_offsets_emitted.add(_offset)
+                    # Tag the window with which offset fired so strategy knows
+                    window.eval_offset = _offset
+                    window.state = WindowState.CLOSING
+                    await self._emit_state_change(window.asset, window.window_ts, window.state)
+                    await self._emit_window_signal(window)
+                    break  # One emission per tick — next offset fires next tick
+
             # Window expired
-            elif remaining <= 0:
+            if remaining <= 0:
                 window.state = WindowState.RESOLVED
                 await self._emit_state_change(window.asset, window.window_ts, window.state)
 
