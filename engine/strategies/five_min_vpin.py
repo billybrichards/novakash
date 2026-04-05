@@ -830,22 +830,24 @@ class FiveMinVPINStrategy(BaseStrategy):
             return None
 
         # ── v5.8: TimesFM Agreement Check ─────────────────────────────────
-        # If TimesFM is available, check if it agrees with our direction.
+        # Uses cached forecast from TimesFMClient (refreshed every 8s).
+        # This is a sync check — no await needed (cache is pre-populated).
         # Agreement → boost confidence (+0.15)
         # Disagreement → penalty (-0.10), may cause skip
         timesfm_agreement = None  # None = no forecast available
         if self._timesfm_client and window.asset == "BTC":
             try:
-                tfm_forecast = await self._timesfm_client.get_forecast(open_price=open_price)
-                if not tfm_forecast.error and tfm_forecast.direction:
-                    if tfm_forecast.direction == direction:
+                # Use the cached forecast (populated by the async client's last call)
+                cached = self._timesfm_client._cached
+                if cached and not cached.error and cached.direction:
+                    if cached.direction == direction:
                         timesfm_agreement = True
                         confidence += 0.15  # Agreement boost
                         self._log.info(
                             "evaluate.timesfm_agrees",
                             v57c_dir=direction,
-                            tfm_dir=tfm_forecast.direction,
-                            tfm_conf=f"{tfm_forecast.confidence:.2f}",
+                            tfm_dir=cached.direction,
+                            tfm_conf=f"{cached.confidence:.2f}",
                             new_confidence=f"{confidence:.2f}",
                             boost="+0.15",
                         )
@@ -855,8 +857,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                         self._log.info(
                             "evaluate.timesfm_disagrees",
                             v57c_dir=direction,
-                            tfm_dir=tfm_forecast.direction,
-                            tfm_conf=f"{tfm_forecast.confidence:.2f}",
+                            tfm_dir=cached.direction,
+                            tfm_conf=f"{cached.confidence:.2f}",
                             new_confidence=f"{confidence:.2f}",
                             penalty="-0.10",
                         )
