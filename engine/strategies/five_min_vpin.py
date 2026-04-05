@@ -781,10 +781,10 @@ class FiveMinVPINStrategy(BaseStrategy):
             _veto_reasons = []
 
             # 1. Smart money opposing: top traders >52% on the other side (was 55%)
-            if direction == "YES" and cg.top_position_short_pct > 52:
+            if direction == "UP" and cg.top_position_short_pct > 52:
                 _veto_count += 1
                 _veto_reasons.append(f"smart_money_short={cg.top_position_short_pct:.0f}%")
-            elif direction == "NO" and cg.top_position_long_pct > 52:
+            elif direction == "DOWN" and cg.top_position_long_pct > 52:
                 _veto_count += 1
                 _veto_reasons.append(f"smart_money_long={cg.top_position_long_pct:.0f}%")
 
@@ -793,20 +793,20 @@ class FiveMinVPINStrategy(BaseStrategy):
             # Strong POSITIVE funding = longs paying big premium = bullish conviction against DOWN
             # Strong NEGATIVE funding = not relevant for DOWN veto (shorts paying = bearish = confirms DOWN)
             _funding_annual = cg.funding_rate * 3 * 365  # 8h rate → annualised
-            if direction == "YES" and cg.funding_rate > 0.0005:    # longs paying → bearish → against UP
+            if direction == "UP" and cg.funding_rate > 0.0005:    # longs paying → bearish → against UP
                 _veto_count += 1
                 _veto_reasons.append(f"funding_against_up={_funding_annual:.0f}%/yr")
-            elif direction == "NO" and _funding_annual > 1.0:       # >100%/yr longs paying → bullish → against DOWN
+            elif direction == "DOWN" and _funding_annual > 1.0:       # >100%/yr longs paying → bullish → against DOWN
                 _veto_count += 1
                 _veto_reasons.append(f"funding_bullish_vs_down={_funding_annual:.0f}%/yr")
-            elif direction == "NO" and cg.funding_rate < -0.0005:  # shorts paying heavily → bearish → confirms DOWN (no veto)
+            elif direction == "DOWN" and cg.funding_rate < -0.0005:  # shorts paying heavily → bearish → confirms DOWN (no veto)
                 pass  # This confirms our DOWN bet, not opposes it
 
             # 3. Crowd overleveraged in opposing direction (unchanged, >60%)
-            if direction == "YES" and cg.long_pct > 60:
+            if direction == "UP" and cg.long_pct > 60:
                 _veto_count += 1
                 _veto_reasons.append(f"crowd_overleveraged_long={cg.long_pct:.0f}%")
-            elif direction == "NO" and cg.short_pct > 60:
+            elif direction == "DOWN" and cg.short_pct > 60:
                 _veto_count += 1
                 _veto_reasons.append(f"crowd_overleveraged_short={cg.short_pct:.0f}%")
 
@@ -815,10 +815,10 @@ class FiveMinVPINStrategy(BaseStrategy):
             if _taker_total > 0:
                 _sell_pct = cg.taker_sell_volume_1m / _taker_total * 100
                 _buy_pct = 100 - _sell_pct
-                if direction == "YES" and _sell_pct > 60:
+                if direction == "UP" and _sell_pct > 60:
                     _veto_count += 1
                     _veto_reasons.append(f"taker_selling={_sell_pct:.0f}%")
-                elif direction == "NO" and _buy_pct > 60:
+                elif direction == "DOWN" and _buy_pct > 60:
                     _veto_count += 1
                     _veto_reasons.append(f"taker_buying={_buy_pct:.0f}%")
 
@@ -826,15 +826,15 @@ class FiveMinVPINStrategy(BaseStrategy):
             #    but takers say "they're going the other way")
             if _taker_total > 0:
                 if current_vpin >= 0.65:
-                    if direction == "YES" and _sell_pct > 55:
+                    if direction == "UP" and _sell_pct > 55:
                         _veto_count += 1
                         _veto_reasons.append(f"cascade_taker_divergence: vpin={current_vpin:.2f} but sell={_sell_pct:.0f}%")
-                    elif direction == "NO" and _buy_pct > 55:
+                    elif direction == "DOWN" and _buy_pct > 55:
                         _veto_count += 1
                         _veto_reasons.append(f"cascade_taker_divergence: vpin={current_vpin:.2f} but buy={_buy_pct:.0f}%")
 
-            # VETO: 2+ signals opposing = block (was 3+ in v5.4d)
-            if _veto_count >= 2:
+            # VETO: 3+ signals opposing = block (restored from v5.4d)
+            if _veto_count >= 3:
                 self._log.warning(
                     "evaluate.cg_veto",
                     direction=direction,

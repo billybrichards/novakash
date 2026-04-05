@@ -484,7 +484,19 @@ class OrderManager:
                 return outcome, payout
 
             # Did BTC go up or down from window open to close?
-            btc_went_up = current_btc_price >= window_open
+            # v7.1: Use actual window close from DB if available (not live price)
+            actual_close = current_btc_price  # default to live
+            window_ts = order.metadata.get("window_ts")
+            if self._db and window_ts:
+                try:
+                    close_from_db = await self._db.get_window_close(window_ts, "BTC", "5m")
+                    if close_from_db and close_from_db > 0:
+                        actual_close = close_from_db
+                        self._log.debug("resolution.using_db_close", window_ts=window_ts, close=actual_close)
+                except Exception:
+                    pass  # Fall back to live price
+            
+            btc_went_up = actual_close >= window_open
 
             # Did our bet match?
             if order.direction == "YES":

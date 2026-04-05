@@ -759,3 +759,17 @@ class DBClient:
             log.info("db.manual_trade_updated", trade_id=trade_id, status=status)
         except Exception as exc:
             log.error("db.manual_trade_update_failed", error=str(exc))
+
+    async def get_window_close(self, window_ts: int, asset: str, timeframe: str) -> float:
+        """Get the close price for a resolved window from window_snapshots."""
+        if not self._pool:
+            return 0.0
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchval(
+                    "SELECT close_price FROM window_snapshots WHERE window_ts = $1 AND asset = $2 AND timeframe = $3",
+                    window_ts, asset, timeframe
+                )
+                return float(row) if row else 0.0
+        except Exception:
+            return 0.0
