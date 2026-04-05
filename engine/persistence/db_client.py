@@ -73,14 +73,16 @@ class DBClient:
             INSERT INTO trades (
                 order_id, strategy, venue, market_slug, direction,
                 entry_price, stake_usd, fee_usd, status, outcome,
-                payout_usd, pnl_usd, created_at, resolved_at, metadata, mode
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                payout_usd, pnl_usd, created_at, resolved_at, metadata, mode,
+                is_live
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
             ON CONFLICT (order_id) DO UPDATE SET
                 status      = EXCLUDED.status,
                 outcome     = EXCLUDED.outcome,
                 payout_usd  = EXCLUDED.payout_usd,
                 pnl_usd     = EXCLUDED.pnl_usd,
-                resolved_at = EXCLUDED.resolved_at
+                resolved_at = EXCLUDED.resolved_at,
+                is_live     = EXCLUDED.is_live
         """
 
         try:
@@ -116,6 +118,7 @@ class DBClient:
                     resolved_dt,
                     json.dumps(order.metadata),
                     "live" if order.order_id.startswith("0x") else "paper",
+                    not order.order_id.startswith("5min-") and not order.order_id.startswith("manual-paper"),
                 )
             log.debug("db.trade_written", order_id=order.order_id)
         except Exception as exc:
@@ -586,7 +589,8 @@ class DBClient:
                         market_best_bid, market_best_ask,
                         market_spread, market_mid_price,
                         market_volume, market_liquidity,
-                        v71_would_trade, v71_skip_reason, v71_regime
+                        v71_would_trade, v71_skip_reason, v71_regime,
+                        is_live
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,
                         $9,$10,$11,$12,$13,$14,$15,$16,$17,
@@ -596,7 +600,8 @@ class DBClient:
                         $40,$41,$42,$43,$44,
                         $45,$46,$47,$48,$49,$50,$51,$52,
                         $53,$54,$55,$56,$57,$58,
-                        $59,$60,$61
+                        $59,$60,$61,
+                        $62
                     )
                     ON CONFLICT (window_ts, asset, timeframe) DO NOTHING
                     """,
@@ -664,6 +669,7 @@ class DBClient:
                     snapshot.get("v71_would_trade"),
                     snapshot.get("v71_skip_reason"),
                     snapshot.get("v71_regime"),
+                    snapshot.get("is_live", False),
                 )
             log.debug(
                 "db.window_snapshot_written",

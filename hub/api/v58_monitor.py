@@ -1965,3 +1965,111 @@ async def get_strategy_analysis(
         }
     except Exception as exc:
         return {"error": str(exc)}
+
+
+# ─── Live Wallet & Position Status ────────────────────────────────────────────
+
+@router.get("/v58/wallet-status")
+async def get_wallet_status(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """Real-time Polymarket wallet status: balance, positions, pending redemptions."""
+    try:
+        # 1. Current system state (balance, mode)
+        state_q = text("""
+            SELECT current_balance, peak_balance, current_drawdown_pct,
+                   paper_enabled, live_enabled, engine_status, last_heartbeat,
+                   config::json->>'wallet_balance_usdc' as wallet_usdc,
+                   config::json->>'daily_pnl' as daily_pnl,
+                   config::json->>'paper_mode' as paper_mode
+            FROM system_state WHERE id = 1
+        """)
+        state = (await session.execute(state_q)).mappings().first()
+        
+        # 2. Live trades summary
+        live_q = text("""
+            SELECT 
+                COUNT(*) as total,
+                COUNT(*) FILTER (WHERE outcome = 'WIN') as wins,
+                COUNT(*) FILTER (WHERE outcome = 'LOSS') as losses,
+                COUNT(*) FILTER (WHERE outcome IS NULL) as pending,
+                ROUND(SUM(CASE WHEN outcome IS NOT NULL THEN COALESCE(pnl_usd, 0) ELSE 0 END)::numeric, 2) as realized_pnl,
+                ROUND(SUM(CASE WHEN outcome IS NULL THEN stake_usd ELSE 0 END)::numeric, 2) as open_exposure,
+                COUNT(*) FILTER (WHERE is_live = true) as live_count,
+                COUNT(*) FILTER (WHERE is_live = false OR is_live IS NULL) as paper_count,
+                COUNT(*) FILTER (WHERE redeemed = true) as redeemed_count,
+                COUNT(*) FILTER (WHERE outcome IS NOT NULL AND (redeemed = false OR redeemed IS NULL)) as pending_redemption
+            FROM trades WHERE strategy = 'five_min_vpin'
+        """)
+        trades = (await session.execute(live_q)).mappings().first()
+        
+        # 3. Recent trades with live flag
+        recent_q = text("""
+            SELECT 
+                created_at AT TIME ZONE 'UTC' as time,
+                direction, entry_price, outcome, pnl_usd, stake_usd,
+                is_live, redeemed, clob_order_id,
+                metadata::json->>'window_ts' as window_ts,
+                metadata::json->>'asset' as asset
+            FROM trades 
+            WHERE strategy = 'five_min_vpin'
+            ORDER BY created_at DESC LIMIT 20
+        """)
+        recent = (await session.execute(recent_q)).mappings().all()
+        
+        # 4. Today's P&L breakdown
+        today_q = text("""
+            SELECT 
+                CASE WHEN is_live THEN 'live' ELSE 'paper' END as mode,
+                COUNT(*) as trades,
+                COUNT(*) FILTER (WHERE outcome = 'WIN') as wins,
+                COUNT(*) FILTER (WHERE outcome = 'LOSS') as losses,
+                ROUND(SUM(COALESCE(pnl_usd, 0))::numeric, 2) as pnl
+            FROM trades 
+            WHERE strategy = 'five_min_vpin' AND created_at > CURRENT_DATE
+            GROUP BY 1
+        """)
+        today = (await session.execute(today_q)).mappings().all()
+        
+        return {
+            "engine": {
+                "status": state["engine_status"] if state else "unknown",
+                "paper_enabled": state["paper_enabled"] if state else True,
+                "live_enabled": state["live_enabled"] if state else False,
+                "paper_mode": str(state["paper_mode"]).lower() == "true" if state and state["paper_mode"] else True,
+                "balance": float(state["current_balance"] or 0) if state else 0,
+                "peak": float(state["peak_balance"] or 0) if state else 0,
+                "drawdown_pct": float(state["current_drawdown_pct"] or 0) if state else 0,
+                "wallet_usdc": float(state["wallet_usdc"] or 0) if state and state["wallet_usdc"] else None,
+                "daily_pnl": float(state["daily_pnl"] or 0) if state and state["daily_pnl"] else 0,
+                "last_heartbeat": state["last_heartbeat"].isoformat() if state and state["last_heartbeat"] else None,
+            },
+            "trades": {
+                "total": int(trades["total"] or 0),
+                "wins": int(trades["wins"] or 0),
+                "losses": int(trades["losses"] or 0),
+                "pending": int(trades["pending"] or 0),
+                "realized_pnl": float(trades["realized_pnl"] or 0),
+                "open_exposure": float(trades["open_exposure"] or 0),
+                "live_count": int(trades["live_count"] or 0),
+                "paper_count": int(trades["paper_count"] or 0),
+                "pending_redemption": int(trades["pending_redemption"] or 0),
+                "redeemed": int(trades["redeemed_count"] or 0),
+            },
+            "today": [{"mode": r["mode"], "trades": int(r["trades"]), "wins": int(r["wins"]), "losses": int(r["losses"]), "pnl": float(r["pnl"] or 0)} for r in today],
+            "recent": [{
+                "time": str(r["time"]),
+                "direction": r["direction"],
+                "entry_price": float(r["entry_price"]) if r["entry_price"] else None,
+                "outcome": r["outcome"],
+                "pnl": float(r["pnl_usd"]) if r["pnl_usd"] else None,
+                "stake": float(r["stake_usd"]) if r["stake_usd"] else None,
+                "is_live": bool(r["is_live"]) if r["is_live"] is not None else False,
+                "redeemed": bool(r["redeemed"]) if r["redeemed"] is not None else False,
+                "clob_id": r["clob_order_id"],
+                "asset": r["asset"] or "BTC",
+            } for r in recent],
+        }
+    except Exception as exc:
+        return {"error": str(exc)}

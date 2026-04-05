@@ -18,6 +18,7 @@ const NAV_ITEMS = [
   { path: '/v58',             label: 'v7 Monitor', icon: '🎯', highlight: true },
   { path: '/windows',         label: 'Window Results', icon: '📊', highlight: true },
   { path: '/strategy',        label: 'Strategy Analysis', icon: '🧪', highlight: true },
+  { path: '/live',            label: 'Live Trading', icon: '💰', highlight: true },
   { path: '/analysis',        label: 'Analysis',   icon: '📚', highlight: true },
   { path: '/paper',           label: 'Paper',      icon: '📄' },
   { path: '/positions',       label: 'Positions',  icon: '📍' },
