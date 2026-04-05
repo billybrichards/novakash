@@ -138,7 +138,7 @@ async def get_windows(
                     timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
                     gamma_up_price, gamma_down_price, engine_version
                 FROM window_snapshots
-                WHERE asset = :asset
+                WHERE asset = :asset AND timeframe = '5m'
                 ORDER BY window_ts DESC
                 LIMIT :limit
             """)
@@ -154,6 +154,7 @@ async def get_windows(
                     timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
                     gamma_up_price, gamma_down_price, engine_version
                 FROM window_snapshots
+                WHERE timeframe = '5m'
                 ORDER BY window_ts DESC
                 LIMIT :limit
             """)
@@ -282,7 +283,7 @@ async def get_stats(
                 COUNT(*) FILTER (WHERE twap_gamma_gate = 'OK')               AS twap_gate_passed,
                 AVG(twap_agreement_score)                                   AS avg_twap_agreement
             FROM window_snapshots
-            WHERE window_ts >= :since_epoch
+            WHERE window_ts >= :since_epoch AND timeframe = '5m'
         """)
         result = await session.execute(q, {"since_epoch": since_epoch})
         row = result.mappings().first()
@@ -375,6 +376,7 @@ async def get_price_history(
             FROM window_snapshots
             WHERE window_ts >= :since_epoch
               AND open_price IS NOT NULL
+              AND timeframe = '5m'
             ORDER BY window_ts ASC
             LIMIT 500
         """)
@@ -761,6 +763,7 @@ async def get_outcomes(
             ) t ON true
             WHERE (CAST(:asset AS VARCHAR) IS NULL OR ws.asset = :asset)
               AND ws.close_price IS NOT NULL
+              AND ws.timeframe = '5m'
             ORDER BY ws.window_ts DESC
             LIMIT :limit
         """)
@@ -821,6 +824,7 @@ async def get_accuracy(
             WHERE (CAST(:asset AS VARCHAR) IS NULL OR ws.asset = :asset)
               AND ws.close_price IS NOT NULL
               AND ws.open_price IS NOT NULL
+              AND ws.timeframe = '5m'
             ORDER BY ws.window_ts DESC
             LIMIT :limit
         """)
