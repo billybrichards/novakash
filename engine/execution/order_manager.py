@@ -328,9 +328,9 @@ class OrderManager:
                 # FALLBACK: Use Binance BTC price (less accurate)
                 self._log.debug("resolution.fallback_to_binance", order_id=order.order_id[:20] + "...")
                 result = self._determine_paper_outcome(order, price)
-            if result is None:
-                continue  # Not ready to resolve yet (waiting for window close buffer)
-            outcome, payout = result
+                if result is None:
+                    continue  # Not ready to resolve yet (waiting for window close buffer)
+                outcome, payout = result
             
             resolved = await self.resolve_order(order.order_id, outcome, payout)
 
