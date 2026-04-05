@@ -521,10 +521,10 @@ def _calc_v71_retroactive_decision(row: Any) -> dict:
     direction = row.get("direction")  # v5.7c direction as baseline
     timesfm_dir = row.get("timesfm_direction")
     
-    # Constants for v7.1
+    # Constants for v7.1 (delta_pct from DB is already in percentage: -0.05 = -5%)
     VPIN_GATE = 0.45
-    MIN_DELTA_NORMAL = 0.0002  # 0.02%
-    MIN_DELTA_CASCADE = 0.0001  # 0.01%
+    MIN_DELTA_NORMAL = 0.0002  # 0.02% (as decimal in DB: 0.02/100 = 0.0002)
+    MIN_DELTA_CASCADE = 0.0001  # 0.01% (as decimal in DB: 0.01/100 = 0.0001)
     CASCADE_THRESHOLD = 0.65
     INFORMED_THRESHOLD = 0.55
     
