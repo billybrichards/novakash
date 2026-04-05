@@ -111,6 +111,7 @@ class Orchestrator:
             alerts_paper=settings.telegram_alerts_paper,
             alerts_live=settings.telegram_alerts_live,
             paper_mode=settings.paper_mode,
+            anthropic_api_key=settings.anthropic_api_key,  # fix: pass key explicitly (pydantic doesn't inject into os.environ)
         )
 
         # ── Signal Processors ──────────────────────────────────────────────────
