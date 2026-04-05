@@ -1,5 +1,6 @@
 [build]
 dockerfilePath = "data-collector/Dockerfile"
+watchPatterns = ["data-collector/**"]
 
 [build.buildContext]
 context = "data-collector"
