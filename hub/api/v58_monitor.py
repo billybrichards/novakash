@@ -277,7 +277,7 @@ async def get_stats(
                 MAX(confidence)                                             AS max_confidence,
 
                 -- TWAP stats
-                COUNT(*) FILTER (WHERE twap_gamma_gate = TRUE)              AS twap_gate_passed,
+                COUNT(*) FILTER (WHERE twap_gamma_gate = 'OK')               AS twap_gate_passed,
                 AVG(twap_agreement_score)                                   AS avg_twap_agreement
             FROM window_snapshots
             WHERE window_ts >= :since_epoch
@@ -813,6 +813,12 @@ async def get_live_prices(
     Returns UP/DOWN prices, spread, and what-if P&L at $4 stake.
     Called by the frontend every 2s to keep the preview fresh.
     """
+    # Auto-detect current window if not provided
+    if not window_ts:
+        import time as _time
+        now = int(_time.time())
+        window_ts = (now // 300) * 300  # Current 5-min window
+    
     gamma = await _fetch_gamma_prices(window_ts)
     up = gamma.get("up_price")
     down = gamma.get("down_price")
