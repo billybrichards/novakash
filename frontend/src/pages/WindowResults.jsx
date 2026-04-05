@@ -518,6 +518,8 @@ function WindowCard({ outcome, isExpanded, onToggle }) {
     v58_would_trade, v58_correct, v58_pnl,
     v58_skip_reason, tfm_v57c_agree,
     engine_version,
+    v71_would_trade, v71_correct, v71_pnl, v71_regime, v71_skip_reason,
+    poly_outcome,
   } = outcome;
 
   const time = window_ts
@@ -527,19 +529,28 @@ function WindowCard({ outcome, isExpanded, onToggle }) {
       })
     : '—';
 
-  // Card color based on signal correctness (v58 preferred, else v57c)
-  const isCorrect = v58_would_trade ? v58_correct : v57c_correct;
+  // Card color: traded windows get strong WIN/LOSS highlight
   const hasPending = !actual_direction;
+  const tradeOutcome = poly_outcome || (trade_placed && actual_direction ? (
+    direction === actual_direction ? 'WIN' : 'LOSS'
+  ) : null);
 
   let cardBorderColor = T.border;
   let cardBg = T.card;
-  if (!hasPending) {
+  if (trade_placed && tradeOutcome === 'WIN') {
+    cardBorderColor = 'rgba(74,222,128,0.5)';
+    cardBg = 'rgba(74,222,128,0.08)';
+  } else if (trade_placed && tradeOutcome === 'LOSS') {
+    cardBorderColor = 'rgba(248,113,113,0.5)';
+    cardBg = 'rgba(248,113,113,0.08)';
+  } else if (!hasPending) {
+    const isCorrect = v58_would_trade ? v58_correct : v57c_correct;
     if (isCorrect === true) {
-      cardBorderColor = 'rgba(74,222,128,0.25)';
-      cardBg = 'rgba(74,222,128,0.04)';
+      cardBorderColor = 'rgba(74,222,128,0.15)';
+      cardBg = 'rgba(74,222,128,0.02)';
     } else if (isCorrect === false) {
-      cardBorderColor = 'rgba(248,113,113,0.25)';
-      cardBg = 'rgba(248,113,113,0.04)';
+      cardBorderColor = 'rgba(248,113,113,0.15)';
+      cardBg = 'rgba(248,113,113,0.02)';
     }
   }
 
@@ -662,16 +673,63 @@ function WindowCard({ outcome, isExpanded, onToggle }) {
           )}
         </div>
 
+        {/* Trade Outcome Badge (prominent for traded windows) */}
+        {trade_placed && tradeOutcome && (
+          <span style={{
+            padding: '3px 10px',
+            borderRadius: 6,
+            background: tradeOutcome === 'WIN' ? 'rgba(74,222,128,0.2)' : 'rgba(248,113,113,0.2)',
+            color: tradeOutcome === 'WIN' ? '#22c55e' : '#ef4444',
+            fontSize: 11,
+            fontWeight: 800,
+            fontFamily: T.mono,
+            letterSpacing: '0.06em',
+            border: `1px solid ${tradeOutcome === 'WIN' ? 'rgba(74,222,128,0.4)' : 'rgba(248,113,113,0.4)'}`,
+          }}>
+            {tradeOutcome === 'WIN' ? '✅ WIN' : '❌ LOSS'}
+          </span>
+        )}
+
         {/* Gate badge */}
         <GateBadge gateStatus={gateStatus} />
 
-        {/* v5.8 P&L */}
+        {/* v7.1 badge */}
+        {v71_would_trade !== null && v71_would_trade !== undefined && (
+          <span
+            title={v71_skip_reason || (v71_regime ? `${v71_regime} regime` : '')}
+            style={{
+              padding: '2px 6px',
+              borderRadius: 4,
+              background: v71_would_trade 
+                ? (v71_correct === true ? 'rgba(168,85,247,0.15)' : v71_correct === false ? 'rgba(248,113,113,0.1)' : 'rgba(168,85,247,0.08)')
+                : 'rgba(255,255,255,0.04)',
+              color: v71_would_trade ? '#a855f7' : T.label,
+              fontSize: 8,
+              fontWeight: 700,
+              fontFamily: T.mono,
+              letterSpacing: '0.04em',
+              cursor: 'help',
+            }}>
+            7.1:{v71_would_trade ? (v71_correct === true ? '✓W' : v71_correct === false ? '✗L' : 'T') : 'S'}
+          </span>
+        )}
+
+        {/* Real P&L (actual trade) or shadow P&L */}
         <div style={{ textAlign: 'right', minWidth: 60 }}>
-          {v58_pnl != null ? (
+          {trade_placed && v58_pnl != null ? (
             <span style={{
-              fontSize: 13, fontWeight: 700,
+              fontSize: 14, fontWeight: 800,
               color: v58_pnl >= 0 ? T.profit : T.loss,
               fontFamily: T.mono,
+            }}>
+              {fmtPnl(v58_pnl)}
+            </span>
+          ) : v58_pnl != null ? (
+            <span style={{
+              fontSize: 12, fontWeight: 600,
+              color: v58_pnl >= 0 ? T.profit : T.loss,
+              fontFamily: T.mono,
+              opacity: 0.6,
             }}>
               {fmtPnl(v58_pnl)}
             </span>
@@ -824,9 +882,11 @@ export default function WindowResults() {
       .filter(p => p != null)
       .reduce((a, b) => a + b, 0);
     
-    // v7.1 Retroactive analysis
+    // v7.1 Retroactive analysis (only count resolved windows)
     const v71eligible = base.filter(o => o.v71_would_trade === true);
-    const v71wins = v71eligible.filter(o => o.v71_correct === true).length;
+    const v71resolved = v71eligible.filter(o => o.v71_correct !== null && o.v71_correct !== undefined);
+    const v71wins = v71resolved.filter(o => o.v71_correct === true).length;
+    const v71losses = v71resolved.filter(o => o.v71_correct === false).length;
     const v71pnl = v71eligible
       .map(o => o.v71_pnl)
       .filter(p => p != null)
@@ -842,7 +902,9 @@ export default function WindowResults() {
       shadowPnl,
       v71count,
       v71eligible: v71eligible.length,
+      v71resolved: v71resolved.length,
       v71wins,
+      v71losses,
       v71pnl,
     };
   }, [filtered]);
@@ -900,11 +962,11 @@ export default function WindowResults() {
             value: stats.shadowPnl !== 0 ? (stats.shadowPnl >= 0 ? `+$${stats.shadowPnl.toFixed(2)}` : `-$${Math.abs(stats.shadowPnl).toFixed(2)}`) : '—',
             color: stats.shadowPnl >= 0 ? 'rgba(74,222,128,0.6)' : T.loss,
           },
-          ...(stats.v71eligible > 0 ? [{
+          ...(stats.v71resolved > 0 ? [{
             label: 'v7.1 Retroactive WR',
-            title: 'How v7.1 config would have performed on historical windows',
-            value: `${Math.round(stats.v71wins / stats.v71eligible * 100)}% (${stats.v71wins}/${stats.v71eligible})`,
-            color: stats.v71wins / stats.v71eligible >= 0.7 ? T.profit : T.loss,
+            title: `v7.1 config on resolved windows (${stats.v71eligible} eligible, ${stats.v71resolved} resolved)`,
+            value: `${Math.round(stats.v71wins / stats.v71resolved * 100)}% (${stats.v71wins}W / ${stats.v71losses}L)`,
+            color: stats.v71wins / stats.v71resolved >= 0.7 ? T.profit : T.loss,
           }] : []),
         ].map(({ label, value, color, title }) => (
           <div key={label} title={title || ''} style={{
