@@ -20,6 +20,7 @@ Signal components:
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from dataclasses import dataclass
@@ -1893,8 +1894,18 @@ class FiveMinVPINStrategy(BaseStrategy):
         max_stake = bankroll * runtime.bet_fraction
         adjusted_stake = min(adjusted_stake, max_stake * 0.95)
         
-        # ABSOLUTE HARD CAP: $32 max bet (v5.8) — never exceed regardless of bankroll
-        ABSOLUTE_MAX_BET = 32.0
+        # ABSOLUTE HARD CAP — configurable via env, default $32 paper / $3 live
+        ABSOLUTE_MAX_BET = float(os.environ.get("ABSOLUTE_MAX_BET", "32.0"))
+        # Also check .env file
+        if ABSOLUTE_MAX_BET == 32.0:
+            from pathlib import Path
+            _env_file = Path(__file__).parent.parent / ".env"
+            if _env_file.exists():
+                with open(_env_file) as f:
+                    for line in f:
+                        if line.startswith("ABSOLUTE_MAX_BET="):
+                            ABSOLUTE_MAX_BET = float(line.split("=", 1)[1].strip())
+                            break
         if adjusted_stake > ABSOLUTE_MAX_BET:
             self._log.info(
                 "stake.absolute_cap",
