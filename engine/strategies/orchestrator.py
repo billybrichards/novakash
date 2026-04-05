@@ -818,6 +818,113 @@ class Orchestrator:
                     _proxy_price = window.open_price * (1 + _implied_delta)
                 self._twap_tracker.add_tick(window.asset, window.window_ts, _proxy_price)
 
+            # ── v5.8 Countdown Alerts (T-180, T-120, T-90) ─────────────
+            if state_value == "ACTIVE" and window.open_price:
+                import time as _time
+                _elapsed = _time.time() - window.window_ts
+                _remaining = window.duration_secs - _elapsed
+                _wkey = f"{window.asset}-{window.window_ts}"
+                
+                # Track which countdown stages we've sent
+                if not hasattr(self, '_countdown_sent'):
+                    self._countdown_sent = {}
+                if _wkey not in self._countdown_sent:
+                    self._countdown_sent[_wkey] = set()
+                
+                # T-180s: TimesFM pre-fetch + initial outlook
+                if 178 <= _remaining <= 182 and "T-180" not in self._countdown_sent[_wkey]:
+                    self._countdown_sent[_wkey].add("T-180")
+                    _vpin = self._five_min_strategy._vpin.current_vpin if self._five_min_strategy._vpin else 0.0
+                    _btc_price = float(self._aggregator.btc_price) if self._aggregator.btc_price else 0.0
+                    _delta = (_btc_price - window.open_price) / window.open_price * 100 if window.open_price and _btc_price else 0.0
+                    
+                    # Fetch TimesFM early
+                    _tsf_dir = None
+                    _tsf_conf = None
+                    if self._five_min_strategy._timesfm:
+                        try:
+                            _tsf = await self._five_min_strategy._timesfm.get_forecast(open_price=window.open_price)
+                            if _tsf and not _tsf.error:
+                                _tsf_dir = _tsf.direction
+                                _tsf_conf = _tsf.confidence
+                        except Exception:
+                            pass
+                    
+                    if self._alerter:
+                        _tf = "15m" if window.duration_secs == 900 else "5m"
+                        _tsf_str = f"{_tsf_dir} ({_tsf_conf:.0%})" if _tsf_dir else "⏳ loading..."
+                        await self._alerter.send_system_alert(
+                            f"⏱️ T-180s | {window.asset} {_tf}\n"
+                            f"📡 TimesFM: {_tsf_str}\n"
+                            f"📊 VPIN: {_vpin:.3f}\n"
+                            f"📈 Delta: {_delta:+.4f}%\n"
+                            f"💰 Gamma: UP ${window.up_price:.2f} / DOWN ${window.down_price:.2f}\n"
+                            f"Open: ${window.open_price:,.2f} | Now: ${_btc_price:,.2f}",
+                            level="info",
+                        )
+                
+                # T-120s: VPIN + TWAP snapshot
+                if 118 <= _remaining <= 122 and "T-120" not in self._countdown_sent[_wkey]:
+                    self._countdown_sent[_wkey].add("T-120")
+                    _vpin = self._five_min_strategy._vpin.current_vpin if self._five_min_strategy._vpin else 0.0
+                    _btc_price = float(self._aggregator.btc_price) if self._aggregator.btc_price else 0.0
+                    _delta = (_btc_price - window.open_price) / window.open_price * 100 if window.open_price and _btc_price else 0.0
+                    
+                    # Quick TWAP check
+                    _twap_dir = "—"
+                    if self._twap_tracker:
+                        _tw = self._twap_tracker.evaluate(
+                            asset=window.asset,
+                            window_ts=window.window_ts,
+                            current_price=_btc_price,
+                            gamma_up_price=window.up_price,
+                            gamma_down_price=window.down_price,
+                        )
+                        if _tw:
+                            _twap_dir = f"{_tw.recommended_direction} (agree {_tw.agree_count}/{_tw.total_count})"
+                    
+                    if self._alerter:
+                        _regime = "CASCADE" if _vpin >= 0.65 else "TRANSITION" if _vpin >= 0.55 else "NORMAL"
+                        _tf = "15m" if window.duration_secs == 900 else "5m"
+                        await self._alerter.send_system_alert(
+                            f"⏱️ T-120s | {window.asset} {_tf}\n"
+                            f"🔬 VPIN: {_vpin:.3f} ({_regime})\n"
+                            f"📊 TWAP: {_twap_dir}\n"
+                            f"📈 Delta: {_delta:+.4f}%\n"
+                            f"💰 Gamma: UP ${window.up_price:.2f} / DOWN ${window.down_price:.2f}",
+                            level="info",
+                        )
+                
+                # T-90s: Agreement preview
+                if 88 <= _remaining <= 92 and "T-90" not in self._countdown_sent[_wkey]:
+                    self._countdown_sent[_wkey].add("T-90")
+                    _vpin = self._five_min_strategy._vpin.current_vpin if self._five_min_strategy._vpin else 0.0
+                    _btc_price = float(self._aggregator.btc_price) if self._aggregator.btc_price else 0.0
+                    _delta = (_btc_price - window.open_price) / window.open_price * 100 if window.open_price and _btc_price else 0.0
+                    _implied_dir = "UP" if _delta > 0 else "DOWN"
+                    
+                    _will_trade = "🟢 LIKELY" if _vpin >= 0.55 else "🔴 UNLIKELY (VPIN too low)"
+                    
+                    if self._alerter:
+                        _tf = "15m" if window.duration_secs == 900 else "5m"
+                        await self._alerter.send_system_alert(
+                            f"⏱️ T-90s | {window.asset} {_tf}\n"
+                            f"🎯 Leaning: {_implied_dir} (δ{_delta:+.4f}%)\n"
+                            f"🔬 VPIN: {_vpin:.3f}\n"
+                            f"📋 Trade outlook: {_will_trade}\n"
+                            f"⏳ Final evaluation in 30s...",
+                            level="info",
+                        )
+                
+                # Clean old countdown tracking
+                _old_keys = [k for k in self._countdown_sent if k != _wkey]
+                for k in _old_keys[-10:]:  # Keep last 10
+                    pass
+                if len(self._countdown_sent) > 20:
+                    _oldest = sorted(self._countdown_sent.keys())[:-10]
+                    for k in _oldest:
+                        del self._countdown_sent[k]
+
             # Evaluate at CLOSING state (T-{FIVE_MIN_ENTRY_OFFSET}s before close)
             # Now set to T-60s for real prediction testing (was T-10s)
             if state_value == "CLOSING":
@@ -826,7 +933,7 @@ class Orchestrator:
 
                 # v5.8: TimesFM is checked INSIDE v5.7c's _evaluate_signal (agreement check)
                 # No standalone TimesFM evaluation needed here
-            else:
+            elif state_value != "ACTIVE":
                 log.info("five_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
             if len(self._five_min_strategy._recent_windows) > 20:
                 self._five_min_strategy._recent_windows = self._five_min_strategy._recent_windows[-20:]
