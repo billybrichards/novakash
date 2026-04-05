@@ -51,6 +51,7 @@ class WindowInfo:
     down_token_id: Optional[str] = None  # "Down" outcome token ID
     up_price: Optional[float] = None   # Current Up token price
     down_price: Optional[float] = None  # Current Down token price
+    price_source: str = "unknown"       # "gamma_api", "synthetic", "stale_gamma"
 
 
 class Polymarket5MinFeed:
@@ -400,6 +401,7 @@ class Polymarket5MinFeed:
                 if best_ask is not None:
                     window.up_price = float(best_ask)
                     window.down_price = round(1.0 - window.up_price, 4)
+                    window.price_source = "gamma_api"
             except (TypeError, ValueError):
                 pass  # prices will stay None; strategy will handle
 
@@ -464,6 +466,7 @@ class Polymarket5MinFeed:
             noise = random.uniform(-0.02, 0.02)
             window.up_price = max(0.01, min(0.99, base_price + noise))
             window.down_price = 1.0 - window.up_price
+            window.price_source = "synthetic"
         
         # Only set token IDs if Gamma API didn't provide them
         if window.up_token_id is None:

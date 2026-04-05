@@ -707,6 +707,7 @@ class TelegramAlerter:
         gamma_ask: float | None = None,
         bankroll: float = 160.0,
         max_bet: float = 32.0,
+        price_source: str = "unknown",
     ) -> None:
         """
         Enhanced window report with P&L scenarios and clear market prices.
@@ -718,6 +719,7 @@ class TelegramAlerter:
             gamma_bid, gamma_ask:  Real Gamma market prices (bid/ask)
             bankroll:              Paper bankroll in USD
             max_bet:               Max bet per trade in USD
+            price_source:          "gamma_api", "synthetic", "stale_gamma"
         """
         try:
             from datetime import datetime, timezone
@@ -750,15 +752,16 @@ class TelegramAlerter:
                 f"VPIN: `{vpin:.4f}` | Regime: {regime_emoji} `{regime}`",
             ]
 
-            # Real Gamma prices (critical info)
+            # Real Gamma prices (critical info) with source tag
+            _src_tag = {"gamma_api": "LIVE", "gamma_api_fresh": "LIVE", "synthetic": "SYN", "stale_gamma": "STALE"}.get(price_source, "?")
             if gamma_bid is not None and gamma_ask is not None and gamma_bid > 0 and gamma_ask > 0:
                 gamma_mid = (gamma_bid + gamma_ask) / 2
                 gamma_spread = gamma_ask - gamma_bid
                 lines += [
-                    f"Gamma Prices: *`${gamma_bid:.4f}`* bid / *`${gamma_ask:.4f}`* ask | mid: `${gamma_mid:.4f}` | spread: `${gamma_spread:.4f}`",
+                    f"Gamma: *`${gamma_bid:.4f}`* / *`${gamma_ask:.4f}`* [{_src_tag}] | mid: `${gamma_mid:.4f}` | spread: `${gamma_spread:.4f}`",
                 ]
             else:
-                lines += [f"Gamma Prices: ❌ unavailable"]
+                lines += [f"Gamma Prices: ❌ unavailable [{_src_tag}]"]
             
             lines.append("")
 

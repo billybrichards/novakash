@@ -63,6 +63,7 @@ class ClaudeEvaluator:
         fill_status: str = None,  # "FILLED", "UNFILLED", "FOK_KILLED"
         actual_fill_price: float = None,
         shares_matched: float = None,
+        price_source: str = "UNKNOWN",  # "LIVE", "STALE", "SYN"
     ) -> Optional[str]:
         """Ask Claude to evaluate a trade decision with all available data."""
         
@@ -85,9 +86,10 @@ class ClaudeEvaluator:
 - **Current price:** ${current_price:,.2f}
 
 ## Pricing
-- **Gamma bestAsk:** ${gamma_bestask:.4f} (indicative market price for this token)
+- **Gamma bestAsk:** ${gamma_bestask:.4f} [{price_source}] (indicative market price for this token)
 - **Our entry price:** ${token_price:.4f}
 - **Price cap:** $0.65 (5m) / $0.70 (15m)
+- **Price source:** {price_source} (LIVE=fresh fetch at eval time, STALE=from window open ~5min ago, SYN=synthetic/no market data)
 
 ## CoinGlass Derivatives Data ({asset}-specific)
 {self._format_cg(cg_snapshot)}
@@ -124,7 +126,7 @@ Be concise and objective. No hedging — give a clear verdict."""
                     msg = (
                         f"{emoji} *AI Assessment — {asset} {timeframe} {status_label}*\n"
                         f"Direction: {direction} | δ={delta_pct:+.4f}% | VPIN={vpin:.3f}\n"
-                        f"Gamma: ${gamma_bestask:.2f} | Entry: ${token_price:.4f}\n\n"
+                        f"Gamma: ${gamma_bestask:.2f} [{price_source}] | Entry: ${token_price:.4f}\n\n"
                         f"{_escape_telegram_md(analysis)}"
                     )
                     try:

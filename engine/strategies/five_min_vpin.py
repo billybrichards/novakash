@@ -422,6 +422,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                         cg_modifier=0.0,
                         twap_result=twap_result,
                         timesfm_forecast=timesfm_forecast,
+                        price_source=window.price_source,
                     ))
                 except Exception:
                     pass
@@ -447,6 +448,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                     cg_modifier=signal.cg_modifier,
                     twap_result=twap_result,
                     timesfm_forecast=timesfm_forecast,
+                    price_source=window.price_source,
                 ))
             except Exception:
                 pass
@@ -455,6 +457,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         await self._execute_trade(state, signal)
         
         # Claude AI evaluation (non-blocking, 1min timeout)
+        # Fetches FRESH Gamma price before evaluation so Claude sees real-time data
         if self._claude_eval and signal:
             try:
                 _cg_dict = {}
@@ -467,21 +470,54 @@ class FiveMinVPINStrategy(BaseStrategy):
                         "taker_buy": cg.taker_buy_volume_1m,
                         "taker_sell": cg.taker_sell_volume_1m,
                     }
-                asyncio.create_task(self._claude_eval.evaluate_trade_decision(
-                    asset=window.asset,
-                    timeframe=tf,
-                    direction=signal.direction,
-                    confidence=signal.confidence,
-                    delta_pct=signal.delta_pct,
-                    vpin=signal.current_vpin,
-                    regime=_snap_regime,
-                    cg_snapshot=_cg_dict,
-                    token_price=self._delta_to_token_price(signal.delta_pct),
-                    gamma_bestask=window.up_price if signal.direction == "UP" else (window.down_price or 0.50),
-                    window_open_price=open_price,
-                    current_price=current_price,
-                    trade_placed=True,
-                ))
+
+                async def _eval_with_fresh_gamma():
+                    """Fetch fresh Gamma price, then run Claude evaluation."""
+                    slug = f"{window.asset.lower()}-updown-{tf}-{window.window_ts}"
+                    fresh_up, fresh_down, source = await self._fetch_fresh_gamma_price(slug)
+
+                    # Use fresh price if available, fall back to window price (stale)
+                    if fresh_up is not None:
+                        gamma_price = fresh_up if signal.direction == "UP" else fresh_down
+                        price_tag = "LIVE"
+                        stale_price = window.up_price if signal.direction == "UP" else (window.down_price or 0.50)
+                        drift = abs(gamma_price - stale_price) if stale_price else 0
+                        self._log.info(
+                            "claude_eval.fresh_gamma",
+                            asset=window.asset,
+                            fresh=f"${gamma_price:.4f}",
+                            stale=f"${stale_price:.4f}" if stale_price else "n/a",
+                            drift=f"${drift:.4f}",
+                            source=source,
+                        )
+                    else:
+                        gamma_price = window.up_price if signal.direction == "UP" else (window.down_price or 0.50)
+                        price_tag = "SYN" if window.price_source == "synthetic" else "STALE"
+                        self._log.warning(
+                            "claude_eval.using_stale_gamma",
+                            asset=window.asset,
+                            price=f"${gamma_price:.4f}",
+                            source=window.price_source,
+                        )
+
+                    await self._claude_eval.evaluate_trade_decision(
+                        asset=window.asset,
+                        timeframe=tf,
+                        direction=signal.direction,
+                        confidence=signal.confidence,
+                        delta_pct=signal.delta_pct,
+                        vpin=signal.current_vpin,
+                        regime=_snap_regime,
+                        cg_snapshot=_cg_dict,
+                        token_price=gamma_price,
+                        gamma_bestask=gamma_price,
+                        window_open_price=open_price,
+                        current_price=current_price,
+                        trade_placed=True,
+                        price_source=price_tag,
+                    )
+
+                asyncio.create_task(_eval_with_fresh_gamma())
             except Exception:
                 pass
         
@@ -1723,6 +1759,31 @@ class FiveMinVPINStrategy(BaseStrategy):
         except Exception as exc:
             self._log.warning("price_fetch_failed", asset=asset, error=str(exc))
             return None
+
+    async def _fetch_fresh_gamma_price(self, slug: str) -> tuple[float | None, float | None, str]:
+        """
+        Fetch fresh Gamma bestAsk right now.
+
+        Returns:
+            (up_price, down_price, source) where source is "gamma_api_fresh" or "failed"
+        """
+        import aiohttp
+        try:
+            async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as session:
+                url = f"https://gamma-api.polymarket.com/events?slug={slug}"
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if data and isinstance(data, list) and data[0].get("markets"):
+                            mkt = data[0]["markets"][0]
+                            best_ask = mkt.get("bestAsk")
+                            if best_ask is not None:
+                                up = float(best_ask)
+                                down = round(1.0 - up, 4)
+                                return up, down, "gamma_api_fresh"
+        except Exception as exc:
+            self._log.warning("fresh_gamma.fetch_failed", slug=slug, error=str(exc)[:80])
+        return None, None, "failed"
 
     @staticmethod
     def _delta_to_token_price(delta_pct: float) -> float:
