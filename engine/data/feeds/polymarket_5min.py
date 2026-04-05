@@ -261,6 +261,17 @@ class Polymarket5MinFeed:
                 await self._emit_window_signal(window)
         
         elif window.state == WindowState.ACTIVE:
+            # ── Countdown re-emissions at T-180, T-120, T-90 ─────────────
+            # Re-emit window signal at countdown milestones so orchestrator can send alerts
+            _countdown_milestones = [180, 120, 90]
+            if not hasattr(window, '_countdown_emitted'):
+                window._countdown_emitted = set()
+            for _ms in _countdown_milestones:
+                if remaining <= _ms and _ms not in window._countdown_emitted:
+                    window._countdown_emitted.add(_ms)
+                    await self._emit_window_signal(window)
+                    break  # Only one per tick
+            
             # Check for T-offset signal (re-emit with updated prices)
             if remaining <= self._signal_offset and remaining > 0:
                 window.state = WindowState.CLOSING
