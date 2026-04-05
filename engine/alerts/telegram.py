@@ -1101,11 +1101,25 @@ class TelegramAlerter:
                 ) as resp:
                     if resp.status != 200:
                         body = await resp.text()
-                        self._log.warning(
-                            "telegram.api_error",
-                            status=resp.status,
-                            body=body[:200],
-                        )
+                        # Retry without Markdown if parse error
+                        if "can't parse entities" in body:
+                            payload_plain = {**payload, "parse_mode": None}
+                            del payload_plain["parse_mode"]
+                            async with session.post(
+                                self._url,
+                                json=payload_plain,
+                                timeout=aiohttp.ClientTimeout(total=10),
+                            ) as retry_resp:
+                                if retry_resp.status == 200:
+                                    self._log.debug("telegram.sent_plain", chars=len(text))
+                                else:
+                                    self._log.warning("telegram.retry_failed", status=retry_resp.status)
+                        else:
+                            self._log.warning(
+                                "telegram.api_error",
+                                status=resp.status,
+                                body=body[:200],
+                            )
                     else:
                         self._log.debug("telegram.sent", chars=len(text))
 

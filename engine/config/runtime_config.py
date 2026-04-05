@@ -128,7 +128,7 @@ class RuntimeConfig:
 
         # ── Guardrails ────────────────────────────────────────────────────
         # G1: Staggered asset execution
-        self.order_stagger_seconds: float = _env_float("ORDER_STAGGER_SECONDS", 5.0)
+        self.order_stagger_seconds: float = _env_float("ORDER_STAGGER_SECONDS", 1.5)  # was 5.0, reduced — FOK fills are near-instant
         # G3: Single best signal mode (only trade the top-scoring asset per window)
         self.single_best_signal: bool = os.environ.get("SINGLE_BEST_SIGNAL", "false").lower() == "true"
         # G4: Order rate limiter

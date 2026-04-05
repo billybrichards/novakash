@@ -49,6 +49,6 @@ ARB_MAX_EXECUTION_MS: int = _env_int("ARB_MAX_EXECUTION_MS", 500)
 FIVE_MIN_ENABLED: bool = os.environ.get("FIVE_MIN_ENABLED", "false").lower() == "true"
 FIVE_MIN_ASSETS: list[str] = os.environ.get("FIVE_MIN_ASSETS", "BTC").split(",")
 FIVE_MIN_MODE: str = os.environ.get("FIVE_MIN_MODE", "safe")
-FIVE_MIN_ENTRY_OFFSET: int = _env_int("FIVE_MIN_ENTRY_OFFSET", 10)  # seconds before close
+FIVE_MIN_ENTRY_OFFSET: int = _env_int("FIVE_MIN_ENTRY_OFFSET", 60)  # seconds before close (was 10, now 60 for real prediction testing)
 FIVE_MIN_MIN_CONFIDENCE: float = _env_float("FIVE_MIN_MIN_CONFIDENCE", 0.30)
 FIVE_MIN_MIN_DELTA_PCT: float = _env_float("FIVE_MIN_MIN_DELTA_PCT", 0.001)  # skip below this (matches backtest)

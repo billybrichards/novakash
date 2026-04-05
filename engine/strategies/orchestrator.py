@@ -840,10 +840,10 @@ class Orchestrator:
                     _proxy_price = window.open_price * (1 + _implied_delta)
                 self._twap_tracker.add_tick(window.asset, window.window_ts, _proxy_price)
 
-            # ONLY evaluate at T-60s (CLOSING state), NOT at window open
-            # Window open signal is just for token ID registration
+            # Evaluate at CLOSING state (T-{FIVE_MIN_ENTRY_OFFSET}s before close)
+            # Now set to T-60s for real prediction testing (was T-10s)
             if state_value == "CLOSING":
-                # G1 & G3: Queue window for staggered execution instead of immediate eval
+                # G1 & G3: Queue window for staggered execution (v5.7c)
                 await self._execution_queue.put((window, self._aggregator))
 
                 # v6.0: Also evaluate with TimesFM-only strategy (parallel, independent)
@@ -1530,9 +1530,9 @@ class Orchestrator:
                         break
                     
                     if idx > 0:
-                        # G1: Stagger execution with jitter
+                        # G1: Stagger execution with jitter (reduced — FOK fills are instant)
                         stagger_delay = runtime.order_stagger_seconds
-                        jitter = random.uniform(1.0, 3.0)  # 1-3s random jitter
+                        jitter = random.uniform(0.3, 1.0)  # 0.3-1s jitter (was 1-3s)
                         total_delay = stagger_delay + jitter
                         log.info(
                             "guardrail.staggered_execution.wait",
