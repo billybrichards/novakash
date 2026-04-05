@@ -22,6 +22,7 @@ import asyncio
 import os
 import signal as _signal
 import time
+from pathlib import Path
 from typing import Optional
 
 import structlog
@@ -250,9 +251,39 @@ class Orchestrator:
             log.info("orchestrator.five_min_disabled")
 
         # ── v6.0 TimesFM-Only Strategy ──────────────────────────────────────
-        timesfm_enabled = os.environ.get("TIMESFM_ENABLED", "false").lower() == "true"
-        timesfm_url = os.environ.get("TIMESFM_URL", "http://16.52.148.255:8000")
-        timesfm_min_conf = float(os.environ.get("TIMESFM_MIN_CONFIDENCE", "0.30"))
+        # Read from os.environ first, then .env file as fallback
+        timesfm_enabled = os.environ.get("TIMESFM_ENABLED", "").lower() == "true"
+        if not timesfm_enabled:
+            # Fallback: read .env file directly if env var not set
+            env_file = Path(__file__).parent.parent / ".env"
+            if env_file.exists():
+                with open(env_file) as f:
+                    for line in f:
+                        if line.startswith("TIMESFM_ENABLED="):
+                            timesfm_enabled = line.split("=", 1)[1].strip().lower() == "true"
+                            break
+        
+        timesfm_url = os.environ.get("TIMESFM_URL")
+        if not timesfm_url:
+            env_file = Path(__file__).parent.parent / ".env"
+            if env_file.exists():
+                with open(env_file) as f:
+                    for line in f:
+                        if line.startswith("TIMESFM_URL="):
+                            timesfm_url = line.split("=", 1)[1].strip()
+                            break
+        timesfm_url = timesfm_url or "http://16.52.148.255:8080"
+        
+        timesfm_min_conf_str = os.environ.get("TIMESFM_MIN_CONFIDENCE")
+        if not timesfm_min_conf_str:
+            env_file = Path(__file__).parent.parent / ".env"
+            if env_file.exists():
+                with open(env_file) as f:
+                    for line in f:
+                        if line.startswith("TIMESFM_MIN_CONFIDENCE="):
+                            timesfm_min_conf_str = line.split("=", 1)[1].strip()
+                            break
+        timesfm_min_conf = float(timesfm_min_conf_str or "0.30")
 
         if timesfm_enabled:
             self._timesfm_client = TimesFMClient(
