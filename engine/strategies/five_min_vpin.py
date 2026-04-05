@@ -422,7 +422,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                         cg_modifier=0.0,
                         twap_result=twap_result,
                         timesfm_forecast=timesfm_forecast,
-                        price_source=window.price_source,
+                        gamma_bid=window.up_price,
+                        gamma_ask=window.down_price,
                     ))
                 except Exception:
                     pass
@@ -448,7 +449,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                     cg_modifier=signal.cg_modifier,
                     twap_result=twap_result,
                     timesfm_forecast=timesfm_forecast,
-                    price_source=window.price_source,
+                    gamma_bid=window.up_price,
+                    gamma_ask=window.down_price,
                 ))
             except Exception:
                 pass
