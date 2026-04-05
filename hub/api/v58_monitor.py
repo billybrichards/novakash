@@ -125,21 +125,37 @@ async def get_windows(
     Ordered newest-first. Falls back gracefully when the table doesn't exist.
     """
     try:
-        q = text("""
-            SELECT
-                window_ts, asset, timeframe,
-                open_price, close_price, delta_pct, vpin,
-                regime, direction, confidence,
-                trade_placed, skip_reason,
-                twap_direction, twap_agreement_score, twap_gamma_gate,
-                timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
-                gamma_up_price, gamma_down_price
-            FROM window_snapshots
-            WHERE (:asset IS NULL OR asset = :asset)
-            ORDER BY window_ts DESC
-            LIMIT :limit
-        """)
-        result = await session.execute(q, {"limit": limit, "asset": asset})
+        if asset:
+            q = text("""
+                SELECT
+                    window_ts, asset, timeframe,
+                    open_price, close_price, delta_pct, vpin,
+                    regime, direction, confidence,
+                    trade_placed, skip_reason,
+                    twap_direction, twap_agreement_score, twap_gamma_gate,
+                    timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
+                    gamma_up_price, gamma_down_price
+                FROM window_snapshots
+                WHERE asset = :asset
+                ORDER BY window_ts DESC
+                LIMIT :limit
+            """)
+            result = await session.execute(q, {"limit": limit, "asset": asset})
+        else:
+            q = text("""
+                SELECT
+                    window_ts, asset, timeframe,
+                    open_price, close_price, delta_pct, vpin,
+                    regime, direction, confidence,
+                    trade_placed, skip_reason,
+                    twap_direction, twap_agreement_score, twap_gamma_gate,
+                    timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
+                    gamma_up_price, gamma_down_price
+                FROM window_snapshots
+                ORDER BY window_ts DESC
+                LIMIT :limit
+            """)
+            result = await session.execute(q, {"limit": limit})
         rows = result.mappings().all()
         return {"windows": [_row_to_window(r) for r in rows]}
     except Exception as exc:
@@ -569,7 +585,7 @@ async def get_outcomes(
                 gamma_up_price, gamma_down_price,
                 vpin, regime, confidence
             FROM window_snapshots
-            WHERE (:asset IS NULL OR asset = :asset)
+            WHERE (CAST(:asset AS VARCHAR) IS NULL OR asset = :asset)
               AND close_price IS NOT NULL
             ORDER BY window_ts DESC
             LIMIT :limit
@@ -606,7 +622,7 @@ async def get_accuracy(
                 gamma_up_price, gamma_down_price,
                 vpin, regime, confidence
             FROM window_snapshots
-            WHERE (:asset IS NULL OR asset = :asset)
+            WHERE (CAST(:asset AS VARCHAR) IS NULL OR asset = :asset)
               AND close_price IS NOT NULL
               AND open_price IS NOT NULL
             ORDER BY window_ts DESC
