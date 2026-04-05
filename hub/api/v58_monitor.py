@@ -109,6 +109,12 @@ def _row_to_window(row: Any) -> dict:
         "gamma_down_price": _safe_float(row.get("gamma_down_price")),
         # Engine version
         "engine_version": row.get("engine_version"),
+        # v7.1 Retroactive
+        "v71_would_trade": bool(row.get("v71_would_trade")) if row.get("v71_would_trade") is not None else None,
+        "v71_skip_reason": row.get("v71_skip_reason"),
+        "v71_regime": row.get("v71_regime"),
+        "v71_correct": bool(row.get("v71_correct")) if row.get("v71_correct") is not None else None,
+        "v71_pnl": _safe_float(row.get("v71_pnl")),
     }
 
 
@@ -136,7 +142,8 @@ async def get_windows(
                     trade_placed, skip_reason,
                     twap_direction, twap_agreement_score, twap_gamma_gate,
                     timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
-                    gamma_up_price, gamma_down_price, engine_version
+                    gamma_up_price, gamma_down_price, engine_version,
+                    v71_would_trade, v71_skip_reason, v71_regime, v71_correct, v71_pnl
                 FROM window_snapshots
                 WHERE asset = :asset AND timeframe = '5m'
                 ORDER BY window_ts DESC
@@ -152,7 +159,8 @@ async def get_windows(
                     trade_placed, skip_reason,
                     twap_direction, twap_agreement_score, twap_gamma_gate,
                     timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
-                    gamma_up_price, gamma_down_price, engine_version
+                    gamma_up_price, gamma_down_price, engine_version,
+                    v71_would_trade, v71_skip_reason, v71_regime, v71_correct, v71_pnl
                 FROM window_snapshots
                 WHERE timeframe = '5m'
                 ORDER BY window_ts DESC

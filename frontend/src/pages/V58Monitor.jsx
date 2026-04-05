@@ -1091,7 +1091,7 @@ function OutcomeHistoryTable({ outcomes, selectedTs, onSelectWindow }) {
       }}>
         <thead>
           <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-            {['Time', 'Open→Close', 'Actual', 'TimesFM', 'TWAP', 'Gamma', 'v5.7c', 'v5.8', 'If Traded'].map(h => (
+            {['Time', 'Open→Close', 'Actual', 'TimesFM', 'TWAP', 'Gamma', 'v5.7c', 'v5.8', 'v7.1', 'If Traded'].map(h => (
               <th key={h} style={{
                 padding: '6px 10px',
                 textAlign: 'left',
@@ -1215,6 +1215,39 @@ function OutcomeHistoryTable({ outcomes, selectedTs, onSelectWindow }) {
                         borderBottom: '1px dotted rgba(255,255,255,0.15)',
                       }}>
                       {o.tfm_v57c_agree === false ? 'DISAGREE' : 'SKIP'}
+                    </span>
+                  )}
+                </td>
+                <td style={{ padding: '7px 10px' }}>
+                  {o.v71_would_trade ? (
+                    <span
+                      title={`${o.v71_regime || 'NORMAL'} regime${o.v71_pnl != null ? ` | P&L: $${o.v71_pnl.toFixed(2)}` : ''}`}
+                      style={{
+                        padding: '2px 7px',
+                        borderRadius: 4,
+                        background: o.v71_correct ? 'rgba(168,85,247,0.15)' : o.v71_correct === false ? 'rgba(248,113,113,0.12)' : 'rgba(168,85,247,0.08)',
+                        color: o.v71_correct ? '#a855f7' : o.v71_correct === false ? T.loss : '#c084fc',
+                        fontSize: 9,
+                        fontWeight: 700,
+                        letterSpacing: '0.04em',
+                        cursor: 'help',
+                      }}>
+                      {o.v71_correct === true ? '✓ WIN' : o.v71_correct === false ? '✗ LOSS' : 'TRADE'}
+                    </span>
+                  ) : (
+                    <span
+                      title={o.v71_skip_reason || 'v7.1 skip'}
+                      style={{
+                        padding: '2px 7px',
+                        borderRadius: 4,
+                        background: 'rgba(255,255,255,0.04)',
+                        color: T.label,
+                        fontSize: 9,
+                        letterSpacing: '0.04em',
+                        cursor: 'help',
+                        borderBottom: '1px dotted rgba(168,85,247,0.2)',
+                      }}>
+                      SKIP
                     </span>
                   )}
                 </td>
