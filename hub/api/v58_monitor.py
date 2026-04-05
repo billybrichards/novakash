@@ -74,8 +74,16 @@ def _safe_float(v: Any) -> Optional[float]:
 
 def _row_to_window(row: Any) -> dict:
     """Map a window_snapshots row (RowMapping) to a serialisable dict."""
+    # window_ts is BIGINT (unix epoch seconds), not a datetime
+    wts = row["window_ts"]
+    if wts is not None and isinstance(wts, (int, float)):
+        wts_iso = datetime.fromtimestamp(int(wts), tz=timezone.utc).isoformat()
+    elif wts is not None and hasattr(wts, 'isoformat'):
+        wts_iso = wts.isoformat()
+    else:
+        wts_iso = str(wts) if wts else None
     return {
-        "window_ts": row["window_ts"].isoformat() if row["window_ts"] else None,
+        "window_ts": wts_iso,
         "asset": row.get("asset"),
         "timeframe": row.get("timeframe"),
         "open_price": _safe_float(row.get("open_price")),
@@ -228,6 +236,7 @@ async def get_stats(
     Covers the last `days` days of window snapshots.
     """
     since = datetime.now(timezone.utc) - timedelta(days=days)
+    since_epoch = int(since.timestamp())
 
     try:
         q = text("""
@@ -255,9 +264,9 @@ async def get_stats(
                 COUNT(*) FILTER (WHERE twap_gamma_gate = TRUE)              AS twap_gate_passed,
                 AVG(twap_agreement_score)                                   AS avg_twap_agreement
             FROM window_snapshots
-            WHERE window_ts >= :since
+            WHERE window_ts >= :since_epoch
         """)
-        result = await session.execute(q, {"since": since})
+        result = await session.execute(q, {"since_epoch": since_epoch})
         row = result.mappings().first()
 
         if not row:
@@ -346,12 +355,13 @@ async def get_price_history(
                 direction,
                 trade_placed
             FROM window_snapshots
-            WHERE window_ts >= :since
+            WHERE window_ts >= :since_epoch
               AND open_price IS NOT NULL
             ORDER BY window_ts ASC
             LIMIT 500
         """)
-        result = await session.execute(q, {"since": since})
+        since_epoch = int(since.timestamp())
+        result = await session.execute(q, {"since_epoch": since_epoch})
         rows = result.mappings().all()
 
         if rows:
@@ -360,7 +370,7 @@ async def get_price_history(
                 o = _safe_float(r["open"]) or 0.0
                 c = _safe_float(r["close"]) or o
                 candles.append({
-                    "time": int(r["time"].timestamp()),
+                    "time": int(r["time"]) if isinstance(r["time"], (int, float)) else int(r["time"].timestamp()),
                     "open": o,
                     "high": max(o, c),
                     "low": min(o, c),
@@ -868,12 +878,12 @@ async def post_manual_trade(
             q = text("""
                 SELECT gamma_up_price, gamma_down_price
                 FROM window_snapshots
-                WHERE window_ts >= :ts - INTERVAL '10 minutes'
-                  AND window_ts <= :ts + INTERVAL '10 minutes'
-                ORDER BY ABS(EXTRACT(EPOCH FROM (window_ts - :ts)))
+                WHERE window_ts >= :ts_epoch - 600
+                  AND window_ts <= :ts_epoch + 600
+                ORDER BY ABS(window_ts - :ts_epoch)
                 LIMIT 1
             """)
-            result = await session.execute(q, {"ts": ts_dt})
+            result = await session.execute(q, {"ts": ts_dt, "ts_epoch": int(ts_dt.timestamp())})
             row = result.mappings().first()
             if row:
                 up_price = _safe_float(row.get("gamma_up_price")) or up_price
@@ -958,18 +968,18 @@ async def get_manual_trades(
             FROM manual_trades mt
             LEFT JOIN window_snapshots ws ON (
                 mt.window_ts IS NOT NULL
-                AND ws.window_ts >= to_timestamp(
-                    CASE WHEN mt.window_ts > 1e12::bigint
+                AND ws.window_ts >= (
+                    CASE WHEN mt.window_ts > 1000000000000
                          THEN mt.window_ts / 1000
                          ELSE mt.window_ts
                     END
-                ) - INTERVAL '5 minutes'
-                AND ws.window_ts <= to_timestamp(
-                    CASE WHEN mt.window_ts > 1e12::bigint
+                ) - 300
+                AND ws.window_ts <= (
+                    CASE WHEN mt.window_ts > 1000000000000
                          THEN mt.window_ts / 1000
                          ELSE mt.window_ts
                     END
-                ) + INTERVAL '5 minutes'
+                ) + 300
             )
             ORDER BY mt.created_at DESC
             LIMIT :limit
@@ -1047,13 +1057,13 @@ async def _resolve_open_trades(session: AsyncSession) -> None:
             ws_q = text("""
                 SELECT open_price, close_price, direction
                 FROM window_snapshots
-                WHERE window_ts >= :ts - INTERVAL '5 minutes'
-                  AND window_ts <= :ts + INTERVAL '5 minutes'
+                WHERE window_ts >= :ts_epoch - 300
+                  AND window_ts <= :ts_epoch + 300
                   AND close_price IS NOT NULL
-                ORDER BY ABS(EXTRACT(EPOCH FROM (window_ts - :ts)))
+                ORDER BY ABS(window_ts - :ts_epoch)
                 LIMIT 1
             """)
-            ws_result = await session.execute(ws_q, {"ts": ts_dt})
+            ws_result = await session.execute(ws_q, {"ts": ts_dt, "ts_epoch": int(ts_dt.timestamp())})
             ws_row = ws_result.mappings().first()
 
             if not ws_row:
@@ -1128,12 +1138,12 @@ async def get_window_detail(
         q = text("""
             SELECT *
             FROM window_snapshots
-            WHERE window_ts >= :ts - INTERVAL '2 minutes'
-              AND window_ts <= :ts + INTERVAL '2 minutes'
-            ORDER BY ABS(EXTRACT(EPOCH FROM (window_ts - :ts)))
+            WHERE window_ts >= :ts_epoch - 120
+              AND window_ts <= :ts_epoch + 120
+            ORDER BY ABS(window_ts - :ts_epoch)
             LIMIT 1
         """)
-        result = await session.execute(q, {"ts": ts_dt})
+        result = await session.execute(q, {"ts": ts_dt, "ts_epoch": int(ts_dt.timestamp())})
         row = result.mappings().first()
         if row:
             snapshot = _calc_outcome_row(row)
@@ -1147,11 +1157,11 @@ async def get_window_detail(
         ce_q = text("""
             SELECT stage, evaluated_at, direction, confidence, agreement, action, notes
             FROM countdown_evaluations
-            WHERE window_ts >= :ts - INTERVAL '2 minutes'
-              AND window_ts <= :ts + INTERVAL '2 minutes'
+            WHERE window_ts >= :ts_epoch - 120
+              AND window_ts <= :ts_epoch + 120
             ORDER BY evaluated_at ASC
         """)
-        ce_result = await session.execute(ce_q, {"ts": ts_dt})
+        ce_result = await session.execute(ce_q, {"ts": ts_dt, "ts_epoch": int(ts_dt.timestamp())})
         ce_rows = ce_result.mappings().all()
         evaluations = [
             {
@@ -1208,7 +1218,7 @@ async def get_window_detail(
             ORDER BY created_at ASC
             LIMIT 200
         """)
-        tick_result = await session.execute(tick_q, {"ts": ts_dt})
+        tick_result = await session.execute(tick_q, {"ts": ts_dt, "ts_epoch": int(ts_dt.timestamp())})
         tick_rows = tick_result.mappings().all()
         price_ticks = [
             {
