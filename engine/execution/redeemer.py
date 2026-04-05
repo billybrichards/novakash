@@ -162,11 +162,13 @@ class PositionRedeemer:
             config = BuilderConfig(
                 local_builder_creds=creds,
             )
+            from py_builder_relayer_client.models import RelayerTxType
             self._relay_client = RelayClient(
                 relayer_url="https://relayer-v2.polymarket.com",
                 chain_id=137,
                 private_key=self._private_key,
                 builder_config=config,
+                relay_tx_type=RelayerTxType.PROXY,
             )
             self._log.info("redeemer.relay_client_ready")
         except Exception as exc:
@@ -279,31 +281,27 @@ class PositionRedeemer:
 
         try:
             from web3 import Web3
-            from py_builder_relayer_client.models import SafeTransaction
+            from py_builder_relayer_client.models import Transaction
 
             cid_bytes = bytes.fromhex(condition_id.replace("0x", ""))
             zero_bytes32 = b"\x00" * 32
 
             # Build redeemPositions calldata
-            # indexSets=[1, 2] → redeem both YES (set 1) and NO (set 2)
-            # Build calldata using web3 contract function selector + ABI encoding
             fn = self._ctf.functions.redeemPositions(
                 Web3.to_checksum_address(USDC_ADDRESS),
                 zero_bytes32,   # parentCollectionId (0 for root collection)
                 cid_bytes,      # conditionId
                 [1, 2],         # indexSets: YES=1, NO=2
             )
-            # Get raw calldata (selector + encoded args) without building full tx
             calldata = fn._encode_transaction_data()
 
-            txn = SafeTransaction(
+            # Use Transaction (SDK handles Safe vs Proxy based on relay_tx_type)
+            txn = Transaction(
                 to=CTF_ADDRESS,
-                value=0,
                 data=calldata,
-                operation=0,  # 0 = CALL (not DELEGATECALL)
             )
 
-            # Execute via relay (synchronous SDK call)
+            # Execute via relay (synchronous SDK call — handles signing internally)
             response = await asyncio.to_thread(
                 self._relay_client.execute, [txn]
             )
