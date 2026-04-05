@@ -476,7 +476,42 @@ class FiveMinVPINStrategy(BaseStrategy):
             if self._alerter:
                 try:
                     _implied_dir = "UP" if delta_pct > 0 else "DOWN"
-                    asyncio.create_task(self._alerter.send_window_report(
+
+                    async def _send_skip_alert():
+                        try:
+                            await self._alerter.send_window_report(
+                                window_ts=window.window_ts,
+                                asset=window.asset,
+                                timeframe=tf,
+                                open_price=open_price,
+                                close_price=current_price,
+                                delta_pct=delta_pct,
+                                vpin=current_vpin,
+                                regime=_snap_regime,
+                                cg_snapshot=cg,
+                                direction=_implied_dir,
+                                confidence=None,
+                                trade_placed=False,
+                                skip_reason=_skip_reason,
+                                cg_modifier=0.0,
+                                twap_result=twap_result,
+                                timesfm_forecast=timesfm_forecast,
+                                gamma_up_price=window.up_price,
+                                gamma_down_price=window.down_price,
+                            )
+                        except Exception as alert_exc:
+                            self._log.error("alert.skip_report_failed", error=str(alert_exc), window_ts=window.window_ts)
+
+                    asyncio.create_task(_send_skip_alert())
+                except Exception:
+                    pass
+            return
+
+        # ── Send window report (non-blocking) ────────────────────────────────
+        if self._alerter:
+            async def _send_trade_alert():
+                try:
+                    await self._alerter.send_window_report(
                         window_ts=window.window_ts,
                         asset=window.asset,
                         timeframe=tf,
@@ -486,45 +521,19 @@ class FiveMinVPINStrategy(BaseStrategy):
                         vpin=current_vpin,
                         regime=_snap_regime,
                         cg_snapshot=cg,
-                        direction=_implied_dir,
-                        confidence=None,
-                        trade_placed=False,
-                        skip_reason=_skip_reason,
-                        cg_modifier=0.0,
+                        direction=signal.direction,
+                        confidence=signal.confidence,
+                        trade_placed=True,
+                        skip_reason=None,
+                        cg_modifier=signal.cg_modifier,
                         twap_result=twap_result,
                         timesfm_forecast=timesfm_forecast,
                         gamma_up_price=window.up_price,
                         gamma_down_price=window.down_price,
-                    ))
-                except Exception:
-                    pass
-            return
-
-        # ── Send window report (non-blocking) ────────────────────────────────
-        if self._alerter:
-            try:
-                asyncio.create_task(self._alerter.send_window_report(
-                    window_ts=window.window_ts,
-                    asset=window.asset,
-                    timeframe=tf,
-                    open_price=open_price,
-                    close_price=current_price,
-                    delta_pct=delta_pct,
-                    vpin=current_vpin,
-                    regime=_snap_regime,
-                    cg_snapshot=cg,
-                    direction=signal.direction,
-                    confidence=signal.confidence,
-                    trade_placed=True,
-                    skip_reason=None,
-                    cg_modifier=signal.cg_modifier,
-                    twap_result=twap_result,
-                    timesfm_forecast=timesfm_forecast,
-                    gamma_up_price=window.up_price,
-                    gamma_down_price=window.down_price,
-                ))
-            except Exception:
-                pass
+                    )
+                except Exception as alert_exc:
+                    self._log.error("alert.trade_report_failed", error=str(alert_exc), window_ts=window.window_ts)
+            asyncio.create_task(_send_trade_alert())
 
         # Execute trade
         await self._execute_trade(state, signal)
