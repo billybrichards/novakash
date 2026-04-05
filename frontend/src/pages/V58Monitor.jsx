@@ -744,6 +744,819 @@ function TradeLog({ windows }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// A. Accuracy Scoreboard
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function ProgressRing({ pct, color, size = 56, stroke = 5 }) {
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (pct / 100) * circumference;
+  return (
+    <svg width={size} height={size} style={{ transform: 'rotate(-90deg)', flexShrink: 0 }}>
+      <circle
+        cx={size / 2} cy={size / 2} r={radius}
+        fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth={stroke}
+      />
+      <circle
+        cx={size / 2} cy={size / 2} r={radius}
+        fill="none" stroke={color} strokeWidth={stroke}
+        strokeDasharray={circumference}
+        strokeDashoffset={offset}
+        strokeLinecap="round"
+        style={{ transition: 'stroke-dashoffset 600ms ease-out' }}
+      />
+    </svg>
+  );
+}
+
+function AccuracyCard({ label, pct, sub, color }) {
+  const displayPct = typeof pct === 'number' ? pct : 0;
+  const ringColor = displayPct >= 70 ? T.profit : displayPct >= 50 ? T.warning : T.loss;
+  return (
+    <div style={{
+      background: T.card,
+      border: `1px solid ${T.border}`,
+      borderRadius: 12,
+      padding: '14px 16px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 14,
+      fontFamily: T.mono,
+    }}>
+      <div style={{ position: 'relative', width: 56, height: 56, flexShrink: 0 }}>
+        <ProgressRing pct={displayPct} color={color ?? ringColor} size={56} stroke={5} />
+        <div style={{
+          position: 'absolute', inset: 0, display: 'flex',
+          alignItems: 'center', justifyContent: 'center',
+          fontSize: 11, fontWeight: 700, color: color ?? ringColor,
+        }}>
+          {displayPct.toFixed(0)}%
+        </div>
+      </div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 4 }}>
+          {label}
+        </div>
+        <div style={{ fontSize: 20, fontWeight: 700, color: color ?? ringColor, lineHeight: 1 }}>
+          {displayPct.toFixed(1)}%
+        </div>
+        {sub && <div style={{ fontSize: 10, color: T.label, marginTop: 3 }}>{sub}</div>}
+      </div>
+    </div>
+  );
+}
+
+function AccuracyScoreboard({ accuracy }) {
+  if (!accuracy) {
+    return <div style={{ color: T.label, fontSize: 11, fontFamily: T.mono, padding: 16 }}>Loading accuracy data…</div>;
+  }
+
+  const pnlColor = accuracy.cumulative_pnl >= 0 ? T.profit : T.loss;
+  const streakColor = accuracy.current_streak > 0 ? T.profit : T.label;
+
+  return (
+    <div style={{ fontFamily: T.mono }}>
+      {/* Main accuracy cards */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+        gap: 10,
+        marginBottom: 14,
+      }}>
+        <AccuracyCard
+          label="TimesFM Accuracy"
+          pct={accuracy.timesfm_accuracy}
+          sub={`${accuracy.windows_analysed} windows`}
+          color="#e879f9"
+        />
+        <AccuracyCard
+          label="v5.7c Accuracy"
+          pct={accuracy.v57c_accuracy}
+          sub="Final signal call"
+          color={T.purple}
+        />
+        <AccuracyCard
+          label="v5.8 Accuracy"
+          pct={accuracy.v58_accuracy}
+          sub={`${accuracy.v58_trades_count} trades`}
+          color={T.cyan}
+        />
+        <AccuracyCard
+          label="TWAP Accuracy"
+          pct={accuracy.twap_accuracy}
+          sub="TWAP direction"
+          color={T.cyan}
+        />
+      </div>
+
+      {/* Secondary stats row */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(3, 1fr)',
+        gap: 10,
+      }}>
+        {/* Agreement rate */}
+        <div style={{
+          background: T.card,
+          border: `1px solid ${T.border}`,
+          borderRadius: 10,
+          padding: '12px 14px',
+        }}>
+          <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 6 }}>
+            Agreement Rate
+          </div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: accuracy.agreement_rate >= 60 ? T.profit : T.warning }}>
+            {accuracy.agreement_rate.toFixed(1)}%
+          </div>
+          <div style={{ fontSize: 10, color: T.label }}>TimesFM ↔ v5.7c</div>
+        </div>
+
+        {/* Cumulative P&L */}
+        <div style={{
+          background: T.card,
+          border: `1px solid ${pnlColor}30`,
+          borderRadius: 10,
+          padding: '12px 14px',
+        }}>
+          <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 6 }}>
+            Cumulative P&L
+          </div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: pnlColor }}>
+            {accuracy.cumulative_pnl >= 0 ? '+' : ''}${accuracy.cumulative_pnl.toFixed(2)}
+          </div>
+          <div style={{ fontSize: 10, color: T.label }}>$4 bets · v5.8 only</div>
+        </div>
+
+        {/* Win streak */}
+        <div style={{
+          background: T.card,
+          border: `1px solid ${streakColor}30`,
+          borderRadius: 10,
+          padding: '12px 14px',
+        }}>
+          <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 6 }}>
+            Current Streak
+          </div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: streakColor }}>
+            {accuracy.current_streak} {accuracy.current_streak === 1 ? 'WIN' : 'WINS'}
+          </div>
+          <div style={{ fontSize: 10, color: T.label }}>In a row</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// B. Outcome History Table
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function CheckBadge({ value, na = false }) {
+  if (na || value === null || value === undefined) {
+    return <span style={{ color: T.label, fontSize: 11 }}>—</span>;
+  }
+  return (
+    <span style={{
+      fontSize: 13,
+      color: value ? T.profit : T.loss,
+    }}>
+      {value ? '✅' : '❌'}
+    </span>
+  );
+}
+
+function PnlBadge({ pnl }) {
+  if (pnl === null || pnl === undefined) {
+    return <span style={{ color: T.label, fontSize: 10 }}>—</span>;
+  }
+  const color = pnl >= 0 ? T.profit : T.loss;
+  return (
+    <span style={{ color, fontWeight: 700, fontSize: 10, fontFamily: T.mono }}>
+      {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+    </span>
+  );
+}
+
+function OutcomeHistoryTable({ outcomes, selectedTs, onSelectWindow }) {
+  if (!outcomes?.length) {
+    return (
+      <div style={{ color: T.label, fontSize: 11, fontFamily: T.mono, padding: '16px 0' }}>
+        No outcome data yet. Windows need close_price to calculate outcomes.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{
+        width: '100%',
+        borderCollapse: 'collapse',
+        fontFamily: T.mono,
+        fontSize: 10,
+        minWidth: 720,
+      }}>
+        <thead>
+          <tr style={{ borderBottom: `1px solid ${T.border}` }}>
+            {['Time', 'Open→Close', 'Actual', 'TimesFM', 'TWAP', 'Gamma', 'v5.7c', 'v5.8', 'v5.8 P&L'].map(h => (
+              <th key={h} style={{
+                padding: '6px 10px',
+                textAlign: 'left',
+                color: T.label,
+                fontWeight: 600,
+                fontSize: 9,
+                letterSpacing: '0.08em',
+                whiteSpace: 'nowrap',
+              }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {outcomes.map((o) => {
+            const isSelected = selectedTs === o.window_ts;
+            // Row background
+            let rowBg = 'transparent';
+            if (o.v58_would_trade) {
+              rowBg = o.v58_correct ? 'rgba(74,222,128,0.05)' : 'rgba(248,113,113,0.05)';
+            } else {
+              rowBg = 'rgba(255,255,255,0.01)';
+            }
+            if (isSelected) rowBg = 'rgba(168,85,247,0.08)';
+
+            const time = o.window_ts
+              ? new Date(o.window_ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+              : '—';
+            const openClose = (o.open_price && o.close_price)
+              ? `$${Math.round(o.open_price).toLocaleString()} → $${Math.round(o.close_price).toLocaleString()}`
+              : '—';
+
+            const gammaStr = (o.gamma_up_price && o.gamma_down_price)
+              ? `↑$${o.gamma_up_price.toFixed(2)} / ↓$${o.gamma_down_price.toFixed(2)}`
+              : null;
+
+            return (
+              <tr
+                key={o.window_ts}
+                onClick={() => onSelectWindow(o.window_ts)}
+                style={{
+                  background: rowBg,
+                  borderBottom: `1px solid rgba(255,255,255,0.025)`,
+                  cursor: 'pointer',
+                  transition: 'background 120ms',
+                  outline: isSelected ? `1px solid ${T.purple}40` : 'none',
+                }}
+                onMouseEnter={e => {
+                  if (!isSelected) e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.background = rowBg;
+                }}
+              >
+                <td style={{ padding: '7px 10px', color: T.label, whiteSpace: 'nowrap' }}>{time}</td>
+                <td style={{ padding: '7px 10px', color: T.label2, fontSize: 9, whiteSpace: 'nowrap' }}>{openClose}</td>
+                <td style={{ padding: '7px 10px' }}>
+                  {o.actual_direction ? (
+                    <span style={{
+                      color: o.actual_direction === 'UP' ? T.profit : T.loss,
+                      fontWeight: 700,
+                    }}>
+                      {o.actual_direction === 'UP' ? '▲ UP' : '▼ DOWN'}
+                    </span>
+                  ) : <span style={{ color: T.label }}>—</span>}
+                </td>
+                <td style={{ padding: '7px 10px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <CheckBadge value={o.timesfm_correct} />
+                    {o.timesfm_direction && (
+                      <span style={{ fontSize: 9, color: directionColor(o.timesfm_direction) }}>
+                        {o.timesfm_direction}
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td style={{ padding: '7px 10px' }}>
+                  <CheckBadge value={o.twap_correct} />
+                </td>
+                <td style={{ padding: '7px 10px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <CheckBadge value={o.gamma_correct} />
+                    {gammaStr && (
+                      <span style={{ fontSize: 8, color: T.warning, whiteSpace: 'nowrap' }}>{gammaStr}</span>
+                    )}
+                  </div>
+                </td>
+                <td style={{ padding: '7px 10px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <CheckBadge value={o.v57c_correct} />
+                    {o.direction && (
+                      <span style={{ fontSize: 9, color: directionColor(o.direction) }}>
+                        {o.direction}
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td style={{ padding: '7px 10px' }}>
+                  {o.v58_would_trade ? (
+                    <span style={{
+                      padding: '2px 7px',
+                      borderRadius: 4,
+                      background: o.v58_correct ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)',
+                      color: o.v58_correct ? T.profit : T.loss,
+                      fontSize: 9,
+                      fontWeight: 700,
+                      letterSpacing: '0.04em',
+                    }}>
+                      {o.v58_correct ? '✓ WIN' : '✗ LOSS'}
+                    </span>
+                  ) : (
+                    <span style={{
+                      padding: '2px 7px',
+                      borderRadius: 4,
+                      background: 'rgba(255,255,255,0.04)',
+                      color: T.label,
+                      fontSize: 9,
+                      letterSpacing: '0.04em',
+                    }}>
+                      SKIP
+                    </span>
+                  )}
+                </td>
+                <td style={{ padding: '7px 10px' }}>
+                  <PnlBadge pnl={o.v58_pnl} />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// C. What-If Analysis Panel
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function WhatIfAnalysis({ outcome }) {
+  if (!outcome) {
+    return (
+      <div style={{ color: T.label, fontSize: 11, fontFamily: T.mono, textAlign: 'center', padding: 24 }}>
+        Click a row in the outcome table to analyse
+      </div>
+    );
+  }
+
+  const gammaUp = outcome.gamma_up_price;
+  const gammaDown = outcome.gamma_down_price;
+
+  const scenarios = [
+    {
+      label: 'TimesFM',
+      icon: '🔮',
+      direction: outcome.timesfm_direction,
+      entryPrice: outcome.timesfm_direction === 'UP' ? gammaUp : gammaDown,
+      correct: outcome.timesfm_correct,
+      pnl: outcome.timesfm_pnl,
+      color: '#e879f9',
+    },
+    {
+      label: 'v5.7c Signal',
+      icon: '📍',
+      direction: outcome.direction,
+      entryPrice: outcome.direction === 'UP' ? gammaUp : gammaDown,
+      correct: outcome.v57c_correct,
+      pnl: outcome.v57c_pnl,
+      color: T.purple,
+    },
+    {
+      label: 'TWAP',
+      icon: '📊',
+      direction: outcome.twap_direction,
+      entryPrice: outcome.twap_direction === 'UP' ? gammaUp : gammaDown,
+      correct: outcome.twap_correct,
+      pnl: outcome.twap_pnl,
+      color: T.cyan,
+    },
+  ];
+
+  const actualDelta = outcome.delta_pct != null ? (outcome.delta_pct * 100).toFixed(3) : null;
+
+  return (
+    <div style={{ fontFamily: T.mono }}>
+      {/* Window price summary */}
+      <div style={{
+        padding: '10px 14px',
+        borderRadius: 8,
+        background: 'rgba(255,255,255,0.03)',
+        border: `1px solid ${T.border}`,
+        marginBottom: 14,
+        display: 'flex',
+        gap: 20,
+        flexWrap: 'wrap',
+        alignItems: 'center',
+      }}>
+        {outcome.open_price != null && (
+          <div>
+            <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>OPEN</div>
+            <div style={{ fontSize: 13, color: '#fff', fontWeight: 600 }}>
+              ${outcome.open_price.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+            </div>
+          </div>
+        )}
+        <div style={{ color: T.label, fontSize: 14 }}>→</div>
+        {outcome.close_price != null && (
+          <div>
+            <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>CLOSE</div>
+            <div style={{ fontSize: 13, color: '#fff', fontWeight: 600 }}>
+              ${outcome.close_price.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+            </div>
+          </div>
+        )}
+        {actualDelta && (
+          <div>
+            <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>Δ%</div>
+            <div style={{
+              fontSize: 13, fontWeight: 700,
+              color: outcome.delta_pct >= 0 ? T.profit : T.loss,
+            }}>
+              {outcome.delta_pct >= 0 ? '+' : ''}{actualDelta}%
+            </div>
+          </div>
+        )}
+        {outcome.actual_direction && (
+          <div style={{ marginLeft: 'auto' }}>
+            <span style={{
+              padding: '4px 12px',
+              borderRadius: 6,
+              background: outcome.actual_direction === 'UP' ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)',
+              color: outcome.actual_direction === 'UP' ? T.profit : T.loss,
+              fontSize: 11,
+              fontWeight: 700,
+            }}>
+              {outcome.actual_direction === 'UP' ? '▲ WENT UP' : '▼ WENT DOWN'}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Scenario cards */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
+        {scenarios.map((s) => {
+          if (!s.direction) return null;
+          const side = s.direction === 'UP' ? 'YES' : 'NO';
+          const entryStr = s.entryPrice != null ? `@$${s.entryPrice.toFixed(3)}` : '';
+          return (
+            <div key={s.label} style={{
+              padding: '10px 14px',
+              borderRadius: 8,
+              background: 'rgba(0,0,0,0.2)',
+              border: `1px solid ${s.color}25`,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              flexWrap: 'wrap',
+            }}>
+              <span style={{ fontSize: 14 }}>{s.icon}</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ fontSize: 11, color: s.color, fontWeight: 600 }}>{s.label}</span>
+                <span style={{ fontSize: 10, color: T.label, marginLeft: 8 }}>
+                  BUY {side} {entryStr} → $4 bet
+                </span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {s.correct !== null && s.correct !== undefined && (
+                  <span style={{ fontSize: 12, color: s.correct ? T.profit : T.loss }}>
+                    {s.correct ? '✅' : '❌'} {s.correct ? 'WON' : 'LOST'}
+                  </span>
+                )}
+                {s.pnl !== null && s.pnl !== undefined && (
+                  <span style={{
+                    fontWeight: 700,
+                    color: s.pnl >= 0 ? T.profit : T.loss,
+                    fontSize: 13,
+                  }}>
+                    {s.pnl >= 0 ? '+' : ''}${s.pnl.toFixed(2)}
+                  </span>
+                )}
+                {(s.correct === null || s.correct === undefined) && (
+                  <span style={{ color: T.label, fontSize: 10 }}>No price data</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* v5.8 decision */}
+      <div style={{
+        padding: '12px 14px',
+        borderRadius: 10,
+        background: outcome.v58_would_trade
+          ? outcome.v58_correct ? 'rgba(74,222,128,0.07)' : 'rgba(248,113,113,0.07)'
+          : 'rgba(255,255,255,0.03)',
+        border: `1px solid ${outcome.v58_would_trade
+          ? outcome.v58_correct ? 'rgba(74,222,128,0.25)' : 'rgba(248,113,113,0.25)'
+          : T.border}`,
+      }}>
+        <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em', marginBottom: 8, textTransform: 'uppercase' }}>
+          v5.8 Decision
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{
+            fontSize: 12, fontWeight: 700,
+            color: outcome.v58_would_trade ? T.cyan : T.label,
+          }}>
+            {outcome.v58_would_trade ? '✓ TRADED' : '✗ SKIPPED'}
+          </span>
+          {outcome.v58_would_trade && (
+            <>
+              <span style={{ color: T.label, fontSize: 10 }}>
+                (TimesFM ↔ v5.7c agreed: {outcome.direction})
+              </span>
+              {outcome.v58_correct !== null && (
+                <span style={{
+                  padding: '3px 10px',
+                  borderRadius: 5,
+                  background: outcome.v58_correct ? 'rgba(74,222,128,0.15)' : 'rgba(248,113,113,0.15)',
+                  color: outcome.v58_correct ? T.profit : T.loss,
+                  fontSize: 11, fontWeight: 700,
+                }}>
+                  {outcome.v58_correct ? '▲ CORRECT' : '▼ WRONG'}
+                </span>
+              )}
+              {outcome.v58_pnl !== null && outcome.v58_pnl !== undefined && (
+                <span style={{
+                  marginLeft: 'auto',
+                  fontSize: 15, fontWeight: 700,
+                  color: outcome.v58_pnl >= 0 ? T.profit : T.loss,
+                }}>
+                  {outcome.v58_pnl >= 0 ? '+' : ''}${outcome.v58_pnl.toFixed(2)}
+                </span>
+              )}
+            </>
+          )}
+          {!outcome.v58_would_trade && outcome.skip_reason && (
+            <span style={{ fontSize: 10, color: T.label }}>
+              Skip reason: {outcome.skip_reason}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// D. Signal Source Cards (enhanced, outcome-aware)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function SignalSourceCards({ outcome }) {
+  if (!outcome) {
+    return (
+      <div style={{ color: T.label, fontSize: 11, fontFamily: T.mono, textAlign: 'center', padding: 24 }}>
+        Select a window to see signal detail
+      </div>
+    );
+  }
+
+  const gammaUp = outcome.gamma_up_price;
+  const gammaDown = outcome.gamma_down_price;
+  const cheaperSide = (gammaUp != null && gammaDown != null)
+    ? (gammaUp < gammaDown ? 'UP' : 'DOWN')
+    : null;
+  const spread = (gammaUp != null && gammaDown != null)
+    ? Math.abs(gammaUp - gammaDown).toFixed(3)
+    : null;
+
+  const vpinPct = outcome.vpin != null ? (outcome.vpin * 100).toFixed(1) : null;
+  const vpinColor = outcome.vpin > 0.5 ? T.loss : outcome.vpin > 0.3 ? T.warning : T.profit;
+
+  const cards = [
+    {
+      id: 'timesfm',
+      icon: '🔮',
+      label: 'TimesFM',
+      color: '#e879f9',
+      correct: outcome.timesfm_correct,
+      content: (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <span style={{ fontSize: 10, color: '#e879f9', fontWeight: 600 }}>Direction</span>
+            {outcome.timesfm_direction ? (
+              <span style={{ color: directionColor(outcome.timesfm_direction), fontWeight: 700, fontSize: 12 }}>
+                {outcome.timesfm_direction === 'UP' ? '▲ UP' : '▼ DOWN'}
+              </span>
+            ) : <span style={{ color: T.label }}>—</span>}
+          </div>
+          {outcome.timesfm_confidence != null && (
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 9, color: T.label, marginBottom: 4 }}>Confidence</div>
+              {confidenceBar(outcome.timesfm_confidence, '#e879f9')}
+            </div>
+          )}
+          {outcome.timesfm_predicted_close != null && (
+            <div style={{ fontSize: 10, color: T.label }}>
+              Pred close: <span style={{ color: '#e879f9' }}>
+                ${outcome.timesfm_predicted_close.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+              </span>
+              {outcome.close_price != null && (
+                <span style={{ color: outcome.timesfm_correct ? T.profit : T.loss, marginLeft: 6 }}>
+                  (δ {outcome.close_price > outcome.timesfm_predicted_close ? '+' : ''}
+                  ${(outcome.close_price - outcome.timesfm_predicted_close).toFixed(0)})
+                </span>
+              )}
+            </div>
+          )}
+          {outcome.timesfm_agreement != null && (
+            <div style={{
+              marginTop: 8,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              padding: '2px 8px',
+              borderRadius: 4,
+              background: outcome.timesfm_agreement ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)',
+              border: `1px solid ${outcome.timesfm_agreement ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}`,
+              fontSize: 9, fontWeight: 700,
+              color: outcome.timesfm_agreement ? T.profit : T.loss,
+            }}>
+              {outcome.timesfm_agreement ? '✓ AGREE w/ v5.7c' : '✗ DISAGREE'}
+            </div>
+          )}
+        </>
+      ),
+    },
+    {
+      id: 'twap',
+      icon: '📊',
+      label: 'TWAP',
+      color: T.cyan,
+      correct: outcome.twap_correct,
+      content: (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <span style={{ fontSize: 10, color: T.cyan, fontWeight: 600 }}>Direction</span>
+            {outcome.twap_direction ? (
+              <span style={{ color: directionColor(outcome.twap_direction), fontWeight: 700, fontSize: 12 }}>
+                {outcome.twap_direction === 'UP' ? '▲ UP' : '▼ DOWN'}
+              </span>
+            ) : <span style={{ color: T.label }}>—</span>}
+          </div>
+          {outcome.twap_agreement_score != null && (
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 9, color: T.label, marginBottom: 4 }}>Agreement Score</div>
+              {confidenceBar(outcome.twap_agreement_score, T.cyan)}
+            </div>
+          )}
+          <div style={{ fontSize: 10, color: T.label }}>
+            Gamma Gate: {' '}
+            <span style={{ color: outcome.twap_gamma_gate ? T.profit : T.loss, fontWeight: 600 }}>
+              {outcome.twap_gamma_gate === true ? '✅ PASSED' : outcome.twap_gamma_gate === false ? '❌ FAILED' : '—'}
+            </span>
+          </div>
+        </>
+      ),
+    },
+    {
+      id: 'gamma',
+      icon: '⚡',
+      label: 'Gamma',
+      color: T.warning,
+      correct: outcome.gamma_correct,
+      content: (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+            <div style={{
+              padding: '6px 8px',
+              borderRadius: 6,
+              background: cheaperSide === 'UP' ? 'rgba(74,222,128,0.1)' : 'rgba(255,255,255,0.04)',
+              border: `1px solid ${cheaperSide === 'UP' ? 'rgba(74,222,128,0.25)' : T.border}`,
+              textAlign: 'center',
+            }}>
+              <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>↑ UP</div>
+              <div style={{ fontSize: 12, color: T.profit, fontWeight: 700 }}>
+                {gammaUp != null ? `$${gammaUp.toFixed(3)}` : '—'}
+              </div>
+              {cheaperSide === 'UP' && (
+                <div style={{ fontSize: 8, color: T.profit, marginTop: 2 }}>CHEAPER</div>
+              )}
+            </div>
+            <div style={{
+              padding: '6px 8px',
+              borderRadius: 6,
+              background: cheaperSide === 'DOWN' ? 'rgba(248,113,113,0.1)' : 'rgba(255,255,255,0.04)',
+              border: `1px solid ${cheaperSide === 'DOWN' ? 'rgba(248,113,113,0.25)' : T.border}`,
+              textAlign: 'center',
+            }}>
+              <div style={{ fontSize: 9, color: T.label, marginBottom: 2 }}>↓ DOWN</div>
+              <div style={{ fontSize: 12, color: T.loss, fontWeight: 700 }}>
+                {gammaDown != null ? `$${gammaDown.toFixed(3)}` : '—'}
+              </div>
+              {cheaperSide === 'DOWN' && (
+                <div style={{ fontSize: 8, color: T.loss, marginTop: 2 }}>CHEAPER</div>
+              )}
+            </div>
+          </div>
+          {spread && (
+            <div style={{ fontSize: 10, color: T.label }}>
+              Spread: <span style={{ color: T.warning }}>${spread}</span>
+              {outcome.gamma_implied_direction && (
+                <span style={{ marginLeft: 8, color: T.warning, fontWeight: 600 }}>
+                  → mkt favours {outcome.gamma_implied_direction}
+                </span>
+              )}
+            </div>
+          )}
+        </>
+      ),
+    },
+    {
+      id: 'vpin',
+      icon: '🌊',
+      label: 'VPIN',
+      color: vpinColor,
+      correct: null, // VPIN is a gate, not directional
+      content: (
+        <>
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, marginBottom: 8 }}>
+            <div style={{ fontSize: 24, fontWeight: 700, color: vpinColor, lineHeight: 1 }}>
+              {vpinPct != null ? vpinPct + '%' : '—'}
+            </div>
+            {outcome.regime && (
+              <div style={{ fontSize: 10, color: T.warning, marginBottom: 3, fontWeight: 600 }}>
+                {outcome.regime}
+              </div>
+            )}
+          </div>
+          {outcome.vpin != null && (
+            <div style={{ marginBottom: 8 }}>
+              {confidenceBar(outcome.vpin, vpinColor)}
+            </div>
+          )}
+          <div style={{ fontSize: 10, color: T.label }}>
+            Gate (0.5): {' '}
+            <span style={{ color: outcome.vpin > 0.5 ? T.loss : T.profit, fontWeight: 600 }}>
+              {outcome.vpin != null
+                ? outcome.vpin > 0.5 ? '❌ ABOVE (skip)' : '✅ OK'
+                : '—'}
+            </span>
+          </div>
+        </>
+      ),
+    },
+  ];
+
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: 'repeat(2, 1fr)',
+      gap: 10,
+    }}>
+      {cards.map((card) => (
+        <div
+          key={card.id}
+          style={{
+            padding: '12px 14px',
+            borderRadius: 10,
+            background: 'rgba(0,0,0,0.25)',
+            border: `1px solid ${card.color}30`,
+            position: 'relative',
+            overflow: 'hidden',
+          }}
+        >
+          {/* Top accent */}
+          <div style={{
+            position: 'absolute', top: 0, left: 0, right: 0, height: 2,
+            background: card.color, opacity: 0.6,
+          }} />
+
+          {/* Header */}
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ fontSize: 14 }}>{card.icon}</span>
+              <span style={{ fontSize: 10, color: card.color, fontWeight: 600, letterSpacing: '0.06em', fontFamily: T.mono }}>
+                {card.label}
+              </span>
+            </div>
+            {card.correct !== null && card.correct !== undefined && (
+              <span style={{ fontSize: 12 }}>
+                {card.correct ? '✅' : '❌'}
+              </span>
+            )}
+          </div>
+
+          {/* Content */}
+          <div style={{ fontFamily: T.mono }}>
+            {card.content}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // MAIN PAGE
 // ═══════════════════════════════════════════════════════════════════════════════
 export default function V58Monitor() {
@@ -756,6 +1569,9 @@ export default function V58Monitor() {
   const [loading, setLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState(null);
   const [wsStatus, setWsStatus] = useState('OFFLINE');
+  const [outcomes, setOutcomes] = useState([]);
+  const [accuracy, setAccuracy] = useState(null);
+  const [selectedOutcomeTs, setSelectedOutcomeTs] = useState(null);
 
   // Derived: the selected window object
   const selectedWindow = useMemo(
@@ -769,10 +1585,12 @@ export default function V58Monitor() {
   // ── Fetch ───────────────────────────────────────────────────────────────────
   const fetchAll = useCallback(async () => {
     try {
-      const [windowsRes, statsRes, priceRes] = await Promise.allSettled([
+      const [windowsRes, statsRes, priceRes, outcomesRes, accuracyRes] = await Promise.allSettled([
         api('GET', '/v58/windows?limit=50'),
         api('GET', '/v58/stats?days=7'),
         api('GET', '/v58/price-history?minutes=60'),
+        api('GET', '/v58/outcomes?limit=100'),
+        api('GET', '/v58/accuracy?limit=100'),
       ]);
 
       if (windowsRes.status === 'fulfilled') {
@@ -788,6 +1606,15 @@ export default function V58Monitor() {
         const rawCandles = priceRes.value?.data?.candles ?? [];
         // lightweight-charts needs { time, open, high, low, close } with numeric time
         setCandles(rawCandles.filter(c => c.time && c.open && c.close));
+      }
+
+      if (outcomesRes.status === 'fulfilled') {
+        const data = outcomesRes.value?.data?.outcomes ?? [];
+        setOutcomes(data);
+      }
+
+      if (accuracyRes.status === 'fulfilled') {
+        setAccuracy(accuracyRes.value?.data ?? null);
       }
 
       setLastRefresh(new Date());
@@ -1075,6 +1902,89 @@ export default function V58Monitor() {
             <TradeLog windows={windows} />
           </div>
         </section>
+
+        {/* § ACCURACY SCOREBOARD */}
+        <section>
+          <SectionHeader>ACCURACY SCOREBOARD — last 100 windows</SectionHeader>
+          <div style={{
+            background: T.card,
+            border: `1px solid ${T.border}`,
+            borderRadius: 12,
+            padding: '20px',
+          }}>
+            <AccuracyScoreboard accuracy={accuracy} />
+          </div>
+        </section>
+
+        {/* § OUTCOME HISTORY TABLE */}
+        <section>
+          <SectionHeader>OUTCOME HISTORY — click row to analyse</SectionHeader>
+          <div style={{
+            background: T.card,
+            border: `1px solid ${T.border}`,
+            borderRadius: 12,
+            padding: '16px',
+          }}>
+            <OutcomeHistoryTable
+              outcomes={outcomes}
+              selectedTs={selectedOutcomeTs}
+              onSelectWindow={(ts) => setSelectedOutcomeTs(prev => prev === ts ? null : ts)}
+            />
+          </div>
+        </section>
+
+        {/* § WHAT-IF ANALYSIS + SIGNAL SOURCE CARDS */}
+        {selectedOutcomeTs && (() => {
+          const selOutcome = outcomes.find(o => o.window_ts === selectedOutcomeTs) ?? null;
+          return (
+            <section>
+              <SectionHeader>
+                WHAT-IF ANALYSIS —{' '}
+                {selectedOutcomeTs
+                  ? new Date(selectedOutcomeTs).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'medium' })
+                  : 'select a window'}
+              </SectionHeader>
+              <div
+                className="v58-grid-2"
+                style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}
+              >
+                {/* What-If panel */}
+                <div style={{
+                  background: T.card,
+                  border: `1px solid ${T.border}`,
+                  borderRadius: 12,
+                  padding: '20px',
+                }}>
+                  <div style={{
+                    fontSize: 9, color: T.purple,
+                    letterSpacing: '0.1em', textTransform: 'uppercase',
+                    marginBottom: 14, fontFamily: T.mono, fontWeight: 600,
+                  }}>
+                    § WHAT IF WE BET $4
+                  </div>
+                  <WhatIfAnalysis outcome={selOutcome} />
+                </div>
+
+                {/* Signal source cards */}
+                <div style={{
+                  background: T.card,
+                  border: `1px solid ${T.border}`,
+                  borderRadius: 12,
+                  padding: '20px',
+                }}>
+                  <div style={{
+                    fontSize: 9, color: T.purple,
+                    letterSpacing: '0.1em', textTransform: 'uppercase',
+                    marginBottom: 14, fontFamily: T.mono, fontWeight: 600,
+                  }}>
+                    § SIGNAL SOURCES
+                  </div>
+                  <SignalSourceCards outcome={selOutcome} />
+                </div>
+              </div>
+            </section>
+          );
+        })()}
 
       </div>
     </div>

@@ -407,3 +407,257 @@ def _aggregate_ticks_to_candles(rows: list, interval_seconds: int = 60) -> list:
             b["close"] = price
 
     return sorted(buckets.values(), key=lambda x: x["time"])
+
+
+# ─── Outcome calculation helpers ─────────────────────────────────────────────
+
+def _calc_what_if_pnl(direction: Optional[str], actual_direction: str,
+                       gamma_up: Optional[float], gamma_down: Optional[float],
+                       stake: float = 4.0, fee: float = 0.02) -> Optional[float]:
+    """
+    Calculate what-if P&L for a $stake bet using Polymarket prices.
+
+    entry_price = gamma_up_price if direction=="UP" else gamma_down_price
+    correct: win = (1 - entry_price) * stake * (1 - fee)
+    wrong:   loss = -entry_price * stake
+    """
+    if not direction or gamma_up is None or gamma_down is None:
+        return None
+
+    entry_price = gamma_up if direction == "UP" else gamma_down
+    if entry_price is None:
+        return None
+
+    correct = direction == actual_direction
+    if correct:
+        return round((1.0 - entry_price) * stake * (1.0 - fee), 4)
+    else:
+        return round(-entry_price * stake, 4)
+
+
+def _calc_outcome_row(row: Any) -> dict:
+    """Calculate outcome metrics for a single window_snapshots row."""
+    open_p = _safe_float(row.get("open_price"))
+    close_p = _safe_float(row.get("close_price"))
+
+    # Actual direction from price movement
+    actual_direction: Optional[str] = None
+    if open_p is not None and close_p is not None:
+        actual_direction = "UP" if close_p > open_p else "DOWN"
+
+    direction = row.get("direction")  # v5.7c final call
+    timesfm_dir = row.get("timesfm_direction")
+    twap_dir = row.get("twap_direction")
+    gamma_up = _safe_float(row.get("gamma_up_price"))
+    gamma_down = _safe_float(row.get("gamma_down_price"))
+
+    # Gamma implied direction: UP if gamma_up > gamma_down (more expensive UP = market favours UP)
+    gamma_implied: Optional[str] = None
+    if gamma_up is not None and gamma_down is not None:
+        gamma_implied = "UP" if gamma_up > gamma_down else "DOWN"
+
+    # Correctness flags
+    timesfm_correct = (timesfm_dir == actual_direction) if (timesfm_dir and actual_direction) else None
+    v57c_correct = (direction == actual_direction) if (direction and actual_direction) else None
+    twap_correct = (twap_dir == actual_direction) if (twap_dir and actual_direction) else None
+    gamma_correct = (gamma_implied == actual_direction) if (gamma_implied and actual_direction) else None
+
+    # What-if P&L for each source
+    timesfm_pnl = _calc_what_if_pnl(timesfm_dir, actual_direction, gamma_up, gamma_down) if actual_direction else None
+    v57c_pnl = _calc_what_if_pnl(direction, actual_direction, gamma_up, gamma_down) if actual_direction else None
+    twap_pnl = _calc_what_if_pnl(twap_dir, actual_direction, gamma_up, gamma_down) if actual_direction else None
+
+    # v5.8 decision: would trade if timesfm_agreement=True
+    timesfm_agreement = row.get("timesfm_agreement")
+    trade_placed = bool(row.get("trade_placed")) if row.get("trade_placed") is not None else False
+    v58_would_trade = bool(timesfm_agreement) and trade_placed
+    v58_pnl: Optional[float] = None
+    v58_correct: Optional[bool] = None
+
+    if v58_would_trade and actual_direction:
+        v58_correct = v57c_correct  # v5.8 follows v5.7c direction when agreed
+        v58_pnl = _calc_what_if_pnl(direction, actual_direction, gamma_up, gamma_down)
+
+    base = _row_to_window(row)
+    base.update({
+        "actual_direction": actual_direction,
+        "gamma_implied_direction": gamma_implied,
+        "timesfm_correct": timesfm_correct,
+        "v57c_correct": v57c_correct,
+        "twap_correct": twap_correct,
+        "gamma_correct": gamma_correct,
+        "timesfm_pnl": timesfm_pnl,
+        "v57c_pnl": v57c_pnl,
+        "twap_pnl": twap_pnl,
+        "v58_would_trade": v58_would_trade,
+        "v58_correct": v58_correct,
+        "v58_pnl": v58_pnl,
+    })
+    return base
+
+
+# ─── New outcome + accuracy endpoints ────────────────────────────────────────
+
+@router.get("/v58/outcomes")
+async def get_outcomes(
+    limit: int = Query(100, ge=1, le=500),
+    asset: Optional[str] = Query(None),
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    Return outcome analysis for recent windows.
+
+    For each window calculates:
+    - actual_direction (UP/DOWN from open→close prices)
+    - correctness flags for each signal source (TimesFM, v5.7c, TWAP, Gamma)
+    - what-if P&L for $4 bets using Polymarket gamma prices
+    - v5.8 decision (would_trade when timesfm_agreement=True)
+    """
+    try:
+        q = text("""
+            SELECT
+                window_ts, asset, timeframe,
+                open_price, close_price, delta_pct,
+                direction, trade_placed, skip_reason,
+                timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
+                twap_direction, twap_agreement_score, twap_gamma_gate,
+                gamma_up_price, gamma_down_price,
+                vpin, regime, confidence
+            FROM window_snapshots
+            WHERE (:asset IS NULL OR asset = :asset)
+              AND close_price IS NOT NULL
+            ORDER BY window_ts DESC
+            LIMIT :limit
+        """)
+        result = await session.execute(q, {"limit": limit, "asset": asset})
+        rows = result.mappings().all()
+        outcomes = [_calc_outcome_row(r) for r in rows]
+        return {"outcomes": outcomes, "count": len(outcomes)}
+    except Exception as exc:
+        return {"outcomes": [], "count": 0, "error": str(exc)}
+
+
+@router.get("/v58/accuracy")
+async def get_accuracy(
+    limit: int = Query(100, ge=10, le=500),
+    asset: Optional[str] = Query(None),
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    Rolling accuracy statistics across recent windows.
+
+    Returns accuracy percentages for each signal source,
+    agreement rate, cumulative P&L, and current win streak.
+    """
+    try:
+        q = text("""
+            SELECT
+                window_ts, asset, timeframe,
+                open_price, close_price, delta_pct,
+                direction, trade_placed, skip_reason,
+                timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
+                twap_direction, twap_agreement_score, twap_gamma_gate,
+                gamma_up_price, gamma_down_price,
+                vpin, regime, confidence
+            FROM window_snapshots
+            WHERE (:asset IS NULL OR asset = :asset)
+              AND close_price IS NOT NULL
+              AND open_price IS NOT NULL
+            ORDER BY window_ts DESC
+            LIMIT :limit
+        """)
+        result = await session.execute(q, {"limit": limit, "asset": asset})
+        rows = result.mappings().all()
+        outcomes = [_calc_outcome_row(r) for r in rows]
+
+        if not outcomes:
+            return _empty_accuracy()
+
+        # Accuracy calculations
+        def _accuracy(items: list) -> float:
+            filtered = [x for x in items if x is not None]
+            if not filtered:
+                return 0.0
+            return round(sum(1 for x in filtered if x) / len(filtered) * 100, 1)
+
+        timesfm_corrects = [o["timesfm_correct"] for o in outcomes]
+        v57c_corrects = [o["v57c_correct"] for o in outcomes]
+        twap_corrects = [o["twap_correct"] for o in outcomes]
+        gamma_corrects = [o["gamma_correct"] for o in outcomes]
+
+        # v5.8 accuracy: only when it would trade
+        v58_trades = [o for o in outcomes if o["v58_would_trade"]]
+        v58_corrects = [o["v58_correct"] for o in v58_trades]
+
+        # Agreement rate: % of windows where TimesFM and v5.7c agreed
+        agreement_windows = [
+            o for o in outcomes
+            if o.get("timesfm_direction") and o.get("direction")
+        ]
+        agreed_count = sum(
+            1 for o in agreement_windows
+            if o["timesfm_direction"] == o["direction"]
+        )
+        agreement_rate = round(
+            (agreed_count / len(agreement_windows) * 100) if agreement_windows else 0.0, 1
+        )
+
+        # Cumulative P&L (v5.8 trades only, newest-first → reverse for running total)
+        pnls = [o["v58_pnl"] for o in reversed(outcomes) if o["v58_pnl"] is not None]
+        cumulative_pnl = round(sum(pnls), 4)
+
+        # Current win streak (from most recent backwards)
+        streak = 0
+        for o in outcomes:
+            if not o["v58_would_trade"]:
+                continue
+            if o["v58_correct"] is True:
+                streak += 1
+            elif o["v58_correct"] is False:
+                break
+
+        # Cumulative P&L timeline for charting (newest-first from API, reversed for chart)
+        pnl_timeline = []
+        running = 0.0
+        for o in reversed(outcomes):
+            if o["v58_pnl"] is not None:
+                running += o["v58_pnl"]
+                pnl_timeline.append({
+                    "window_ts": o["window_ts"],
+                    "pnl": round(o["v58_pnl"], 4),
+                    "cumulative": round(running, 4),
+                })
+
+        return {
+            "windows_analysed": len(outcomes),
+            "timesfm_accuracy": _accuracy(timesfm_corrects),
+            "v57c_accuracy": _accuracy(v57c_corrects),
+            "twap_accuracy": _accuracy(twap_corrects),
+            "gamma_accuracy": _accuracy(gamma_corrects),
+            "v58_accuracy": _accuracy(v58_corrects),
+            "v58_trades_count": len(v58_trades),
+            "agreement_rate": agreement_rate,
+            "cumulative_pnl": cumulative_pnl,
+            "current_streak": streak,
+            "pnl_timeline": pnl_timeline,
+        }
+    except Exception as exc:
+        return {**_empty_accuracy(), "error": str(exc)}
+
+
+def _empty_accuracy() -> dict:
+    return {
+        "windows_analysed": 0,
+        "timesfm_accuracy": 0.0,
+        "v57c_accuracy": 0.0,
+        "twap_accuracy": 0.0,
+        "gamma_accuracy": 0.0,
+        "v58_accuracy": 0.0,
+        "v58_trades_count": 0,
+        "agreement_rate": 0.0,
+        "cumulative_pnl": 0.0,
+        "current_streak": 0,
+        "pnl_timeline": [],
+    }
