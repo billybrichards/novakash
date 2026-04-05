@@ -300,6 +300,7 @@ class PositionRedeemer:
                 to=CTF_ADDRESS,
                 value=0,
                 data=calldata,
+                operation=0,  # 0 = CALL (not DELEGATECALL)
             )
 
             # Execute via relay (synchronous SDK call)
