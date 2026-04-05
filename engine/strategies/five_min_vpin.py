@@ -432,6 +432,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                     )
                 )
             ),
+            "engine_version": "v7.1",
         }
 
         # ── Non-blocking DB write ────────────────────────────────────────────
@@ -754,53 +755,86 @@ class FiveMinVPINStrategy(BaseStrategy):
                 cg_confidence_modifier += 0.10
                 cg_log_parts.append(f"oi_delta_confirms(+0.10, OI_Δ={cg.oi_delta_pct_1m:.3f}%)")
 
-            # MONITORING + VETO SYSTEM (v5.4d)
-            # Individual CG signals are coin flips per 30-day backtest.
-            # But EXTREME DIVERGENCE (multiple signals aligned against our direction)
-            # warrants a veto. This catches contradictory trades like the 18:35 loss.
+            # ── CoinGlass VETO SYSTEM v7.1 ────────────────────────────────
+            # Fires when 2+ signals strongly oppose our direction.
+            # (Was 3+ in v5.4d — too loose. Apr 5 trade slipped through with only
+            #  1 trigger despite 3 independent bullish signals against a DOWN bet.)
             #
-            # Veto triggers when 3+ signals oppose direction:
-            
+            # Changes from v5.4d → v7.1:
+            #   1. Veto threshold: 3+ → 2+  (was too forgiving)
+            #   2. Smart money threshold: 55% → 52%  (catch near-majority divergence)
+            #   3. Taker threshold: 65% → 60%  (catch clear directional flow)
+            #   4. Funding bug fixed: was only checking negative funding for DOWN veto.
+            #      Strongly POSITIVE funding (longs paying huge premium) is bullish —
+            #      it should also veto a DOWN bet. Threshold: >100% annualised.
+            #   5. New: CASCADE + taker divergence. If VPIN ≥ 0.65 (high informed flow)
+            #      but taker flow opposes direction >55%, that's the worst case — VPIN
+            #      detected real flow but takers are telling us which WAY it goes.
+            #
+            # Replay of Apr 5 DOWN trade (LOSS):
+            #   taker_buying=66.2% > 60%         → veto +1
+            #   smart_money_long=54% > 52%        → veto +1
+            #   CASCADE_taker_divergence           → veto +1
+            #   Total: 3 → TRADE WOULD HAVE BEEN BLOCKED ✓
+
             _veto_count = 0
             _veto_reasons = []
-            
-            # Smart money opposing: top traders > 55% on the other side
-            if direction == "YES" and cg.top_position_short_pct > 55:
+
+            # 1. Smart money opposing: top traders >52% on the other side (was 55%)
+            if direction == "YES" and cg.top_position_short_pct > 52:
                 _veto_count += 1
                 _veto_reasons.append(f"smart_money_short={cg.top_position_short_pct:.0f}%")
-            elif direction == "NO" and cg.top_position_long_pct > 55:
+            elif direction == "NO" and cg.top_position_long_pct > 52:
                 _veto_count += 1
                 _veto_reasons.append(f"smart_money_long={cg.top_position_long_pct:.0f}%")
-            
-            # Funding extreme opposing direction
-            if direction == "YES" and cg.funding_rate > 0.0005:  # >0.05% = longs paying heavily
+
+            # 2. Funding opposing — FIXED: check both directions properly
+            # For DOWN bet: both strong positive AND strong negative funding can be signals
+            # Strong POSITIVE funding = longs paying big premium = bullish conviction against DOWN
+            # Strong NEGATIVE funding = not relevant for DOWN veto (shorts paying = bearish = confirms DOWN)
+            _funding_annual = cg.funding_rate * 3 * 365  # 8h rate → annualised
+            if direction == "YES" and cg.funding_rate > 0.0005:    # longs paying → bearish → against UP
                 _veto_count += 1
-                _veto_reasons.append(f"funding_bearish={cg.funding_rate*100:.3f}%")
-            elif direction == "NO" and cg.funding_rate < -0.0005:  # negative = shorts paying
+                _veto_reasons.append(f"funding_against_up={_funding_annual:.0f}%/yr")
+            elif direction == "NO" and _funding_annual > 1.0:       # >100%/yr longs paying → bullish → against DOWN
                 _veto_count += 1
-                _veto_reasons.append(f"funding_bullish={cg.funding_rate*100:.3f}%")
-            
-            # Crowd heavily positioned (>60%) in our direction = contrarian risk
+                _veto_reasons.append(f"funding_bullish_vs_down={_funding_annual:.0f}%/yr")
+            elif direction == "NO" and cg.funding_rate < -0.0005:  # shorts paying heavily → bearish → confirms DOWN (no veto)
+                pass  # This confirms our DOWN bet, not opposes it
+
+            # 3. Crowd overleveraged in opposing direction (unchanged, >60%)
             if direction == "YES" and cg.long_pct > 60:
                 _veto_count += 1
                 _veto_reasons.append(f"crowd_overleveraged_long={cg.long_pct:.0f}%")
             elif direction == "NO" and cg.short_pct > 60:
                 _veto_count += 1
                 _veto_reasons.append(f"crowd_overleveraged_short={cg.short_pct:.0f}%")
-            
-            # Taker volume opposing (>65% sell when going UP, >65% buy when going DOWN)
+
+            # 4. Taker volume opposing (was >65%, now >60%)
             _taker_total = cg.taker_buy_volume_1m + cg.taker_sell_volume_1m
             if _taker_total > 0:
                 _sell_pct = cg.taker_sell_volume_1m / _taker_total * 100
-                if direction == "YES" and _sell_pct > 65:
+                _buy_pct = 100 - _sell_pct
+                if direction == "YES" and _sell_pct > 60:
                     _veto_count += 1
                     _veto_reasons.append(f"taker_selling={_sell_pct:.0f}%")
-                elif direction == "NO" and (100 - _sell_pct) > 65:
+                elif direction == "NO" and _buy_pct > 60:
                     _veto_count += 1
-                    _veto_reasons.append(f"taker_buying={100-_sell_pct:.0f}%")
-            
-            # VETO: 3+ signals opposing = too much divergence, skip
-            if _veto_count >= 3:
+                    _veto_reasons.append(f"taker_buying={_buy_pct:.0f}%")
+
+            # 5. NEW: CASCADE + taker divergence (worst case — VPIN says "big player"
+            #    but takers say "they're going the other way")
+            if _taker_total > 0:
+                if current_vpin >= 0.65:
+                    if direction == "YES" and _sell_pct > 55:
+                        _veto_count += 1
+                        _veto_reasons.append(f"cascade_taker_divergence: vpin={current_vpin:.2f} but sell={_sell_pct:.0f}%")
+                    elif direction == "NO" and _buy_pct > 55:
+                        _veto_count += 1
+                        _veto_reasons.append(f"cascade_taker_divergence: vpin={current_vpin:.2f} but buy={_buy_pct:.0f}%")
+
+            # VETO: 2+ signals opposing = block (was 3+ in v5.4d)
+            if _veto_count >= 2:
                 self._log.warning(
                     "evaluate.cg_veto",
                     direction=direction,
@@ -811,7 +845,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 return None
             
             # Log "would have blocked" for tracking — even when not vetoing
-            if _veto_count >= 2:
+            if _veto_count == 1:
                 self._log.info(
                     "evaluate.cg_would_warn",
                     direction=direction,

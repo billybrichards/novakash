@@ -573,8 +573,8 @@ function WindowCard({ outcome, isExpanded, onToggle }) {
             {engine_version && (
               <span style={{
                 fontSize: 8, padding: '1px 4px', borderRadius: 3,
-                background: engine_version === 'v5.8' ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.06)',
-                color: engine_version === 'v5.8' ? '#4ade80' : T.label,
+                background: engine_version === 'v7.1' ? 'rgba(168,85,247,0.15)' : engine_version === 'v5.8' ? 'rgba(74,222,128,0.15)' : 'rgba(255,255,255,0.06)',
+                color: engine_version === 'v7.1' ? '#a855f7' : engine_version === 'v5.8' ? '#4ade80' : T.label,
                 fontWeight: 600,
               }}>{engine_version}</span>
             )}

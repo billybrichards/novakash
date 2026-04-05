@@ -27,10 +27,28 @@ const C = {
 
 const RELEASES = [
   {
+    version: '7.1',
+    date: '2026-04-05',
+    title: 'v7.1 — CoinGlass Modifier Overhaul',
+    tag: 'current',
+    changes: [
+      { type: 'fix', text: 'CG veto threshold: 3+ → 2+ signals required (was too forgiving)' },
+      { type: 'fix', text: 'Funding rate bug: extreme positive funding now correctly vetos DOWN bets (was only checking negative funding)' },
+      { type: 'fix', text: 'Smart money threshold: 55% → 52% (catch near-majority divergence earlier)' },
+      { type: 'fix', text: 'Taker threshold: >65% → >60% (catch clear directional flow divergence)' },
+      { type: 'feat', text: 'New: CASCADE + taker divergence rule — if VPIN ≥ 0.65 but takers oppose direction >55%, veto' },
+      { type: 'fix', text: 'Order type: Limit FOK @ Gamma+2¢ (cap $0.70) → GTD fallback. Removes market FOK entirely.' },
+      { type: 'feat', text: 'Multi-offset eval: FIVE_MIN_EVAL_OFFSETS env var (e.g. 90,60 for T-90 + T-60)' },
+      { type: 'feat', text: 'Analysis Library: 5 reports including order strategy, BTC accuracy, gate analysis' },
+      { type: 'data', text: 'Apr 5 17:00 trade replay: v7.1 veto fires with 3 independent triggers vs 1 in v5.4d' },
+      { type: 'data', text: 'Breakdown: taker_buying=66%, smart_money_long=54%, CASCADE_taker_divergence' },
+    ],
+  },
+  {
     version: '7.0',
     date: '2026-04-05',
     title: 'v7 — Gate Optimisation & Full Dashboard',
-    tag: 'current',
+    tag: '',
     changes: [
       { type: 'feat', text: 'TIMESFM_ONLY regime disabled — eliminates all 8 historical losses' },
       { type: 'feat', text: 'Delta gates loosened: 0.08%→0.02% (normal), 0.03%→0.01% (cascade)' },
