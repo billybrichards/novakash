@@ -503,6 +503,73 @@ def _calc_what_if_pnl(direction: Optional[str], actual_direction: str,
         return round(-entry_price * stake, 4)
 
 
+def _calc_v71_retroactive_decision(row: Any) -> dict:
+    """
+    Retroactively apply v7.1 thresholds to a historical window.
+    
+    v7.1 config:
+    - vpin_gate: 0.45 (skip if VPIN < 0.45)
+    - min_delta (NORMAL/TRANSITION): 0.02% (skip if |delta| < 0.02%)
+    - min_delta (CASCADE): 0.01% (skip if |delta| < 0.01%)
+    - cascade_threshold: 0.65
+    - informed_threshold: 0.55
+    
+    Returns: {"v71_would_trade": bool, "v71_skip_reason": str, "v71_direction": str}
+    """
+    vpin = _safe_float(row.get("vpin"))
+    delta_pct = _safe_float(row.get("delta_pct"))
+    direction = row.get("direction")  # v5.7c direction as baseline
+    timesfm_dir = row.get("timesfm_direction")
+    
+    # Constants for v7.1
+    VPIN_GATE = 0.45
+    MIN_DELTA_NORMAL = 0.0002  # 0.02%
+    MIN_DELTA_CASCADE = 0.0001  # 0.01%
+    CASCADE_THRESHOLD = 0.65
+    INFORMED_THRESHOLD = 0.55
+    
+    v71_would_trade = False
+    v71_skip_reason = None
+    v71_direction = direction  # default to v5.7c
+    
+    if not direction or vpin is None or delta_pct is None:
+        v71_skip_reason = "Insufficient data for v7.1 retroactive"
+        return {"v71_would_trade": False, "v71_skip_reason": v71_skip_reason, "v71_direction": None}
+    
+    # v7.1 Gate 1: VPIN gate
+    if vpin < VPIN_GATE:
+        v71_skip_reason = f"VPIN {vpin:.3f} < gate {VPIN_GATE} (TIMESFM_ONLY regime)"
+        return {"v71_would_trade": False, "v71_skip_reason": v71_skip_reason, "v71_direction": None}
+    
+    # v7.1 Gate 2: Delta thresholds (regime-aware)
+    abs_delta = abs(delta_pct)
+    if vpin >= CASCADE_THRESHOLD:
+        # CASCADE regime: min delta = 0.01%
+        min_delta = MIN_DELTA_CASCADE
+        regime = "CASCADE"
+    elif vpin >= INFORMED_THRESHOLD:
+        # TRANSITION regime: min delta = 0.02%
+        min_delta = MIN_DELTA_NORMAL
+        regime = "TRANSITION"
+    else:
+        # NORMAL regime: min delta = 0.02%
+        min_delta = MIN_DELTA_NORMAL
+        regime = "NORMAL"
+    
+    if abs_delta < min_delta:
+        v71_skip_reason = f"Delta {abs_delta:.4f}% < v7.1 {regime} threshold {min_delta:.4f}%"
+        return {"v71_would_trade": False, "v71_skip_reason": v71_skip_reason, "v71_direction": None}
+    
+    # v7.1 Would trade: VPIN passed, delta passed, direction from v5.7c
+    v71_would_trade = True
+    return {
+        "v71_would_trade": True,
+        "v71_skip_reason": None,
+        "v71_direction": direction,
+        "v71_regime": regime,
+    }
+
+
 def _calc_outcome_row(row: Any) -> dict:
     """Calculate outcome metrics for a single window_snapshots row.
     
@@ -588,6 +655,16 @@ def _calc_outcome_row(row: Any) -> dict:
         gate_value = round(-ungated_pnl, 4)  # saved us from loss (positive) or blocked profit (negative)
 
     base = _row_to_window(row)
+    # v7.1 Retroactive decision (how current config would have performed on old windows)
+    v71_ret = _calc_v71_retroactive_decision(row)
+    v71_would_trade = v71_ret.get("v71_would_trade", False)
+    v71_correct: Optional[bool] = None
+    v71_pnl: Optional[float] = None
+    if v71_would_trade and actual_direction:
+        v71_direction = v71_ret.get("v71_direction")
+        v71_correct = (v71_direction == actual_direction) if v71_direction else None
+        v71_pnl = _calc_what_if_pnl(v71_direction, actual_direction, gamma_up, gamma_down)
+    
     base.update({
         "actual_direction": actual_direction,
         "gamma_implied_direction": gamma_implied,
@@ -606,6 +683,11 @@ def _calc_outcome_row(row: Any) -> dict:
         "tfm_v57c_agree": tfm_v57c_agree,
         "v58_correct": v58_correct,
         "v58_pnl": v58_pnl,
+        "v71_would_trade": v71_would_trade,
+        "v71_skip_reason": v71_ret.get("v71_skip_reason"),
+        "v71_regime": v71_ret.get("v71_regime"),
+        "v71_correct": v71_correct,
+        "v71_pnl": v71_pnl,
         "poly_outcome": poly_outcome,
         "resolution_source": "polymarket" if poly_outcome else "binance_t60",
     })

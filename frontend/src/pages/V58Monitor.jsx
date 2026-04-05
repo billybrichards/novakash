@@ -274,9 +274,13 @@ function WindowTimeline({ windows, selectedTs, onSelect }) {
             ? prediction === actualDirection
             : null;
 
-          // Label: TRADE or SKIP
+          // Legacy decision (what actually happened)
           const tradeLabel = w.trade_placed ? 'TRADE' : 'SKIP';
           const labelColor = w.trade_placed ? T.cyan : T.label;
+          
+          // v7.1 Retroactive decision (what would happen with current config)
+          const v71Trade = w.v71_would_trade ? 'TRADE' : 'SKIP';
+          const v71Color = w.v71_would_trade ? '#a855f7' : T.label2; // purple for v7.1
 
           return (
             <button
@@ -295,22 +299,42 @@ function WindowTimeline({ windows, selectedTs, onSelect }) {
                 fontFamily: T.mono,
                 transition: 'all 150ms ease-out',
                 boxShadow: isSelected ? `0 0 8px ${status.color}33` : 'none',
-                minWidth: 64,
+                minWidth: 68,
                 flexShrink: 0,
               }}
+              title={`Legacy: ${tradeLabel} | v7.1: ${v71Trade}${w.v71_regime ? ' (' + w.v71_regime + ')' : ''}`}
             >
               {/* Time */}
               <div style={{ fontSize: 9, color: T.label }}>{time}</div>
 
-              {/* Trade/Skip label */}
+              {/* Dual decision: legacy / v7.1 */}
               <div style={{
-                fontSize: 9,
+                display: 'flex',
+                gap: 2,
+                fontSize: 8,
                 fontWeight: 700,
-                color: labelColor,
                 letterSpacing: '0.04em',
               }}>
-                {tradeLabel}
+                <span style={{ color: labelColor }}>{tradeLabel}</span>
+                <span style={{ color: '#999' }}>/</span>
+                <span style={{ color: v71Color }}>{v71Trade}</span>
               </div>
+
+              {/* Regime badge (v7.1 only) */}
+              {w.v71_regime && (
+                <div style={{
+                  fontSize: 7,
+                  fontWeight: 700,
+                  color: w.v71_regime === 'CASCADE' ? T.profit : w.v71_regime === 'TRANSITION' ? T.warning : T.label2,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.04em',
+                  background: 'rgba(168,85,247,0.1)',
+                  padding: '1px 4px',
+                  borderRadius: 2,
+                }}>
+                  {w.v71_regime}
+                </div>
+              )}
 
               {/* Prediction direction — prominent */}
               {prediction ? (
