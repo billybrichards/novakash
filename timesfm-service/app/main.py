@@ -117,12 +117,12 @@ app.add_middleware(
 # ─── Background tasks ────────────────────────────────────────────────────────
 
 async def _forecast_refresh_loop() -> None:
-    """Refresh the forecast cache every 10 seconds and broadcast to WS clients."""
+    """Refresh the forecast cache every 1 second and broadcast to WS clients."""
     global _forecast_cache, _forecast_ws_clients
 
     while True:
         try:
-            await asyncio.sleep(10)
+            await asyncio.sleep(1)
 
             prices = _price_feed.get_prices()
             if len(prices) < 10:

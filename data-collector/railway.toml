@@ -1,0 +1,9 @@
+[build]
+dockerfilePath = "data-collector/Dockerfile"
+
+[build.buildContext]
+context = "data-collector"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

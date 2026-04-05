@@ -23,8 +23,8 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-# Cache TTL — don't hammer the forecast service faster than it refreshes
-_CACHE_TTL_SECONDS = 8.0  # Service refreshes every 10s, cache for 8s
+# Cache TTL — service refreshes every 1s, cache briefly to avoid duplicate calls
+_CACHE_TTL_SECONDS = 0.8  # Service refreshes every 1s, cache for 0.8s
 
 
 @dataclass

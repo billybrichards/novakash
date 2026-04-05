@@ -517,6 +517,15 @@ class Orchestrator:
                 )
             )
 
+        # 5b. TimesFM 1-second forecast recorder
+        if self._tick_recorder and self._timesfm_client:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._timesfm_forecast_recorder_loop(),
+                    name="tick_recorder:timesfm_1s",
+                )
+            )
+
         # 5. Heartbeat task (every 10s)
         self._tasks.append(
             asyncio.create_task(self._heartbeat_loop(), name="heartbeat")
@@ -728,6 +737,28 @@ class Orchestrator:
                 await asyncio.wait_for(
                     asyncio.shield(self._shutdown_event.wait()),
                     timeout=10.0,
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    async def _timesfm_forecast_recorder_loop(self) -> None:
+        """Every 1s: fetch fresh TimesFM forecast and record to ticks_timesfm."""
+        while not self._shutdown_event.is_set():
+            try:
+                forecast = await self._timesfm_client.get_forecast()
+                if forecast and not forecast.error:
+                    asyncio.create_task(
+                        self._tick_recorder.record_timesfm_forecast(
+                            forecast, asset="BTC", window_ts=None,
+                        )
+                    )
+            except Exception as exc:
+                log.debug("tick_recorder.timesfm_1s_loop.error", error=str(exc))
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=1.0,
                 )
                 break
             except asyncio.TimeoutError:
