@@ -1389,10 +1389,17 @@ class FiveMinVPINStrategy(BaseStrategy):
         # If Gamma bestAsk > cap → skip (market too expensive)
         # If Gamma bestAsk <= cap → use cap as limit, FOK fills at actual market price
         
+        # _fresh_best_ask = real market price for the token we want to buy
+        # _max_price = our cap (max we'll pay)
+        # token_price = what we record/display (real market price)
+        # _fok_limit = what we submit to FOK (the cap — fills at best available)
+        
+        _fok_limit = _max_price  # Always submit FOK at cap
+        
         if _fresh_best_ask is not None and _fresh_best_ask >= 0.30 and _fresh_best_ask <= _max_price:
-            # Market price is within our cap — use cap as limit, FOK fills at actual
-            token_price = _max_price  # Submit at cap, pay actual market price
-            _price_source = f"fok_at_cap(market={_fresh_best_ask:.2f})"
+            # Market price within cap — record real price, submit at cap
+            token_price = _fresh_best_ask  # Record REAL market price
+            _price_source = f"market={_fresh_best_ask:.4f}(fok_limit={_max_price})"
         elif _fresh_best_ask is not None and _fresh_best_ask > _max_price:
             self._log.warning(
                 "execute.price_above_cap",
@@ -1401,8 +1408,8 @@ class FiveMinVPINStrategy(BaseStrategy):
             )
             return
         elif _model_price <= _max_price and _model_price >= 0.30:
-            token_price = _max_price  # FOK at cap with model fallback
-            _price_source = "fok_at_cap(model_fallback)"
+            token_price = min(_model_price, _max_price)  # Best estimate
+            _price_source = f"model={_model_price:.4f}(fok_limit={_max_price})"
         else:
             self._log.warning(
                 "execute.price_out_of_range",
@@ -1422,7 +1429,8 @@ class FiveMinVPINStrategy(BaseStrategy):
             cap=f"${_max_price:.2f}",
         )
         
-        price = Decimal(str(round(token_price, 4)))
+        price = Decimal(str(round(token_price, 4)))        # Real market price (for records/display)
+        _fok_price = Decimal(str(round(_fok_limit, 4)))   # Cap price (for FOK order submission)
         tf = "15m" if window.duration_secs == 900 else "5m"
         market_slug = f"{window.asset.lower()}-updown-{tf}-{window.window_ts}"
         
@@ -1465,7 +1473,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         _used_rfq = False
         
         if not self._poly.paper_mode:
-            # Calculate size in shares
+            # Calculate size in shares using real market price
             _shares = stake / float(price) if float(price) > 0 else 0
             is_15m = "15m" in market_slug
             _rfq_cap = 0.70 if is_15m else 0.65
@@ -1474,7 +1482,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 rfq_id, rfq_price = await self._poly.place_rfq_order(
                     token_id=token_id,
                     direction=direction,
-                    price=float(price),
+                    price=float(_fok_price),  # Submit at cap, fill at market
                     size=_shares,
                     max_price=_rfq_cap,
                 )
@@ -1500,7 +1508,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 clob_order_id = await self._poly.place_order(
                     market_slug=market_slug,
                     direction=direction,
-                    price=price,
+                    price=_fok_price,  # Submit at cap, FOK fills at market
                     stake_usd=stake,
                     token_id=token_id,
                 )
