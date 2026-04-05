@@ -185,10 +185,22 @@ class TelegramAlerter:
         gamma_down: float,
     ) -> None:
         """Sent once when a new window opens."""
+        from datetime import datetime, timezone
+        
         mode = self._mode_tag()
         g_skew = "BALANCED" if abs(gamma_up - gamma_down) < 0.03 else ("UP leaning" if gamma_up > gamma_down else "DOWN leaning")
+        
+        # Extract window time from ID (e.g., "BTC-1775416200" → "19:10 UTC")
+        window_time = "?"
+        try:
+            ts = int(window_id.split('-')[1])
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            window_time = dt.strftime('%H:%M UTC')
+        except:
+            pass
+        
         text = (
-            f"🪟 *WINDOW OPEN — {asset} {timeframe}*  {mode}\n"
+            f"🪟 *WINDOW OPEN — {asset} {timeframe}*  `{window_time}`  {mode}\n"
             f"`{window_id}`\n"
             f"\n"
             f"Open: `${open_price:,.2f}`\n"
@@ -225,14 +237,24 @@ class TelegramAlerter:
     ) -> None:
         """Send snapshot chart + text card at T-240/T-180/T-120/T-90."""
         from alerts.window_chart import window_snapshot_chart
+        from datetime import datetime, timezone
 
         delta_sign = "+" if delta_pct >= 0 else ""
         dirs = [d for d in [twap_direction, timesfm_direction,
                              "UP" if delta_pct > 0 else "DOWN"] if d]
         conflict = len(set(dirs)) > 1
+        
+        # Extract window time from ID
+        window_time = "?"
+        try:
+            ts = int(window_id.split('-')[1])
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            window_time = dt.strftime('%H:%M UTC')
+        except:
+            pass
 
         caption_lines = [
-            f"⏱ *{t_label}* — {window_id}",
+            f"⏱ *{t_label}* — Window `{window_time}` — {window_id}",
             f"",
             f"{'▲' if delta_pct > 0 else '▼'} `{delta_sign}{delta_pct:.4f}%`  |  VPIN `{vpin:.3f}` `{vpin_regime}`",
         ]
