@@ -1493,41 +1493,22 @@ class Orchestrator:
                         status_emoji = "🛑" if killed else "🟢"
 
                         # Fetch position outcomes
+                        # Use order manager for wins/losses (works for both paper and live)
                         real_wins = 0
                         real_losses = 0
                         open_positions_val = 0
+                        try:
+                            for oid, o in self._order_manager._orders.items():
+                                if o.outcome == "WIN":
+                                    real_wins += 1
+                                elif o.outcome == "LOSS":
+                                    real_losses += 1
+                                elif o.status.value in ("OPEN", "FILLED"):
+                                    open_positions_val += o.stake_usd
+                        except Exception:
+                            pass
 
-                        if not self._settings.paper_mode:
-                            # Live mode: fetch real Polymarket position outcomes
-                            try:
-                                pos_outcomes = await self._poly_client.get_position_outcomes()
-                                for cid, data in pos_outcomes.items():
-                                    if data["outcome"] == "WIN":
-                                        real_wins += 1
-                                    elif data["outcome"] == "LOSS":
-                                        real_losses += 1
-                                    else:
-                                        open_positions_val += data["value"]
-                            except Exception:
-                                pass
-                        else:
-                            # Paper mode: use internal order manager counts
-                            try:
-                                for oid, o in self._order_manager._orders.items():
-                                    if o.outcome == "WIN":
-                                        real_wins += 1
-                                    elif o.outcome == "LOSS":
-                                        real_losses += 1
-                                    elif o.status.value in ("OPEN", "FILLED"):
-                                        open_positions_val += o.stake_usd
-                            except Exception:
-                                pass
-
-                        portfolio = wallet + open_positions_val
-                        # Use starting bankroll as baseline (not hardcoded $208.98)
-                        baseline = runtime.starting_bankroll if self._settings.paper_mode else 208.98
-                        real_pnl = portfolio - baseline
-                        mode_label = "📄 PAPER" if self._settings.paper_mode else "💰 LIVE"
+                        mode_label = "📄 PAPER" if self._settings.paper_mode else "🔴 LIVE"
 
                         # Build CoinGlass block for sitrep
                         cg_block = ""
@@ -1537,19 +1518,14 @@ class Orchestrator:
                         except Exception:
                             pass
 
-                        # ── P&L baseline: use current bankroll from risk manager ──
-                        # Paper: bankroll is tracked internally from STARTING_BANKROLL
-                        # Live: bankroll is synced from Polymarket wallet
-                        # baseline = starting_bankroll from settings (set in .env)
+                        # ── P&L: use risk manager bankroll (synced from wallet in live) ──
                         baseline = self._settings.starting_bankroll
-                        # Paper portfolio = bankroll (no real USDC wallet)
-                        # Live portfolio = wallet cash + open position value
-                        if self._settings.paper_mode:
-                            portfolio = bankroll
-                            real_pnl = bankroll - baseline
-                        else:
+                        portfolio = bankroll + open_positions_val
+                        real_pnl = daily_pnl  # Use today's tracked P&L, not lifetime
+                        
+                        # Live mode: wallet is the real USDC balance
+                        if not self._settings.paper_mode and wallet and wallet > 0:
                             portfolio = wallet + open_positions_val
-                            real_pnl = portfolio - baseline
 
                         # ── Regime label (use VPIN thresholds from runtime) ──
                         vpin_regime = (
