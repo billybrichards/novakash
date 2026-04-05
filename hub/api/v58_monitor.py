@@ -1998,8 +1998,8 @@ async def get_wallet_status(
                 ROUND(SUM(CASE WHEN outcome IS NULL THEN stake_usd ELSE 0 END)::numeric, 2) as open_exposure,
                 COUNT(*) FILTER (WHERE is_live = true) as live_count,
                 COUNT(*) FILTER (WHERE is_live = false OR is_live IS NULL) as paper_count,
-                COUNT(*) FILTER (WHERE redeemed = true) as redeemed_count,
-                COUNT(*) FILTER (WHERE outcome IS NOT NULL AND (redeemed = false OR redeemed IS NULL)) as pending_redemption
+                COUNT(*) FILTER (WHERE redeemed = true AND is_live = true) as redeemed_count,
+                COUNT(*) FILTER (WHERE outcome IS NOT NULL AND is_live = true AND (redeemed = false OR redeemed IS NULL)) as pending_redemption
             FROM trades WHERE strategy = 'five_min_vpin'
         """)
         trades = (await session.execute(live_q)).mappings().first()

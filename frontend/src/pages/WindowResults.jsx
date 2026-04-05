@@ -413,7 +413,7 @@ function WindowDetail({ windowTs }) {
             marginBottom: 10,
           }}>
             <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em', textTransform: 'uppercase', fontFamily: T.mono }}>
-              What-If P&amp;L ($4 bet)
+              What-If P&amp;L ($10 bet)
             </div>
             <GateBadge gateStatus={what_if.gate_status} />
             {what_if.skip_reason && (
