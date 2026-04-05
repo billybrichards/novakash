@@ -102,7 +102,9 @@ class PositionRedeemer:
         self._private_key = private_key
         self._proxy_address = proxy_address
         self._paper_mode = paper_mode
-        self._builder_key = builder_key or os.environ.get("BUILDER_KEY", "")
+        self._builder_key = builder_key or os.environ.get("BUILDER_API_KEY", "") or os.environ.get("BUILDER_KEY", "")
+        self._builder_secret = os.environ.get("BUILDER_SECRET", "")
+        self._builder_passphrase = os.environ.get("BUILDER_PASSPHRASE", "")
         self._w3 = None
         self._ctf = None
         self._usdc = None
@@ -153,8 +155,8 @@ class PositionRedeemer:
 
             config = BuilderConfig(
                 api_key=self._builder_key,
-                secret="",
-                passphrase="",
+                secret=self._builder_secret,
+                passphrase=self._builder_passphrase,
             )
             self._relay_client = RelayClient(
                 relayer_url="https://relayer-v2.polymarket.com",
