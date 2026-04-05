@@ -2536,6 +2536,112 @@ export default function V58Monitor() {
                 windowTs={latestWindow?.window_ts}
               />
             </div>
+
+            {/* v7.1 Live Decision Panel */}
+            <div style={{
+              background: 'rgba(168,85,247,0.08)',
+              border: `1px solid rgba(168,85,247,0.3)`,
+              borderRadius: 12,
+              padding: '20px',
+              display: 'flex',
+              flexDirection: 'column',
+            }}>
+              <div style={{ fontSize: 9, color: '#a855f7', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 14, fontWeight: 700 }}>
+                § v7.1 LIVE DECISION
+              </div>
+              {latestWindow ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {/* Main decision */}
+                  <div style={{
+                    padding: '12px 16px',
+                    borderRadius: 8,
+                    background: latestWindow.v71_would_trade ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)',
+                    border: `1px solid ${latestWindow.v71_would_trade ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}`,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: 10, color: T.label, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Decision</span>
+                      <span style={{
+                        fontSize: 16,
+                        fontWeight: 700,
+                        color: latestWindow.v71_would_trade ? T.profit : T.loss,
+                        fontFamily: T.mono,
+                      }}>
+                        {latestWindow.v71_would_trade ? '✅ TRADE' : '🚫 SKIP'}
+                      </span>
+                    </div>
+                    {latestWindow.v71_regime && (
+                      <div style={{ fontSize: 9, color: T.label, marginTop: 8, fontFamily: T.mono }}>
+                        Regime: <span style={{
+                          fontWeight: 700,
+                          color: latestWindow.v71_regime === 'CASCADE' ? T.profit : latestWindow.v71_regime === 'TRANSITION' ? T.warning : T.label2,
+                        }}>{latestWindow.v71_regime}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Skip reason if blocked */}
+                  {latestWindow.v71_skip_reason && (
+                    <div style={{
+                      padding: '8px 12px',
+                      borderRadius: 6,
+                      background: 'rgba(248,113,113,0.08)',
+                      border: `1px solid rgba(248,113,113,0.2)`,
+                      fontSize: 9,
+                      color: T.label,
+                      fontFamily: T.mono,
+                      lineHeight: 1.4,
+                    }}>
+                      {latestWindow.v71_skip_reason}
+                    </div>
+                  )}
+
+                  {/* Comparison: legacy vs v7.1 */}
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1fr 1fr',
+                    gap: 8,
+                    fontSize: 9,
+                  }}>
+                    <div style={{
+                      padding: '8px',
+                      borderRadius: 6,
+                      background: 'rgba(255,255,255,0.04)',
+                      border: `1px solid ${T.border}`,
+                      textAlign: 'center',
+                    }}>
+                      <div style={{ color: T.label, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 }}>Legacy</div>
+                      <div style={{
+                        fontWeight: 700,
+                        color: latestWindow.trade_placed ? T.cyan : T.label,
+                        fontSize: 11,
+                      }}>
+                        {latestWindow.trade_placed ? 'TRADE' : 'SKIP'}
+                      </div>
+                    </div>
+                    <div style={{
+                      padding: '8px',
+                      borderRadius: 6,
+                      background: 'rgba(168,85,247,0.08)',
+                      border: `1px solid rgba(168,85,247,0.3)`,
+                      textAlign: 'center',
+                    }}>
+                      <div style={{ color: '#a855f7', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4, fontWeight: 700 }}>v7.1</div>
+                      <div style={{
+                        fontWeight: 700,
+                        color: latestWindow.v71_would_trade ? T.profit : T.loss,
+                        fontSize: 11,
+                      }}>
+                        {latestWindow.v71_would_trade ? 'TRADE' : 'SKIP'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ color: T.label, fontSize: 10, textAlign: 'center', padding: '20px 0' }}>
+                  No window data yet
+                </div>
+              )}
+            </div>
           </div>
         </section>
 
