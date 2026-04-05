@@ -888,7 +888,7 @@ class Orchestrator:
                             gamma_down_price=window.down_price,
                         )
                         if _tw:
-                            _twap_dir = f"{_tw.recommended_direction} (agree {_tw.agree_count}/{_tw.total_count})"
+                            _twap_dir = f"{_tw.recommended_direction} (agree {_tw.agreement_score}/3)"
                     
                     if self._alerter:
                         _regime = "CASCADE" if _vpin >= 0.65 else "TRANSITION" if _vpin >= 0.55 else "NORMAL"
