@@ -299,6 +299,7 @@ class PositionRedeemer:
             txn = Transaction(
                 to=CTF_ADDRESS,
                 data=calldata,
+                value="0",
             )
 
             # Execute via relay (synchronous SDK call — handles signing internally)
