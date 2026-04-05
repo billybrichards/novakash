@@ -260,6 +260,24 @@ function WindowTimeline({ windows, selectedTs, onSelect }) {
             hour: '2-digit', minute: '2-digit',
           }) : '?';
 
+          // Prediction direction (v5.7c)
+          const prediction = w.direction; // UP or DOWN
+
+          // Actual outcome direction (from open/close prices)
+          let actualDirection = null;
+          if (w.open_price != null && w.close_price != null) {
+            actualDirection = w.close_price > w.open_price ? 'UP' : 'DOWN';
+          }
+
+          // Was prediction correct?
+          const predCorrect = prediction && actualDirection
+            ? prediction === actualDirection
+            : null;
+
+          // Label: TRADE or SKIP
+          const tradeLabel = w.trade_placed ? 'TRADE' : 'SKIP';
+          const labelColor = w.trade_placed ? T.cyan : T.label;
+
           return (
             <button
               key={ts}
@@ -268,7 +286,7 @@ function WindowTimeline({ windows, selectedTs, onSelect }) {
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
-                gap: 4,
+                gap: 3,
                 padding: '8px 10px',
                 borderRadius: 8,
                 border: `1px solid ${isSelected ? status.color : T.border}`,
@@ -277,27 +295,53 @@ function WindowTimeline({ windows, selectedTs, onSelect }) {
                 fontFamily: T.mono,
                 transition: 'all 150ms ease-out',
                 boxShadow: isSelected ? `0 0 8px ${status.color}33` : 'none',
-                minWidth: 60,
+                minWidth: 64,
                 flexShrink: 0,
               }}
             >
+              {/* Time */}
+              <div style={{ fontSize: 9, color: T.label }}>{time}</div>
+
+              {/* Trade/Skip label */}
               <div style={{
-                fontSize: 10,
+                fontSize: 9,
                 fontWeight: 700,
-                color: status.color,
+                color: labelColor,
                 letterSpacing: '0.04em',
               }}>
-                {status.label}
+                {tradeLabel}
               </div>
-              <div style={{ fontSize: 9, color: T.label }}>{time}</div>
-              {w.direction && (
+
+              {/* Prediction direction — prominent */}
+              {prediction ? (
                 <div style={{
-                  fontSize: 9,
-                  color: directionColor(w.direction),
-                  fontWeight: 600,
+                  fontSize: 14,
+                  fontWeight: 700,
+                  color: directionColor(prediction),
+                  lineHeight: 1,
                 }}>
-                  {w.direction === 'UP' ? '▲' : '▼'}
+                  {prediction === 'UP' ? '▲' : '▼'}
                 </div>
+              ) : (
+                <div style={{ fontSize: 14, color: T.label, lineHeight: 1 }}>—</div>
+              )}
+
+              {/* Actual outcome — colored green/red + emoji */}
+              {actualDirection ? (
+                <div style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: predCorrect ? T.profit : T.loss,
+                  lineHeight: 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 2,
+                }}>
+                  {actualDirection === 'UP' ? '▲' : '▼'}
+                  <span style={{ fontSize: 9 }}>{predCorrect ? '✅' : '❌'}</span>
+                </div>
+              ) : (
+                <div style={{ fontSize: 9, color: T.label }}>pending</div>
               )}
             </button>
           );

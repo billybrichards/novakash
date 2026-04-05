@@ -1,23 +1,25 @@
 /**
- * CountdownTimer.jsx — v5.8 Window Countdown Component
+ * CountdownTimer.jsx — v7 Window Countdown Component
  *
  * Shows:
  * - Progress bar for the current 5-minute window (300s)
  * - T-180/T-120/T-90/T-60 evaluation stage markers
  * - Current stage highlighted with a glow
  * - Seconds remaining displayed prominently
+ * - Auto-detects the current live window from system clock
  *
  * Props:
- *   windowTs   {string|Date} — ISO timestamp of the current window start
+ *   windowTs   {string|Date} — ISO timestamp of the last known window start
+ *                              (used as a hint, but we always prefer live clock)
  *   className  {string}      — additional CSS class
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 
 // Window duration in seconds
 const WINDOW_DURATION = 300;
 
-// Evaluation stage checkpoints (seconds from window START)
+// Evaluation stage checkpoints (seconds REMAINING until window close)
 const STAGES = [
   { key: 't180', label: 'T-180', secondsRemaining: 180, color: '#a855f7' },
   { key: 't120', label: 'T-120', secondsRemaining: 120, color: '#06b6d4' },
@@ -28,15 +30,17 @@ const STAGES = [
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
- * Given a window start timestamp, returns seconds remaining until window close.
- * Returns 0 if the window has passed.
+ * Auto-detect the CURRENT active window from system clock.
+ * window_ts = floor(now / 300) * 300  (unix seconds)
+ * Returns { windowTs, secondsRemaining, secondsElapsed }
  */
-function getSecondsRemaining(windowTs) {
-  if (!windowTs) return 0;
-  const start = new Date(windowTs).getTime();
-  const end = start + WINDOW_DURATION * 1000;
-  const now = Date.now();
-  return Math.max(0, Math.floor((end - now) / 1000));
+function getCurrentWindowState() {
+  const nowSec = Date.now() / 1000;
+  const windowTs = Math.floor(nowSec / WINDOW_DURATION) * WINDOW_DURATION;
+  const windowEnd = windowTs + WINDOW_DURATION;
+  const secondsRemaining = Math.max(0, Math.floor(windowEnd - nowSec));
+  const secondsElapsed = WINDOW_DURATION - secondsRemaining;
+  return { windowTs, secondsRemaining, secondsElapsed };
 }
 
 /**
@@ -44,10 +48,8 @@ function getSecondsRemaining(windowTs) {
  */
 function getActiveStage(secondsRemaining) {
   if (secondsRemaining <= 0) return null;
-  // Stages are evaluated when we REACH that threshold (countdown passes through it)
   const passed = STAGES.filter(s => secondsRemaining <= s.secondsRemaining);
   if (passed.length === 0) return null;
-  // The most recent one is the highest secondsRemaining among those passed
   return passed.reduce((best, s) =>
     s.secondsRemaining > best.secondsRemaining ? s : best
   );
@@ -65,26 +67,27 @@ function formatTime(seconds) {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function CountdownTimer({ windowTs, className = '' }) {
-  const [secondsRemaining, setSecondsRemaining] = useState(() => getSecondsRemaining(windowTs));
-  const frameRef = useRef(null);
+  // Always drive from live clock — windowTs prop is informational only
+  const [state, setState] = useState(() => getCurrentWindowState());
 
-  // Tick every second
+  // Tick every second using live clock
   useEffect(() => {
-    const tick = () => {
-      setSecondsRemaining(getSecondsRemaining(windowTs));
-    };
-    tick(); // immediate
+    const tick = () => setState(getCurrentWindowState());
+    tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [windowTs]);
+  }, []); // no dependency on windowTs — we use the clock
 
-  const progress = Math.min(1, Math.max(0, 1 - secondsRemaining / WINDOW_DURATION));
+  const { secondsRemaining, secondsElapsed } = state;
+  const progress = Math.min(1, Math.max(0, secondsElapsed / WINDOW_DURATION));
   const pct = Math.round(progress * 100);
   const activeStage = getActiveStage(secondsRemaining);
-  const isComplete = secondsRemaining <= 0;
+  // In a 5-min window, there's always time remaining (it resets every 300s)
+  // "between windows" means seconds 0–1 briefly at the boundary
+  const isBoundary = secondsRemaining === 0;
 
   // Status colour
-  const barColor = isComplete
+  const barColor = isBoundary
     ? 'rgba(255,255,255,0.2)'
     : activeStage?.color ?? '#4ade80';
 
@@ -107,15 +110,15 @@ export default function CountdownTimer({ windowTs, className = '' }) {
         <div style={{
           fontSize: 28,
           fontWeight: 700,
-          color: isComplete ? 'rgba(255,255,255,0.25)' : barColor,
+          color: isBoundary ? 'rgba(255,255,255,0.25)' : barColor,
           letterSpacing: '-0.02em',
           transition: 'color 300ms ease-out',
         }}>
-          {isComplete ? '—:——' : formatTime(secondsRemaining)}
+          {isBoundary ? '0:00' : formatTime(secondsRemaining)}
         </div>
 
         {/* Active stage badge */}
-        {activeStage && !isComplete ? (
+        {activeStage && !isBoundary ? (
           <div style={{
             padding: '4px 10px',
             borderRadius: 6,
@@ -130,18 +133,18 @@ export default function CountdownTimer({ windowTs, className = '' }) {
           }}>
             {activeStage.label}
           </div>
-        ) : isComplete ? (
+        ) : isBoundary ? (
           <div style={{
             padding: '4px 10px',
             borderRadius: 6,
-            background: 'rgba(255,255,255,0.04)',
-            border: '1px solid rgba(255,255,255,0.1)',
-            color: 'rgba(255,255,255,0.3)',
+            background: 'rgba(74,222,128,0.08)',
+            border: '1px solid rgba(74,222,128,0.2)',
+            color: '#4ade80',
             fontSize: 11,
             fontWeight: 700,
             letterSpacing: '0.06em',
           }}>
-            COMPLETE
+            NEW WINDOW
           </div>
         ) : (
           <div style={{
@@ -177,7 +180,7 @@ export default function CountdownTimer({ windowTs, className = '' }) {
           width: `${pct}%`,
           background: barColor,
           borderRadius: 4,
-          boxShadow: isComplete ? 'none' : `0 0 8px ${barColor}88`,
+          boxShadow: isBoundary ? 'none' : `0 0 8px ${barColor}88`,
           transition: 'width 800ms linear, background 300ms ease-out',
         }} />
 
@@ -235,7 +238,7 @@ export default function CountdownTimer({ windowTs, className = '' }) {
       }}>
         {STAGES.map(stage => {
           const isPast = secondsRemaining <= stage.secondsRemaining;
-          const isActive = activeStage?.key === stage.key && !isComplete;
+          const isActive = activeStage?.key === stage.key && !isBoundary;
           return (
             <div
               key={stage.key}

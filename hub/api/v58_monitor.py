@@ -482,12 +482,18 @@ def _calc_what_if_pnl(direction: Optional[str], actual_direction: str,
     entry_price = gamma_up_price if direction=="UP" else gamma_down_price
     correct: win = (1 - entry_price) * stake * (1 - fee)
     wrong:   loss = -entry_price * stake
+
+    Returns None if entry price is 0, 1, or not in the real range (0.01–0.99).
     """
     if not direction or gamma_up is None or gamma_down is None:
         return None
 
     entry_price = gamma_up if direction == "UP" else gamma_down
     if entry_price is None:
+        return None
+
+    # Skip resolved prices ($0 or $1) — not a real entry price
+    if entry_price <= 0.005 or entry_price >= 0.995:
         return None
 
     correct = direction == actual_direction
@@ -654,18 +660,29 @@ async def get_accuracy(
     try:
         q = text("""
             SELECT
-                window_ts, asset, timeframe,
-                open_price, close_price, delta_pct,
-                direction, trade_placed, skip_reason,
-                timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
-                twap_direction, twap_agreement_score, twap_gamma_gate,
-                gamma_up_price, gamma_down_price, engine_version,
-                vpin, regime, confidence
-            FROM window_snapshots
-            WHERE (CAST(:asset AS VARCHAR) IS NULL OR asset = :asset)
-              AND close_price IS NOT NULL
-              AND open_price IS NOT NULL
-            ORDER BY window_ts DESC
+                ws.window_ts, ws.asset, ws.timeframe,
+                ws.open_price, ws.close_price, ws.delta_pct,
+                ws.direction, ws.trade_placed, ws.skip_reason,
+                ws.timesfm_direction, ws.timesfm_confidence, ws.timesfm_predicted_close, ws.timesfm_agreement,
+                ws.twap_direction, ws.twap_agreement_score, ws.twap_gamma_gate,
+                COALESCE(ws.gamma_up_price, ms.up_price)    AS gamma_up_price,
+                COALESCE(ws.gamma_down_price, ms.down_price) AS gamma_down_price,
+                ws.engine_version,
+                ws.vpin, ws.regime, ws.confidence
+            FROM window_snapshots ws
+            LEFT JOIN LATERAL (
+                SELECT up_price, down_price
+                FROM market_snapshots
+                WHERE window_ts = ws.window_ts
+                  AND asset = ws.asset
+                  AND timeframe = ws.timeframe
+                ORDER BY ABS(seconds_remaining - 60)
+                LIMIT 1
+            ) ms ON true
+            WHERE (CAST(:asset AS VARCHAR) IS NULL OR ws.asset = :asset)
+              AND ws.close_price IS NOT NULL
+              AND ws.open_price IS NOT NULL
+            ORDER BY ws.window_ts DESC
             LIMIT :limit
         """)
         result = await session.execute(q, {"limit": limit, "asset": asset})
