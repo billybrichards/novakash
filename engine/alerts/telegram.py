@@ -767,11 +767,31 @@ class TelegramAlerter:
                 lines.append(self.format_coinglass_block(cg_snapshot))
                 lines.append("")
 
-            # UNIFIED INDICATORS SECTION
-            lines.append("🔮 *Indicators (What Each Means)*")
+            # ━━━━ STRATEGY PREDICTIONS ━━━━━━━━━━━━━━━━━━━━━━
+            lines.append("🤖 *STRATEGY PREDICTIONS*")
             lines.append("")
 
-            # TWAP/VPIN/Point indicators
+            # TimesFM prediction (BTC only)
+            if asset == "BTC" and timesfm_forecast is not None:
+                _tfm = timesfm_forecast
+                if not getattr(_tfm, 'error', ''):
+                    _tfm_dir = getattr(_tfm, 'direction', '?')
+                    _tfm_conf = getattr(_tfm, 'confidence', 0)
+                    _tfm_close = getattr(_tfm, 'predicted_close', 0)
+                    _tfm_delta = getattr(_tfm, 'delta_vs_open_pct', 0)
+                    _tfm_dir_emoji = "📈" if _tfm_dir == "UP" else "📉"
+
+                    lines += [
+                        f"🧠 *TimesFM (v6.0)*: {_tfm_dir_emoji} `{_tfm_dir}` | Confidence `{_tfm_conf*100:.0f}%`",
+                        f"   Predicted: `${_tfm_close:,.2f}` (Δ {_tfm_delta:+.4f}%)",
+                        f"",
+                    ]
+                else:
+                    lines += [f"🧠 *TimesFM*: ❌ `{getattr(_tfm, 'error', 'unknown')}`", f""]
+            elif asset != "BTC":
+                lines += [f"🧠 *TimesFM*: Not available (BTC only)", f""]
+
+            # v5.7c prediction
             if twap_result is not None:
                 _twap_dir = getattr(twap_result, 'twap_direction', '—')
                 _gamma_dir = getattr(twap_result, 'gamma_direction', '—')
@@ -794,40 +814,25 @@ class TelegramAlerter:
                 _trend_filled = int(_trend_pct * 10)
                 _trend_bar = "▓" * _trend_filled + "░" * (10 - _trend_filled)
 
-                lines += [
-                    f"✓ VPIN `{vpin:.4f}` → {regime_emoji} *{regime}* — [Shows informed trading activity level]",
-                    f"✓ TWAP Δ `{_twap_delta:+.4f}%` → `{_twap_dir}` — [Average price moved this much in window]",
-                    f"✓ Point Δ `{delta_pct:+.4f}%` → `{_point_dir}` — [Last trade vs window open]",
-                    f"✓ Momentum `{_mom_pct:+.3f}%` → `{_mom_dir}` (30s) — [Is price accelerating?]",
-                    f"✓ Trend `[{_trend_bar}]` `{_trend_pct:.0%}` above open — [How much of window was bullish?]",
-                    f"✓ Gamma `{_gamma_up:.2f}`/`{_gamma_down:.2f}` → `{_gamma_dir}` {_gate_emoji} `{_gamma_gate}` — [Market maker fair prices]",
-                    f"✓ Agreement {_agree_bar} `{_agree_score}/3` | Boost `{_boost:+.2f}` — [How many signals agree?]",
-                    f"",
-                ]
-
                 if _should_skip:
                     _skip_reason = getattr(twap_result, 'skip_reason', '')
-                    lines.append(f"⛔ *v5.7c (multi-indicator) → SKIP* — `{_skip_reason}`")
-            else:
-                lines.append(f"✓ v5.7c: not evaluated")
-            
-            lines.append("")
-
-            # TimesFM block — only for v6.0 strategy reporting
-            if timesfm_forecast is not None:
-                _tfm = timesfm_forecast
-                if not getattr(_tfm, 'error', ''):
-                    _tfm_dir = getattr(_tfm, 'direction', '?')
-                    _tfm_conf = getattr(_tfm, 'confidence', 0)
-                    _tfm_close = getattr(_tfm, 'predicted_close', 0)
-                    _tfm_delta = getattr(_tfm, 'delta_vs_open_pct', 0)
-                    _tfm_dir_emoji = "📈" if _tfm_dir == "UP" else "📉"
-
                     lines += [
-                        f"🧠 *TimesFM ML Forecast* — `{_tfm_dir}` | Confidence `{_tfm_conf*100:.0f}%` — [Neural net predicts close price]",
-                        f"   Predicted close: `${_tfm_close:,.2f}` (Δ `{_tfm_delta:+.4f}%`)",
+                        f"📊 *v5.7c (Multi)* ⛔ SKIPPED",
+                        f"   Reason: `{_skip_reason}`",
                         f"",
                     ]
+                else:
+                    lines += [
+                        f"📊 *v5.7c (Multi)* {('📈' if _gamma_dir == 'UP' else '📉')} `{_gamma_dir}` | Agreement {_agree_bar} `{_agree_score}/3`",
+                        f"   TWAP: `{_twap_dir}` | Point: `{_point_dir}` | Gamma: `{_gamma_dir}`",
+                        f"   Gate: {_gate_emoji} `{_gamma_gate}` | Boost: `{_boost:+.2f}`",
+                        f"",
+                    ]
+            else:
+                lines.append(f"📊 *v5.7c (Multi)*: Not evaluated")
+                lines.append(f"")
+            
+            lines.append("")
 
             # P&L SCENARIOS SECTION
             lines.append("💡 *What If We Followed Each Strategy?*")
