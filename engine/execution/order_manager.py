@@ -484,21 +484,17 @@ class OrderManager:
                 return outcome, payout
 
             # Did BTC go up or down from window open to close?
-            # v7.1: Use window close from window_snapshots if available
-            actual_close = current_btc_price  # default to live
-            window_ts = order.metadata.get("window_ts")
-            if self._db and window_ts and hasattr(self._db, '_pool') and self._db._pool:
-                try:
-                    import asyncio
-                    close_from_db = asyncio.get_event_loop().run_until_complete(
-                        self._db.get_window_close(window_ts, "BTC", "5m")
-                    ) if not asyncio.get_event_loop().is_running() else 0.0
-                except Exception:
-                    close_from_db = 0.0
-                if close_from_db and close_from_db > 0:
-                    actual_close = close_from_db
+            # v7.1: Use the window open price + current BTC price BUT only
+            # resolve AFTER a buffer period to ensure the window has fully closed.
+            # The resolution poll runs every 5s. Window = 300s. So at 305s age,
+            # the live BTC price IS effectively the close price (±5s).
+            # For more accuracy, we add 10s buffer beyond window_seconds.
+            age = time.time() - order.created_at
+            if age < order.window_seconds + 10:
+                # Too early — window might not have closed yet, skip this cycle
+                continue  # Will be picked up on next poll
             
-            btc_went_up = actual_close >= window_open
+            btc_went_up = current_btc_price >= window_open
 
             # Did our bet match?
             if order.direction == "YES":

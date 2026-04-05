@@ -1328,23 +1328,49 @@ class Orchestrator:
                         except Exception:
                             pass
 
+                        # ── P&L baseline: use current bankroll from risk manager ──
+                        # Paper: bankroll is tracked internally from STARTING_BANKROLL
+                        # Live: bankroll is synced from Polymarket wallet
+                        # baseline = starting_bankroll from settings (set in .env)
+                        baseline = self._settings.starting_bankroll
+                        # Paper portfolio = bankroll (no real USDC wallet)
+                        # Live portfolio = wallet cash + open position value
+                        if self._settings.paper_mode:
+                            portfolio = bankroll
+                            real_pnl = bankroll - baseline
+                        else:
+                            portfolio = wallet + open_positions_val
+                            real_pnl = portfolio - baseline
+
+                        # ── Regime label (use VPIN thresholds from runtime) ──
+                        vpin_regime = (
+                            "CASCADE" if vpin >= runtime.vpin_cascade_direction_threshold
+                            else "TRANSITION" if vpin >= runtime.vpin_informed_threshold
+                            else "NORMAL" if vpin >= runtime.five_min_vpin_gate
+                            else "CALM"
+                        )
+
                         sitrep = (
                             f"📋 *5-MIN SITREP* ({status_emoji} {'KILLED' if killed else 'ACTIVE'}) {mode_label}\n"
                             f"\n"
-                            f"🏦 Cash: `${wallet:.2f}`{' USDC' if not self._settings.paper_mode else ''}\n"
-                            f"📊 Positions: `${open_positions_val:.2f}`\n"
-                            f"💰 Portfolio: `${portfolio:.2f}`\n"
-                            f"📈 P&L: `${real_pnl:+.2f}` (from ${baseline:.0f})\n"
+                            + (
+                                f"🏦 Cash: `${wallet:.2f}` USDC\n"
+                                f"📊 Positions: `${open_positions_val:.2f}`\n"
+                                f"💰 Portfolio: `${portfolio:.2f}`\n"
+                                if not self._settings.paper_mode else
+                                f"💰 Bankroll: `${bankroll:.2f}`\n"
+                            ) +
+                            f"📈 P&L: `${real_pnl:+.2f}` (from `${baseline:.0f}`)\n"
                             f"\n"
                             f"✅ Wins: `{real_wins}` | ❌ Losses: `{real_losses}`\n"
                             f"📉 Drawdown: `{drawdown:.1%}`\n"
                             f"\n"
-                            f"🔬 VPIN: `{vpin:.4f}` | Vol: `{regime}` | Trade: `{'CASCADE' if vpin >= 0.65 else ('TRANSITION' if vpin >= 0.55 else 'NORMAL' if vpin >= 0.45 else 'CALM')}`\n"
+                            f"🔬 VPIN: `{vpin:.4f}` | Regime: `{vpin_regime}`\n"
                             + cg_block +
                             f"🔗 Binance: `{'✅' if binance_ok else '❌'}` | BTC: `${self._order_manager._current_btc_price:,.2f}`\n"
                         )
 
-                        await self._alerter.send_system_alert(sitrep, level="info")
+                        await self._alerter.send_raw_message(sitrep)
                         log.info("sitrep.sent")
                     except Exception as exc:
                         log.warning("sitrep.failed", error=str(exc))

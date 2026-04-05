@@ -569,8 +569,8 @@ class TelegramAlerter:
             pass
 
     async def send_raw_message(self, text: str) -> None:
-        if not self.trade_alerts_enabled:
-            return
+        """Send a raw markdown message — always sends (bypasses trade_alerts_enabled gate).
+        Used for sitreps and system notifications that should always go through."""
         try:
             await self._send(text)
         except Exception:
