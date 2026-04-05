@@ -504,13 +504,31 @@ def _calc_what_if_pnl(direction: Optional[str], actual_direction: str,
 
 
 def _calc_outcome_row(row: Any) -> dict:
-    """Calculate outcome metrics for a single window_snapshots row."""
+    """Calculate outcome metrics for a single window_snapshots row.
+    
+    v7.1: Uses Polymarket resolution as source of truth when available.
+    Falls back to Binance open→close if no trade/resolution exists.
+    """
     open_p = _safe_float(row.get("open_price"))
     close_p = _safe_float(row.get("close_price"))
 
-    # Actual direction from price movement
+    # v7.1: Prefer Polymarket resolution (the actual payout truth)
+    poly_outcome = row.get("poly_outcome")  # "WIN" or "LOSS" from trades table
+    trade_direction = row.get("trade_direction")  # "YES" or "NO" from trades table
+    
     actual_direction: Optional[str] = None
-    if open_p is not None and close_p is not None:
+    if poly_outcome and trade_direction:
+        # Polymarket resolved this window — use that as truth
+        # If trade was YES (UP) and WON → actual was UP
+        # If trade was YES (UP) and LOST → actual was DOWN
+        # If trade was NO (DOWN) and WON → actual was DOWN
+        # If trade was NO (DOWN) and LOST → actual was UP
+        if trade_direction == "YES":
+            actual_direction = "UP" if poly_outcome == "WIN" else "DOWN"
+        else:
+            actual_direction = "DOWN" if poly_outcome == "WIN" else "UP"
+    elif open_p is not None and close_p is not None:
+        # Fallback: Binance T-60s price (less accurate)
         actual_direction = "UP" if close_p > open_p else "DOWN"
 
     direction = row.get("direction")  # v5.7c final call
@@ -588,6 +606,8 @@ def _calc_outcome_row(row: Any) -> dict:
         "tfm_v57c_agree": tfm_v57c_agree,
         "v58_correct": v58_correct,
         "v58_pnl": v58_pnl,
+        "poly_outcome": poly_outcome,
+        "resolution_source": "polymarket" if poly_outcome else "binance_t60",
     })
     return base
 
@@ -621,7 +641,9 @@ async def get_outcomes(
                 COALESCE(ws.gamma_up_price, ms.up_price) as gamma_up_price,
                 COALESCE(ws.gamma_down_price, ms.down_price) as gamma_down_price,
                 ws.engine_version,
-                ws.vpin, ws.regime, ws.confidence
+                ws.vpin, ws.regime, ws.confidence,
+                t.outcome AS poly_outcome,
+                t.direction AS trade_direction
             FROM window_snapshots ws
             LEFT JOIN LATERAL (
                 SELECT up_price, down_price
@@ -631,6 +653,15 @@ async def get_outcomes(
                 ORDER BY ABS(seconds_remaining - 60) NULLS LAST
                 LIMIT 1
             ) ms ON true
+            LEFT JOIN LATERAL (
+                SELECT outcome, direction
+                FROM trades
+                WHERE strategy = 'five_min_vpin'
+                  AND (metadata::json->>'window_ts')::bigint = ws.window_ts
+                  AND outcome IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) t ON true
             WHERE (CAST(:asset AS VARCHAR) IS NULL OR ws.asset = :asset)
               AND ws.close_price IS NOT NULL
             ORDER BY ws.window_ts DESC
@@ -668,7 +699,9 @@ async def get_accuracy(
                 COALESCE(ws.gamma_up_price, ms.up_price)    AS gamma_up_price,
                 COALESCE(ws.gamma_down_price, ms.down_price) AS gamma_down_price,
                 ws.engine_version,
-                ws.vpin, ws.regime, ws.confidence
+                ws.vpin, ws.regime, ws.confidence,
+                t.outcome AS poly_outcome,
+                t.direction AS trade_direction
             FROM window_snapshots ws
             LEFT JOIN LATERAL (
                 SELECT up_price, down_price
@@ -679,6 +712,15 @@ async def get_accuracy(
                 ORDER BY ABS(seconds_remaining - 60)
                 LIMIT 1
             ) ms ON true
+            LEFT JOIN LATERAL (
+                SELECT outcome, direction
+                FROM trades
+                WHERE strategy = 'five_min_vpin'
+                  AND (metadata::json->>'window_ts')::bigint = ws.window_ts
+                  AND outcome IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) t ON true
             WHERE (CAST(:asset AS VARCHAR) IS NULL OR ws.asset = :asset)
               AND ws.close_price IS NOT NULL
               AND ws.open_price IS NOT NULL
@@ -764,6 +806,10 @@ async def get_accuracy(
                     "ungated_cumulative": round(running_ungated, 4),
                 })
 
+        # v7.1: Count resolution sources
+        poly_resolved = sum(1 for o in outcomes if o.get("poly_outcome"))
+        binance_resolved = sum(1 for o in outcomes if o.get("resolution_source") == "binance_t60" and o.get("actual_direction"))
+
         return {
             "windows_analysed": len(outcomes),
             "timesfm_accuracy": _accuracy(timesfm_corrects),
@@ -781,6 +827,10 @@ async def get_accuracy(
             "gate_value": gate_total,
             "current_streak": streak,
             "pnl_timeline": pnl_timeline,
+            "resolution_sources": {
+                "polymarket": poly_resolved,
+                "binance_t60": binance_resolved,
+            },
         }
     except Exception as exc:
         return {**_empty_accuracy(), "error": str(exc)}
