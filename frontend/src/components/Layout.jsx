@@ -23,11 +23,11 @@ const NAV_ITEMS = [
   { path: '/trades',          label: 'Trades',     icon: '📋' },
   { path: '/signals',         label: 'Signals',    icon: '📡' },
   { path: '/pnl',             label: 'P&L',        icon: '💰' },
-  { path: '/risk',            label: 'Risk',       icon: '🛡️' },
+  { path: '/risk',            label: 'Risk',       icon: '🛡️', highlight: true },
   { path: '/system',          label: 'System',     icon: '🖥️' },
-  { path: '/trading-config',  label: 'Config',     icon: '⚙️' },
+  { path: '/trading-config',  label: 'Config',     icon: '⚙️', highlight: true },
   { path: '/playwright',      label: 'Account',    icon: '👁' },
-  { path: '/changelog',       label: 'Changelog',  icon: '📝' },
+  { path: '/changelog',       label: 'Changelog',  icon: '📝', highlight: true },
 ];
 
 // Bottom tab bar items (mobile) — 5 most important
