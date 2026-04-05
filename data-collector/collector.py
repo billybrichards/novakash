@@ -238,18 +238,22 @@ class RateLimiter:
 _limiter = RateLimiter()
 
 
+def _current_window_ts(duration: int) -> int:
+    """Get the current window timestamp aligned to duration."""
+    now = int(time.time())
+    return (now // duration) * duration
+
+
 async def fetch_current_markets(session: aiohttp.ClientSession, asset: str,
                                  timeframe: str) -> list:
-    """Fetch active markets for an asset+timeframe from Gamma API."""
+    """Fetch active market for an asset+timeframe from Gamma API by slug."""
     await _limiter.wait()
     
-    slug_prefix = f"{asset.lower()}-updown-{timeframe}"
+    duration = DURATIONS[timeframe]
+    window_ts = _current_window_ts(duration)
+    slug = f"{asset.lower()}-updown-{timeframe}-{window_ts}"
     url = f"{GAMMA_API}/events"
-    params = {
-        "tag": f"{asset.lower()}-updown",
-        "closed": "false",
-        "limit": 10,
-    }
+    params = {"slug": slug}
     
     try:
         async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
