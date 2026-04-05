@@ -5,7 +5,7 @@ Connects to the TimesFM BTC forecast service running on a separate instance.
 Provides direction (UP/DOWN), confidence, predicted close, quantile spreads.
 
 Usage:
-    client = TimesFMClient(base_url="http://16.52.148.255:8000")
+    client = TimesFMClient(base_url="http://3.98.114.0:8000")
     result = await client.get_forecast()
     # result.direction = "UP"
     # result.confidence = 0.82
@@ -80,7 +80,7 @@ class TimesFMClient:
 
     def __init__(
         self,
-        base_url: str = "http://16.52.148.255:8000",
+        base_url: str = "http://3.98.114.0:8000",
         timeout_seconds: float = 10.0,
         cache_ttl: float = _CACHE_TTL_SECONDS,
     ) -> None:

@@ -279,7 +279,7 @@ class Orchestrator:
                         if line.startswith("TIMESFM_URL="):
                             timesfm_url = line.split("=", 1)[1].strip()
                             break
-        timesfm_url = timesfm_url or "http://16.52.148.255:8080"
+        timesfm_url = timesfm_url or "http://3.98.114.0:8080"
         
         timesfm_min_conf_str = os.environ.get("TIMESFM_MIN_CONFIDENCE")
         if not timesfm_min_conf_str:
