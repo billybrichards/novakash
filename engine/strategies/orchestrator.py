@@ -1255,21 +1255,27 @@ class Orchestrator:
                             loss_streak=_streak_l,
                         )
                         
-                        # NEW: Dual-AI outcome analysis (non-blocking task)
-                        if order.outcome in ("WIN", "LOSS"):
-                            async def _send_outcome_ai():
-                                try:
-                                    await self._alerter.send_outcome_with_analysis(
-                                        window_id=_window_id,
-                                        decision=_direction,
-                                        entry_price=float(order.price or 0.50),
-                                        outcome=order.outcome,
-                                        pnl_usd=order.pnl_usd or 0,
-                                    )
-                                except Exception as exc:
-                                    log.error("outcome_analysis_failed", order_id=order.order_id[:20], error=str(exc))
-                            
-                            asyncio.create_task(_send_outcome_ai())
+                        # NEW: Dual-AI outcome analysis (non-blocking, fully isolated)
+                        if order.outcome in ("WIN", "LOSS") and self._alerter:
+                            try:
+                                _oid = order.order_id[:20]
+                                _wid = _window_id
+                                _dir = _direction
+                                _ep = float(order.price or 0.50)
+                                _oc = order.outcome
+                                _pnl = order.pnl_usd or 0
+                                async def _send_outcome_ai(_wid=_wid, _dir=_dir, _ep=_ep, _oc=_oc, _pnl=_pnl, _oid=_oid):
+                                    try:
+                                        result = await self._alerter.send_outcome_with_analysis(
+                                            window_id=_wid, decision=_dir,
+                                            entry_price=_ep, outcome=_oc, pnl_usd=_pnl,
+                                        )
+                                        log.debug("outcome_ai.sent", order_id=_oid, result_type=type(result).__name__)
+                                    except Exception as exc:
+                                        log.error("outcome_analysis_failed", order_id=_oid, error=str(exc)[:100])
+                                asyncio.create_task(_send_outcome_ai())
+                            except Exception as exc:
+                                log.error("outcome_ai_spawn_failed", error=str(exc)[:100])
                         
                         log.info("resolution.alert_sent", order_id=order.order_id[:20])
                     except Exception as exc:
