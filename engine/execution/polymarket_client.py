@@ -306,17 +306,11 @@ class PolymarketClient:
         # every fill has excellent risk/reward. Better to miss trades
         # than pay terrible prices.
         #
-        # MAX PRICE CAP: 0.65 (65¢). Never buy tokens above this —
-        # ensures minimum 54% upside on every trade.
-        
-        # Enforce token price range: 30-65¢
-        # Analysis shows 30-50¢ is the only profitable range.
-        # Below 30¢ = lottery tickets (0% win rate)
-        # Above 65¢ = terrible risk/reward
+        # MAX PRICE CAP: from env var (default 0.80 for v7.1)
+        # The strategy already caps at FIVE_MIN_MAX_ENTRY_PRICE but we double-check here
         token_price_f = float(price)
-        # 15m markets run higher prices — allow up to 70¢
         is_15m = "15m" in market_slug
-        max_price = 0.70 if is_15m else 0.65
+        max_price = float(os.environ.get("FIFTEEN_MIN_MAX_ENTRY_PRICE", "0.80")) if is_15m else float(os.environ.get("FIVE_MIN_MAX_ENTRY_PRICE", "0.80"))
         if token_price_f > max_price:
             self._log.warning(
                 "place_order.price_too_high",
