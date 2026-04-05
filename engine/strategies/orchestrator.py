@@ -1424,6 +1424,19 @@ class Orchestrator:
                                 new_mode=new_mode,
                                 paper_mode=want_paper,
                             )
+                            
+                            # Start redeemer if switching TO live
+                            if not want_paper and self._redeemer:
+                                try:
+                                    await self._redeemer.connect()
+                                    self._tasks.append(
+                                        asyncio.create_task(
+                                            self._redeemer_loop(), name="redeemer:sweep"
+                                        )
+                                    )
+                                    log.info("orchestrator.redeemer_started_on_mode_switch")
+                                except Exception as exc:
+                                    log.error("orchestrator.redeemer_start_failed", error=str(exc))
                 except Exception as exc:
                     log.debug("mode_sync.failed", error=str(exc)[:80])
 
