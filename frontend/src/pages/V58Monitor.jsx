@@ -2256,7 +2256,7 @@ export default function V58Monitor() {
           letterSpacing: '0.08em',
           marginRight: 4,
         }}>
-          ◈ v5.8 MONITOR
+          ◈ v7 MONITOR
         </span>
 
         {/* Stats pills */}
