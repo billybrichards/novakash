@@ -726,175 +726,132 @@ class TelegramAlerter:
             ts_str = datetime.fromtimestamp(window_ts, tz=timezone.utc).strftime("%H:%M UTC")
 
             delta_sign = "+" if delta_pct >= 0 else ""
-            trade_emoji = "✅" if trade_placed else "⏭️"
-            dir_str = f"`{direction}`" if direction else "`—`"
-
-            if isinstance(confidence, float) and confidence <= 1.0:
-                conf_str = f"{int(confidence * 100)}%"
-            elif isinstance(confidence, float):
-                conf_str = f"{int(confidence)}%"
-            else:
-                conf_str = f"`{confidence}`" if confidence else "`—`"
+            _current_dir = "UP" if delta_pct > 0 else "DOWN"
+            _current_emoji = "📈" if _current_dir == "UP" else "📉"
 
             regime_emoji = {
-                "CASCADE": "🌊",
-                "TRANSITION": "🔄",
-                "NORMAL": "📊",
-                "CALM": "😴",
+                "CASCADE": "🌊", "TRANSITION": "🔄", "NORMAL": "📊",
+                "CALM": "😴", "LOW_VOL": "😴", "TRENDING": "📈",
             }.get(regime, "❓")
 
+            # Price source tag
+            _src_tag = {"gamma_api": "LIVE", "gamma_api_fresh": "LIVE", "synthetic": "SYN", "stale_gamma": "STALE"}.get(price_source, "?")
+
+            # Safe gamma values
+            gamma_bid_safe = gamma_bid if (gamma_bid and gamma_bid > 0) else 0.50
+            gamma_ask_safe = gamma_ask if (gamma_ask and gamma_ask > 0) else 0.50
+            gamma_up = gamma_bid_safe   # UP token price (what you pay to bet UP)
+            gamma_down = gamma_ask_safe  # DOWN token price (what you pay to bet DOWN)
+
+            # ━━━━━ HEADER ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             lines = [
-                f"🎯 *{asset} {timeframe} Window*",
-                f"",
-                f"⏰ {ts_str} | Open `${open_price:,.2f}` → Close `${close_price:,.2f}` | Δ `{delta_sign}{delta_pct:+.4f}%`",
-                f"",
-                f"📊 *Market State*",
-                f"VPIN: `{vpin:.4f}` | Regime: {regime_emoji} `{regime}`",
+                f"🎯 *{asset} {timeframe}* — {ts_str}",
+                f"`${open_price:,.2f}` → `${close_price:,.2f}` | Δ `{delta_sign}{delta_pct:+.4f}%` {_current_emoji}",
+                f"VPIN `{vpin:.4f}` | {regime_emoji} `{regime}`",
             ]
 
-            # Real Gamma prices (critical info) with source tag
-            _src_tag = {"gamma_api": "LIVE", "gamma_api_fresh": "LIVE", "synthetic": "SYN", "stale_gamma": "STALE"}.get(price_source, "?")
+            # ━━━━━ GAMMA PRICES ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             if gamma_bid is not None and gamma_ask is not None and gamma_bid > 0 and gamma_ask > 0:
-                gamma_mid = (gamma_bid + gamma_ask) / 2
-                gamma_spread = gamma_ask - gamma_bid
-                lines += [
-                    f"Gamma: *`${gamma_bid:.4f}`* / *`${gamma_ask:.4f}`* [{_src_tag}] | mid: `${gamma_mid:.4f}` | spread: `${gamma_spread:.4f}`",
-                ]
+                lines.append(f"UP `${gamma_up:.2f}` / DOWN `${gamma_down:.2f}` [{_src_tag}]")
             else:
-                lines += [f"Gamma Prices: ❌ unavailable [{_src_tag}]"]
-            
+                lines.append(f"Gamma: unavailable [{_src_tag}]")
+
             lines.append("")
 
-            # CoinGlass block
+            # ━━━━━ TIMESFM FORECAST (prominent) ━━━━━━━━━━━━
+            _tfm_dir = "?"
+            if timesfm_forecast is not None and not getattr(timesfm_forecast, 'error', ''):
+                _tfm_dir = getattr(timesfm_forecast, 'direction', '?')
+                _tfm_conf = getattr(timesfm_forecast, 'confidence', 0)
+                _tfm_close = getattr(timesfm_forecast, 'predicted_close', 0)
+                _tfm_emoji = "📈" if _tfm_dir == "UP" else "📉"
+                _conf_bar_filled = int(_tfm_conf * 10)
+                _conf_bar = "█" * _conf_bar_filled + "░" * (10 - _conf_bar_filled)
+
+                lines += [
+                    f"🧠 *TimesFM*: {_tfm_emoji} *{_tfm_dir}* `[{_conf_bar}]` {_tfm_conf*100:.0f}%",
+                    f"Predicted close: `${_tfm_close:,.2f}`",
+                    f"",
+                ]
+            elif timesfm_forecast is not None and getattr(timesfm_forecast, 'error', ''):
+                lines += [f"🧠 *TimesFM*: ❌ `{getattr(timesfm_forecast, 'error', '')[:60]}`", ""]
+            elif asset != "BTC":
+                pass  # Don't show TimesFM line for non-BTC (it only supports BTC)
+            else:
+                lines += [f"🧠 *TimesFM*: not available", ""]
+
+            # ━━━━━ DIRECTION AGREEMENT MATRIX ━━━━━━━━━━━━━━
+            point_dir = "UP" if delta_pct > 0 else ("DOWN" if delta_pct < 0 else "—")
+            twap_dir = getattr(twap_result, 'twap_direction', '?') if twap_result else "?"
+            gamma_dir = getattr(twap_result, 'gamma_direction', '?') if twap_result else "?"
+            _should_skip = getattr(twap_result, 'should_skip', False) if twap_result else False
+
+            def _dot(a, b):
+                if a == "?" or b == "?" or a == "—" or b == "—":
+                    return "⚫"
+                return "🟢" if a == b else "🔴"
+
+            # Build compact matrix
+            lines.append("*Direction Agreement*")
+            lines.append("```")
+            lines.append(f"TimesFM {_tfm_dir:>4}  {_dot(_tfm_dir, point_dir)}Pt {_dot(_tfm_dir, twap_dir)}TW {_dot(_tfm_dir, gamma_dir)}Gm")
+            lines.append(f"Point   {point_dir:>4}       {_dot(point_dir, twap_dir)}TW {_dot(point_dir, gamma_dir)}Gm")
+            lines.append(f"TWAP    {twap_dir:>4}            {_dot(twap_dir, gamma_dir)}Gm")
+            lines.append(f"Gamma   {gamma_dir:>4}")
+            lines.append("```")
+            lines.append("")
+
+            # ━━━━━ v5.8 AGREEMENT DECISION ━━━━━━━━━━━━━━━━━
+            if twap_result is not None:
+                _agree_score = getattr(twap_result, 'agreement_score', 0)
+                _gamma_gate = getattr(twap_result, 'gamma_gate', 'OK')
+                _gate_emoji = {"BLOCK": "🚫", "SKIP": "⚠️", "REDUCE": "🔻", "OK": "✅", "PRICED_IN": "💸"}.get(_gamma_gate, "❓")
+                _agree_dots = "🟢" * _agree_score + "⚫" * (3 - _agree_score)
+                _boost = getattr(twap_result, 'confidence_boost', 0)
+
+                if _should_skip:
+                    _skip_r = getattr(twap_result, 'skip_reason', 'unknown')
+                    lines.append(f"⛔ *DISAGREE → Skip* | {_agree_dots} {_agree_score}/3 | {_gate_emoji} `{_gamma_gate}`")
+                    lines.append(f"`{_skip_r[:70]}`")
+                else:
+                    lines.append(f"✅ *AGREE → Trade {gamma_dir}* | {_agree_dots} {_agree_score}/3 | {_gate_emoji} `{_gamma_gate}` | boost `{_boost:+.2f}`")
+
+                lines.append("")
+
+            # ━━━━━ COINGLASS (compact) ━━━━━━━━━━━━━━━━━━━━━
             if cg_snapshot is not None:
                 lines.append(self.format_coinglass_block(cg_snapshot))
                 lines.append("")
 
-            # ━━━━ STRATEGY PREDICTIONS ━━━━━━━━━━━━━━━━━━━━━━
-            lines.append("🤖 *STRATEGY PREDICTIONS*")
+            # ━━━━━ P&L SCENARIOS ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            lines.append("💰 *If we bet:*")
+
+            # TimesFM P&L
+            if timesfm_forecast is not None and not getattr(timesfm_forecast, 'error', '') and _tfm_dir != "?":
+                _tfm_token = "YES" if _tfm_dir == "UP" else "NO"
+                _tfm_entry = gamma_up if _tfm_dir == "UP" else gamma_down
+                _tfm_win = (1.00 - _tfm_entry) * max_bet * 0.98
+                _tfm_loss = _tfm_entry * max_bet
+                lines.append(f"TimesFM {_tfm_token} @`${_tfm_entry:.2f}`: ✅+`${_tfm_win:.2f}` / ❌-`${_tfm_loss:.2f}`")
+
+            # v5.7c P&L
+            if twap_result is not None and not _should_skip:
+                _v57_token = "YES" if gamma_dir == "UP" else "NO"
+                _v57_entry = gamma_up if gamma_dir == "UP" else gamma_down
+                _v57_win = (1.00 - _v57_entry) * max_bet * 0.98
+                _v57_loss = _v57_entry * max_bet
+                lines.append(f"v5.7c {_v57_token} @`${_v57_entry:.2f}`: ✅+`${_v57_win:.2f}` / ❌-`${_v57_loss:.2f}`")
+            elif twap_result is not None and _should_skip:
+                lines.append(f"v5.7c: SKIP")
+
             lines.append("")
 
-            # TimesFM prediction (BTC only)
-            if asset == "BTC" and timesfm_forecast is not None:
-                _tfm = timesfm_forecast
-                if not getattr(_tfm, 'error', ''):
-                    _tfm_dir = getattr(_tfm, 'direction', '?')
-                    _tfm_conf = getattr(_tfm, 'confidence', 0)
-                    _tfm_close = getattr(_tfm, 'predicted_close', 0)
-                    _tfm_delta = getattr(_tfm, 'delta_vs_open_pct', 0)
-                    _tfm_dir_emoji = "📈" if _tfm_dir == "UP" else "📉"
-
-                    lines += [
-                        f"🧠 *TimesFM (v6.0)*: {_tfm_dir_emoji} `{_tfm_dir}` | Confidence `{_tfm_conf*100:.0f}%`",
-                        f"   Predicted: `${_tfm_close:,.2f}` (Δ {_tfm_delta:+.4f}%)",
-                        f"",
-                    ]
-                else:
-                    lines += [f"🧠 *TimesFM*: ❌ `{getattr(_tfm, 'error', 'unknown')}`", f""]
-            elif asset != "BTC":
-                lines += [f"🧠 *TimesFM*: Not available (BTC only)", f""]
-
-            # v5.7c prediction
-            if twap_result is not None:
-                _twap_dir = getattr(twap_result, 'twap_direction', '—')
-                _gamma_dir = getattr(twap_result, 'gamma_direction', '—')
-                _point_dir = getattr(twap_result, 'point_direction', '—')
-                _mom_dir = getattr(twap_result, 'momentum_direction', '—')
-                _twap_delta = getattr(twap_result, 'twap_delta_pct', 0)
-                _mom_pct = getattr(twap_result, 'momentum_pct', 0)
-                _trend_pct = getattr(twap_result, 'trend_pct', 0.5)
-                _agree_score = getattr(twap_result, 'agreement_score', 0)
-                _agree_max = 3
-                _agree_bar = "🟢" * _agree_score + "⚫" * (_agree_max - _agree_score)
-                _gamma_up = getattr(twap_result, 'gamma_up_price', 0.50)
-                _gamma_down = getattr(twap_result, 'gamma_down_price', 0.50)
-                _gamma_gate = getattr(twap_result, 'gamma_gate', 'OK')
-                _boost = getattr(twap_result, 'confidence_boost', 0)
-                _ticks = getattr(twap_result, 'n_ticks', 0)
-                _should_skip = getattr(twap_result, 'should_skip', False)
-
-                _gate_emoji = {"BLOCK": "🚫", "SKIP": "⚠️", "REDUCE": "🔻", "OK": "✅", "PRICED_IN": "💸"}.get(_gamma_gate, "❓")
-                _trend_filled = int(_trend_pct * 10)
-                _trend_bar = "▓" * _trend_filled + "░" * (10 - _trend_filled)
-
-                if _should_skip:
-                    _skip_reason = getattr(twap_result, 'skip_reason', '')
-                    lines += [
-                        f"📊 *v5.7c (Multi)* ⛔ SKIPPED",
-                        f"   Reason: `{_skip_reason}`",
-                        f"",
-                    ]
-                else:
-                    lines += [
-                        f"📊 *v5.7c (Multi)* {('📈' if _gamma_dir == 'UP' else '📉')} `{_gamma_dir}` | Agreement {_agree_bar} `{_agree_score}/3`",
-                        f"   TWAP: `{_twap_dir}` | Point: `{_point_dir}` | Gamma: `{_gamma_dir}`",
-                        f"   Gate: {_gate_emoji} `{_gamma_gate}` | Boost: `{_boost:+.2f}`",
-                        f"",
-                    ]
+            # ━━━━━ DECISION ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            if trade_placed:
+                lines.append(f"⚡ *PLACED* ✅ | Bankroll `${bankroll:.0f}` | Bet `${max_bet:.0f}`")
             else:
-                lines.append(f"📊 *v5.7c (Multi)*: Not evaluated")
-                lines.append(f"")
-            
-            lines.append("")
-
-            # P&L SCENARIOS — show entry prices and potential outcomes
-            lines.append("💰 *Trade Economics*")
-            lines.append("")
-
-            # Current price direction (at eval time, not final!)
-            _current_dir = "UP" if delta_pct > 0 else "DOWN"
-
-            # TimesFM scenario
-            if asset == "BTC" and timesfm_forecast is not None and not getattr(_tfm, 'error', ''):
-                _tfm_dir = getattr(_tfm, 'direction', '?')
-                _tfm_conf = getattr(_tfm, 'confidence', 0)
-                gamma_bid_safe = gamma_bid if (gamma_bid and gamma_bid > 0) else 0.50
-                gamma_ask_safe = gamma_ask if (gamma_ask and gamma_ask > 0) else 0.50
-                gamma_mid = (gamma_bid_safe + gamma_ask_safe) / 2
-                
-                _dir_label = "NO" if _tfm_dir == "DOWN" else "YES"
-                _win_pnl = (1.00 - gamma_mid) * max_bet * 0.98
-                _loss_pnl = -gamma_mid * max_bet
-                
-                lines += [
-                    f"*TimesFM:* Bet {_dir_label} at ${gamma_mid:.4f}",
-                    f"  If correct: +${_win_pnl:.2f} | If wrong: ${_loss_pnl:.2f}",
-                    f"  Current trend ({_current_dir}) {'agrees' if _tfm_dir == _current_dir else 'DISAGREES'}",
-                    f"",
-                ]
-
-            # v5.7c scenario
-            if twap_result is not None:
-                gamma_bid_safe = gamma_bid if (gamma_bid and gamma_bid > 0) else 0.50
-                gamma_ask_safe = gamma_ask if (gamma_ask and gamma_ask > 0) else 0.50
-                
-                if not _should_skip:
-                    _entry = gamma_bid_safe if _gamma_dir == "UP" else gamma_ask_safe
-                    _dir_label = "YES" if _gamma_dir == "UP" else "NO"
-                    _win_pnl = (1.00 - _entry) * max_bet * 0.98
-                    _loss_pnl = -_entry * max_bet
-                    
-                    lines += [
-                        f"*v5.7c:* Bet {_dir_label} at ${_entry:.4f}",
-                        f"  If correct: +${_win_pnl:.2f} | If wrong: ${_loss_pnl:.2f}",
-                        f"  Current trend ({_current_dir}) {'agrees' if _gamma_dir == _current_dir else 'DISAGREES'}",
-                        f"",
-                    ]
-                else:
-                    _skip_reason = getattr(twap_result, 'skip_reason', '')
-                    lines.append(f"*v5.7c:* SKIP — {_skip_reason[:60]}")
-                    lines.append(f"")
-
-            # DECISION SECTION
-            lines += [
-                f"⚡ *Decision*",
-                f"Trade placed: `{'YES ✅' if trade_placed else 'NO ⏭️'}`",
-            ]
-            
-            if not trade_placed and skip_reason:
-                lines.append(f"Reason: `{skip_reason}`")
-
-            lines.append(f"Bankroll: `${bankroll:.2f}` | Max bet: `${max_bet:.2f}`")
+                _reason = f" — `{skip_reason}`" if skip_reason else ""
+                lines.append(f"⏭️ *SKIPPED*{_reason}")
 
             await self._send("\n".join(lines))
         except Exception as exc:
