@@ -1351,7 +1351,13 @@ class FiveMinVPINStrategy(BaseStrategy):
                             _mkt = _data[0]["markets"][0]
                             _up_ask = _mkt.get("bestAsk")     # UP token ask price
                             _up_bid = _mkt.get("bestBid")     # UP token bid price
-                            _outcome_prices = _mkt.get("outcomePrices", [])
+                            _outcome_prices_raw = _mkt.get("outcomePrices", [])
+                            # outcomePrices can be a JSON string or a list
+                            if isinstance(_outcome_prices_raw, str):
+                                import json as _json
+                                _outcome_prices = _json.loads(_outcome_prices_raw)
+                            else:
+                                _outcome_prices = _outcome_prices_raw
                             
                             if _outcome_prices and len(_outcome_prices) >= 2:
                                 # Use outcome prices directly — most accurate
