@@ -148,9 +148,20 @@ class TimesFMOnlyStrategy(BaseStrategy):
         Evaluate a window using ONLY TimesFM forecast.
 
         Called by orchestrator at T-60s (CLOSING state).
+        
+        NOTE: TimesFM only supports BTC. Other assets are skipped.
         """
         window_key = f"{window.asset}-{window.window_ts}"
         if self._last_executed_window == window_key:
+            return
+
+        # ⚠️ TimesFM only has BTC models trained
+        if window.asset != "BTC":
+            self._log.info(
+                "evaluate.timesfm_asset_unsupported",
+                asset=window.asset,
+                reason="TimesFM only supports BTC",
+            )
             return
 
         # Get current price
