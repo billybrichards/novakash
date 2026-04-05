@@ -125,6 +125,114 @@ class TelegramAlerter:
                 has_claude=bool(self._anthropic_api_key),
             )
 
+    # ── Trade Decision + AI Analysis (Dual-AI) ────────────────────────────────
+    async def send_trade_decision_detailed(
+        self,
+        window_id: str,
+        signal: dict,
+        decision: str,
+        reason: str = "",
+    ) -> tuple:
+        """Send MANDATORY trade decision + optional AI analysis (separated)."""
+        from datetime import datetime, timezone
+        
+        window_time = "?"
+        try:
+            ts = int(window_id.split('-')[1])
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            window_time = dt.strftime('%H:%M UTC')
+        except Exception:
+            pass
+        
+        direction = signal.get("direction", "?")
+        delta = signal.get("delta_pct", 0)
+        vpin = signal.get("vpin", 0)
+        regime = signal.get("regime", "?")
+        mode = self._mode_tag()
+        
+        decision_text = (
+            f"{'🎯' if decision == 'TRADE' else '⏭'} *{decision}* — Window {window_time}  {mode}\n"
+            f"`{window_id}`\n\n"
+            f"Direction: `{direction}`\n"
+            f"Delta: `{delta:+.4f}%`\n"
+            f"VPIN: `{vpin:.3f}` — `{regime}`\n"
+        )
+        if reason:
+            decision_text += f"Reason: _{reason}_\n"
+        
+        decision_msg_id = await self._send_with_id(decision_text)
+        
+        # AI analysis (separate, can timeout without blocking)
+        analysis_msg_id = None
+        if decision == "TRADE":
+            try:
+                prompt = (
+                    f"BTC 5-min trade decision. Direction: {direction}. "
+                    f"Delta: {delta:+.4f}%. VPIN: {vpin:.3f} ({regime}). "
+                    f"In 1-2 sentences: likelihood of win, key risks?"
+                )
+                ai_text, ai_source = await self._ai.assess(prompt, timeout_s=8)
+                analysis_card = (
+                    f"🤖 *AI Assessment* — `{ai_source.upper()}`\n"
+                    f"_{ai_text}_\n"
+                )
+                analysis_msg_id = await self._send_with_id(analysis_card)
+            except Exception as exc:
+                self._log.warning("ai.decision_analysis_failed", error=str(exc)[:100])
+        
+        return decision_msg_id, analysis_msg_id
+
+    async def send_outcome_with_analysis(
+        self,
+        window_id: str,
+        decision: str,
+        entry_price: float,
+        outcome: str,
+        pnl_usd: float,
+    ) -> tuple:
+        """Send MANDATORY outcome + optional AI analysis (separated)."""
+        from datetime import datetime, timezone
+        
+        window_time = "?"
+        try:
+            ts = int(window_id.split('-')[1])
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            window_time = dt.strftime('%H:%M UTC')
+        except Exception:
+            pass
+        
+        emoji = "✅" if outcome == "WIN" else "❌"
+        pnl_sign = "+" if pnl_usd >= 0 else ""
+        mode = self._mode_tag()
+        
+        outcome_text = (
+            f"{emoji} *{outcome}* — Window {window_time}  {mode}\n"
+            f"`{window_id}`\n\n"
+            f"Entry: `${entry_price:.3f}`\n"
+            f"P&L: `{pnl_sign}${pnl_usd:.2f}`\n"
+        )
+        
+        outcome_msg_id = await self._send_with_id(outcome_text)
+        
+        # AI analysis (separate, can timeout without blocking)
+        analysis_msg_id = None
+        try:
+            prompt = (
+                f"Trading outcome: {decision} → {outcome} (P&L: ${pnl_usd:.2f}). "
+                f"Entry: ${entry_price:.3f}. "
+                f"In 1 sentence: what went right/wrong?"
+            )
+            ai_text, ai_source = await self._ai.assess(prompt, timeout_s=8)
+            analysis_card = (
+                f"📊 *Post-Trade Analysis* — `{ai_source.upper()}`\n"
+                f"_{ai_text}_\n"
+            )
+            analysis_msg_id = await self._send_with_id(analysis_card)
+        except Exception as exc:
+            self._log.warning("ai.outcome_analysis_failed", error=str(exc)[:100])
+        
+        return outcome_msg_id, analysis_msg_id
+
     def set_risk_manager(self, rm) -> None:
         self._risk_manager = rm
 
@@ -1093,151 +1201,3 @@ class DualAIAssessment:
                     return data["response"][:200]
                 raise Exception(f"Status {resp.status}")
 
-    async def send_trade_decision_detailed(
-        self,
-        window_id: str,
-        signal: dict,
-        decision: str,  # "TRADE" or "SKIP"
-        reason: str = "",
-    ) -> tuple[Optional[int], Optional[int]]:
-        """
-        Send MANDATORY trade decision notification + optional AI analysis.
-        Returns (decision_msg_id, analysis_msg_id)
-        
-        This separates raw data (always sent) from AI (sent separately, can timeout).
-        """
-        from datetime import datetime, timezone
-        
-        # Extract window time
-        window_time = "?"
-        try:
-            ts = int(window_id.split('-')[1])
-            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-            window_time = dt.strftime('%H:%M UTC')
-        except:
-            pass
-        
-        # ── PART 1: RAW TRADE DECISION (MANDATORY) ────────────────────
-        direction = signal.get("direction", "?")
-        delta = signal.get("delta_pct", 0)
-        vpin = signal.get("vpin", 0)
-        regime = signal.get("regime", "?")
-        
-        decision_text = (
-            f"{'🎯' if decision == 'TRADE' else '⏭'} *{decision}* — {window_id}\n"
-            f"`{window_time}`\n"
-            f"\n"
-            f"Direction: `{direction}`\n"
-            f"Delta: `{delta:+.4f}%`\n"
-            f"VPIN: `{vpin:.3f}` — `{regime}`\n"
-        )
-        
-        if reason:
-            decision_text += f"Reason: _{reason}_\n"
-        
-        decision_text += f"\n{self._footer(window_id)}"
-        
-        decision_msg_id = await self._send_with_id(decision_text)
-        await self._log_notification(
-            "trade_decision", decision_text, window_id,
-            telegram_message_id=decision_msg_id
-        )
-        
-        # ── PART 2: AI ANALYSIS (SEPARATE, CAN TIMEOUT) ────────────────
-        analysis_msg_id = None
-        
-        if decision == "TRADE":
-            # Only analyze trades, not skips
-            prompt = (
-                f"BTC 5-min trade decision. "
-                f"Direction: {direction}. "
-                f"Delta: {delta:+.4f}%. "
-                f"VPIN: {vpin:.3f} ({regime}). "
-                f"In 1-2 sentences: likelihood of win, key risks?"
-            )
-            
-            ai_text, ai_source = await self._ai.assess(prompt, timeout_s=8)
-            
-            analysis_card = (
-                f"🤖 *AI Assessment* — `{ai_source.upper()}`\n"
-                f"_{ai_text}_\n"
-                f"\n"
-                f"{self._footer(window_id)}"
-            )
-            
-            analysis_msg_id = await self._send_with_id(analysis_card)
-            await self._log_notification(
-                f"trade_analysis_{ai_source}", analysis_card, window_id,
-                telegram_message_id=analysis_msg_id
-            )
-        
-        return decision_msg_id, analysis_msg_id
-
-    async def send_outcome_with_analysis(
-        self,
-        window_id: str,
-        decision: str,
-        entry_price: float,
-        outcome: str,  # "WIN" or "LOSS"
-        pnl_usd: float,
-    ) -> tuple[Optional[int], Optional[int]]:
-        """
-        Send MANDATORY outcome + optional AI analysis.
-        Returns (outcome_msg_id, analysis_msg_id)
-        """
-        from datetime import datetime, timezone
-        
-        # Extract window time
-        window_time = "?"
-        try:
-            ts = int(window_id.split('-')[1])
-            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-            window_time = dt.strftime('%H:%M UTC')
-        except:
-            pass
-        
-        # ── PART 1: OUTCOME (MANDATORY) ────────────────────────────────
-        emoji = "✅" if outcome == "WIN" else "❌"
-        pnl_sign = "+" if pnl_usd >= 0 else ""
-        
-        outcome_text = (
-            f"{emoji} *{outcome}* — {window_id}\n"
-            f"`{window_time}`\n"
-            f"\n"
-            f"Entry: `${entry_price:.3f}`\n"
-            f"P&L: `{pnl_sign}${pnl_usd:.2f}`\n"
-            f"\n"
-            f"{self._footer(window_id)}"
-        )
-        
-        outcome_msg_id = await self._send_with_id(outcome_text)
-        await self._log_notification(
-            "trade_outcome", outcome_text, window_id,
-            telegram_message_id=outcome_msg_id
-        )
-        
-        # ── PART 2: AI ANALYSIS (SEPARATE, CAN TIMEOUT) ────────────────
-        analysis_msg_id = None
-        
-        prompt = (
-            f"Trading outcome: {decision} → {outcome} (P&L: ${pnl_usd:.2f}). "
-            f"Entry price: ${entry_price:.3f}. "
-            f"In 1 sentence: what went right/wrong?"
-        )
-        
-        ai_text, ai_source = await self._ai.assess(prompt, timeout_s=8)
-        
-        analysis_card = (
-            f"📊 *Post-Trade Analysis* — `{ai_source.upper()}`\n"
-            f"_{ai_text}_\n"
-            f"\n"
-            f"{self._footer(window_id)}"
-        )
-        
-        analysis_msg_id = await self._send_with_id(analysis_card)
-        await self._log_notification(
-            f"outcome_analysis_{ai_source}", analysis_card, window_id,
-            telegram_message_id=analysis_msg_id
-        )
-        
-        return outcome_msg_id, analysis_msg_id
