@@ -727,11 +727,19 @@ function FilterBar({ filter, onFilter, sortBy, onSort, count, versionFilter, set
       </div>
       <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
         <span style={{ fontSize: 9, color: T.label, fontFamily: T.mono }}>Version:</span>
-        {['ALL', 'v5.8', 'v5.7c', 'v5.7', 'v5.0'].map(v => (
+        {[
+          { v: 'ALL', color: null },
+          { v: 'v7.1', color: 'rgba(168,85,247,0.3)', label: 'v7.1 ★' },
+          { v: 'v5.8', color: 'rgba(74,222,128,0.3)' },
+          { v: 'v5.7c', color: null },
+          { v: 'v5.7', color: null },
+          { v: 'v5.0', color: null },
+        ].map(({ v, color, label }) => (
           <button key={v} style={{
             ...btnStyle(versionFilter === v),
-            ...(v === 'v5.8' && versionFilter !== v ? { borderColor: 'rgba(74,222,128,0.3)' } : {}),
-          }} onClick={() => setVersionFilter(v)}>{v}</button>
+            ...(color && versionFilter !== v ? { borderColor: color } : {}),
+            ...(v === 'v7.1' && versionFilter !== v ? { color: 'rgba(168,85,247,0.7)' } : {}),
+          }} onClick={() => setVersionFilter(v)}>{label || v}</button>
         ))}
       </div>
       <div style={{ marginLeft: 'auto', display: 'flex', gap: 4, alignItems: 'center' }}>
@@ -777,7 +785,7 @@ export default function WindowResults() {
   const filtered = useMemo(() => {
     let items = [...outcomes];
 
-    // Version filter
+    // Version filter — v7.1 is the current engine, show it by default highlighted
     if (versionFilter !== 'ALL') {
       items = items.filter(o => o.engine_version === versionFilter);
     }
@@ -799,17 +807,33 @@ export default function WindowResults() {
     return items;
   }, [outcomes, filter, versionFilter, sortBy]);
 
-  // Summary stats
+  // Summary stats — computed on filtered set so version filter affects stats
   const stats = useMemo(() => {
-    const resolved = outcomes.filter(o => o.actual_direction);
+    const base = filtered;
+    const resolved = base.filter(o => o.actual_direction);
     const wins = resolved.filter(o => o.v57c_correct === true).length;
     const losses = resolved.filter(o => o.v57c_correct === false).length;
-    const totalPnl = outcomes
+    // Shadow P&L: what-if P&L if we had traded every signal (gated or not)
+    const shadowPnl = base
+      .filter(o => o.ungated_pnl != null)
+      .map(o => o.ungated_pnl)
+      .reduce((a, b) => a + b, 0);
+    // Real P&L: only actual trades
+    const realPnl = base
       .map(o => o.v58_pnl)
       .filter(p => p != null)
       .reduce((a, b) => a + b, 0);
-    return { total: outcomes.length, resolved: resolved.length, wins, losses, totalPnl };
-  }, [outcomes]);
+    const v71count = base.filter(o => o.engine_version === 'v7.1').length;
+    return {
+      total: base.length,
+      resolved: resolved.length,
+      wins,
+      losses,
+      totalPnl: realPnl,
+      shadowPnl,
+      v71count,
+    };
+  }, [filtered]);
 
   const toggleExpand = (ts) => {
     setExpandedTs(prev => prev === ts ? null : ts);
@@ -851,17 +875,28 @@ export default function WindowResults() {
           {
             label: 'Accuracy',
             value: stats.resolved > 0 ? `${Math.round(stats.wins / stats.resolved * 100)}%` : '—',
-            color: stats.wins / (stats.resolved || 1) >= 0.5 ? T.profit : T.loss,
+            color: stats.wins / (stats.resolved || 1) >= 0.9 ? T.profit : (stats.wins / (stats.resolved || 1) >= 0.7 ? T.amber : T.loss),
           },
           {
-            label: 'v5.8 P&L',
+            label: 'Real P&L',
             value: stats.totalPnl >= 0 ? `+$${stats.totalPnl.toFixed(2)}` : `-$${Math.abs(stats.totalPnl).toFixed(2)}`,
             color: stats.totalPnl >= 0 ? T.profit : T.loss,
           },
-        ].map(({ label, value, color }) => (
-          <div key={label} style={{
-            background: T.card,
-            border: `1px solid ${T.border}`,
+          {
+            label: 'Shadow P&L',
+            title: 'What P&L would have been if all signals were traded (no gate)',
+            value: stats.shadowPnl !== 0 ? (stats.shadowPnl >= 0 ? `+$${stats.shadowPnl.toFixed(2)}` : `-$${Math.abs(stats.shadowPnl).toFixed(2)}`) : '—',
+            color: stats.shadowPnl >= 0 ? 'rgba(74,222,128,0.6)' : T.loss,
+          },
+          ...(stats.v71count > 0 ? [{
+            label: 'v7.1',
+            value: `${stats.v71count} windows`,
+            color: 'rgba(168,85,247,0.9)',
+          }] : []),
+        ].map(({ label, value, color, title }) => (
+          <div key={label} title={title || ''} style={{
+            background: label === 'v7.1' ? 'rgba(168,85,247,0.08)' : T.card,
+            border: `1px solid ${label === 'v7.1' ? 'rgba(168,85,247,0.3)' : T.border}`,
             borderRadius: 6,
             padding: '4px 12px',
             display: 'flex',
