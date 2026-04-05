@@ -945,6 +945,44 @@ function AccuracyScoreboard({ accuracy }) {
           sub="TWAP direction"
           color={T.cyan}
         />
+        <AccuracyCard
+          label="v7.1 Win Rate"
+          pct={accuracy.v71_accuracy}
+          sub={`${accuracy.v71_wins || 0}W / ${accuracy.v71_losses || 0}L — ${accuracy.v71_resolved_count || 0} resolved`}
+          color="#a855f7"
+        />
+      </div>
+
+      {/* v7.1 P&L + Streak row */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(3, 1fr)',
+        gap: 10,
+        marginTop: 10,
+      }}>
+        <div style={{
+          background: 'rgba(168,85,247,0.06)',
+          border: '1px solid rgba(168,85,247,0.2)',
+          borderRadius: 10,
+          padding: '12px 14px',
+        }}>
+          <div style={{ fontSize: 9, color: '#c084fc', fontWeight: 600, letterSpacing: '0.08em', marginBottom: 4 }}>v7.1 P&L</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: (accuracy.v71_pnl || 0) >= 0 ? '#22c55e' : '#ef4444', fontFamily: T.mono }}>
+            {(accuracy.v71_pnl || 0) >= 0 ? '+' : ''}${(accuracy.v71_pnl || 0).toFixed(2)}
+          </div>
+          <div style={{ fontSize: 9, color: '#c084fc', marginTop: 2 }}>{accuracy.v71_trades_count || 0} eligible trades</div>
+        </div>
+        <div style={{
+          background: 'rgba(168,85,247,0.06)',
+          border: '1px solid rgba(168,85,247,0.2)',
+          borderRadius: 10,
+          padding: '12px 14px',
+        }}>
+          <div style={{ fontSize: 9, color: '#c084fc', fontWeight: 600, letterSpacing: '0.08em', marginBottom: 4 }}>v7.1 STREAK</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: '#a855f7', fontFamily: T.mono }}>
+            {accuracy.v71_streak || 0} {(accuracy.v71_streak || 0) === 1 ? 'WIN' : 'WINS'}
+          </div>
+        </div>
       </div>
 
       {/* Secondary stats row */}
@@ -2654,9 +2692,30 @@ export default function V58Monitor() {
                       fontFamily: T.mono,
                       lineHeight: 1.4,
                     }}>
-                      {latestWindow.v71_skip_reason}
+                      ⚠️ {latestWindow.v71_skip_reason}
                     </div>
                   )}
+
+                  {/* v7.1 Criteria Breakdown */}
+                  <div style={{
+                    padding: '8px 12px',
+                    borderRadius: 6,
+                    background: 'rgba(168,85,247,0.04)',
+                    border: '1px solid rgba(168,85,247,0.15)',
+                    fontSize: 9,
+                    fontFamily: T.mono,
+                    lineHeight: 1.6,
+                    color: T.label2,
+                  }}>
+                    <div style={{ fontWeight: 600, color: '#a855f7', marginBottom: 4 }}>v7.1 Criteria</div>
+                    <div>VPIN: <span style={{ color: (latestWindow.vpin || 0) >= 0.45 ? '#22c55e' : '#ef4444', fontWeight: 700 }}>
+                      {(latestWindow.vpin || 0).toFixed(3)}
+                    </span> {(latestWindow.vpin || 0) >= 0.45 ? '✓' : '✗'} gate ≥0.45</div>
+                    <div>Delta: <span style={{ color: Math.abs(latestWindow.delta_pct || 0) >= 0.02 ? '#22c55e' : '#ef4444', fontWeight: 700 }}>
+                      {Math.abs(latestWindow.delta_pct || 0).toFixed(4)}%
+                    </span> {Math.abs(latestWindow.delta_pct || 0) >= 0.02 ? '✓' : '✗'} min ≥0.02%</div>
+                    <div>Entry Cap: <span style={{ fontWeight: 700, color: '#c084fc' }}>$0.70</span></div>
+                  </div>
 
                   {/* Comparison: legacy vs v7.1 */}
                   <div style={{

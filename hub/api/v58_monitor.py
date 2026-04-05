@@ -919,6 +919,24 @@ async def get_accuracy(
         poly_resolved = sum(1 for o in outcomes if o.get("poly_outcome"))
         binance_resolved = sum(1 for o in outcomes if o.get("resolution_source") == "binance_t60" and o.get("actual_direction"))
 
+        # v7.1 stats: accuracy, P&L, streak, trade count
+        v71_trades = [o for o in outcomes if o.get("v71_would_trade")]
+        v71_corrects = [o.get("v71_correct") for o in v71_trades if o.get("v71_correct") is not None]
+        v71_wins = sum(1 for c in v71_corrects if c is True)
+        v71_losses = sum(1 for c in v71_corrects if c is False)
+        v71_accuracy = round(v71_wins / (v71_wins + v71_losses) * 100, 1) if (v71_wins + v71_losses) > 0 else 0.0
+        v71_pnl_total = round(sum(o.get("v71_pnl", 0) or 0 for o in v71_trades if o.get("v71_pnl") is not None), 2)
+        
+        # v7.1 streak (from most recent backwards)
+        v71_streak = 0
+        for o in outcomes:
+            if not o.get("v71_would_trade"):
+                continue
+            if o.get("v71_correct") is True:
+                v71_streak += 1
+            elif o.get("v71_correct") is False:
+                break
+
         return {
             "windows_analysed": len(outcomes),
             "timesfm_accuracy": _accuracy(timesfm_corrects),
@@ -940,6 +958,14 @@ async def get_accuracy(
                 "polymarket": poly_resolved,
                 "binance_t60": binance_resolved,
             },
+            # v7.1 stats
+            "v71_accuracy": v71_accuracy,
+            "v71_trades_count": len(v71_trades),
+            "v71_resolved_count": v71_wins + v71_losses,
+            "v71_wins": v71_wins,
+            "v71_losses": v71_losses,
+            "v71_pnl": v71_pnl_total,
+            "v71_streak": v71_streak,
         }
     except Exception as exc:
         return {**_empty_accuracy(), "error": str(exc)}
