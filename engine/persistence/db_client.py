@@ -246,6 +246,21 @@ class DBClient:
             log.error("db.update_heartbeat_failed", error=str(exc))
             # Don't re-raise — heartbeat failure is not fatal
 
+    async def get_mode_toggles(self) -> dict | None:
+        """Read paper_enabled / live_enabled from system_state (set by frontend toggle)."""
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT paper_enabled, live_enabled FROM system_state WHERE id = 1"
+                )
+                if row:
+                    return {"paper_enabled": row["paper_enabled"], "live_enabled": row["live_enabled"]}
+        except Exception:
+            pass
+        return None
+
     async def update_feed_status(
         self,
         binance: Optional[bool] = None,

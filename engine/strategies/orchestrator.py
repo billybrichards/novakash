@@ -1356,6 +1356,62 @@ class Orchestrator:
                     config=config_snapshot,
                 )
 
+                # ── Mode sync: read paper/live toggles from DB ──────────────
+                # The frontend toggle updates system_state.paper_enabled/live_enabled
+                # The engine picks it up here and switches mode at runtime
+                try:
+                    mode_row = await self._db.get_mode_toggles()
+                    if mode_row is not None:
+                        db_paper = mode_row.get("paper_enabled", True)
+                        db_live = mode_row.get("live_enabled", False)
+                        
+                        # Determine target mode: if live_enabled and not paper_enabled → LIVE
+                        # Otherwise → PAPER (safe default)
+                        want_paper = not db_live or db_paper
+                        current_paper = self._poly_client.paper_mode
+                        
+                        if want_paper != current_paper:
+                            old_mode = "PAPER" if current_paper else "LIVE"
+                            new_mode = "PAPER" if want_paper else "LIVE"
+                            
+                            log.warning(
+                                "mode_switch.detected",
+                                old_mode=old_mode,
+                                new_mode=new_mode,
+                                db_paper=db_paper,
+                                db_live=db_live,
+                            )
+                            
+                            # Switch poly client mode
+                            self._poly_client.paper_mode = want_paper
+                            self._settings.paper_mode = want_paper
+                            
+                            # Update risk manager
+                            self._risk_manager._paper_mode = want_paper
+                            
+                            # Update alerter mode tag
+                            if self._alerter:
+                                self._alerter._paper_mode = want_paper
+                            
+                            # Telegram notification
+                            if self._alerter:
+                                mode_emoji = "📄 PAPER" if want_paper else "🔴 LIVE"
+                                await self._alerter.send_system_alert(
+                                    f"⚡ MODE SWITCH: {old_mode} → {new_mode}\n\n"
+                                    f"Trading mode is now: {mode_emoji}\n"
+                                    f"{'Simulated orders only' if want_paper else '⚠️ REAL MONEY — orders will be placed on Polymarket CLOB'}\n\n"
+                                    f"Config: v7.1 | Gate: 0.45 | Cap: $0.70 | Bet: 10%",
+                                    level="critical" if not want_paper else "info",
+                                )
+                            
+                            log.warning(
+                                "mode_switch.complete",
+                                new_mode=new_mode,
+                                paper_mode=want_paper,
+                            )
+                except Exception as exc:
+                    log.debug("mode_sync.failed", error=str(exc)[:80])
+
                 await self._db.update_feed_status(
                     binance=self._binance_feed.connected,
                     coinglass=self._coinglass_feed.connected if self._coinglass_feed else False,
