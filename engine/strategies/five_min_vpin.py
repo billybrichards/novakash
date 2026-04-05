@@ -280,8 +280,8 @@ class FiveMinVPINStrategy(BaseStrategy):
             except Exception as exc:
                 self._log.debug("evaluate.timesfm_fetch_failed", error=str(exc))
 
-        # Evaluate signal (with TWAP override for direction)
-        signal = self._evaluate_signal(window, current_price, current_vpin, delta_pct, twap_result=twap_result)
+        # Evaluate signal (with TWAP override for direction + TimesFM agreement)
+        signal = self._evaluate_signal(window, current_price, current_vpin, delta_pct, twap_result=twap_result, timesfm_forecast=timesfm_forecast)
 
         tf = "15m" if window.duration_secs == 900 else "5m"
 
@@ -531,6 +531,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         current_vpin: float,
         delta_pct: float,
         twap_result: Optional[TWAPResult] = None,
+        timesfm_forecast=None,
     ) -> Optional[FiveMinSignal]:
         """
         Evaluate trading signal based on delta, VPIN, and market regime.
@@ -830,46 +831,42 @@ class FiveMinVPINStrategy(BaseStrategy):
             return None
 
         # ── v5.8: TimesFM Agreement Check ─────────────────────────────────
-        # Uses cached forecast from TimesFMClient (refreshed every 8s).
-        # This is a sync check — no await needed (cache is pre-populated).
+        # Uses the FRESH forecast fetched in _evaluate_window (passed in).
         # Agreement → boost confidence (+0.15)
         # Disagreement → penalty (-0.10), may cause skip
         timesfm_agreement = None  # None = no forecast available
-        if self._timesfm_client and window.asset == "BTC":
+        if timesfm_forecast and not timesfm_forecast.error and timesfm_forecast.direction and window.asset == "BTC":
             try:
-                # Use the cached forecast (populated by the async client's last call)
-                cached = self._timesfm_client._cached
-                if cached and not cached.error and cached.direction:
-                    if cached.direction == direction:
-                        timesfm_agreement = True
-                        confidence += 0.15  # Agreement boost
+                if timesfm_forecast.direction == direction:
+                    timesfm_agreement = True
+                    confidence += 0.15  # Agreement boost
+                    self._log.info(
+                        "evaluate.timesfm_agrees",
+                        v57c_dir=direction,
+                        tfm_dir=timesfm_forecast.direction,
+                        tfm_conf=f"{timesfm_forecast.confidence:.2f}",
+                        new_confidence=f"{confidence:.2f}",
+                        boost="+0.15",
+                    )
+                else:
+                    timesfm_agreement = False
+                    confidence -= 0.10  # Disagreement penalty
+                    self._log.info(
+                        "evaluate.timesfm_disagrees",
+                        v57c_dir=direction,
+                        tfm_dir=timesfm_forecast.direction,
+                        tfm_conf=f"{timesfm_forecast.confidence:.2f}",
+                        new_confidence=f"{confidence:.2f}",
+                        penalty="-0.10",
+                    )
+                    # If confidence drops too low after disagreement, skip
+                    if confidence < 0.30:
                         self._log.info(
-                            "evaluate.timesfm_agrees",
-                            v57c_dir=direction,
-                            tfm_dir=cached.direction,
-                            tfm_conf=f"{cached.confidence:.2f}",
-                            new_confidence=f"{confidence:.2f}",
-                            boost="+0.15",
+                            "evaluate.timesfm_disagree_skip",
+                            confidence=f"{confidence:.2f}",
+                            reason="confidence too low after TimesFM disagreement",
                         )
-                    else:
-                        timesfm_agreement = False
-                        confidence -= 0.10  # Disagreement penalty
-                        self._log.info(
-                            "evaluate.timesfm_disagrees",
-                            v57c_dir=direction,
-                            tfm_dir=cached.direction,
-                            tfm_conf=f"{cached.confidence:.2f}",
-                            new_confidence=f"{confidence:.2f}",
-                            penalty="-0.10",
-                        )
-                        # If confidence drops too low after disagreement, skip
-                        if confidence < 0.30:
-                            self._log.info(
-                                "evaluate.timesfm_disagree_skip",
-                                confidence=f"{confidence:.2f}",
-                                reason="confidence too low after TimesFM disagreement",
-                            )
-                            return None
+                        return None
             except Exception as exc:
                 self._log.debug("evaluate.timesfm_check_failed", error=str(exc))
 
