@@ -327,7 +327,10 @@ class OrderManager:
             else:
                 # FALLBACK: Use Binance BTC price (less accurate)
                 self._log.debug("resolution.fallback_to_binance", order_id=order.order_id[:20] + "...")
-                outcome, payout = self._determine_paper_outcome(order, price)
+                result = self._determine_paper_outcome(order, price)
+            if result is None:
+                continue  # Not ready to resolve yet (waiting for window close buffer)
+            outcome, payout = result
             
             resolved = await self.resolve_order(order.order_id, outcome, payout)
 
@@ -492,7 +495,7 @@ class OrderManager:
             age = time.time() - order.created_at
             if age < order.window_seconds + 10:
                 # Too early — window might not have closed yet, skip this cycle
-                continue  # Will be picked up on next poll
+                return None  # Will be picked up on next poll
             
             btc_went_up = current_btc_price >= window_open
 
