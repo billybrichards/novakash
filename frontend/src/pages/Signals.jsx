@@ -14,13 +14,19 @@ export default function Signals() {
 
   useEffect(() => {
     if (activeTab === 'VPIN') {
-      api.get('/api/signals/vpin?limit=2000').then(res => setVpinData(res.data.items || []));
+      api.get('/api/signals/vpin?limit=2000')
+        .then(res => setVpinData(res.data.items || []))
+        .catch(err => console.error('[Signals] VPIN fetch error:', err));
     } else if (activeTab === 'Cascade') {
-      api.get('/api/signals/cascade?limit=100').then(res => setCascadeEvents(res.data.items || []));
+      api.get('/api/signals/cascade?limit=100')
+        .then(res => setCascadeEvents(res.data.items || []))
+        .catch(err => console.error('[Signals] Cascade fetch error:', err));
     } else if (activeTab === 'Arb') {
-      api.get('/api/signals/arb?limit=500').then(res => setArbOpportunities(res.data.items || []));
+      api.get('/api/signals/arb?limit=500')
+        .then(res => setArbOpportunities(res.data.items || []))
+        .catch(err => console.error('[Signals] Arb fetch error:', err));
     }
-  }, [activeTab]);
+  }, [api, activeTab]);
 
   return (
     <div className="space-y-6">

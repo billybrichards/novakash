@@ -105,6 +105,8 @@ A prediction market trading system for BTC with three strategies:
 │  ├─ CoinGlass Enhanced (OI, liquidations, funding rate,    │
 │  │   taker buy/sell, L/S ratio — 4 assets every 15s)       │
 │  ├─ Gamma API (Polymarket token prices per window)         │
+│  ├─ CLOB Order Book (ground truth Polymarket bid/ask,     │
+│  │   every 10s — real entry prices, Montreal only)         │
 │  └─ TimesFM (ML forecast direction + confidence)           │
 │                                                              │
 │  Signal Processors:                                         │
@@ -143,9 +145,11 @@ A prediction market trading system for BTC with three strategies:
 - Chainlink Multi-Asset Feed (BTC/ETH/SOL/XRP on Polygon, 5s polls — oracle source of truth)
 - Tiingo Top-of-Book Feed (BTC/ETH/SOL/XRP, 2s polls — multi-exchange bid/ask with exchange attribution)
 - Gamma API (Polymarket token prices per window)
+- CLOB Order Book Feed (ground truth Polymarket bid/ask, 10s polls — real entry prices)
 - TimesFM ML forecast (direction + confidence)
+- v7.2: Multi-source delta calculation (Chainlink primary, Tiingo, Binance)
 - Market aggregator wiring complete
-- All feeds save to dedicated tick tables in Railway PostgreSQL
+- All 7 feeds save to dedicated tick tables in Railway PostgreSQL
 - See `docs/DATA_FEEDS.md` for full schema, queries, and data flow diagram
 
 ### Phase 3: Signal Layer
@@ -186,7 +190,7 @@ A prediction market trading system for BTC with three strategies:
 ### Engine (`engine/`)
 - `main.py` — Entry point
 - `config/` — Settings & constants
-- `data/` — Feeds (Binance WS, Chainlink multi-asset, Tiingo top-of-book, CoinGlass enhanced, Polymarket/Gamma, TimesFM) + aggregator
+- `data/` — Feeds (Binance WS, Chainlink multi-asset, Tiingo top-of-book, CoinGlass enhanced, Polymarket/Gamma, CLOB order book, TimesFM) + aggregator
 - `signals/` — VPIN, cascade, arb, regime
 - `execution/` — Clients & risk management
 - `strategies/` — Sub-$1 arb, VPIN cascade, orchestrator

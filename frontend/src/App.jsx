@@ -10,7 +10,6 @@ import Signals from './pages/Signals.jsx';
 import PnL from './pages/PnL.jsx';
 import System from './pages/System.jsx';
 import Setup from './pages/Setup.jsx';
-import PaperTrading from './pages/PaperTrading.jsx';
 import PaperDashboard from './pages/PaperDashboard.jsx';
 import TradingConfig from './pages/TradingConfig.jsx';
 import Positions from './pages/Positions.jsx';
@@ -46,14 +45,14 @@ export default function App() {
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="paper" element={<PaperDashboard />} />
-            <Route path="paper-trading" element={<PaperTrading />} />
+            {/* PaperTrading removed — duplicate of Dashboard, use /paper instead */}
             <Route path="positions" element={<Positions />} />
             <Route path="trades" element={<Trades />} />
             <Route path="signals" element={<Signals />} />
             <Route path="pnl" element={<PnL />} />
             <Route path="risk" element={<Risk />} />
             <Route path="system" element={<System />} />
-            <Route path="config" element={<TradingConfig />} />
+            <Route path="config" element={<Navigate to="/trading-config" replace />} />
             <Route path="trading-config" element={<TradingConfig />} />
             <Route path="setup" element={<Setup />} />
             <Route path="learn" element={<Learn />} />
