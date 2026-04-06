@@ -1187,12 +1187,26 @@ class Orchestrator:
                         # ── Write snapshot to countdown_evaluations DB ───────
                         try:
                             _twap_agree_bool = (_tw_agree >= 2) if _tw_agree is not None else None
+                            # v7.2: fetch multi-source prices for countdown record
+                            _cl_price = None
+                            _ti_price = None
+                            if self._db:
+                                try:
+                                    _cl_price = await self._db.get_latest_chainlink_price(window.asset)
+                                except Exception:
+                                    pass
+                                try:
+                                    _ti_price = await self._db.get_latest_tiingo_price(window.asset)
+                                except Exception:
+                                    pass
                             _eval_notes = (
                                 f"gamma_up={_snap_gamma_up:.4f},gamma_down={_snap_gamma_down:.4f},"
                                 f"vpin={_vpin:.4f},delta_pct={_d:.4f},regime={_regime},"
                                 f"tsf_dir={_tsf_dir},tsf_conf={_tsf_conf:.3f},"
                                 f"twap_dir={_tw_dir},twap_agree={_tw_agree},"
-                                f"btc={_btc:.2f}"
+                                f"btc={_btc:.2f},"
+                                f"chainlink={_cl_price:.2f if _cl_price else 'N/A'},"
+                                f"tiingo={_ti_price:.2f if _ti_price else 'N/A'}"
                             )
                             asyncio.create_task(self._db.write_countdown_evaluation({
                                 "window_ts": window.window_ts,
@@ -1202,6 +1216,10 @@ class Orchestrator:
                                 "agreement": _twap_agree_bool,
                                 "action": "SNAPSHOT",
                                 "notes": _eval_notes,
+                                # v7.2: multi-source prices
+                                "chainlink_price": _cl_price,
+                                "tiingo_price": _ti_price,
+                                "binance_price": _btc,
                             }))
                         except Exception:
                             pass

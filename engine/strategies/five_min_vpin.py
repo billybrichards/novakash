@@ -241,9 +241,111 @@ class FiveMinVPINStrategy(BaseStrategy):
         if open_price is None:
             self._log.warning("evaluate.no_open_price")
             return
-        
-        # Calculate window delta
-        delta_pct = (current_price - open_price) / open_price * 100
+
+        # ── Multi-source delta calculation (v7.2) ─────────────────────────
+        # Binance is always available (websocket). Chainlink + Tiingo from DB.
+        # DELTA_PRICE_SOURCE env var controls which source drives the direction.
+        _delta_source = os.environ.get("DELTA_PRICE_SOURCE", "chainlink").lower()
+
+        # Binance delta (always computed — legacy baseline)
+        binance_price = current_price
+        delta_binance = (binance_price - open_price) / open_price * 100
+
+        # Fetch Chainlink + Tiingo prices for delta calculation (best-effort)
+        _chainlink_price: Optional[float] = None
+        _tiingo_price: Optional[float] = None
+        if self._db:
+            try:
+                _chainlink_price = await self._db.get_latest_chainlink_price(window.asset)
+            except Exception:
+                pass
+            try:
+                _tiingo_price = await self._db.get_latest_tiingo_price(window.asset)
+            except Exception:
+                pass
+
+        delta_chainlink = ((_chainlink_price - open_price) / open_price * 100) if _chainlink_price else None
+        delta_tiingo = ((_tiingo_price - open_price) / open_price * 100) if _tiingo_price else None
+
+        # Determine price_consensus: direction agreement across available sources
+        _dirs = []
+        if delta_binance is not None:
+            _dirs.append("UP" if delta_binance > 0 else "DOWN")
+        if delta_chainlink is not None:
+            _dirs.append("UP" if delta_chainlink > 0 else "DOWN")
+        if delta_tiingo is not None:
+            _dirs.append("UP" if delta_tiingo > 0 else "DOWN")
+
+        if len(_dirs) >= 2:
+            _up_count = _dirs.count("UP")
+            _down_count = _dirs.count("DOWN")
+            if _up_count == len(_dirs) or _down_count == len(_dirs):
+                price_consensus = "AGREE"
+            elif _up_count == 0 or _down_count == 0:
+                price_consensus = "AGREE"
+            elif abs(_up_count - _down_count) >= 1 and len(_dirs) >= 3:
+                price_consensus = "MIXED"
+            elif len(_dirs) == 2 and _up_count != _down_count:
+                price_consensus = "MIXED"
+            else:
+                price_consensus = "DISAGREE"
+        else:
+            price_consensus = "AGREE"  # Only one source — no conflict
+
+        # Select primary delta based on DELTA_PRICE_SOURCE env var
+        if _delta_source == "chainlink" and delta_chainlink is not None:
+            delta_pct = delta_chainlink
+            _price_source_used = "chainlink"
+        elif _delta_source == "tiingo" and delta_tiingo is not None:
+            delta_pct = delta_tiingo
+            _price_source_used = "tiingo"
+        elif _delta_source == "consensus":
+            # Only trade when all sources agree — set delta_pct to chainlink (primary) or binance
+            if price_consensus != "AGREE":
+                self._log.info(
+                    "evaluate.consensus_skip",
+                    asset=window.asset,
+                    price_consensus=price_consensus,
+                    delta_binance=f"{delta_binance:+.4f}%" if delta_binance is not None else "N/A",
+                    delta_chainlink=f"{delta_chainlink:+.4f}%" if delta_chainlink is not None else "N/A",
+                    delta_tiingo=f"{delta_tiingo:+.4f}%" if delta_tiingo is not None else "N/A",
+                )
+                return
+            delta_pct = delta_chainlink if delta_chainlink is not None else delta_binance
+            _price_source_used = "consensus"
+        else:
+            # Default: chainlink with Binance fallback
+            delta_pct = delta_chainlink if delta_chainlink is not None else delta_binance
+            _price_source_used = "chainlink" if delta_chainlink is not None else "binance_fallback"
+
+        # Flag LOW confidence if Chainlink and Binance disagree on direction
+        _price_confidence_flag = "OK"
+        if delta_chainlink is not None:
+            _cl_dir = "UP" if delta_chainlink > 0 else "DOWN"
+            _bn_dir = "UP" if delta_binance > 0 else "DOWN"
+            if _cl_dir != _bn_dir:
+                _price_confidence_flag = "LOW"
+                self._log.warning(
+                    "evaluate.price_source_disagreement",
+                    asset=window.asset,
+                    chainlink_dir=_cl_dir,
+                    binance_dir=_bn_dir,
+                    delta_chainlink=f"{delta_chainlink:+.4f}%",
+                    delta_binance=f"{delta_binance:+.4f}%",
+                    price_source_used=_price_source_used,
+                )
+
+        self._log.info(
+            "evaluate.multi_source_delta",
+            asset=window.asset,
+            source=_price_source_used,
+            delta_pct=f"{delta_pct:+.4f}%",
+            delta_binance=f"{delta_binance:+.4f}%",
+            delta_chainlink=f"{delta_chainlink:+.4f}%" if delta_chainlink else "N/A",
+            delta_tiingo=f"{delta_tiingo:+.4f}%" if delta_tiingo else "N/A",
+            consensus=price_consensus,
+            confidence_flag=_price_confidence_flag,
+        )
         
         # Get current VPIN
         current_vpin = self._vpin.current_vpin
@@ -361,7 +463,12 @@ class FiveMinVPINStrategy(BaseStrategy):
             "timeframe": tf,
             "open_price": open_price,
             "close_price": current_price,
-            "delta_pct": delta_pct,
+            "delta_pct": delta_pct,  # Primary delta (chainlink if available, else binance)
+            # Multi-source deltas (v7.2)
+            "delta_chainlink": delta_chainlink,
+            "delta_tiingo": delta_tiingo,
+            "delta_binance": delta_binance,
+            "price_consensus": price_consensus,
             "vpin": current_vpin,
             "regime": _snap_regime,
             "btc_price": current_price,
@@ -457,15 +564,12 @@ class FiveMinVPINStrategy(BaseStrategy):
         except Exception:
             pass
 
-        # ── Fetch Chainlink + Tiingo prices at evaluation time ────────────────
-        if self._db:
-            try:
-                _cl = await self._db.get_latest_chainlink_price(window.asset)
-                _ti = await self._db.get_latest_tiingo_price(window.asset)
-                if _cl: window_snapshot["chainlink_open"] = _cl
-                if _ti: window_snapshot["tiingo_open"] = _ti
-            except Exception:
-                pass
+        # ── Populate chainlink_open / tiingo_open from already-fetched prices ──
+        # _chainlink_price and _tiingo_price were fetched earlier for delta calc.
+        if _chainlink_price:
+            window_snapshot["chainlink_open"] = _chainlink_price
+        if _tiingo_price:
+            window_snapshot["tiingo_open"] = _tiingo_price
 
         # ── DB write (AWAIT so row exists before trade_placed update) ─────────
         if self._db is not None:

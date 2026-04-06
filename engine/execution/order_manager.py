@@ -379,15 +379,36 @@ class OrderManager:
                     await self._db.update_window_outcome(
                         window_ts, asset, tf, resolved.outcome, resolved.pnl_usd or 0.0, poly_winner
                     )
-                    # Save close prices from Chainlink + Tiingo at resolution time
+                    # Save close prices from Chainlink + Tiingo + Binance at resolution time (v7.2)
                     try:
                         _cl_close = await self._db.get_latest_chainlink_price(asset)
                         _ti_close = await self._db.get_latest_tiingo_price(asset)
+                        # Binance close: use btc_price passed to poll_resolutions
+                        _bn_close = btc_price  # may be None if not provided
+                        # Direction match: did Chainlink direction agree with Binance at resolution?
+                        _cl_bn_match = None
+                        if _cl_close and _bn_close:
+                            # Compare relative to window open price for direction context
+                            # (Use Chainlink close vs Binance close direction vs order direction)
+                            _cl_dir = "UP" if resolved.direction == "YES" else "DOWN"
+                            # Chainlink vs Binance close: agree if price difference is small or same sign
+                            _cl_bn_match = abs(_cl_close - _bn_close) / max(_bn_close, 1.0) < 0.005
+                        # Resolution delay: time from order created to resolved
+                        _res_delay = None
+                        if resolved.resolved_at and hasattr(resolved, 'created_at') and resolved.created_at:
+                            _res_delay = int(resolved.resolved_at - resolved.created_at)
                         await self._db.update_window_prices(
                             window_ts, asset, tf,
                             chainlink_close=_cl_close,
                             tiingo_close=_ti_close,
                             poly_resolved_outcome=poly_winner,
+                        )
+                        # Update extra resolution columns (binance_close, direction match, delay)
+                        await self._db.update_window_resolution_extras(
+                            window_ts, asset, tf,
+                            binance_close=_bn_close,
+                            chainlink_binance_direction_match=_cl_bn_match,
+                            resolution_delay_secs=_res_delay,
                         )
                     except Exception:
                         pass

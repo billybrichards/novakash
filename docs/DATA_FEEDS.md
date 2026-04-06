@@ -408,6 +408,68 @@ TIINGO_API_KEY=<your-key>
 
 ---
 
+## Multi-Source Delta Strategy (v7.2)
+
+The engine now calculates **three independent window deltas** at evaluation time:
+
+| Delta | Source | Role |
+|-------|--------|------|
+| `delta_binance` | Binance WebSocket (`state.btc_price`) | Legacy baseline |
+| `delta_chainlink` | Chainlink oracle (DB: `ticks_chainlink`) | **PRIMARY** — oracle-aligned |
+| `delta_tiingo` | Tiingo top-of-book (DB: `ticks_tiingo`) | Secondary validation |
+
+### Primary Delta Selection
+
+The `DELTA_PRICE_SOURCE` env var (default: `chainlink`) controls which delta drives the trading decision:
+
+| Value | Behaviour |
+|-------|-----------|
+| `chainlink` | Use Chainlink oracle price as primary (default — aligns with Polymarket settlement) |
+| `binance` | Use Binance WebSocket price (legacy v7.1 behaviour) |
+| `tiingo` | Use Tiingo top-of-book price |
+| `consensus` | Only trade when ALL sources agree on direction (most conservative) |
+
+Fallback: if the selected source is unavailable, falls back to Binance (always available).
+
+### Consensus Scoring
+
+`price_consensus` column in `window_snapshots`:
+- `AGREE` — all available sources point the same direction
+- `MIXED` — 2 out of 3 sources agree
+- `DISAGREE` — sources split evenly (only possible with 2 sources)
+
+If Chainlink and Binance disagree on direction, the engine logs a `LOW` confidence flag (but still trades unless `DELTA_PRICE_SOURCE=consensus`).
+
+### DB Columns Added
+
+**window_snapshots:**
+- `delta_chainlink` — Chainlink-based window delta %
+- `delta_tiingo` — Tiingo-based window delta %
+- `delta_binance` — Binance-based window delta %
+- `price_consensus` — AGREE / MIXED / DISAGREE
+- `binance_close` — Binance price at trade resolution
+- `chainlink_binance_direction_match` — did CL and Binance agree at close?
+- `resolution_delay_secs` — seconds from evaluation to oracle resolution
+
+**countdown_evaluations:**
+- `chainlink_price` — Chainlink price at each T-minus snapshot
+- `tiingo_price` — Tiingo price at each T-minus snapshot
+- `binance_price` — Binance price at each T-minus snapshot
+
+### Switching Delta Source
+
+To revert to Binance-only delta (legacy):
+```bash
+DELTA_PRICE_SOURCE=binance
+```
+
+To require full consensus before trading:
+```bash
+DELTA_PRICE_SOURCE=consensus
+```
+
+---
+
 ## Adding a New Data Source
 
 1. Create `engine/data/feeds/<name>_feed.py` with `start()` / `stop()` async methods
