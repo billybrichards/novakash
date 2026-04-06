@@ -166,6 +166,7 @@ class ChainlinkFeed:
             if result is not None:
                 rows.append(result)
 
+        log.debug("chainlink_feed.poll_complete", total_assets=len(self._contracts), rows=len(rows))
         if rows:
             await self._write_rows(rows)
 
@@ -193,16 +194,18 @@ class ChainlinkFeed:
     async def _write_rows(self, rows: list[tuple]) -> None:
         """Batch INSERT rows into ticks_chainlink."""
         if not self._pool:
+            log.warning("chainlink_feed.no_pool")
             return
         try:
+            prepared_rows = [(*row, SOURCE) for row in rows]
             async with self._pool.acquire() as conn:
                 await conn.executemany(
                     """
                     INSERT INTO ticks_chainlink (ts, asset, price, round_id, updated_at, source)
                     VALUES (NOW(), $1, $2, $3, $4, $5)
                     """,
-                    [(*row, SOURCE) for row in rows],
+                    prepared_rows,
                 )
-            log.debug("chainlink_feed.written", rows=len(rows))
+            log.info("chainlink_feed.written", rows=len(rows), assets=[r[0] for r in rows])
         except Exception as exc:
-            log.debug("chainlink_feed.write_error", error=str(exc))
+            log.error("chainlink_feed.write_error", error=str(exc), rows=len(rows))
