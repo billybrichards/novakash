@@ -24,6 +24,7 @@ import WindowResults from './pages/WindowResults.jsx';
 import StrategyAnalysis from './pages/StrategyAnalysis.jsx';
 import LiveTrading from './pages/LiveTrading.jsx';
 import AnalysisLibrary from './pages/AnalysisLibrary.jsx';
+import FactoryFloor from './pages/FactoryFloor.jsx';
 
 export default function App() {
   return (
@@ -65,6 +66,7 @@ export default function App() {
             <Route path="strategy" element={<StrategyAnalysis />} />
             <Route path="live" element={<LiveTrading />} />
             <Route path="analysis" element={<AnalysisLibrary />} />
+            <Route path="factory" element={<FactoryFloor />} />
           </Route>
 
           {/* 404 fallback */}
