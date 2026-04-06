@@ -103,6 +103,8 @@ class ChainlinkFeed:
 
     async def start(self) -> None:
         """Initialise Web3 contracts and begin polling loop."""
+        # Init happens before entering the loop
+        init_ok = False
         try:
             from web3 import AsyncWeb3
             try:
@@ -124,11 +126,13 @@ class ChainlinkFeed:
                 rpc=self.rpc_url[:40],
                 assets=list(FEEDS.keys()),
             )
+            init_ok = True
         except ImportError as exc:
             log.error("chainlink_feed.web3_not_installed", error=str(exc))
-            return
         except Exception as exc:
             log.error("chainlink_feed.init_failed", error=str(exc))
+
+        if not init_ok:
             return
 
         self._running = True
