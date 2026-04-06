@@ -151,7 +151,7 @@ export default function LiveTrading() {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10 }}>
             <thead>
               <tr style={{ borderBottom: `1px solid ${T.border}` }}>
-                {['Time', 'Mode', 'Asset', 'Dir', 'Entry', 'Outcome', 'P&L', 'Redeemed', 'CLOB ID'].map(h => (
+                {['Time', 'Mode', 'Asset', 'Signal', 'Actual', 'Entry', 'Outcome', 'P&L', 'Redeemed', 'CLOB ID'].map(h => (
                   <th key={h} style={{ padding: '6px 8px', textAlign: 'left', color: T.label, fontSize: 9, fontWeight: 600 }}>{h}</th>
                 ))}
               </tr>
@@ -175,6 +175,23 @@ export default function LiveTrading() {
                   <td style={{ padding: '6px 8px' }}>{r.asset}</td>
                   <td style={{ padding: '6px 8px', color: r.direction === 'YES' ? T.profit : T.loss, fontWeight: 700 }}>
                     {r.direction === 'YES' ? '▲ UP' : '▼ DN'}
+                  </td>
+                  <td style={{ padding: '6px 8px', fontWeight: 700 }}>
+                    {r.outcome ? (() => {
+                      const actualUp = (r.direction === 'YES' && r.outcome === 'WIN') || (r.direction === 'NO' && r.outcome === 'LOSS');
+                      const actualDir = actualUp ? 'UP' : 'DN';
+                      const mismatch = (r.direction === 'YES') !== actualUp;
+                      return (
+                        <span style={{
+                          color: actualUp ? T.profit : T.loss,
+                          background: mismatch ? 'rgba(248,113,113,0.12)' : 'transparent',
+                          borderRadius: 3,
+                          padding: '0 4px',
+                        }}>
+                          {actualUp ? '▲' : '▼'} {actualDir}
+                        </span>
+                      );
+                    })() : <span style={{ color: T.label }}>—</span>}
                   </td>
                   <td style={{ padding: '6px 8px', fontFamily: T.mono }}>${r.entry_price?.toFixed(3) || '—'}</td>
                   <td style={{ padding: '6px 8px' }}>
