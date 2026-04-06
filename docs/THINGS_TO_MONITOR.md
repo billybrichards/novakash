@@ -89,3 +89,42 @@ Engine notifications may lag or show different prices.
 - Reporter is source of truth for P&L
 - Engine notifications are for lifecycle tracking
 - Monitor: do they converge after reconciler runs?
+
+## UP vs DOWN Asymmetry (Critical Finding Apr 6)
+
+Data from 1,335 v7.1-eligible windows:
+- **UP signals: 84.2% WR** (373W/70L)
+- **DOWN signals: 65.2% WR** (580W/310L)
+- Last 24h UP: 96.4% WR (!!)
+
+BUT: UP orders never fill on CLOB (0 of 6 resolved). DOWN fills regularly.
+We're effectively a DOWN-only system running at 65% WR.
+
+**TODO:** Investigate UP token liquidity. If UP can't fill, consider:
+- Only trading DOWN in favorable entry zone (30-50¢)
+- Finding liquidity for UP tokens (different order approach?)
+- The 84% WR on UP is being completely wasted
+
+## Cap Analysis (Apr 6)
+
+Last 24h with gamma data:
+- $0.73 cap: 69.4% WR, +$5.91
+- $0.77 cap: 70.3% WR, +$7.03  
+- $0.80 cap: 72.5% WR, +$10.24
+
+The 73-80¢ DOWN entries have HIGH WR because the market is confident.
+Consider raising cap to $0.80 for DOWN trades specifically.
+
+## TWAP Override Risk
+
+TWAP can flip direction against current delta:
+- When delta is +0.05% (UP) but TWAP says DOWN → override flips to DOWN
+- This caused at least one loss where we bet DOWN against positive momentum
+- Consider: disable override when delta strongly disagrees (>0.05% opposite)
+
+## DOWN 50-60¢ Entry Zone
+
+DOWN trades at 50-60¢ entry: only 40% WR (4W/6L)
+This zone is actively losing money. Consider:
+- Tightening DOWN cap to $0.50 max
+- OR requiring higher VPIN (>0.55) for 50-60¢ entries
