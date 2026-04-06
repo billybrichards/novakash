@@ -622,8 +622,8 @@ class TelegramAlerter:
             self._log.warning("telegram.session_summary_failed", error=str(exc)[:100])
             return None
 
-    async def send_fok_exhausted(self, window_id: str, attempts: int, prices: list) -> Optional[int]:
-        """v8.0 FOK Ladder Exhausted — all attempts killed."""
+    async def send_fok_exhausted(self, window_id: str, attempts: int, prices: list, abort_reason: str = "") -> Optional[int]:
+        """v8.0 FOK Ladder — no fill, falling back to GTC."""
         try:
             from datetime import datetime, timezone
             window_time = "?"
@@ -633,14 +633,23 @@ class TelegramAlerter:
                 window_time = dt.strftime('%H:%M UTC')
             except Exception:
                 pass
-            price_str = " → ".join([f"${p:.3f}" for p in prices[:5]])
-            text = (
-                f"⛔ *FOK EXHAUSTED* — BTC 5m | {window_time} | {self._engine_version}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Attempts: `{attempts}` | All killed\n"
-                f"Prices tried: `{price_str}`\n"
-                f"No fill — skipping window\n"
-            )
+            if attempts == 0:
+                reason_short = abort_reason[:80] if abort_reason else "no book liquidity"
+                text = (
+                    f"🔄 *FOK → GTC* — BTC 5m | {window_time} | {self._engine_version}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"CLOB book empty: `{reason_short}`\n"
+                    f"Falling back to GTC at Gamma price\n"
+                )
+            else:
+                price_str = " → ".join([f"${p:.3f}" for p in prices[:5]])
+                text = (
+                    f"🔄 *FOK → GTC* — BTC 5m | {window_time} | {self._engine_version}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"FOK: `{attempts}` attempts, all killed\n"
+                    f"Prices: `{price_str}`\n"
+                    f"Falling back to GTC at Gamma price\n"
+                )
             return await self._send_with_id(text)
         except Exception as exc:
             self._log.warning("telegram.fok_exhausted_failed", error=str(exc)[:100])

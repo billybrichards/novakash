@@ -2178,9 +2178,14 @@ class FiveMinVPINStrategy(BaseStrategy):
                         prices=_fok_result.attempted_prices,
                         abort_reason=_fok_result.abort_reason,
                     )
-                    # Don't return — fall through to GTC with Gamma price
-                    # CLOB book may be empty but GTC limit orders at Gamma
-                    # indicative price can still match via RFQ/internal matching
+                    # Notify — falling back to GTC
+                    if self._alerter:
+                        _wkey = f"{window.asset}-{window.window_ts}"
+                        asyncio.create_task(self._alerter.send_fok_exhausted(
+                            _wkey, _fok_result.attempts, _fok_result.attempted_prices,
+                            abort_reason=_fok_result.abort_reason or "",
+                        ))
+                    # Fall through to GTC with Gamma price
             except Exception as fok_exc:
                 self._log.error("execute.fok_error", error=str(fok_exc)[:200])
                 # Fall through to GTC
