@@ -2067,7 +2067,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             signal: Trading signal
         """
         window = signal.window
-        runtime = self._get_runtime_config()
+        from config.runtime_config import runtime
         
         # Determine stake — will recalculate with fresh price later
         token_price_est = window.down_price or window.up_price or 0.50
