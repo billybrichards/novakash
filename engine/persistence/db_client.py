@@ -747,6 +747,68 @@ class DBClient:
         except Exception as exc:
             log.error("db.update_window_outcome_failed", error=str(exc))
 
+    async def update_window_prices(
+        self,
+        window_ts: int,
+        asset: str,
+        timeframe: str,
+        **kwargs,
+    ) -> None:
+        """Update price columns on window_snapshot (chainlink, tiingo, poly resolution)."""
+        if not self._pool:
+            return
+        valid_cols = {
+            "chainlink_open", "chainlink_close", "tiingo_open", "tiingo_close",
+            "poly_resolved_outcome", "poly_up_price_final", "poly_down_price_final",
+        }
+        updates = []
+        params = []
+        idx = 4  # $1=window_ts, $2=asset, $3=timeframe
+        for col, val in kwargs.items():
+            if col in valid_cols and val is not None:
+                idx += 1
+                updates.append(f"{col} = ${idx}")
+                params.append(val)
+        if not updates:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    f"UPDATE window_snapshots SET {', '.join(updates)} "
+                    f"WHERE window_ts = $1 AND asset = $2 AND timeframe = $3",
+                    window_ts, asset, timeframe, *params,
+                )
+        except Exception as exc:
+            log.error("db.update_window_prices_failed", error=str(exc)[:80])
+
+    async def get_latest_chainlink_price(self, asset: str = "BTC") -> float | None:
+        """Get the most recent Chainlink price for an asset."""
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT price FROM ticks_chainlink WHERE asset = $1 ORDER BY ts DESC LIMIT 1",
+                    asset,
+                )
+                return float(row["price"]) if row else None
+        except Exception:
+            return None
+
+    async def get_latest_tiingo_price(self, asset: str = "BTC") -> float | None:
+        """Get the most recent Tiingo price for an asset."""
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT last_price FROM ticks_tiingo WHERE asset = $1 ORDER BY ts DESC LIMIT 1",
+                    asset,
+                )
+                return float(row["last_price"]) if row else None
+        except Exception:
+            return None
+
     # ─── Read Helpers ─────────────────────────────────────────────────────────
 
     async def get_daily_pnl(self, date: Optional[datetime] = None) -> float:

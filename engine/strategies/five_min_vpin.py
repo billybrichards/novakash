@@ -423,6 +423,9 @@ class FiveMinVPINStrategy(BaseStrategy):
             # This field is updated in the post-eval block below
             "skip_reason": None,
             "engine_version": "v7.1",
+            # Multi-source prices at evaluation time
+            "chainlink_open": None,  # Populated async below
+            "tiingo_open": None,     # Populated async below
             # v7.1 retroactive: would this window pass v7.1 VPIN+delta gate?
             "v71_would_trade": (
                 current_vpin >= 0.45 and abs(delta_pct) >= (
@@ -453,6 +456,16 @@ class FiveMinVPINStrategy(BaseStrategy):
                 self._log.debug("snapshot.gamma_fetched", up=f"${_fresh_up:.3f}", down=f"${_fresh_down:.3f}")
         except Exception:
             pass
+
+        # ── Fetch Chainlink + Tiingo prices at evaluation time ────────────────
+        if self._db:
+            try:
+                _cl = await self._db.get_latest_chainlink_price(window.asset)
+                _ti = await self._db.get_latest_tiingo_price(window.asset)
+                if _cl: window_snapshot["chainlink_open"] = _cl
+                if _ti: window_snapshot["tiingo_open"] = _ti
+            except Exception:
+                pass
 
         # ── DB write (AWAIT so row exists before trade_placed update) ─────────
         if self._db is not None:
