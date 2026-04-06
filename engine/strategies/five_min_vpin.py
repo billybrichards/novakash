@@ -242,32 +242,99 @@ class FiveMinVPINStrategy(BaseStrategy):
             self._log.warning("evaluate.no_open_price")
             return
 
-        # ── Multi-source delta calculation (v7.2) ─────────────────────────
-        # Binance is always available (websocket). Chainlink + Tiingo from DB.
-        # DELTA_PRICE_SOURCE env var controls which source drives the direction.
-        _delta_source = os.environ.get("DELTA_PRICE_SOURCE", "chainlink").lower()
+        # ── Multi-source delta calculation (v8.0) ─────────────────────────
+        # Feature flag: DELTA_PRICE_SOURCE (runtime_config.delta_price_source)
+        # 'tiingo'    — Tiingo REST 5m candle open/close (oracle-aligned, default)
+        # 'chainlink' — Chainlink price from DB (legacy)
+        # 'binance'   — Binance websocket price (legacy baseline)
+        # Tiingo REST candle gives a true 5m open→close delta aligned with the
+        # Chainlink oracle settlement, achieving 96.9% accuracy vs Binance's 71.6%.
+        from config.runtime_config import runtime as _rt_cfg
+        _delta_source = _rt_cfg.delta_price_source  # env-only, not DB-synced
 
-        # Binance delta (always computed — legacy baseline)
+        # Binance delta (always computed — VPIN baseline, not direction driver in v8.0)
         binance_price = current_price
         delta_binance = (binance_price - open_price) / open_price * 100
 
-        # Fetch Chainlink + Tiingo prices for delta calculation (best-effort)
+        # ── Tiingo 5m candle REST fetch (v8.0) ────────────────────────────
+        # Query the exact 5m window: window_ts → window_ts+300
+        # Endpoint: https://api.tiingo.com/tiingo/crypto/prices?tickers=btcusd&resampleFreq=5min
+        # Falls back to DB ticks_tiingo latest price if REST unavailable.
+        _tiingo_open: Optional[float] = None
+        _tiingo_close: Optional[float] = None
+        delta_tiingo: Optional[float] = None
+        _tiingo_candle_source = "none"
+
+        _tiingo_asset_ticker = f"{window.asset.lower()}usd"
+        _tiingo_api_key = "3f4456e457a4184d76c58a1320d8e1b214c3ab16"
+        _tiingo_window_start = datetime.fromtimestamp(window.window_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        _tiingo_window_end = datetime.fromtimestamp(window.window_ts + 300, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        try:
+            import aiohttp as _aiohttp_tiingo
+            _tiingo_url = (
+                f"https://api.tiingo.com/tiingo/crypto/prices"
+                f"?tickers={_tiingo_asset_ticker}"
+                f"&startDate={_tiingo_window_start}"
+                f"&endDate={_tiingo_window_end}"
+                f"&resampleFreq=5min"
+                f"&token={_tiingo_api_key}"
+            )
+            async with _aiohttp_tiingo.ClientSession() as _ts:
+                async with _ts.get(_tiingo_url, timeout=_aiohttp_tiingo.ClientTimeout(total=3.0)) as _tr:
+                    if _tr.status == 200:
+                        _tiingo_data = await _tr.json()
+                        # Response: list of {ticker, baseCurrency, quoteCurrency, priceData: [{date, open, high, low, close, volume}]}
+                        if _tiingo_data and isinstance(_tiingo_data, list) and len(_tiingo_data) > 0:
+                            _price_data = _tiingo_data[0].get("priceData", [])
+                            if _price_data and len(_price_data) > 0:
+                                # Use the first candle's open and the last candle's close
+                                _tiingo_open = float(_price_data[0].get("open", 0) or 0) or None
+                                _tiingo_close = float(_price_data[-1].get("close", 0) or 0) or None
+                                if _tiingo_open and _tiingo_close and _tiingo_open > 0:
+                                    delta_tiingo = (_tiingo_close - _tiingo_open) / _tiingo_open * 100
+                                    _tiingo_candle_source = "rest_candle"
+                                    self._log.info(
+                                        "tiingo.candle_fetched",
+                                        asset=window.asset,
+                                        open=f"${_tiingo_open:,.2f}",
+                                        close=f"${_tiingo_close:,.2f}",
+                                        delta=f"{delta_tiingo:+.4f}%",
+                                        candles=len(_price_data),
+                                    )
+        except Exception as _te:
+            self._log.debug("tiingo.candle_fetch_failed", error=str(_te)[:80])
+
+        # Tiingo DB fallback: use latest tick from ticks_tiingo if REST unavailable
+        _tiingo_db_price: Optional[float] = None
+        if delta_tiingo is None and self._db:
+            try:
+                _tiingo_db_price = await self._db.get_latest_tiingo_price(window.asset)
+                if _tiingo_db_price:
+                    _tiingo_open = open_price  # use window open as reference
+                    _tiingo_close = _tiingo_db_price
+                    delta_tiingo = (_tiingo_db_price - open_price) / open_price * 100
+                    _tiingo_candle_source = "db_tick"
+                    self._log.debug(
+                        "tiingo.db_fallback",
+                        asset=window.asset,
+                        price=f"${_tiingo_db_price:,.2f}",
+                        delta=f"{delta_tiingo:+.4f}%",
+                    )
+            except Exception:
+                pass
+
+        # ── Chainlink + Binance delta (always compute for comparison) ─────
         _chainlink_price: Optional[float] = None
-        _tiingo_price: Optional[float] = None
         if self._db:
             try:
                 _chainlink_price = await self._db.get_latest_chainlink_price(window.asset)
             except Exception:
                 pass
-            try:
-                _tiingo_price = await self._db.get_latest_tiingo_price(window.asset)
-            except Exception:
-                pass
 
         delta_chainlink = ((_chainlink_price - open_price) / open_price * 100) if _chainlink_price else None
-        delta_tiingo = ((_tiingo_price - open_price) / open_price * 100) if _tiingo_price else None
 
-        # Determine price_consensus: direction agreement across available sources
+        # ── Direction consensus across all sources ─────────────────────────
         _dirs = []
         if delta_binance is not None:
             _dirs.append("UP" if delta_binance > 0 else "DOWN")
@@ -281,8 +348,6 @@ class FiveMinVPINStrategy(BaseStrategy):
             _down_count = _dirs.count("DOWN")
             if _up_count == len(_dirs) or _down_count == len(_dirs):
                 price_consensus = "AGREE"
-            elif _up_count == 0 or _down_count == 0:
-                price_consensus = "AGREE"
             elif abs(_up_count - _down_count) >= 1 and len(_dirs) >= 3:
                 price_consensus = "MIXED"
             elif len(_dirs) == 2 and _up_count != _down_count:
@@ -292,15 +357,24 @@ class FiveMinVPINStrategy(BaseStrategy):
         else:
             price_consensus = "AGREE"  # Only one source — no conflict
 
-        # Select primary delta based on DELTA_PRICE_SOURCE env var
-        if _delta_source == "chainlink" and delta_chainlink is not None:
+        # ── Select primary delta based on DELTA_PRICE_SOURCE ──────────────
+        # v8.0 default: tiingo → chainlink fallback → binance fallback
+        if _delta_source == "tiingo" and delta_tiingo is not None:
+            delta_pct = delta_tiingo
+            _price_source_used = f"tiingo_{_tiingo_candle_source}"
+        elif _delta_source == "tiingo" and delta_chainlink is not None:
+            # Tiingo unavailable — fall back to chainlink
+            delta_pct = delta_chainlink
+            _price_source_used = "chainlink_fallback"
+            self._log.info(
+                "evaluate.tiingo_unavailable_chainlink_fallback",
+                asset=window.asset,
+                tiingo_source=_tiingo_candle_source,
+            )
+        elif _delta_source == "chainlink" and delta_chainlink is not None:
             delta_pct = delta_chainlink
             _price_source_used = "chainlink"
-        elif _delta_source == "tiingo" and delta_tiingo is not None:
-            delta_pct = delta_tiingo
-            _price_source_used = "tiingo"
         elif _delta_source == "consensus":
-            # Only trade when all sources agree — set delta_pct to chainlink (primary) or binance
             if price_consensus != "AGREE":
                 self._log.info(
                     "evaluate.consensus_skip",
@@ -311,29 +385,35 @@ class FiveMinVPINStrategy(BaseStrategy):
                     delta_tiingo=f"{delta_tiingo:+.4f}%" if delta_tiingo is not None else "N/A",
                 )
                 return
-            delta_pct = delta_chainlink if delta_chainlink is not None else delta_binance
+            delta_pct = delta_tiingo if delta_tiingo is not None else (delta_chainlink if delta_chainlink is not None else delta_binance)
             _price_source_used = "consensus"
         else:
-            # Default: chainlink with Binance fallback
-            delta_pct = delta_chainlink if delta_chainlink is not None else delta_binance
-            _price_source_used = "chainlink" if delta_chainlink is not None else "binance_fallback"
+            # Fallback: tiingo → chainlink → binance
+            if delta_tiingo is not None:
+                delta_pct = delta_tiingo
+                _price_source_used = f"tiingo_{_tiingo_candle_source}"
+            elif delta_chainlink is not None:
+                delta_pct = delta_chainlink
+                _price_source_used = "chainlink"
+            else:
+                delta_pct = delta_binance
+                _price_source_used = "binance"
 
-        # Flag LOW confidence if Chainlink and Binance disagree on direction
+        # Flag LOW confidence if primary source and Binance disagree on direction
         _price_confidence_flag = "OK"
-        if delta_chainlink is not None:
-            _cl_dir = "UP" if delta_chainlink > 0 else "DOWN"
-            _bn_dir = "UP" if delta_binance > 0 else "DOWN"
-            if _cl_dir != _bn_dir:
-                _price_confidence_flag = "LOW"
-                self._log.warning(
-                    "evaluate.price_source_disagreement",
-                    asset=window.asset,
-                    chainlink_dir=_cl_dir,
-                    binance_dir=_bn_dir,
-                    delta_chainlink=f"{delta_chainlink:+.4f}%",
-                    delta_binance=f"{delta_binance:+.4f}%",
-                    price_source_used=_price_source_used,
-                )
+        _primary_dir = "UP" if delta_pct > 0 else "DOWN"
+        _bn_dir = "UP" if delta_binance > 0 else "DOWN"
+        if _primary_dir != _bn_dir and _price_source_used not in ("binance", "binance_fallback"):
+            _price_confidence_flag = "LOW"
+            self._log.warning(
+                "evaluate.price_source_disagreement",
+                asset=window.asset,
+                primary_dir=_primary_dir,
+                binance_dir=_bn_dir,
+                delta_primary=f"{delta_pct:+.4f}%",
+                delta_binance=f"{delta_binance:+.4f}%",
+                price_source_used=_price_source_used,
+            )
 
         self._log.info(
             "evaluate.multi_source_delta",
@@ -341,8 +421,11 @@ class FiveMinVPINStrategy(BaseStrategy):
             source=_price_source_used,
             delta_pct=f"{delta_pct:+.4f}%",
             delta_binance=f"{delta_binance:+.4f}%",
-            delta_chainlink=f"{delta_chainlink:+.4f}%" if delta_chainlink else "N/A",
-            delta_tiingo=f"{delta_tiingo:+.4f}%" if delta_tiingo else "N/A",
+            delta_chainlink=f"{delta_chainlink:+.4f}%" if delta_chainlink is not None else "N/A",
+            delta_tiingo=f"{delta_tiingo:+.4f}%" if delta_tiingo is not None else "N/A",
+            tiingo_open=f"${_tiingo_open:,.2f}" if _tiingo_open else "N/A",
+            tiingo_close=f"${_tiingo_close:,.2f}" if _tiingo_close else "N/A",
+            tiingo_source=_tiingo_candle_source,
             consensus=price_consensus,
             confidence_flag=_price_confidence_flag,
         )
@@ -529,10 +612,13 @@ class FiveMinVPINStrategy(BaseStrategy):
             # skip_reason is set AFTER evaluation via _last_skip_reason (accurate)
             # This field is updated in the post-eval block below
             "skip_reason": None,
-            "engine_version": "v7.1",
+            "engine_version": "v8.0",
+            # v8.0 delta source tracking
+            "delta_source": _price_source_used,
             # Multi-source prices at evaluation time
             "chainlink_open": None,  # Populated async below
             "tiingo_open": None,     # Populated async below
+            "tiingo_close": _tiingo_close,  # v8.0: REST candle close price
             # v7.1 retroactive: would this window pass v7.1 VPIN+delta gate?
             "v71_would_trade": (
                 current_vpin >= 0.45 and abs(delta_pct) >= (
@@ -565,11 +651,14 @@ class FiveMinVPINStrategy(BaseStrategy):
             pass
 
         # ── Populate chainlink_open / tiingo_open / CLOB prices ────────────────
-        # _chainlink_price and _tiingo_price were fetched earlier for delta calc.
+        # _chainlink_price fetched earlier for delta calc.
+        # _tiingo_open / _tiingo_close fetched from REST candle above.
         if _chainlink_price:
             window_snapshot["chainlink_open"] = _chainlink_price
-        if _tiingo_price:
-            window_snapshot["tiingo_open"] = _tiingo_price
+        if _tiingo_open:
+            window_snapshot["tiingo_open"] = _tiingo_open
+        if _tiingo_close:
+            window_snapshot["tiingo_close"] = _tiingo_close
         # CLOB real bid/ask from Polymarket order book
         if self._db:
             try:
@@ -588,6 +677,73 @@ class FiveMinVPINStrategy(BaseStrategy):
                 await self._db.write_window_snapshot(window_snapshot)
             except Exception as exc:
                 self._log.warning("db.snapshot_write_failed", error=str(exc)[:80])
+
+        # ── Gate audit write (v8.0) — record pass/fail for every window ───────
+        # Builds audit AFTER signal eval so gate_passed reflects actual decision.
+        # signal is None → SKIP; signal is not None → TRADE.
+        if self._db is not None:
+            try:
+                # Determine individual gate results for audit
+                _vpin_gate_result = current_vpin >= _runtime.five_min_vpin_gate
+                _delta_threshold = (
+                    _runtime.five_min_cascade_min_delta_pct
+                    if current_vpin >= _runtime.vpin_cascade_direction_threshold
+                    else _runtime.five_min_min_delta_pct
+                )
+                _delta_gate_result = abs(delta_pct) >= _delta_threshold if delta_pct is not None else False
+
+                _gates_passed = []
+                _gate_failed_name = None
+                if _vpin_gate_result:
+                    _gates_passed.append("vpin")
+                else:
+                    if not _gate_failed_name:
+                        _gate_failed_name = "vpin"
+                if _delta_gate_result:
+                    _gates_passed.append("delta")
+                else:
+                    if not _gate_failed_name:
+                        _gate_failed_name = "delta"
+
+                # CG gate — inferred from skip reason if CG veto was triggered
+                _cg_gate_passed = True
+                _actual_skip_reason = getattr(self, '_last_skip_reason', '') or ""
+                if "CG_VETO" in _actual_skip_reason.upper() or "coinglass" in _actual_skip_reason.lower():
+                    _cg_gate_passed = False
+                    if not _gate_failed_name:
+                        _gate_failed_name = "cg"
+                if _cg_gate_passed:
+                    _gates_passed.append("cg")
+
+                _all_passed = signal is not None
+                asyncio.create_task(self._db.write_gate_audit({
+                    "window_ts": window.window_ts,
+                    "asset": window.asset,
+                    "timeframe": tf,
+                    "engine_version": "v8.0",
+                    "delta_source": _price_source_used,
+                    "open_price": open_price,
+                    "tiingo_open": _tiingo_open,
+                    "tiingo_close": _tiingo_close,
+                    "delta_tiingo": delta_tiingo,
+                    "delta_binance": delta_binance,
+                    "delta_chainlink": delta_chainlink,
+                    "delta_pct": delta_pct,
+                    "vpin": current_vpin,
+                    "regime": _snap_regime,
+                    "gate_vpin": _vpin_gate_result,
+                    "gate_delta": _delta_gate_result,
+                    "gate_cg": _cg_gate_passed,
+                    "gate_floor": None,  # Floor check happens post-signal in execution
+                    "gate_cap": None,    # Cap check happens post-signal in execution
+                    "gate_passed": _all_passed,
+                    "gate_failed": _gate_failed_name,
+                    "gates_passed_list": ",".join(_gates_passed) if _gates_passed else "",
+                    "decision": "TRADE" if _all_passed else "SKIP",
+                    "skip_reason": None if _all_passed else _actual_skip_reason[:500],
+                }))
+            except Exception as _ga_exc:
+                self._log.debug("db.gate_audit_write_failed", error=str(_ga_exc)[:80])
 
         if signal is None:
             # v7.1: Use the actual skip reason set at the point of rejection

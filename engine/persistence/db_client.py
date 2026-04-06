@@ -1032,3 +1032,90 @@ class DBClient:
             "action": "TRADE" if data.get("trade_placed") else "SKIP",
             "notes": data.get("analysis", "")[:2000] if data.get("analysis") else None,
         })
+
+    async def write_gate_audit(self, data: dict) -> None:
+        """
+        Write a gate audit record for every window evaluation (v8.0).
+
+        Records all gate pass/fail results so signal analysis can identify which
+        gate is blocking trades and whether skipped windows would have been winners.
+
+        Args:
+            data: dict with keys matching gate_audit table columns.
+        """
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO gate_audit (
+                        window_ts, asset, timeframe, engine_version,
+                        delta_source,
+                        open_price, tiingo_open, tiingo_close,
+                        delta_tiingo, delta_binance, delta_chainlink, delta_pct,
+                        vpin, regime,
+                        gate_vpin, gate_delta, gate_cg, gate_floor, gate_cap,
+                        gate_passed, gate_failed, gates_passed_list,
+                        decision, skip_reason
+                    ) VALUES (
+                        $1, $2, $3, $4,
+                        $5,
+                        $6, $7, $8,
+                        $9, $10, $11, $12,
+                        $13, $14,
+                        $15, $16, $17, $18, $19,
+                        $20, $21, $22,
+                        $23, $24
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe) DO UPDATE SET
+                        engine_version      = EXCLUDED.engine_version,
+                        delta_source        = EXCLUDED.delta_source,
+                        open_price          = EXCLUDED.open_price,
+                        tiingo_open         = EXCLUDED.tiingo_open,
+                        tiingo_close        = EXCLUDED.tiingo_close,
+                        delta_tiingo        = EXCLUDED.delta_tiingo,
+                        delta_binance       = EXCLUDED.delta_binance,
+                        delta_chainlink     = EXCLUDED.delta_chainlink,
+                        delta_pct           = EXCLUDED.delta_pct,
+                        vpin                = EXCLUDED.vpin,
+                        regime              = EXCLUDED.regime,
+                        gate_vpin           = EXCLUDED.gate_vpin,
+                        gate_delta          = EXCLUDED.gate_delta,
+                        gate_cg             = EXCLUDED.gate_cg,
+                        gate_floor          = EXCLUDED.gate_floor,
+                        gate_cap            = EXCLUDED.gate_cap,
+                        gate_passed         = EXCLUDED.gate_passed,
+                        gate_failed         = EXCLUDED.gate_failed,
+                        gates_passed_list   = EXCLUDED.gates_passed_list,
+                        decision            = EXCLUDED.decision,
+                        skip_reason         = EXCLUDED.skip_reason,
+                        evaluated_at        = NOW()
+                    """,
+                    int(data.get("window_ts", 0)),
+                    data.get("asset", "BTC"),
+                    data.get("timeframe", "5m"),
+                    data.get("engine_version", "v8.0"),
+                    data.get("delta_source"),
+                    float(data["open_price"]) if data.get("open_price") is not None else None,
+                    float(data["tiingo_open"]) if data.get("tiingo_open") is not None else None,
+                    float(data["tiingo_close"]) if data.get("tiingo_close") is not None else None,
+                    float(data["delta_tiingo"]) if data.get("delta_tiingo") is not None else None,
+                    float(data["delta_binance"]) if data.get("delta_binance") is not None else None,
+                    float(data["delta_chainlink"]) if data.get("delta_chainlink") is not None else None,
+                    float(data["delta_pct"]) if data.get("delta_pct") is not None else None,
+                    float(data["vpin"]) if data.get("vpin") is not None else None,
+                    data.get("regime"),
+                    bool(data["gate_vpin"]) if data.get("gate_vpin") is not None else None,
+                    bool(data["gate_delta"]) if data.get("gate_delta") is not None else None,
+                    bool(data["gate_cg"]) if data.get("gate_cg") is not None else None,
+                    bool(data["gate_floor"]) if data.get("gate_floor") is not None else None,
+                    bool(data["gate_cap"]) if data.get("gate_cap") is not None else None,
+                    bool(data.get("gate_passed", False)),
+                    data.get("gate_failed"),
+                    data.get("gates_passed_list"),
+                    data.get("decision", "SKIP"),
+                    data.get("skip_reason"),
+                )
+        except Exception as exc:
+            log.debug("db.write_gate_audit_failed", error=str(exc)[:120])

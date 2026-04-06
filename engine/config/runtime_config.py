@@ -160,6 +160,13 @@ class RuntimeConfig:
         self.max_orders_per_hour: int = _env_int("MAX_ORDERS_PER_HOUR", 10)
         self.min_order_interval_seconds: float = _env_float("MIN_ORDER_INTERVAL_SECONDS", 4.0)
 
+        # ── v8.0: Price source feature flag (env-only, not DB-synced) ────────
+        # Controls which feed drives direction signal in five_min_vpin evaluate().
+        # Values: 'tiingo' | 'binance' | 'chainlink'
+        # Default: 'tiingo' — oracle-aligned (96.9% accuracy vs Binance 71.6%)
+        # Tiingo REST candle (open/close) used when available; falls back to Binance.
+        self.delta_price_source: str = os.environ.get("DELTA_PRICE_SOURCE", "tiingo").lower()
+
         # ── Sync metadata ─────────────────────────────────────────────────
         self._active_config_id: Optional[int] = None
         self._active_config_name: Optional[str] = None

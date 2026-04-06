@@ -1,5 +1,60 @@
 # Changelog — 6 April 2026
 
+---
+
+## v8.0 Phase 1 — Tiingo Delta Swap (20:09 UTC)
+
+### Summary
+Engine version bumped to v8.0. Tiingo REST 5m candle is now the primary delta source,
+replacing Binance spot (71.6% oracle accuracy → 96.9%). Fully additive with feature flag.
+Gate audit table added for per-window pass/fail analysis.
+
+### Changes
+
+#### feat: Tiingo REST 5m candle delta (`engine/strategies/five_min_vpin.py`)
+- **New**: `_fetch_tiingo_candle` logic inline in `_evaluate_window()` (~line 245)
+- Queries `https://api.tiingo.com/tiingo/crypto/prices?tickers=btcusd&resampleFreq=5min` for the exact window (window_ts → window_ts+300)
+- Computes `delta_tiingo = (tiingo_close - tiingo_open) / tiingo_open * 100` from candle open/close
+- 3-second timeout on REST call; falls back to DB `ticks_tiingo` latest tick if unavailable
+- Second fallback: Binance price (unchanged legacy path)
+- Feature flag: `DELTA_PRICE_SOURCE` env var (`tiingo` | `chainlink` | `binance`), default `tiingo`
+- Stores `delta_source`, `tiingo_open`, `tiingo_close`, `delta_tiingo` in window snapshot
+
+#### feat: DELTA_PRICE_SOURCE runtime config (`engine/config/runtime_config.py`)
+- Added `self.delta_price_source` field (env-only, not DB-synced)
+- Reads `DELTA_PRICE_SOURCE` env var, default `"tiingo"`
+- Documented as v8.0 price source feature flag
+
+#### feat: gate_audit DB writes (`engine/strategies/five_min_vpin.py`, `engine/persistence/db_client.py`)
+- `db_client.write_gate_audit()` — upserts per-window gate audit record
+- Written for EVERY window evaluation (non-blocking `asyncio.create_task`)
+- Records: `gate_vpin`, `gate_delta`, `gate_cg`, `gate_passed`, `gate_failed`, `gates_passed_list`, `decision`, `skip_reason`
+- Enables offline "which gate is blocking wins?" analysis
+
+#### migration: gate_audit table (`migrations/add_gate_audit_table.sql`)
+- Creates `gate_audit` table with all gate result columns
+- Includes indexes on window_ts, asset, decision
+
+#### chore: bump engine_version to "v8.0"
+- Changed `"engine_version": "v7.1"` → `"v8.0"` in window snapshot dict
+
+### Feature Flags
+| Variable | Value | Effect |
+|---|---|---|
+| `DELTA_PRICE_SOURCE` | `tiingo` (default) | Use Tiingo REST candle |
+| `DELTA_PRICE_SOURCE` | `chainlink` | Use Chainlink DB price (v7.1 behaviour) |
+| `DELTA_PRICE_SOURCE` | `binance` | Use Binance spot (legacy) |
+
+### What Was NOT Changed
+- Execution / order placement code (Phase 2 FOK)
+- Macro observer wiring (data collection only)
+- TWAP removal (Phase 3)
+
+### Branch
+`develop` — commit pushed, not deployed to Montreal
+
+---
+
 ## Overview
 
 Major analysis and architecture day. No code deployed to live engine.
