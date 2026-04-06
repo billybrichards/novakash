@@ -106,18 +106,14 @@ class ChainlinkFeed:
         # Init happens before entering the loop
         init_ok = False
         try:
-            from web3 import AsyncWeb3
-            try:
-                from web3.providers.async_rpc import AsyncHTTPProvider
-            except ImportError:
-                from web3.providers import AsyncHTTPProvider
+            from web3 import Web3
 
-            self._w3 = AsyncWeb3(AsyncHTTPProvider(self.rpc_url))
+            self._w3 = Web3(Web3.HTTPProvider(self.rpc_url))
 
-            # Instantiate all 4 contracts
+            # Instantiate all 4 contracts (synchronous Web3 — wrapped in to_thread for async)
             for asset, (addr, _decimals) in FEEDS.items():
                 self._contracts[asset] = self._w3.eth.contract(
-                    address=AsyncWeb3.to_checksum_address(addr),
+                    address=Web3.to_checksum_address(addr),
                     abi=AGGREGATOR_ABI,
                 )
 
@@ -196,12 +192,20 @@ class ChainlinkFeed:
         return (asset, price, int(round_id), int(updated_at))
 
     async def _write_rows(self, rows: list[tuple]) -> None:
-        """Batch INSERT rows into ticks_chainlink."""
+        """Batch INSERT rows into ticks_chainlink.
+        
+        Args:
+            rows: list of (asset, price, round_id, updated_at) tuples
+        """
         if not self._pool:
             log.warning("chainlink_feed.no_pool")
             return
         try:
-            prepared_rows = [(*row, SOURCE) for row in rows]
+            # Convert round_id to string (uint80 doesn't fit in int64)
+            prepared_rows = [
+                (row[0], row[1], str(row[2]), row[3], SOURCE)
+                for row in rows
+            ]
             async with self._pool.acquire() as conn:
                 await conn.executemany(
                     """
