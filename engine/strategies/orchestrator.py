@@ -1479,7 +1479,7 @@ class Orchestrator:
                         om_total = self._order_manager.total_orders
                         om_resolved = self._order_manager.resolved_orders
                         om_open = len(open_orders)
-                        wallet = _cached_wallet_balance or 0
+                        wallet = _cached_wallet_balance or risk_status.get("current_bankroll", 0) or 0
                         bankroll = risk_status.get("current_bankroll", 0)
                         daily_pnl = risk_status.get("daily_pnl", 0)
                         drawdown = risk_status.get("drawdown_pct", 0)

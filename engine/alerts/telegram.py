@@ -132,6 +132,8 @@ class TelegramAlerter:
         signal: dict,
         decision: str,
         reason: str = "",
+        gamma_up: float = None,
+        gamma_down: float = None,
     ) -> tuple:
         """Send MANDATORY trade decision + optional AI analysis (separated)."""
         from datetime import datetime, timezone
@@ -152,12 +154,30 @@ class TelegramAlerter:
         
         live_warn = "\n⚠️ *REAL MONEY ORDER WILL BE PLACED*\n" if not self._paper_mode and decision == "TRADE" else ""
         
+        # Gamma + fill likelihood
+        gamma_line = ""
+        fill_line = ""
+        if gamma_up is not None and gamma_down is not None:
+            entry = gamma_down if direction in ("DOWN", "NO") else gamma_up
+            cap = 0.73
+            floor = 0.30
+            if entry < floor:
+                fill_line = f"⛔ FLOOR BLOCKED (${entry:.2f} < ${floor})\n"
+            elif entry > cap:
+                fill_line = f"⛔ CAP BLOCKED (${entry:.2f} > ${cap})\n"
+            else:
+                rr = (1 - entry) / entry if entry > 0 else 0
+                fill_line = f"💰 Entry: `${entry:.3f}` | R/R: `1:{rr:.1f}` | Will place at `${entry + 0.02:.3f}`\n"
+            gamma_line = f"Gamma: ↑`${gamma_up:.3f}` ↓`${gamma_down:.3f}`\n"
+        
         decision_text = (
             f"{'🎯' if decision == 'TRADE' else '⏭'} *{decision}* — Window {window_time}  {mode}\n"
             f"`{window_id}`\n{live_warn}\n"
             f"Direction: `{direction}`\n"
             f"Delta: `{delta:+.4f}%`\n"
             f"VPIN: `{vpin:.3f}` — `{regime}`\n"
+            f"{gamma_line}"
+            f"{fill_line}"
         )
         if reason:
             decision_text += f"Reason: _{reason}_\n"

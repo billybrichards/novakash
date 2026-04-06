@@ -504,6 +504,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                                 signal=signal_dict,
                                 decision="SKIP",
                                 reason=_skip_reason[:100],
+                                gamma_up=window_snapshot.get("gamma_up_price"),
+                                gamma_down=window_snapshot.get("gamma_down_price"),
                             )
                         except Exception as alert_exc:
                             self._log.error("alert.skip_decision_failed", error=str(alert_exc), window_ts=window.window_ts)
@@ -532,6 +534,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                         signal=signal_dict,
                         decision="TRADE",
                         reason=reason,
+                        gamma_up=window_snapshot.get("gamma_up_price"),
+                        gamma_down=window_snapshot.get("gamma_down_price"),
                     )
                 except Exception as alert_exc:
                     self._log.error("alert.trade_decision_failed", error=str(alert_exc), window_ts=window.window_ts)
