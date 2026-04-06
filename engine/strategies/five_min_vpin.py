@@ -958,6 +958,33 @@ class FiveMinVPINStrategy(BaseStrategy):
                 except Exception:
                     pass  # Don't block trade if DB read fails
 
+        # If CLOB cap/floor blocked the trade, go through SKIP path
+        if signal is None:
+            _skip_reason = getattr(self, '_last_skip_reason', '') or "CLOB price gate"
+            self._last_skip_reason = ""
+            if self._alerter:
+                try:
+                    _implied_dir = "UP" if delta_pct and delta_pct > 0 else "DOWN"
+                    async def _send_clob_skip():
+                        try:
+                            window_id = f"{window.asset}-{window.window_ts}"
+                            await self._alerter.send_trade_decision_detailed(
+                                window_id=window_id,
+                                signal={"direction": _implied_dir, "delta_pct": delta_pct, "vpin": current_vpin, "regime": _snap_regime,
+                                        "delta_source": window_snapshot.get("delta_source", "?"), "gates_passed": window_snapshot.get("gates_passed", ""),
+                                        "gate_failed": "clob_price", "confidence_tier": window_snapshot.get("confidence_tier", "?"),
+                                        "macro_bias": window_snapshot.get("macro_bias", "N/A"), "macro_confidence": window_snapshot.get("macro_confidence", ""),
+                                        "macro_gate": window_snapshot.get("macro_gate", "")},
+                                decision="SKIP", reason=_skip_reason[:100],
+                                gamma_up=window_snapshot.get("gamma_up_price"), gamma_down=window_snapshot.get("gamma_down_price"),
+                            )
+                        except Exception:
+                            pass
+                    asyncio.create_task(_send_clob_skip())
+                except Exception:
+                    pass
+            return
+
         # ── Send trade decision + dual-AI analysis (non-blocking) ──────────────
         if self._alerter:
             async def _send_trade_alert():
