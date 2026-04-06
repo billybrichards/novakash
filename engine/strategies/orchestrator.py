@@ -1292,8 +1292,14 @@ class Orchestrator:
                     window_key=window_key,
                     eval_offset=eval_offset,
                 )
-                # G1 & G3: Queue window for staggered execution
-                await self._execution_queue.put((window, self._aggregator))
+                # v8.0: Direct evaluation — no staggered queue delay.
+                # Staggered loop was for multi-asset batching (BTC+ETH+SOL).
+                # BTC-only: evaluate immediately for fastest FOK execution.
+                try:
+                    state = await self._aggregator.get_state()
+                    await self._five_min_strategy._evaluate_window(window, state)
+                except Exception as exc:
+                    log.warning("five_min.direct_eval_error", asset=window.asset, error=str(exc)[:200])
             elif state_value != "ACTIVE":
                 log.info("five_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
             if len(self._five_min_strategy._recent_windows) > 20:
