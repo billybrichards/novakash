@@ -2173,23 +2173,47 @@ class FiveMinVPINStrategy(BaseStrategy):
                     self._on_order_success()
                 else:
                     self._log.warning(
-                        "execute.fok_exhausted",
+                        "execute.fok_no_fill_fallback_gtc",
                         attempts=_fok_result.attempts,
                         prices=_fok_result.attempted_prices,
                         abort_reason=_fok_result.abort_reason,
                     )
-                    if self._alerter:
-                        _wkey = f"{window.asset}-{window.window_ts}"
-                        asyncio.create_task(self._alerter.send_fok_exhausted(
-                            _wkey, _fok_result.attempts, _fok_result.attempted_prices,
-                        ))
-                    return
+                    # Don't return — fall through to GTC with Gamma price
+                    # CLOB book may be empty but GTC limit orders at Gamma
+                    # indicative price can still match via RFQ/internal matching
             except Exception as fok_exc:
                 self._log.error("execute.fok_error", error=str(fok_exc)[:200])
                 # Fall through to GTC
         
-        # ── Legacy GTC path (paper mode or FOK disabled or FOK error) ─────
+        # ── GTC fallback (FOK no-fill, paper mode, or FOK disabled) ────────
+        # When FOK can't fill (empty book, cap exceeded), fall back to GTC
+        # at Gamma indicative price. Market makers match these via RFQ.
         if not clob_order_id:
+            # Fetch Gamma indicative price for GTC limit
+            if float(price) == 0.50:  # Still default — need real price
+                try:
+                    import aiohttp as _aiohttp
+                    _tf_str = "15m" if window.duration_secs == 900 else "5m"
+                    _slug = f"{window.asset.lower()}-updown-{_tf_str}-{window.window_ts}"
+                    async with _aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as _sess:
+                        _url = f"https://gamma-api.polymarket.com/events?slug={_slug}"
+                        async with _sess.get(_url, timeout=_aiohttp.ClientTimeout(total=5)) as _resp:
+                            if _resp.status == 200:
+                                _data = await _resp.json()
+                                if _data and isinstance(_data, list) and _data[0].get("markets"):
+                                    _mkt = _data[0]["markets"][0]
+                                    _outcome_raw = _mkt.get("outcomePrices", [])
+                                    if isinstance(_outcome_raw, str):
+                                        import json as _json
+                                        _outcome_raw = _json.loads(_outcome_raw)
+                                    if _outcome_raw and len(_outcome_raw) >= 2:
+                                        _gp = float(_outcome_raw[0]) if direction == "YES" else float(_outcome_raw[1])
+                                        if 0.30 <= _gp <= 0.73:
+                                            price = Decimal(str(round(_gp, 4)))
+                                            self._log.info("execute.gamma_fallback_price", price=f"${_gp:.4f}", direction=direction)
+                except Exception as _gp_exc:
+                    self._log.debug("execute.gamma_fallback_error", error=str(_gp_exc)[:100])
+            
             if not self._poly.paper_mode:
                 _shares = stake / float(price) if float(price) > 0 else 0
                 is_15m = "15m" in market_slug
