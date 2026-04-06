@@ -1,0 +1,111 @@
+# Changelog — 6 April 2026
+
+## Overview
+
+Major analysis and architecture day. No code deployed to live engine.
+Built the macro-observer as a standalone Railway service (not yet deployed).
+Key discoveries: oracle mismatch root cause, WR analysis, entry price problems.
+
+---
+
+## Key Discoveries
+
+### Oracle Mismatch — ROOT CAUSE FOUND
+- Polymarket uses **Chainlink Data Streams** (`data.chain.link/streams/btc-usd`)
+- NOT Binance spot price
+- 15+ oracle nodes, each sampling 3+ USD-settled CEXes (Coinbase, Kraken, Gemini, OKX)
+- Aggregates to LWBA (Liquidity-Weighted Bid/Ask) median mid-price
+- Reads price at **exact millisecond** of window open/close timestamps
+- **57% mismatch rate** — Binance showed DOWN but oracle resolved UP
+- Root causes: Binance USDT premium ($10-50 vs USD-settled), LWBA vs last-trade, timestamp precision
+- Fix: use Tiingo (listed oracle node, free) for signal price instead of Binance
+
+### WR Analysis — 18h Live Trading (21:30 Apr5 → 15:28 Apr6)
+- 20 resolved trades | 8W/12L | **40% WR** | -$52.51 net
+- BTC was +3.4% uptrend — engine bet DOWN into bull run all session
+- bestAsk fills at $0.73 require **73% WR to break even** — unachievable
+- Cheap fills ($0.31-0.40) have excellent R/R (30-40% break-even WR)
+- 30-day backfill WR: 71.4% overall, 65.2% DOWN-only
+
+### Entry Price Problem
+- bestAsk > $0.60 = negative EV (need >60% WR just to break even)
+- Current $0.73 fills = need 73% WR, we're hitting 40-50%
+- Solution: entry price gate (not yet implemented — monitoring first)
+
+---
+
+## Built This Session
+
+### feat: macro-observer standalone Railway service
+**Branch:** feat/macro-observer (pending creation + push)
+**Files added:**
+- `macro-observer/observer.py` — async polling loop, Anthropic call, DB writer
+- `macro-observer/requirements.txt`
+- `macro-observer/Dockerfile`
+- `macro-observer/railway.toml`
+
+**What it does:**
+- Polls every 60s (configurable via `POLL_INTERVAL` env var)
+- Gathers: resolved Polymarket outcomes (1h + 4h), BTC deltas (15m/1h/4h/24h),
+  Coinbase/Kraken/Binance prices (exchange spread = oracle divergence risk),
+  CoinGlass (OI, funding, L/S, taker), VPIN trend, spike detection,
+  recent ai_analyses summaries, upcoming macro_events, session stats
+- Calls `claude-sonnet-4-5` with 10s timeout, ~$0.007/call
+- Returns structured MacroSignal: `{bias, confidence, direction_gate, threshold_modifier, size_modifier, override_active, reasoning}`
+- Writes to `macro_signals` table with full payload logged
+- Falls back to NEUTRAL signal if Anthropic times out — engine always has a fresh row
+
+**Three modes:**
+- Neutral (<50%): engine runs unchanged
+- Trend-Aware (50-79%): gate contrarian bets, adjust delta thresholds
+- Override (80%+): early entry T-120/T-180, direction flip, 1.3x sizing
+
+**Architecture:** DB is the only interface. Observer writes, engine reads.
+Engine crash ≠ observer crash. Deploy observer ≠ restart engine.
+
+### migration: add_macro_observer_tables.sql
+**File:** `migrations/add_macro_observer_tables.sql`
+- Creates `macro_signals` table (29 columns, full signal + input logging)
+- Creates `macro_events` table (economic calendar — Fed/CPI/FOMC etc)
+- Adds columns to `window_snapshots`: macro_bias, macro_confidence, macro_override_active, macro_signal_id, coinbase_price, exchange_spread_usd
+
+### docker-compose: add macro-observer service
+Added `macro-observer` service to `docker-compose.yml` for local dev.
+
+---
+
+## TODO Updated
+
+Added to `TODO.md`:
+- **Macro Observer Engine Integration (Phase 2)** — engine wiring after Railway deploy
+- **Tiingo Integration** — oracle-aligned price source, API key already available
+- **Gamma Balance Block** — feature flag, monitor data first before implementing
+
+---
+
+## Pending (Not Yet Done)
+
+1. **Railway deploy** — macro-observer needs its own Railway service created (Billy to do)
+2. **DB migration** — run `add_macro_observer_tables.sql` on Railway postgres
+3. **Engine integration** — Phase 2: wire orchestrator to read macro_signals
+4. **Tiingo** — add to data-collector once API key confirmed
+5. **Entry price gate** — block bestAsk > $0.60 (waiting for Billy approval)
+
+---
+
+## Environment Variables Required (macro-observer)
+
+| Variable | Description | Default |
+|---|---|---|
+| `DATABASE_URL` | Railway postgres URL | required |
+| `ANTHROPIC_API_KEY` | Anthropic API key | required |
+| `POLL_INTERVAL` | Seconds between calls | 60 |
+| `ANTHROPIC_TIMEOUT` | Anthropic call timeout | 10 |
+
+---
+
+## Cost Estimate
+
+- ~$0.007/call × 60 calls/hour × 24h = **~$10/day** at 60s intervals
+- Reduce to 90s during quiet hours to cut to ~$7/day
+- Negligible vs trading losses prevented

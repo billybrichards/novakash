@@ -1,0 +1,4 @@
+aiohttp==3.9.5
+anthropic==0.40.0
+asyncpg==0.29.0
+structlog==24.1.0
