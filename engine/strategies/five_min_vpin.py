@@ -405,8 +405,8 @@ class FiveMinVPINStrategy(BaseStrategy):
             "twap_should_skip": twap_result.should_skip if twap_result else None,
             "twap_skip_reason": twap_result.skip_reason if twap_result else None,
             # Gamma market prices (Polymarket token prices)
-            "gamma_up_price": window.up_price if window.up_price else None,
-            "gamma_down_price": window.down_price if window.down_price else None,
+            "gamma_up_price": float(window.up_price) if window.up_price is not None else None,
+            "gamma_down_price": float(window.down_price) if window.down_price is not None else None,
             "gamma_mid_price": (window.up_price + window.down_price) / 2 if (window.up_price and window.down_price) else None,
             "gamma_spread": abs(window.up_price - window.down_price) if (window.up_price and window.down_price) else None,
             # Shadow trade fields (v5.8.1) — recorded for EVERY window with a signal direction.
@@ -442,6 +442,17 @@ class FiveMinVPINStrategy(BaseStrategy):
                 else "NORMAL"
             ),
         }
+
+        # ── Fetch fresh Gamma prices for ALL windows (not just traded ones) ────
+        try:
+            _slug = f"btc-updown-5m-{window.window_ts}"
+            _fresh_up, _fresh_down, _src = await self._fetch_fresh_gamma_price(_slug)
+            if _fresh_up is not None and _fresh_down is not None:
+                window_snapshot["gamma_up_price"] = _fresh_up
+                window_snapshot["gamma_down_price"] = _fresh_down
+                self._log.debug("snapshot.gamma_fetched", up=f"${_fresh_up:.3f}", down=f"${_fresh_down:.3f}")
+        except Exception:
+            pass
 
         # ── DB write (AWAIT so row exists before trade_placed update) ─────────
         if self._db is not None:
