@@ -135,7 +135,7 @@ class TelegramAlerter:
         gamma_up: float = None,
         gamma_down: float = None,
     ) -> tuple:
-        """Send MANDATORY trade decision + optional AI analysis (separated)."""
+        """v8.0 Window Evaluation Card — TRADE or SKIP with full source attribution."""
         from datetime import datetime, timezone
         
         window_time = "?"
@@ -152,52 +152,85 @@ class TelegramAlerter:
         regime = signal.get("regime", "?")
         mode = self._mode_tag()
         
-        live_warn = "\n⚠️ *REAL MONEY ORDER WILL BE PLACED*\n" if not self._paper_mode and decision == "TRADE" else ""
+        # v8.0 multi-source data
+        delta_source = signal.get("delta_source", "?")
+        delta_tiingo = signal.get("delta_tiingo")
+        delta_binance = signal.get("delta_binance")
+        delta_chainlink = signal.get("delta_chainlink")
+        tiingo_close = signal.get("tiingo_close")
+        chainlink_price = signal.get("chainlink_price")
+        binance_price = signal.get("binance_price")
+        gates_passed = signal.get("gates_passed", "")
+        gate_failed = signal.get("gate_failed")
+        confidence_tier = signal.get("confidence_tier", "?")
+        macro_bias = signal.get("macro_bias", "N/A")
+        macro_confidence = signal.get("macro_confidence", "")
         
-        # Gamma + fill likelihood
-        gamma_line = ""
-        fill_line = ""
+        # Build source prices line
+        prices = []
+        if tiingo_close: prices.append(f"TI=${tiingo_close:,.0f}")
+        if chainlink_price: prices.append(f"CL=${chainlink_price:,.0f}")
+        if binance_price: prices.append(f"BN=${binance_price:,.0f}")
+        prices_line = " | ".join(prices) if prices else "N/A"
+        
+        # Build gates line
+        gate_icons = ""
+        for g in ["vpin", "delta", "cg", "floor", "cap"]:
+            if gate_failed and g == gate_failed:
+                gate_icons += f"❌{g.upper()} "
+            elif g in (gates_passed or ""):
+                gate_icons += f"✅{g.upper()} "
+        if not gate_icons:
+            gate_icons = "N/A"
+        
+        # Gamma / entry price
+        entry_line = ""
         if gamma_up is not None and gamma_down is not None:
             entry = gamma_down if direction in ("DOWN", "NO") else gamma_up
-            cap = 0.73
-            floor = 0.30
-            if entry < floor:
-                fill_line = f"⛔ FLOOR BLOCKED (${entry:.2f} < ${floor})\n"
-            elif entry > cap:
-                fill_line = f"⛔ CAP BLOCKED (${entry:.2f} > ${cap})\n"
-            else:
+            if 0.30 <= entry <= 0.73:
                 rr = (1 - entry) / entry if entry > 0 else 0
-                fill_line = f"💰 Entry: `${entry:.3f}` | R/R: `1:{rr:.1f}` | Will place at `${entry + 0.02:.3f}`\n"
-            gamma_line = f"Gamma: ↑`${gamma_up:.3f}` ↓`${gamma_down:.3f}`\n"
+                entry_line = f"💱 Entry: `${entry:.3f}` | R/R `1:{rr:.1f}`\n"
+            elif entry < 0.30:
+                entry_line = f"⛔ FLOOR `${entry:.3f}` < $0.30\n"
+            else:
+                entry_line = f"⛔ CAP `${entry:.3f}` > $0.73\n"
+        
+        # Delta display with source
+        delta_str = f"{delta:+.4f}%" if delta else "?"
+        src_short = delta_source.replace("_rest_candle", "").replace("_db_tick", "(db)").replace("_fallback", "(fb)")
+        
+        emoji = "🎯" if decision == "TRADE" else "⏭"
         
         decision_text = (
-            f"{'🎯' if decision == 'TRADE' else '⏭'} *{decision}* — Window {window_time}  {mode}\n"
-            f"`{window_id}`\n{live_warn}\n"
-            f"Direction: `{direction}`\n"
-            f"Delta: `{delta:+.4f}%`\n"
-            f"VPIN: `{vpin:.3f}` — `{regime}`\n"
-            f"{gamma_line}"
-            f"{fill_line}"
+            f"{emoji} *{decision}* — BTC 5m | {window_time} | {self._engine_version}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 Signal: `{direction}` | {src_short} Δ `{delta_str}`\n"
+            f"📈 VPIN: `{vpin:.3f}` | `{regime}`\n"
+            f"🔗 {prices_line}\n"
+            f"{entry_line}"
+            f"🧠 Macro: `{macro_bias} {macro_confidence}`\n"
+            f"\n⚡ Gates: {gate_icons}\n"
+            f"🎖 Confidence: `{confidence_tier}`\n"
         )
-        if reason:
-            decision_text += f"Reason: _{reason}_\n"
+        
+        if decision == "SKIP" and reason:
+            decision_text += f"\n❌ _{reason[:200]}_\n"
+        
+        if not self._paper_mode and decision == "TRADE":
+            decision_text += f"\n🟢 *PLACING ORDER*  {mode}\n"
         
         decision_msg_id = await self._send_with_id(decision_text)
         
-        # AI analysis (separate, can timeout without blocking)
+        # AI analysis (shorter in v8.0 — 1 sentence max)
         analysis_msg_id = None
         if decision == "TRADE":
             try:
                 prompt = (
-                    f"BTC 5-min trade decision. Direction: {direction}. "
-                    f"Delta: {delta:+.4f}%. VPIN: {vpin:.3f} ({regime}). "
-                    f"In 1-2 sentences: likelihood of win, key risks?"
+                    f"BTC 5m {direction} trade. Tiingo Δ{delta_str}, VPIN {vpin:.2f} ({regime}). "
+                    f"Source: {delta_source}. 1 sentence: win probability + key risk."
                 )
-                ai_text, ai_source = await self._ai.assess(prompt, timeout_s=8)
-                analysis_card = (
-                    f"🤖 *AI Assessment* — `{ai_source.upper()}`\n"
-                    f"_{ai_text}_\n"
-                )
+                ai_text, ai_source = await self._ai.assess(prompt, timeout_s=6)
+                analysis_card = f"🤖 `{ai_source.upper()}` — _{ai_text[:300]}_"
                 analysis_msg_id = await self._send_with_id(analysis_card)
             except Exception as exc:
                 self._log.warning("ai.decision_analysis_failed", error=str(exc)[:100])
@@ -501,74 +534,49 @@ class TelegramAlerter:
         pnl_sign = "+" if pnl_usd >= 0 else ""
         mode = self._mode_tag()
         
-        # Build comprehensive outcome card
-        outcome_lines = [
-            f"{emoji} *{outcome}* — Window {window_time}  {mode}",
-            f"`{window_id}`",
-            "",
-            f"▸ Direction: `{decision}` @ `${entry_price:.3f}`",
-            f"▸ P&L: `{pnl_sign}${pnl_usd:.2f}`",
-        ]
+        # v8.0 session tracking
+        if not hasattr(self, '_session_wins'):
+            self._session_wins = 0
+            self._session_losses = 0
+            self._session_pnl = 0.0
+        if outcome == "WIN":
+            self._session_wins += 1
+        else:
+            self._session_losses += 1
+        self._session_pnl += pnl_usd
+        total = self._session_wins + self._session_losses
+        wr = (self._session_wins / total * 100) if total > 0 else 0
         
-        if wd.get("open_price") and wd.get("close_price"):
-            delta = ((wd["close_price"] - wd["open_price"]) / wd["open_price"]) * 100
-            actual = "UP" if wd["close_price"] > wd["open_price"] else "DOWN"
-            outcome_lines.append(f"▸ BTC: `${wd['open_price']:,.2f}` → `${wd['close_price']:,.2f}` ({actual} {delta:+.3f}%)")
+        # v8.0 source attribution
+        delta_source = wd.get("delta_source", "?")
+        delta_val = wd.get("delta_pct", 0)
+        src_short = delta_source.replace("_rest_candle", "").replace("_db_tick", "(db)") if delta_source else "?"
         
-        if wd.get("vpin") is not None:
-            regime = wd.get("regime", "?")
-            outcome_lines.append(f"▸ VPIN: `{wd['vpin']:.3f}` ({regime})")
+        oracle_note = ""
+        if outcome == "LOSS" and wd.get("actual_direction"):
+            oracle_note = f"\nOracle: `{wd['actual_direction']}` ← {src_short} was wrong"
         
-        if wd.get("gamma_up") and wd.get("gamma_down"):
-            outcome_lines.append(f"▸ Gamma: ↑`${wd['gamma_up']:.2f}` ↓`${wd['gamma_down']:.2f}`")
+        outcome_text = (
+            f"{emoji} *{outcome}* — BTC 5m | {window_time} | {self._engine_version}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Direction: `{decision}` ({src_short} Δ `{delta_val:+.4f}%`)\n"
+            f"Entry: `${entry_price:.3f}` | P&L: `{pnl_sign}${pnl_usd:.2f}`"
+            f"{oracle_note}\n"
+            f"📊 Session: `{self._session_wins}W/{self._session_losses}L ({wr:.1f}%)` | `{'+' if self._session_pnl >= 0 else ''}${self._session_pnl:.2f}`\n"
+        )
         
-        # Signal agreement summary
-        signals = []
-        if wd.get("timesfm_direction"):
-            tsfm_agree = "✓" if wd["timesfm_direction"] == decision else "✗"
-            signals.append(f"TsFM:{wd['timesfm_direction']}{tsfm_agree}")
-        if wd.get("twap_direction"):
-            twap_agree = "✓" if wd["twap_direction"] == decision else "✗"
-            signals.append(f"TWAP:{wd['twap_direction']}{twap_agree}")
-        if signals:
-            outcome_lines.append(f"▸ Signals: {' | '.join(signals)}")
-        
-        outcome_text = "\n".join(outcome_lines)
         outcome_msg_id = await self._send_with_id(outcome_text)
         
-        # AI analysis (separate, can timeout without blocking)
+        # AI analysis — shorter in v8.0 (1-2 sentences)
         analysis_msg_id = None
         try:
-            # Build comprehensive prompt with all window data
-            prompt_parts = [
-                f"BTC 5-min trade: {decision} @ ${entry_price:.3f} → {outcome} (P&L: ${pnl_usd:.2f}).",
-            ]
-            if wd.get("vpin") is not None:
-                prompt_parts.append(f"VPIN: {wd['vpin']:.3f} ({wd.get('regime', '?')}).")
-            if wd.get("delta_pct") is not None:
-                prompt_parts.append(f"Delta at T-60: {wd['delta_pct']:+.4f}%.")
-            if wd.get("open_price") and wd.get("close_price"):
-                prompt_parts.append(f"BTC: ${wd['open_price']:,.2f} → ${wd['close_price']:,.2f}.")
-            if wd.get("timesfm_direction"):
-                conf = wd.get("timesfm_confidence", 0)
-                prompt_parts.append(f"TimesFM predicted {wd['timesfm_direction']} ({conf:.0%} conf).")
-            if wd.get("twap_direction"):
-                prompt_parts.append(f"TWAP: {wd['twap_direction']} (agreement: {wd.get('twap_agreement', '?')}/3).")
-            if wd.get("cg_data"):
-                prompt_parts.append(f"CoinGlass: {wd['cg_data']}.")
-            
-            prompt_parts.append(
-                "In 2-3 sentences: Why did this trade win/lose? "
-                "Was the signal quality good? Any red flags we should have caught? "
-                "Would a TimesFM disagreement gate have helped?"
+            prompt = (
+                f"BTC 5m {decision} @ ${entry_price:.3f} → {outcome} ({pnl_sign}${pnl_usd:.2f}). "
+                f"Source: {delta_source}. VPIN: {wd.get('vpin', '?')}. "
+                f"1 sentence: why did this {'win' if outcome == 'WIN' else 'lose'}?"
             )
-            
-            prompt = " ".join(prompt_parts)
-            ai_text, ai_source = await self._ai.assess(prompt, timeout_s=10)
-            analysis_card = (
-                f"📊 *Post-Trade Analysis* — `{ai_source.upper()}`\n"
-                f"_{ai_text}_\n"
-            )
+            ai_text, ai_source = await self._ai.assess(prompt, timeout_s=6)
+            analysis_card = f"🤖 `{ai_source.upper()}` — _{ai_text[:300]}_"
             analysis_msg_id = await self._send_with_id(analysis_card)
         except Exception as exc:
             self._log.warning("ai.outcome_analysis_failed", error=str(exc)[:100])
