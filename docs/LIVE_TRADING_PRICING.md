@@ -89,3 +89,22 @@ Option B is better for now. At 69-77% WR, even $0.73 fills are slightly +EV. The
 | $0.73 | +$1.32 | -$3.65 | **-$0.22** ← slightly -EV |
 
 At 69% WR, $0.73 entries are marginally -EV. But with 77% WR (our paper backtest), $0.73 is still +EV (+$0.16/trade). The cap is right at the edge — monitor closely.
+
+## Montreal Rules (CRITICAL)
+
+> ⚠️ ALL Polymarket API calls MUST originate from Montreal (15.223.247.178).
+
+This includes:
+- CLOB order placement (FOK, GTC, GTD)
+- Gamma API price fetches during execution
+- Order status checks (fill_check)
+- Market resolution queries
+- Builder Relayer redemption calls
+- Wallet balance checks (web3 RPC)
+
+**NEVER** call Polymarket APIs from:
+- OpenClaw VPS (this server)
+- Railway (hub/frontend)
+- Any non-Montreal location
+
+Code changes: push from VPS → git pull on Montreal → restart engine there.
