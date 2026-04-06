@@ -2305,210 +2305,87 @@ class FiveMinVPINStrategy(BaseStrategy):
             token_price=str(price),
         )
 
-        # Post-trade verification — v5.3: faster poll (30s) + dynamic bump + GTD
-        # CLOB matching can take 5-30s on thin books near window close.
-        # Poll every 5s for 30s, then dynamic bump retry for 15s.
+        # ── v8.0: Post-trade verification ─────────────────────────────────────
+        # FOK fills are instant — if FOK filled, we just confirm and notify.
+        # GTC/RFQ fills need polling (legacy path for paper mode).
         if not self._poly.paper_mode and order.order_id.startswith("0x"):
-            POLL_INTERVAL = 5    # seconds between checks
-            MAX_WAIT = 30        # v5.3: reduced from 60s → 30s
-            filled = False
-
-            try:
-                elapsed = 0
-                while elapsed < MAX_WAIT:
-                    await asyncio.sleep(POLL_INTERVAL)
-                    elapsed += POLL_INTERVAL
-
-                    status = await self._poly.get_order_status(order.order_id)
-                    clob_status = status.get("status", "UNKNOWN")
-                    size_matched = status.get("size_matched", "0")
-                    filled = float(size_matched) > 0 if size_matched else False
-
-                    self._log.info(
-                        "trade.fill_check",
-                        order_id=order.order_id[:20] + "...",
-                        clob_status=clob_status,
-                        size_matched=size_matched,
-                        filled=filled,
-                        elapsed=f"{elapsed}s",
-                    )
-
-                    if filled:
-                        break
-
-                    # If order was cancelled or matched (not LIVE), stop polling
-                    if clob_status not in ("LIVE", "UNKNOWN"):
-                        break
-
-                order.metadata["clob_status"] = clob_status
-                order.metadata["size_matched"] = size_matched
-                order.metadata["filled"] = filled
-                order.metadata["fill_wait_seconds"] = elapsed
-
-                if filled:
-                    # Calculate ACTUAL fill price from matched size and stake
-                    _actual_fill_price = None
+            if _fok_result and _fok_result.filled:
+                # FOK filled instantly — record and notify
+                order.metadata["filled"] = True
+                order.metadata["fok_fill_step"] = _fok_result.fill_step
+                order.metadata["fok_attempts"] = _fok_result.attempts
+                order.metadata["fok_prices"] = _fok_result.attempted_prices
+                order.metadata["actual_fill_price"] = _fok_result.fill_price
+                order.metadata["shares_matched"] = _fok_result.shares
+                order.metadata["fill_wait_seconds"] = 0
+                order.metadata["execution_mode"] = "fok"
+                self._log.info(
+                    "trade.fok_verified",
+                    order_id=order.order_id[:20] + "...",
+                    fill_price=f"${_fok_result.fill_price:.4f}",
+                    shares=f"{_fok_result.shares:.2f}",
+                    step=f"{_fok_result.fill_step}/{_fok_result.attempts}",
+                )
+                if self._alerter:
                     try:
-                        _matched_shares = float(size_matched)
-                        if _matched_shares > 0:
-                            _actual_fill_price = round(order.stake_usd / _matched_shares, 4)
-                            order.price = str(_actual_fill_price)
-                            order.metadata["actual_fill_price"] = _actual_fill_price
-                            order.metadata["shares_matched"] = _matched_shares
-                            self._log.info(
-                                "trade.actual_fill_price",
-                                submitted_price=f"${token_price:.4f}",
-                                actual_price=f"${_actual_fill_price:.4f}",
-                                shares=f"{_matched_shares:.2f}",
-                            )
+                        asyncio.create_task(self._alerter.send_order_filled(
+                            order, _fok_result.fill_price, _fok_result.shares,
+                        ))
                     except Exception:
                         pass
-                    
-                    self._log.info(
-                        "trade.verified",
-                        order_id=order.order_id[:20] + "...",
-                        size_matched=size_matched,
-                        actual_price=f"${_actual_fill_price:.4f}" if _actual_fill_price else "n/a",
-                        wait=f"{elapsed}s",
-                    )
-                    if self._alerter:
-                        asyncio.create_task(self._alerter.send_entry_alert(order))
-                else:
-                    self._log.warning(
-                        "trade.not_filled",
-                        order_id=order.order_id[:20] + "...",
-                        clob_status=clob_status,
-                        waited=f"{elapsed}s",
-                    )
-                    # Notify on Telegram when order doesn't fill
-                    if self._alerter:
-                        try:
+            else:
+                # GTC/RFQ path — poll for fill (60s max)
+                order.metadata["execution_mode"] = "gtc"
+                POLL_INTERVAL = 5
+                MAX_WAIT = 60
+                filled = False
+                elapsed = 0
+                try:
+                    while elapsed < MAX_WAIT:
+                        await asyncio.sleep(POLL_INTERVAL)
+                        elapsed += POLL_INTERVAL
+                        status = await self._poly.get_order_status(order.order_id)
+                        clob_status = status.get("status", "UNKNOWN")
+                        size_matched = status.get("size_matched", "0")
+                        filled = float(size_matched) > 0 if size_matched else False
+                        self._log.info(
+                            "trade.fill_check",
+                            order_id=order.order_id[:20] + "...",
+                            clob_status=clob_status,
+                            size_matched=size_matched,
+                            filled=filled,
+                            elapsed=f"{elapsed}s",
+                        )
+                        if filled or clob_status not in ("LIVE", "UNKNOWN"):
+                            break
+
+                    order.metadata["clob_status"] = clob_status
+                    order.metadata["size_matched"] = size_matched
+                    order.metadata["filled"] = filled
+                    order.metadata["fill_wait_seconds"] = elapsed
+
+                    if filled:
+                        _matched_shares = float(size_matched)
+                        if _matched_shares > 0:
+                            _actual_fill = round(order.stake_usd / _matched_shares, 4)
+                            order.price = str(_actual_fill)
+                            order.metadata["actual_fill_price"] = _actual_fill
+                        self._log.info("trade.gtc_verified", order_id=order.order_id[:20], filled=True)
+                        if self._alerter:
+                            asyncio.create_task(self._alerter.send_entry_alert(order))
+                    else:
+                        self._log.warning("trade.gtc_not_filled", order_id=order.order_id[:20], waited=f"{elapsed}s")
+                        if self._alerter:
                             asyncio.create_task(self._alerter.send_system_alert(
-                                f"⏰ Order NOT FILLED — {window.asset} {tf}\n"
-                                f"Direction: {direction} at ${float(price):.2f}\n"
-                                f"Waited {elapsed}s, status: {clob_status}\n"
-                                f"Attempting retry...",
+                                f"❌ GTC NOT FILLED — {window.asset} {tf}\n"
+                                f"Direction: {direction} at ${float(price):.4f}\n"
+                                f"Waited {elapsed}s — no fill",
                                 level="warning",
                             ))
-                        except Exception:
-                            pass
-                    # ── v5.3 DYNAMIC BUMP RETRY ────────────────────────────
-                    # Read order book spread, bump by min(2¢, spread)
-                    self._log.info("trade.retry_starting", original_price=str(price), order_id=order.order_id[:20] + "...")
-                    try:
-                        # Dynamic bump: read spread, bump intelligently
-                        try:
-                            spread = await self._poly.get_order_book_spread(token_id)
-                            bumped_price_f = self._poly.calculate_dynamic_bump(float(price), spread)
-                        except Exception:
-                            bumped_price_f = round(float(price) + 0.02, 4)
-                        # Only retry if bumped price is still reasonable (<0.70)
-                        if bumped_price_f < 0.70:
-                            # Cancel the unfilled original order
-                            try:
-                                if hasattr(self._poly, '_clob_client') and self._poly._clob_client:
-                                    await asyncio.to_thread(self._poly._clob_client.cancel, order.order_id)
-                                    self._log.info("trade.retry_cancelled_original", order_id=order.order_id[:20] + "...")
-                            except Exception:
-                                pass
-
-                            # Recalculate stake at bumped price
-                            retry_stake = self._calculate_stake(signal.confidence, bumped_price_f)
-
-                            # Re-check risk with new stake
-                            retry_approved, retry_reason = await self._check_risk(retry_stake)
-                            if not retry_approved:
-                                self._log.info("trade.retry_risk_blocked", reason=retry_reason, stake=retry_stake)
-                            else:
-                                # G4: Check rate limit before retry
-                                rl_allowed_retry, rl_reason_retry = self._check_rate_limit()
-                                if not rl_allowed_retry:
-                                    self._log.warning("guardrail.rate_limit.blocked_on_retry", reason=rl_reason_retry)
-                                else:
-                                    # G5: Check circuit breaker before retry
-                                    cb_allowed_retry, cb_reason_retry = self._check_circuit_breaker()
-                                    if not cb_allowed_retry:
-                                        self._log.warning("guardrail.circuit_breaker.blocked_on_retry", reason=cb_reason_retry)
-                                    else:
-                                        bumped_price_dec = Decimal(str(bumped_price_f))
-                                        self._log.info(
-                                            "trade.retry_bumped",
-                                            original_price=str(price),
-                                            bumped_price=str(bumped_price_dec),
-                                            retry_stake=f"${retry_stake:.2f}",
-                                        )
-                                        _original_order_id_2 = order.order_id  # save before overwrite
-                                        try:
-                                            retry_id = await self._poly.place_order(
-                                                market_slug=market_slug,
-                                                direction=direction,
-                                                price=bumped_price_dec,
-                                                stake_usd=retry_stake,
-                                                token_id=token_id,
-                                            )
-                                            # G4: Record order placed
-                                            self._record_order_placed()
-                                            # G5: Reset consecutive errors
-                                            self._on_order_success()
-                                            
-                                            if retry_id:
-                                                # FIX: Register retry_id → original order so resolve_order works for both IDs
-                                                await self._om.register_retry_order_id(retry_id, _original_order_id_2)
-                                            order.order_id = retry_id
-                                            order.price = str(bumped_price_dec)
-                                            order.stake_usd = retry_stake
-                                            order.metadata["retried_at_bump"] = True
-                                            order.metadata["bumped_price"] = str(bumped_price_dec)
-                                            self._log.info("trade.retry_placed", order_id=str(retry_id)[:20], price=str(bumped_price_dec))
-                                        except Exception as retry_place_exc:
-                                            # G5: Record error for circuit breaker
-                                            self._on_order_error(retry_place_exc)
-                                            self._log.error("trade.retry_place_failed", error=str(retry_place_exc))
-                                            retry_id = None
-
-                                        # Quick fill check on retry (15s) — only if order was placed
-                                        if 'retry_id' in locals() and retry_id:
-                                            await asyncio.sleep(15)
-                                            status2 = await self._poly.get_order_status(retry_id)
-                                            retry_size_matched_2 = status2.get("size_matched", "0") or "0"
-                                            retry_filled = float(retry_size_matched_2) > 0
-                                            order.metadata["filled"] = retry_filled
-                                            if retry_filled:
-                                                # FIX: Update entry_price with actual fill price
-                                                try:
-                                                    _retry_shares_2 = float(retry_size_matched_2)
-                                                    if _retry_shares_2 > 0:
-                                                        _retry_fill_price_2 = round(order.stake_usd / _retry_shares_2, 4)
-                                                        order.price = str(_retry_fill_price_2)
-                                                        order.metadata["actual_fill_price"] = _retry_fill_price_2
-                                                        self._log.info("trade.retry_actual_fill_price", price=f"${_retry_fill_price_2:.4f}", shares=_retry_shares_2)
-                                                except Exception:
-                                                    pass
-                                                self._log.info("trade.retry_filled", order_id=str(retry_id)[:20], size_matched=status2.get("size_matched"))
-                                                if self._alerter:
-                                                    asyncio.create_task(self._alerter.send_entry_alert(order))
-                                            else:
-                                                self._log.warning("trade.retry_not_filled", order_id=str(retry_id)[:20])
-                                                if self._alerter:
-                                                    try:
-                                                        asyncio.create_task(self._alerter.send_system_alert(
-                                                            f"❌ Retry also NOT FILLED — {window.asset} {tf}\n"
-                                                            f"Direction: {direction}\n"
-                                                            f"Order expired unfilled. No position taken.",
-                                                            level="warning",
-                                                        ))
-                                                    except Exception:
-                                                        pass
-                        else:
-                            self._log.info("trade.retry_skip_expensive", bumped_price=bumped_price_f)
-                    except Exception as retry_exc:
-                        self._log.warning("trade.retry_failed", error=str(retry_exc))
-                    # ── END RETRY ──────────────────────────────────────────
-            except Exception as exc:
-                self._log.warning("trade.verify_failed", order_id=order.order_id[:20], error=str(exc))
-                # Still send alert on verify failure — better to over-notify than miss
-                if self._alerter:
-                    asyncio.create_task(self._alerter.send_entry_alert(order))
+                except Exception as exc:
+                    self._log.warning("trade.verify_failed", error=str(exc)[:100])
+                    if self._alerter:
+                        asyncio.create_task(self._alerter.send_entry_alert(order))
         else:
             # Paper mode — always alert
             if self._alerter:
