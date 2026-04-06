@@ -763,7 +763,7 @@ export default function FactoryFloor() {
         {/* Header */}
         <div style={{
           display: 'grid',
-          gridTemplateColumns: '60px 50px 1fr 100px 60px',
+          gridTemplateColumns: '60px 46px 46px 1fr 100px 60px',
           gap: 8,
           padding: '4px 0 6px',
           borderBottom: `1px solid ${T.border}`,
@@ -772,7 +772,8 @@ export default function FactoryFloor() {
           letterSpacing: '0.08em',
         }}>
           <span>TIME</span>
-          <span>DIR</span>
+          <span>SIGNAL</span>
+          <span>ACTUAL</span>
           <span>GATES</span>
           <span>REASON</span>
           <span style={{ textAlign: 'right' }}>RESULT</span>
@@ -789,7 +790,7 @@ export default function FactoryFloor() {
           return (
             <div key={i} style={{
               display: 'grid',
-              gridTemplateColumns: '60px 50px 1fr 100px 60px',
+              gridTemplateColumns: '60px 46px 46px 1fr 100px 60px',
               gap: 8,
               padding: '5px 0',
               borderBottom: `1px solid ${T.border}`,
@@ -799,11 +800,23 @@ export default function FactoryFloor() {
               <span style={{ color: T.label2 }}>{utcHHMM(o.window_ts)}</span>
               <span style={{
                 fontWeight: 600,
+                color: o.direction === 'UP' ? T.profit
+                  : o.direction === 'DOWN' ? T.loss
+                  : T.label,
+              }}>
+                {o.direction || '\u2014'}
+              </span>
+              <span style={{
+                fontWeight: 600,
                 color: o.actual_direction === 'UP' ? T.profit
                   : o.actual_direction === 'DOWN' ? T.loss
                   : T.label,
+                background: (o.direction && o.actual_direction && o.direction !== o.actual_direction)
+                  ? 'rgba(248,113,113,0.12)' : 'transparent',
+                borderRadius: 3,
+                padding: '0 3px',
               }}>
-                {o.actual_direction || o.direction || '\u2014'}
+                {o.actual_direction || '\u2014'}
               </span>
               <span style={{ fontSize: 10, letterSpacing: 1 }}>{gateStr}</span>
               <span style={{ fontSize: 9, color: T.label, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
