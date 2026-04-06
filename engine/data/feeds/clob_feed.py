@@ -7,7 +7,7 @@ Gamma API's bestAsk can be stale/smoothed. CLOB is live.
 
 MUST run on Montreal only (Polymarket geo-blocked elsewhere).
 
-Polls every 10 seconds per active window (rate-limited to avoid CLOB spam).
+Polls every 2 seconds (configurable via CLOB_POLL_INTERVAL env var).
 Stores to ticks_clob table.
 """
 
@@ -22,7 +22,7 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-POLL_INTERVAL = 10  # seconds — CLOB book doesn't change faster than this for 5-min markets
+POLL_INTERVAL = int(os.environ.get("CLOB_POLL_INTERVAL", "2"))  # seconds — need fresh prices for FOK/GTC
 
 
 class CLOBFeed:
