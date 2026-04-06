@@ -180,7 +180,7 @@ class ChainlinkFeed:
             (asset, price, round_id, updated_at) tuple or None on error.
         """
         round_id, answer, _started, updated_at, _answered_in = (
-            await contract.functions.latestRoundData().call()
+            await asyncio.to_thread(contract.functions.latestRoundData().call)
         )
         price = float(answer) / (10 ** decimals)
         log.debug(
