@@ -1256,15 +1256,43 @@ class FiveMinVPINStrategy(BaseStrategy):
                     size_matched = status.get("size_matched", "0")
                     filled = float(size_matched) > 0 if size_matched else False
                     
-                    # Immediate Telegram notification on first meaningful status
-                    if elapsed == POLL_INTERVAL and self._alerter:
+                    # Immediate Telegram notification on MATCHED
+                    if filled and self._alerter:
                         try:
-                            _st = "✅ FILLED" if filled else f"⏳ {clob_status}"
-                            _det = f"{size_matched} shares @ ~${order.stake_usd/float(size_matched):.3f}" if filled and float(size_matched) > 0 else "Waiting for counterparty..."
-                            asyncio.create_task(self._alerter._send_with_id(
-                                f"📋 *CLOB STATUS: {_st}*  🔴 LIVE\n"
-                                f"`{order.order_id[:20]}...`\n{_det}"
-                            ))
+                            _shares = float(size_matched)
+                            _fill_px = round(order.stake_usd / _shares, 4) if _shares > 0 else 0
+                            _rr = round((1 - _fill_px) / _fill_px, 1) if _fill_px > 0 else 0
+                            _profit_if_win = round((1 - _fill_px) * _shares * 0.98, 2)
+                            _dir = "DOWN" if order.direction == "NO" else "UP"
+                            _mode = "📄 PAPER" if self._poly.paper_mode else "🔴 LIVE"
+                            
+                            async def _send_fill_notif():
+                                # Main notification
+                                await self._alerter._send_with_id(
+                                    f"💰 *BET PLACED — FILLED*  {_mode}\n"
+                                    f"`{order.order_id[:20]}...`\n\n"
+                                    f"Direction: `{_dir}`\n"
+                                    f"Fill: `${_fill_px:.3f}` × `{_shares:.1f}` shares\n"
+                                    f"Cost: `${order.stake_usd:.2f}`\n"
+                                    f"R/R: `1:{_rr}` | If WIN: `+${_profit_if_win:.2f}`\n"
+                                    f"Fill time: `{elapsed}s`"
+                                )
+                                # Brief AI analysis on the fill
+                                try:
+                                    _prompt = (
+                                        f"BTC 5-min bet just FILLED on Polymarket. {_dir} @ ${_fill_px:.3f}, "
+                                        f"{_shares:.0f} shares, ${order.stake_usd:.0f} stake. "
+                                        f"R/R is 1:{_rr}. If win: +${_profit_if_win:.2f}. "
+                                        f"In 1 sentence: is this a good fill price and what's the likely outcome?"
+                                    )
+                                    _ai_text, _ai_src = await self._alerter._ai.assess(_prompt, timeout_s=8)
+                                    await self._alerter._send_with_id(
+                                        f"🤖 *Fill Analysis* — `{_ai_src.upper()}`\n_{_ai_text}_"
+                                    )
+                                except Exception:
+                                    pass
+                            
+                            asyncio.create_task(_send_fill_notif())
                         except Exception:
                             pass
                     
