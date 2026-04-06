@@ -701,6 +701,8 @@ class FiveMinVPINStrategy(BaseStrategy):
         window_snapshot["gates_passed"] = ",".join(_gp_list)
         window_snapshot["gate_failed"] = _gf
         window_snapshot["confidence_tier"] = _conf_tier
+        window_snapshot["_cap_passed"] = _cap_passed
+        window_snapshot["_floor_passed"] = _floor_passed
 
         # ── Fetch fresh Gamma prices for ALL windows (not just traded ones) ────
         try:
@@ -912,6 +914,37 @@ class FiveMinVPINStrategy(BaseStrategy):
                 except Exception:
                     pass
             return
+
+        # ── v8.0: Cap/Floor check from Gamma/CLOB prices ─────────────────────
+        # If the token price is outside our bounds, skip before execution.
+        # This catches the case where signal passes VPIN+delta gates but
+        # the market price is too expensive (>$0.73) or too cheap (<$0.30).
+        if not window_snapshot.get("_cap_passed", True) or not window_snapshot.get("_floor_passed", True):
+            _implied = signal.direction if signal else ("UP" if delta_pct and delta_pct > 0 else "DOWN")
+            _ep = window_snapshot.get("gamma_up_price") if _implied == "UP" else window_snapshot.get("gamma_down_price")
+            _reason = f"CAP: entry ${_ep:.3f} > $0.73" if not window_snapshot.get("_cap_passed", True) else f"FLOOR: entry ${_ep:.3f} < $0.30"
+            self._log.info("evaluate.price_gate_block", direction=_implied, entry=f"${_ep:.3f}" if _ep else "?", reason=_reason)
+            self._last_skip_reason = _reason
+            signal = None  # Force SKIP path
+
+        if signal is not None:
+            # Also check fresh CLOB price before committing to trade
+            if self._db:
+                try:
+                    _clob = await self._db.get_latest_clob_prices(window.asset)
+                    if _clob:
+                        _dir = signal.direction
+                        _clob_ask = _clob.get("clob_up_ask") if _dir == "UP" else _clob.get("clob_down_ask")
+                        if _clob_ask and _clob_ask > 0.73:
+                            self._log.info("evaluate.clob_cap_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}")
+                            self._last_skip_reason = f"CLOB CAP: {_dir} ask ${_clob_ask:.3f} > $0.73"
+                            signal = None
+                        elif _clob_ask and _clob_ask < 0.30:
+                            self._log.info("evaluate.clob_floor_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}")
+                            self._last_skip_reason = f"CLOB FLOOR: {_dir} ask ${_clob_ask:.3f} < $0.30"
+                            signal = None
+                except Exception:
+                    pass  # Don't block trade if DB read fails
 
         # ── Send trade decision + dual-AI analysis (non-blocking) ──────────────
         if self._alerter:
