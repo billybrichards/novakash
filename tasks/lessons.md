@@ -52,3 +52,18 @@ Lessons learned from corrections. Review at session start.
 **What happened:** Changed STARTING_BANKROLL from 25→100 and BET_FRACTION, but strategy still used hardcoded values.
 **Root cause:** Some code read env vars at import time, some at runtime, some were hardcoded.
 **Rule:** All tuneable parameters must come from constants.py which reads env vars. Never hardcode values that should be configurable.
+
+### Win rate sources must be unified — 2026-04-06
+**What happened:** Audit found 3 independent win rate sources (trades.outcome, window_snapshots.v71_correct, backtest JSONs) giving different numbers. Paper mode fallback resolves from Binance price instead of Polymarket oracle, corrupting win rate history.
+**Root cause:** Resolution paths diverged over time — live mode uses oracle, paper mode has Binance fallback, v71_correct has separate logic, backtests use simulated data.
+**Rule:** ONE source of truth for trade outcomes: Polymarket oracle. If oracle unavailable, mark PENDING and retry — never guess from Binance price. Document all metrics that intentionally differ (directional WR vs P&L WR).
+
+### Verify agent findings before reporting — 2026-04-06
+**What happened:** Subagent audit incorrectly reported /v58/*, /playwright/*, /trading-config/* endpoints as "missing/broken" and api('GET', url) callable syntax as "broken". All were working correctly.
+**Root cause:** Agent searched frontend but didn't cross-check with hub/api/ backend routes. Made assumptions without verification.
+**Rule:** Cross-verify frontend→backend endpoint claims by checking BOTH sides. Never report an endpoint as missing without grepping the backend router definitions.
+
+### Large files need dedicated audits — 2026-04-06
+**What happened:** V58Monitor.jsx is 122KB — too large for a general audit pass to assess properly. Needs dedicated deep-read in chunks.
+**Root cause:** File grew organically without decomposition. Single components shouldn't exceed ~500 lines.
+**Rule:** Flag any component >500 lines for decomposition. Audit large files in dedicated passes with chunked reads.
