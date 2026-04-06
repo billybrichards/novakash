@@ -1288,6 +1288,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                         retry_stake = self._calculate_stake(signal.tier, float(bumped_price))
                         
                         try:
+                            _original_order_id = order.order_id  # save before overwrite
                             retry_id = await self._poly.place_order(
                                 market_slug=market_slug,
                                 direction=direction,
@@ -1295,6 +1296,9 @@ class FiveMinVPINStrategy(BaseStrategy):
                                 stake_usd=retry_stake,
                                 token_id=token_id,
                             )
+                            if retry_id:
+                                # FIX: Register retry_id → original order so resolve_order works for both IDs
+                                await self._om.register_retry_order_id(retry_id, _original_order_id)
                             order.order_id = retry_id
                             order.price = str(bumped_price)
                             order.stake_usd = retry_stake
@@ -1306,10 +1310,22 @@ class FiveMinVPINStrategy(BaseStrategy):
                             # Quick fill check on retry (15s = 3 checks)
                             await asyncio.sleep(15)
                             status2 = await self._poly.get_order_status(retry_id)
-                            retry_filled = float(status2.get("size_matched", "0") or "0") > 0
+                            retry_size_matched = status2.get("size_matched", "0") or "0"
+                            retry_filled = float(retry_size_matched) > 0
                             order.metadata["filled"] = retry_filled
-                            if retry_filled and self._alerter:
-                                asyncio.create_task(self._alerter.send_entry_alert(order))
+                            if retry_filled:
+                                # FIX: Update entry_price with actual fill price
+                                try:
+                                    _retry_shares = float(retry_size_matched)
+                                    if _retry_shares > 0:
+                                        _retry_fill_price = round(order.stake_usd / _retry_shares, 4)
+                                        order.price = str(_retry_fill_price)
+                                        order.metadata["actual_fill_price"] = _retry_fill_price
+                                        self._log.info("trade.retry_actual_fill_price", price=f"${_retry_fill_price:.4f}", shares=_retry_shares)
+                                except Exception:
+                                    pass
+                                if self._alerter:
+                                    asyncio.create_task(self._alerter.send_entry_alert(order))
                             elif not retry_filled:
                                 self._log.warning("trade.retry_not_filled", order_id=retry_id[:20] if retry_id else "?")
                         except Exception as exc:
@@ -1948,6 +1964,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                                             bumped_price=str(bumped_price_dec),
                                             retry_stake=f"${retry_stake:.2f}",
                                         )
+                                        _original_order_id_2 = order.order_id  # save before overwrite
                                         try:
                                             retry_id = await self._poly.place_order(
                                                 market_slug=market_slug,
@@ -1961,6 +1978,9 @@ class FiveMinVPINStrategy(BaseStrategy):
                                             # G5: Reset consecutive errors
                                             self._on_order_success()
                                             
+                                            if retry_id:
+                                                # FIX: Register retry_id → original order so resolve_order works for both IDs
+                                                await self._om.register_retry_order_id(retry_id, _original_order_id_2)
                                             order.order_id = retry_id
                                             order.price = str(bumped_price_dec)
                                             order.stake_usd = retry_stake
@@ -1977,9 +1997,20 @@ class FiveMinVPINStrategy(BaseStrategy):
                                         if 'retry_id' in locals() and retry_id:
                                             await asyncio.sleep(15)
                                             status2 = await self._poly.get_order_status(retry_id)
-                                            retry_filled = float(status2.get("size_matched", "0") or "0") > 0
+                                            retry_size_matched_2 = status2.get("size_matched", "0") or "0"
+                                            retry_filled = float(retry_size_matched_2) > 0
                                             order.metadata["filled"] = retry_filled
                                             if retry_filled:
+                                                # FIX: Update entry_price with actual fill price
+                                                try:
+                                                    _retry_shares_2 = float(retry_size_matched_2)
+                                                    if _retry_shares_2 > 0:
+                                                        _retry_fill_price_2 = round(order.stake_usd / _retry_shares_2, 4)
+                                                        order.price = str(_retry_fill_price_2)
+                                                        order.metadata["actual_fill_price"] = _retry_fill_price_2
+                                                        self._log.info("trade.retry_actual_fill_price", price=f"${_retry_fill_price_2:.4f}", shares=_retry_shares_2)
+                                                except Exception:
+                                                    pass
                                                 self._log.info("trade.retry_filled", order_id=str(retry_id)[:20], size_matched=status2.get("size_matched"))
                                                 if self._alerter:
                                                     asyncio.create_task(self._alerter.send_entry_alert(order))

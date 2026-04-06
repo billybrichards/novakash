@@ -111,6 +111,7 @@ class OrderManager:
         self._on_resolution = on_resolution
         self._poly_client = poly_client
         self._orders: Dict[str, Order] = {}
+        self._order_id_aliases: Dict[str, str] = {}  # retry_id → original_order_id
         self._lock = asyncio.Lock()
         self._log = logger.bind(component="order_manager")
         self._current_btc_price: float = 0.0
@@ -148,6 +149,25 @@ class OrderManager:
         # Persist to DB (non-blocking — don't hold the lock)
         await self._persist_trade(order)
 
+    async def register_retry_order_id(self, retry_id: str, original_id: str) -> None:
+        """Register a retry order ID as an alias for the original order.
+
+        When FOK fails and a GTC/bumped retry is placed, the retry gets a NEW
+        CLOB order ID. This maps retry_id → original order so that resolve_order()
+        works for both the original ID and the retry ID.
+
+        Args:
+            retry_id: The new CLOB order ID assigned to the retry order.
+            original_id: The original order ID already tracked in self._orders.
+        """
+        async with self._lock:
+            self._order_id_aliases[retry_id] = original_id
+            self._log.info(
+                "order_manager.retry_alias_registered",
+                retry_id=retry_id[:20] + "..." if len(retry_id) > 20 else retry_id,
+                original_id=original_id[:20] + "..." if len(original_id) > 20 else original_id,
+            )
+
     # ------------------------------------------------------------------
     # Resolution
     # ------------------------------------------------------------------
@@ -176,7 +196,11 @@ class OrderManager:
             raise ValueError(f"outcome must be WIN or LOSS, got {outcome!r}")
 
         async with self._lock:
-            order = self._orders[order_id]  # raises KeyError if missing
+            # If this is a retry order ID, resolve via the original order's record
+            canonical_id = self._order_id_aliases.get(order_id, order_id)
+            order = self._orders[canonical_id]  # raises KeyError if missing
+            # Update the canonical key used for logging
+            order_id = canonical_id
             order.status = (
                 OrderStatus.RESOLVED_WIN if outcome == "WIN" else OrderStatus.RESOLVED_LOSS
             )
@@ -336,6 +360,7 @@ class OrderManager:
                 outcome, payout = result
             
             resolved = await self.resolve_order(order.order_id, outcome, payout)
+
 
             # Persist updated trade to DB (upsert with resolution data)
             await self._persist_trade(resolved)

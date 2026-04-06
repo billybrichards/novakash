@@ -549,6 +549,14 @@ class Orchestrator:
             asyncio.create_task(self._resolution_loop(), name="resolution_poller")
         )
 
+        # 6b. Polymarket reconciliation loop (every 5 min) — live mode only
+        if not self._settings.paper_mode:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._polymarket_reconcile_loop(), name="polymarket_reconciler"
+                )
+            )
+
         # 7. Market state fan-out loop
         self._tasks.append(
             asyncio.create_task(self._market_state_loop(), name="market_state_loop")
@@ -1571,6 +1579,160 @@ class Orchestrator:
                 break  # Shutdown event set
             except asyncio.TimeoutError:
                 pass  # Normal — continue heartbeat
+
+    async def _polymarket_reconcile_loop(self) -> None:
+        """Every 5 minutes: reconcile Polymarket activity with DB trades.
+
+        Queries the Polymarket data API for recent user activity, compares with
+        DB trades, and corrects any mismatches (wrong price, missing fills, etc).
+        This runs on Montreal (where Polymarket is not geo-blocked).
+        """
+        import aiohttp
+        from datetime import datetime, timezone
+
+        RECONCILE_INTERVAL = 300  # 5 minutes
+        POLYMARKET_ACTIVITY_URL = (
+            "https://data-api.polymarket.com/activity"
+            "?user=0x181d2ed714e0f7fe9c6e4f13711376edaab25e10&limit=20"
+        )
+
+        log.info("orchestrator.reconcile_loop.started")
+
+        while not self._shutdown_event.is_set():
+            try:
+                async with aiohttp.ClientSession(
+                    headers={"User-Agent": "Mozilla/5.0"}
+                ) as session:
+                    async with session.get(
+                        POLYMARKET_ACTIVITY_URL,
+                        timeout=aiohttp.ClientTimeout(total=15),
+                    ) as resp:
+                        if resp.status != 200:
+                            log.warning(
+                                "reconcile.api_error", status=resp.status
+                            )
+                            raise Exception(f"HTTP {resp.status}")
+                        activity = await resp.json()
+
+                if not self._db or not self._db._pool:
+                    raise Exception("DB pool not available")
+
+                # Pull recent trades from DB for comparison
+                async with self._db._pool.acquire() as conn:
+                    db_trades = await conn.fetch(
+                        """
+                        SELECT order_id, entry_price, status, outcome, metadata
+                        FROM trades
+                        WHERE created_at > NOW() - INTERVAL '2 hours'
+                        AND is_live = TRUE
+                        ORDER BY created_at DESC
+                        LIMIT 50
+                        """
+                    )
+
+                db_map = {row["order_id"]: row for row in db_trades}
+
+                updates_made = 0
+                for event in activity:
+                    event_type = event.get("type")
+                    slug = event.get("slug") or event.get("eventSlug", "")
+                    price = event.get("price", 0)
+                    size = event.get("size", 0)  # shares
+                    usdc_size = event.get("usdcSize", 0)  # cost in USDC
+                    side = event.get("side", "")
+                    outcome_name = event.get("outcome", "")
+                    tx_hash = event.get("transactionHash", "")
+
+                    if event_type != "TRADE" or not slug:
+                        continue
+
+                    # Try to find matching DB trade by market slug
+                    matched_row = None
+                    matched_order_id = None
+                    for oid, row in db_map.items():
+                        meta = {}
+                        try:
+                            import json as _json
+                            meta = _json.loads(row["metadata"]) if row["metadata"] else {}
+                        except Exception:
+                            pass
+                        if meta.get("market_slug") == slug or slug in (meta.get("market_slug", "")):
+                            matched_row = row
+                            matched_order_id = oid
+                            break
+
+                    if matched_row is None:
+                        continue
+
+                    # Check if fill price is wrong
+                    db_price = float(matched_row["entry_price"]) if matched_row["entry_price"] else None
+                    actual_price = float(price) if price else None
+
+                    needs_update = False
+                    update_fields = {}
+
+                    if (
+                        actual_price
+                        and db_price
+                        and abs(actual_price - db_price) > 0.005  # >0.5¢ mismatch
+                    ):
+                        log.info(
+                            "reconcile.price_mismatch",
+                            order_id=matched_order_id[:20] if matched_order_id else "?",
+                            db_price=f"${db_price:.4f}",
+                            actual_price=f"${actual_price:.4f}",
+                            slug=slug,
+                        )
+                        update_fields["entry_price"] = actual_price
+                        needs_update = True
+
+                    if needs_update and self._db._pool:
+                        try:
+                            set_clauses = ", ".join(
+                                f"{k} = ${i+2}"
+                                for i, k in enumerate(update_fields.keys())
+                            )
+                            values = list(update_fields.values())
+                            async with self._db._pool.acquire() as conn:
+                                await conn.execute(
+                                    f"UPDATE trades SET {set_clauses} WHERE order_id = $1",
+                                    matched_order_id,
+                                    *values,
+                                )
+                            updates_made += 1
+                            log.info(
+                                "reconcile.updated",
+                                order_id=matched_order_id[:20] if matched_order_id else "?",
+                                fields=list(update_fields.keys()),
+                            )
+                        except Exception as upd_exc:
+                            log.warning(
+                                "reconcile.update_failed",
+                                error=str(upd_exc)[:80],
+                            )
+
+                if updates_made > 0:
+                    log.info(
+                        "reconcile.complete",
+                        updates=updates_made,
+                        activity_events=len(activity),
+                    )
+                else:
+                    log.debug("reconcile.no_mismatches", checked=len(activity))
+
+            except Exception as exc:
+                log.warning(
+                    "orchestrator.reconcile_loop.error", error=str(exc)[:120]
+                )
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=float(RECONCILE_INTERVAL),
+                )
+                break
+            except asyncio.TimeoutError:
+                pass  # Normal — continue
 
     async def _resolution_loop(self) -> None:
         """Every 5s: poll order resolutions (paper mode simulation)."""
