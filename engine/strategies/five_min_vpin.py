@@ -1003,53 +1003,27 @@ class FiveMinVPINStrategy(BaseStrategy):
                         "taker_sell": cg.taker_sell_volume_1m,
                     }
 
-                async def _eval_with_fresh_gamma():
-                    """Fetch fresh Gamma price, then run Claude evaluation."""
-                    slug = f"{window.asset.lower()}-updown-{tf}-{window.window_ts}"
-                    fresh_up, fresh_down, source = await self._fetch_fresh_gamma_price(slug)
+                # v8.0: Use actual entry price from window snapshot, not fresh Gamma
+                # Fresh Gamma moves after trade placement and misleads the evaluator
+                _eval_entry = window_snapshot.get("gamma_up_price") if signal.direction == "UP" else window_snapshot.get("gamma_down_price")
+                _eval_entry = _eval_entry or (window.up_price if signal.direction == "UP" else (window.down_price or 0.50))
 
-                    # Use fresh price if available, fall back to window price (stale)
-                    if fresh_up is not None:
-                        gamma_price = fresh_up if signal.direction == "UP" else fresh_down
-                        price_tag = "LIVE"
-                        stale_price = window.up_price if signal.direction == "UP" else (window.down_price or 0.50)
-                        drift = abs(gamma_price - stale_price) if stale_price else 0
-                        self._log.info(
-                            "claude_eval.fresh_gamma",
-                            asset=window.asset,
-                            fresh=f"${gamma_price:.4f}",
-                            stale=f"${stale_price:.4f}" if stale_price else "n/a",
-                            drift=f"${drift:.4f}",
-                            source=source,
-                        )
-                    else:
-                        gamma_price = window.up_price if signal.direction == "UP" else (window.down_price or 0.50)
-                        price_tag = "SYN" if window.price_source == "synthetic" else "STALE"
-                        self._log.warning(
-                            "claude_eval.using_stale_gamma",
-                            asset=window.asset,
-                            price=f"${gamma_price:.4f}",
-                            source=window.price_source,
-                        )
-
-                    await self._claude_eval.evaluate_trade_decision(
-                        asset=window.asset,
-                        timeframe=tf,
-                        direction=signal.direction,
-                        confidence=signal.confidence,
-                        delta_pct=signal.delta_pct,
-                        vpin=signal.current_vpin,
-                        regime=_snap_regime,
-                        cg_snapshot=_cg_dict,
-                        token_price=gamma_price,
-                        gamma_bestask=gamma_price,
-                        window_open_price=open_price,
-                        current_price=current_price,
-                        trade_placed=True,
-                        price_source=price_tag,
-                    )
-
-                asyncio.create_task(_eval_with_fresh_gamma())
+                asyncio.create_task(self._claude_eval.evaluate_trade_decision(
+                    asset=window.asset,
+                    timeframe=tf,
+                    direction=signal.direction,
+                    confidence=signal.confidence,
+                    delta_pct=signal.delta_pct,
+                    vpin=signal.current_vpin,
+                    regime=_snap_regime,
+                    cg_snapshot=_cg_dict,
+                    token_price=float(_eval_entry),
+                    gamma_bestask=float(_eval_entry),
+                    window_open_price=open_price,
+                    current_price=current_price,
+                    trade_placed=True,
+                    price_source="SNAPSHOT",
+                ))
             except Exception:
                 pass
         
