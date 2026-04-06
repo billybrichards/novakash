@@ -128,3 +128,20 @@ DOWN trades at 50-60¢ entry: only 40% WR (4W/6L)
 This zone is actively losing money. Consider:
 - Tightening DOWN cap to $0.50 max
 - OR requiring higher VPIN (>0.55) for 50-60¢ entries
+
+## Extended Cap Analysis (Apr 6 15:13 UTC)
+
+Last 24h DOWN trades with gamma data:
+
+| Cap   | Trades | W/L   | WR    | P&L     | Per Trade |
+|-------|--------|-------|-------|---------|-----------|
+| $0.73 | 36     | 25/11 | 69.4% | +$5.91  | $0.16     |
+| $0.77 | 37     | 26/11 | 70.3% | +$7.03  | $0.19     |
+| $0.80 | 40     | 29/11 | 72.5% | +$10.24 | $0.26     |
+| $0.83 | 41     | 30/11 | 73.2% | +$11.13 | $0.27     |
+| $0.85 | 41     | 30/11 | 73.2% | +$11.13 | $0.27     |
+| $0.90 | 42     | 31/11 | 73.8% | +$11.71 | $0.28     |
+
+$0.83 is the sweet spot — after that diminishing returns.
+Losses stay flat at 11 regardless of cap (73-83¢ entries are almost all wins).
+Consider raising cap from $0.73 to $0.83 for DOWN trades.
