@@ -152,6 +152,24 @@ Integrated into orchestrator startup sequence. VPIN warms within seconds.
 - ✅ Live trades resolve ONLY from Polymarket oracle (commit 5af81b5)
 - ⚠️ Paper mode still has Binance fallback (see HIGH PRIORITY above)
 
+### Chainlink Multi-Asset Feed
+- ✅ BTC/ETH/SOL/XRP on Polygon mainnet, polls every 5s (commits 9f529ec → 5b3a790)
+- ✅ Oracle source of truth for Polymarket resolution
+- ✅ Saves open/close prices for alignment analysis
+- ✅ Integrated into orchestrator + five_min_vpin window snapshots
+- ✅ round_id stored as TEXT for uint80 compatibility
+
+### Tiingo Top-of-Book Feed
+- ✅ BTC/ETH/SOL/XRP, polls every 2s (commit 9f529ec)
+- ✅ Multi-exchange best bid/ask with exchange attribution
+- ✅ Saves open/close prices for alignment analysis
+- ✅ Integrated into orchestrator + five_min_vpin window snapshots
+
+### Data Feeds Documentation
+- ✅ `docs/DATA_FEEDS.md` — comprehensive reference with schemas, queries, data flow diagram
+- ✅ 6 feeds: Binance WS, Chainlink, Tiingo, CoinGlass Enhanced, Gamma API, TimesFM
+- ✅ All feeds write to dedicated tick tables with proper indexing
+
 ---
 
 ## 📝 Notes
@@ -164,3 +182,74 @@ Integrated into orchestrator startup sequence. VPIN warms within seconds.
 - All `/playwright/*` endpoints are valid — backed by `hub/api/playwright.py`
 - All `/trading-config/*` endpoints are valid — backed by `hub/api/trading_config.py`
 - `useApi()` hook supports both `api.get()` and `api('GET', url)` calling conventions
+
+### Macro Observer — Engine Integration (Phase 2)
+**Status:** TODO — Service built (feat/macro-observer), pending engine wiring
+**What:** Engine reads latest `macro_signals` row from DB each window evaluation and applies:
+- Mode 1 (Neutral <50%): no changes
+- Mode 2 (Trend-Aware 50-79%): gate contrarian bets, adjust delta thresholds
+- Mode 3 (Override 80%+): early entry T-120/T-180, direction flip, 1.3x sizing
+**Files to update:**
+- `engine/strategies/orchestrator.py` — load macro signal on startup + each heartbeat
+- `engine/strategies/five_min_vpin.py` — apply gate/threshold/size modifiers pre-execution
+- `engine/persistence/db_client.py` — write macro_signal_id to window_snapshots
+**Blocked by:** Railway deploy of macro-observer service (Billy to trigger)
+
+### Tiingo Integration
+**Status:** PARTIALLY DONE — feed built, saving open/close prices for alignment analysis
+**Key:** 3f4456e457a4184d76c58a1320d8e1b214c3ab16
+**Why critical:** Chainlink oracle uses multi-exchange LWBA median. Binance alone diverges 57%
+of the time vs oracle direction. Tiingo is an oracle node input — should track much better.
+**What's done:**
+- Tiingo data feed implemented (commit 9f529ec)
+- Saves Tiingo + Chainlink prices at window open/close (commit 5b3a790)
+**What remains:**
+- Compare Tiingo vs oracle resolution direction for 48h to validate
+- If tracks well: replace Binance delta in signal calculation
+
+### Chainlink Multi-Asset Feed
+**Status:** DONE — implemented and saving data
+**What:** Direct Chainlink on-chain price reads for BTC/USD (and multi-asset support)
+**Commits:** 9f529ec, caa9fc3, 220a19c, 86542d4, 7197632, 5b3a790
+**Why:** Polymarket oracle likely uses Chainlink as price source — tracking this gives us
+the same price the oracle sees, eliminating Binance divergence issues.
+**Details:**
+- Uses sync Web3 (async provider not available)
+- round_id stored as TEXT for uint80 compatibility
+- Saves prices at both window open and close for alignment analysis
+
+### Gamma Balance Block (Feature Flag — Monitor First)
+**Status:** TO MONITOR before implementing
+**Observation:** When `abs(gamma_up_price - gamma_down_price) < 0.02`, market has zero
+directional conviction. Hypothesis: correlates with losses.
+**To do:** Query `window_snapshots` where Gamma is BALANCED and cross with outcome.
+Only implement if data confirms the hypothesis.
+**When ready:** Feature flag `gamma_balance_block` (default OFF) in runtime_config.py
+
+### FOK Ladder (ORDER_PRICING_MODE=fokladder)
+**Status:** TODO — full plan at docs/FOK_LADDER_PLAN.md
+**What:** Rapid FOK attempts with fresh Gamma every 2s, fast re-eval (delta/VPIN/floor/cap) at each step, GTD fallback
+**Why:** 96.9% of unfilled trades would have won. Need higher fill rate.
+**Blocking:** Must investigate Polymarket oracle resolution first (BTC goes DOWN but oracle says UP)
+
+### Signal Component Modularity
+**Status:** TODO
+**What:** Make each evaluator independently toggleable via env var:
+- TIMESFM_ENABLED, TWAP_ENABLED, CG_VETO_ENABLED, TWAP_OVERRIDE_ENABLED
+**Why:** Test combinations, disable TWAP override that flips direction wrong
+
+### Polymarket Oracle Investigation
+**Status:** DATA COLLECTION LIVE — Chainlink + Tiingo saving open/close prices
+**What:** Understand exactly how UpDown oracle resolves:
+- What price source? (Binance, Chainlink, Pyth?)
+- What timestamp? (window close? +4min?)
+- Open→close or TWAP/VWAP?
+**Why:** Multiple trades where BTC moved in our direction but oracle disagreed.
+Binance alone diverges 57% of the time vs oracle direction.
+**Progress:**
+- Chainlink multi-asset feed LIVE — polls every 5s, saves to ticks_chainlink
+- Tiingo top-of-book feed LIVE — polls every 2s, saves to ticks_tiingo
+- Both save prices at window open AND close in window_snapshots
+- Cross-reference query ready in `docs/DATA_FEEDS.md` (Chainlink vs Binance diff)
+**Next:** Run alignment analysis after 48h of data collection — compare
+Chainlink open→close direction vs Polymarket oracle resolution for each window

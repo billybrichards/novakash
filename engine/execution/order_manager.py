@@ -379,6 +379,18 @@ class OrderManager:
                     await self._db.update_window_outcome(
                         window_ts, asset, tf, resolved.outcome, resolved.pnl_usd or 0.0, poly_winner
                     )
+                    # Save close prices from Chainlink + Tiingo at resolution time
+                    try:
+                        _cl_close = await self._db.get_latest_chainlink_price(asset)
+                        _ti_close = await self._db.get_latest_tiingo_price(asset)
+                        await self._db.update_window_prices(
+                            window_ts, asset, tf,
+                            chainlink_close=_cl_close,
+                            tiingo_close=_ti_close,
+                            poly_resolved_outcome=poly_winner,
+                        )
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 

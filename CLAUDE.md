@@ -94,11 +94,18 @@ A prediction market trading system for BTC with three strategies:
 ┌───────────────────────────────────────┴──────────────────────┐
 │                   Engine (Python/asyncio)                    │
 │                                                              │
-│  Data Feeds:                                                │
-│  ├─ Binance WS (aggTrade, depth20, forceOrder)             │
-│  ├─ CoinGlass API (OI, liquidations)                       │
-│  ├─ Chainlink RPC (oracle price, Polygon)                  │
-│  └─ Polymarket WS (CLOB order books)                       │
+│  Data Feeds (6 sources):                                    │
+│  ├─ Binance WS (aggTrade — primary BTC price, VPIN input)  │
+│  ├─ Chainlink Multi-Asset (BTC/ETH/SOL/XRP on Polygon,     │
+│  │   polls every 5s — oracle source of truth for Polymarket │
+│  │   resolution, saved to ticks_chainlink)                  │
+│  ├─ Tiingo Top-of-Book (BTC/ETH/SOL/XRP, polls every 2s,  │
+│  │   multi-exchange bid/ask with exchange attribution,      │
+│  │   saved to ticks_tiingo)                                 │
+│  ├─ CoinGlass Enhanced (OI, liquidations, funding rate,    │
+│  │   taker buy/sell, L/S ratio — 4 assets every 15s)       │
+│  ├─ Gamma API (Polymarket token prices per window)         │
+│  └─ TimesFM (ML forecast direction + confidence)           │
 │                                                              │
 │  Signal Processors:                                         │
 │  ├─ VPIN Calculator (volume-synchronized informed flow)    │
@@ -130,12 +137,16 @@ A prediction market trading system for BTC with three strategies:
 - Auth system (JWT, single-user login)
 - Project structure with full skeleton code
 
-### Phase 2: Data Layer
-- Binance WebSocket ingestion
-- CoinGlass API polling
-- Chainlink RPC integration
-- Polymarket CLOB WebSocket
-- Market aggregator test & polish
+### Phase 2: Data Layer ✓ (Done)
+- Binance WebSocket ingestion (aggTrade → VPIN, 1-3 Hz)
+- CoinGlass Enhanced API (OI, liquidations, funding, taker buy/sell — 4 assets)
+- Chainlink Multi-Asset Feed (BTC/ETH/SOL/XRP on Polygon, 5s polls — oracle source of truth)
+- Tiingo Top-of-Book Feed (BTC/ETH/SOL/XRP, 2s polls — multi-exchange bid/ask with exchange attribution)
+- Gamma API (Polymarket token prices per window)
+- TimesFM ML forecast (direction + confidence)
+- Market aggregator wiring complete
+- All feeds save to dedicated tick tables in Railway PostgreSQL
+- See `docs/DATA_FEEDS.md` for full schema, queries, and data flow diagram
 
 ### Phase 3: Signal Layer
 - VPIN calculator implementation & testing
@@ -175,7 +186,7 @@ A prediction market trading system for BTC with three strategies:
 ### Engine (`engine/`)
 - `main.py` — Entry point
 - `config/` — Settings & constants
-- `data/` — Feeds (Binance, CoinGlass, Chainlink, Polymarket) + aggregator
+- `data/` — Feeds (Binance WS, Chainlink multi-asset, Tiingo top-of-book, CoinGlass enhanced, Polymarket/Gamma, TimesFM) + aggregator
 - `signals/` — VPIN, cascade, arb, regime
 - `execution/` — Clients & risk management
 - `strategies/` — Sub-$1 arb, VPIN cascade, orchestrator

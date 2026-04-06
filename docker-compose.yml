@@ -39,6 +39,18 @@ services:
     ports:
       - "3000:80"
 
+  macro-observer:
+    build: ./macro-observer
+    restart: unless-stopped
+    depends_on:
+      - db
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@db:5432/btc_trader
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      POLL_INTERVAL: "60"
+      ANTHROPIC_TIMEOUT: "10"
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
