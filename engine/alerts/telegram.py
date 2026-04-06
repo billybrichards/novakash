@@ -173,9 +173,10 @@ class TelegramAlerter:
         if binance_price: prices.append(f"BN=${binance_price:,.0f}")
         prices_line = " | ".join(prices) if prices else "N/A"
         
-        # Build gates line
+        # Build gates line — only show signal gates (VPIN, DELTA, CG)
+        # Floor/Cap from Gamma are indicative only, not real CLOB book
         gate_icons = ""
-        for g in ["vpin", "delta", "cg", "floor", "cap"]:
+        for g in ["vpin", "delta", "cg"]:
             if gate_failed and g == gate_failed:
                 gate_icons += f"❌{g.upper()} "
             elif g in (gates_passed or ""):
@@ -183,17 +184,17 @@ class TelegramAlerter:
         if not gate_icons:
             gate_icons = "N/A"
         
-        # Gamma / entry price
+        # Gamma indicative price (NOT real CLOB book price)
         entry_line = ""
         if gamma_up is not None and gamma_down is not None:
             entry = gamma_down if direction in ("DOWN", "NO") else gamma_up
             if 0.30 <= entry <= 0.73:
                 rr = (1 - entry) / entry if entry > 0 else 0
-                entry_line = f"💱 Entry: `${entry:.3f}` | R/R `1:{rr:.1f}`\n"
+                entry_line = f"💱 Gamma: `${entry:.3f}` | R/R `1:{rr:.1f}` _(indicative)_\n"
             elif entry < 0.30:
-                entry_line = f"⛔ FLOOR `${entry:.3f}` < $0.30\n"
+                entry_line = f"⛔ Gamma FLOOR `${entry:.3f}` < $0.30\n"
             else:
-                entry_line = f"⛔ CAP `${entry:.3f}` > $0.73\n"
+                entry_line = f"⛔ Gamma CAP `${entry:.3f}` > $0.73\n"
         
         # Delta display with source
         delta_str = f"{delta:+.4f}%" if delta else "?"
@@ -699,21 +700,22 @@ class TelegramAlerter:
             except Exception:
                 pass
             if attempts == 0:
-                reason_short = abort_reason[:80] if abort_reason else "no book liquidity"
+                # Clean up abort reason — remove raw token IDs
+                reason_clean = abort_reason or "no book liquidity"
+                reason_clean = reason_clean.split("for token")[0].strip() if "for token" in reason_clean else reason_clean
                 text = (
                     f"🔄 *FOK → GTC* — BTC 5m | {window_time} | {self._engine_version}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"CLOB book empty: `{reason_short}`\n"
-                    f"Falling back to GTC at Gamma price\n"
+                    f"CLOB book: `{reason_clean[:60]}`\n"
+                    f"→ GTC limit at cap ($0.73)\n"
                 )
             else:
                 price_str = " → ".join([f"${p:.3f}" for p in prices[:5]])
                 text = (
                     f"🔄 *FOK → GTC* — BTC 5m | {window_time} | {self._engine_version}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"FOK: `{attempts}` attempts, all killed\n"
-                    f"Prices: `{price_str}`\n"
-                    f"Falling back to GTC at Gamma price\n"
+                    f"FOK: `{attempts}` killed | Prices: `{price_str}`\n"
+                    f"→ GTC limit at cap ($0.73)\n"
                 )
             return await self._send_with_id(text)
         except Exception as exc:
@@ -786,7 +788,7 @@ class TelegramAlerter:
         text = (
             f"🪟 *{asset} {timeframe}* | {window_time} | {self._engine_version}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Open: `${open_price:,.2f}` | CLOB: ↑`${gamma_up:.3f}` ↓`${gamma_down:.3f}` `{skew}`\n"
+            f"Open: `${open_price:,.2f}` | Gamma: ↑`${gamma_up:.3f}` ↓`${gamma_down:.3f}` `{skew}`\n"
         )
         msg_id = await self._send_with_id(text)
         await self._log_notification("window_open", text, window_id, telegram_message_id=msg_id)
@@ -840,10 +842,9 @@ class TelegramAlerter:
             f"⏱ *{t_label}* — BTC {window_time} | {self._engine_version}",
             f"━━━━━━━━━━━━━━━━━━━━━━",
             f"Tiingo: Δ `{delta_sign}{delta_pct:.4f}%` {_dir_emoji} `{_dir}`",
-            f"VPIN: `{vpin:.3f}` `{vpin_regime}` | CLOB: ↑`${gamma_up:.3f}` ↓`${gamma_down:.3f}`",
+            f"VPIN: `{vpin:.3f}` `{vpin_regime}` | Gamma: ↑`${gamma_up:.3f}` ↓`${gamma_down:.3f}`",
         ]
-        if conflict:
-            caption_lines.append(f"⚠ *SIGNAL CONFLICT*")
+        # No more SIGNAL CONFLICT — TWAP/TimesFM disabled in v8.0
         if ai_commentary:
             caption_lines.append(f"🤖 _{ai_commentary[:200]}_")
 
