@@ -427,3 +427,19 @@ DOWN ask: $0.58-$0.82 (was $0.99)
 - ✅ All notification cards v8.0 format
 - ✅ Sonnet AI evaluators with v8.0 context
 - ✅ CLOB feed recording correct best asks every 2s
+
+---
+
+## First v8.0 Fill (22:14 UTC)
+
+**Milestone:** First successful v8.0 trade execution and fill.
+
+- Window BTC-1775513400, UP direction, 6.85 shares MATCHED in 5s
+- FOK decimal precision error fixed (CLOB needs 2-decimal size)
+- ORDER_PRICING_MODE switched from `bestask` to `cap`
+  - `bestask`: submit at Gamma price + bump → doesn't fill on thin books
+  - `cap`: submit at $0.73 cap → CLOB fills at market price → works
+- Cap pricing is NOT overpaying: CLOB fills at best available ask, cap is just the maximum
+- Three failed fills (22:00, 22:05, 22:10 windows) all caused by bestask pricing
+- Shadow resolution system live — checks oracle outcome for skipped windows
+- CLOB feed sort bug was root cause of most today's issues (showing $0.99 instead of real $0.34-$0.67)

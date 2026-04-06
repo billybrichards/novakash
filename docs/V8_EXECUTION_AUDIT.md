@@ -174,3 +174,87 @@ Rare:         dn_ask=$0.49 dn_bid=$0.46 (real liquidity)
 4. **Historical data migration** — reconcile orphaned trades, mark pre-v8.0 as legacy
 5. **FOK fill rate monitoring** — if <5% FOK fill rate, swap primary to GTC
 6. **Activity API reconciliation** — cross-check CLOB matched orders vs DB
+
+---
+
+## First v8.0 Fill — 22:14 UTC, April 6
+
+### Trade Details
+```
+Window: BTC-1775513400 (22:10 UTC)
+Direction: UP (YES token)
+Signal: Tiingo Δ +0.021%, VPIN 0.524, MODERATE confidence
+All gates passed: ✅VPIN ✅DELTA ✅CG ✅FLOOR ✅CAP
+
+Execution:
+1. FOK attempt @ $0.73 → KILLED (decimal precision error)
+   Error: "maker amount supports max accuracy of 2 decimals"
+2. GTC fallback → CLOB DB price $0.73 → RFQ failed (market not found)
+3. GTC limit @ $0.73 cap → MATCHED in 5 seconds
+4. Fill: 6.85 shares, clob_status=MATCHED
+
+Order ID: 0x3af8036a18d017bd78f375716c38b9245e4394268f28f4941467d1b33b048bc1
+```
+
+### Critical Discovery: Cap Pricing vs BestAsk Pricing
+
+**Cap mode (ORDER_PRICING_MODE=cap) — WORKS:**
+Submit limit order at cap price ($0.73). CLOB fills at the actual market
+best ask (could be $0.49, $0.53, whatever). We don't pay $0.73 — the cap
+is our maximum willingness to pay. The CLOB matching engine fills at the
+best available price.
+
+**BestAsk mode (ORDER_PRICING_MODE=bestask) — DOESN'T FILL:**
+Submit at Gamma indicative price + $0.02 bump (e.g., $0.545). On thin
+5-min token books, this price is often just below or just above the real
+ask, and the matching engine doesn't fill. The 22:05 window placed at
+$0.5450 with asks at ~$0.530 — should have filled but didn't match in
+60 seconds.
+
+**Why cap mode works:** Polymarket's CLOB matching engine for UpDown tokens
+appears to match based on whether the buyer's limit is >= the seller's ask.
+Cap mode guarantees our limit exceeds any reasonable ask. The fill price
+is determined by the market, not our limit.
+
+**Config changed:** `ORDER_PRICING_MODE=cap` on Montreal (.env).
+
+### FOK Decimal Fix
+The CLOB API requires:
+- Price: max 4 decimal places
+- Size (maker amount): max 2 decimal places
+
+FOK ladder was passing `round(5.0 / 0.73, 2)` which should give `6.85`
+but floating point produced extra decimals. Fixed with explicit `f"{val:.2f}"`.
+
+### FOK Strategy Going Forward
+1. FOK queries CLOB book for real best ask
+2. If book has liquidity: FOK at best ask (fills instantly, best price)
+3. If book empty: GTC fallback at cap price (fills in ~5s, market price)
+4. Both paths record fill price, shares, execution mode in order metadata
+
+FOK is the ideal path (instant fill at exact price), GTC at cap is the
+reliable fallback. Together they cover both liquid and thin book scenarios.
+
+---
+
+## Previous Failed Trades (22:05 UTC)
+
+### Trade 1: 22:05 — UP @ $0.525 → NOT FILLED
+```
+Signal: UP, Tiingo Δ +0.145%, VPIN 0.552, HIGH confidence
+FOK: empty book → fell through to GTC
+GTC: $0.525 (Gamma) + $0.02 bump = $0.545 limit
+Result: LIVE for 60s, never matched
+Cause: bestask pricing too conservative for thin books
+```
+
+### Trade 2: 22:00 — DOWN @ $0.49 → NOT FILLED
+```
+Signal: DOWN, Tiingo Δ -0.134%, VPIN 0.591, MODERATE
+FOK: empty book → GTC fallback
+GTC: $0.49 limit
+Result: NOT FILLED after 60s
+Cause: bestask pricing, thin book
+```
+
+Both would have filled with cap pricing mode.
