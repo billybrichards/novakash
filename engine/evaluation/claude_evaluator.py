@@ -95,13 +95,7 @@ class ClaudeEvaluator:
 {self._format_cg(cg_snapshot)}
 
 ## Your Analysis
-Evaluate in 3-4 sentences:
-1. Was the direction call correct based on the data?
-2. Any contradictions between signals (VPIN vs CG data vs delta)?
-3. Was the entry price reasonable?
-4. What would you have done differently?
-
-Be concise and objective. No hedging — give a clear verdict."""
+2 sentences max: Was the direction call justified by the data? Key risk factor."""
 
         try:
             analysis = await self._call_claude(prompt)
@@ -235,7 +229,7 @@ In 2-3 sentences: Was this a good trade regardless of outcome? Did the signals s
         }
         payload = {
             "model": "claude-sonnet-4-20250514",
-            "max_tokens": 300,
+            "max_tokens": 150,
             "messages": [{"role": "user", "content": prompt}],
         }
         
