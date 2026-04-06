@@ -588,10 +588,10 @@ class TelegramAlerter:
     # ── Location / identity ────────────────────────────────────────────────────
 
     _location: str = "MTL"
-    _engine_version: str = "v7.1"
+    _engine_version: str = "v8.0"
     _db_client = None  # injected after construction
 
-    def set_location(self, location: str, version: str = "v7.1") -> None:
+    def set_location(self, location: str, version: str = "v8.0") -> None:
         self._location = location
         self._engine_version = version
 

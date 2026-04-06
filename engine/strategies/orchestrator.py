@@ -173,7 +173,7 @@ class Orchestrator:
         # Wire alerter references now that risk_manager and poly_client exist
         self._alerter.set_risk_manager(self._risk_manager)
         self._alerter.set_poly_client(self._poly_client)
-        self._alerter.set_location("MTL", self._settings.engine_version if hasattr(self._settings, "engine_version") else "v7.1")
+        self._alerter.set_location("MTL", "v8.0")
 
         # ── Builder Relayer Redeemer ──────────────────────────────────────────
         from execution.redeemer import PositionRedeemer
