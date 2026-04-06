@@ -2114,273 +2114,35 @@ class FiveMinVPINStrategy(BaseStrategy):
             self._log.error("execute.no_token_id", direction=signal.direction)
             return
         
-        # Price: SMART LIMIT PRICING (v5.4b)
-        # Strategy: Use Gamma bestAsk as limit price if within our cap.
-        # This gets us REAL market fills. If bestAsk > cap, skip.
-        # The paper winning streak used tokens at $0.45-$0.51 — aim for that.
-        
-        _model_price = self._delta_to_token_price(signal.delta_pct)
-        _fresh_best_ask = None
-        _tf_str = "15m" if window.duration_secs == 900 else "5m"
-        _slug = f"{window.asset.lower()}-updown-{_tf_str}-{window.window_ts}"
-        _fresh_up = None
-        _fresh_down = None
-        try:
-            import aiohttp as _aiohttp
-            async with _aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as _sess:
-                _url = f"https://gamma-api.polymarket.com/events?slug={_slug}"
-                async with _sess.get(_url, timeout=_aiohttp.ClientTimeout(total=5)) as _resp:
-                    if _resp.status == 200:
-                        _data = await _resp.json()
-                        if _data and isinstance(_data, list) and _data[0].get("markets"):
-                            _mkt = _data[0]["markets"][0]
-                            _up_ask = _mkt.get("bestAsk")     # UP token ask price
-                            _up_bid = _mkt.get("bestBid")     # UP token bid price
-                            _outcome_prices_raw = _mkt.get("outcomePrices", [])
-                            # outcomePrices can be a JSON string or a list
-                            if isinstance(_outcome_prices_raw, str):
-                                import json as _json
-                                _outcome_prices = _json.loads(_outcome_prices_raw)
-                            else:
-                                _outcome_prices = _outcome_prices_raw
-                            
-                            if _outcome_prices and len(_outcome_prices) >= 2:
-                                # Use outcome prices directly — most accurate
-                                _fresh_up = float(_outcome_prices[0])    # UP price
-                                _fresh_down = float(_outcome_prices[1])  # DOWN price
-                            elif _up_ask is not None and _up_bid is not None:
-                                _fresh_up = float(_up_ask)
-                                # DOWN effective ask = 1 - UP bid (buying NO = selling YES at bid)
-                                _fresh_down = round(1.0 - float(_up_bid), 4)
-                            
-                            if _fresh_up is not None and _fresh_down is not None:
-                                _fresh_best_ask = _fresh_up if direction == "YES" else _fresh_down
-                                self._log.info(
-                                    "execute.gamma_prices",
-                                    up_price=f"${_fresh_up:.4f}",
-                                    down_price=f"${_fresh_down:.4f}",
-                                    direction=direction,
-                                    using=f"${_fresh_best_ask:.4f}",
-                                )
-                                # Store fresh T-60 gamma prices to snapshot
-                                if self._db:
-                                    try:
-                                        asyncio.create_task(self._db.update_gamma_prices(
-                                            window_ts=signal.window_ts, asset=signal.asset, timeframe="5m",
-                                            gamma_up=_fresh_up, gamma_down=_fresh_down,
-                                        ))
-                                    except Exception:
-                                        pass
-        except Exception as _exc:
-            self._log.debug("execute.gamma_fetch_error", error=str(_exc))
-        
-        # Use Gamma bestAsk if available and within cap, else model price
-        is_15m = "15m" in _slug
-        _max_price = runtime.fifteen_min_max_entry_price if is_15m else runtime.five_min_max_entry_price
-        
-        # FOK PRICING (v5.5b): Buy at whatever the market offers, up to our cap
-        # FOK order at cap price → fills at best available (could be much cheaper)
-        # If Gamma bestAsk > cap → skip (market too expensive)
-        # If Gamma bestAsk <= cap → use cap as limit, FOK fills at actual market price
-        
-        # _fresh_best_ask = real market price for the token we want to buy
-        # _max_price = our cap (max we'll pay)
-        # token_price = what we record/display (real market price)
-        # _fok_limit = what we submit to FOK (the cap — fills at best available)
-        
-        _fok_limit = _max_price  # Always submit FOK at cap
-        
-        # FLOOR CHECK: if Gamma bestAsk is below $0.30, the market strongly disagrees
-        # with our direction. Don't trade — it's priced cheap for a reason.
-        # v7.2 FIX: if Gamma returns None, try Chainlink fallback; if still None, SKIP.
-        # Previously: None bypassed the floor entirely → $0.03 trades losing $10.
-        _min_entry = 0.30
-        if _fresh_best_ask is None:
-            # Attempt Chainlink fallback — not for token price, but to confirm market exists
-            _chainlink_fallback = None
-            if self._db:
-                try:
-                    _chainlink_fallback = await self._db.get_latest_chainlink_price(signal.asset)
-                except Exception:
-                    pass
-            if _chainlink_fallback is None:
-                _skip_msg = "NO_PRICE: Gamma returned None and no Chainlink fallback — cannot verify floor, skipping"
-                self._log.warning("execute.no_price_source", asset=signal.asset)
-                if self._db:
-                    try:
-                        asyncio.create_task(self._db.update_window_skip_reason(
-                            signal.window_ts, signal.asset, "5m", _skip_msg
-                        ))
-                    except Exception:
-                        pass
-                return
-            else:
-                self._log.info("execute.chainlink_fallback", chainlink_price=f"${_chainlink_fallback:.2f}", asset=signal.asset)
-                # Chainlink gives BTC/USD price, not token price — we can't derive token price from it
-                # But we know the market exists and BTC price is valid
-                # Still skip because we don't have a reliable token price for entry
-                _skip_msg = f"NO_GAMMA_PRICE: using Chainlink ${_chainlink_fallback:.0f} as existence check but no token price available"
-                self._log.warning("execute.no_token_price", chainlink=f"${_chainlink_fallback:.2f}")
-                if self._db:
-                    try:
-                        asyncio.create_task(self._db.update_window_skip_reason(
-                            signal.window_ts, signal.asset, "5m", _skip_msg
-                        ))
-                    except Exception:
-                        pass
-                return
+        # ── v8.0: CLOB-first execution ─────────────────────────────────────────
+        # FOK ladder queries the live CLOB book directly for pricing.
+        # NO Gamma API — stale and unreliable. Floor/cap inside FOK ladder.
+        from execution.fok_ladder import FOKLadder, FOKResult
 
-        if _fresh_best_ask < _min_entry:
-            _skip_msg = f"PRICE FLOOR: entry ${_fresh_best_ask:.3f} < floor ${_min_entry} — market strongly disagrees, adverse selection risk"
-            self._log.warning("execute.price_below_floor", bestask=f"${_fresh_best_ask:.4f}", floor=f"${_min_entry}")
-            if self._alerter:
-                try:
-                    _mode = "📄 PAPER" if self._poly.paper_mode else "🔴 LIVE"
-                    asyncio.create_task(self._alerter._send_with_id(
-                        f"🚫 *TRADE BLOCKED — PRICE FLOOR*  {_mode}\n"
-                        f"`{signal.asset}-{signal.window_ts}`\n\n"
-                        f"Direction: `{direction}`\n"
-                        f"Entry price: `${_fresh_best_ask:.3f}` ← below floor\n"
-                        f"Floor: `${_min_entry}`\n"
-                        f"_Market is {(1-_fresh_best_ask)*100:.0f}% confident we're wrong_"
-                    ))
-                except Exception:
-                    pass
-            if self._db:
-                try:
-                    asyncio.create_task(self._db.update_window_skip_reason(
-                        signal.window_ts, signal.asset, "5m", _skip_msg
-                    ))
-                except Exception:
-                    pass
-            return
-
-        if _fresh_best_ask is not None and _fresh_best_ask >= _min_entry and _fresh_best_ask <= _max_price:
-            # Market price within cap — record real price, submit at cap
-            token_price = _fresh_best_ask  # Record REAL market price
-            _price_source = f"market={_fresh_best_ask:.4f}(fok_limit={_max_price})"
-        elif _fresh_best_ask is not None and _fresh_best_ask > _max_price:
-            _skip_msg = f"PRICE CAP: entry ${_fresh_best_ask:.3f} > cap ${_max_price:.2f} — too expensive, bad R/R"
-            self._log.warning(
-                "execute.price_above_cap",
-                bestask=f"${_fresh_best_ask:.4f}",
-                cap=f"${_max_price:.2f}",
-            )
-            # Telegram notification for cap-blocked trade
-            if self._alerter:
-                try:
-                    _mode = "📄 PAPER" if self._poly.paper_mode else "🔴 LIVE"
-                    asyncio.create_task(self._alerter._send_with_id(
-                        f"🚫 *TRADE BLOCKED — PRICE CAP*  {_mode}\n"
-                        f"`{signal.asset}-{signal.window_ts}`\n\n"
-                        f"Direction: `{direction}`\n"
-                        f"Entry price: `${_fresh_best_ask:.3f}` ← above cap\n"
-                        f"Cap: `${_max_price:.2f}`\n"
-                        f"R/R: risk `${_fresh_best_ask:.2f}` to win `${1-_fresh_best_ask:.2f}` ({((1-_fresh_best_ask)/_fresh_best_ask*100):.0f}% return)\n\n"
-                        f"_Trade would have proceeded if price ≤ ${_max_price:.2f}_"
-                    ))
-                except Exception:
-                    pass
-            # Record in DB
-            if self._db:
-                try:
-                    asyncio.create_task(self._db.update_window_skip_reason(
-                        signal.window_ts, signal.asset, "5m", _skip_msg
-                    ))
-                except Exception:
-                    pass
-            return
-        elif _model_price <= _max_price and _model_price >= 0.30:
-            token_price = min(_model_price, _max_price)  # Best estimate
-            _price_source = f"model={_model_price:.4f}(fok_limit={_max_price})"
-        else:
-            _skip_msg = f"PRICE OUT OF RANGE: model=${_model_price:.4f}, bestask=${_fresh_best_ask:.4f if _fresh_best_ask else 'n/a'}, cap=${_max_price:.2f}"
-            self._log.warning(
-                "execute.price_out_of_range",
-                model=f"${_model_price:.4f}",
-                bestask=f"${_fresh_best_ask:.4f}" if _fresh_best_ask else "n/a",
-                cap=f"${_max_price:.2f}",
-            )
-            # Telegram notification
-            if self._alerter:
-                try:
-                    _mode = "📄 PAPER" if self._poly.paper_mode else "🔴 LIVE"
-                    asyncio.create_task(self._alerter._send_with_id(
-                        f"🚫 *TRADE BLOCKED — PRICE OUT OF RANGE*  {_mode}\n"
-                        f"`{signal.asset}-{signal.window_ts}`\n\n"
-                        f"Model: `${_model_price:.4f}` | BestAsk: `${_fresh_best_ask:.4f if _fresh_best_ask else 'n/a'}`\n"
-                        f"Cap: `${_max_price:.2f}`\n\n"
-                        f"_No valid entry price found_"
-                    ))
-                except Exception:
-                    pass
-            if self._db:
-                try:
-                    asyncio.create_task(self._db.update_window_skip_reason(
-                        signal.window_ts, signal.asset, "5m", _skip_msg
-                    ))
-                except Exception:
-                    pass
-            return
-        
-        self._log.info(
-            "execute.smart_pricing",
-            direction=direction,
-            used_price=f"${token_price:.4f}",
-            source=_price_source,
-            model_price=f"${_model_price:.4f}",
-            gamma_bestask=f"${_fresh_best_ask:.4f}" if _fresh_best_ask else "n/a",
-            cap=f"${_max_price:.2f}",
-        )
-        
-        price = Decimal(str(round(token_price, 4)))        # Real market price (for records/display)
-        _fok_price = Decimal(str(round(_fok_limit, 4)))   # Cap price (for FOK order submission)
         tf = "15m" if window.duration_secs == 900 else "5m"
         market_slug = f"{window.asset.lower()}-updown-{tf}-{window.window_ts}"
-        
-        # ── G6: Geoblock check ────────────────────────────────────────────────
+        PRICE_CAP = float(os.environ.get("FOK_PRICE_CAP", "0.73"))
+        PRICE_FLOOR = float(os.environ.get("PRICE_FLOOR", "0.30"))
+
+        # ── Guardrails ────────────────────────────────────────────────────────
         if self._geoblock_check_fn and self._geoblock_check_fn():
             self._log.error("guardrail.geoblock.blocked")
-            if self._alerter:
-                asyncio.create_task(self._alerter.send_system_alert(
-                    "🚨 GEOBLOCK: Trading blocked. Skipping order.",
-                    level="critical",
-                ))
             return
-
-        # ── G5: Circuit breaker check ─────────────────────────────────────────
         cb_allowed, cb_reason = self._check_circuit_breaker()
         if not cb_allowed:
             self._log.warning("guardrail.circuit_breaker.blocked", reason=cb_reason)
-            if self._alerter:
-                asyncio.create_task(self._alerter.send_system_alert(
-                    f"⚡ CIRCUIT BREAKER: Trade blocked — {cb_reason}",
-                    level="warning",
-                ))
             return
-
-        # ── G4: Rate limiter check ────────────────────────────────────────────
         rl_allowed, rl_reason = self._check_rate_limit()
         if not rl_allowed:
             self._log.warning("guardrail.rate_limit.blocked", reason=rl_reason)
-            if self._alerter:
-                asyncio.create_task(self._alerter.send_system_alert(
-                    f"🚦 RATE LIMIT: Trade blocked — {rl_reason}",
-                    level="warning",
-                ))
             return
 
-        # ── v8.0: FOK Ladder or legacy GTC ─────────────────────────────────────
-        from execution.fok_ladder import FOKLadder, FOKResult
-        
         clob_order_id = None
         _rfq_fill_price = None
         _used_rfq = False
         _fok_result = None
-        
-        PRICE_CAP = float(os.environ.get("FOK_PRICE_CAP", "0.73"))
-        PRICE_FLOOR = float(os.environ.get("PRICE_FLOOR", "0.30"))
-        
+        price = Decimal("0.50")  # Default — overwritten by FOK fill or GTC
+
         if runtime.fok_enabled and not self._poly.paper_mode:
             # ── FOK path ──────────────────────────────────────────────────
             self._log.info(
