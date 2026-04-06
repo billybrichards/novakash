@@ -564,12 +564,23 @@ class FiveMinVPINStrategy(BaseStrategy):
         except Exception:
             pass
 
-        # ── Populate chainlink_open / tiingo_open from already-fetched prices ──
+        # ── Populate chainlink_open / tiingo_open / CLOB prices ────────────────
         # _chainlink_price and _tiingo_price were fetched earlier for delta calc.
         if _chainlink_price:
             window_snapshot["chainlink_open"] = _chainlink_price
         if _tiingo_price:
             window_snapshot["tiingo_open"] = _tiingo_price
+        # CLOB real bid/ask from Polymarket order book
+        if self._db:
+            try:
+                _clob = await self._db.get_latest_clob_prices(window.asset)
+                if _clob:
+                    window_snapshot["clob_up_bid"] = _clob.get("clob_up_bid")
+                    window_snapshot["clob_up_ask"] = _clob.get("clob_up_ask")
+                    window_snapshot["clob_down_bid"] = _clob.get("clob_down_bid")
+                    window_snapshot["clob_down_ask"] = _clob.get("clob_down_ask")
+            except Exception:
+                pass
 
         # ── DB write (AWAIT so row exists before trade_placed update) ─────────
         if self._db is not None:

@@ -859,6 +859,28 @@ class DBClient:
         except Exception:
             return None
 
+    async def get_latest_clob_prices(self, asset: str = "BTC") -> dict | None:
+        """Get the most recent CLOB book prices for an asset."""
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT up_best_bid, up_best_ask, down_best_bid, down_best_ask "
+                    "FROM ticks_clob WHERE asset = $1 ORDER BY ts DESC LIMIT 1",
+                    asset,
+                )
+                if row:
+                    return {
+                        "clob_up_bid": float(row["up_best_bid"]) if row["up_best_bid"] else None,
+                        "clob_up_ask": float(row["up_best_ask"]) if row["up_best_ask"] else None,
+                        "clob_down_bid": float(row["down_best_bid"]) if row["down_best_bid"] else None,
+                        "clob_down_ask": float(row["down_best_ask"]) if row["down_best_ask"] else None,
+                    }
+                return None
+        except Exception:
+            return None
+
     # ─── Read Helpers ─────────────────────────────────────────────────────────
 
     async def get_daily_pnl(self, date: Optional[datetime] = None) -> float:
