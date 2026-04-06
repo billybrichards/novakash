@@ -2194,30 +2194,57 @@ class FiveMinVPINStrategy(BaseStrategy):
         # When FOK can't fill (empty book, cap exceeded), fall back to GTC
         # at Gamma indicative price. Market makers match these via RFQ.
         if not clob_order_id:
-            # Fetch Gamma indicative price for GTC limit
+            # Fetch fresh price for GTC limit: try CLOB DB first, then Gamma API
             if float(price) == 0.50:  # Still default — need real price
-                try:
-                    import aiohttp as _aiohttp
-                    _tf_str = "15m" if window.duration_secs == 900 else "5m"
-                    _slug = f"{window.asset.lower()}-updown-{_tf_str}-{window.window_ts}"
-                    async with _aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as _sess:
-                        _url = f"https://gamma-api.polymarket.com/events?slug={_slug}"
-                        async with _sess.get(_url, timeout=_aiohttp.ClientTimeout(total=5)) as _resp:
-                            if _resp.status == 200:
-                                _data = await _resp.json()
-                                if _data and isinstance(_data, list) and _data[0].get("markets"):
-                                    _mkt = _data[0]["markets"][0]
-                                    _outcome_raw = _mkt.get("outcomePrices", [])
-                                    if isinstance(_outcome_raw, str):
-                                        import json as _json
-                                        _outcome_raw = _json.loads(_outcome_raw)
-                                    if _outcome_raw and len(_outcome_raw) >= 2:
-                                        _gp = float(_outcome_raw[0]) if direction == "YES" else float(_outcome_raw[1])
-                                        if 0.30 <= _gp <= 0.73:
-                                            price = Decimal(str(round(_gp, 4)))
-                                            self._log.info("execute.gamma_fallback_price", price=f"${_gp:.4f}", direction=direction)
-                except Exception as _gp_exc:
-                    self._log.debug("execute.gamma_fallback_error", error=str(_gp_exc)[:100])
+                _got_price = False
+                # Source 1: Fresh CLOB prices from ticks_clob (recorded every 10s)
+                if self._db:
+                    try:
+                        _clob = await self._db.get_latest_clob_prices(window.asset)
+                        if _clob:
+                            _clob_ask = _clob.get("clob_down_ask") if direction == "NO" else _clob.get("clob_up_ask")
+                            if _clob_ask and 0.30 <= _clob_ask <= 0.73:
+                                price = Decimal(str(round(_clob_ask, 4)))
+                                _got_price = True
+                                self._log.info("execute.clob_db_price", price=f"${_clob_ask:.4f}", direction=direction, source="ticks_clob")
+                            elif _clob_ask:
+                                self._log.info("execute.clob_db_price_out_of_range", price=f"${_clob_ask:.4f}", direction=direction)
+                    except Exception as _clob_exc:
+                        self._log.debug("execute.clob_db_error", error=str(_clob_exc)[:100])
+                
+                # Source 2: Gamma API fallback
+                if not _got_price:
+                    try:
+                        import aiohttp as _aiohttp
+                        _tf_str = "15m" if window.duration_secs == 900 else "5m"
+                        _slug = f"{window.asset.lower()}-updown-{_tf_str}-{window.window_ts}"
+                        async with _aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as _sess:
+                            _url = f"https://gamma-api.polymarket.com/events?slug={_slug}"
+                            async with _sess.get(_url, timeout=_aiohttp.ClientTimeout(total=5)) as _resp:
+                                if _resp.status == 200:
+                                    _data = await _resp.json()
+                                    if _data and isinstance(_data, list) and _data[0].get("markets"):
+                                        _mkt = _data[0]["markets"][0]
+                                        _outcome_raw = _mkt.get("outcomePrices", [])
+                                        if isinstance(_outcome_raw, str):
+                                            import json as _json
+                                            _outcome_raw = _json.loads(_outcome_raw)
+                                        if _outcome_raw and len(_outcome_raw) >= 2:
+                                            _gp = float(_outcome_raw[0]) if direction == "YES" else float(_outcome_raw[1])
+                                            if 0.30 <= _gp <= 0.73:
+                                                price = Decimal(str(round(_gp, 4)))
+                                                _got_price = True
+                                                self._log.info("execute.gamma_fallback_price", price=f"${_gp:.4f}", direction=direction)
+                    except Exception as _gp_exc:
+                        self._log.debug("execute.gamma_fallback_error", error=str(_gp_exc)[:100])
+                
+                if not _got_price:
+                    self._log.warning("execute.no_price_for_gtc", direction=direction)
+                    # Use window's Gamma price as last resort
+                    _wp = window.down_price if direction == "NO" else window.up_price
+                    if _wp and 0.30 <= float(_wp) <= 0.73:
+                        price = Decimal(str(round(float(_wp), 4)))
+                        self._log.info("execute.window_price_fallback", price=f"${float(_wp):.4f}")
             
             if not self._poly.paper_mode:
                 _shares = stake / float(price) if float(price) > 0 else 0
