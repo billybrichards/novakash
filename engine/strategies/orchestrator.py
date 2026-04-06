@@ -656,6 +656,12 @@ class Orchestrator:
         except Exception as exc:
             log.warning("orchestrator.ensure_shadow_columns_failed", error=str(exc))
 
+        # 6d. Ensure v8.0 columns exist in trades table
+        try:
+            await self._db.ensure_v8_trade_columns()
+        except Exception as exc:
+            log.warning("orchestrator.ensure_v8_trade_columns_failed", error=str(exc))
+
         # 6e. Polymarket reconciliation loop (every 5 min) — live mode only
         if not self._settings.paper_mode:
             self._tasks.append(

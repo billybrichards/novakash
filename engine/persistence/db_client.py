@@ -74,18 +74,24 @@ class DBClient:
                 order_id, strategy, venue, market_slug, direction,
                 entry_price, stake_usd, fee_usd, status, outcome,
                 payout_usd, pnl_usd, created_at, resolved_at, metadata, mode,
-                is_live
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+                is_live,
+                engine_version, clob_order_id, fill_price, fill_size, execution_mode
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                      $18,$19,$20,$21,$22)
             ON CONFLICT (order_id) DO UPDATE SET
-                status      = EXCLUDED.status,
-                outcome     = EXCLUDED.outcome,
-                payout_usd  = EXCLUDED.payout_usd,
-                pnl_usd     = EXCLUDED.pnl_usd,
-                resolved_at = EXCLUDED.resolved_at,
-                is_live     = EXCLUDED.is_live,
-                entry_price = EXCLUDED.entry_price,
-                stake_usd   = EXCLUDED.stake_usd,
-                metadata    = EXCLUDED.metadata
+                status         = EXCLUDED.status,
+                outcome        = EXCLUDED.outcome,
+                payout_usd     = EXCLUDED.payout_usd,
+                pnl_usd        = EXCLUDED.pnl_usd,
+                resolved_at    = EXCLUDED.resolved_at,
+                is_live        = EXCLUDED.is_live,
+                entry_price    = EXCLUDED.entry_price,
+                stake_usd      = EXCLUDED.stake_usd,
+                metadata       = EXCLUDED.metadata,
+                clob_order_id  = COALESCE(EXCLUDED.clob_order_id, trades.clob_order_id),
+                fill_price     = COALESCE(EXCLUDED.fill_price, trades.fill_price),
+                fill_size      = COALESCE(EXCLUDED.fill_size, trades.fill_size),
+                execution_mode = COALESCE(EXCLUDED.execution_mode, trades.execution_mode)
         """
 
         try:
@@ -101,6 +107,13 @@ class DBClient:
                 if isinstance(order.resolved_at, (int, float))
                 else order.resolved_at
             )
+
+            # Extract v8.0 fields from metadata if present
+            meta = order.metadata or {}
+            clob_order_id = meta.get("clob_order_id") or meta.get("order_id")
+            fill_price = meta.get("fill_price") or meta.get("avg_price")
+            fill_size = meta.get("fill_size") or meta.get("size_matched")
+            execution_mode = meta.get("execution_mode", "paper")
 
             async with self._pool.acquire() as conn:
                 await conn.execute(
@@ -122,6 +135,12 @@ class DBClient:
                     json.dumps(order.metadata),
                     "live" if order.order_id.startswith("0x") else "paper",
                     not order.order_id.startswith("5min-") and not order.order_id.startswith("manual-paper"),
+                    # v8.0 fields
+                    "v8.0",
+                    clob_order_id,
+                    float(fill_price) if fill_price is not None else None,
+                    float(fill_size) if fill_size is not None else None,
+                    execution_mode,
                 )
             log.debug("db.trade_written", order_id=order.order_id)
         except Exception as exc:
@@ -725,6 +744,14 @@ class DBClient:
                     snapshot.get("delta_tiingo"),
                     snapshot.get("delta_binance"),
                     snapshot.get("price_consensus"),
+                    # v8.0: engine metadata + gate audit + shadow trade
+                    snapshot.get("engine_version", "v8.0"),
+                    snapshot.get("delta_source"),
+                    snapshot.get("confidence_tier"),
+                    snapshot.get("gates_passed"),
+                    snapshot.get("gate_failed"),
+                    snapshot.get("shadow_trade_direction"),
+                    snapshot.get("shadow_trade_entry_price"),
                 )
             log.debug(
                 "db.window_snapshot_written",
@@ -1119,6 +1146,27 @@ class DBClient:
             log.info("db.shadow_columns_ensured")
         except Exception as exc:
             log.warning("db.ensure_shadow_columns_failed", error=str(exc))
+
+    async def ensure_v8_trade_columns(self) -> None:
+        """Add v8.0 columns to trades table if missing (idempotent)."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                for col, col_type in [
+                    ("engine_version", "VARCHAR(10)"),
+                    ("clob_order_id", "VARCHAR(128)"),
+                    ("fill_price", "DOUBLE PRECISION"),
+                    ("fill_size", "DOUBLE PRECISION"),
+                    ("execution_mode", "VARCHAR(20)"),
+                    ("is_live", "BOOLEAN DEFAULT FALSE"),
+                ]:
+                    await conn.execute(
+                        f"ALTER TABLE trades ADD COLUMN IF NOT EXISTS {col} {col_type}"
+                    )
+            log.info("db.v8_trade_columns_ensured")
+        except Exception as exc:
+            log.warning("db.ensure_v8_trade_columns_failed", error=str(exc))
 
     async def get_unresolved_shadow_windows(self, minutes_back: int = 10) -> list:
         """
