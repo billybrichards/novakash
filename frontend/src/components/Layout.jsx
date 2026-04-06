@@ -13,6 +13,7 @@ import { useApi } from '../hooks/useApi.js';
 
 const NAV_ITEMS = [
   { path: '/dashboard',       label: 'Dashboard',  icon: '📊' },
+  { path: '/factory',         label: 'Factory Floor', icon: '🏭', highlight: true },
   { path: '/timesfm',         label: 'TimesFM',    icon: '🔮', highlight: true },
   { path: '/indicators',      label: 'Indicators', icon: '📈', highlight: true },
   { path: '/v58',             label: 'v7 Monitor', icon: '🎯', highlight: true },
