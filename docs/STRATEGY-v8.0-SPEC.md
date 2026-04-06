@@ -76,12 +76,12 @@ EVERY 5 MINUTES:
 │    → CASCADE + taker divergence (VPIN≥0.65, taker >55%)     │
 │    → Same as v7.1                                            │
 │                                                              │
-│  Gate 4: Macro observer gate (NEW)                           │
-│    → Read latest macro_signals row from DB                   │
-│    → If direction_gate = SKIP_DOWN and signal = DOWN → skip  │
-│    → If direction_gate = SKIP_UP and signal = UP → skip      │
-│    → Apply threshold_modifier to delta thresholds            │
-│    → If override_active: apply size_modifier to stake        │
+│  Gate 4: Macro observer (DATA COLLECTION ONLY — NOT GATING)  │
+│    → Macro observer runs on Railway, writes to macro_signals │
+│    → Log macro_bias + macro_confidence to window_snapshots   │
+│    → DO NOT gate trades — needs validation period first      │
+│    → Investigate: 62% BEAR blocked winning UP trades         │
+│    → Revisit after 1-2 weeks of data collection              │
 │                                                              │
 │  Gate 5: Oracle divergence gate (NEW)                        │
 │    → Chainlink price - Binance price = spread                │
@@ -181,7 +181,7 @@ EVERY 5 MINUTES:
 | `TWAP_OVERRIDE_ENABLED` | implicit `true` | `false` | Tiingo replaces TWAP |
 | `TIMESFM_ENABLED` | `true` | `false` | Coin flip, disable |
 | `FILL_POLL_MAX_WAIT` | `30` | `60` | Catch YES fills (v7.2) |
-| `MACRO_OBSERVER_ENABLED` | N/A | `true` | Read macro_signals DB |
+| `MACRO_OBSERVER_ENABLED` | N/A | `false` | DO NOT ENABLE YET — collecting data only |
 | `ORACLE_DIVERGENCE_GATE` | N/A | `true` | Chainlink spread check |
 
 ### Unchanged from v7.1
@@ -218,12 +218,15 @@ EVERY 5 MINUTES:
 - **Expected fill rate improvement: 40% → 90%+**
 - **Risk: MEDIUM** — new execution path, test in paper first
 
-### Phase 3: Macro observer wiring
-- Read `macro_signals` table in orchestrator
-- Apply gate + threshold modifiers in `five_min_vpin.py`
-- Feature flag: `MACRO_OBSERVER_ENABLED=true|false`
-- **Expected improvement: ~$15-20/day from blocked wrong-direction bets**
-- **Risk: LOW** — purely additive gating
+### Phase 3: Macro observer investigation (DO NOT WIRE INTO TRADING YET)
+- Macro observer continues running on Railway, collecting signals to DB
+- **Do NOT gate trades based on macro signals yet**
+- Investigate: at 62% BEAR confidence it would have blocked two winning UP trades (19:10, 19:15)
+- Needs: wire btc_delta fields into payload (currently "missing price deltas")
+- Needs: 1-2 weeks of data to validate macro signal vs oracle outcomes
+- Needs: determine correct confidence threshold for gating (62% too low, maybe 75%+)
+- Track: log macro_bias + macro_confidence to window_snapshots for offline analysis
+- Revisit gating decision after validation period
 
 ### Phase 4: TWAP removal + cleanup
 - Remove TWAP override code path
@@ -252,7 +255,7 @@ EVERY 5 MINUTES:
 |---|---|
 | Tiingo delta (71.6% → 96.9% WR) | +$50-80/day |
 | FOK ladder (40% → 90% fill rate) | +$40-80/day from unfilled winners |
-| Macro observer | +$15-20/day from blocked losses |
+| Macro observer | DATA COLLECTION ONLY — not gating trades yet |
 | Floor fix (deployed) | Prevents -$10 incidents |
 | Fill detection fix (deployed) | Correct P&L tracking |
 | **Combined** | **+$100-180/day estimated** |
