@@ -348,21 +348,15 @@ class OrderManager:
                     continue
 
             # PRIMARY: Query Polymarket oracle for actual market outcome
+            # ALWAYS resolve from Polymarket oracle — paper and live
+            # Polymarket IS the market. Binance price direction != oracle outcome.
             poly_result = await self._resolve_from_polymarket(order)
             if poly_result is not None:
                 outcome, payout = poly_result
-            elif not self._paper_mode:
-                # LIVE MODE: ONLY resolve from Polymarket oracle. Never Binance fallback.
-                # If Polymarket hasn't resolved yet, skip and try next poll cycle.
+            else:
+                # Oracle hasn't resolved yet — wait and retry next poll cycle
                 self._log.debug("resolution.waiting_for_polymarket", order_id=order.order_id[:20] + "...")
                 continue
-            else:
-                # PAPER MODE: Use Binance BTC price as fallback
-                self._log.debug("resolution.fallback_to_binance", order_id=order.order_id[:20] + "...")
-                result = await self._determine_paper_outcome(order, price)
-                if result is None:
-                    continue
-                outcome, payout = result
             
             resolved = await self.resolve_order(order.order_id, outcome, payout)
 
