@@ -36,6 +36,7 @@ from data.feeds.binance_ws import BinanceWebSocketFeed
 from data.feeds.chainlink_rpc import ChainlinkRPCFeed
 from data.feeds.chainlink_feed import ChainlinkFeed
 from data.feeds.tiingo_feed import TiingoFeed
+from data.feeds.clob_feed import CLOBFeed
 from data.feeds.coinglass_api import CoinGlassAPIFeed
 from data.feeds.coinglass_enhanced import CoinGlassEnhancedFeed
 from evaluation.claude_evaluator import ClaudeEvaluator
@@ -370,6 +371,7 @@ class Orchestrator:
         # ── Tiingo Top-of-Book Feed (BTC/ETH/SOL/XRP, every 2s) ─────────────
         # Pool not yet available at __init__ — injected in start() after connect()
         self._tiingo_feed: Optional[TiingoFeed] = None
+        self._clob_feed: Optional[CLOBFeed] = None
         # Instantiated in start() once DB pool is live
 
         # Polymarket token IDs from settings
@@ -504,6 +506,24 @@ class Orchestrator:
             log.warning("orchestrator.tiingo_feed_init_failed", error=str(exc))
             self._tiingo_feed = None
 
+        # ── CLOB Book Feed (real Polymarket bid/ask, every 10s) ──────────────
+        try:
+            if self._order_manager and self._db and self._db._pool:
+                _poly_client = getattr(self._order_manager, '_poly_client', None)
+                _five_min_feed = getattr(self, '_strategy', None)
+                if _poly_client:
+                    self._clob_feed = CLOBFeed(
+                        poly_client=_poly_client,
+                        db_pool=self._db._pool,
+                        polymarket_feed=self._five_min_feed,
+                    )
+                    log.info("orchestrator.clob_feed_ready")
+                else:
+                    log.info("orchestrator.clob_feed_disabled", reason="no poly client")
+        except Exception as exc:
+            log.warning("orchestrator.clob_feed_init_failed", error=str(exc))
+            self._clob_feed = None
+
         # ── VPIN Warm Start: replay recent ticks to avoid cold-start ──────────
         try:
             if self._db and self._db._pool:
@@ -586,6 +606,11 @@ class Orchestrator:
                 asyncio.create_task(self._tiingo_feed.start(), name="feed:tiingo")
             )
             log.info("orchestrator.tiingo_feed_started")
+        if self._clob_feed:
+            self._tasks.append(
+                asyncio.create_task(self._clob_feed.start(), name="feed:clob")
+            )
+            log.info("orchestrator.clob_feed_started")
         self._tasks.append(
             asyncio.create_task(self._polymarket_feed.start(), name="feed:polymarket")
         )
@@ -1187,12 +1212,28 @@ class Orchestrator:
                         # ── Write snapshot to countdown_evaluations DB ───────
                         try:
                             _twap_agree_bool = (_tw_agree >= 2) if _tw_agree is not None else None
+                            # v7.2: fetch multi-source prices for countdown record
+                            _cl_price = None
+                            _ti_price = None
+                            if self._db:
+                                try:
+                                    _cl_price = await self._db.get_latest_chainlink_price(window.asset)
+                                except Exception:
+                                    pass
+                                try:
+                                    _ti_price = await self._db.get_latest_tiingo_price(window.asset)
+                                except Exception:
+                                    pass
+                            _cl_str = f"{_cl_price:.2f}" if _cl_price else "N/A"
+                            _ti_str = f"{_ti_price:.2f}" if _ti_price else "N/A"
                             _eval_notes = (
                                 f"gamma_up={_snap_gamma_up:.4f},gamma_down={_snap_gamma_down:.4f},"
                                 f"vpin={_vpin:.4f},delta_pct={_d:.4f},regime={_regime},"
                                 f"tsf_dir={_tsf_dir},tsf_conf={_tsf_conf:.3f},"
                                 f"twap_dir={_tw_dir},twap_agree={_tw_agree},"
-                                f"btc={_btc:.2f}"
+                                f"btc={_btc:.2f},"
+                                f"chainlink={_cl_str},"
+                                f"tiingo={_ti_str}"
                             )
                             asyncio.create_task(self._db.write_countdown_evaluation({
                                 "window_ts": window.window_ts,
@@ -1202,6 +1243,10 @@ class Orchestrator:
                                 "agreement": _twap_agree_bool,
                                 "action": "SNAPSHOT",
                                 "notes": _eval_notes,
+                                # v7.2: multi-source prices
+                                "chainlink_price": _cl_price,
+                                "tiingo_price": _ti_price,
+                                "binance_price": _btc,
                             }))
                         except Exception:
                             pass

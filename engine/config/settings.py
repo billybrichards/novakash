@@ -69,5 +69,11 @@ class Settings(BaseSettings):
     timesfm_min_confidence: float = Field(default=0.30, description="Minimum TimesFM confidence to trade")
     timesfm_assets: str = Field(default="BTC", description="Comma-separated assets for TimesFM strategy")
 
+    # v7.2 Multi-source delta calculation
+    delta_price_source: str = Field(
+        default="chainlink",
+        description="Price source for window delta: chainlink (default/oracle), binance (legacy), tiingo, or consensus (all must agree)",
+    )
+
 
 settings = Settings()

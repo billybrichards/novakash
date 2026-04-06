@@ -13,6 +13,7 @@ All real-time and near-real-time data ingested by the Novakash trading engine.
 | Tiingo Top-of-Book | BTC, ETH, SOL, XRP | ~2s | `ticks_tiingo` | Multi-exchange best bid/ask |
 | CoinGlass Enhanced | BTC, ETH, SOL, XRP | ~15s | `ticks_coinglass` | Open interest, funding rate, liquidations |
 | Gamma API | BTC, ETH, SOL, XRP | per-window | `ticks_gamma` | Polymarket token prices at window open/close |
+| CLOB Order Book | BTC | ~10s | `ticks_clob` | Ground truth Polymarket bid/ask (replaces Gamma for pricing) |
 | TimesFM | BTC | ~1s | `ticks_timesfm` | ML price forecast — agreement signal |
 
 ---
@@ -357,6 +358,96 @@ ORDER BY t.window_ts DESC;
 
 ---
 
+## 7. CLOB Order Book (Polymarket) — NEW
+
+**Module:** `engine/data/feeds/clob_feed.py`  
+**Assets:** BTC (follows active 5-min window)  
+**Update rate:** Every 10s  
+**Endpoint:** `https://clob.polymarket.com/book?token_id=<TOKEN>`  
+**Runs on:** Montreal only (Polymarket geo-blocked)
+
+### Why CLOB, not Gamma?
+
+Gamma API's `outcomePrices` are **stale/smoothed** — they lag the real market.
+The CLOB is the **ground truth** — it's what you actually pay when you trade.
+
+| Source | Stale by | Data |
+|--------|----------|------|
+| Gamma API | 5-60s | Smoothed mid-price |
+| CLOB Book | Real-time | Actual best bid/ask from order book |
+
+### What it provides
+- **UP token:** best bid, best ask
+- **DOWN token:** best bid, best ask
+- **Spreads:** per-token bid-ask spread (liquidity indicator)
+- **Mid price:** composite from UP and DOWN asks
+
+### How it's used
+- Compare CLOB bid/ask vs Gamma prices (how stale is Gamma?)
+- Real entry price estimation — CLOB best ask is what we'll actually pay
+- Spread as liquidity gate — wide spread = thin book = risky entry
+- Window snapshot records CLOB prices alongside Gamma for full audit trail
+
+### Table: `ticks_clob`
+```sql
+CREATE TABLE ticks_clob (
+    id              BIGSERIAL PRIMARY KEY,
+    ts              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    asset           VARCHAR(10) NOT NULL,
+    timeframe       VARCHAR(5) DEFAULT '5m',
+    window_ts       BIGINT,
+    up_token_id     VARCHAR,
+    down_token_id   VARCHAR,
+    up_best_bid     DOUBLE PRECISION,
+    up_best_ask     DOUBLE PRECISION,
+    down_best_bid   DOUBLE PRECISION,
+    down_best_ask   DOUBLE PRECISION,
+    up_spread       DOUBLE PRECISION,
+    down_spread     DOUBLE PRECISION,
+    mid_price       DOUBLE PRECISION,
+    source          VARCHAR(20) DEFAULT 'clob'
+);
+```
+
+### Window snapshot columns
+- `clob_up_bid` — CLOB best bid for UP token at evaluation
+- `clob_up_ask` — CLOB best ask for UP token at evaluation
+- `clob_down_bid` — CLOB best bid for DOWN token at evaluation
+- `clob_down_ask` — CLOB best ask for DOWN token at evaluation
+
+### Query examples
+```sql
+-- Compare Gamma vs CLOB pricing (stale detection)
+SELECT
+    ws.window_ts,
+    ws.gamma_up_price AS gamma_up,
+    ws.clob_up_ask AS clob_up_ask,
+    ws.gamma_up_price - ws.clob_up_ask AS gamma_clob_diff,
+    ws.outcome
+FROM window_snapshots ws
+WHERE ws.clob_up_ask IS NOT NULL
+ORDER BY ws.window_ts DESC LIMIT 20;
+
+-- CLOB spread over time (liquidity tracking)
+SELECT ts, up_spread, down_spread, mid_price
+FROM ticks_clob
+WHERE asset = 'BTC' AND ts > NOW() - INTERVAL '1 hour'
+ORDER BY ts DESC;
+
+-- Average spread per window (are some windows thinner?)
+SELECT
+    window_ts,
+    AVG(up_spread) AS avg_up_spread,
+    AVG(down_spread) AS avg_down_spread,
+    COUNT(*) AS samples
+FROM ticks_clob
+WHERE asset = 'BTC' AND ts > NOW() - INTERVAL '6 hours'
+GROUP BY window_ts
+ORDER BY window_ts DESC;
+```
+
+---
+
 ## Data Flow: How Sources Map to Trading Decisions
 
 ```
@@ -383,6 +474,11 @@ Gamma API (per window evaluation)
     └─► FiveMinVPINStrategy (entry price for UP/DOWN tokens)
     └─► CLOB order placement (token IDs)
 
+CLOB Order Book (every 10s)
+    └─► ticks_clob (ground truth bid/ask from Polymarket order book)
+    └─► Window snapshots (clob_up_bid/ask, clob_down_bid/ask)
+    └─► [future] Replace Gamma for entry pricing (CLOB best ask = real cost)
+
 TimesFM (every 1s during windows)
     └─► ticks_timesfm
     └─► FiveMinVPINStrategy (agreement signal: boosts/penalises confidence)
@@ -404,6 +500,68 @@ CHAINLINK_XRP_USD=0x785ba89291f676b5386652eB12b30cF361020694
 
 # Tiingo
 TIINGO_API_KEY=<your-key>
+```
+
+---
+
+## Multi-Source Delta Strategy (v7.2)
+
+The engine now calculates **three independent window deltas** at evaluation time:
+
+| Delta | Source | Role |
+|-------|--------|------|
+| `delta_binance` | Binance WebSocket (`state.btc_price`) | Legacy baseline |
+| `delta_chainlink` | Chainlink oracle (DB: `ticks_chainlink`) | **PRIMARY** — oracle-aligned |
+| `delta_tiingo` | Tiingo top-of-book (DB: `ticks_tiingo`) | Secondary validation |
+
+### Primary Delta Selection
+
+The `DELTA_PRICE_SOURCE` env var (default: `chainlink`) controls which delta drives the trading decision:
+
+| Value | Behaviour |
+|-------|-----------|
+| `chainlink` | Use Chainlink oracle price as primary (default — aligns with Polymarket settlement) |
+| `binance` | Use Binance WebSocket price (legacy v7.1 behaviour) |
+| `tiingo` | Use Tiingo top-of-book price |
+| `consensus` | Only trade when ALL sources agree on direction (most conservative) |
+
+Fallback: if the selected source is unavailable, falls back to Binance (always available).
+
+### Consensus Scoring
+
+`price_consensus` column in `window_snapshots`:
+- `AGREE` — all available sources point the same direction
+- `MIXED` — 2 out of 3 sources agree
+- `DISAGREE` — sources split evenly (only possible with 2 sources)
+
+If Chainlink and Binance disagree on direction, the engine logs a `LOW` confidence flag (but still trades unless `DELTA_PRICE_SOURCE=consensus`).
+
+### DB Columns Added
+
+**window_snapshots:**
+- `delta_chainlink` — Chainlink-based window delta %
+- `delta_tiingo` — Tiingo-based window delta %
+- `delta_binance` — Binance-based window delta %
+- `price_consensus` — AGREE / MIXED / DISAGREE
+- `binance_close` — Binance price at trade resolution
+- `chainlink_binance_direction_match` — did CL and Binance agree at close?
+- `resolution_delay_secs` — seconds from evaluation to oracle resolution
+
+**countdown_evaluations:**
+- `chainlink_price` — Chainlink price at each T-minus snapshot
+- `tiingo_price` — Tiingo price at each T-minus snapshot
+- `binance_price` — Binance price at each T-minus snapshot
+
+### Switching Delta Source
+
+To revert to Binance-only delta (legacy):
+```bash
+DELTA_PRICE_SOURCE=binance
+```
+
+To require full consensus before trading:
+```bash
+DELTA_PRICE_SOURCE=consensus
 ```
 
 ---

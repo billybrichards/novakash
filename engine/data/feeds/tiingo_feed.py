@@ -31,7 +31,7 @@ TICKERS = {
     "XRP": "xrpusd",
 }
 
-POLL_INTERVAL = 5  # seconds (Tiingo rate limits at ~2s)
+POLL_INTERVAL = 2  # seconds (Tiingo paid: 10K req/hr = 2.7/s, 2s is safe)
 API_BASE = "https://api.tiingo.com/tiingo/crypto/top"
 SOURCE = "tiingo"
 
@@ -106,6 +106,9 @@ class TiingoFeed:
                 except Exception as exc:
                     log.error("tiingo_feed.poll_error", error=str(exc))
                     self._connected = False
+                    if "429" in str(exc):
+                        await asyncio.sleep(60)  # Back off 60s on rate limit
+                        continue
                 await asyncio.sleep(POLL_INTERVAL)
 
         self._session = None

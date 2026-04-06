@@ -607,7 +607,8 @@ class DBClient:
                         market_volume, market_liquidity,
                         v71_would_trade, v71_skip_reason, v71_regime,
                         is_live,
-                        gamma_up_price, gamma_down_price
+                        gamma_up_price, gamma_down_price,
+                        delta_chainlink, delta_tiingo, delta_binance, price_consensus
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,
                         $9,$10,$11,$12,$13,$14,$15,$16,$17,
@@ -619,11 +620,16 @@ class DBClient:
                         $53,$54,$55,$56,$57,$58,
                         $59,$60,$61,
                         $62,
-                        $63,$64
+                        $63,$64,
+                        $65,$66,$67,$68
                     )
                     ON CONFLICT (window_ts, asset, timeframe) DO UPDATE SET
                         gamma_up_price   = COALESCE(EXCLUDED.gamma_up_price, window_snapshots.gamma_up_price),
-                        gamma_down_price = COALESCE(EXCLUDED.gamma_down_price, window_snapshots.gamma_down_price)
+                        gamma_down_price = COALESCE(EXCLUDED.gamma_down_price, window_snapshots.gamma_down_price),
+                        delta_chainlink  = COALESCE(EXCLUDED.delta_chainlink, window_snapshots.delta_chainlink),
+                        delta_tiingo     = COALESCE(EXCLUDED.delta_tiingo, window_snapshots.delta_tiingo),
+                        delta_binance    = COALESCE(EXCLUDED.delta_binance, window_snapshots.delta_binance),
+                        price_consensus  = COALESCE(EXCLUDED.price_consensus, window_snapshots.price_consensus)
                     """,
                     snapshot.get("window_ts"),
                     snapshot.get("asset", "BTC"),
@@ -693,6 +699,11 @@ class DBClient:
                     # gamma prices (fetched at T-60 and included in snapshot dict)
                     snapshot.get("gamma_up_price"),
                     snapshot.get("gamma_down_price"),
+                    # v7.2: multi-source deltas
+                    snapshot.get("delta_chainlink"),
+                    snapshot.get("delta_tiingo"),
+                    snapshot.get("delta_binance"),
+                    snapshot.get("price_consensus"),
                 )
             log.debug(
                 "db.window_snapshot_written",
@@ -781,6 +792,45 @@ class DBClient:
         except Exception as exc:
             log.error("db.update_window_prices_failed", error=str(exc)[:80])
 
+    async def update_window_resolution_extras(
+        self,
+        window_ts: int,
+        asset: str,
+        timeframe: str,
+        binance_close: Optional[float] = None,
+        chainlink_binance_direction_match: Optional[bool] = None,
+        resolution_delay_secs: Optional[int] = None,
+    ) -> None:
+        """Update extra resolution columns (v7.2: Binance close, direction match, delay)."""
+        if not self._pool:
+            return
+        updates = []
+        params = []
+        idx = 4
+        if binance_close is not None:
+            idx += 1
+            updates.append(f"binance_close = ${idx}")
+            params.append(binance_close)
+        if chainlink_binance_direction_match is not None:
+            idx += 1
+            updates.append(f"chainlink_binance_direction_match = ${idx}")
+            params.append(chainlink_binance_direction_match)
+        if resolution_delay_secs is not None:
+            idx += 1
+            updates.append(f"resolution_delay_secs = ${idx}")
+            params.append(resolution_delay_secs)
+        if not updates:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    f"UPDATE window_snapshots SET {', '.join(updates)} "
+                    f"WHERE window_ts = $1 AND asset = $2 AND timeframe = $3",
+                    window_ts, asset, timeframe, *params,
+                )
+        except Exception as exc:
+            log.error("db.update_window_resolution_extras_failed", error=str(exc)[:80])
+
     async def get_latest_chainlink_price(self, asset: str = "BTC") -> float | None:
         """Get the most recent Chainlink price for an asset."""
         if not self._pool:
@@ -806,6 +856,28 @@ class DBClient:
                     asset,
                 )
                 return float(row["last_price"]) if row else None
+        except Exception:
+            return None
+
+    async def get_latest_clob_prices(self, asset: str = "BTC") -> dict | None:
+        """Get the most recent CLOB book prices for an asset."""
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT up_best_bid, up_best_ask, down_best_bid, down_best_ask "
+                    "FROM ticks_clob WHERE asset = $1 ORDER BY ts DESC LIMIT 1",
+                    asset,
+                )
+                if row:
+                    return {
+                        "clob_up_bid": float(row["up_best_bid"]) if row["up_best_bid"] else None,
+                        "clob_up_ask": float(row["up_best_ask"]) if row["up_best_ask"] else None,
+                        "clob_down_bid": float(row["down_best_bid"]) if row["down_best_bid"] else None,
+                        "clob_down_ask": float(row["down_best_ask"]) if row["down_best_ask"] else None,
+                    }
+                return None
         except Exception:
             return None
 
@@ -920,7 +992,8 @@ class DBClient:
 
         Args:
             data: dict with keys:
-                window_ts, stage, direction, confidence, agreement, action, notes
+                window_ts, stage, direction, confidence, agreement, action, notes,
+                chainlink_price, tiingo_price, binance_price  (v7.2: multi-source prices)
         """
         if not self._pool:
             return
@@ -928,8 +1001,9 @@ class DBClient:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     """INSERT INTO countdown_evaluations
-                       (window_ts, stage, direction, confidence, agreement, action, notes, evaluated_at)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())""",
+                       (window_ts, stage, direction, confidence, agreement, action, notes, evaluated_at,
+                        chainlink_price, tiingo_price, binance_price)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10)""",
                     int(data.get("window_ts", 0)),
                     data.get("stage", ""),
                     data.get("direction"),
@@ -937,6 +1011,9 @@ class DBClient:
                     bool(data.get("agreement")) if data.get("agreement") is not None else None,
                     data.get("action"),
                     data.get("notes"),
+                    float(data.get("chainlink_price")) if data.get("chainlink_price") is not None else None,
+                    float(data.get("tiingo_price")) if data.get("tiingo_price") is not None else None,
+                    float(data.get("binance_price")) if data.get("binance_price") is not None else None,
                 )
         except Exception as exc:
             log.debug("db.write_countdown_evaluation_failed", error=str(exc)[:120])
