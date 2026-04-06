@@ -1158,19 +1158,22 @@ class Orchestrator:
                     _ai = None
                     if self._alerter._anthropic_api_key:
                         try:
+                            # v8.0: Tiingo-based prompt, Sonnet model, adequate tokens
+                            _dir_word = "UP" if _d > 0 else "DOWN"
                             _prompt = (
-                                f"BTC 5m window {t_label}: "
-                                f"VPIN {_vpin:.3f} ({_regime}), delta {_d:+.4f}%, "
-                                f"TWAP {_tw_dir or '?'} {_tw_agree}/3, "
-                                f"TimesFM {_tsf_dir or '?'} {_tsf_conf:.0%}, "
-                                f"CG taker {_cg_taker:.0f}% buy, funding {_cg_fund:.0f}%/yr. "
-                                f"1 sentence: what does this signal suggest about the next {int(_remaining):.0f}s?"
+                                f"BTC 5m window at {t_label} ({int(_remaining)}s left). "
+                                f"Tiingo delta: {_d:+.4f}% → {_dir_word}. "
+                                f"VPIN: {_vpin:.3f} ({_regime}). "
+                                f"CG: taker {_cg_taker:.0f}% buy, funding {_cg_fund:.0f}%/yr. "
+                                f"CLOB: UP ${_snap_gamma_up:.2f} / DOWN ${_snap_gamma_down:.2f}. "
+                                f"1 sentence: signal strength and key risk."
                             )
                             import aiohttp as _ah
                             async with _ah.ClientSession() as _sess:
                                 async with _sess.post(
                                     "https://api.anthropic.com/v1/messages",
-                                    json={"model": "claude-haiku-4-5", "max_tokens": 80,
+                                    json={"model": "claude-sonnet-4-6", "max_tokens": 150,
+                                          "system": "You are a crypto trading analyst for Polymarket 5-min prediction markets. Be concise. 1-2 sentences max.",
                                           "messages": [{"role": "user", "content": _prompt}]},
                                     headers={"x-api-key": self._alerter._anthropic_api_key,
                                              "anthropic-version": "2023-06-01"},
