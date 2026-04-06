@@ -1278,8 +1278,15 @@ class FiveMinVPINStrategy(BaseStrategy):
                         if _shares > 0:
                             _fill_price = round(order.stake_usd / _shares, 4)
                             order.price = str(_fill_price)
+                            order.entry_price = _fill_price
                             order.metadata["actual_fill_price"] = _fill_price
                             self._log.info("trade.verified", order_id=order.order_id[:20] + "...", actual_price=f"${_fill_price:.4f}", size_matched=size_matched, wait=f"{elapsed}s")
+                            # Persist actual fill price to DB
+                            if self._db:
+                                try:
+                                    await self._db.write_trade(order)
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
                     if self._alerter:
