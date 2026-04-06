@@ -886,14 +886,18 @@ class FiveMinVPINStrategy(BaseStrategy):
         if eval_offset and eval_offset >= 120 and signal is not None and self._timesfm_v2 is not None:
             _v81_cap = V81_ENTRY_CAPS.get(eval_offset, 0.73)
             _v81_active = True
+            _v8_dir = signal.direction  # capture before any mutation
             try:
                 _v2_result = await self._timesfm_v2.get_probability(
                     asset=window.asset, seconds_to_close=eval_offset
                 )
-                _v2_p = _v2_result.get("probability_up", 0.5)
+                if not _v2_result or "probability_up" not in _v2_result:
+                    raise RuntimeError(f"v2.2 returned invalid response: {str(_v2_result)[:80]}")
+
+                _v2_p = float(_v2_result["probability_up"])
                 _v2_dir = "UP" if _v2_p > 0.5 else "DOWN"
                 _v2_high = _v2_p > 0.65 or _v2_p < 0.35
-                _v2_agrees = (_v2_dir == signal.direction)
+                _v2_agrees = (_v2_dir == _v8_dir)
 
                 # Store in snapshot for analysis
                 window_snapshot["v2_probability_up"] = round(_v2_p, 4)
@@ -906,7 +910,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                     offset=eval_offset,
                     v2_p=f"{_v2_p:.3f}",
                     v2_dir=_v2_dir,
-                    v8_dir=signal.direction,
+                    v8_dir=_v8_dir,
                     agrees=_v2_agrees,
                     high_conf=_v2_high,
                     cap=_v81_cap,
@@ -917,7 +921,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                     self._last_skip_reason = f"v8.1: v2.2 LOW conf ({_v2_p:.2f}) at T-{eval_offset}"
                 elif not _v2_agrees:
                     signal = None
-                    self._last_skip_reason = f"v8.1: v2.2 DISAGREES (v2={_v2_dir} vs v8={signal.direction}) at T-{eval_offset}"
+                    self._last_skip_reason = f"v8.1: v2.2 DISAGREES (v2={_v2_dir} vs v8={_v8_dir}) at T-{eval_offset}"
                 else:
                     # v2.2 HIGH + agrees → upgrade to DECISIVE, set dynamic cap
                     signal.confidence = "DECISIVE"
@@ -926,7 +930,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                     self._log.info(
                         "v81.early_entry_approved",
                         offset=eval_offset,
-                        direction=signal.direction,
+                        direction=_v8_dir,
                         cap=_v81_cap,
                         v2_p=f"{_v2_p:.3f}",
                     )
@@ -1087,6 +1091,13 @@ class FiveMinVPINStrategy(BaseStrategy):
                         "macro_gate": window_snapshot.get("macro_gate", ""),
                         "clob_up_ask": window_snapshot.get("clob_up_ask"),
                         "clob_down_ask": window_snapshot.get("clob_down_ask"),
+                        # v8.1 early entry fields
+                        "v2_probability_up": window_snapshot.get("v2_probability_up"),
+                        "v2_direction": window_snapshot.get("v2_direction"),
+                        "v2_agrees": window_snapshot.get("v2_agrees"),
+                        "entry_reason": getattr(signal, 'entry_reason', 'v8_standard'),
+                        "eval_offset": eval_offset,
+                        "v81_entry_cap": getattr(signal, 'v81_entry_cap', None),
                     }
                     reason = f"VPIN {current_vpin:.3f} ({_snap_regime}), delta {delta_pct:+.4f}%"
                     

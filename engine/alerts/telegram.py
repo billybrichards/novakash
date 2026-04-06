@@ -212,6 +212,27 @@ class TelegramAlerter:
         
         emoji = "🎯" if decision == "TRADE" else "⏭"
         
+        # v8.1 early entry info
+        _eval_offset = signal.get("eval_offset")
+        _entry_reason = signal.get("entry_reason", "v8_standard")
+        _v2_p = signal.get("v2_probability_up")
+        _v2_dir = signal.get("v2_direction")
+        _v2_agrees = signal.get("v2_agrees")
+        _v81_cap = signal.get("v81_entry_cap")
+
+        v81_line = ""
+        if _v2_p is not None:
+            _v2_conf = "HIGH" if (_v2_p > 0.65 or _v2_p < 0.35) else "LOW"
+            _agree_icon = "✅" if _v2_agrees else "❌"
+            v81_line = (
+                f"🔮 v2.2: P(UP)=`{_v2_p:.3f}` → `{_v2_dir}` {_agree_icon} "
+                f"({_v2_conf})\n"
+            )
+
+        offset_line = ""
+        if _eval_offset and _eval_offset != 60:
+            offset_line = f"⏱ Entry: `T-{_eval_offset}s` | cap `${_v81_cap:.2f}`\n" if _v81_cap else f"⏱ Entry: `T-{_eval_offset}s`\n"
+
         decision_text = (
             f"{emoji} *{decision}* — BTC 5m | {window_time} | {self._engine_version}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -219,6 +240,8 @@ class TelegramAlerter:
             f"📈 VPIN: `{vpin:.3f}` | `{regime}`\n"
             f"🔗 {prices_line}\n"
             f"{entry_line}"
+            f"{v81_line}"
+            f"{offset_line}"
             f"🧠 Macro: `{macro_bias}` `{macro_confidence}`"
             f"{' — ' + signal.get('macro_gate', '') if signal.get('macro_gate') else ''}\n"
             f"\n⚡ Gates: {gate_icons}\n"

@@ -566,10 +566,16 @@ class PolymarketClient:
         _size = math.floor(size * 100) / 100  # Floor to 2 decimals
         if _size <= 0:
             return {"filled": False, "size_matched": 0, "order_id": None}
+        # Pass size as string with exactly 2 decimals to prevent py_clob_client
+        # from introducing floating-point precision errors internally.
+        # The CLOB API rejects sizes with >2 decimal places.
+        _size_str = f"{_size:.2f}"
+        _price_str = f"{_price:.4f}"
+
         order_args = OrderArgs(
             token_id=token_id,
-            price=_price,
-            size=_size,
+            price=float(_price_str),
+            size=float(_size_str),
             side=BUY,
         )
 
