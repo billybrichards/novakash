@@ -371,3 +371,59 @@ Added to `TODO.md`:
 - ~$0.007/call × 60 calls/hour × 24h = **~$10/day** at 60s intervals
 - Reduce to 90s during quiet hours to cut to ~$7/day
 - Negligible vs trading losses prevented
+
+---
+
+## v8.0 Phase 4 — Execution Audit & Fixes (21:00-22:00 UTC)
+
+### Critical Bugs Fixed
+
+1. **CLOB feed sort bug** — `asks[0]` on descending list returned $0.99 (worst ask) instead of best ask. Every CLOB price in the DB and notifications was wrong. Fixed: sort ascending, take first.
+
+2. **`_get_runtime_config()` crash** — method doesn't exist on strategy object. Every trade execution crashed silently after signal evaluation. Fixed: `from config.runtime_config import runtime`.
+
+3. **FOK wired to dead method** — FOK ladder was added to `_execute_from_signal()` (never called) instead of `_execute_trade()` (the actual execution path). Fixed: moved to correct method.
+
+4. **`runtime` referenced before assignment** — variable defined at line 2374 but used at line 2178. Fixed: moved to method top.
+
+5. **Gamma pricing block blocking FOK** — 250 lines of stale Gamma API pricing ran before FOK. Removed entirely — CLOB-first execution.
+
+6. **T-60 retry never fired** — multi-offset eval block was inside `ACTIVE`-only state handler. After T-70 set state to `CLOSING`, T-60 block never executed. Fixed: run for both ACTIVE and CLOSING.
+
+7. **Feed `break` prevented dual offset** — `break` after first offset emission prevented T-60 from firing when both became eligible between ticks. Removed.
+
+8. **FOK exhausted = abort** — FOK failure returned instead of falling through to GTC. Fixed: fall through to GTC with CLOB DB price → Gamma API → window price cascade.
+
+9. **Cap/floor only in notification, not execution** — gate showed ❌CAP but engine still placed order. Fixed: added cap/floor check before execution using Gamma + fresh CLOB prices.
+
+10. **AI evaluators using Opus** — $0.03/call. Switched to Sonnet: $0.003/call (10x cheaper). Fed v8.0 data (delta source, multi-source deltas, confidence tier).
+
+### Improvements
+
+- CLOB poll interval: 10s → 2s (configurable via `CLOB_POLL_INTERVAL`)
+- Staggered execution queue bypassed — direct eval for instant FOK
+- GTC fallback price cascade: CLOB DB (2s fresh) → Gamma API → window price
+- Dual eval: T-70 first chance, T-60 retry with fresh data
+- All notifications updated to v8.0 format
+- FOK → GTC notification shows real abort reason
+- Session running totals in outcome cards
+- Dead Gamma pricing block removed (-248 lines)
+- Old 30s poll + bump retry removed (-194 lines)
+
+### DB Verification
+
+CLOB prices now correct in `ticks_clob`:
+```
+UP ask:   $0.19-$0.43 (was $0.99)
+DOWN ask: $0.58-$0.82 (was $0.99)
+```
+
+### What's Working
+
+- ✅ T-70/T-60 dual evaluation firing correctly
+- ✅ FOK ladder queries real CLOB book
+- ✅ GTC fallback with fresh CLOB DB prices
+- ✅ Cap/floor blocks before execution
+- ✅ All notification cards v8.0 format
+- ✅ Sonnet AI evaluators with v8.0 context
+- ✅ CLOB feed recording correct best asks every 2s

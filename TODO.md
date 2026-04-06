@@ -250,3 +250,34 @@ Only implement if data confirms the hypothesis.
 - All `/playwright/*` endpoints are valid — backed by `hub/api/playwright.py`
 - All `/trading-config/*` endpoints are valid — backed by `hub/api/trading_config.py`
 - `useApi()` hook supports both `api.get()` and `api('GET', url)` calling conventions
+
+---
+
+## v8.0 Completed (April 6, 2026)
+
+- [x] Tiingo delta as primary direction source
+- [x] FOK execution ladder (5 attempts, +$0.02 bump)
+- [x] FOK → GTC fallback when CLOB book empty
+- [x] TWAP override feature-flagged OFF
+- [x] TimesFM feature-flagged OFF (TIMESFM_ENABLED=false)
+- [x] CLOB feed sort fix (best ask, not worst)
+- [x] CLOB poll interval 2s (was 10s)
+- [x] T-70/T-60 dual eval (retry after skip)
+- [x] Direct eval (bypass staggered queue)
+- [x] Cap/floor gate blocks before execution
+- [x] All notification cards v8.0 format
+- [x] AI evaluators: Sonnet (was Opus/Haiku)
+- [x] Gate audit tracking + confidence tiers
+- [x] Session running totals in outcome cards
+- [x] Execution audit documented (docs/V8_EXECUTION_AUDIT.md)
+
+## v8.1 Backlog
+
+- [ ] DECISIVE early entry (T-120/T-180) — multi-step eval with conviction re-checks
+- [ ] trade_placed flag fix — update window_snapshot after order placed
+- [ ] Dead code cleanup — remove _execute_from_signal (~250 lines), duplicate imports
+- [ ] Historical data migration — reconcile 803 orphaned trades from v7.1
+- [ ] FOK fill rate monitoring — if <5% FOK fill rate, swap primary to GTC
+- [ ] Activity API reconciliation — cross-check CLOB matched orders vs DB
+- [ ] Macro observer wired into engine (data collection only, not gating)
+- [ ] Delta threshold recalibration for Tiingo (needs 48h data)
