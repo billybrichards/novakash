@@ -697,13 +697,9 @@ class TelegramAlerter:
         gamma_up: float,
         gamma_down: float,
     ) -> None:
-        """Sent once when a new window opens."""
+        """v8.0 Window Open — compact card."""
         from datetime import datetime, timezone
         
-        mode = self._mode_tag()
-        g_skew = "BALANCED" if abs(gamma_up - gamma_down) < 0.03 else ("UP leaning" if gamma_up > gamma_down else "DOWN leaning")
-        
-        # Extract window time from ID (e.g., "BTC-1775416200" → "19:10 UTC")
         window_time = "?"
         try:
             ts = int(window_id.split('-')[1])
@@ -712,14 +708,11 @@ class TelegramAlerter:
         except:
             pass
         
+        skew = "BALANCED" if abs(gamma_up - gamma_down) < 0.03 else ("↑ UP" if gamma_up > gamma_down else "↓ DOWN")
         text = (
-            f"🪟 *WINDOW OPEN — {asset} {timeframe}*  `{window_time}`  {mode}\n"
-            f"`{window_id}`\n"
-            f"\n"
-            f"Open: `${open_price:,.2f}`\n"
-            f"Gamma: UP `${gamma_up:.3f}` / DOWN `${gamma_down:.3f}`  `{g_skew}`\n"
-            f"\n"
-            f"{self._footer(window_id)}"
+            f"🪟 *{asset} {timeframe}* | {window_time} | {self._engine_version}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Open: `${open_price:,.2f}` | CLOB: ↑`${gamma_up:.3f}` ↓`${gamma_down:.3f}` `{skew}`\n"
         )
         msg_id = await self._send_with_id(text)
         await self._log_notification("window_open", text, window_id, telegram_message_id=msg_id)
@@ -766,22 +759,19 @@ class TelegramAlerter:
         except:
             pass
 
+        # v8.0 compact snapshot card
+        _dir_emoji = "▲" if delta_pct > 0 else "▼"
+        _dir = "UP" if delta_pct > 0 else "DOWN"
         caption_lines = [
-            f"⏱ *{t_label}* — Window `{window_time}` — {window_id}",
-            f"",
-            f"{'▲' if delta_pct > 0 else '▼'} `{delta_sign}{delta_pct:.4f}%`  |  VPIN `{vpin:.3f}` `{vpin_regime}`",
+            f"⏱ *{t_label}* — BTC {window_time} | {self._engine_version}",
+            f"━━━━━━━━━━━━━━━━━━━━━━",
+            f"Tiingo: Δ `{delta_sign}{delta_pct:.4f}%` {_dir_emoji} `{_dir}`",
+            f"VPIN: `{vpin:.3f}` `{vpin_regime}` | CLOB: ↑`${gamma_up:.3f}` ↓`${gamma_down:.3f}`",
         ]
-        if twap_direction:
-            caption_lines.append(f"TWAP `{twap_direction}` {twap_agreement}/3  |  Gamma UP `${gamma_up:.3f}` / DN `${gamma_down:.3f}`")
-        if timesfm_direction:
-            caption_lines.append(f"TimesFM `{timesfm_direction}` {timesfm_confidence:.0%}")
         if conflict:
-            caption_lines.append(f"⚠ SIGNAL CONFLICT")
+            caption_lines.append(f"⚠ *SIGNAL CONFLICT*")
         if ai_commentary:
-            caption_lines.append(f"")
-            caption_lines.append(f"🤖 _{ai_commentary}_")
-        caption_lines.append(f"")
-        caption_lines.append(self._footer(window_id))
+            caption_lines.append(f"🤖 _{ai_commentary[:200]}_")
 
         caption = "\n".join(caption_lines)
 
@@ -846,21 +836,21 @@ class TelegramAlerter:
     ) -> None:
         """Full resolution report with what-if P&L table at each T-point."""
         result_e = "✅" if outcome == "WIN" else "❌"
-        arrow = "▲" if actual_direction == "UP" else "▼"
         correct = actual_direction == direction
         confirm = "✓" if correct else "✗"
         pnl_sign = "+" if pnl_usd >= 0 else ""
-        streak_str = (f"  Streak: `{win_streak}W`" if win_streak > 0
-                      else f"  Streak: `{loss_streak}L`" if loss_streak > 0 else "")
+        streak_str = (f" | `{win_streak}W streak`" if win_streak > 0
+                      else f" | `{loss_streak}L streak`" if loss_streak > 0 else "")
 
         lines = [
-            f"{result_e} *{outcome} — {asset} {timeframe}*  {self._mode_tag()}",
-            f"`{window_id}`",
-            f"",
-            f"{arrow} {direction} @ `${entry_price:.3f}` → resolved {actual_direction} {confirm}",
+            f"{result_e} *{outcome}* — {asset} {timeframe} | {self._engine_version}",
+            f"━━━━━━━━━━━━━━━━━━━━━━",
+            f"Bet: `{direction}` @ `${entry_price:.3f}` → Oracle: `{actual_direction}` {confirm}",
             f"P&L: `{pnl_sign}${pnl_usd:.2f}`{streak_str}",
+            f"BTC: `${open_price:,.2f}` → `${close_price:,.2f}` (Δ `{delta_pct:+.4f}%`)",
+            f"VPIN: `{vpin:.3f}` `{regime}`",
             f"",
-            f"*What-if P&L at each entry point:*",
+            f"*Entry prices by checkpoint:*",
         ]
 
         # What-if table
