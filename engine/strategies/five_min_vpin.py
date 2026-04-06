@@ -2369,61 +2369,101 @@ class FiveMinVPINStrategy(BaseStrategy):
                 ))
             return
 
-        # Place order — TRY RFQ FIRST (UpDown tokens have no CLOB book)
-        # Then fall back to GTC limit if RFQ fails
+        # ── v8.0: FOK Ladder or legacy GTC ─────────────────────────────────────
+        from execution.fok_ladder import FOKLadder, FOKResult
+        runtime = self._get_runtime_config()
+        
         clob_order_id = None
         _rfq_fill_price = None
         _used_rfq = False
+        _fok_result = None
         
-        if not self._poly.paper_mode:
-            # Calculate size in shares using real market price
-            _shares = stake / float(price) if float(price) > 0 else 0
-            is_15m = "15m" in market_slug
-            _rfq_cap = runtime.fifteen_min_max_entry_price if is_15m else runtime.five_min_max_entry_price
-            
+        PRICE_CAP = float(os.environ.get("FOK_PRICE_CAP", "0.73"))
+        PRICE_FLOOR = float(os.environ.get("PRICE_FLOOR", "0.30"))
+        
+        if runtime.fok_enabled and not self._poly.paper_mode:
+            # ── FOK path ──────────────────────────────────────────────────
+            self._log.info(
+                "execute.fok_path",
+                window=window_key if 'window_key' in dir() else f"{window.asset}-{window.window_ts}",
+                token_id=token_id[:20] + "..." if len(token_id) > 20 else token_id,
+                stake=f"${stake:.2f}",
+                direction=direction,
+            )
+            ladder = FOKLadder(self._poly)
             try:
-                rfq_id, rfq_price = await self._poly.place_rfq_order(
+                _fok_result = await ladder.execute(
                     token_id=token_id,
-                    direction=direction,
-                    price=float(price),  # Gamma bestAsk — client applies mode (cap or bestask)
-                    size=_shares,
-                    max_price=_rfq_cap,
+                    direction="BUY",
+                    stake_usd=stake,
+                    max_price=PRICE_CAP,
+                    min_price=PRICE_FLOOR,
                 )
-                if rfq_id:
-                    clob_order_id = rfq_id
-                    _rfq_fill_price = rfq_price
-                    _used_rfq = True
+                if _fok_result.filled:
+                    clob_order_id = _fok_result.order_id
+                    price = str(_fok_result.fill_price)
+                    _rfq_fill_price = _fok_result.fill_price
                     self._log.info(
-                        "trade.rfq_filled",
-                        order_id=str(rfq_id)[:20],
-                        fill_price=f"${rfq_price:.4f}" if rfq_price else "n/a",
+                        "execute.fok_filled",
+                        fill_price=f"${_fok_result.fill_price:.4f}",
+                        fill_step=_fok_result.fill_step,
+                        attempts=_fok_result.attempts,
+                        shares=f"{_fok_result.shares:.2f}",
                     )
                     self._record_order_placed()
                     self._on_order_success()
                 else:
-                    self._log.info("trade.rfq_no_fill_trying_clob")
-            except Exception as rfq_exc:
-                self._log.warning("trade.rfq_error", error=str(rfq_exc)[:100])
+                    self._log.warning(
+                        "execute.fok_exhausted",
+                        attempts=_fok_result.attempts,
+                        prices=_fok_result.attempted_prices,
+                        abort_reason=_fok_result.abort_reason,
+                    )
+                    if self._alerter:
+                        _wkey = f"{window.asset}-{window.window_ts}"
+                        asyncio.create_task(self._alerter.send_fok_exhausted(
+                            _wkey, _fok_result.attempts, _fok_result.attempted_prices,
+                        ))
+                    return
+            except Exception as fok_exc:
+                self._log.error("execute.fok_error", error=str(fok_exc)[:200])
+                # Fall through to GTC
         
-        # Fall back to GTC limit if RFQ didn't fill
+        # ── Legacy GTC path (paper mode or FOK disabled or FOK error) ─────
         if not clob_order_id:
-            try:
-                clob_order_id = await self._poly.place_order(
-                    market_slug=market_slug,
-                    direction=direction,
-                    price=price,  # Gamma bestAsk — client applies mode
-                    stake_usd=stake,
-                    token_id=token_id,
-                )
-                # G4: Record order placed
-                self._record_order_placed()
-                # G5: Reset consecutive errors
-                self._on_order_success()
-            except Exception as exc:
-                # G5: Record error for circuit breaker
-                self._on_order_error(exc)
-                self._log.error("execute.order_failed", error=str(exc))
-                return
+            if not self._poly.paper_mode:
+                _shares = stake / float(price) if float(price) > 0 else 0
+                is_15m = "15m" in market_slug
+                _rfq_cap = runtime.fifteen_min_max_entry_price if is_15m else runtime.five_min_max_entry_price
+                try:
+                    rfq_id, rfq_price = await self._poly.place_rfq_order(
+                        token_id=token_id, direction=direction,
+                        price=float(price), size=_shares, max_price=_rfq_cap,
+                    )
+                    if rfq_id:
+                        clob_order_id = rfq_id
+                        _rfq_fill_price = rfq_price
+                        _used_rfq = True
+                        self._log.info("trade.rfq_filled", order_id=str(rfq_id)[:20])
+                        self._record_order_placed()
+                        self._on_order_success()
+                    else:
+                        self._log.info("trade.rfq_no_fill_trying_clob")
+                except Exception as rfq_exc:
+                    self._log.warning("trade.rfq_error", error=str(rfq_exc)[:100])
+            
+            if not clob_order_id:
+                try:
+                    clob_order_id = await self._poly.place_order(
+                        market_slug=market_slug, direction=direction,
+                        price=price, stake_usd=stake, token_id=token_id,
+                    )
+                    self._record_order_placed()
+                    self._on_order_success()
+                except Exception as exc:
+                    self._on_order_error(exc)
+                    self._log.error("execute.order_failed", error=str(exc))
+                    return
         
         # Use the real CLOB order ID so we can track it on-chain
         order_id = clob_order_id if not self._poly.paper_mode else f"5min-{uuid.uuid4().hex[:12]}"
