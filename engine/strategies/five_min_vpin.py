@@ -2070,6 +2070,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             signal: Trading signal
         """
         window = signal.window
+        runtime = self._get_runtime_config()
         
         # Determine stake — will recalculate with fresh price later
         token_price_est = window.down_price or window.up_price or 0.50
@@ -2371,7 +2372,6 @@ class FiveMinVPINStrategy(BaseStrategy):
 
         # ── v8.0: FOK Ladder or legacy GTC ─────────────────────────────────────
         from execution.fok_ladder import FOKLadder, FOKResult
-        runtime = self._get_runtime_config()
         
         clob_order_id = None
         _rfq_fill_price = None
