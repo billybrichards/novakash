@@ -295,14 +295,16 @@ export default function FactoryFloor() {
   const [stats, setStats]               = useState(null);
   const [livePrices, setLivePrices]     = useState(null);
   const [systemStatus, setSystemStatus] = useState(null);
-  const [clock, setClock]               = useState(utcClock());
+  const [tick, setTick]                 = useState(0);
   const [loading, setLoading]           = useState(true);
 
-  // ── Clock tick ─────────────────────────────────────────────────────────────
+  // ── Tick counter (drives clock + progress bar, 1 state update vs 2) ───────
   useEffect(() => {
-    const id = setInterval(() => setClock(utcClock()), 1000);
+    const id = setInterval(() => setTick(t => t + 1), 1000);
     return () => clearInterval(id);
   }, []);
+
+  const clock = utcClock();
 
   // ── Primary fetch (windows, outcomes, accuracy, stats) ─────────────────────
   const fetchPrimary = useCallback(async () => {
@@ -327,7 +329,7 @@ export default function FactoryFloor() {
       if (statsRes.status === 'fulfilled') {
         setStats(statsRes.value?.data ?? null);
       }
-    } catch (_) { /* swallow */ }
+    } catch (err) { console.warn('[FactoryFloor] primary fetch:', err?.message); }
     setLoading(false);
   }, [api]);
 
@@ -336,7 +338,7 @@ export default function FactoryFloor() {
     try {
       const res = await api('GET', '/v58/live-prices');
       setLivePrices(res?.data ?? null);
-    } catch (_) { /* swallow */ }
+    } catch (err) { console.warn('[FactoryFloor] prices fetch:', err?.message); }
   }, [api]);
 
   // ── System status ──────────────────────────────────────────────────────────
@@ -344,7 +346,7 @@ export default function FactoryFloor() {
     try {
       const res = await api('GET', '/system/status');
       setSystemStatus(res?.data ?? null);
-    } catch (_) { /* swallow */ }
+    } catch (err) { console.warn('[FactoryFloor] system fetch:', err?.message); }
   }, [api]);
 
   // ── Polling setup ──────────────────────────────────────────────────────────
@@ -353,20 +355,12 @@ export default function FactoryFloor() {
     fetchPrices();
     fetchSystem();
 
-    const idPrimary = setInterval(fetchPrimary, 15000);
-    const idWindow  = setInterval(async () => {
-      try {
-        const res = await api('GET', '/v58/windows?limit=1');
-        const ws = res?.data?.windows ?? [];
-        if (ws[0]) setLatestWindow(ws[0]);
-      } catch (_) {}
-    }, 5000);
+    const idPrimary = setInterval(fetchPrimary, 5000);
     const idPrices  = setInterval(fetchPrices, 3000);
     const idSystem  = setInterval(fetchSystem, 10000);
 
     return () => {
       clearInterval(idPrimary);
-      clearInterval(idWindow);
       clearInterval(idPrices);
       clearInterval(idSystem);
     };
@@ -402,7 +396,7 @@ export default function FactoryFloor() {
     const remaining = Math.max(0, 300 - elapsed);
     const pct = Math.min(100, (elapsed / 300) * 100);
     return { elapsed, remaining, pct };
-  }, [w, clock]); // clock dependency forces re-render every second
+  }, [w, tick]);
 
   // Performance from accuracy
   const perf = useMemo(() => {

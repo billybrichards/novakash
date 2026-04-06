@@ -13,10 +13,10 @@ export default function PnL() {
   const [byStrategy, setByStrategy] = useState(null);
 
   useEffect(() => {
-    api.get('/api/pnl/cumulative').then(res => setCumulative(res.data.items || [])).catch(() => {});
-    api.get('/api/pnl/daily').then(res => setDaily(res.data.items || [])).catch(() => {});
-    api.get('/api/pnl/monthly').then(res => setMonthly(res.data.items || [])).catch(() => {});
-    api.get('/api/pnl/by-strategy').then(res => setByStrategy(res.data)).catch(() => {});
+    api.get('/api/pnl/cumulative').then(res => setCumulative(res.data.items || [])).catch(e => console.warn('[PnL]', e?.message));
+    api.get('/api/pnl/daily').then(res => setDaily(res.data.items || [])).catch(e => console.warn('[PnL]', e?.message));
+    api.get('/api/pnl/monthly').then(res => setMonthly(res.data.items || [])).catch(e => console.warn('[PnL]', e?.message));
+    api.get('/api/pnl/by-strategy').then(res => setByStrategy(res.data)).catch(e => console.warn('[PnL]', e?.message));
   }, [api]);
 
   return (
