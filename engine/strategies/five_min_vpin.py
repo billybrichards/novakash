@@ -736,6 +736,18 @@ class FiveMinVPINStrategy(BaseStrategy):
             except Exception:
                 pass
 
+        # ── v8.0: Inject macro observer signal (display only, not gating) ────
+        if self._db:
+            try:
+                _macro = await self._db.get_latest_macro_signal()
+                if _macro:
+                    window_snapshot["macro_bias"] = _macro["macro_bias"]
+                    window_snapshot["macro_confidence"] = _macro["macro_confidence"]
+                    window_snapshot["macro_gate"] = _macro.get("macro_gate", "")
+                    window_snapshot["macro_reasoning"] = _macro.get("macro_reasoning", "")
+            except Exception:
+                pass
+
         # ── DB write (AWAIT so row exists before trade_placed update) ─────────
         if self._db is not None:
             try:

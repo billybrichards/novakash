@@ -555,6 +555,14 @@ class DBClient:
                     ("market_mid_price", "DOUBLE PRECISION"),
                     ("market_volume", "DOUBLE PRECISION"),
                     ("market_liquidity", "DOUBLE PRECISION"),
+                    # v8.0: engine metadata + gate audit + shadow trade tracking
+                    ("engine_version", "VARCHAR(10)"),
+                    ("delta_source", "VARCHAR(10)"),
+                    ("confidence_tier", "VARCHAR(10)"),
+                    ("gates_passed", "TEXT"),
+                    ("gate_failed", "VARCHAR(20)"),
+                    ("shadow_trade_direction", "VARCHAR(4)"),
+                    ("shadow_trade_entry_price", "DOUBLE PRECISION"),
                 ]:
                     try:
                         await conn.execute(f"ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS {col} {col_type}")
@@ -608,7 +616,10 @@ class DBClient:
                         v71_would_trade, v71_skip_reason, v71_regime,
                         is_live,
                         gamma_up_price, gamma_down_price,
-                        delta_chainlink, delta_tiingo, delta_binance, price_consensus
+                        delta_chainlink, delta_tiingo, delta_binance, price_consensus,
+                        engine_version, delta_source, confidence_tier,
+                        gates_passed, gate_failed,
+                        shadow_trade_direction, shadow_trade_entry_price
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,
                         $9,$10,$11,$12,$13,$14,$15,$16,$17,
@@ -621,15 +632,25 @@ class DBClient:
                         $59,$60,$61,
                         $62,
                         $63,$64,
-                        $65,$66,$67,$68
+                        $65,$66,$67,$68,
+                        $69,$70,$71,
+                        $72,$73,
+                        $74,$75
                     )
                     ON CONFLICT (window_ts, asset, timeframe) DO UPDATE SET
-                        gamma_up_price   = COALESCE(EXCLUDED.gamma_up_price, window_snapshots.gamma_up_price),
-                        gamma_down_price = COALESCE(EXCLUDED.gamma_down_price, window_snapshots.gamma_down_price),
-                        delta_chainlink  = COALESCE(EXCLUDED.delta_chainlink, window_snapshots.delta_chainlink),
-                        delta_tiingo     = COALESCE(EXCLUDED.delta_tiingo, window_snapshots.delta_tiingo),
-                        delta_binance    = COALESCE(EXCLUDED.delta_binance, window_snapshots.delta_binance),
-                        price_consensus  = COALESCE(EXCLUDED.price_consensus, window_snapshots.price_consensus)
+                        gamma_up_price         = COALESCE(EXCLUDED.gamma_up_price, window_snapshots.gamma_up_price),
+                        gamma_down_price       = COALESCE(EXCLUDED.gamma_down_price, window_snapshots.gamma_down_price),
+                        delta_chainlink        = COALESCE(EXCLUDED.delta_chainlink, window_snapshots.delta_chainlink),
+                        delta_tiingo           = COALESCE(EXCLUDED.delta_tiingo, window_snapshots.delta_tiingo),
+                        delta_binance          = COALESCE(EXCLUDED.delta_binance, window_snapshots.delta_binance),
+                        price_consensus        = COALESCE(EXCLUDED.price_consensus, window_snapshots.price_consensus),
+                        engine_version         = COALESCE(EXCLUDED.engine_version, window_snapshots.engine_version),
+                        delta_source           = COALESCE(EXCLUDED.delta_source, window_snapshots.delta_source),
+                        confidence_tier        = COALESCE(EXCLUDED.confidence_tier, window_snapshots.confidence_tier),
+                        gates_passed           = COALESCE(EXCLUDED.gates_passed, window_snapshots.gates_passed),
+                        gate_failed            = COALESCE(EXCLUDED.gate_failed, window_snapshots.gate_failed),
+                        shadow_trade_direction = COALESCE(EXCLUDED.shadow_trade_direction, window_snapshots.shadow_trade_direction),
+                        shadow_trade_entry_price = COALESCE(EXCLUDED.shadow_trade_entry_price, window_snapshots.shadow_trade_entry_price)
                     """,
                     snapshot.get("window_ts"),
                     snapshot.get("asset", "BTC"),
@@ -856,6 +877,29 @@ class DBClient:
                     asset,
                 )
                 return float(row["last_price"]) if row else None
+        except Exception:
+            return None
+
+    async def get_latest_macro_signal(self) -> dict | None:
+        """Get the most recent macro observer signal (< 5 min old)."""
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT bias, confidence, direction_gate, reasoning "
+                    "FROM macro_signals "
+                    "WHERE created_at > NOW() - INTERVAL '5 minutes' "
+                    "ORDER BY created_at DESC LIMIT 1",
+                )
+                if row:
+                    return {
+                        "macro_bias": row["bias"],
+                        "macro_confidence": f"{row['confidence']}%",
+                        "macro_gate": row["direction_gate"],
+                        "macro_reasoning": row["reasoning"][:100] if row["reasoning"] else "",
+                    }
+                return None
         except Exception:
             return None
 

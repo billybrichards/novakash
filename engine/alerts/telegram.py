@@ -208,7 +208,8 @@ class TelegramAlerter:
             f"📈 VPIN: `{vpin:.3f}` | `{regime}`\n"
             f"🔗 {prices_line}\n"
             f"{entry_line}"
-            f"🧠 Macro: `{macro_bias} {macro_confidence}`\n"
+            f"🧠 Macro: `{macro_bias}` `{macro_confidence}`"
+            f"{' — ' + signal.get('macro_gate', '') if signal.get('macro_gate') else ''}\n"
             f"\n⚡ Gates: {gate_icons}\n"
             f"🎖 Confidence: `{confidence_tier}`\n"
         )
