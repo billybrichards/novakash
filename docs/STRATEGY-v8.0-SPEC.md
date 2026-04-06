@@ -405,3 +405,14 @@ DOWN bets: threshold raised +50%
 - [ ] YES/UP orders now show as FILLED in DB (v7.2 fix)
 - [ ] Delta thresholds not causing too many/few trades (compare window counts vs v7.1)
 - [ ] CLOB book queries not rate-limited (5 queries per window × every 5 min = 1/min)
+
+---
+
+## v8.1 Backlog
+
+### DECISIVE Confidence Tier + Early Entry (T-120/T-180)
+**Priority:** P1 for v8.1
+**What:** When confidence tier = DECISIVE (3 sources agree, VPIN ≥ 0.65, delta ≥ 0.05%), evaluate and enter at T-120 or T-180 instead of T-60. Earlier entry = cheaper tokens = better R/R.
+**Why:** Current T-60 evaluation means tokens are already repriced by the time we enter. DECISIVE signals with multi-source consensus are high-confidence enough to justify early entry when tokens are still near 50/50.
+**Architecture change needed:** The evaluation loop currently fires once at T-60. Need to add T-120 and T-180 checkpoints that only fire for DECISIVE-tier signals. Lower tiers (HIGH/MODERATE) still wait for T-60.
+**Blocked by:** Need 48h of Tiingo delta data to validate DECISIVE tier accuracy before enabling early entry with real money.
