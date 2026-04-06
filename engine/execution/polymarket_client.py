@@ -356,11 +356,20 @@ class PolymarketClient:
         # This approach: ONE order, good price, accept miss if no fill.
 
         PRICE_CAP = float(os.environ.get("FOK_PRICE_CAP", "0.73"))
+        PRICE_FLOOR = float(os.environ.get("PRICE_FLOOR", "0.30"))
         BUMP = float(os.environ.get("FOK_BUMP", "0.02"))
+        PRICING_MODE = os.environ.get("ORDER_PRICING_MODE", "cap")
 
-        # Limit price = Gamma bestAsk + 2¢ bump (crosses spread slightly)
-        limit_price = round(float(price) + BUMP, 4)
-        limit_price = min(limit_price, PRICE_CAP)  # hard cap
+        # Two pricing modes:
+        # "cap"     — submit at cap price (current, fills at cap or market)
+        # "bestask" — submit at Gamma bestAsk + bump (fills near market, cap as ceiling)
+        if PRICING_MODE == "bestask":
+            limit_price = round(float(price) + BUMP, 4)  # price = Gamma bestAsk from strategy
+            limit_price = max(limit_price, PRICE_FLOOR)   # floor: never below $0.30
+            limit_price = min(limit_price, PRICE_CAP)      # cap: never above $0.73
+        else:
+            # "cap" mode — submit at cap (legacy behaviour)
+            limit_price = PRICE_CAP
 
         order_size = round(stake_usd / limit_price, 2)
         _order_type = OrderType.GTD if expiration > 0 else OrderType.GTC
@@ -380,10 +389,12 @@ class PolymarketClient:
 
         self._log.info(
             "place_order.order_strategy",
+            pricing_mode=PRICING_MODE,
             limit_price=f"${limit_price:.4f}",
             gamma_price=f"${float(price):.4f}",
             bump=f"{BUMP:.2f}",
             cap=f"${PRICE_CAP:.2f}",
+            floor=f"${PRICE_FLOOR:.2f}",
             size=f"{order_size:.2f}",
             order_type=str(_order_type),
             seconds_to_expiry=expiration - int(time.time()) if expiration > 0 else "none",

@@ -1685,7 +1685,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 rfq_id, rfq_price = await self._poly.place_rfq_order(
                     token_id=token_id,
                     direction=direction,
-                    price=float(_fok_price),  # Submit at cap, fill at market
+                    price=float(price),  # Gamma bestAsk — client applies mode (cap or bestask)
                     size=_shares,
                     max_price=_rfq_cap,
                 )
@@ -1711,7 +1711,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 clob_order_id = await self._poly.place_order(
                     market_slug=market_slug,
                     direction=direction,
-                    price=_fok_price,  # Submit at cap, FOK fills at market
+                    price=price,  # Gamma bestAsk — client applies mode
                     stake_usd=stake,
                     token_id=token_id,
                 )
