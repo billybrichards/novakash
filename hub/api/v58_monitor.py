@@ -143,7 +143,9 @@ async def get_windows(
                     twap_direction, twap_agreement_score, twap_gamma_gate,
                     timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
                     gamma_up_price, gamma_down_price, engine_version,
-                    v71_would_trade, v71_skip_reason, v71_regime, v71_correct, v71_pnl
+                    v71_would_trade, v71_skip_reason, v71_regime, v71_correct, v71_pnl,
+                    delta_source, execution_mode, fok_attempts, fok_fill_step, clob_fill_price,
+                    gates_passed, gate_failed, confidence_tier
                 FROM window_snapshots
                 WHERE asset = :asset AND timeframe = '5m'
                 ORDER BY window_ts DESC
@@ -160,7 +162,9 @@ async def get_windows(
                     twap_direction, twap_agreement_score, twap_gamma_gate,
                     timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
                     gamma_up_price, gamma_down_price, engine_version,
-                    v71_would_trade, v71_skip_reason, v71_regime, v71_correct, v71_pnl
+                    v71_would_trade, v71_skip_reason, v71_regime, v71_correct, v71_pnl,
+                    delta_source, execution_mode, fok_attempts, fok_fill_step, clob_fill_price,
+                    gates_passed, gate_failed, confidence_tier
                 FROM window_snapshots
                 WHERE timeframe = '5m'
                 ORDER BY window_ts DESC
@@ -721,6 +725,12 @@ def _calc_outcome_row(row: Any) -> dict:
         "v71_pnl": final_v71_pnl,
         "poly_outcome": poly_outcome,
         "resolution_source": "polymarket" if poly_outcome else "binance_t60",
+        # v8.0 fields — COALESCE window_snapshot with trades metadata fallback
+        "delta_source": row.get("delta_source"),
+        "execution_mode": row.get("execution_mode"),
+        "fok_attempts": row.get("fok_attempts") or row.get("t_fok_attempts"),
+        "fok_fill_step": row.get("fok_fill_step") or row.get("t_fok_fill_step"),
+        "clob_fill_price": _safe_float(row.get("clob_fill_price")) or _safe_float(row.get("t_clob_fill_price")),
     })
     return base
 
@@ -756,8 +766,13 @@ async def get_outcomes(
                 ws.engine_version,
                 ws.vpin, ws.regime, ws.confidence,
                 ws.v71_would_trade, ws.v71_skip_reason, ws.v71_regime, ws.v71_correct, ws.v71_pnl,
+                ws.delta_source, ws.execution_mode,
+                ws.fok_attempts, ws.fok_fill_step, ws.clob_fill_price,
                 t.outcome AS poly_outcome,
-                t.direction AS trade_direction
+                t.direction AS trade_direction,
+                (t.metadata::json->>'fok_attempts')::int AS t_fok_attempts,
+                (t.metadata::json->>'fok_fill_step')::int AS t_fok_fill_step,
+                (t.metadata::json->>'clob_fill_price')::float AS t_clob_fill_price
             FROM window_snapshots ws
             LEFT JOIN LATERAL (
                 SELECT up_price, down_price
@@ -768,7 +783,7 @@ async def get_outcomes(
                 LIMIT 1
             ) ms ON true
             LEFT JOIN LATERAL (
-                SELECT outcome, direction
+                SELECT outcome, direction, metadata
                 FROM trades
                 WHERE strategy = 'five_min_vpin'
                   AND (metadata::json->>'window_ts')::bigint = ws.window_ts

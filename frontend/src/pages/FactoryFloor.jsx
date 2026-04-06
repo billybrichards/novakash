@@ -763,7 +763,7 @@ export default function FactoryFloor() {
         {/* Header */}
         <div style={{
           display: 'grid',
-          gridTemplateColumns: '60px 46px 46px 1fr 100px 60px',
+          gridTemplateColumns: '60px 46px 46px 36px 1fr 100px 60px',
           gap: 8,
           padding: '4px 0 6px',
           borderBottom: `1px solid ${T.border}`,
@@ -774,6 +774,7 @@ export default function FactoryFloor() {
           <span>TIME</span>
           <span>SIGNAL</span>
           <span>ACTUAL</span>
+          <span>SRC</span>
           <span>GATES</span>
           <span>REASON</span>
           <span style={{ textAlign: 'right' }}>RESULT</span>
@@ -790,7 +791,7 @@ export default function FactoryFloor() {
           return (
             <div key={i} style={{
               display: 'grid',
-              gridTemplateColumns: '60px 46px 46px 1fr 100px 60px',
+              gridTemplateColumns: '60px 46px 46px 36px 1fr 100px 60px',
               gap: 8,
               padding: '5px 0',
               borderBottom: `1px solid ${T.border}`,
@@ -817,6 +818,15 @@ export default function FactoryFloor() {
                 padding: '0 3px',
               }}>
                 {o.actual_direction || '\u2014'}
+              </span>
+              <span style={{ fontSize: 8, color: T.label, fontFamily: 'monospace' }} title={
+                o.fok_fill_step ? `FOK ${o.fok_fill_step}/${o.fok_attempts}` : o.delta_source || ''
+              }>
+                {o.delta_source === 'tiingo' ? 'TNG'
+                  : o.delta_source === 'chainlink' ? 'CL'
+                  : o.delta_source === 'binance' ? 'BN'
+                  : o.delta_source || '\u2014'}
+                {o.fok_fill_step ? <span style={{ color: '#06b6d4', marginLeft: 1 }}>F{o.fok_fill_step}</span> : null}
               </span>
               <span style={{ fontSize: 10, letterSpacing: 1 }}>{gateStr}</span>
               <span style={{ fontSize: 9, color: T.label, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

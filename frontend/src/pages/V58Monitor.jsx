@@ -46,14 +46,19 @@ function windowStatus(w) {
   if (!w.trade_placed) {
     return { label: 'SKIP', color: 'rgba(255,255,255,0.2)', bg: 'rgba(255,255,255,0.04)' };
   }
-  // We don't store WIN/LOSS in the snapshot itself — use delta_pct as proxy
+  // v8.0: Use actual Polymarket outcome when available (from /v58/outcomes trades JOIN)
+  if (w.poly_outcome === 'WIN') {
+    return { label: 'WIN', color: T.profit, bg: 'rgba(74,222,128,0.12)' };
+  }
+  if (w.poly_outcome === 'LOSS') {
+    return { label: 'LOSS', color: T.loss, bg: 'rgba(248,113,113,0.12)' };
+  }
+  // Fallback for windows without oracle resolution yet: use directional match
   if (w.delta_pct == null) {
     return { label: 'TRADE', color: T.cyan, bg: 'rgba(6,182,212,0.12)' };
   }
-  if (w.direction === 'UP' && w.delta_pct > 0) {
-    return { label: 'WIN', color: T.profit, bg: 'rgba(74,222,128,0.12)' };
-  }
-  if (w.direction === 'DOWN' && w.delta_pct < 0) {
+  const dirMatch = (w.direction === 'UP' && w.delta_pct > 0) || (w.direction === 'DOWN' && w.delta_pct < 0);
+  if (dirMatch) {
     return { label: 'WIN', color: T.profit, bg: 'rgba(74,222,128,0.12)' };
   }
   return { label: 'LOSS', color: T.loss, bg: 'rgba(248,113,113,0.12)' };

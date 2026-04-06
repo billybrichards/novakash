@@ -973,6 +973,27 @@ class DBClient:
             import structlog
             structlog.get_logger().error("db.trade_placed_update_failed", window_ts=window_ts, asset=asset, error=str(exc))
 
+    async def update_window_fok_data(
+        self, window_ts: int, asset: str, timeframe: str,
+        execution_mode: str, fok_attempts: int, fok_fill_step: int, clob_fill_price: float,
+    ) -> None:
+        """Write FOK execution details to window_snapshot after a successful fill."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """UPDATE window_snapshots
+                       SET execution_mode = $4, fok_attempts = $5,
+                           fok_fill_step = $6, clob_fill_price = $7
+                       WHERE window_ts = $1 AND asset = $2 AND timeframe = $3""",
+                    window_ts, asset, timeframe,
+                    execution_mode, fok_attempts, fok_fill_step, clob_fill_price,
+                )
+        except Exception as exc:
+            import structlog
+            structlog.get_logger().error("db.fok_data_update_failed", window_ts=window_ts, error=str(exc))
+
     async def update_window_skip_reason(self, window_ts: int, asset: str, timeframe: str, skip_reason: str) -> None:
         """Update skip_reason on a window_snapshot after evaluation."""
         if not self._pool:

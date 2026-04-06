@@ -1830,6 +1830,19 @@ class FiveMinVPINStrategy(BaseStrategy):
             except Exception:
                 pass
 
+            # v8.0: Write FOK execution data to window_snapshot
+            if fok_result is not None and fok_result.filled:
+                try:
+                    asyncio.create_task(self._db.update_window_fok_data(
+                        window_ts=signal.window_ts, asset=signal.asset, timeframe="5m",
+                        execution_mode="fok_ladder",
+                        fok_attempts=fok_result.attempts,
+                        fok_fill_step=fok_result.fill_step,
+                        clob_fill_price=fok_result.fill_price,
+                    ))
+                except Exception:
+                    pass
+
         # ── Post-trade fill verification (both FOK and GTC paths) ─────────────
         # For FOK: the order already filled synchronously, but we still verify
         # via the CLOB status poll for auditing and to capture actual size_matched.

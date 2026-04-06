@@ -12,25 +12,25 @@ import { useApi } from '../hooks/useApi.js';
  */
 
 const NAV_ITEMS = [
+  // ── Trading ──
   { path: '/dashboard',       label: 'Dashboard',  icon: '📊' },
   { path: '/factory',         label: 'Factory Floor', icon: '🏭', highlight: true },
-  { path: '/timesfm',         label: 'TimesFM',    icon: '🔮', highlight: true },
-  { path: '/indicators',      label: 'Indicators', icon: '📈', highlight: true },
-  { path: '/v58',             label: 'v7 Monitor', icon: '🎯', highlight: true },
+  { path: '/v58',             label: 'Trade Monitor', icon: '🎯', highlight: true },
+  { path: '/live',            label: 'Live Trading', icon: '💰', highlight: true },
+  { path: '/paper',           label: 'Paper',      icon: '📄' },
+  // ── Analysis ──
+  { path: '/timesfm',         label: 'TimesFM v2', icon: '🔮', highlight: true },
   { path: '/windows',         label: 'Window Results', icon: '📊', highlight: true },
   { path: '/strategy',        label: 'Strategy Analysis', icon: '🧪', highlight: true },
-  { path: '/live',            label: 'Live Trading', icon: '💰', highlight: true },
-  { path: '/analysis',        label: 'Analysis',   icon: '📚', highlight: true },
-  { path: '/paper',           label: 'Paper',      icon: '📄' },
-  { path: '/positions',       label: 'Positions',  icon: '📍' },
   { path: '/trades',          label: 'Trades',     icon: '📋' },
   { path: '/signals',         label: 'Signals',    icon: '📡' },
   { path: '/pnl',             label: 'P&L',        icon: '💰' },
+  // ── System ──
+  { path: '/positions',       label: 'Positions',  icon: '📍' },
   { path: '/risk',            label: 'Risk',       icon: '🛡️', highlight: true },
   { path: '/system',          label: 'System',     icon: '🖥️' },
   { path: '/trading-config',  label: 'Config',     icon: '⚙️', highlight: true },
-  { path: '/playwright',      label: 'Account',    icon: '👁' },
-  { path: '/changelog',       label: 'Changelog',  icon: '📝', highlight: true },
+  { path: '/changelog',       label: 'Changelog',  icon: '📝' },
 ];
 
 // Bottom tab bar items (mobile) — 5 most important
