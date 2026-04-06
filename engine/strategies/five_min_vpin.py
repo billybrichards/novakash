@@ -34,6 +34,7 @@ from config.constants import FIVE_MIN_ENTRY_OFFSET
 from config.runtime_config import runtime
 from data.models import MarketState
 from data.feeds.polymarket_5min import WindowInfo, WindowState
+from execution.fok_ladder import FOKLadder, FOKResult
 from execution.order_manager import Order, OrderManager, OrderStatus
 from execution.polymarket_client import PolymarketClient
 from execution.risk_manager import RiskManager
@@ -1608,22 +1609,115 @@ class FiveMinVPINStrategy(BaseStrategy):
         # Recalculate stake with the FRESH price for proper risk/reward scaling
         stake = self._calculate_stake(signal.tier, float(price))
 
-        try:
-            clob_order_id = await self._poly.place_order(
-                market_slug=market_slug,
-                direction=direction,
-                price=price,
-                stake_usd=stake,
-                token_id=token_id or None,
+        # ── v8.0 Phase 2: FOK Execution Ladder ───────────────────────────────
+        # When FOK_ENABLED=true (default): use FOKLadder.execute() — queries
+        # the live CLOB book directly for fresh pricing, then attempts FOK
+        # fills at progressively higher prices (up to FOK_ATTEMPTS times).
+        #
+        # When FOK_ENABLED=false: fall back to the legacy GTC/GTD single order
+        # at the Gamma bestAsk price (preserved below for reference).
+        #
+        # FOK ladder replaces ONLY order placement — the 60s fill-detection
+        # poll below is shared by both paths (GTC still needs it; FOK uses it
+        # for monitoring even though FOK fills synchronously).
+
+        PRICE_CAP = float(os.environ.get("FOK_PRICE_CAP", "0.73"))
+        PRICE_FLOOR = float(os.environ.get("PRICE_FLOOR", "0.30"))
+
+        clob_order_id: Optional[str] = None
+        fok_result: Optional["FOKResult"] = None
+
+        if runtime.fok_enabled:
+            # ── FOK path ──────────────────────────────────────────────────
+            self._log.info(
+                "execute.fok_path",
+                window=window_key,
+                token_id=token_id[:20] + "..." if len(token_id) > 20 else token_id,
+                stake=f"${stake:.2f}",
+                cap=f"${PRICE_CAP:.2f}",
+                floor=f"${PRICE_FLOOR:.2f}",
             )
-        except Exception as exc:
-            self._log.error("execute.order_failed", window=window_key, error=str(exc))
-            return
+
+            ladder = FOKLadder(self._poly)
+            try:
+                fok_result = await ladder.execute(
+                    token_id=token_id,
+                    direction="BUY",
+                    stake_usd=stake,
+                    max_price=PRICE_CAP,
+                    min_price=PRICE_FLOOR,
+                )
+            except Exception as exc:
+                self._log.error("execute.fok_ladder_error", window=window_key, error=str(exc))
+                return
+
+            if not fok_result.filled:
+                # FOK ladder exhausted or aborted — log and bail
+                self._log.warning(
+                    "FOK_LADDER_EXHAUSTED",
+                    window=window_key,
+                    direction=direction,
+                    attempts=fok_result.attempts,
+                    attempted_prices=fok_result.attempted_prices,
+                    abort_reason=fok_result.abort_reason,
+                )
+                if self._alerter:
+                    try:
+                        _prices_str = ", ".join(f"${p:.3f}" for p in fok_result.attempted_prices) or "none"
+                        asyncio.create_task(self._alerter._send_with_id(
+                            f"⚠️ *FOK LADDER EXHAUSTED* — {window_key}\n"
+                            f"Direction: `{direction}`\n"
+                            f"Attempts: `{fok_result.attempts}`\n"
+                            f"Prices tried: `{_prices_str}`\n"
+                            f"{'Abort: ' + fok_result.abort_reason if fok_result.abort_reason else 'No fill after all attempts'}"
+                        ))
+                    except Exception:
+                        pass
+                return
+
+            # FOK filled — extract fill details
+            clob_order_id = fok_result.order_id or f"fok-{uuid.uuid4().hex[:12]}"
+            filled_price = fok_result.fill_price or float(price)
+            price = Decimal(str(round(filled_price, 4)))
+
+        else:
+            # ── GTC/GTD fallback path (legacy) ────────────────────────────
+            # Preserved exactly from v7.2 — enabled when FOK_ENABLED=false.
+            self._log.info(
+                "execute.gtc_path",
+                window=window_key,
+                price=str(price),
+                stake=f"${stake:.2f}",
+            )
+            try:
+                clob_order_id = await self._poly.place_order(
+                    market_slug=market_slug,
+                    direction=direction,
+                    price=price,
+                    stake_usd=stake,
+                    token_id=token_id or None,
+                )
+            except Exception as exc:
+                self._log.error("execute.order_failed", window=window_key, error=str(exc))
+                return
 
         order_id = clob_order_id if not self._poly.paper_mode else f"5min-{uuid.uuid4().hex[:12]}"
 
         fee_mult = 0.072
         fee_usd = fee_mult * float(price) * (1.0 - float(price)) * stake
+
+        # Build FOK metadata (None fields for GTC path)
+        fok_meta: dict = {}
+        if fok_result is not None and fok_result.filled:
+            fok_meta = {
+                "fok_enabled": True,
+                "clob_fill_price": fok_result.fill_price,
+                "fok_attempts": fok_result.attempts,
+                "fok_fill_step": fok_result.fill_step,
+                "fok_attempted_prices": fok_result.attempted_prices,
+            }
+        else:
+            fok_meta = {"fok_enabled": False}
 
         order = Order(
             order_id=order_id,
@@ -1654,6 +1748,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 "liq_surge_weight": signal.liq_surge_weight,
                 "ls_imbalance_weight": signal.ls_imbalance_weight,
                 "funding_weight": signal.funding_weight,
+                **fok_meta,
             },
         )
 
@@ -1672,6 +1767,8 @@ class FiveMinVPINStrategy(BaseStrategy):
             token_price=str(price),
             seconds_to_close=f"{signal.seconds_to_close:.0f}",
             entry_reason=signal.entry_reason,
+            fok_enabled=runtime.fok_enabled,
+            **({"fok_fill_step": fok_result.fill_step, "fok_attempts": fok_result.attempts} if fok_result else {}),
         )
 
         # v7.1: Update window_snapshot with trade_placed = True
@@ -1683,12 +1780,13 @@ class FiveMinVPINStrategy(BaseStrategy):
             except Exception:
                 pass
 
-        # Post-trade fill verification — NO RETRY, NO BUMPING
-        # Apr 2 lesson: "Fill rate doesn't matter if fills are at bad prices"
-        # Single order at good price, accept miss if no fill.
+        # ── Post-trade fill verification (both FOK and GTC paths) ─────────────
+        # For FOK: the order already filled synchronously, but we still verify
+        # via the CLOB status poll for auditing and to capture actual size_matched.
+        # For GTC: this is the primary fill detection loop (unchanged from v7.2).
+        #
         # v7.2 FIX: extended from 30s → 60s with first check at 3s.
         # YES orders were filling on CLOB but our 30s poll missed them.
-        # Confirmed: CLOB showed MATCHED but our DB showed OPEN for every YES order.
         if not self._poly.paper_mode and order.order_id.startswith("0x"):
             FIRST_CHECK = 3   # first poll at 3s (catches fast fills)
             POLL_INTERVAL = 5
@@ -1719,15 +1817,17 @@ class FiveMinVPINStrategy(BaseStrategy):
                             _mode = "📄 PAPER" if self._poly.paper_mode else "🔴 LIVE"
                             _oid = order.order_id
                             _stake = order.stake_usd
+                            _fok_step = fok_result.fill_step if fok_result else None
 
                             # Use explicit parameters to avoid closure capture bugs
                             async def _send_fill_notif(
                                 _mode=_mode, _dir=_dir, _fill_px=_fill_px,
                                 _shares=_shares, _stake=_stake, _rr=_rr,
                                 _profit_if_win=_profit_if_win, _elapsed=elapsed,
-                                _oid=_oid,
+                                _oid=_oid, _fok_step=_fok_step,
                             ):
                                 try:
+                                    _fok_line = f"FOK step: `{_fok_step}`\n" if _fok_step is not None else ""
                                     # Main notification
                                     await self._alerter._send_with_id(
                                         f"💰 *BET PLACED — FILLED*  {_mode}\n"
@@ -1736,6 +1836,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                                         f"Fill: `${_fill_px:.3f}` × `{_shares:.1f}` shares\n"
                                         f"Cost: `${_stake:.2f}`\n"
                                         f"R/R: `1:{_rr}` | If WIN: `+${_profit_if_win:.2f}`\n"
+                                        f"{_fok_line}"
                                         f"Fill time: `{_elapsed}s`"
                                     )
                                     # Brief AI analysis on the fill
@@ -1784,6 +1885,11 @@ class FiveMinVPINStrategy(BaseStrategy):
                             order.price = str(_fill_price)
                             order.entry_price = _fill_price
                             order.metadata["actual_fill_price"] = _fill_price
+                            # Record FOK fill details to snapshot
+                            if fok_result and fok_result.filled:
+                                order.metadata["clob_fill_price"] = _fill_price
+                                order.metadata["fok_attempts"] = fok_result.attempts
+                                order.metadata["fok_fill_step"] = fok_result.fill_step
                             self._log.info("trade.verified", order_id=order.order_id[:20] + "...", actual_price=f"${_fill_price:.4f}", size_matched=size_matched, wait=f"{elapsed}s")
                             # Persist actual fill price to DB
                             if self._db:

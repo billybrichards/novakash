@@ -2,6 +2,84 @@
 
 ---
 
+## v8.0 Phase 2 — FOK Execution Ladder (20:39 UTC)
+
+### Summary
+Replaced the single GTC/GTD order at stale Gamma price with a Fill-or-Kill
+execution ladder that queries the live CLOB book directly for pricing. FOK
+orders fill immediately or are cancelled — no resting on the book at bad prices.
+The GTC path is fully preserved as a feature-flag fallback (`FOK_ENABLED=false`).
+
+### Changes
+
+#### feat: FOK Ladder (`engine/execution/fok_ladder.py`) — NEW FILE
+- Class `FOKLadder` with async `execute()` method
+- Parameters: `token_id`, `direction`, `stake_usd`, `max_price` (default $0.73), `min_price` (default $0.30)
+- Config env vars: `FOK_ATTEMPTS` (default 5), `FOK_INTERVAL_S` (default 2s), `FOK_BUMP` (default $0.01)
+- Flow:
+  1. Query CLOB book → get live best ask via `PolymarketClient.get_clob_best_ask()`
+  2. If best_ask < floor or > cap → abort with reason logged
+  3. Submit FOK at best_ask price via `PolymarketClient.place_fok_order()`
+  4. If filled → return `FOKResult(filled=True, fill_price, fill_step, shares, attempts)`
+  5. If killed → wait `FOK_INTERVAL_S`, query fresh book, set next price = `fresh_ask + FOK_BUMP`
+  6. Repeat up to `FOK_ATTEMPTS` times
+  7. If all attempts exhausted → return `FOKResult(filled=False, ...)`
+- Each attempt logs: attempt number, price, size, result
+- Paper mode: `get_clob_best_ask` returns simulated price; `place_fok_order` always fills
+- Returns `FOKResult` dataclass with: `filled`, `fill_price`, `fill_step`, `shares`, `attempts`, `order_id`, `attempted_prices`, `abort_reason`
+
+#### feat: CLOB helpers (`engine/execution/polymarket_client.py`)
+- `async get_clob_best_ask(token_id) → float`
+  - Queries `client.get_order_book(token_id)` via `asyncio.to_thread`
+  - Sorts asks ascending, returns lowest ask price
+  - Paper: returns simulated `random.uniform(0.40, 0.65)`
+  - Raises `ValueError` if no ask-side liquidity
+- `async place_fok_order(token_id, price, size) → dict`
+  - Builds `OrderArgs` + `client.post_order(signed, OrderType.FOK)`
+  - Returns `{filled: bool, size_matched: float, order_id: str}`
+  - Paper: always fills at requested price (simulated)
+  - Respects `LIVE_MAX_TRADE_USD` safety cap
+  - Emits first-live-trade warning on first call
+
+#### feat: FOK_ENABLED flag (`engine/config/runtime_config.py`)
+- Added `self.fok_enabled: bool` — reads `FOK_ENABLED` env var, default `"true"`
+- Env-only, not DB-synced (structural execution flag, not a tunable parameter)
+- Included in `snapshot()` dict for logging
+
+#### feat: FOK execution path in strategy (`engine/strategies/five_min_vpin.py`)
+- Added import: `from execution.fok_ladder import FOKLadder, FOKResult`
+- When `runtime.fok_enabled = True`:
+  - Instantiates `FOKLadder(self._poly)` and calls `ladder.execute()`
+  - On FOK miss: logs `FOK_LADDER_EXHAUSTED` with all attempted prices, sends Telegram alert, returns
+  - On FOK fill: uses `fok_result.fill_price` as actual price for order record
+  - Records `clob_fill_price`, `fok_attempts`, `fok_fill_step` to `order.metadata`
+- When `runtime.fok_enabled = False`:
+  - Falls back to original `self._poly.place_order()` GTC/GTD path (unchanged)
+- Post-trade fill verification poll (60s, 3s first check) retained for BOTH paths
+- FOK fill step shown in Telegram fill notification
+
+### Feature Flags
+
+| Variable | Default | Effect |
+|---|---|---|
+| `FOK_ENABLED` | `true` | Use FOK ladder instead of GTC |
+| `FOK_ATTEMPTS` | `5` | Max FOK attempts per signal |
+| `FOK_INTERVAL_S` | `2` | Seconds between FOK attempts |
+| `FOK_BUMP` | `0.01` | Price bump per attempt ($0.01 = 1¢) |
+| `FOK_PRICE_CAP` | `0.73` | Maximum fill price (hard cap) |
+| `PRICE_FLOOR` | `0.30` | Minimum fill price (hard floor) |
+
+### What Was NOT Changed
+- GTC/GTD order placement code — preserved as fallback
+- Fill detection poll (60s, 5s interval) — shared by both paths
+- Risk checks, stake calculation, order registration
+- Telegram fill notifications (FOK step added to message)
+
+### Branch
+`develop` — commit pushed, not deployed to Montreal
+
+---
+
 ## Frontend AWS Deployment + UI Improvements (21:30 UTC)
 
 ### Summary

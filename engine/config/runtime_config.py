@@ -167,6 +167,12 @@ class RuntimeConfig:
         # Tiingo REST candle (open/close) used when available; falls back to Binance.
         self.delta_price_source: str = os.environ.get("DELTA_PRICE_SOURCE", "tiingo").lower()
 
+        # ── v8.0 Phase 2: FOK Execution Ladder (env-only, default ON) ───────────
+        # FOK_ENABLED: replace GTC single-order with FOK attempt ladder.
+        # When true: FOKLadder.execute() used for order placement.
+        # When false: legacy GTC/GTD path used (fallback).
+        self.fok_enabled: bool = os.environ.get("FOK_ENABLED", "true").lower() == "true"
+
         # ── v8.0 Phase 3: Gate feature flags (env-only, default OFF) ─────────
         # TWAP_OVERRIDE_ENABLED: allow TWAP+Gamma to override point-delta direction.
         # Disabled: TWAP blocked 12 windows, 8 were winners — net harmful.
@@ -293,6 +299,8 @@ class RuntimeConfig:
             "arb_enabled": self.arb_enabled,
             "cascade_enabled": self.cascade_enabled,
             "preferred_venue": self.preferred_venue,
+            # Execution
+            "fok_enabled": self.fok_enabled,
             # Guardrails
             "order_stagger_seconds": self.order_stagger_seconds,
             "single_best_signal": self.single_best_signal,

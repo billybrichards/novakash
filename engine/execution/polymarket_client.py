@@ -420,6 +420,200 @@ class PolymarketClient:
 
         return order_id
 
+    # ------------------------------------------------------------------
+    # FOK Ladder helpers — v8.0 Phase 2
+    # ------------------------------------------------------------------
+
+    async def get_clob_best_ask(self, token_id: str) -> float:
+        """Query the CLOB order book and return the lowest (best) ask price.
+
+        The CLOB book ``asks`` list is sorted descending — we sort ascending
+        and take the first element to get the best ask.
+
+        Paper mode returns a simulated price around 0.50.
+
+        Args:
+            token_id: CLOB outcome token ID.
+
+        Returns:
+            Best ask price as a float.
+
+        Raises:
+            RuntimeError: If live mode and CLOB client is not connected.
+            ValueError: If the order book has no ask-side liquidity.
+        """
+        if self.paper_mode:
+            import random
+            simulated = round(random.uniform(0.40, 0.65), 4)
+            self._log.debug(
+                "get_clob_best_ask.paper",
+                token_id=token_id[:20] + "...",
+                simulated_ask=f"${simulated:.4f}",
+            )
+            return simulated
+
+        if not self._clob_client:
+            raise RuntimeError("CLOB client not connected — call connect() first")
+
+        client = self._clob_client
+
+        def _fetch_book():
+            return client.get_order_book(token_id)
+
+        book = await asyncio.to_thread(_fetch_book)
+
+        # book.asks is sorted descending — lowest ask is the last element,
+        # OR sort ascending and take first. Handle both list and object attrs.
+        asks = getattr(book, "asks", None)
+        if asks is None and isinstance(book, dict):
+            asks = book.get("asks", [])
+
+        if not asks:
+            raise ValueError(f"No ask-side liquidity for token {token_id[:20]}...")
+
+        # Sort ascending by price to reliably get the lowest ask
+        try:
+            sorted_asks = sorted(asks, key=lambda x: float(getattr(x, "price", x.get("price", 0) if isinstance(x, dict) else 0)))
+            best_ask = float(getattr(sorted_asks[0], "price", sorted_asks[0].get("price") if isinstance(sorted_asks[0], dict) else sorted_asks[0]))
+        except (TypeError, AttributeError, IndexError) as exc:
+            raise ValueError(f"Could not parse ask prices from order book: {exc}") from exc
+
+        self._log.debug(
+            "get_clob_best_ask.live",
+            token_id=token_id[:20] + "...",
+            best_ask=f"${best_ask:.4f}",
+            ask_levels=len(asks),
+        )
+        return best_ask
+
+    async def place_fok_order(
+        self,
+        token_id: str,
+        price: float,
+        size: float,
+    ) -> dict:
+        """Place a Fill-or-Kill (FOK) order on the CLOB.
+
+        FOK orders are immediately executed or cancelled — no resting on the book.
+
+        Paper mode simulates a fill at the requested price (always fills, because
+        paper mode has unlimited simulated liquidity — realistic FOK testing
+        requires live mode).
+
+        Args:
+            token_id: CLOB outcome token ID.
+            price: Limit price in [0, 1].
+            size: Number of shares.
+
+        Returns:
+            Dict: {filled: bool, size_matched: float, order_id: str}
+
+        Raises:
+            RuntimeError: If live mode and CLOB client is not connected.
+        """
+        if self.paper_mode:
+            simulated_order_id = f"fok-paper-{uuid.uuid4().hex[:12]}"
+            self._log.info(
+                "place_fok_order.paper",
+                token_id=token_id[:20] + "...",
+                price=f"${price:.4f}",
+                size=f"{size:.2f}",
+                order_id=simulated_order_id,
+            )
+            return {
+                "filled": True,
+                "size_matched": size,
+                "order_id": simulated_order_id,
+            }
+
+        if not self._clob_client:
+            raise RuntimeError("CLOB client not connected — call connect() first")
+
+        # Safety cap check
+        stake_usd = price * size
+        if stake_usd > LIVE_MAX_TRADE_USD:
+            raise ValueError(
+                f"FOK trade stake ${stake_usd:.2f} exceeds safety cap "
+                f"${LIVE_MAX_TRADE_USD:.2f}."
+            )
+
+        # First-live-trade warning
+        if not self._live_first_trade_warned:
+            self._live_first_trade_warned = True
+            import warnings
+            warnings.warn(
+                "First live Polymarket FOK trade being placed — verify manually on "
+                "polymarket.com/portfolio",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            self._log.warning(
+                "place_fok_order.first_live_trade",
+                token_id=token_id[:20] + "..." if len(token_id) > 20 else token_id,
+                price=f"${price:.4f}",
+                size=f"{size:.2f}",
+            )
+
+        from py_clob_client.clob_types import OrderArgs, OrderType
+        from py_clob_client.order_builder.constants import BUY
+
+        client = self._clob_client
+
+        order_args = OrderArgs(
+            token_id=token_id,
+            price=price,
+            size=size,
+            side=BUY,
+        )
+
+        def _sign_and_submit():
+            signed = client.create_order(order_args)
+            return client.post_order(signed, OrderType.FOK)
+
+        self._log.info(
+            "place_fok_order.submitting",
+            token_id=token_id[:20] + "...",
+            price=f"${price:.4f}",
+            size=f"{size:.2f}",
+        )
+
+        response = await asyncio.to_thread(_sign_and_submit)
+
+        # Parse response
+        if isinstance(response, dict):
+            order_id = response.get("orderID") or response.get("id") or f"fok-live-{uuid.uuid4().hex[:12]}"
+            status = response.get("status", "UNKNOWN")
+            size_matched_raw = response.get("size_matched", "0")
+        else:
+            order_id = getattr(response, "orderID", None) or getattr(response, "id", None) or f"fok-live-{uuid.uuid4().hex[:12]}"
+            status = getattr(response, "status", "UNKNOWN")
+            size_matched_raw = getattr(response, "size_matched", "0")
+
+        try:
+            size_matched = float(size_matched_raw) if size_matched_raw else 0.0
+        except (ValueError, TypeError):
+            size_matched = 0.0
+
+        # FOK is filled if size_matched > 0 or status is MATCHED
+        filled = size_matched > 0 or status in ("MATCHED", "FILLED")
+
+        self._log.info(
+            "place_fok_order.result",
+            token_id=token_id[:20] + "...",
+            price=f"${price:.4f}",
+            size=f"{size:.2f}",
+            order_id=str(order_id)[:20],
+            status=status,
+            size_matched=size_matched,
+            filled=filled,
+        )
+
+        return {
+            "filled": filled,
+            "size_matched": size_matched,
+            "order_id": str(order_id),
+        }
+
     async def get_order_book_spread(self, token_id: str) -> float:
         """Get the best ask - best bid spread for a token.
         
