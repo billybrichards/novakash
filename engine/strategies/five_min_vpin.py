@@ -1539,7 +1539,35 @@ class FiveMinVPINStrategy(BaseStrategy):
         
         _fok_limit = _max_price  # Always submit FOK at cap
         
-        if _fresh_best_ask is not None and _fresh_best_ask >= 0.30 and _fresh_best_ask <= _max_price:
+        # FLOOR CHECK: if Gamma bestAsk is below $0.30, the market strongly disagrees
+        # with our direction. Don't trade — it's priced cheap for a reason.
+        _min_entry = 0.30
+        if _fresh_best_ask is not None and _fresh_best_ask < _min_entry:
+            _skip_msg = f"PRICE FLOOR: entry ${_fresh_best_ask:.3f} < floor ${_min_entry} — market strongly disagrees, adverse selection risk"
+            self._log.warning("execute.price_below_floor", bestask=f"${_fresh_best_ask:.4f}", floor=f"${_min_entry}")
+            if self._alerter:
+                try:
+                    _mode = "📄 PAPER" if self._poly.paper_mode else "🔴 LIVE"
+                    asyncio.create_task(self._alerter._send_with_id(
+                        f"🚫 *TRADE BLOCKED — PRICE FLOOR*  {_mode}\n"
+                        f"`{signal.asset}-{signal.window_ts}`\n\n"
+                        f"Direction: `{direction}`\n"
+                        f"Entry price: `${_fresh_best_ask:.3f}` ← below floor\n"
+                        f"Floor: `${_min_entry}`\n"
+                        f"_Market is {(1-_fresh_best_ask)*100:.0f}% confident we're wrong_"
+                    ))
+                except Exception:
+                    pass
+            if self._db:
+                try:
+                    asyncio.create_task(self._db.update_window_skip_reason(
+                        signal.window_ts, signal.asset, "5m", _skip_msg
+                    ))
+                except Exception:
+                    pass
+            return
+
+        if _fresh_best_ask is not None and _fresh_best_ask >= _min_entry and _fresh_best_ask <= _max_price:
             # Market price within cap — record real price, submit at cap
             token_price = _fresh_best_ask  # Record REAL market price
             _price_source = f"market={_fresh_best_ask:.4f}(fok_limit={_max_price})"
