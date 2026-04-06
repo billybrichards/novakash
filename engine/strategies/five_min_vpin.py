@@ -47,6 +47,20 @@ from strategies.base import BaseStrategy
 log = structlog.get_logger(__name__)
 
 
+# ── v8.1 Dynamic entry caps by eval offset ──────────────────────────────────
+# Max FOK price at each offset — set conservatively below breakeven WR.
+# T-240 (89.5% WR) → cap $0.55 | T-180 (86.4%) → $0.60
+# T-120 (84.3%) → $0.65        | T-60  (78.8%) → $0.73 (current)
+# Feature-flagged via V2_EARLY_ENTRY_ENABLED env var.
+import os as _os
+V81_ENTRY_CAPS: dict[int, float] = {
+    240: float(_os.environ.get("V81_CAP_T240", "0.55")),
+    180: float(_os.environ.get("V81_CAP_T180", "0.60")),
+    120: float(_os.environ.get("V81_CAP_T120", "0.65")),
+    60:  float(_os.environ.get("V81_CAP_T60", "0.73")),
+}
+
+
 @dataclass
 class FiveMinSignal:
     """Signal for 5-minute trading decision."""
@@ -54,9 +68,11 @@ class FiveMinSignal:
     current_price: float
     current_vpin: float
     delta_pct: float
-    confidence: str  # "HIGH", "MODERATE", "LOW"
+    confidence: str  # "HIGH", "MODERATE", "LOW", "DECISIVE"
     direction: str   # "UP" or "DOWN"
     cg_modifier: float = 0.0  # CoinGlass confidence modifier applied
+    entry_reason: str = "v8_standard"  # v8.1: "v2.2_early_T240", "v8_standard", etc.
+    v81_entry_cap: float = 0.73  # v8.1: dynamic FOK price cap for this offset
 
 
 class FiveMinVPINStrategy(BaseStrategy):
@@ -98,6 +114,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._geoblock_check_fn = geoblock_check_fn  # G6: Callable to check if geoblock is active
         self._twap = twap_tracker  # v5.7: TWAP-delta direction tracker
         self._timesfm = timesfm_client  # v6.0: TimesFM forecast client (for comparison alerts)
+        self._timesfm_v2 = None  # v8.1: TimesFM v2.2 calibrated probability client (injected by orchestrator)
         self._tick_recorder = None  # TickRecorder injected by orchestrator after start
         self._evaluator = WindowEvaluator()
         
@@ -859,6 +876,65 @@ class FiveMinVPINStrategy(BaseStrategy):
                 }))
             except Exception as _ga_exc:
                 self._log.debug("db.gate_audit_write_failed", error=str(_ga_exc)[:80])
+
+        # ── v8.1 Early Entry Gate ────────────────────────────────────────────
+        # At offsets >= 120s, require v2.2 HIGH CONF + v8 direction agreement.
+        # If v2.2 disagrees or is low confidence → skip this offset, fall through
+        # to the next one (T-180 → T-120 → T-60). At T-60 no v2.2 gate is applied.
+        # Dynamic entry cap per offset: T-240=$0.55, T-180=$0.60, T-120=$0.65, T-60=$0.73
+        _v81_active = False
+        if eval_offset and eval_offset >= 120 and signal is not None and self._timesfm_v2 is not None:
+            _v81_cap = V81_ENTRY_CAPS.get(eval_offset, 0.73)
+            _v81_active = True
+            try:
+                _v2_result = await self._timesfm_v2.get_probability(
+                    asset=window.asset, seconds_to_close=eval_offset
+                )
+                _v2_p = _v2_result.get("probability_up", 0.5)
+                _v2_dir = "UP" if _v2_p > 0.5 else "DOWN"
+                _v2_high = _v2_p > 0.65 or _v2_p < 0.35
+                _v2_agrees = (_v2_dir == signal.direction)
+
+                # Store in snapshot for analysis
+                window_snapshot["v2_probability_up"] = round(_v2_p, 4)
+                window_snapshot["v2_direction"] = _v2_dir
+                window_snapshot["v2_agrees"] = _v2_agrees
+                window_snapshot["v2_model_version"] = _v2_result.get("model_version", "")
+
+                self._log.info(
+                    "v81.early_gate",
+                    offset=eval_offset,
+                    v2_p=f"{_v2_p:.3f}",
+                    v2_dir=_v2_dir,
+                    v8_dir=signal.direction,
+                    agrees=_v2_agrees,
+                    high_conf=_v2_high,
+                    cap=_v81_cap,
+                )
+
+                if not _v2_high:
+                    signal = None
+                    self._last_skip_reason = f"v8.1: v2.2 LOW conf ({_v2_p:.2f}) at T-{eval_offset}"
+                elif not _v2_agrees:
+                    signal = None
+                    self._last_skip_reason = f"v8.1: v2.2 DISAGREES (v2={_v2_dir} vs v8={signal.direction}) at T-{eval_offset}"
+                else:
+                    # v2.2 HIGH + agrees → upgrade to DECISIVE, set dynamic cap
+                    signal.confidence = "DECISIVE"
+                    signal.entry_reason = f"v2.2_early_T{eval_offset}"
+                    signal.v81_entry_cap = _v81_cap
+                    self._log.info(
+                        "v81.early_entry_approved",
+                        offset=eval_offset,
+                        direction=signal.direction,
+                        cap=_v81_cap,
+                        v2_p=f"{_v2_p:.3f}",
+                    )
+            except Exception as _v2_exc:
+                # v2.2 service down — skip early entry, fall through to next offset
+                signal = None
+                self._last_skip_reason = f"v8.1: v2.2 unavailable at T-{eval_offset}: {str(_v2_exc)[:50]}"
+                self._log.warning("v81.v2_service_error", offset=eval_offset, error=str(_v2_exc)[:80])
 
         if signal is None:
             # v7.1: Use the actual skip reason set at the point of rejection
@@ -1720,7 +1796,8 @@ class FiveMinVPINStrategy(BaseStrategy):
         # poll below is shared by both paths (GTC still needs it; FOK uses it
         # for monitoring even though FOK fills synchronously).
 
-        PRICE_CAP = float(os.environ.get("FOK_PRICE_CAP", "0.73"))
+        _default_cap = float(os.environ.get("FOK_PRICE_CAP", "0.73"))
+        PRICE_CAP = getattr(signal, 'v81_entry_cap', _default_cap)  # v8.1: dynamic cap per offset
         PRICE_FLOOR = float(os.environ.get("PRICE_FLOOR", "0.30"))
 
         clob_order_id: Optional[str] = None
@@ -1735,6 +1812,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                 stake=f"${stake:.2f}",
                 cap=f"${PRICE_CAP:.2f}",
                 floor=f"${PRICE_FLOOR:.2f}",
+                v81_dynamic_cap=PRICE_CAP != _default_cap,
+                entry_reason=getattr(signal, 'entry_reason', 'v8_standard'),
             )
 
             ladder = FOKLadder(self._poly)
@@ -2180,7 +2259,8 @@ class FiveMinVPINStrategy(BaseStrategy):
 
         tf = "15m" if window.duration_secs == 900 else "5m"
         market_slug = f"{window.asset.lower()}-updown-{tf}-{window.window_ts}"
-        PRICE_CAP = float(os.environ.get("FOK_PRICE_CAP", "0.73"))
+        _default_cap = float(os.environ.get("FOK_PRICE_CAP", "0.73"))
+        PRICE_CAP = getattr(signal, 'v81_entry_cap', _default_cap)  # v8.1: dynamic cap per offset
         PRICE_FLOOR = float(os.environ.get("PRICE_FLOOR", "0.30"))
 
         # ── Guardrails ────────────────────────────────────────────────────────
@@ -2395,13 +2475,16 @@ class FiveMinVPINStrategy(BaseStrategy):
                 "confidence": signal.confidence,
                 "cg_modifier": signal.cg_modifier,
                 "token_id": token_id,
-                "entry_offset_s": FIVE_MIN_ENTRY_OFFSET,
-                "entry_label": f"T-{FIVE_MIN_ENTRY_OFFSET}s",
+                "entry_offset_s": getattr(signal.window, 'eval_offset', FIVE_MIN_ENTRY_OFFSET),
+                "entry_label": f"T-{getattr(signal.window, 'eval_offset', FIVE_MIN_ENTRY_OFFSET)}s",
+                "entry_reason": getattr(signal, 'entry_reason', 'v8_standard'),
                 "entry_reason_detail": _entry_reason_detail,
+                "v81_entry_cap": PRICE_CAP,
                 "timeframe": tf,
                 "window_duration_s": window.duration_secs,
                 "clob_order_id": clob_order_id if 'clob_order_id' in dir() else None,
                 "market_slug": f"{window.asset.lower()}-updown-{tf}-{window.window_ts}",
+                "engine_version": "v8.1",
             },
         )
         

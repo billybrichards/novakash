@@ -317,6 +317,16 @@ class Orchestrator:
             self._five_min_strategy._timesfm = self._timesfm_client
             log.info("orchestrator.timesfm_injected_into_five_min")
 
+        # v8.1: Inject TimesFM v2.2 client for early entry (calibrated probability)
+        _v2_enabled = os.environ.get("V2_EARLY_ENTRY_ENABLED", "true").lower() == "true"
+        if _v2_enabled and self._five_min_strategy:
+            from signals.timesfm_v2_client import TimesFMV2Client
+            _v2_url = os.environ.get("TIMESFM_V2_URL", "http://3.98.114.0:8080")
+            self._five_min_strategy._timesfm_v2 = TimesFMV2Client(base_url=_v2_url)
+            log.info("orchestrator.v2_early_entry_enabled", url=_v2_url)
+        else:
+            log.info("orchestrator.v2_early_entry_disabled")
+
         # TickRecorder is not yet available at __init__ (pool not connected)
         # It is injected in start() after pool is live.
 

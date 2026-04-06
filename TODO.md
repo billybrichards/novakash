@@ -271,12 +271,17 @@ Only implement if data confirms the hypothesis.
 - [x] Session running totals in outcome cards
 - [x] Execution audit documented (docs/V8_EXECUTION_AUDIT.md)
 
-## v8.1 Backlog
+## v8.1 Completed (April 7, 2026)
 
-- [ ] DECISIVE early entry (T-120/T-180) — multi-step eval with conviction re-checks
-- [ ] trade_placed flag fix — update window_snapshot after order placed
+- [x] DECISIVE early entry (T-240/T-180/T-120/T-60 cascade) — v2.2 + v8 agreement gate
+- [x] Dynamic entry caps per offset ($0.55/$0.60/$0.65/$0.73)
+- [x] TimesFM v2.2 client (calibrated probability from Montreal EC2)
+- [x] trade_placed flag fix — backfill migration run (465 windows fixed)
+- [x] Historical data migration — reconcile 803 orphaned trades from v7.1
+
+## v8.2 Backlog
+
 - [ ] Dead code cleanup — remove _execute_from_signal (~250 lines), duplicate imports
-- [ ] Historical data migration — reconcile 803 orphaned trades from v7.1
 - [ ] FOK fill rate monitoring — if <5% FOK fill rate, swap primary to GTC
 - [ ] Activity API reconciliation — cross-check CLOB matched orders vs DB
 - [ ] Macro observer wired into engine (data collection only, not gating)
