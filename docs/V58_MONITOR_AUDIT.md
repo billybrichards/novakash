@@ -80,7 +80,17 @@ Multiple `catch {}` / `catch (_) {}` blocks with no logging:
 
 The main `fetchAll` at line 2355 does log errors (`console.error`), but individual Promise.allSettled results don't log failures.
 
-### 6. WIN/LOSS DETERMINED BY `delta_pct` PROXY (lines 49-59)
+### 6. VPIN THRESHOLD INCONSISTENCY (lines 1562, 2640, 2737)
+
+**Severity:** HIGH  
+Different VPIN thresholds used in different sections of the same file:
+- **Line 1562 (SignalSourceCards):** `outcome.vpin > 0.5` → red, `> 0.3` → warning, else green
+- **Line 2640 (Countdown quick stats):** `vpin >= 0.65` → green, `>= 0.45` → warning, else gray
+- **Line 2737 (v7.1 criteria display):** `vpin >= 0.45` → green checkmark, else red X
+
+These are **three contradictory color mappings** for the same metric. In SignalSourceCards, high VPIN = red (bad). In the countdown, high VPIN = green (good). This is confusing and likely wrong in one place.
+
+### 7. WIN/LOSS DETERMINED BY `delta_pct` PROXY (lines 49-59)
 
 **Severity:** HIGH — relates to win rate inconsistency  
 The `windowStatus()` function determines WIN/LOSS by checking if `delta_pct` aligns with `direction`:
@@ -90,12 +100,12 @@ if (w.direction === 'DOWN' && w.delta_pct < 0) → WIN
 ```
 This is a **directional** win rate (did BTC move in our direction), NOT the Polymarket oracle resolution. This means the WindowTimeline pills may show different WIN/LOSS than actual trade outcomes.
 
-### 7. FONT INJECTION VIA DOM (lines 36-42)
+### 8. FONT INJECTION VIA DOM (lines 36-42)
 
 **Severity:** LOW  
 Google Fonts loaded by injecting a `<link>` tag into `document.head` at module load time. This is a side effect that runs outside React lifecycle. Should be in `index.html` or a CSS import.
 
-### 8. MASSIVE INLINE STYLES
+### 9. MASSIVE INLINE STYLES
 
 **Severity:** LOW (cosmetic)  
 Every component uses inline `style={{}}` objects. This is functional but:
@@ -105,7 +115,7 @@ Every component uses inline `style={{}}` objects. This is functional but:
 
 This is a design choice, not a bug. But it's a major contributor to the 3,113 line count.
 
-### 9. ENTRY CAP HARDCODED (line 2743)
+### 10. ENTRY CAP HARDCODED (line 2743)
 
 **Severity:** LOW  
 ```jsx
@@ -113,7 +123,7 @@ This is a design choice, not a bug. But it's a major contributor to the 3,113 li
 ```
 The v7.1 criteria display hardcodes the entry cap as `$0.70`. Should come from config or the window data.
 
-### 10. STALE NAMING: "v5.8" REFERENCES (lines 2852, 4, 8)
+### 11. STALE NAMING: "v5.8" REFERENCES (lines 2852, 4, 8)
 
 **Severity:** LOW  
 The file header and AgreementTracker section still reference "v5.8" but the strategy has evolved to v7/v7.1. The section header says "v5.8 AGREEMENT TRACKER" but the actual logic tracks TimesFM vs v5.7c agreement which is still relevant.
@@ -166,6 +176,7 @@ frontend/src/pages/V58Monitor/
 
 | Category | Count | Severity |
 |----------|-------|----------|
+| VPIN threshold inconsistency (3 different thresholds) | 3 locations | HIGH |
 | Hardcoded values ($4 stake, $0.70 cap) | 2 | MEDIUM |
 | Missing useEffect deps | 1 | MEDIUM |
 | Silent error swallowing | 4 locations | MEDIUM |
