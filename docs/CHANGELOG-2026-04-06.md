@@ -2,6 +2,41 @@
 
 ---
 
+## Frontend AWS Deployment + UI Improvements (21:30 UTC)
+
+### Summary
+Deployed frontend to AWS EC2 (Montreal, ca-central-1) with nginx reverse proxy to Railway hub.
+Added Signal vs Actual direction columns to both trade tables for clearer outcome visibility.
+
+### AWS Frontend Instance
+- **Instance:** `i-0fe72a610900b5cca` / `99.79.41.246` / t3.small Ubuntu 24.04
+- **Key pair:** `novakash-local-rsa` (`~/.ssh/novakash-local-rsa.pem`)
+- **Security group:** `sg-05606e7fee858ca86`
+- Nginx proxies `/api/`, `/auth/`, `/ws/` → `hub-develop-0433.up.railway.app`
+- Montreal region chosen per Polymarket geo-block rules (Rule 2)
+- Old broken instance (`i-097ee664dda263be0`) terminated
+
+### feat: Signal vs Actual direction columns
+**Files:** `frontend/src/pages/FactoryFloor.jsx`, `frontend/src/pages/LiveTrading.jsx`
+
+**Flow Timeline (Factory Floor):**
+- Split `DIR` column into `SIGNAL` (our v5.7c call) + `ACTUAL` (oracle resolution)
+- Mismatches highlighted with red background on ACTUAL cell
+
+**Recent Trades (Live Trading):**
+- Renamed `Dir` → `Signal`, added new `Actual` column
+- Oracle direction derived from `direction` + `outcome` (no backend change needed)
+- YES+WIN or NO+LOSS = market went UP; YES+LOSS or NO+WIN = market went DOWN
+
+### Docs Updated
+- `docs/INFRASTRUCTURE.md` — added Frontend (AWS) section
+- `docs/DEPLOYMENT.md` — added frontend redeploy steps
+
+### Branch
+`claude/review-docs-and-setup-uGPRs` → merged to `develop`
+
+---
+
 ## v8.0 Phase 3 — TWAP Override Removal + TimesFM Gate Disable (20:25 UTC)
 
 ### Summary

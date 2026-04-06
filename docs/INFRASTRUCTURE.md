@@ -74,6 +74,39 @@ curl http://16.52.148.255:8080/forecast
 
 ---
 
+### Frontend (AWS — Montreal)
+
+| Property | Value |
+|----------|-------|
+| **Instance ID** | `i-0fe72a610900b5cca` |
+| **IP** | `99.79.41.246` |
+| **Region** | ca-central-1b (Montreal) |
+| **Instance type** | t3.small, Ubuntu 24.04 |
+| **Key pair** | `novakash-local-rsa` (`~/.ssh/novakash-local-rsa.pem`) |
+| **Security group** | `sg-05606e7fee858ca86` (SSH/HTTP/HTTPS open) |
+| **Web root** | `/var/www/frontend` |
+| **Nginx config** | `/etc/nginx/conf.d/frontend.conf` |
+
+**Why Montreal:** Polymarket geo-blocks EU and UK. Canada (Montreal) is confirmed unblocked. See `docs/polymarket_ban_avoidance.md` Rule 2.
+
+**Proxy routing:**
+- `/api/*` → `hub-develop-0433.up.railway.app` (Railway hub)
+- `/auth/*` → same
+- `/ws/*` → same (WebSocket upgrade supported)
+
+**SSH access:**
+```bash
+ssh -i ~/.ssh/novakash-local-rsa.pem ubuntu@99.79.41.246
+```
+
+**Health check:**
+```bash
+curl -sI http://99.79.41.246            # Should return index.html
+curl -s http://99.79.41.246/api/health  # Should proxy to Railway hub
+```
+
+---
+
 ### Railway Services
 
 All Railway services share the same project and PostgreSQL instance.
