@@ -184,17 +184,27 @@ class TelegramAlerter:
         if not gate_icons:
             gate_icons = "N/A"
         
-        # Gamma indicative price (NOT real CLOB book price)
+        # Real CLOB book price + Gamma indicative
         entry_line = ""
-        if gamma_up is not None and gamma_down is not None:
-            entry = gamma_down if direction in ("DOWN", "NO") else gamma_up
-            if 0.30 <= entry <= 0.73:
-                rr = (1 - entry) / entry if entry > 0 else 0
-                entry_line = f"💱 Gamma: `${entry:.3f}` | R/R `1:{rr:.1f}` _(indicative)_\n"
-            elif entry < 0.30:
-                entry_line = f"⛔ Gamma FLOOR `${entry:.3f}` < $0.30\n"
+        clob_up = signal.get("clob_up_ask")
+        clob_dn = signal.get("clob_down_ask")
+        if clob_up or clob_dn:
+            _clob_entry = clob_dn if direction in ("DOWN", "NO") else clob_up
+            if _clob_entry and _clob_entry < 10:  # sanity check
+                _clob_rr = (1 - _clob_entry) / _clob_entry if _clob_entry > 0 else 0
+                entry_line = f"📊 CLOB: ↑`${clob_up:.3f}` ↓`${clob_dn:.3f}`"
+                if 0.30 <= _clob_entry <= 0.73:
+                    entry_line += f" | R/R `1:{_clob_rr:.1f}`\n"
+                elif _clob_entry > 0.73:
+                    entry_line += f" ⛔ >`$0.73`\n"
+                else:
+                    entry_line += f" ⛔ <`$0.30`\n"
             else:
-                entry_line = f"⛔ Gamma CAP `${entry:.3f}` > $0.73\n"
+                entry_line = f"📊 CLOB: no book\n"
+        elif gamma_up is not None and gamma_down is not None:
+            entry = gamma_down if direction in ("DOWN", "NO") else gamma_up
+            rr = (1 - entry) / entry if entry > 0 else 0
+            entry_line = f"💱 Gamma: `${entry:.3f}` R/R `1:{rr:.1f}` _(indicative)_\n"
         
         # Delta display with source
         delta_str = f"{delta:+.4f}%" if delta else "?"

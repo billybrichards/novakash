@@ -1008,6 +1008,9 @@ class FiveMinVPINStrategy(BaseStrategy):
                         "confidence_tier": window_snapshot.get("confidence_tier", "?"),
                         "macro_bias": window_snapshot.get("macro_bias", "N/A"),
                         "macro_confidence": window_snapshot.get("macro_confidence", ""),
+                        "macro_gate": window_snapshot.get("macro_gate", ""),
+                        "clob_up_ask": window_snapshot.get("clob_up_ask"),
+                        "clob_down_ask": window_snapshot.get("clob_down_ask"),
                     }
                     reason = f"VPIN {current_vpin:.3f} ({_snap_regime}), delta {delta_pct:+.4f}%"
                     
