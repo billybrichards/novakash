@@ -31,7 +31,7 @@ TICKERS = {
     "XRP": "xrpusd",
 }
 
-POLL_INTERVAL = 5  # seconds (Tiingo rate limits at ~2s)
+POLL_INTERVAL = 30  # seconds (Tiingo free tier ~100 req/hr = 1 per 36s)
 API_BASE = "https://api.tiingo.com/tiingo/crypto/top"
 SOURCE = "tiingo"
 
