@@ -565,9 +565,15 @@ class TelegramAlerter:
         # AI analysis — shorter in v8.0 (1-2 sentences)
         analysis_msg_id = None
         try:
+            _ti = wd.get("delta_tiingo")
+            _bn = wd.get("delta_binance")
+            _src_detail = ""
+            if _ti is not None and _bn is not None:
+                _src_detail = f" Tiingo Δ{_ti:+.4f}%, Binance Δ{_bn:+.4f}%."
             prompt = (
                 f"BTC 5m {decision} @ ${entry_price:.3f} → {outcome} ({pnl_sign}${pnl_usd:.2f}). "
-                f"Source: {delta_source}. VPIN: {wd.get('vpin', '?')}. "
+                f"Source: {delta_source}. VPIN: {wd.get('vpin', '?')}.{_src_detail} "
+                f"Oracle: {wd.get('actual_direction', '?')}. "
                 f"1 sentence: why did this {'win' if outcome == 'WIN' else 'lose'}?"
             )
             ai_text, ai_source = await self._ai.assess(prompt, timeout_s=6)
@@ -1252,24 +1258,38 @@ class TelegramAlerter:
             elif loss_streak >= 2:
                 streak_ctx = f"Coming off a {loss_streak}-loss streak. "
 
+            # v8.0: include delta source and multi-source data
+            delta_source = meta.get("delta_source", "?")
+            delta_tiingo = meta.get("delta_tiingo")
+            delta_binance = meta.get("delta_binance")
+            delta_chainlink = meta.get("delta_chainlink")
+            confidence_tier = meta.get("confidence_tier", "?")
+            gates = meta.get("gates_passed", "")
+            gate_failed = meta.get("gate_failed", "")
+
+            source_ctx = f"Delta source: {delta_source}. "
+            if delta_tiingo is not None and delta_binance is not None:
+                source_ctx += f"Tiingo Δ{delta_tiingo:+.4f}%, Binance Δ{delta_binance:+.4f}%"
+                if delta_chainlink is not None:
+                    source_ctx += f", Chainlink Δ{delta_chainlink:+.4f}%"
+                source_ctx += ". "
+
             prompt = (
-                f"{asset} {timeframe} trade on Polymarket prediction market.\n"
-                f"Regime: {regime}  VPIN: {vpin:.3f}  Delta: {delta_pct:+.4f}%\n"
-                f"Direction bet: {direction}  Entry price: ${tp:.3f}  "
-                f"Open: ${open_price:,.2f}  Close: ${close_price:,.2f}\n"
-                f"Outcome: {outcome}  PnL: ${pnl:+.2f}\n"
-                f"Entry: {entry_reason}\n"
-                f"{twap_ctx}{tfm_ctx}{streak_ctx}"
-                f"\nWrite 1-2 tight sentences assessing the entry quality and outcome."
+                f"{asset} {timeframe} v8.0 trade. "
+                f"Regime: {regime}, VPIN: {vpin:.3f}, Delta: {delta_pct:+.4f}%\n"
+                f"Direction: {direction}, Entry: ${tp:.3f}, Confidence: {confidence_tier}\n"
+                f"BTC: ${open_price:,.2f}→${close_price:,.2f}. Outcome: {outcome}, PnL: ${pnl:+.2f}\n"
+                f"{source_ctx}{streak_ctx}"
+                f"1 sentence: was this a good entry? Key factor in the {outcome.lower()}."
             )
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     "https://api.anthropic.com/v1/messages",
                     json={
-                        "model": "claude-haiku-4-5",
-                        "max_tokens": 120,
-                        "system": "You are a crypto trading analyst. Be concise and specific.",
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 100,
+                        "system": "You are a crypto trading analyst for Polymarket 5-min prediction markets. The engine uses Tiingo as primary delta source (oracle-aligned). Be concise.",
                         "messages": [{"role": "user", "content": prompt}],
                     },
                     headers={
@@ -1561,7 +1581,7 @@ class DualAIAssessment:
             "content-type": "application/json",
         }
         payload = {
-            "model": "claude-opus-4-6",
+            "model": "claude-sonnet-4-6",
             "max_tokens": 200,
             "messages": [{"role": "user", "content": prompt}],
         }
