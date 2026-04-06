@@ -204,6 +204,273 @@ class TelegramAlerter:
         
         return decision_msg_id, analysis_msg_id
 
+    # ── Clean 5-Stage Lifecycle Notifications ─────────────────────────────────
+
+    async def send_signal_snapshot(
+        self,
+        window_id: str,
+        data: dict,
+        ai_text: Optional[str] = None,
+    ) -> Optional[int]:
+        """
+        ① 📊 SIGNAL (T-90) — Combined market snapshot + AI analysis.
+
+        data keys: vpin, delta_pct, regime, gamma_up, gamma_down,
+                   timesfm_direction, timesfm_confidence,
+                   twap_direction, twap_agreement, btc_price, window_time
+        """
+        try:
+            window_time = data.get("window_time", "?")
+            if not window_time or window_time == "?":
+                try:
+                    ts = int(window_id.split('-')[1])
+                    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                    window_time = dt.strftime('%H:%M')
+                except Exception:
+                    pass
+
+            vpin = data.get("vpin", 0)
+            delta = data.get("delta_pct", 0)
+            regime = data.get("regime", "?")
+            gamma_up = data.get("gamma_up", 0.50)
+            gamma_down = data.get("gamma_down", 0.50)
+            tsf_dir = data.get("timesfm_direction", "?")
+            tsf_conf = data.get("timesfm_confidence", 0)
+            twap_dir = data.get("twap_direction", "?")
+            twap_agree = data.get("twap_agreement", 0)
+            btc = data.get("btc_price", 0)
+            mode = self._mode_tag()
+
+            regime_emoji = _REGIME_EMOJI.get(regime, "📊")
+            dir_arrow = "▲" if delta > 0 else "▼"
+            implied_dir = "UP" if delta > 0 else "DOWN"
+
+            lines = [
+                f"📊 *SIGNAL — BTC window {window_time} UTC*  {mode}",
+                f"`{window_id}`",
+                f"",
+                f"{dir_arrow} `{delta:+.4f}%`  |  VPIN `{vpin:.3f}` {regime_emoji} `{regime}`",
+                f"Gamma ↑`${gamma_up:.3f}` ↓`${gamma_down:.3f}`",
+                f"TimesFM `{tsf_dir}` `{tsf_conf:.0%}` conf  |  TWAP `{twap_dir}` `{twap_agree}/3`",
+            ]
+            if btc:
+                lines.append(f"BTC: `${btc:,.2f}`")
+            if ai_text:
+                lines += ["", f"🤖 _{ai_text}_"]
+            lines += ["", self._footer(window_id)]
+
+            text = "\n".join(lines)
+            msg_id = await self._send_with_id(text)
+            await self._log_notification("signal_snapshot", text, window_id, telegram_message_id=msg_id)
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_signal_snapshot_failed", error=str(exc)[:100])
+            return None
+
+    async def send_trade_decision(
+        self,
+        window_id: str,
+        signal: dict,
+        gamma: dict,
+        ai_text: Optional[str] = None,
+        prev_gamma_up: Optional[float] = None,
+        prev_gamma_down: Optional[float] = None,
+    ) -> Optional[int]:
+        """
+        ② 🎯 DECISION (T-70) — TRADE or SKIP with reason, gamma, R/R, AI analysis.
+
+        signal keys: direction, delta_pct, vpin, regime, decision, reason
+        gamma keys: gamma_up, gamma_down
+        prev_gamma_up/down: Gamma prices recorded at T-90 for comparison
+        """
+        try:
+            window_time = "?"
+            try:
+                ts = int(window_id.split('-')[1])
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                window_time = dt.strftime('%H:%M UTC')
+            except Exception:
+                pass
+
+            direction = signal.get("direction", "?")
+            delta = signal.get("delta_pct", 0)
+            vpin = signal.get("vpin", 0)
+            regime = signal.get("regime", "?")
+            decision = signal.get("decision", "SKIP")
+            reason = signal.get("reason", "")
+            gamma_up = gamma.get("gamma_up", 0.50)
+            gamma_down = gamma.get("gamma_down", 0.50)
+            mode = self._mode_tag()
+
+            entry = gamma_down if direction in ("DOWN", "NO") else gamma_up
+            rr = round((1 - entry) / entry, 1) if entry > 0 else 0
+            d_emoji = "🎯" if decision == "TRADE" else "⏭"
+
+            lines = [
+                f"{d_emoji} *{decision} — {window_time}*  {mode}",
+                f"`{window_id}`",
+                f"",
+                f"Direction: `{direction}` | δ `{delta:+.4f}%` | VPIN `{vpin:.3f}` `{regime}`",
+                f"Gamma ↑`${gamma_up:.3f}` ↓`${gamma_down:.3f}`",
+            ]
+
+            # Show gamma movement vs T-90 if available
+            if prev_gamma_up is not None and prev_gamma_down is not None:
+                prev_entry = prev_gamma_down if direction in ("DOWN", "NO") else prev_gamma_up
+                arrow = "↑" if entry > prev_entry else "↓"
+                lines.append(f"Gamma moved `${prev_entry:.3f}`→`${entry:.3f}` since T-90 {arrow}")
+
+            if decision == "TRADE":
+                lines.append(f"R/R `1:{rr}` | Entry `${entry:.3f}` | Will place at `${entry + 0.02:.3f}`")
+
+            if reason:
+                lines.append(f"_{reason}_")
+
+            if ai_text:
+                lines += ["", f"🤖 _{ai_text}_"]
+
+            if decision == "TRADE" and not self._paper_mode:
+                lines.insert(2, "⚠️ *REAL MONEY ORDER WILL BE PLACED*")
+
+            lines += ["", self._footer(window_id)]
+
+            text = "\n".join(lines)
+            msg_id = await self._send_with_id(text)
+            await self._log_notification("trade_decision", text, window_id, telegram_message_id=msg_id)
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_trade_decision_failed", error=str(exc)[:100])
+            return None
+
+    async def send_order_filled(
+        self,
+        order,
+        fill_price: float,
+        shares: float,
+        gamma_at_fill: Optional[dict] = None,
+        gamma_at_decision: Optional[dict] = None,
+        ai_text: Optional[str] = None,
+    ) -> Optional[int]:
+        """
+        ③ 💰 FILLED — On CLOB MATCHED: shares, fill price, cost, gamma comparison, AI.
+
+        order: Order object with order_id, direction, stake_usd
+        gamma_at_fill: {"gamma_up": x, "gamma_down": y}
+        gamma_at_decision: Gamma at T-70 for comparison
+        """
+        try:
+            mode = self._mode_tag()
+            direction = "DOWN" if getattr(order, "direction", "") == "NO" else "UP"
+            stake = getattr(order, "stake_usd", 0)
+            oid = getattr(order, "order_id", "?")
+            cost = fill_price * shares
+            rr = round((1 - fill_price) / fill_price, 1) if fill_price > 0 else 0
+            profit_if_win = round((1 - fill_price) * shares * 0.98, 2)
+
+            lines = [
+                f"💰 *ORDER FILLED*  {mode}",
+                f"`{oid[:24]}...`",
+                f"",
+                f"Direction: `{direction}`",
+                f"Fill: `${fill_price:.4f}` × `{shares:.2f}` shares",
+                f"Cost: `${cost:.2f}` | Stake: `${stake:.2f}`",
+                f"R/R: `1:{rr}` | If WIN: `+${profit_if_win:.2f}`",
+            ]
+
+            if gamma_at_fill and gamma_at_decision:
+                gf = gamma_at_fill.get("gamma_down" if direction == "DOWN" else "gamma_up", fill_price)
+                gd = gamma_at_decision.get("gamma_down" if direction == "DOWN" else "gamma_up", fill_price)
+                diff = gf - gd
+                lines.append(f"Gamma @ fill `${gf:.3f}` vs decision `${gd:.3f}` ({diff:+.3f})")
+
+            if ai_text:
+                lines += ["", f"🤖 _{ai_text}_"]
+
+            lines += ["", self._footer()]
+
+            text = "\n".join(lines)
+            msg_id = await self._send_with_id(text)
+            await self._log_notification("order_filled", text, telegram_message_id=msg_id)
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_order_filled_failed", error=str(exc)[:100])
+            return None
+
+    async def send_trade_result(
+        self,
+        order,
+        outcome: str,
+        pnl: float,
+        ai_text: Optional[str] = None,
+    ) -> Optional[int]:
+        """
+        ④ ✅❌ RESULT — WIN/LOSS from Polymarket oracle, P&L, AI post-trade analysis.
+
+        NEVER uses Binance for resolution — outcome must come from Polymarket.
+        """
+        try:
+            mode = self._mode_tag()
+            meta = getattr(order, "metadata", {}) or {}
+            direction = "DOWN" if getattr(order, "direction", "") == "NO" else "UP"
+            entry_price = float(getattr(order, "price", 0) or 0)
+            window_id = f"{meta.get('asset', 'BTC')}-{int(meta.get('window_ts', 0))}"
+            stake = getattr(order, "stake_usd", 0)
+
+            result_emoji = "✅" if outcome == "WIN" else "❌"
+            pnl_sign = "+" if pnl >= 0 else ""
+
+            lines = [
+                f"{result_emoji} *{outcome} — Polymarket Resolution*  {mode}",
+                f"`{window_id}`",
+                f"",
+                f"Direction: `{direction}` @ `${entry_price:.3f}`",
+                f"P&L: `{pnl_sign}${pnl:.2f}` | Stake: `${stake:.2f}`",
+            ]
+
+            # Portfolio summary
+            pf = self._portfolio_line()
+            if pf:
+                lines += ["", pf]
+
+            if ai_text:
+                lines += ["", f"🤖 _{ai_text}_"]
+
+            lines += ["", self._footer(window_id)]
+
+            text = "\n".join(lines)
+            msg_id = await self._send_with_id(text)
+            await self._log_notification("trade_result", text, window_id, telegram_message_id=msg_id)
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_trade_result_failed", error=str(exc)[:100])
+            return None
+
+    async def send_redemption(
+        self,
+        amount: float,
+        new_balance: float,
+    ) -> Optional[int]:
+        """
+        ⑤ 🔄 REDEEMED — Amount returned to wallet, new wallet balance.
+        """
+        try:
+            mode = self._mode_tag()
+            sign = "+" if amount >= 0 else ""
+            text = (
+                f"🔄 *REDEEMED*  {mode}\n"
+                f"\n"
+                f"Amount returned: `{sign}${amount:.2f}` USDC\n"
+                f"New wallet balance: `${new_balance:.2f}` USDC\n"
+                f"\n"
+                f"{self._footer()}"
+            )
+            msg_id = await self._send_with_id(text)
+            await self._log_notification("redemption", text, telegram_message_id=msg_id)
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_redemption_failed", error=str(exc)[:100])
+            return None
+
     async def send_outcome_with_analysis(
         self,
         window_id: str,

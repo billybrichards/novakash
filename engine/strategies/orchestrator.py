@@ -1072,12 +1072,15 @@ class Orchestrator:
                             pass
                     return _vpin, _btc, _d, _regime, _tsf_dir, _tsf_conf, _tsf_pred, _tw_dir, _tw_agree, _cg_taker, _cg_fund, _ticks, _ai
 
-                # Snapshot windows: T-240, T-180, T-120, T-90
+                # Snapshot windows: T-240, T-210, T-180, T-150, T-120, T-90, T-70
                 _snapshot_windows = [
                     ("T-240", 242, 220),
+                    ("T-210", 212, 190),
                     ("T-180", 182, 160),
+                    ("T-150", 152, 130),
                     ("T-120", 122, 100),
-                    ("T-90", 92, 70),
+                    ("T-90",   92,  70),
+                    ("T-70",   72,  55),
                 ]
                 for _t_lbl, _hi, _lo in _snapshot_windows:
                     if _remaining <= _hi and _remaining >= _lo and _t_lbl not in self._countdown_sent[_wkey]:
@@ -1085,6 +1088,51 @@ class Orchestrator:
                         _elapsed_now = int(window.duration_secs - _remaining)
                         (_vpin, _btc, _d, _regime, _tsf_dir, _tsf_conf, _tsf_pred,
                          _tw_dir, _tw_agree, _cg_taker, _cg_fund, _ticks, _ai) = await _get_full_snapshot(_t_lbl, _elapsed_now)
+
+                        # ── Fetch fresh Gamma prices for this stage ──────────
+                        _snap_gamma_up = window.up_price or 0.50
+                        _snap_gamma_down = window.down_price or 0.50
+                        try:
+                            _slug = f"{window.asset.lower()}-updown-{_tf}-{window.window_ts}"
+                            import aiohttp as _ah_gamma
+                            async with _ah_gamma.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as _gs:
+                                async with _gs.get(
+                                    f"https://gamma-api.polymarket.com/events?slug={_slug}",
+                                    timeout=_ah_gamma.ClientTimeout(total=5),
+                                ) as _gr:
+                                    if _gr.status == 200:
+                                        _gd = await _gr.json()
+                                        if _gd and isinstance(_gd, list) and _gd[0].get("markets"):
+                                            _gm = _gd[0]["markets"][0]
+                                            _ba = _gm.get("bestAsk")
+                                            if _ba is not None:
+                                                _snap_gamma_up = round(float(_ba), 4)
+                                                _snap_gamma_down = round(1.0 - _snap_gamma_up, 4)
+                        except Exception:
+                            pass
+
+                        # ── Write snapshot to countdown_evaluations DB ───────
+                        try:
+                            _twap_agree_bool = (_tw_agree >= 2) if _tw_agree is not None else None
+                            _eval_notes = (
+                                f"gamma_up={_snap_gamma_up:.4f},gamma_down={_snap_gamma_down:.4f},"
+                                f"vpin={_vpin:.4f},delta_pct={_d:.4f},regime={_regime},"
+                                f"tsf_dir={_tsf_dir},tsf_conf={_tsf_conf:.3f},"
+                                f"twap_dir={_tw_dir},twap_agree={_tw_agree},"
+                                f"btc={_btc:.2f}"
+                            )
+                            asyncio.create_task(self._db.write_countdown_evaluation({
+                                "window_ts": window.window_ts,
+                                "stage": _t_lbl,
+                                "direction": _tsf_dir or ("UP" if _d > 0 else "DOWN"),
+                                "confidence": _tsf_conf,
+                                "agreement": _twap_agree_bool,
+                                "action": "SNAPSHOT",
+                                "notes": _eval_notes,
+                            }))
+                        except Exception:
+                            pass
+
                         if self._alerter:
                             asyncio.create_task(self._alerter.send_window_snapshot(
                                 window_id=_window_id,
@@ -1101,8 +1149,8 @@ class Orchestrator:
                                 timesfm_direction=_tsf_dir,
                                 timesfm_confidence=_tsf_conf,
                                 timesfm_predicted=_tsf_pred,
-                                gamma_up=window.up_price or 0.50,
-                                gamma_down=window.down_price or 0.50,
+                                gamma_up=_snap_gamma_up,
+                                gamma_down=_snap_gamma_down,
                                 cg_taker_buy_pct=_cg_taker,
                                 cg_funding_annual=_cg_fund,
                                 stake_usd=4.0,

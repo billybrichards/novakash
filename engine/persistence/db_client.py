@@ -851,3 +851,45 @@ class DBClient:
                 )
         except Exception:
             pass
+
+    async def write_countdown_evaluation(self, data: dict) -> None:
+        """
+        Persist a multi-stage countdown snapshot to countdown_evaluations table.
+
+        Args:
+            data: dict with keys:
+                window_ts, stage, direction, confidence, agreement, action, notes
+        """
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO countdown_evaluations
+                       (window_ts, stage, direction, confidence, agreement, action, notes, evaluated_at)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())""",
+                    int(data.get("window_ts", 0)),
+                    data.get("stage", ""),
+                    data.get("direction"),
+                    float(data.get("confidence", 0)) if data.get("confidence") is not None else None,
+                    bool(data.get("agreement")) if data.get("agreement") is not None else None,
+                    data.get("action"),
+                    data.get("notes"),
+                )
+        except Exception as exc:
+            log.debug("db.write_countdown_evaluation_failed", error=str(exc)[:120])
+
+    async def write_evaluation(self, data: dict) -> None:
+        """
+        Write a Claude evaluation to countdown_evaluations (compatibility shim).
+        Maps claude_evaluator's write_evaluation call to the countdown_evaluations table.
+        """
+        await self.write_countdown_evaluation({
+            "window_ts": int(data.get("timestamp", 0)),
+            "stage": "claude_eval",
+            "direction": data.get("direction"),
+            "confidence": data.get("confidence"),
+            "agreement": data.get("trade_placed"),
+            "action": "TRADE" if data.get("trade_placed") else "SKIP",
+            "notes": data.get("analysis", "")[:2000] if data.get("analysis") else None,
+        })

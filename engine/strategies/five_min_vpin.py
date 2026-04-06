@@ -1266,33 +1266,44 @@ class FiveMinVPINStrategy(BaseStrategy):
                             _profit_if_win = round((1 - _fill_px) * _shares * 0.98, 2)
                             _dir = "DOWN" if order.direction == "NO" else "UP"
                             _mode = "📄 PAPER" if self._poly.paper_mode else "🔴 LIVE"
-                            
-                            async def _send_fill_notif():
-                                # Main notification
-                                await self._alerter._send_with_id(
-                                    f"💰 *BET PLACED — FILLED*  {_mode}\n"
-                                    f"`{order.order_id[:20]}...`\n\n"
-                                    f"Direction: `{_dir}`\n"
-                                    f"Fill: `${_fill_px:.3f}` × `{_shares:.1f}` shares\n"
-                                    f"Cost: `${order.stake_usd:.2f}`\n"
-                                    f"R/R: `1:{_rr}` | If WIN: `+${_profit_if_win:.2f}`\n"
-                                    f"Fill time: `{elapsed}s`"
-                                )
-                                # Brief AI analysis on the fill
+                            _oid = order.order_id
+                            _stake = order.stake_usd
+
+                            # Use explicit parameters to avoid closure capture bugs
+                            async def _send_fill_notif(
+                                _mode=_mode, _dir=_dir, _fill_px=_fill_px,
+                                _shares=_shares, _stake=_stake, _rr=_rr,
+                                _profit_if_win=_profit_if_win, _elapsed=elapsed,
+                                _oid=_oid,
+                            ):
                                 try:
-                                    _prompt = (
-                                        f"BTC 5-min bet just FILLED on Polymarket. {_dir} @ ${_fill_px:.3f}, "
-                                        f"{_shares:.0f} shares, ${order.stake_usd:.0f} stake. "
-                                        f"R/R is 1:{_rr}. If win: +${_profit_if_win:.2f}. "
-                                        f"In 1 sentence: is this a good fill price and what's the likely outcome?"
-                                    )
-                                    _ai_text, _ai_src = await self._alerter._ai.assess(_prompt, timeout_s=8)
+                                    # Main notification
                                     await self._alerter._send_with_id(
-                                        f"🤖 *Fill Analysis* — `{_ai_src.upper()}`\n_{_ai_text}_"
+                                        f"💰 *BET PLACED — FILLED*  {_mode}\n"
+                                        f"`{_oid[:20]}...`\n\n"
+                                        f"Direction: `{_dir}`\n"
+                                        f"Fill: `${_fill_px:.3f}` × `{_shares:.1f}` shares\n"
+                                        f"Cost: `${_stake:.2f}`\n"
+                                        f"R/R: `1:{_rr}` | If WIN: `+${_profit_if_win:.2f}`\n"
+                                        f"Fill time: `{_elapsed}s`"
                                     )
-                                except Exception:
-                                    pass
-                            
+                                    # Brief AI analysis on the fill
+                                    try:
+                                        _prompt = (
+                                            f"BTC 5-min bet just FILLED on Polymarket. {_dir} @ ${_fill_px:.3f}, "
+                                            f"{_shares:.0f} shares, ${_stake:.0f} stake. "
+                                            f"R/R is 1:{_rr}. If win: +${_profit_if_win:.2f}. "
+                                            f"In 1 sentence: is this a good fill price and what's the likely outcome?"
+                                        )
+                                        _ai_text, _ai_src = await self._alerter._ai.assess(_prompt, timeout_s=8)
+                                        await self._alerter._send_with_id(
+                                            f"🤖 *Fill Analysis* — `{_ai_src.upper()}`\n_{_ai_text}_"
+                                        )
+                                    except Exception:
+                                        pass
+                                except Exception as _inner_exc:
+                                    self._log.error("trade.fill_notif_inner_error", error=str(_inner_exc)[:100])
+
                             asyncio.create_task(_send_fill_notif())
                             self._log.info("trade.fill_notif_spawned")
                         except Exception as _notif_err:
