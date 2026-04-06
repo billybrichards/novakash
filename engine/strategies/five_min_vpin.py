@@ -1257,6 +1257,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                     filled = float(size_matched) > 0 if size_matched else False
                     
                     # Immediate Telegram notification on MATCHED
+                    self._log.info("trade.fill_status", filled=filled, has_alerter=bool(self._alerter), elapsed=elapsed)
                     if filled and self._alerter:
                         try:
                             _shares = float(size_matched)
@@ -1293,8 +1294,9 @@ class FiveMinVPINStrategy(BaseStrategy):
                                     pass
                             
                             asyncio.create_task(_send_fill_notif())
-                        except Exception:
-                            pass
+                            self._log.info("trade.fill_notif_spawned")
+                        except Exception as _notif_err:
+                            self._log.error("trade.fill_notif_error", error=str(_notif_err)[:100])
                     
                     self._log.info(
                         "trade.fill_check",
