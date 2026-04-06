@@ -1256,6 +1256,18 @@ class FiveMinVPINStrategy(BaseStrategy):
                     size_matched = status.get("size_matched", "0")
                     filled = float(size_matched) > 0 if size_matched else False
                     
+                    # Immediate Telegram notification on first meaningful status
+                    if elapsed == POLL_INTERVAL and self._alerter:
+                        try:
+                            _st = "✅ FILLED" if filled else f"⏳ {clob_status}"
+                            _det = f"{size_matched} shares @ ~${order.stake_usd/float(size_matched):.3f}" if filled and float(size_matched) > 0 else "Waiting for counterparty..."
+                            asyncio.create_task(self._alerter._send_with_id(
+                                f"📋 *CLOB STATUS: {_st}*  🔴 LIVE\n"
+                                f"`{order.order_id[:20]}...`\n{_det}"
+                            ))
+                        except Exception:
+                            pass
+                    
                     self._log.info(
                         "trade.fill_check",
                         order_id=order.order_id[:20] + "...",
