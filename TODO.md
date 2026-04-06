@@ -2,6 +2,24 @@
 
 ## 🔴 HIGH PRIORITY
 
+### Retry Order ID Mismatch (Resolution Callback Bug)
+**Status:** TODO — causes resolution loop error on retry orders
+**What:** When FOK fails and GTC retry is placed, the retry order gets a NEW CLOB order ID.
+But the order_manager only knows the original ID. When Polymarket resolves the retry order,
+`resolve_order()` raises KeyError because the new ID isn't registered.
+**Impact:** Wins/losses from retry orders don't get recorded to DB automatically.
+Had to manually record the 08:50 WIN (+$7.70).
+**Fix:** Register retry order IDs in order_manager, or map retry→original ID.
+**Files:** `engine/execution/order_manager.py`, `engine/strategies/five_min_vpin.py` (retry logic)
+
+### Redemption Timing Issue
+**Status:** TODO — redemption submits but doesn't execute for fresh positions
+**What:** Redeemer successfully submits via Builder Relayer (PROXY type) but fresh live trade
+positions don't redeem immediately. Older positions (Apr 4) redeemed fine.
+**Theory:** Fresh positions need more time to settle on-chain before redemption works.
+**Fix:** Add retry with delay (try again after 5-10 min) or check settlement status first.
+**Files:** `engine/execution/redeemer.py`
+
 ### V2 Probability Gate (TimesFM v2 LightGBM)
 **Status:** TODO — data validated, API live, needs engine integration
 **Endpoint:** `http://3.98.114.0:8080/v2/probability?asset=BTC&seconds_to_close=60`
