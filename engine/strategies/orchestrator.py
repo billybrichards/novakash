@@ -509,7 +509,7 @@ class Orchestrator:
         # ── CLOB Book Feed (real Polymarket bid/ask, every 10s) ──────────────
         try:
             if self._order_manager and self._db and self._db._pool:
-                _poly_client = getattr(self._order_manager, '_poly', None)
+                _poly_client = getattr(self._order_manager, '_poly_client', None)
                 _five_min_feed = getattr(self, '_strategy', None)
                 if _poly_client:
                     self._clob_feed = CLOBFeed(
