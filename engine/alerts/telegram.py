@@ -473,6 +473,70 @@ class TelegramAlerter:
             self._log.warning("telegram.send_trade_result_failed", error=str(exc)[:100])
             return None
 
+    async def send_shadow_resolution(
+        self,
+        window_id: str,
+        direction: str,
+        entry_price: float,
+        oracle_direction: str,
+        shadow_pnl: float,
+        skip_reason: str,
+        confidence_tier: str,
+    ) -> Optional[int]:
+        """
+        👻 SHADOW — notify when a skipped window's oracle outcome is resolved.
+
+        Shows whether the skipped trade would have won or lost, helping Billy
+        evaluate if our gates are too aggressive.
+
+        Format (correct signal):
+            👻 SHADOW — BTC 5m | 21:55 UTC | v8.0
+            ━━━━━━━━━━━━━━━━━━━━━━━━
+            Signal was: UP @ $0.32 (HIGH)
+            Oracle resolved: UP ✅
+            Shadow P&L: +$3.33 (missed profit)
+            Skip reason: delta 0.004% < 0.020%
+
+        Format (wrong signal):
+            👻 SHADOW — BTC 5m | 21:55 UTC | v8.0
+            ━━━━━━━━━━━━━━━━━━━━━━━━
+            Signal was: DOWN @ $0.67 (MODERATE)
+            Oracle resolved: UP ❌
+            Shadow P&L: -$3.35 (avoided loss)
+            Skip reason: VPIN 0.43 < gate 0.45
+        """
+        try:
+            window_time = "?"
+            try:
+                ts = int(window_id.split("-")[1])
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                window_time = dt.strftime("%H:%M UTC")
+            except Exception:
+                pass
+
+            signal_correct = (direction == oracle_direction)
+            oracle_emoji = "✅" if signal_correct else "❌"
+            pnl_sign = "+" if shadow_pnl >= 0 else ""
+            pnl_label = "missed profit" if shadow_pnl > 0 else "avoided loss"
+
+            text = (
+                f"👻 *SHADOW — BTC 5m | {window_time} | {self._engine_version}*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Signal was: `{direction}` @ `${entry_price:.2f}` (`{confidence_tier}`)\n"
+                f"Oracle resolved: `{oracle_direction}` {oracle_emoji}\n"
+                f"Shadow P&L: `{pnl_sign}${shadow_pnl:.2f}` ({pnl_label})\n"
+                f"Skip reason: _{skip_reason[:100]}_\n"
+            )
+
+            msg_id = await self._send_with_id(text)
+            await self._log_notification(
+                "shadow_resolution", text, window_id, telegram_message_id=msg_id
+            )
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_shadow_resolution_failed", error=str(exc)[:100])
+            return None
+
     async def send_redemption(
         self,
         amount: float,

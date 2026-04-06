@@ -1054,6 +1054,113 @@ class DBClient:
             "notes": data.get("analysis", "")[:2000] if data.get("analysis") else None,
         })
 
+    # ─── Shadow Trade Resolution ──────────────────────────────────────────────
+
+    async def ensure_shadow_columns(self) -> None:
+        """Add shadow trade resolution columns to window_snapshots if missing."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                for col, col_type in [
+                    ("shadow_trade_direction", "VARCHAR(4)"),
+                    ("shadow_trade_entry_price", "DOUBLE PRECISION"),
+                    ("oracle_outcome", "VARCHAR(4)"),
+                    ("shadow_pnl", "DOUBLE PRECISION"),
+                    ("shadow_would_win", "BOOLEAN"),
+                ]:
+                    await conn.execute(
+                        f"ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS {col} {col_type}"
+                    )
+            log.info("db.shadow_columns_ensured")
+        except Exception as exc:
+            log.warning("db.ensure_shadow_columns_failed", error=str(exc))
+
+    async def get_unresolved_shadow_windows(self, minutes_back: int = 10) -> list:
+        """
+        Get recent skipped windows that haven't been shadow-resolved yet.
+
+        Returns window_snapshots rows where:
+          - trade_placed = FALSE (skipped)
+          - shadow_trade_direction IS NOT NULL
+          - oracle_outcome IS NULL (not yet resolved)
+          - window_ts > now() - interval (recent enough to query)
+        """
+        if not self._pool:
+            return []
+        try:
+            cutoff_ts = int(__import__("time").time()) - (minutes_back * 60)
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT window_ts, asset, timeframe,
+                           shadow_trade_direction, shadow_trade_entry_price,
+                           skip_reason, confidence
+                    FROM window_snapshots
+                    WHERE trade_placed = FALSE
+                      AND shadow_trade_direction IS NOT NULL
+                      AND oracle_outcome IS NULL
+                      AND window_ts > $1
+                    ORDER BY window_ts DESC
+                    LIMIT 20
+                    """,
+                    cutoff_ts,
+                )
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            log.warning("db.get_unresolved_shadow_windows_failed", error=str(exc))
+            return []
+
+    async def update_shadow_resolution(
+        self,
+        window_ts: int,
+        asset: str,
+        timeframe: str,
+        oracle_outcome: str,
+        shadow_pnl: float,
+        shadow_would_win: bool,
+    ) -> None:
+        """
+        Update a skipped window with oracle resolution for shadow trade analysis.
+
+        Args:
+            window_ts:       Window open timestamp (unix int)
+            asset:           e.g. "BTC"
+            timeframe:       e.g. "5m"
+            oracle_outcome:  "UP" or "DOWN" (what Polymarket oracle resolved)
+            shadow_pnl:      Simulated P&L if the trade had been placed
+            shadow_would_win: True if shadow_trade_direction matched oracle_outcome
+        """
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE window_snapshots
+                    SET oracle_outcome  = $1,
+                        shadow_pnl      = $2,
+                        shadow_would_win = $3
+                    WHERE window_ts = $4 AND asset = $5 AND timeframe = $6
+                    """,
+                    oracle_outcome,
+                    shadow_pnl,
+                    shadow_would_win,
+                    window_ts,
+                    asset,
+                    timeframe,
+                )
+            log.debug(
+                "db.shadow_resolution_updated",
+                window_ts=window_ts,
+                asset=asset,
+                oracle_outcome=oracle_outcome,
+                shadow_pnl=f"{shadow_pnl:+.2f}",
+                shadow_would_win=shadow_would_win,
+            )
+        except Exception as exc:
+            log.error("db.update_shadow_resolution_failed", error=str(exc))
+
     async def write_gate_audit(self, data: dict) -> None:
         """
         Write a gate audit record for every window evaluation (v8.0).

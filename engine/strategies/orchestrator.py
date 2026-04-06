@@ -643,7 +643,20 @@ class Orchestrator:
             asyncio.create_task(self._resolution_loop(), name="resolution_poller")
         )
 
-        # 6b. Polymarket reconciliation loop (every 5 min) — live mode only
+        # 6b. Shadow trade resolution loop (every 30s) — evaluates skipped windows
+        self._tasks.append(
+            asyncio.create_task(
+                self._shadow_resolution_loop(), name="shadow_resolution"
+            )
+        )
+
+        # 6c. Ensure shadow columns exist in window_snapshots
+        try:
+            await self._db.ensure_shadow_columns()
+        except Exception as exc:
+            log.warning("orchestrator.ensure_shadow_columns_failed", error=str(exc))
+
+        # 6e. Polymarket reconciliation loop (every 5 min) — live mode only
         if not self._settings.paper_mode:
             self._tasks.append(
                 asyncio.create_task(
@@ -2332,6 +2345,200 @@ class Orchestrator:
                 break
             except asyncio.TimeoutError:
                 pass
+
+    # ── Shadow Trade Resolution Loop ─────────────────────────────────────────
+
+    async def _shadow_resolution_loop(self) -> None:
+        """
+        Every 30s: resolve oracle outcomes for skipped (shadow) windows.
+
+        For each recent skipped window (trade_placed=FALSE) with a shadow signal
+        that hasn't been oracle-resolved yet, query the Polymarket Gamma API to
+        check whether the market settled UP or DOWN. Then:
+          - Compute shadow P&L (what we would have won/lost)
+          - Write oracle_outcome, shadow_pnl, shadow_would_win to DB
+          - Send Telegram notification
+
+        Rate limiting: batch all windows, one API call per window, 0.5s delay between.
+        Resolution typically happens ~4 min after window close (oracle lag).
+        """
+        import aiohttp as _aiohttp
+
+        POLL_INTERVAL = 30  # seconds between sweeps
+        API_DELAY = 0.5    # seconds between Gamma API calls (rate limit)
+        STAKE_USD = 5.0    # shadow stake for P&L calculation
+        FEE_MULT = 0.98    # 2% fee on winnings
+
+        log.info("shadow_resolution_loop.started")
+
+        while not self._shutdown_event.is_set():
+            try:
+                # Fetch unresolved skipped windows from last 10 min
+                unresolved = await self._db.get_unresolved_shadow_windows(minutes_back=10)
+
+                if unresolved:
+                    log.debug(
+                        "shadow_resolution.checking",
+                        count=len(unresolved),
+                    )
+
+                for row in unresolved:
+                    if self._shutdown_event.is_set():
+                        break
+
+                    window_ts = row["window_ts"]
+                    asset = row.get("asset", "BTC")
+                    timeframe = row.get("timeframe", "5m")
+                    shadow_dir = row.get("shadow_trade_direction")
+                    entry_price = row.get("shadow_trade_entry_price")
+                    skip_reason = row.get("skip_reason") or "unknown"
+                    confidence_raw = row.get("confidence")
+
+                    # Map confidence float → tier label
+                    confidence_tier = "LOW"
+                    if confidence_raw is not None:
+                        if confidence_raw >= 0.80:
+                            confidence_tier = "HIGH"
+                        elif confidence_raw >= 0.60:
+                            confidence_tier = "MODERATE"
+
+                    if not shadow_dir or entry_price is None:
+                        continue
+
+                    # Build Gamma API slug: btc-updown-5m-{window_ts}
+                    slug = f"{asset.lower()}-updown-{timeframe}-{window_ts}"
+                    url = f"https://gamma-api.polymarket.com/events?slug={slug}"
+
+                    try:
+                        async with _aiohttp.ClientSession(
+                            headers={"User-Agent": "Mozilla/5.0"}
+                        ) as session:
+                            async with session.get(
+                                url,
+                                timeout=_aiohttp.ClientTimeout(total=10),
+                            ) as resp:
+                                if resp.status != 200:
+                                    log.debug(
+                                        "shadow_resolution.api_error",
+                                        slug=slug,
+                                        status=resp.status,
+                                    )
+                                    await asyncio.sleep(API_DELAY)
+                                    continue
+
+                                data = await resp.json()
+                    except Exception as api_exc:
+                        log.debug(
+                            "shadow_resolution.api_exception",
+                            slug=slug,
+                            error=str(api_exc)[:80],
+                        )
+                        await asyncio.sleep(API_DELAY)
+                        continue
+
+                    # Parse response
+                    try:
+                        if not data or not isinstance(data, list) or not data[0].get("markets"):
+                            # Market not found yet — skip until next sweep
+                            await asyncio.sleep(API_DELAY)
+                            continue
+
+                        market = data[0]["markets"][0]
+
+                        # Check if resolved
+                        if not market.get("resolved"):
+                            # Not settled yet — oracle hasn't closed
+                            await asyncio.sleep(API_DELAY)
+                            continue
+
+                        # outcomePrices: [1, 0] = UP won, [0, 1] = DOWN won
+                        outcome_prices = market.get("outcomePrices", [])
+                        if len(outcome_prices) < 2:
+                            await asyncio.sleep(API_DELAY)
+                            continue
+
+                        # Polymarket UP is outcomes[0], DOWN is outcomes[1]
+                        try:
+                            up_price_final = float(outcome_prices[0])
+                            down_price_final = float(outcome_prices[1])
+                        except (ValueError, TypeError):
+                            await asyncio.sleep(API_DELAY)
+                            continue
+
+                        # Determine oracle winner
+                        if up_price_final >= 0.99:
+                            oracle_direction = "UP"
+                        elif down_price_final >= 0.99:
+                            oracle_direction = "DOWN"
+                        else:
+                            # Not yet fully settled (prices not at 0/1)
+                            await asyncio.sleep(API_DELAY)
+                            continue
+
+                        # Compute shadow P&L
+                        shadow_would_win = (shadow_dir == oracle_direction)
+                        if shadow_would_win:
+                            # Win: (1 - entry_price) * stake * fee_mult
+                            shadow_pnl = (1.0 - float(entry_price)) * STAKE_USD * FEE_MULT
+                        else:
+                            # Loss: -entry_price * stake
+                            shadow_pnl = -float(entry_price) * STAKE_USD
+
+                        # Persist to DB
+                        await self._db.update_shadow_resolution(
+                            window_ts=window_ts,
+                            asset=asset,
+                            timeframe=timeframe,
+                            oracle_outcome=oracle_direction,
+                            shadow_pnl=round(shadow_pnl, 2),
+                            shadow_would_win=shadow_would_win,
+                        )
+
+                        # Send Telegram notification
+                        window_id = f"{asset}-{window_ts}"
+                        await self._alerter.send_shadow_resolution(
+                            window_id=window_id,
+                            direction=shadow_dir,
+                            entry_price=float(entry_price),
+                            oracle_direction=oracle_direction,
+                            shadow_pnl=round(shadow_pnl, 2),
+                            skip_reason=skip_reason,
+                            confidence_tier=confidence_tier,
+                        )
+
+                        log.info(
+                            "shadow_resolution.resolved",
+                            window_ts=window_ts,
+                            asset=asset,
+                            shadow_dir=shadow_dir,
+                            oracle_direction=oracle_direction,
+                            shadow_would_win=shadow_would_win,
+                            shadow_pnl=f"{shadow_pnl:+.2f}",
+                        )
+
+                    except Exception as parse_exc:
+                        log.warning(
+                            "shadow_resolution.parse_error",
+                            slug=slug,
+                            error=str(parse_exc)[:120],
+                        )
+
+                    await asyncio.sleep(API_DELAY)
+
+            except Exception as exc:
+                log.error("shadow_resolution_loop.error", error=str(exc)[:120])
+
+            # Wait 30s between sweeps
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=float(POLL_INTERVAL),
+                )
+                break
+            except asyncio.TimeoutError:
+                pass  # Normal — continue loop
+
+        log.info("shadow_resolution_loop.stopped")
 
     # ── G1 & G3: Staggered Execution + Single Best Signal ────────────────────
 
