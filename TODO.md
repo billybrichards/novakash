@@ -117,3 +117,23 @@ Code is stable, tested, ready for Montreal restart.
 - Claude maxed out? Qwen will take over automatically
 - Raw trade data always preserved (AI analysis in separate messages)
 - v7.1 WR: 73.3% on backfilled 120 windows
+
+### FOK Ladder (ORDER_PRICING_MODE=fokladder)
+**Status:** TODO — full plan at docs/FOK_LADDER_PLAN.md
+**What:** Rapid FOK attempts with fresh Gamma every 2s, fast re-eval (delta/VPIN/floor/cap) at each step, GTD fallback
+**Why:** 96.9% of unfilled trades would have won. Need higher fill rate.
+**Blocking:** Must investigate Polymarket oracle resolution first (BTC goes DOWN but oracle says UP)
+
+### Signal Component Modularity
+**Status:** TODO
+**What:** Make each evaluator independently toggleable via env var:
+- TIMESFM_ENABLED, TWAP_ENABLED, CG_VETO_ENABLED, TWAP_OVERRIDE_ENABLED
+**Why:** Test combinations, disable TWAP override that flips direction wrong
+
+### Polymarket Oracle Investigation
+**Status:** TODO — BLOCKING for FOK ladder
+**What:** Understand exactly how UpDown oracle resolves:
+- What price source? (Binance, Chainlink, Pyth?)
+- What timestamp? (window close? +4min?)
+- Open→close or TWAP/VWAP?
+**Why:** Multiple trades where BTC moved in our direction but oracle disagreed
