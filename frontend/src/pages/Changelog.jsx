@@ -27,10 +27,54 @@ const C = {
 
 const RELEASES = [
   {
+    version: '7.2',
+    date: '2026-04-06',
+    title: 'v7.2 — Multi-Source Delta & 7-Feed Data Pipeline',
+    tag: 'current',
+    changes: [
+      { type: 'feat', text: 'Multi-source delta: Chainlink (primary), Tiingo, Binance calculated independently at T-60 evaluation' },
+      { type: 'feat', text: 'Chainlink Multi-Asset Feed — BTC/ETH/SOL/XRP oracle prices on Polygon mainnet (5s polls, ticks_chainlink)' },
+      { type: 'feat', text: 'Tiingo Top-of-Book Feed — multi-exchange bid/ask with exchange attribution (2s polls, ticks_tiingo)' },
+      { type: 'feat', text: 'CLOB Order Book Feed — ground truth Polymarket bid/ask every 10s (replaces stale Gamma pricing)' },
+      { type: 'feat', text: 'DELTA_PRICE_SOURCE env var — select chainlink/tiingo/binance as primary delta source' },
+      { type: 'feat', text: 'Enhanced countdown + resolution recording with all price sources at window open + close' },
+      { type: 'feat', text: 'Window snapshots: chainlink_open/close, tiingo_open/close, clob_up/down_bid/ask columns' },
+      { type: 'fix', text: 'Tiingo rate limit — upgraded to 10K req/hr tier, 2s polling (was 5s→30s→60s→90s)' },
+      { type: 'fix', text: 'Chainlink round_id stored as TEXT for uint80 compatibility' },
+      { type: 'fix', text: 'Chainlink uses sync Web3 (async HTTPProvider not available on Polygon)' },
+      { type: 'data', text: 'Binance diverges from Polymarket oracle 57% of the time — Chainlink matches oracle' },
+      { type: 'data', text: '7 data feeds now active: Binance WS, Chainlink, Tiingo, CoinGlass, Gamma, TimesFM, CLOB' },
+    ],
+  },
+  {
+    version: '7.1.1',
+    date: '2026-04-05',
+    title: 'v7.1.1 — Live Trading Fixes & VPIN Warm Start',
+    tag: '',
+    changes: [
+      { type: 'fix', text: 'CRITICAL: Live trades ONLY resolve from Polymarket oracle, never Binance (5af81b5)' },
+      { type: 'fix', text: 'Paper mode also resolves from Polymarket oracle only (fe4fbe3)' },
+      { type: 'fix', text: 'Price FLOOR check — block entries below $0.30 (73a636d)' },
+      { type: 'fix', text: 'CRITICAL: revert to single GTC order — FOK retry strategy had 28% WR, -$35 (2b0a5a1)' },
+      { type: 'fix', text: 'Redeemer: PROXY tx type + Transaction (not SafeTransaction) (6eb6a3d)' },
+      { type: 'fix', text: 'Redeemer starts on PAPER→LIVE mode switch, not only at boot (c0e9681)' },
+      { type: 'fix', text: 'Persist actual CLOB fill price to DB after MATCHED confirmation (eb12f4e)' },
+      { type: 'fix', text: 'DB sync: retry ID alias, fill price, gamma INSERT, reconciler loop (8c680ab)' },
+      { type: 'feat', text: 'VPIN warm start — loads 30min of ticks from DB on engine restart (88c71e8)' },
+      { type: 'feat', text: 'Configurable ORDER_PRICING_MODE — cap or bestask (41eeb37)' },
+      { type: 'feat', text: 'Dual-AI notifications — Claude primary, Qwen122b fallback (c0c48f7)' },
+      { type: 'feat', text: 'Telegram lifecycle: BET PLACED + CLOB status + AI fill analysis + resolution' },
+      { type: 'feat', text: 'Live Trading page with wallet status, live/paper mode toggle (380688b)' },
+      { type: 'feat', text: 'Strategy Analysis page — 30-day Polymarket backtest (9eef57f)' },
+      { type: 'data', text: 'FOK retry: 28% WR, -$35 over 2 days → reverted to simple GTC' },
+      { type: 'data', text: '96.9% of unfilled trades would have won — adverse selection confirmed' },
+    ],
+  },
+  {
     version: '7.1',
     date: '2026-04-05',
     title: 'v7.1 — CoinGlass Modifier Overhaul',
-    tag: 'current',
+    tag: '',
     changes: [
       { type: 'fix', text: 'CG veto threshold: 3+ → 2+ signals required (was too forgiving)' },
       { type: 'fix', text: 'Funding rate bug: extreme positive funding now correctly vetos DOWN bets (was only checking negative funding)' },
@@ -196,58 +240,58 @@ const RELEASES = [
 const TODO = [
   {
     priority: 'high',
-    category: 'Data & Validation',
+    category: 'Signal Gating',
     items: [
-      { text: 'Collect 48-72h of real Gamma entry prices for accurate P&L', status: 'in-progress', note: 'Engine now records real prices. Need time to accumulate.' },
-      { text: 'Validate accuracy in bullish/sideways regime (current data is all bearish)', status: 'todo', note: 'v5.7c 100% may not hold in choppy markets' },
-      { text: 'Build adaptive gate: rolling 50-window accuracy → auto-tighten/loosen', status: 'todo' },
-      { text: 'Run ungated paper for 24h to validate loosened delta gates', status: 'in-progress' },
+      { text: 'TimesFM v1 disagreement gate — block when v1 disagrees >90% confidence', status: 'todo', note: 'AGREE=84.6% WR (+$22.77), DISAGREE=40% WR (-$15.20). Highest-ROI fix available.' },
+      { text: 'TimesFM v2 probability gate — LightGBM calibrated model at port 8080', status: 'todo', note: 'API live. V2 at T-30 has 75.7% accuracy (v1: 59.8%). ECE 0.18 vs 0.40.' },
+      { text: 'Remove paper mode Binance resolution fallback — mark PENDING instead', status: 'todo', note: 'Corrupts win rate data. Live mode already fixed (5af81b5).' },
     ],
   },
   {
     priority: 'high',
-    category: 'Reliability',
+    category: 'Execution',
     items: [
-      { text: 'Fix Binance WebSocket auto-reconnect (VPIN=0 for 7+ hrs on Apr 5)', status: 'todo', note: 'Root cause of TIMESFM_ONLY fallback' },
-      { text: 'Persist bankroll across engine restarts', status: 'todo' },
-      { text: 'Add engine health check endpoint on Montreal', status: 'todo' },
+      { text: 'FOK Ladder (ORDER_PRICING_MODE=fokladder) — rapid FOK with fresh Gamma every 2s', status: 'todo', note: '96.9% of unfilled trades won. Plan at docs/FOK_LADDER_PLAN.md' },
+      { text: 'Polymarket Oracle Investigation — what price source does oracle use?', status: 'in-progress', note: 'Chainlink + Tiingo now recording. Need 48h data for alignment analysis.' },
+      { text: 'Redemption retry with delay for fresh on-chain positions', status: 'todo', note: 'Infrastructure fixed. Settlement timing may need 5-10min retry.' },
+    ],
+  },
+  {
+    priority: 'medium',
+    category: 'Data & Analysis',
+    items: [
+      { text: 'Validate Chainlink vs oracle resolution for 48h — confirm price source', status: 'in-progress', note: 'Chainlink + Tiingo feeds live since Apr 6. Cross-ref with Polymarket outcomes.' },
+      { text: 'Build adaptive gate: rolling 50-window accuracy → auto-tighten/loosen', status: 'todo' },
+      { text: 'Signal component modularity — toggle TIMESFM, TWAP, CG_VETO via env vars', status: 'todo' },
     ],
   },
   {
     priority: 'medium',
     category: 'Multi-Asset',
     items: [
-      { text: 'Enable ETH/SOL/XRP trading (99.8-100% accuracy in data)', status: 'todo', note: 'Feed already supports them, need per-asset VPIN + testing' },
+      { text: 'Enable ETH/SOL/XRP trading — Chainlink + Tiingo already multi-asset', status: 'todo', note: 'All 4 assets feeding. Need per-asset VPIN + testing.' },
       { text: 'Per-asset VPIN calculation and thresholds', status: 'todo' },
     ],
   },
   {
     priority: 'medium',
-    category: 'TimesFM Research',
+    category: 'Frontend',
     items: [
-      { text: 'Evaluate TimesFM in bullish regime (current: 26-45%, all bearish)', status: 'todo', note: 'DOWN calls at 72% are interesting but redundant with v5.7c' },
-      { text: 'Test TimesFM as contrarian signal (when it disagrees, does it signal reversals?)', status: 'todo' },
-      { text: 'Fine-tune on Polymarket-specific 5m data', status: 'todo' },
-    ],
-  },
-  {
-    priority: 'low',
-    category: 'Live Trading',
-    items: [
-      { text: 'Auto-claim via web3.py contract interaction', status: 'todo' },
-      { text: 'Live mode: increase stake from $4 as accuracy is proven', status: 'todo' },
-      { text: 'Multi-window position management (concurrent bets)', status: 'todo' },
+      { text: 'Factory Floor page — real-time pipeline visualisation with animated flow', status: 'todo', note: 'Plan approved. 7 feeds → signals → gates → order → resolution.' },
+      { text: 'Fix V58Monitor VPIN threshold inconsistency (3 contradictory mappings)', status: 'todo' },
+      { text: 'Macro Observer engine integration (service built, pending wiring)', status: 'todo' },
     ],
   },
 ];
 
 const KNOWN_ISSUES = [
+  { severity: 'warn', text: 'Paper mode Binance fallback can corrupt win rate data if Polymarket API unavailable — should mark PENDING instead', since: '7.1.1' },
+  { severity: 'info', text: 'CLOB feed requires Montreal (Polymarket geo-blocked) — CLOB data unavailable on Railway deploys', since: '7.2' },
+  { severity: 'info', text: 'V58Monitor VPIN thresholds inconsistent across panels (0.45 vs 0.50 vs 0.65 in different sections)', since: '7.0' },
   { severity: 'info', text: 'Legacy paper P&L (v5.0-v5.7c) uses inflated stakes — filter to v7+ for real data', since: '7.0' },
   { severity: 'info', text: '98% of backfill Gamma prices are $0/$1 resolved — P&L only valid on recent windows', since: '6.0' },
   { severity: 'warn', text: 'WebSocket "RECONNECTING" on some pages — WS goes through nginx, not hub direct', since: '6.0' },
   { severity: 'info', text: 'TimesFM confidence always 95-100% — not well calibrated for 5m BTC', since: '6.0' },
-  { severity: 'info', text: 'Bankroll resets to STARTING_BANKROLL on each engine deploy', since: '0.4.0' },
-  { severity: 'info', text: 'Telegram trade alerts crash on 5-min orders (missing market_slug)', since: '0.4.0' },
 ];
 
 // ─── Components ───────────────────────────────────────────────────────────────

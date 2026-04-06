@@ -8,15 +8,17 @@ export default function System() {
   const [status, setStatus] = useState(null);
   const [killConfirm, setKillConfirm] = useState(false);
 
+  const fetchStatus = () => {
+    api.get('/api/system/status')
+      .then(res => setStatus(res.data))
+      .catch(err => console.error('[System] status fetch error:', err));
+  };
+
   useEffect(() => {
     fetchStatus();
     const interval = setInterval(fetchStatus, 10000);
     return () => clearInterval(interval);
-  }, []);
-
-  const fetchStatus = () => {
-    api.get('/api/system/status').then(res => setStatus(res.data));
-  };
+  }, [api]);
 
   const handleKill = async () => {
     if (!killConfirm) { setKillConfirm(true); return; }
