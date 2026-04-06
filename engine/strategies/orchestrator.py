@@ -1460,6 +1460,10 @@ class Orchestrator:
                                     "gamma_up": meta.get("gamma_up_price"),
                                     "gamma_down": meta.get("gamma_down_price"),
                                     "cg_data": meta.get("cg_modifier_reason", ""),
+                                    # v8.0 fields
+                                    "delta_source": meta.get("delta_source", "?"),
+                                    "delta_pct": meta.get("delta_pct", 0),
+                                    "actual_direction": _oc,  # Oracle resolved direction
                                 }
                                 async def _send_outcome_ai(_wid=_wid, _dir=_dir, _ep=_ep, _oc=_oc, _pnl=_pnl, _oid=_oid, _wd=_wd):
                                     try:

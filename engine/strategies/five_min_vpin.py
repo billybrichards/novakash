@@ -649,6 +649,59 @@ class FiveMinVPINStrategy(BaseStrategy):
             ),
         }
 
+        # ── v8.0: Compute gate results + confidence tier for notifications ────
+        _vpin_passed = current_vpin >= _runtime.five_min_vpin_gate
+        _delta_thresh = (
+            _runtime.five_min_cascade_min_delta_pct
+            if current_vpin >= _runtime.vpin_cascade_direction_threshold
+            else _runtime.five_min_min_delta_pct
+        )
+        _delta_passed = abs(delta_pct) >= _delta_thresh if delta_pct is not None else False
+        _actual_skip = getattr(self, '_last_skip_reason', '') or ""
+        _cg_passed = not ("CG_VETO" in _actual_skip.upper() or "coinglass" in _actual_skip.lower())
+        _floor_passed = True
+        _cap_passed = True
+
+        # Check floor/cap from Gamma prices
+        _entry_price = None
+        _implied = signal.direction if signal else ("UP" if delta_pct and delta_pct > 0 else "DOWN")
+        if window_snapshot.get("gamma_up_price") and window_snapshot.get("gamma_down_price"):
+            _entry_price = window_snapshot["gamma_up_price"] if _implied == "UP" else window_snapshot["gamma_down_price"]
+            if _entry_price < 0.30:
+                _floor_passed = False
+            elif _entry_price > 0.73:
+                _cap_passed = False
+
+        # Build gates_passed string and identify failed gate
+        _gp_list = []
+        _gf = None
+        for _gname, _gpassed in [("vpin", _vpin_passed), ("delta", _delta_passed), ("cg", _cg_passed), ("floor", _floor_passed), ("cap", _cap_passed)]:
+            if _gpassed:
+                _gp_list.append(_gname)
+            elif _gf is None:
+                _gf = _gname
+
+        # Confidence tier: based on VPIN strength + delta magnitude + source agreement
+        _sources_agree = 0
+        for _d in [delta_tiingo, delta_binance, delta_chainlink]:
+            if _d is not None:
+                if (_d > 0 and _implied == "UP") or (_d < 0 and _implied == "DOWN"):
+                    _sources_agree += 1
+        if _sources_agree >= 3 and current_vpin >= 0.65 and abs(delta_pct or 0) >= 0.05:
+            _conf_tier = "DECISIVE"
+        elif _sources_agree >= 2 and current_vpin >= 0.55:
+            _conf_tier = "HIGH"
+        elif _vpin_passed and _delta_passed:
+            _conf_tier = "MODERATE"
+        elif _vpin_passed:
+            _conf_tier = "LOW"
+        else:
+            _conf_tier = "NONE"
+
+        window_snapshot["gates_passed"] = ",".join(_gp_list)
+        window_snapshot["gate_failed"] = _gf
+        window_snapshot["confidence_tier"] = _conf_tier
+
         # ── Fetch fresh Gamma prices for ALL windows (not just traded ones) ────
         try:
             _slug = f"btc-updown-5m-{window.window_ts}"

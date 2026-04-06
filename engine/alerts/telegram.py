@@ -392,36 +392,31 @@ class TelegramAlerter:
         gamma_at_decision: Gamma at T-70 for comparison
         """
         try:
-            mode = self._mode_tag()
             direction = "DOWN" if getattr(order, "direction", "") == "NO" else "UP"
             stake = getattr(order, "stake_usd", 0)
-            oid = getattr(order, "order_id", "?")
             cost = fill_price * shares
             rr = round((1 - fill_price) / fill_price, 1) if fill_price > 0 else 0
             profit_if_win = round((1 - fill_price) * shares * 0.98, 2)
 
-            lines = [
-                f"💰 *ORDER FILLED*  {mode}",
-                f"`{oid[:24]}...`",
-                f"",
-                f"Direction: `{direction}`",
-                f"Fill: `${fill_price:.4f}` × `{shares:.2f}` shares",
-                f"Cost: `${cost:.2f}` | Stake: `${stake:.2f}`",
-                f"R/R: `1:{rr}` | If WIN: `+${profit_if_win:.2f}`",
-            ]
+            # v8.0 FOK metadata
+            fok_step = getattr(order, "fok_fill_step", None)
+            fok_attempts = getattr(order, "fok_attempts", None)
+            delta_source = getattr(order, "delta_source", "?")
+            src_short = delta_source.replace("_rest_candle", "").replace("_db_tick", "(db)") if delta_source else "?"
 
-            if gamma_at_fill and gamma_at_decision:
-                gf = gamma_at_fill.get("gamma_down" if direction == "DOWN" else "gamma_up", fill_price)
-                gd = gamma_at_decision.get("gamma_down" if direction == "DOWN" else "gamma_up", fill_price)
-                diff = gf - gd
-                lines.append(f"Gamma @ fill `${gf:.3f}` vs decision `${gd:.3f}` ({diff:+.3f})")
+            fok_line = ""
+            if fok_step is not None and fok_attempts is not None:
+                fok_line = f"⚡ FOK step `{fok_step}/{fok_attempts}`\n"
 
-            if ai_text:
-                lines += ["", f"🤖 _{ai_text}_"]
-
-            lines += ["", self._footer()]
-
-            text = "\n".join(lines)
+            text = (
+                f"💰 *FILLED* — BTC 5m {direction} | {self._engine_version}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Fill: `${fill_price:.4f}` × `{shares:.2f}` shares\n"
+                f"Cost: `${cost:.2f}` | R/R `1:{rr}`\n"
+                f"If WIN: `+${profit_if_win:.2f}`\n"
+                f"{fok_line}"
+                f"Source: `{src_short}` | Mode: `{'gtc' if not fok_step else 'fok'}`\n"
+            )
             msg_id = await self._send_with_id(text)
             await self._log_notification("order_filled", text, telegram_message_id=msg_id)
             return msg_id
@@ -598,6 +593,52 @@ class TelegramAlerter:
     _location: str = "MTL"
     _engine_version: str = "v8.0"
     _db_client = None  # injected after construction
+
+    async def send_session_summary(self) -> Optional[int]:
+        """v8.0 Session Summary Card — call periodically or on demand."""
+        try:
+            w = getattr(self, '_session_wins', 0)
+            l = getattr(self, '_session_losses', 0)
+            pnl = getattr(self, '_session_pnl', 0.0)
+            total = w + l
+            wr = (w / total * 100) if total > 0 else 0
+            pnl_sign = "+" if pnl >= 0 else ""
+            text = (
+                f"📋 *Session Summary* | {self._engine_version}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Trades: `{total}` | `{w}W/{l}L` (`{wr:.1f}%`)\n"
+                f"P&L: `{pnl_sign}${pnl:.2f}`\n"
+                f"Delta source: `tiingo`\n"
+                f"FOK: `enabled` | TWAP: `off` | TimesFM: `off`\n"
+            )
+            return await self._send_with_id(text)
+        except Exception as exc:
+            self._log.warning("telegram.session_summary_failed", error=str(exc)[:100])
+            return None
+
+    async def send_fok_exhausted(self, window_id: str, attempts: int, prices: list) -> Optional[int]:
+        """v8.0 FOK Ladder Exhausted — all attempts killed."""
+        try:
+            from datetime import datetime, timezone
+            window_time = "?"
+            try:
+                ts = int(window_id.split('-')[1])
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                window_time = dt.strftime('%H:%M UTC')
+            except Exception:
+                pass
+            price_str = " → ".join([f"${p:.3f}" for p in prices[:5]])
+            text = (
+                f"⛔ *FOK EXHAUSTED* — BTC 5m | {window_time} | {self._engine_version}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Attempts: `{attempts}` | All killed\n"
+                f"Prices tried: `{price_str}`\n"
+                f"No fill — skipping window\n"
+            )
+            return await self._send_with_id(text)
+        except Exception as exc:
+            self._log.warning("telegram.fok_exhausted_failed", error=str(exc)[:100])
+            return None
 
     def set_location(self, location: str, version: str = "v8.0") -> None:
         self._location = location
