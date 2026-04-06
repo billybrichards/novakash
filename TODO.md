@@ -118,7 +118,26 @@ Code is stable, tested, ready for Montreal restart.
 - Raw trade data always preserved (AI analysis in separate messages)
 - v7.1 WR: 73.3% on backfilled 120 windows
 
-### Macro Observer — Engine Integration (Phase 2)
+### v8.0 DB Migration
+**Status:** TODO — run before first v8.0 deploy
+**File:** `migrations/add_v8_columns.sql`
+**Columns:** delta_source, execution_mode, fok_attempts, fok_fill_step, clob_fill_price,
+confidence_tier, entry_time_offset, gates_passed, gate_failed
+
+### v8.0 Telegram Notification Overhaul
+**Status:** TODO — current notifications are average, need complete redesign
+**What:** Redesign all 6 notification types for v8.0:
+1. Window Evaluation Card — shows all source prices (Tiingo/CL/BN/CLOB), gate results
+2. FOK Ladder Progress — real-time step-by-step fill attempts
+3. Outcome Card — WIN/LOSS with delta source attribution, session running totals
+4. Skip Card — which gate failed, would-have-won tracking
+5. Session Summary (hourly) — WR, P&L, fill rate, source accuracy comparison
+6. Divergence Alert — triggered when CL-BN spread spikes
+**Files:** `engine/alerts/telegram.py`
+**Priority:** Implement alongside Phase 1+2 code changes
+
+### Macro Observer — Investigation (DO NOT WIRE INTO TRADING)
+**Status:** TODO — collecting data, not gating
 **Status:** TODO — Service built (feat/macro-observer), pending engine wiring
 **What:** Engine reads latest `macro_signals` row from DB each window evaluation and applies:
 - Mode 1 (Neutral <50%): no changes

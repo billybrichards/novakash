@@ -274,6 +274,127 @@ EVERY 5 MINUTES:
 
 ---
 
+## New DB Columns (v8.0 tracking)
+
+```sql
+-- Source: which feed drove the direction decision
+delta_source VARCHAR(10)        -- 'tiingo' | 'binance' (fallback)
+
+-- FOK ladder execution
+execution_mode VARCHAR(20)      -- 'fok_ladder' | 'gtc'
+fok_attempts INT                -- how many FOK attempts (1-5)
+fok_fill_step INT               -- which step filled (1-5, NULL if miss)
+clob_fill_price FLOAT           -- actual fill price from CLOB
+
+-- Confidence + timing
+confidence_tier VARCHAR(10)     -- 'NONE' | 'LOW' | 'MODERATE' | 'HIGH' | 'DECISIVE'
+entry_time_offset INT           -- seconds before close (70=standard, 120/180=early)
+
+-- Gate audit trail
+gates_passed TEXT                -- 'vpin,delta,cg,floor,cap,confidence'
+gate_failed VARCHAR(20)         -- which gate stopped: 'vpin' | 'delta' | 'cg_veto' etc
+```
+
+Migration: `migrations/add_v8_columns.sql`
+
+---
+
+## Telegram Notification Overhaul (v8.0)
+
+### Current system (average)
+- `send_trade_decision_detailed` — shows signal + AI analysis
+- `send_order_filled` — fill price, shares, R/R
+- `send_outcome_with_analysis` — WIN/LOSS + AI assessment
+- `send_signal_snapshot` — T-180/T-120/T-90 countdown snapshots
+- `send_redemption` — redemption confirmation
+- All use `_send_with_id` with basic Markdown formatting
+
+### v8.0 notification improvements needed
+
+**1. Window Evaluation Card (every window)**
+```
+🎯 BTC 5m | 19:35 UTC | v8.0
+━━━━━━━━━━━━━━━━━━━━━━
+📊 Signal: UP | Tiingo Δ +0.082%
+📈 VPIN: 0.612 | Regime: TRANSITION
+🔗 Sources: Tiingo=$69,825 | CL=$69,848 | BN=$69,792
+💱 CLOB: UP ask $0.42 | DOWN ask $0.58
+🧠 Macro: NEUTRAL 35% (data only)
+
+⚡ Gates: ✅VPIN ✅Delta ✅CG ✅Floor ✅Cap
+🎖 Confidence: MODERATE
+━━━━━━━━━━━━━━━━━━━━━━
+🟢 TRADE → FOK ladder starting at $0.42
+```
+
+**2. FOK Ladder Progress (real-time)**
+```
+🔄 FOK Ladder — BTC UP
+Step 1: FOK $0.42 → ❌ KILLED
+Step 2: FOK $0.43 → ❌ KILLED  
+Step 3: FOK $0.44 → ✅ FILLED 8.2 shares
+Cost: $3.61 | R/R 1:1.3 | If WIN: +$4.59
+```
+
+**3. Outcome Card (resolution)**
+```
+✅ WIN — BTC 5m | 19:35 UTC | v8.0
+━━━━━━━━━━━━━━━━━━━━━━
+Direction: UP (Tiingo Δ +0.082%)
+Entry: $0.44 via FOK step 3
+Payout: $8.20 → P&L +$4.59
+Oracle: Chainlink ↑ (UP confirmed)
+
+📊 Session: 15W/3L (83.3%) | +$42.50
+🔗 Delta source: tiingo | Execution: fok_ladder
+```
+
+**4. Skip Card (when gate blocks)**
+```
+⏭ SKIP — BTC 5m | 19:40 UTC | v8.0
+━━━━━━━━━━━━━━━━━━━━━━
+Signal: DOWN | Tiingo Δ -0.008%
+Gate failed: DELTA (0.008% < 0.020% threshold)
+Gates passed: ✅VPIN(0.52) ✅CG
+Oracle later: DOWN ← would have been correct
+
+💡 If traded: would have WON at ~$0.55 entry
+```
+
+**5. Session Summary (hourly)**
+```
+📋 HOURLY SUMMARY — v8.0
+━━━━━━━━━━━━━━━━━━━━━━
+Trades: 8 | Wins: 7 | WR: 87.5%
+P&L: +$18.50 | Avg win: $3.50 | Avg loss: -$5.00
+Fills: 7/8 (87.5%) | Avg FOK step: 1.8
+Skips: 4 | Would-have-won: 2/4
+
+Source accuracy:
+  Tiingo: 7/8 correct (87.5%)
+  Binance would have been: 5/8 (62.5%)
+
+Macro: NEUTRAL 35% (not gating)
+```
+
+**6. Divergence Alert (when spread spikes)**
+```
+⚠️ ORACLE DIVERGENCE — HIGH
+CL: $69,868 | BN: $69,812 | Spread: $56
+Tiingo: $69,865 (tracking CL)
+DOWN bets: threshold raised +50%
+```
+
+### Implementation priority
+1. Window eval card + gate audit trail (Phase 1 — shows all source prices)
+2. FOK ladder progress (Phase 2 — shows fill attempts)
+3. Outcome card with delta source attribution (Phase 1)
+4. Skip card with would-have-won tracking (Phase 1)
+5. Session summary (Phase 3)
+6. Divergence alert (Phase 3)
+
+---
+
 ## Monitoring Checklist (first 24h after deploy)
 
 - [ ] Tiingo delta matches oracle direction on resolved windows (target: >90%)
