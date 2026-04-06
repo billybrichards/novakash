@@ -462,8 +462,12 @@ class FiveMinVPINStrategy(BaseStrategy):
             self._twap.cleanup_window(window.asset, window.window_ts)
 
         # ── TimesFM forecast (v6.0 comparison data for alerts) ────────────
+        # v8.0 Phase 3: Skip TimesFM fetch entirely when both timesfm_enabled
+        # and timesfm_agreement_enabled are False — saves latency on every window.
+        # If timesfm_enabled=True but timesfm_agreement_enabled=False, still fetch
+        # for monitoring/recording but gate logic is skipped in _evaluate_signal.
         timesfm_forecast: Optional[TimesFMForecast] = None
-        if self._timesfm:
+        if self._timesfm and runtime.timesfm_enabled:
             try:
                 # Calculate seconds until this window closes
                 _window_close_ts = window.window_ts + window.duration_secs
@@ -479,6 +483,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                         direction=timesfm_forecast.direction,
                         confidence=f"{timesfm_forecast.confidence:.2f}",
                         predicted_close=f"${timesfm_forecast.predicted_close:,.2f}",
+                        gate_active=runtime.timesfm_agreement_enabled,
                     )
                     # ── TickRecorder: passive recording only ──────────────
                     if self._tick_recorder:
@@ -594,6 +599,10 @@ class FiveMinVPINStrategy(BaseStrategy):
             "twap_gamma_gate": twap_result.gamma_gate if twap_result else None,
             "twap_should_skip": twap_result.should_skip if twap_result else None,
             "twap_skip_reason": twap_result.skip_reason if twap_result else None,
+            # v8.0 Phase 3: gate status flags (track when gates are off)
+            "twap_override_active": runtime.twap_override_enabled,
+            "twap_gamma_gate_active": runtime.twap_gamma_gate_enabled,
+            "timesfm_gate_active": runtime.timesfm_agreement_enabled,
             # Gamma market prices (Polymarket token prices)
             "gamma_up_price": float(window.up_price) if window.up_price is not None else None,
             "gamma_down_price": float(window.down_price) if window.down_price is not None else None,
@@ -715,6 +724,36 @@ class FiveMinVPINStrategy(BaseStrategy):
                 if _cg_gate_passed:
                     _gates_passed.append("cg")
 
+                # v8.0 Phase 3: TWAP gate audit — record even when disabled
+                # twap_gate_would_block: what TWAP gate WOULD have done (regardless of flag)
+                _twap_gate_would_block_audit = (
+                    twap_result is not None
+                    and twap_result.should_skip
+                    and twap_result.n_ticks >= 5
+                ) if twap_result else False
+                _twap_gate_blocked_actual = (
+                    _twap_gate_would_block_audit and runtime.twap_gamma_gate_enabled
+                )
+                if not _twap_gate_blocked_actual and _twap_gate_would_block_audit:
+                    # Would have blocked but gate is disabled — log shadow block
+                    pass  # recorded in gate_audit via twap_gate_shadow_block field
+                if not _twap_gate_blocked_actual:
+                    _gates_passed.append("twap_gamma")
+                else:
+                    if not _gate_failed_name:
+                        _gate_failed_name = "twap_gamma"
+
+                # TimesFM gate audit — record even when disabled
+                _timesfm_gate_blocked_actual = (
+                    "timesfm" in _actual_skip_reason.lower() and runtime.timesfm_agreement_enabled
+                )
+                _timesfm_would_block = "timesfm" in _actual_skip_reason.lower()
+                if not _timesfm_gate_blocked_actual:
+                    _gates_passed.append("timesfm")
+                else:
+                    if not _gate_failed_name:
+                        _gate_failed_name = "timesfm"
+
                 _all_passed = signal is not None
                 asyncio.create_task(self._db.write_gate_audit({
                     "window_ts": window.window_ts,
@@ -736,6 +775,14 @@ class FiveMinVPINStrategy(BaseStrategy):
                     "gate_cg": _cg_gate_passed,
                     "gate_floor": None,  # Floor check happens post-signal in execution
                     "gate_cap": None,    # Cap check happens post-signal in execution
+                    # v8.0 Phase 3: TWAP + TimesFM gate results (actual + shadow)
+                    "gate_twap_gamma": not _twap_gate_blocked_actual,
+                    "gate_twap_gamma_shadow": _twap_gate_would_block_audit,
+                    "gate_timesfm": not _timesfm_gate_blocked_actual,
+                    "gate_timesfm_shadow": _timesfm_would_block,
+                    "twap_override_active": runtime.twap_override_enabled,
+                    "twap_gamma_gate_active": runtime.twap_gamma_gate_enabled,
+                    "timesfm_gate_active": runtime.timesfm_agreement_enabled,
                     "gate_passed": _all_passed,
                     "gate_failed": _gate_failed_name,
                     "gates_passed_list": ",".join(_gates_passed) if _gates_passed else "",
@@ -938,17 +985,37 @@ class FiveMinVPINStrategy(BaseStrategy):
         # ── TWAP Gamma Gate (v5.7c) ───────────────────────────────
         # Block trades where the market strongly disagrees with our direction
         # or where the token is already >60¢ (priced in, bad R/R)
-        if twap_result and twap_result.should_skip and twap_result.n_ticks >= 5:
-            self._log.info(
-                "evaluate.twap_gate_blocked",
-                reason=twap_result.skip_reason,
-                gamma_gate=twap_result.gamma_gate,
-                trend_pct=f"{twap_result.trend_pct:.2f}",
-                twap_delta=f"{twap_result.twap_delta_pct:+.4f}%",
-                asset=window.asset,
-            )
-            self._last_skip_reason = f"TWAP GATE: {twap_result.skip_reason or 'market disagrees'} (gate={twap_result.gamma_gate})"
-            return None
+        # v8.0 Phase 3: Feature-flagged OFF by default (TWAP_GAMMA_GATE_ENABLED=false).
+        # Gate was blocking more winners than losers — harmful with Tiingo delta source.
+        # Still log the gate result for monitoring even when disabled.
+        _twap_gate_would_block = (
+            twap_result is not None
+            and twap_result.should_skip
+            and twap_result.n_ticks >= 5
+        )
+        if _twap_gate_would_block:
+            if runtime.twap_gamma_gate_enabled:
+                self._log.info(
+                    "evaluate.twap_gate_blocked",
+                    reason=twap_result.skip_reason,
+                    gamma_gate=twap_result.gamma_gate,
+                    trend_pct=f"{twap_result.trend_pct:.2f}",
+                    twap_delta=f"{twap_result.twap_delta_pct:+.4f}%",
+                    asset=window.asset,
+                )
+                self._last_skip_reason = f"TWAP GATE: {twap_result.skip_reason or 'market disagrees'} (gate={twap_result.gamma_gate})"
+                return None
+            else:
+                # Gate is disabled — log as monitoring-only, do not skip
+                self._log.info(
+                    "evaluate.twap_gate_would_block",
+                    reason=twap_result.skip_reason,
+                    gamma_gate=twap_result.gamma_gate,
+                    trend_pct=f"{twap_result.trend_pct:.2f}",
+                    twap_delta=f"{twap_result.twap_delta_pct:+.4f}%",
+                    asset=window.asset,
+                    note="TWAP_GAMMA_GATE_ENABLED=false — monitoring only, not blocking",
+                )
         
         # ── REGIME-AWARE DIRECTION (v4.1) ──────────────────────────
         # Cascade/trend regime: VPIN >= 0.65 → MOMENTUM + lower delta bar
@@ -1011,35 +1078,51 @@ class FiveMinVPINStrategy(BaseStrategy):
         #   2. If TWAP + Gamma agree but point disagrees → use TWAP (point is noisy)
         #   3. If TWAP disagrees with both → stick with point delta (TWAP may be lagging)
         #
-        # The confidence_boost from TWAP is applied AFTER base confidence calculation.
+        # v8.0 Phase 3: Feature-flagged OFF by default (TWAP_OVERRIDE_ENABLED=false).
+        # TWAP blocked 12 windows, 8 winners — net harmful with Tiingo as delta source.
+        # Values still logged for monitoring.
         _twap_overrode = False
         if twap_result and twap_result.n_ticks >= 5:
-            if twap_result.all_agree:
-                # All three agree — highest confidence, use recommended direction
-                if twap_result.recommended_direction != direction:
-                    self._log.info(
-                        "evaluate.twap_override",
-                        old_dir=direction,
-                        new_dir=twap_result.recommended_direction,
-                        reason="all_agree",
-                        agreement=f"{twap_result.agreement_score}/3",
-                    )
-                    direction = twap_result.recommended_direction
-                    _twap_overrode = True
-            elif twap_result.twap_gamma_agree and twap_result.gamma_direction:
-                # TWAP + Gamma agree — strong signal, override point delta
-                if twap_result.recommended_direction != direction:
-                    self._log.info(
-                        "evaluate.twap_override",
-                        old_dir=direction,
-                        new_dir=twap_result.recommended_direction,
-                        reason="twap_gamma_agree",
-                        twap_delta=f"{twap_result.twap_delta_pct:+.4f}%",
-                        gamma_skew=f"{twap_result.gamma_skew:.3f}",
-                    )
-                    direction = twap_result.recommended_direction
-                    _twap_overrode = True
-            # If only TWAP disagrees with point+gamma, don't override — point is fresher
+            # Always log TWAP values for monitoring (regardless of flag)
+            if twap_result.recommended_direction and twap_result.recommended_direction != direction:
+                self._log.info(
+                    "evaluate.twap_direction_info",
+                    twap_dir=twap_result.recommended_direction,
+                    point_dir=direction,
+                    all_agree=twap_result.all_agree,
+                    twap_gamma_agree=twap_result.twap_gamma_agree,
+                    agreement_score=f"{twap_result.agreement_score}/3",
+                    enabled=runtime.twap_override_enabled,
+                    note="TWAP direction monitoring" if not runtime.twap_override_enabled else "TWAP override active",
+                )
+
+            if runtime.twap_override_enabled:
+                if twap_result.all_agree:
+                    # All three agree — highest confidence, use recommended direction
+                    if twap_result.recommended_direction != direction:
+                        self._log.info(
+                            "evaluate.twap_override",
+                            old_dir=direction,
+                            new_dir=twap_result.recommended_direction,
+                            reason="all_agree",
+                            agreement=f"{twap_result.agreement_score}/3",
+                        )
+                        direction = twap_result.recommended_direction
+                        _twap_overrode = True
+                elif twap_result.twap_gamma_agree and twap_result.gamma_direction:
+                    # TWAP + Gamma agree — strong signal, override point delta
+                    if twap_result.recommended_direction != direction:
+                        self._log.info(
+                            "evaluate.twap_override",
+                            old_dir=direction,
+                            new_dir=twap_result.recommended_direction,
+                            reason="twap_gamma_agree",
+                            twap_delta=f"{twap_result.twap_delta_pct:+.4f}%",
+                            gamma_skew=f"{twap_result.gamma_skew:.3f}",
+                        )
+                        direction = twap_result.recommended_direction
+                        _twap_overrode = True
+                # If only TWAP disagrees with point+gamma, don't override — point is fresher
 
         # Calculate base confidence from VPIN + delta (primary signals)
         confidence = self._calculate_confidence(delta_pct, current_vpin, direction)
@@ -1224,67 +1307,118 @@ class FiveMinVPINStrategy(BaseStrategy):
 
         # ── TWAP Confidence Adjustment (v5.7) ──────────────────────────────
         # Apply TWAP boost/penalty to confidence level
+        # v8.0 Phase 3: Feature-flagged OFF by default (TWAP_OVERRIDE_ENABLED=false).
+        # TWAP confidence adjustment is part of the same override system.
+        # Boost/penalty values still logged for monitoring when disabled.
         if twap_result and twap_result.n_ticks >= 5:
             _boost = twap_result.confidence_boost
-            if _boost >= 0.08 and confidence == "LOW":
+            # Log TWAP boost value regardless of flag (monitoring)
+            if abs(_boost) >= 0.05:
                 self._log.info(
-                    "evaluate.twap_lift",
-                    from_confidence="LOW",
-                    to_confidence="MODERATE",
+                    "evaluate.twap_boost_info",
                     boost=f"{_boost:+.2f}",
                     agreement=f"{twap_result.agreement_score}/3",
+                    enabled=runtime.twap_override_enabled,
+                    note="TWAP confidence boost monitoring" if not runtime.twap_override_enabled else "TWAP confidence boost active",
                 )
-                confidence = "MODERATE"
-            elif _boost <= -0.10 and confidence == "MODERATE":
-                self._log.info(
-                    "evaluate.twap_suppress",
-                    from_confidence="MODERATE",
-                    to_confidence="LOW",
-                    boost=f"{_boost:+.2f}",
-                    reason="TWAP disagrees or unstable",
-                )
-                confidence = "LOW"
+            if runtime.twap_override_enabled:
+                if _boost >= 0.08 and confidence == "LOW":
+                    self._log.info(
+                        "evaluate.twap_lift",
+                        from_confidence="LOW",
+                        to_confidence="MODERATE",
+                        boost=f"{_boost:+.2f}",
+                        agreement=f"{twap_result.agreement_score}/3",
+                    )
+                    confidence = "MODERATE"
+                elif _boost <= -0.10 and confidence == "MODERATE":
+                    self._log.info(
+                        "evaluate.twap_suppress",
+                        from_confidence="MODERATE",
+                        to_confidence="LOW",
+                        boost=f"{_boost:+.2f}",
+                        reason="TWAP disagrees or unstable",
+                    )
+                    confidence = "LOW"
 
         # Block NONE and LOW confidence — only trade MODERATE or HIGH
         if confidence in ("NONE", "LOW"):
             return None
 
-        # ── v5.8: TimesFM Agreement Check (DATA-ONLY — NOT A GATE) ───────────
-        # TimesFM is monitored for analysis but does NOT gate, skip, or modify
-        # confidence. All agreement data is recorded in the snapshot for
-        # post-hoc analysis and what-if P&L tracking.
+        # ── v5.8 / v8.0 Phase 3: TimesFM Agreement Check ────────────────────
+        # TimesFM is monitored for analysis.
+        # v8.0 Phase 3: TIMESFM_AGREEMENT_ENABLED=false (default) — skips all
+        # gating/confidence logic. Code still runs when timesfm_enabled=True
+        # but only records agreement for post-hoc analysis.
+        # 47.8% accuracy — worse than coin flip as a gate.
         #
-        # Previously (pre-v5.8.1):
+        # When enabled (pre-v5.8.1 behaviour restored):
         #   - Agree + ≥70% conf → lift MODERATE→HIGH
         #   - Disagree + ≥70% conf → SKIP (return None)
         #   - Disagree + <70% conf → suppress HIGH→MODERATE
-        #
-        # NOW: Log for monitoring only. No gating effect whatsoever.
         timesfm_agreement = None  # None = no forecast available
         if timesfm_forecast and not timesfm_forecast.error and timesfm_forecast.direction and window.asset == "BTC":
             _tfm_conf = timesfm_forecast.confidence or 0.0
             if timesfm_forecast.direction == direction:
                 timesfm_agreement = True
-                # DATA-ONLY: log agreement for monitoring, do not modify confidence
-                self._log.info(
-                    "evaluate.timesfm_agrees",
-                    v57c_dir=direction,
-                    tfm_dir=timesfm_forecast.direction,
-                    tfm_conf=f"{_tfm_conf:.2f}",
-                    confidence=confidence,
-                    note="TimesFM agrees — data-only, no gate effect",
-                )
+                if runtime.timesfm_agreement_enabled:
+                    # Gate-active: log agreement for gate effect
+                    self._log.info(
+                        "evaluate.timesfm_agrees",
+                        v57c_dir=direction,
+                        tfm_dir=timesfm_forecast.direction,
+                        tfm_conf=f"{_tfm_conf:.2f}",
+                        confidence=confidence,
+                        note="TimesFM agrees — gate active",
+                    )
+                else:
+                    # Gate-disabled: log for monitoring only
+                    self._log.info(
+                        "evaluate.timesfm_agrees",
+                        v57c_dir=direction,
+                        tfm_dir=timesfm_forecast.direction,
+                        tfm_conf=f"{_tfm_conf:.2f}",
+                        confidence=confidence,
+                        note="TimesFM agrees — TIMESFM_AGREEMENT_ENABLED=false, monitoring only",
+                    )
             else:
                 timesfm_agreement = False
-                # DATA-ONLY: log disagreement for monitoring, do not skip or suppress
-                self._log.info(
-                    "evaluate.timesfm_disagrees",
-                    v57c_dir=direction,
-                    tfm_dir=timesfm_forecast.direction,
-                    tfm_conf=f"{_tfm_conf:.2f}",
-                    confidence=confidence,
-                    note="TimesFM disagrees — data-only, no gate effect, proceeding",
-                )
+                if runtime.timesfm_agreement_enabled:
+                    # Gate-active: disagreement suppresses or skips
+                    self._log.info(
+                        "evaluate.timesfm_disagrees",
+                        v57c_dir=direction,
+                        tfm_dir=timesfm_forecast.direction,
+                        tfm_conf=f"{_tfm_conf:.2f}",
+                        confidence=confidence,
+                        note="TimesFM disagrees — gate active",
+                    )
+                    if _tfm_conf >= 0.70:
+                        self._log.info(
+                            "evaluate.timesfm_skip",
+                            tfm_conf=f"{_tfm_conf:.2f}",
+                            note="TimesFM high-confidence disagree — skipping",
+                        )
+                        self._last_skip_reason = f"TimesFM disagrees at {_tfm_conf:.0%} confidence"
+                        return None
+                    elif confidence == "HIGH":
+                        self._log.info(
+                            "evaluate.timesfm_suppress",
+                            from_confidence="HIGH",
+                            to_confidence="MODERATE",
+                            tfm_conf=f"{_tfm_conf:.2f}",
+                        )
+                        confidence = "MODERATE"
+                else:
+                    # Gate-disabled: log for monitoring only, do not skip or suppress
+                    self._log.info(
+                        "evaluate.timesfm_disagrees",
+                        v57c_dir=direction,
+                        tfm_dir=timesfm_forecast.direction,
+                        tfm_conf=f"{_tfm_conf:.2f}",
+                        confidence=confidence,
+                        note="TimesFM disagrees — TIMESFM_AGREEMENT_ENABLED=false, monitoring only, proceeding",
+                    )
 
         self._log.info(
             "evaluate.regime_signal",

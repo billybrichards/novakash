@@ -167,6 +167,21 @@ class RuntimeConfig:
         # Tiingo REST candle (open/close) used when available; falls back to Binance.
         self.delta_price_source: str = os.environ.get("DELTA_PRICE_SOURCE", "tiingo").lower()
 
+        # ── v8.0 Phase 3: Gate feature flags (env-only, default OFF) ─────────
+        # TWAP_OVERRIDE_ENABLED: allow TWAP+Gamma to override point-delta direction.
+        # Disabled: TWAP blocked 12 windows, 8 were winners — net harmful.
+        # With Tiingo as delta source, TWAP direction is redundant.
+        self.twap_override_enabled: bool = os.environ.get("TWAP_OVERRIDE_ENABLED", "false").lower() == "true"
+
+        # TWAP_GAMMA_GATE_ENABLED: allow TWAP should_skip to return None early.
+        # Disabled: gate was blocking more winners than losers.
+        self.twap_gamma_gate_enabled: bool = os.environ.get("TWAP_GAMMA_GATE_ENABLED", "false").lower() == "true"
+
+        # TIMESFM_AGREEMENT_ENABLED: allow TimesFM forecast to gate/modify confidence.
+        # Disabled: TimesFM accuracy 47.8% — worse than coin flip as a gate.
+        # Forecast is still fetched and logged for monitoring when timesfm_enabled=True.
+        self.timesfm_agreement_enabled: bool = os.environ.get("TIMESFM_AGREEMENT_ENABLED", "false").lower() == "true"
+
         # ── Sync metadata ─────────────────────────────────────────────────
         self._active_config_id: Optional[int] = None
         self._active_config_name: Optional[str] = None

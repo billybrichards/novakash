@@ -152,26 +152,36 @@ async def fetch_oracle_history(pool: asyncpg.Pool) -> dict:
 
 
 async def fetch_btc_deltas(pool: asyncpg.Pool) -> dict:
-    """Calculate BTC price deltas at multiple timeframes from ticks_binance."""
-    now_ts = int(time.time())
+    """Calculate BTC price deltas at multiple timeframes from ticks_binance.
+
+    Fix (v8.0 Phase 3): ticks_binance.ts is TIMESTAMPTZ, not a Unix integer.
+    Previously the code passed `now_ts - 86400` (int) to a TIMESTAMPTZ column,
+    causing silent failures ("missing price deltas"). Now uses interval arithmetic
+    and compares datetime objects returned by asyncpg correctly.
+    """
+    now_dt = datetime.now(timezone.utc)
     async with pool.acquire() as conn:
         # Try ticks_binance first, fall back to window_snapshots
         try:
             rows = await conn.fetch("""
                 SELECT price, ts
                 FROM ticks_binance
-                WHERE ts >= $1
+                WHERE ts >= NOW() - INTERVAL '24 hours'
                 ORDER BY ts ASC
                 LIMIT 1000
-            """, now_ts - 86400)
+            """)
 
             if not rows:
                 raise ValueError("no ticks data")
 
             price_now = rows[-1]["price"]
-            def _delta(seconds_ago):
-                cutoff = now_ts - seconds_ago
-                past = next((r["price"] for r in rows if r["ts"] >= cutoff), None)
+
+            def _delta(seconds_ago: int):
+                """Return % delta from `seconds_ago` seconds in the past to now."""
+                from datetime import timedelta
+                cutoff_dt = now_dt - timedelta(seconds=seconds_ago)
+                # asyncpg returns ts as timezone-aware datetime
+                past = next((r["price"] for r in rows if r["ts"] >= cutoff_dt), None)
                 if past and past > 0:
                     return round((price_now - past) / past * 100, 4)
                 return None

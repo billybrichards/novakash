@@ -2,6 +2,77 @@
 
 ---
 
+## v8.0 Phase 3 — TWAP Override Removal + TimesFM Gate Disable (20:25 UTC)
+
+### Summary
+Feature-flagged off three harmful gates: TWAP direction override, TWAP gamma gate,
+and TimesFM agreement gating. Today's data showed TWAP blocked 12 windows, 8 of
+which were winners (net harmful). TimesFM accuracy is 47.8% — worse than coin flip.
+All code remains in place for re-enablement; flags default to false.
+Also fixed macro observer "missing price deltas" bug (TIMESTAMPTZ column mismatch).
+
+### Changes
+
+#### feat: gate feature flags (`engine/config/runtime_config.py`)
+- Added `twap_override_enabled` (env: `TWAP_OVERRIDE_ENABLED`, default `false`)
+- Added `twap_gamma_gate_enabled` (env: `TWAP_GAMMA_GATE_ENABLED`, default `false`)
+- Added `timesfm_agreement_enabled` (env: `TIMESFM_AGREEMENT_ENABLED`, default `false`)
+- All three are env-only, not DB-synced (structural flags, not tunable parameters)
+
+#### feat: TWAP gamma gate feature-flagged (`engine/strategies/five_min_vpin.py`)
+- Wrapped TWAP `should_skip` early-return in `evaluate_signal` with `if runtime.twap_gamma_gate_enabled:`
+- When disabled: logs `evaluate.twap_gate_would_block` for monitoring (values visible but no skip)
+- When enabled: original v5.7c behaviour — returns `None` if TWAP says skip
+
+#### feat: TWAP direction override feature-flagged (`engine/strategies/five_min_vpin.py`)
+- Wrapped TWAP `all_agree` / `twap_gamma_agree` direction override with `if runtime.twap_override_enabled:`
+- When disabled: logs `evaluate.twap_direction_info` with TWAP direction for monitoring
+- When enabled: original v5.7 behaviour — overrides `direction` when TWAP+Gamma agree
+- TWAP confidence boost/penalty also wrapped — only applies when `twap_override_enabled=true`
+
+#### feat: TimesFM gate feature-flagged (`engine/strategies/five_min_vpin.py`)
+- Wrapped TimesFM agreement skip/suppress logic with `if runtime.timesfm_agreement_enabled:`
+- When disabled: logs `evaluate.timesfm_agrees/disagrees` for monitoring with `monitoring only` note
+- When enabled: restores pre-v5.8.1 gating (high-conf disagree = skip, disagree = suppress HIGH→MODERATE)
+- TimesFM fetch in `_evaluate_window` now guarded by `runtime.timesfm_enabled` to skip entirely when off
+
+#### feat: gate status in window_snapshot (`engine/strategies/five_min_vpin.py`)
+- Added `twap_override_active: bool` — tracks whether TWAP override flag was on (False = Phase 3)
+- Added `twap_gamma_gate_active: bool` — tracks whether gamma gate was on
+- Added `timesfm_gate_active: bool` — tracks whether TimesFM gate was on
+- Enables post-hoc "what would have happened with gates on?" analysis
+
+#### feat: gate_audit enhancements (`engine/strategies/five_min_vpin.py`)
+- Added `gate_twap_gamma` — actual gate result (True = passed)
+- Added `gate_twap_gamma_shadow` — what TWAP gate WOULD have done (regardless of flag)
+- Added `gate_timesfm` — actual TimesFM gate result
+- Added `gate_timesfm_shadow` — what TimesFM gate would have done
+- Added `twap_override_active`, `twap_gamma_gate_active`, `timesfm_gate_active` flag values
+
+#### fix: macro observer price deltas bug (`macro-observer/observer.py`)
+- `fetch_btc_deltas` was passing Unix int to `TIMESTAMPTZ` column → silent exception → fallback with no deltas
+- Fixed: SQL now uses `NOW() - INTERVAL '24 hours'` (proper timestamp arithmetic)
+- Fixed: `_delta()` helper now compares `datetime` objects (asyncpg returns tz-aware datetime from TIMESTAMPTZ)
+- Result: macro observer will now correctly compute BTC delta_15m/1h/4h/24h fields
+
+### Feature Flags
+| Variable | Default | Effect |
+|---|---|---|
+| `TWAP_OVERRIDE_ENABLED` | `false` | Allow TWAP+Gamma to override point-delta direction |
+| `TWAP_GAMMA_GATE_ENABLED` | `false` | Allow TWAP should_skip to block trades |
+| `TIMESFM_AGREEMENT_ENABLED` | `false` | Allow TimesFM to gate/suppress trades |
+
+### What Was NOT Changed
+- TWAP/TimesFM code is preserved — can be re-enabled via env vars
+- CoinGlass veto system (v7.1) — unchanged, working correctly
+- Execution / order placement code
+- Tiingo delta source (Phase 1)
+
+### Branch
+`develop` — commit pushed, not deployed to Montreal
+
+---
+
 ## v8.0 Phase 1 — Tiingo Delta Swap (20:09 UTC)
 
 ### Summary
