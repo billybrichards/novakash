@@ -137,3 +137,19 @@ Code is stable, tested, ready for Montreal restart.
 - What timestamp? (window close? +4min?)
 - Open→close or TWAP/VWAP?
 **Why:** Multiple trades where BTC moved in our direction but oracle disagreed
+
+### Tiingo Data Source
+**Status:** TODO — API key available
+**Key:** 3f4456e457a4184d76c58a1320d8e1b214c3ab16
+**Endpoints:**
+- Top-of-book (real-time): `https://api.tiingo.com/tiingo/crypto/top?tickers=btcusd`
+- 5min candles: `https://api.tiingo.com/tiingo/crypto/prices?tickers=btcusd`
+- Shows exchange source (GDAX, BULLISH, etc.)
+
+**Why useful:**
+- Multi-exchange price view — our Binance price may differ from oracle's source
+- Could explain "direction correct but oracle disagreed" losses
+- Cross-reference with Polymarket oracle resolution
+- Add as data column in countdown_evaluations (tiingo_price at each stage)
+
+**Integration:** Add to data collector or engine heartbeat as supplementary price feed
