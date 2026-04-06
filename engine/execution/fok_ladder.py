@@ -181,7 +181,7 @@ class FOKLadder:
             attempted_prices.append(attempt_price)
 
             # Calculate size for this attempt
-            size = round(stake_usd / attempt_price, 2)
+            size = float(f"{stake_usd / attempt_price:.2f}")  # Truncate to 2 decimals (CLOB requirement)
 
             self._log.info(
                 "fok_ladder.attempt",

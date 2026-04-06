@@ -559,10 +559,13 @@ class PolymarketClient:
 
         client = self._clob_client
 
+        # CLOB requires: price max 4 decimals, size max 2 decimals
+        _price = float(f"{price:.4f}")
+        _size = float(f"{size:.2f}")
         order_args = OrderArgs(
             token_id=token_id,
-            price=price,
-            size=size,
+            price=_price,
+            size=_size,
             side=BUY,
         )
 
