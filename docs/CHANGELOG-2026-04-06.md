@@ -83,6 +83,29 @@ Added to `TODO.md`:
 
 ---
 
+## Fixes Applied (18:45 UTC)
+
+### fix: floor bypass when Gamma returns None (Issue #5)
+**File:** `engine/strategies/five_min_vpin.py`
+**What:** Previously, if Gamma API returned `None` for bestAsk, the floor check was entirely bypassed — `if _fresh_best_ask is not None and _fresh_best_ask < _min_entry` evaluated False and fell through. This allowed $0.03 and $0.023 trades that lost $10+.
+**Fix:** Added explicit `None` handling before the floor check:
+1. If bestAsk is None → attempt Chainlink price fallback from `ticks_chainlink`
+2. If Chainlink also unavailable → SKIP the trade with reason logged
+3. If Chainlink exists but no token price → SKIP (existence confirmed but can't price)
+4. Only proceeds to floor check if `_fresh_best_ask` is a real number
+**Impact:** Prevents all future floor-bypass incidents. Additive — no existing behaviour changed when Gamma returns a valid price.
+
+### fix: extend fill poll from 30s to 60s (Issue #1)
+**File:** `engine/strategies/five_min_vpin.py`
+**What:** YES/UP orders were filling on the CLOB (confirmed: `MATCHED`, 6.85 shares) but our fill-check loop gave up after 30 seconds. The engine recorded them as `OPEN/EXPIRED` when they were actually winning trades.
+**Fix:**
+1. Extended `MAX_WAIT` from 30s → 60s
+2. Added `FIRST_CHECK` at 3s (catches fast fills immediately)
+3. Subsequent polls every 5s as before
+**Impact:** YES fills that previously went undetected will now be recorded. Fixes the $41 P&L discrepancy found in today's audit.
+
+---
+
 ## Pending (Not Yet Done)
 
 1. **Railway deploy** — macro-observer needs its own Railway service created (Billy to do)

@@ -1370,15 +1370,22 @@ class FiveMinVPINStrategy(BaseStrategy):
         # Post-trade fill verification — NO RETRY, NO BUMPING
         # Apr 2 lesson: "Fill rate doesn't matter if fills are at bad prices"
         # Single order at good price, accept miss if no fill.
+        # v7.2 FIX: extended from 30s → 60s with first check at 3s.
+        # YES orders were filling on CLOB but our 30s poll missed them.
+        # Confirmed: CLOB showed MATCHED but our DB showed OPEN for every YES order.
         if not self._poly.paper_mode and order.order_id.startswith("0x"):
+            FIRST_CHECK = 3   # first poll at 3s (catches fast fills)
             POLL_INTERVAL = 5
-            MAX_WAIT = 30
+            MAX_WAIT = 60     # was 30 — YES orders need more time
             filled = False
             try:
                 elapsed = 0
+                _first = True
                 while elapsed < MAX_WAIT:
-                    await asyncio.sleep(POLL_INTERVAL)
-                    elapsed += POLL_INTERVAL
+                    _sleep = FIRST_CHECK if _first else POLL_INTERVAL
+                    _first = False
+                    await asyncio.sleep(_sleep)
+                    elapsed += _sleep
                     status = await self._poly.get_order_status(order.order_id)
                     clob_status = status.get("status", "UNKNOWN")
                     size_matched = status.get("size_matched", "0")
@@ -1709,8 +1716,45 @@ class FiveMinVPINStrategy(BaseStrategy):
         
         # FLOOR CHECK: if Gamma bestAsk is below $0.30, the market strongly disagrees
         # with our direction. Don't trade — it's priced cheap for a reason.
+        # v7.2 FIX: if Gamma returns None, try Chainlink fallback; if still None, SKIP.
+        # Previously: None bypassed the floor entirely → $0.03 trades losing $10.
         _min_entry = 0.30
-        if _fresh_best_ask is not None and _fresh_best_ask < _min_entry:
+        if _fresh_best_ask is None:
+            # Attempt Chainlink fallback — not for token price, but to confirm market exists
+            _chainlink_fallback = None
+            if self._db:
+                try:
+                    _chainlink_fallback = await self._db.get_latest_chainlink_price(signal.asset)
+                except Exception:
+                    pass
+            if _chainlink_fallback is None:
+                _skip_msg = "NO_PRICE: Gamma returned None and no Chainlink fallback — cannot verify floor, skipping"
+                self._log.warning("execute.no_price_source", asset=signal.asset)
+                if self._db:
+                    try:
+                        asyncio.create_task(self._db.update_window_skip_reason(
+                            signal.window_ts, signal.asset, "5m", _skip_msg
+                        ))
+                    except Exception:
+                        pass
+                return
+            else:
+                self._log.info("execute.chainlink_fallback", chainlink_price=f"${_chainlink_fallback:.2f}", asset=signal.asset)
+                # Chainlink gives BTC/USD price, not token price — we can't derive token price from it
+                # But we know the market exists and BTC price is valid
+                # Still skip because we don't have a reliable token price for entry
+                _skip_msg = f"NO_GAMMA_PRICE: using Chainlink ${_chainlink_fallback:.0f} as existence check but no token price available"
+                self._log.warning("execute.no_token_price", chainlink=f"${_chainlink_fallback:.2f}")
+                if self._db:
+                    try:
+                        asyncio.create_task(self._db.update_window_skip_reason(
+                            signal.window_ts, signal.asset, "5m", _skip_msg
+                        ))
+                    except Exception:
+                        pass
+                return
+
+        if _fresh_best_ask < _min_entry:
             _skip_msg = f"PRICE FLOOR: entry ${_fresh_best_ask:.3f} < floor ${_min_entry} — market strongly disagrees, adverse selection risk"
             self._log.warning("execute.price_below_floor", bestask=f"${_fresh_best_ask:.4f}", floor=f"${_min_entry}")
             if self._alerter:
