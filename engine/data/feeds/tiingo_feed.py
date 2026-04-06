@@ -106,6 +106,9 @@ class TiingoFeed:
                 except Exception as exc:
                     log.error("tiingo_feed.poll_error", error=str(exc))
                     self._connected = False
+                    if "429" in str(exc):
+                        await asyncio.sleep(60)  # Back off 60s on rate limit
+                        continue
                 await asyncio.sleep(POLL_INTERVAL)
 
         self._session = None
