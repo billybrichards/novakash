@@ -1235,10 +1235,12 @@ class FiveMinVPINStrategy(BaseStrategy):
             except Exception:
                 pass
 
-        # Post-trade fill verification (v5.3: faster poll + dynamic bump + GTD)
+        # Post-trade fill verification — NO RETRY, NO BUMPING
+        # Apr 2 lesson: "Fill rate doesn't matter if fills are at bad prices"
+        # Single order at good price, accept miss if no fill.
         if not self._poly.paper_mode and order.order_id.startswith("0x"):
             POLL_INTERVAL = 5
-            MAX_WAIT = 30  # v5.3: reduced from 60s → 30s (6 checks, not 12)
+            MAX_WAIT = 30
             filled = False
             try:
                 elapsed = 0
@@ -1249,94 +1251,52 @@ class FiveMinVPINStrategy(BaseStrategy):
                     clob_status = status.get("status", "UNKNOWN")
                     size_matched = status.get("size_matched", "0")
                     filled = float(size_matched) > 0 if size_matched else False
+                    
+                    self._log.info(
+                        "trade.fill_check",
+                        order_id=order.order_id[:20] + "...",
+                        clob_status=clob_status,
+                        size_matched=size_matched,
+                        filled=filled,
+                        elapsed=f"{elapsed}s",
+                    )
+                    
                     if filled or clob_status not in ("LIVE", "UNKNOWN"):
                         break
 
                 order.metadata["filled"] = filled
                 order.metadata["fill_wait_seconds"] = elapsed
 
-                if filled and self._alerter:
-                    asyncio.create_task(self._alerter.send_entry_alert(order))
-                elif not filled:
-                    self._log.warning("trade.not_filled", order_id=order.order_id[:20], waited=f"{elapsed}s")
-                    
-                    # v5.3: DYNAMIC BUMP — read order book spread, bump by min(2¢, spread)
-                    base_price = getattr(eval_state, '_base_price', None)
-                    if base_price and not filled:
-                        # Get current order book spread for smart bump sizing
+                if filled:
+                    # Update entry_price with actual fill price
+                    try:
+                        _shares = float(size_matched)
+                        if _shares > 0:
+                            _fill_price = round(order.stake_usd / _shares, 4)
+                            order.price = str(_fill_price)
+                            order.metadata["actual_fill_price"] = _fill_price
+                            self._log.info("trade.verified", order_id=order.order_id[:20] + "...", actual_price=f"${_fill_price:.4f}", size_matched=size_matched, wait=f"{elapsed}s")
+                    except Exception:
+                        pass
+                    if self._alerter:
+                        asyncio.create_task(self._alerter.send_entry_alert(order))
+                else:
+                    self._log.warning("trade.not_filled_no_retry", order_id=order.order_id[:20], waited=f"{elapsed}s")
+                    # Notify on Telegram that order is sitting unfilled
+                    if self._alerter:
                         try:
-                            spread = await self._poly.get_order_book_spread(token_id)
-                            bumped = self._poly.calculate_dynamic_bump(base_price, spread)
+                            asyncio.create_task(self._alerter._send_with_id(
+                                f"⏳ *ORDER UNFILLED* — {order.order_id[:16]}...\n"
+                                f"Sitting on book after {elapsed}s. GTD will expire at window close.\n"
+                                f"No retry — accepting miss at this price."
+                            ))
                         except Exception:
-                            bumped = round(base_price + 0.02, 4)  # Fallback to fixed 2¢
-                        
-                        bumped_price = Decimal(str(bumped))
-                        self._log.info(
-                            "trade.retry_dynamic_bump",
-                            original_price=str(price),
-                            bumped_price=str(bumped_price),
-                            window=window_key,
-                        )
-                        # Cancel original order (GTD will auto-expire, but cancel is faster)
-                        try:
-                            if hasattr(self._poly, '_clob_client') and self._poly._clob_client:
-                                await asyncio.to_thread(self._poly._clob_client.cancel, order.order_id)
-                        except Exception:
-                            pass  # GTD auto-expires anyway — no stale order risk
-                        
-                        # Recalculate stake for bumped price
-                        retry_stake = self._calculate_stake(signal.tier, float(bumped_price))
-                        
-                        try:
-                            _original_order_id = order.order_id  # save before overwrite
-                            retry_id = await self._poly.place_order(
-                                market_slug=market_slug,
-                                direction=direction,
-                                price=bumped_price,
-                                stake_usd=retry_stake,
-                                token_id=token_id,
-                            )
-                            if retry_id:
-                                # FIX: Register retry_id → original order so resolve_order works for both IDs
-                                await self._om.register_retry_order_id(retry_id, _original_order_id)
-                            order.order_id = retry_id
-                            order.price = str(bumped_price)
-                            order.stake_usd = retry_stake
-                            order.metadata["retried_at_bump"] = True
-                            order.metadata["bumped_price"] = str(bumped_price)
-                            order.metadata["bump_spread"] = str(spread) if 'spread' in dir() else "fallback"
-                            self._log.info("trade.retry_placed", order_id=retry_id[:20] if retry_id else "?", price=str(bumped_price))
-                            
-                            # Quick fill check on retry (15s = 3 checks)
-                            await asyncio.sleep(15)
-                            status2 = await self._poly.get_order_status(retry_id)
-                            retry_size_matched = status2.get("size_matched", "0") or "0"
-                            retry_filled = float(retry_size_matched) > 0
-                            order.metadata["filled"] = retry_filled
-                            if retry_filled:
-                                # FIX: Update entry_price with actual fill price
-                                try:
-                                    _retry_shares = float(retry_size_matched)
-                                    if _retry_shares > 0:
-                                        _retry_fill_price = round(order.stake_usd / _retry_shares, 4)
-                                        order.price = str(_retry_fill_price)
-                                        order.metadata["actual_fill_price"] = _retry_fill_price
-                                        self._log.info("trade.retry_actual_fill_price", price=f"${_retry_fill_price:.4f}", shares=_retry_shares)
-                                except Exception:
-                                    pass
-                                if self._alerter:
-                                    asyncio.create_task(self._alerter.send_entry_alert(order))
-                            elif not retry_filled:
-                                self._log.warning("trade.retry_not_filled", order_id=retry_id[:20] if retry_id else "?")
-                        except Exception as exc:
-                            self._log.warning("trade.retry_failed", error=str(exc))
+                            pass
             except Exception as exc:
                 self._log.warning("trade.verify_failed", error=str(exc))
-                if self._alerter:
-                    asyncio.create_task(self._alerter.send_entry_alert(order))
-        else:
-            if self._alerter:
-                asyncio.create_task(self._alerter.send_entry_alert(order))
+        
+        if self._alerter:
+            asyncio.create_task(self._alerter.send_entry_alert(order))
 
     # ─── Guardrail Helpers ────────────────────────────────────────────────────
 
