@@ -1,0 +1,52 @@
+name: Deploy Frontend to AWS
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'frontend/**'
+  workflow_dispatch:  # manual trigger
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install & build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Package dist
+        run: tar czf /tmp/frontend-dist.tar.gz -C frontend/dist .
+
+      - name: Deploy to AWS
+        env:
+          SSH_KEY: ${{ secrets.AWS_FRONTEND_SSH_KEY }}
+          HOST: ${{ secrets.AWS_FRONTEND_HOST }}
+        run: |
+          # Write SSH key
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Upload and deploy
+          scp -i ~/.ssh/deploy_key /tmp/frontend-dist.tar.gz "ubuntu@${HOST}:/tmp/frontend-dist.tar.gz"
+          ssh -i ~/.ssh/deploy_key "ubuntu@${HOST}" '
+            sudo rm -rf /var/www/frontend/*
+            sudo tar xzf /tmp/frontend-dist.tar.gz -C /var/www/frontend
+            sudo chown -R www-data:www-data /var/www/frontend
+            sudo systemctl restart nginx
+            rm /tmp/frontend-dist.tar.gz
+          '
+
+          echo "Deployed to http://${HOST}"
