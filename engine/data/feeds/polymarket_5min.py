@@ -292,7 +292,9 @@ class Polymarket5MinFeed:
                     window.state = WindowState.CLOSING
                     await self._emit_state_change(window.asset, window.window_ts, window.state)
                     await self._emit_window_signal(window)
-                    break  # One emission per tick — next offset fires next tick
+                    # Don't break — check remaining offsets in same tick
+                    # so T-60 retry fires even if T-70 and T-60 both became
+                    # eligible between ticks
 
             # Window expired
             if remaining <= 0:

@@ -1050,16 +1050,13 @@ class FiveMinVPINStrategy(BaseStrategy):
         Returns None if no trade should be placed.
         """
         # VPIN gate — core thesis: no informed flow = no trade
-        # When VPIN is 0 or below gate, we'd be relying solely on TimesFM (no informed flow).
-        # TIMESFM_ONLY regime: skip entirely rather than trade on model forecast alone.
         if current_vpin < runtime.five_min_vpin_gate:
             self._log.info(
-                "evaluate.skip_timesfm_only_regime",
+                "evaluate.vpin_below_gate",
                 vpin=f"{current_vpin:.3f}",
                 gate=f"{runtime.five_min_vpin_gate:.3f}",
-                reason="VPIN below gate — no informed flow, would be TIMESFM_ONLY regime, skipping",
             )
-            self._last_skip_reason = f"VPIN {current_vpin:.3f} < gate {runtime.five_min_vpin_gate} — TIMESFM_ONLY regime, no informed flow"
+            self._last_skip_reason = f"VPIN {current_vpin:.3f} < gate {runtime.five_min_vpin_gate}"
             return None
 
         # ── TWAP Gamma Gate (v5.7c) ───────────────────────────────
