@@ -34,6 +34,8 @@ from config.constants import FIVE_MIN_ENTRY_OFFSET
 from data.aggregator import MarketAggregator
 from data.feeds.binance_ws import BinanceWebSocketFeed
 from data.feeds.chainlink_rpc import ChainlinkRPCFeed
+from data.feeds.chainlink_feed import ChainlinkFeed
+from data.feeds.tiingo_feed import TiingoFeed
 from data.feeds.coinglass_api import CoinGlassAPIFeed
 from data.feeds.coinglass_enhanced import CoinGlassEnhancedFeed
 from evaluation.claude_evaluator import ClaudeEvaluator
@@ -360,6 +362,16 @@ class Orchestrator:
         else:
             log.info("orchestrator.chainlink_disabled", reason="no RPC URL set")
 
+        # ── Chainlink Multi-Asset Feed (BTC/ETH/SOL/XRP, every 5s) ──────────
+        # Pool not yet available at __init__ — injected in start() after connect()
+        self._chainlink_multi_feed: Optional[ChainlinkFeed] = None
+        # Instantiated in start() once DB pool is live
+
+        # ── Tiingo Top-of-Book Feed (BTC/ETH/SOL/XRP, every 2s) ─────────────
+        # Pool not yet available at __init__ — injected in start() after connect()
+        self._tiingo_feed: Optional[TiingoFeed] = None
+        # Instantiated in start() once DB pool is live
+
         # Polymarket token IDs from settings
         token_ids = [
             tid.strip()
@@ -447,6 +459,51 @@ class Orchestrator:
             log.warning("orchestrator.tick_recorder_start_failed", error=str(exc))
             self._tick_recorder = None
 
+        # ── Chainlink Multi-Asset Feed — initialise with live DB pool ────────
+        try:
+            _rpc_url = self._settings.polygon_rpc_url
+            if _rpc_url and self._db._pool:
+                self._chainlink_multi_feed = ChainlinkFeed(
+                    rpc_url=_rpc_url,
+                    pool=self._db._pool,
+                )
+                log.info("orchestrator.chainlink_multi_feed_ready", rpc=_rpc_url[:40])
+            else:
+                log.info(
+                    "orchestrator.chainlink_multi_feed_disabled",
+                    reason="no RPC URL or DB pool",
+                )
+        except Exception as exc:
+            log.warning("orchestrator.chainlink_multi_feed_init_failed", error=str(exc))
+            self._chainlink_multi_feed = None
+
+        # ── Tiingo Feed — initialise with live DB pool ────────────────────────
+        try:
+            _tiingo_key = os.environ.get("TIINGO_API_KEY", "")
+            if not _tiingo_key:
+                # Fallback: read from .env file
+                _env_file = Path(__file__).parent.parent / ".env"
+                if _env_file.exists():
+                    with open(_env_file) as _f:
+                        for _line in _f:
+                            if _line.startswith("TIINGO_API_KEY="):
+                                _tiingo_key = _line.split("=", 1)[1].strip()
+                                break
+            if _tiingo_key and self._db._pool:
+                self._tiingo_feed = TiingoFeed(
+                    api_key=_tiingo_key,
+                    pool=self._db._pool,
+                )
+                log.info("orchestrator.tiingo_feed_ready")
+            else:
+                log.info(
+                    "orchestrator.tiingo_feed_disabled",
+                    reason="no API key or DB pool",
+                )
+        except Exception as exc:
+            log.warning("orchestrator.tiingo_feed_init_failed", error=str(exc))
+            self._tiingo_feed = None
+
         # ── VPIN Warm Start: replay recent ticks to avoid cold-start ──────────
         try:
             if self._db and self._db._pool:
@@ -517,6 +574,18 @@ class Orchestrator:
             self._tasks.append(
                 asyncio.create_task(self._chainlink_feed.start(), name="feed:chainlink")
             )
+        if self._chainlink_multi_feed:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._chainlink_multi_feed.start(), name="feed:chainlink_multi"
+                )
+            )
+            log.info("orchestrator.chainlink_multi_feed_started")
+        if self._tiingo_feed:
+            self._tasks.append(
+                asyncio.create_task(self._tiingo_feed.start(), name="feed:tiingo")
+            )
+            log.info("orchestrator.tiingo_feed_started")
         self._tasks.append(
             asyncio.create_task(self._polymarket_feed.start(), name="feed:polymarket")
         )
@@ -658,6 +727,10 @@ class Orchestrator:
             await self._coinglass_feed.stop()
         if self._chainlink_feed:
             await self._chainlink_feed.stop()
+        if self._chainlink_multi_feed:
+            await self._chainlink_multi_feed.stop()
+        if self._tiingo_feed:
+            await self._tiingo_feed.stop()
         await self._polymarket_feed.stop()
 
         # Cancel all tasks

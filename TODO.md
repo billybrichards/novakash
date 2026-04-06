@@ -118,6 +118,36 @@ Code is stable, tested, ready for Montreal restart.
 - Raw trade data always preserved (AI analysis in separate messages)
 - v7.1 WR: 73.3% on backfilled 120 windows
 
+### Macro Observer — Engine Integration (Phase 2)
+**Status:** TODO — Service built (feat/macro-observer), pending engine wiring
+**What:** Engine reads latest `macro_signals` row from DB each window evaluation and applies:
+- Mode 1 (Neutral <50%): no changes
+- Mode 2 (Trend-Aware 50-79%): gate contrarian bets, adjust delta thresholds
+- Mode 3 (Override 80%+): early entry T-120/T-180, direction flip, 1.3x sizing
+**Files to update:**
+- `engine/strategies/orchestrator.py` — load macro signal on startup + each heartbeat
+- `engine/strategies/five_min_vpin.py` — apply gate/threshold/size modifiers pre-execution
+- `engine/persistence/db_client.py` — write macro_signal_id to window_snapshots
+**Blocked by:** Railway deploy of macro-observer service (Billy to trigger)
+
+### Tiingo Integration
+**Status:** TODO — API key available from earlier TODO
+**Key:** 3f4456e457a4184d76c58a1320d8e1b214c3ab16
+**Why critical:** Chainlink oracle uses multi-exchange LWBA median. Binance alone diverges 57%
+of the time vs oracle direction. Tiingo is an oracle node input — should track much better.
+**What to build:**
+- Add to data-collector: record Tiingo BTC/USD at window open/close timestamps
+- Compare Tiingo vs oracle resolution direction for 48h to validate
+- If tracks well: replace Binance delta in signal calculation
+
+### Gamma Balance Block (Feature Flag — Monitor First)
+**Status:** TO MONITOR before implementing
+**Observation:** When `abs(gamma_up_price - gamma_down_price) < 0.02`, market has zero
+directional conviction. Hypothesis: correlates with losses.
+**To do:** Query `window_snapshots` where Gamma is BALANCED and cross with outcome.
+Only implement if data confirms the hypothesis.
+**When ready:** Feature flag `gamma_balance_block` (default OFF) in runtime_config.py
+
 ### FOK Ladder (ORDER_PRICING_MODE=fokladder)
 **Status:** TODO — full plan at docs/FOK_LADDER_PLAN.md
 **What:** Rapid FOK attempts with fresh Gamma every 2s, fast re-eval (delta/VPIN/floor/cap) at each step, GTD fallback
