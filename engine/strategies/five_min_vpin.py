@@ -827,6 +827,19 @@ class FiveMinVPINStrategy(BaseStrategy):
                                 "delta_pct": delta_pct,
                                 "vpin": current_vpin,
                                 "regime": _snap_regime,
+                                # v8.0 fields
+                                "delta_source": window_snapshot.get("delta_source", "?"),
+                                "delta_tiingo": window_snapshot.get("delta_tiingo"),
+                                "delta_binance": window_snapshot.get("delta_binance"),
+                                "delta_chainlink": window_snapshot.get("delta_chainlink"),
+                                "tiingo_close": window_snapshot.get("tiingo_close"),
+                                "chainlink_price": window_snapshot.get("chainlink_open"),
+                                "binance_price": window_snapshot.get("btc_price"),
+                                "gates_passed": window_snapshot.get("gates_passed", ""),
+                                "gate_failed": window_snapshot.get("gate_failed"),
+                                "confidence_tier": window_snapshot.get("confidence_tier", "?"),
+                                "macro_bias": window_snapshot.get("macro_bias", "N/A"),
+                                "macro_confidence": window_snapshot.get("macro_confidence", ""),
                             }
                             
                             # Send skip decision (no AI analysis for skipped trades)
@@ -856,6 +869,19 @@ class FiveMinVPINStrategy(BaseStrategy):
                         "delta_pct": delta_pct,
                         "vpin": current_vpin,
                         "regime": _snap_regime,
+                        # v8.0 fields
+                        "delta_source": window_snapshot.get("delta_source", "?"),
+                        "delta_tiingo": window_snapshot.get("delta_tiingo"),
+                        "delta_binance": window_snapshot.get("delta_binance"),
+                        "delta_chainlink": window_snapshot.get("delta_chainlink"),
+                        "tiingo_close": window_snapshot.get("tiingo_close"),
+                        "chainlink_price": window_snapshot.get("chainlink_open"),
+                        "binance_price": window_snapshot.get("btc_price"),
+                        "gates_passed": window_snapshot.get("gates_passed", ""),
+                        "gate_failed": window_snapshot.get("gate_failed"),
+                        "confidence_tier": window_snapshot.get("confidence_tier", "?"),
+                        "macro_bias": window_snapshot.get("macro_bias", "N/A"),
+                        "macro_confidence": window_snapshot.get("macro_confidence", ""),
                     }
                     reason = f"VPIN {current_vpin:.3f} ({_snap_regime}), delta {delta_pct:+.4f}%"
                     
