@@ -1792,6 +1792,74 @@ class Orchestrator:
                             else "CALM"
                         )
 
+                        # v8.1: Enhanced SITREP with recent trades + pending positions
+                        _recent_block = ""
+                        _pending_block = ""
+                        _pnl_from_wallet = 0.0
+                        try:
+                            if self._db._pool:
+                                async with self._db._pool.acquire() as conn:
+                                    # Recent 5 trades
+                                    _recent = await conn.fetch(
+                                        """SELECT direction, outcome, status,
+                                           metadata->>'entry_reason' as reason,
+                                           metadata->>'v81_entry_cap' as cap,
+                                           ROUND(stake_usd::numeric, 2) as stake,
+                                           ROUND(pnl_usd::numeric, 2) as pnl
+                                        FROM trades WHERE created_at > NOW() - INTERVAL '2 hours'
+                                        ORDER BY created_at DESC LIMIT 5"""
+                                    )
+                                    if _recent:
+                                        _lines = []
+                                        for r in _recent:
+                                            _dir = "⬆️" if r['direction'] == 'YES' else "⬇️"
+                                            _out = {"WIN": "✅", "LOSS": "❌"}.get(r['outcome'] or '', "⏳")
+                                            _cap = f"${float(r['cap']):.2f}" if r['cap'] else "?"
+                                            _rsn = (r['reason'] or '?')[-15:]  # last 15 chars
+                                            if r['outcome']:
+                                                _p = float(r['pnl'] or 0)
+                                                _pstr = f"`{'+' if _p>=0 else ''}${_p:.2f}`"
+                                            elif r['status'] == 'EXPIRED':
+                                                _pstr = "expired"
+                                                _out = "⏭"
+                                            else:
+                                                _pstr = "pending"
+                                            _lines.append(f"{_out}{_dir} {_cap} {_rsn} {_pstr}")
+                                        _recent_block = "\n📝 *Recent:*\n" + "\n".join(_lines) + "\n"
+
+                                    # Pending positions (OPEN/FILLED not yet resolved)
+                                    _pending = await conn.fetch(
+                                        """SELECT direction, metadata->>'v81_entry_cap' as cap,
+                                           metadata->>'entry_reason' as reason,
+                                           ROUND(stake_usd::numeric, 2) as stake,
+                                           metadata->>'market_slug' as slug
+                                        FROM trades WHERE status IN ('OPEN', 'FILLED')
+                                        AND created_at > NOW() - INTERVAL '1 hour'
+                                        ORDER BY created_at"""
+                                    )
+                                    if _pending:
+                                        _plines = []
+                                        _total_risk = 0
+                                        _total_upside = 0
+                                        for p in _pending:
+                                            _dir = "⬆️" if p['direction'] == 'YES' else "⬇️"
+                                            _cap = float(p['cap']) if p['cap'] else 0.73
+                                            _stk = float(p['stake'])
+                                            _win_est = _stk * (1 - _cap) / _cap
+                                            _total_risk += _stk
+                                            _total_upside += _win_est
+                                            _plines.append(f"{_dir} ${_cap:.2f} risk `${_stk:.2f}` → win `+${_win_est:.2f}`")
+                                        _pending_block = (
+                                            f"\n⏳ *Pending ({len(_pending)}):*\n"
+                                            + "\n".join(_plines)
+                                            + f"\nIf all win: `+${_total_upside:.2f}` | If all lose: `-${_total_risk:.2f}`\n"
+                                        )
+
+                                    # Real P&L from wallet
+                                    _pnl_from_wallet = wallet - baseline
+                        except Exception:
+                            pass
+
                         sitrep = (
                             f"📋 *5-MIN SITREP* ({status_emoji} {'KILLED' if killed else 'ACTIVE'}) {mode_label}\n"
                             f"\n"
@@ -1802,10 +1870,12 @@ class Orchestrator:
                                 if not self._settings.paper_mode else
                                 f"💰 Bankroll: `${bankroll:.2f}`\n"
                             ) +
-                            f"📈 P&L: `${real_pnl:+.2f}` (from `${baseline:.0f}`)\n"
+                            f"📈 P&L: `${_pnl_from_wallet:+.2f}` (from `${baseline:.0f}`)\n"
                             f"\n"
-                            f"✅ Wins: `{real_wins}` | ❌ Losses: `{real_losses}`\n"
+                            f"✅ Wins: `{real_wins}` | ❌ Losses: `{real_losses}` | WR: `{(real_wins/(real_wins+real_losses)*100) if (real_wins+real_losses)>0 else 0:.0f}%`\n"
                             f"📉 Drawdown: `{drawdown:.1%}`\n"
+                            + _recent_block
+                            + _pending_block +
                             f"\n"
                             f"🔬 VPIN: `{vpin:.4f}` | Regime: `{vpin_regime}`\n"
                             + cg_block +
