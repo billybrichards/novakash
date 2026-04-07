@@ -2528,14 +2528,21 @@ class FiveMinVPINStrategy(BaseStrategy):
         _default_cap = float(os.environ.get("FOK_PRICE_CAP", "0.73"))
         PRICE_CAP = getattr(signal, 'v81_entry_cap', _default_cap)  # v8.1: dynamic cap per offset
         PRICE_FLOOR = float(os.environ.get("PRICE_FLOOR", "0.30"))
+        
+        # Pi bonus: if FOK exhausted, use cap+π cents for GTC (when CLOB was within π% of cap)
+        _pi_bonus_cents = float(os.environ.get("FOK_PI_BONUS_CENTS", "0.0314"))  # π cents
+        _gtc_price = PRICE_CAP + _pi_bonus_cents if clob_order_id is None and hasattr(signal, '_fok_exhausted') else PRICE_CAP
+        _gtc_price = round(_gtc_price, 2)  # Enforce 2dp
+        
         self._log.info(
             "execute.cap_debug",
             signal_cap=getattr(signal, 'v81_entry_cap', 'NOT_SET'),
             default=_default_cap,
-            resolved=PRICE_CAP,
-            reason=getattr(signal, 'entry_reason', '?'),
+            gtc_price=f"${_gtc_price:.4f}",
+            gtc_with_pi_bonus=f"${_gtc_price:.4f}" if hasattr(signal, '_fok_exhausted') else "N/A",
+            pi_bonus=f"${_pi_bonus_cents:.4f}",
         )
-
+        
         # ── Guardrails ────────────────────────────────────────────────────────
         if self._geoblock_check_fn and self._geoblock_check_fn():
             self._log.error("guardrail.geoblock.blocked")
@@ -2593,6 +2600,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                         prices=_fok_result.attempted_prices,
                         abort_reason=_fok_result.abort_reason,
                     )
+                    # Mark signal as FOK-exhausted so GTC uses cap+π
+                    signal._fok_exhausted = True
                     # Notify — falling back to GTC
                     if self._alerter:
                         _wkey = f"{window.asset}-{window.window_ts}"
@@ -2688,7 +2697,13 @@ class FiveMinVPINStrategy(BaseStrategy):
                 # This way we fill at whatever the market price is (≤ cap).
                 # Previously we sent the CLOB best ask ($0.34-0.60) but
                 # place_order overrode it to $0.73 anyway.
-                _gtc_limit = Decimal(str(round(PRICE_CAP, 4)))
+                _gtc_limit = Decimal(str(round(_gtc_price, 4)))
+                self._log.info(
+                    "execute.gtc_submit",
+                    gtc_limit=f"${_gtc_price:.4f}",
+                    base_cap=f"${PRICE_CAP:.4f}",
+                    pi_bonus_applicable=hasattr(signal, '_fok_exhausted'),
+                )
                 try:
                     clob_order_id = await self._poly.place_order(
                         market_slug=market_slug, direction=direction,

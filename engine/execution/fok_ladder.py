@@ -44,6 +44,12 @@ def _env_float(key: str, default: float) -> float:
 FOK_ATTEMPTS_DEFAULT = 5
 FOK_INTERVAL_S_DEFAULT = 2.0
 FOK_BUMP_DEFAULT = 0.01
+FOK_PI_BONUS_CENTS_DEFAULT = 0.0314  # π cents
+FOK_PI_PERCENT_THRESHOLD_DEFAULT = 3.14  # π%
+
+
+def _env_float(key: str, default: float) -> float:
+    return float(os.environ.get(key, default))
 
 
 @dataclass
@@ -107,6 +113,26 @@ class FOKLadder:
         max_attempts = _env_int("FOK_ATTEMPTS", FOK_ATTEMPTS_DEFAULT)
         interval_s = _env_float("FOK_INTERVAL_S", FOK_INTERVAL_S_DEFAULT)
         bump = _env_float("FOK_BUMP", FOK_BUMP_DEFAULT)
+        pi_bonus_cents = _env_float("FOK_PI_BONUS_CENTS", FOK_PI_BONUS_CENTS_DEFAULT)
+        pi_percent_threshold = _env_float("FOK_PI_PERCENT_THRESHOLD", FOK_PI_PERCENT_THRESHOLD_DEFAULT)
+
+        # Calculate effective max_price with pi bonus if CLOB is close enough
+        # Check initial book state to see if we qualify for pi bonus
+        best_ask_check = best_ask
+        
+        # Pi bonus: if CLOB is within π% of base cap, allow up to cap+π cents
+        pi_threshold_price = max_price * (1 + pi_percent_threshold / 100)
+        effective_max_price = max_price + pi_bonus_cents
+        
+        self._log.info(
+            "fok_ladder.pi_bonus_check",
+            base_max_price=f"${max_price:.4f}",
+            best_ask=f"${best_ask_check:.4f}",
+            pi_threshold=f"${pi_threshold_price:.4f}",
+            pi_bonus=f"${pi_bonus_cents:.4f}",
+            effective_max=f"${effective_max_price:.4f}",
+            within_threshold=best_ask_check <= pi_threshold_price,
+        )
 
         self._log.info(
             "fok_ladder.start",
@@ -155,21 +181,38 @@ class FOKLadder:
                 abort_reason=f"best_ask ${best_ask:.4f} < floor ${min_price:.4f}",
             )
 
-        # FOK mode: start at max_price (our cap) and attempt fills
+        # FOK mode: start at effective_max_price (with pi bonus if applicable)
         # CLOB may drop quickly, or there may be hidden liquidity at our price
-        current_price = max_price
+        current_price = min(best_ask_check, effective_max_price) if best_ask_check <= pi_threshold_price else max_price
 
-        self._log.info(
-            "fok_ladder.clob_above_cap",
-            best_ask=f"${best_ask:.4f}",
-            starting_at=f"${current_price:.4f}",
-            note="FOK will attempt fills at cap; CLOB may drop or hidden liquidity may exist",
-        )
+        if best_ask_check <= pi_threshold_price:
+            self._log.info(
+                "fok_ladder.clob_within_pi_threshold",
+                best_ask=f"${best_ask_check:.4f}",
+                threshold=f"${pi_threshold_price:.4f}",
+                starting_at=f"${current_price:.4f}",
+                note=f'FOK will attempt fills up to ${effective_max_price:.4f} (cap+π cents)',
+            )
+        elif best_ask_check > max_price:
+            self._log.info(
+                "fok_ladder.clob_above_cap",
+                best_ask=f"${best_ask_check:.4f}",
+                starting_at=f"${current_price:.4f}",
+                note="FOK will attempt fills at cap; CLOB may drop or hidden liquidity may exist",
+            )
+        else:
+            self._log.info(
+                "fok_ladder.clob_at_or_below_cap",
+                best_ask=f"${best_ask_check:.4f}",
+                starting_at=f"${current_price:.4f}",
+            )
 
         # ── Steps 3–6: FOK attempt loop ───────────────────────────────────
         for attempt in range(1, max_attempts + 1):
-            # Cap each attempt at max_price
-            attempt_price = min(round(current_price, 4), max_price)
+            # Cap each attempt at effective_max_price (with pi bonus if applicable)
+            attempt_price = min(round(current_price, 4), effective_max_price)
+            # Enforce 2dp strictness for CLOB compliance
+            attempt_price = round(attempt_price, 2)
             attempted_prices.append(attempt_price)
 
             # Calculate size for this attempt
@@ -213,11 +256,11 @@ class FOKLadder:
                     await asyncio.sleep(interval_s)
                     try:
                         current_price = await self._poly.get_clob_best_ask(token_id)
-                        # Keep trying at max_price (CLOB may drop)
-                        current_price = min(current_price + bump, max_price)
+                        # Keep trying at effective_max_price (CLOB may drop)
+                        current_price = min(current_price + bump, effective_max_price)
                     except Exception:
                         # Book query failed — keep trying at cap
-                        current_price = max_price
+                        current_price = min(attempt_price + bump, effective_max_price)
                     continue
                 else:
                     break
@@ -270,11 +313,11 @@ class FOKLadder:
                 )
                 await asyncio.sleep(interval_s)
 
-                # ── Step 5 cont: Refresh book and bump ────────────────────
+                 # ── Step 5 cont: Refresh book and bump ────────────────────
                 try:
                     fresh_ask = await self._poly.get_clob_best_ask(token_id)
                     # Use fresh book price as base, then bump
-                    current_price = min(fresh_ask + bump, max_price)
+                    current_price = min(fresh_ask + bump, effective_max_price)
                     self._log.info(
                         "fok_ladder.fresh_book",
                         fresh_ask=f"${fresh_ask:.4f}",
@@ -282,15 +325,15 @@ class FOKLadder:
                     )
                 except Exception as exc:
                     # Book query failed — bump from last price
-                    current_price = min(attempt_price + bump, max_price)
+                    current_price = min(attempt_price + bump, effective_max_price)
                     self._log.debug(
                         "fok_ladder.fresh_book_failed",
                         fallback_price=f"${current_price:.4f}",
                         error=str(exc)[:100],
                     )
 
-                # Cap at max_price (keep trying at cap even if CLOB is higher)
-                current_price = min(current_price, max_price)
+                # Cap at effective_max_price (with pi bonus if applicable)
+                current_price = min(current_price, effective_max_price)
 
         # ── Step 7: All attempts exhausted ───────────────────────────────
         self._log.warning(
