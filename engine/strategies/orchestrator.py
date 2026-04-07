@@ -683,6 +683,11 @@ class Orchestrator:
         except Exception as exc:
             log.warning("orchestrator.ensure_post_resolution_table_failed", error=str(exc))
 
+        try:
+            await self._db.ensure_window_predictions_table()
+        except Exception as exc:
+            log.warning("orchestrator.ensure_window_predictions_table_failed", error=str(exc))
+
         # 6d. Ensure v8.0 columns exist in trades table
         try:
             await self._db.ensure_v8_trade_columns()

@@ -821,6 +821,45 @@ class FiveMinVPINStrategy(BaseStrategy):
             except Exception as exc:
                 self._log.warning("db.snapshot_write_failed", error=str(exc)[:80])
 
+        # ── Window prediction capture (v8.1.2) ───────────────────────────────
+        # Record Tiingo + Chainlink close prices and predicted directions.
+        # This runs on every window (trade or skip) for accuracy tracking.
+        if self._db is not None:
+            try:
+                _sig_dir = signal.direction if signal else (
+                    "UP" if delta_pct and delta_pct > 0 else "DOWN"
+                )
+                _ti_dir = "UP" if delta_tiingo and delta_tiingo > 0 else "DOWN" if delta_tiingo else None
+                _cl_dir = "UP" if delta_chainlink and delta_chainlink > 0 else "DOWN" if delta_chainlink else None
+                _v2_dir_pred = window_snapshot.get("v2_direction")
+                _v2_prob_pred = window_snapshot.get("v2_probability_up")
+                _regime = _snap_regime
+                _vpin_close = current_vpin
+
+                asyncio.create_task(self._db.write_window_prediction({
+                    "window_ts": window.window_ts,
+                    "asset": window.asset,
+                    "timeframe": tf,
+                    "tiingo_open": _tiingo_open,
+                    "tiingo_close": _tiingo_close,
+                    "chainlink_open": window_snapshot.get("chainlink_open"),
+                    "chainlink_close": current_price,  # BTC price at eval time ≈ Chainlink
+                    "tiingo_direction": _ti_dir,
+                    "chainlink_direction": _cl_dir,
+                    "our_signal_direction": _sig_dir,
+                    "v2_direction": _v2_dir_pred,
+                    "v2_probability": float(_v2_prob_pred) if _v2_prob_pred else None,
+                    "vpin_at_close": _vpin_close,
+                    "regime": _regime,
+                    "trade_placed": signal is not None,
+                    "our_direction": signal.direction if signal else None,
+                    "our_entry_price": getattr(signal, 'v81_entry_cap', None) if signal else None,
+                    "bid_unfilled": False,  # Updated downstream if order expires unfilled
+                    "skip_reason": self._last_skip_reason if signal is None else None,
+                }))
+            except Exception:
+                pass
+
         # ── Gate audit write (v8.0) — record pass/fail for every window ───────
         # Builds audit AFTER signal eval so gate_passed reflects actual decision.
         # signal is None → SKIP; signal is not None → TRADE.
@@ -2753,6 +2792,17 @@ class FiveMinVPINStrategy(BaseStrategy):
                         order.metadata["clob_status"] = "EXPIRED_UNFILLED"
                         if self._om:
                             asyncio.create_task(self._om._persist_trade(order))
+                        # v8.1.2: Mark prediction as bid_unfilled
+                        if self._db:
+                            try:
+                                async with self._db._pool.acquire() as _conn:
+                                    await _conn.execute(
+                                        "UPDATE window_predictions SET bid_unfilled=true, trade_placed=false "
+                                        "WHERE window_ts=$1 AND asset=$2",
+                                        window.window_ts, window.asset
+                                    )
+                            except Exception:
+                                pass
                         if self._alerter:
                             asyncio.create_task(self._alerter.send_system_alert(
                                 f"❌ GTC NOT FILLED — {window.asset} {tf}\n"

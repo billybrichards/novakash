@@ -500,6 +500,13 @@ class OrderManager:
                     await self._db.update_window_outcome(
                         window_ts, asset, tf, resolved.outcome, resolved.pnl_usd or 0.0, poly_winner
                     )
+                    # v8.1.2: Update window_predictions with oracle result
+                    try:
+                        await self._db.update_window_prediction_outcome(
+                            window_ts, asset, poly_winner
+                        )
+                    except Exception:
+                        pass
                     # Save close prices from Chainlink + Tiingo + Binance at resolution time (v7.2)
                     try:
                         _cl_close = await self._db.get_latest_chainlink_price(asset)
