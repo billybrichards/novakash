@@ -574,17 +574,41 @@ class FiveMinVPINStrategy(BaseStrategy):
                                 timeframe="5m", eval_offset=getattr(window, 'eval_offset', None),
                                 delta_chainlink=delta_chainlink, delta_tiingo=delta_tiingo,
                                 delta_binance=delta_binance, vpin=current_vpin,
-                                regime=_snap_regime if '_snap_regime' in dir() else None,
+                                regime=_snap_regime,
                                 decision="SKIP", gate_failed="source_disagree",
                             )
                         except Exception:
                             pass
+                    # Telegram notification for source disagreement (once per window)
+                    _disagree_key = f"{window.asset}-{window.window_ts}-disagree"
+                    if not hasattr(self, '_v9_disagree_notified'):
+                        self._v9_disagree_notified = set()
+                    if self._alerter and _disagree_key not in self._v9_disagree_notified:
+                        self._v9_disagree_notified.add(_disagree_key)
+                        # Clean old keys (>10min)
+                        _now = time.time()
+                        self._v9_disagree_notified = {
+                            k for k in self._v9_disagree_notified
+                            if _now - int(k.rsplit("-", 1)[0].rsplit("-", 1)[-1]) < 600
+                        }
+                        _offset = getattr(window, 'eval_offset', '?')
+                        async def _send_disagree_alert():
+                            try:
+                                await self._alerter.send_message(
+                                    f"🔀 SOURCE DISAGREE — {window.asset} 5m\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"Chainlink: {_cl_dir} (Δ {delta_chainlink:+.4f}%)\n"
+                                    f"Tiingo: {_ti_dir} (Δ {delta_tiingo:+.4f}%)\n"
+                                    f"VPIN: {current_vpin:.3f} | {_snap_regime}\n"
+                                    f"Offset: T-{_offset}\n"
+                                    f"Action: ⏭ SKIP (9.1% WR when disagree)\n"
+                                    f"\n📍 MTL  {window.asset}-{window.window_ts}  v9.0"
+                                )
+                            except Exception:
+                                pass
+                        asyncio.create_task(_send_disagree_alert())
                     signal = None
-                    # Skip directly — don't evaluate further
                     tf = "15m" if window.duration_secs == 900 else "5m"
-                    # Jump to snapshot recording (below)
-                    # We still need to record the window snapshot, so we can't return here.
-                    # Set signal=None and let the existing flow handle it.
 
         # ── v9.0 Dynamic Caps (two-tier) ────────────────────────────────
         # Replace v8.1 four-tier caps with empirical agreement-WR-based tiers.

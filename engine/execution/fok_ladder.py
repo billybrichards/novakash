@@ -114,8 +114,9 @@ class FOKLadder:
         order_type = os.environ.get("ORDER_TYPE", ORDER_TYPE_DEFAULT).upper()
 
         # Pi bonus: allow up to cap+π cents
-        pi_threshold_price = max_price * (1 + pi_percent_threshold / 100)
+        # Threshold and max must be the same — if we'd pay cap+π, check against cap+π
         effective_max_price = max_price + pi_bonus_cents
+        pi_threshold_price = effective_max_price  # unified: check and limit are identical
 
         attempted_prices: list[float] = []
 
