@@ -1860,26 +1860,25 @@ class Orchestrator:
                         except Exception:
                             pass
 
+                        _wr = (real_wins/(real_wins+real_losses)*100) if (real_wins+real_losses)>0 else 0
+                        
                         sitrep = (
                             f"📋 *5-MIN SITREP* ({status_emoji} {'KILLED' if killed else 'ACTIVE'}) {mode_label}\n"
-                            f"\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
                             + (
-                                f"🏦 Cash: `${wallet:.2f}` USDC\n"
-                                f"📊 Positions: `${open_positions_val:.2f}`\n"
-                                f"💰 Portfolio: `${portfolio:.2f}`\n"
+                                f"🏦 Wallet: `${wallet:.2f}` USDC _(CLOB verified)_\n"
+                                f"📈 P&L: `${_pnl_from_wallet:+.2f}` from `${baseline:.0f}` start\n"
                                 if not self._settings.paper_mode else
                                 f"💰 Bankroll: `${bankroll:.2f}`\n"
                             ) +
-                            f"📈 P&L: `${_pnl_from_wallet:+.2f}` (from `${baseline:.0f}`)\n"
                             f"\n"
-                            f"✅ Wins: `{real_wins}` | ❌ Losses: `{real_losses}` | WR: `{(real_wins/(real_wins+real_losses)*100) if (real_wins+real_losses)>0 else 0:.0f}%`\n"
-                            f"📉 Drawdown: `{drawdown:.1%}`\n"
+                            f"📊 *24h Record:* `{real_wins}W/{real_losses}L` (`{_wr:.0f}%` WR)\n"
                             + _recent_block
                             + _pending_block +
                             f"\n"
-                            f"🔬 VPIN: `{vpin:.4f}` | Regime: `{vpin_regime}`\n"
+                            f"🔬 VPIN: `{vpin:.4f}` | `{vpin_regime}`\n"
                             + cg_block +
-                            f"🔗 Binance: `{'✅' if binance_ok else '❌'}` | BTC: `${self._order_manager._current_btc_price:,.2f}`\n"
+                            f"BTC: `${self._order_manager._current_btc_price:,.2f}`\n"
                         )
 
                         await self._alerter.send_raw_message(sitrep)
