@@ -1374,11 +1374,11 @@ class DBClient:
                     float(data["delta_pct"]) if data.get("delta_pct") is not None else None,
                     float(data["vpin"]) if data.get("vpin") is not None else None,
                     data.get("regime"),
-                    str(data["gate_vpin"]) if data.get("gate_vpin") is not None else None,
-                    str(data["gate_delta"]) if data.get("gate_delta") is not None else None,
-                    str(data["gate_cg"]) if data.get("gate_cg") is not None else None,
-                    str(data["gate_floor"]) if data.get("gate_floor") is not None else None,
-                    str(data["gate_cap"]) if data.get("gate_cap") is not None else None,
+                    str(data["gate_vpin"]) if data.get("gate_vpin") is not None else None,  # VARCHAR
+                    str(data["gate_delta"]) if data.get("gate_delta") is not None else None,  # VARCHAR
+                    bool(data["gate_cg"]) if data.get("gate_cg") is not None else None,  # BOOLEAN
+                    str(data["gate_floor"]) if data.get("gate_floor") is not None else None,  # VARCHAR
+                    str(data["gate_cap"]) if data.get("gate_cap") is not None else None,  # VARCHAR
                     bool(data.get("gate_passed", False)),
                     data.get("gate_failed"),
                     data.get("gates_passed_list"),
