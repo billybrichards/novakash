@@ -922,7 +922,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         # to the next one (T-180 → T-120 → T-60). At T-60 no v2.2 gate is applied.
         # Dynamic entry cap per offset: T-240=$0.55, T-180=$0.60, T-120=$0.65, T-60=$0.73
         _v81_active = False
-        if eval_offset and eval_offset >= 120 and signal is not None and self._timesfm_v2 is not None:
+        if eval_offset and signal is not None and self._timesfm_v2 is not None:
             _v81_cap = _get_v81_cap(eval_offset)
             _v81_active = True
             _v8_dir = signal.direction  # capture before any mutation
@@ -955,26 +955,32 @@ class FiveMinVPINStrategy(BaseStrategy):
                     cap=_v81_cap,
                 )
 
-                # Tight DECISIVE: v2.2 HIGH + agrees + CASCADE + strong delta
-                _is_cascade = current_vpin >= 0.65
-                _is_strong_delta = abs(delta_pct) >= 0.05 if delta_pct else False
-
+                # Gate 1: v2.2 must be HIGH confidence (all offsets)
                 if not _v2_high:
                     signal = None
-                    self._last_skip_reason = f"v8.1: v2.2 LOW conf ({_v2_p:.2f}) at T-{eval_offset}"
+                    self._last_skip_reason = f"v2.2 LOW conf ({_v2_p:.2f}) at T-{eval_offset}"
+                # Gate 2: v2.2 must agree with v8 direction (all offsets)
                 elif not _v2_agrees:
                     signal = None
-                    self._last_skip_reason = f"v8.1: v2.2 DISAGREES (v2={_v2_dir} vs v8={_v8_dir}) at T-{eval_offset}"
-                elif not _is_cascade:
-                    signal = None
-                    self._last_skip_reason = f"v8.1: not CASCADE (VPIN {current_vpin:.3f} < 0.65) at T-{eval_offset}"
-                elif not _is_strong_delta:
-                    signal = None
-                    self._last_skip_reason = f"v8.1: delta too weak ({abs(delta_pct):.4f}% < 0.05%) at T-{eval_offset}"
+                    self._last_skip_reason = f"v2.2 DISAGREES (v2={_v2_dir} vs v8={_v8_dir}) at T-{eval_offset}"
+                # Gate 3: Early offsets (≥120) also need CASCADE + strong delta for DECISIVE
+                elif eval_offset >= 120:
+                    _is_cascade = current_vpin >= 0.65
+                    _is_strong_delta = abs(delta_pct) >= 0.05 if delta_pct else False
+                    if not _is_cascade:
+                        signal = None
+                        self._last_skip_reason = f"v8.1: not CASCADE (VPIN {current_vpin:.3f} < 0.65) at T-{eval_offset}"
+                    elif not _is_strong_delta:
+                        signal = None
+                        self._last_skip_reason = f"v8.1: delta too weak ({abs(delta_pct):.4f}% < 0.05%) at T-{eval_offset}"
+                    else:
+                        # Tight DECISIVE: v2.2 HIGH + agrees + CASCADE + delta≥5bp
+                        signal.confidence = "DECISIVE"
+                        signal.entry_reason = f"v2.2_early_T{eval_offset}"
+                        signal.v81_entry_cap = _v81_cap
                 else:
-                    # Tight DECISIVE: v2.2 HIGH + agrees + CASCADE + delta≥5bp
-                    signal.confidence = "DECISIVE"
-                    signal.entry_reason = f"v2.2_early_T{eval_offset}"
+                    # Late offsets (<120): v2.2 HIGH + agrees is enough
+                    signal.entry_reason = f"v2.2_confirmed_T{eval_offset}"
                     signal.v81_entry_cap = _v81_cap
                     self._log.info(
                         "v81.early_entry_approved",
