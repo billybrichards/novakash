@@ -1387,3 +1387,163 @@ class DBClient:
                 )
         except Exception as exc:
             log.debug("db.write_gate_audit_failed", error=str(exc)[:120])
+
+    # ── Post-Resolution AI Analysis ──────────────────────────────────────────
+
+    async def ensure_post_resolution_table(self) -> None:
+        """
+        Ensure post_resolution_analyses table exists (idempotent).
+        Also adds ai_post_analysis columns to window_snapshots if missing.
+        """
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS post_resolution_analyses (
+                        id                SERIAL PRIMARY KEY,
+                        window_ts         BIGINT NOT NULL,
+                        asset             VARCHAR(10) NOT NULL DEFAULT 'BTC',
+                        timeframe         VARCHAR(5)  NOT NULL DEFAULT '5m',
+                        oracle_direction  VARCHAR(4),
+                        n_ticks           INTEGER DEFAULT 0,
+                        missed_profit_usd DOUBLE PRECISION DEFAULT 0,
+                        blocked_loss_usd  DOUBLE PRECISION DEFAULT 0,
+                        cap_too_tight     BOOLEAN DEFAULT FALSE,
+                        gate_recommendation TEXT,
+                        ai_post_analysis  TEXT,
+                        analysed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE (window_ts, asset, timeframe)
+                    )
+                    """
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_pra_window_ts ON post_resolution_analyses(window_ts)"
+                )
+                # Also add summary columns to window_snapshots for quick access
+                for col, col_type in [
+                    ("ai_post_analysis", "TEXT"),
+                    ("missed_profit_usd", "DOUBLE PRECISION"),
+                    ("blocked_loss_usd", "DOUBLE PRECISION"),
+                    ("cap_too_tight", "BOOLEAN"),
+                    ("gate_recommendation", "TEXT"),
+                ]:
+                    await conn.execute(
+                        f"ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS {col} {col_type}"
+                    )
+            log.info("db.post_resolution_table_ensured")
+        except Exception as exc:
+            log.warning("db.ensure_post_resolution_table_failed", error=str(exc))
+
+    async def store_post_resolution_analysis(self, result: dict) -> None:
+        """
+        Persist post-resolution AI analysis to DB.
+
+        Writes to post_resolution_analyses table and also updates window_snapshots
+        with summary columns for quick dashboard access.
+        """
+        if not self._pool:
+            return
+        try:
+            window_ts = int(result["window_ts"])
+            asset = result.get("asset", "BTC")
+            timeframe = result.get("timeframe", "5m")
+            oracle_direction = result.get("oracle_direction")
+            n_ticks = int(result.get("n_ticks", 0))
+            missed_profit = float(result.get("missed_profit_usd", 0.0))
+            blocked_loss = float(result.get("blocked_loss_usd", 0.0))
+            cap_too_tight = bool(result.get("cap_too_tight", False))
+            gate_rec = result.get("gate_recommendation")
+            ai_text = result.get("ai_post_analysis", "")
+
+            async with self._pool.acquire() as conn:
+                # Upsert into post_resolution_analyses
+                await conn.execute(
+                    """
+                    INSERT INTO post_resolution_analyses (
+                        window_ts, asset, timeframe,
+                        oracle_direction, n_ticks,
+                        missed_profit_usd, blocked_loss_usd,
+                        cap_too_tight, gate_recommendation, ai_post_analysis
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    ON CONFLICT (window_ts, asset, timeframe) DO UPDATE SET
+                        oracle_direction  = EXCLUDED.oracle_direction,
+                        n_ticks           = EXCLUDED.n_ticks,
+                        missed_profit_usd = EXCLUDED.missed_profit_usd,
+                        blocked_loss_usd  = EXCLUDED.blocked_loss_usd,
+                        cap_too_tight     = EXCLUDED.cap_too_tight,
+                        gate_recommendation = EXCLUDED.gate_recommendation,
+                        ai_post_analysis  = EXCLUDED.ai_post_analysis,
+                        analysed_at       = NOW()
+                    """,
+                    window_ts, asset, timeframe,
+                    oracle_direction, n_ticks,
+                    missed_profit, blocked_loss,
+                    cap_too_tight, gate_rec, ai_text[:4000] if ai_text else None,
+                )
+                # Update summary columns in window_snapshots
+                await conn.execute(
+                    """
+                    UPDATE window_snapshots
+                    SET ai_post_analysis  = $1,
+                        missed_profit_usd = $2,
+                        blocked_loss_usd  = $3,
+                        cap_too_tight     = $4,
+                        gate_recommendation = $5
+                    WHERE window_ts = $6 AND asset = $7 AND timeframe = $8
+                    """,
+                    ai_text[:4000] if ai_text else None,
+                    missed_profit,
+                    blocked_loss,
+                    cap_too_tight,
+                    gate_rec,
+                    window_ts, asset, timeframe,
+                )
+            log.debug(
+                "db.post_resolution_stored",
+                window_ts=window_ts,
+                missed=f"+${missed_profit:.2f}",
+                avoided=f"-${blocked_loss:.2f}",
+                cap_too_tight=cap_too_tight,
+            )
+        except Exception as exc:
+            log.warning("db.store_post_resolution_failed", error=str(exc)[:120])
+
+    async def get_eval_ticks_for_window(
+        self,
+        window_ts: int,
+        asset: str,
+        timeframe: str,
+    ) -> list:
+        """
+        Fetch all evaluation ticks for a window from gate_audit table.
+        Falls back to constructing from window_eval_history if gate_audit is empty.
+        """
+        if not self._pool:
+            return []
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        eval_offset        AS offset,
+                        skip_reason,
+                        vpin,
+                        delta_pct,
+                        regime,
+                        gate_failed,
+                        gate_passed,
+                        decision
+                    FROM gate_audit
+                    WHERE window_ts = $1
+                      AND asset     = $2
+                      AND timeframe = $3
+                    ORDER BY eval_offset DESC NULLS LAST
+                    """,
+                    window_ts, asset, timeframe,
+                )
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            log.debug("db.get_eval_ticks_failed", error=str(exc)[:80])
+            return []

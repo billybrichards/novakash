@@ -667,6 +667,111 @@ class TelegramAlerter:
             self._log.warning("telegram.send_trade_result_failed", error=str(exc)[:100])
             return None
 
+    async def send_post_resolution_analysis(
+        self,
+        window_id: str,
+        oracle_direction: str,
+        eval_ticks: list,
+        ai_analysis: str,
+        missed_profit: float = 0.0,
+        blocked_loss: float = 0.0,
+        cap_too_tight: bool = False,
+    ) -> Optional[int]:
+        """
+        🔬 POST-RESOLUTION — Full AI analysis of all skipped window ticks.
+
+        Format:
+            🔬 POST-RESOLUTION — BTC 5m | 07:15 UTC | v8.0
+            ━━━━━━━━━━━━━━━━━━━━━━
+            Oracle: DOWN ✅
+            Evaluated: 19 ticks | Traded: 0 | Skipped: 19
+
+            Missed profits:
+            T-240 skip (CLOB $0.52 > cap $0.55): would WIN +$4.41
+            T-210 skip (not CASCADE): would WIN +$3.20
+            T-110 skip (v2.2 disagrees): would LOSE -$8.50
+
+            🤖 Sonnet: "Cap at T-240 was $0.03 too tight..."
+        """
+        try:
+            # Parse window time
+            window_time = "?"
+            asset = "BTC"
+            try:
+                parts = window_id.split("-", 1)
+                asset = parts[0]
+                ts = int(parts[1])
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                window_time = dt.strftime("%H:%M UTC")
+            except Exception:
+                pass
+
+            n_ticks = len(eval_ticks)
+            n_traded = sum(1 for t in eval_ticks if t.get("decision") == "TRADE")
+            n_skipped = n_ticks - n_traded
+
+            # Oracle emoji: would our signal have been correct?
+            # We show ✅ if ANY tick would have won (missed opportunity)
+            # and ❌ if all were correctly blocked
+            n_would_win = sum(1 for t in eval_ticks if t.get("would_win") is True)
+            oracle_emoji = "✅" if n_would_win > 0 else "✓"
+
+            # Build tick breakdown lines (only show meaningful ones)
+            tick_lines = []
+            for t in eval_ticks:
+                if t.get("pnl_label") and "no CLOB price" not in t.get("pnl_label", ""):
+                    offset = t.get("offset", "?")
+                    skip_reason = (t.get("skip_reason") or "unknown")[:40]
+                    clob = t.get("clob_ask")
+                    pnl_label = t.get("pnl_label", "")
+                    clob_str = f" CLOB ${clob:.2f}" if clob is not None else ""
+                    tick_lines.append(f"T-{offset} ({skip_reason}{clob_str}): {pnl_label}")
+
+            # Limit to 6 most informative lines to keep message readable
+            tick_lines = tick_lines[:6]
+
+            cap_warning = " ⚠️ CAP TOO TIGHT" if cap_too_tight else ""
+
+            pnl_summary = ""
+            if missed_profit > 0:
+                pnl_summary += f"Missed: `+${missed_profit:.2f}`"
+            if blocked_loss > 0:
+                sep = " | " if pnl_summary else ""
+                pnl_summary += f"{sep}Avoided: `-${blocked_loss:.2f}`"
+
+            text = (
+                f"🔬 *POST-RESOLUTION — {asset} 5m | {window_time} | {self._engine_version}*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Oracle: `{oracle_direction}` {oracle_emoji}{cap_warning}\n"
+                f"Evaluated: `{n_ticks}` ticks | Traded: `{n_traded}` | Skipped: `{n_skipped}`\n"
+            )
+
+            if pnl_summary:
+                text += f"{pnl_summary}\n"
+
+            if tick_lines:
+                text += f"\n*Tick breakdown:*\n"
+                text += "\n".join(f"  _{line}_" for line in tick_lines) + "\n"
+
+            if ai_analysis:
+                # Truncate to ~250 chars for Telegram readability
+                ai_snippet = ai_analysis[:250].strip()
+                if len(ai_analysis) > 250:
+                    ai_snippet += "…"
+                text += f"\n🤖 _Sonnet: \"{ai_snippet}\"_\n"
+
+            msg_id = await self._send_with_id(text)
+            await self._log_notification(
+                "post_resolution_analysis", text, window_id, telegram_message_id=msg_id
+            )
+            return msg_id
+
+        except Exception as exc:
+            self._log.warning(
+                "telegram.send_post_resolution_failed", error=str(exc)[:100]
+            )
+            return None
+
     async def send_shadow_resolution(
         self,
         window_id: str,

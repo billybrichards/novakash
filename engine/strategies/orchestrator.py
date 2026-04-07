@@ -40,6 +40,7 @@ from data.feeds.clob_feed import CLOBFeed
 from data.feeds.coinglass_api import CoinGlassAPIFeed
 from data.feeds.coinglass_enhanced import CoinGlassEnhancedFeed
 from evaluation.claude_evaluator import ClaudeEvaluator
+from evaluation.post_resolution_evaluator import PostResolutionEvaluator
 from data.feeds.polymarket_ws import PolymarketWebSocketFeed
 from data.feeds.polymarket_5min import Polymarket5MinFeed
 from polymarket_browser.service import PlaywrightService
@@ -218,6 +219,16 @@ class Orchestrator:
                 db_client=self._db,
             )
             log.info("orchestrator.claude_evaluator_enabled")
+
+        # ── Post-Resolution AI Evaluator (Sonnet, runs after shadow resolution) ─
+        self._post_resolution_evaluator = None
+        if settings.anthropic_api_key:
+            self._post_resolution_evaluator = PostResolutionEvaluator(
+                api_key=settings.anthropic_api_key,
+                db_client=self._db,
+                alerter=self._alerter,
+            )
+            log.info("orchestrator.post_resolution_evaluator_enabled")
 
         # ── Strategies ─────────────────────────────────────────────────────────
         self._arb_strategy = SubDollarArbStrategy(
@@ -665,6 +676,12 @@ class Orchestrator:
             await self._db.ensure_shadow_columns()
         except Exception as exc:
             log.warning("orchestrator.ensure_shadow_columns_failed", error=str(exc))
+
+        # 6c2. Ensure post-resolution analysis table exists
+        try:
+            await self._db.ensure_post_resolution_table()
+        except Exception as exc:
+            log.warning("orchestrator.ensure_post_resolution_table_failed", error=str(exc))
 
         # 6d. Ensure v8.0 columns exist in trades table
         try:
@@ -2552,6 +2569,52 @@ class Orchestrator:
                             shadow_would_win=shadow_would_win,
                             shadow_pnl=f"{shadow_pnl:+.2f}",
                         )
+
+                        # ── Post-Resolution AI Analysis ───────────────────────
+                        # Run Sonnet analysis of ALL eval ticks for this window.
+                        # Only for recent windows (last 15 min), rate-limited to
+                        # 1 analysis per 60 seconds to avoid API spam.
+                        if self._post_resolution_evaluator:
+                            try:
+                                # Fetch eval ticks from gate_audit / in-memory history
+                                _eval_ticks = []
+                                # Try in-memory window_eval_history first (most complete)
+                                if self._five_min_strategy and hasattr(
+                                    self._five_min_strategy, "_window_eval_history"
+                                ):
+                                    _wkey = f"{asset}-{window_ts}"
+                                    _eval_ticks = list(
+                                        self._five_min_strategy._window_eval_history.get(
+                                            _wkey, []
+                                        )
+                                    )
+                                # Fall back to DB gate_audit table
+                                if not _eval_ticks:
+                                    _eval_ticks = await self._db.get_eval_ticks_for_window(
+                                        window_ts=window_ts,
+                                        asset=asset,
+                                        timeframe=timeframe,
+                                    )
+                                # Schedule analysis as a background task (non-blocking)
+                                asyncio.create_task(
+                                    self._post_resolution_evaluator.analyse_window(
+                                        window_ts=window_ts,
+                                        asset=asset,
+                                        timeframe=timeframe,
+                                        oracle_direction=oracle_direction,
+                                        eval_ticks=_eval_ticks or None,
+                                    )
+                                )
+                                log.debug(
+                                    "shadow_resolution.post_eval_scheduled",
+                                    window_ts=window_ts,
+                                    n_ticks=len(_eval_ticks),
+                                )
+                            except Exception as _pe:
+                                log.warning(
+                                    "shadow_resolution.post_eval_error",
+                                    error=str(_pe)[:100],
+                                )
 
                     except Exception as parse_exc:
                         log.warning(
