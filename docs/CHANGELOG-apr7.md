@@ -41,9 +41,20 @@ Root cause found: hidden `.env` on Montreal overriding dynamic caps.
 
 ### Phase 6: NORMAL Gate at T-70/T-60 (13:19 UTC)
 - **v8.1.1:** Block NORMAL regime (VPIN < 0.55) at T-70 and T-60
-- All 3 post-fix losses were NORMAL at T-70 (VPIN 0.49, 0.54, 0.49)
-- Requires TRANSITION+ (VPIN ≥ 0.55) for final offsets
-- Would have saved ~$37 today
+- 3 post-fix losses were NORMAL at T-70 (VPIN 0.49, 0.54, 0.49)
+
+### Phase 7: NORMAL Gate Extended to ALL Late Offsets (16:10 UTC)
+- **v8.1.2:** Block NORMAL (VPIN < 0.55) at ALL offsets <120 (was only T-70/T-60)
+- 4th NORMAL loss at T-100 (VPIN 0.487) prompted the extension
+- Would have saved $48.60 across 4 losses today
+- Deployed commit `5eff911`
+
+### Phase 8: Data Persistence + Backfill (15:20 UTC)
+- Fill data now persists to DB after CLOB poll (was in-memory only, lost on restart)
+- Unfilled orders marked EXPIRED (were stuck as OPEN forever)
+- Backfilled 11 trades with missing fill data from cap prices
+- Cleaned 183 stale OPEN trades from old engine runs
+- SITREP W/L queries from midnight (was rolling 24h pulling yesterday's trades)
 
 ### Phase 5: Chrome Kill (12:40 UTC)
 - Discovered Google Chrome running since Apr 4 with Polymarket open on VNC
@@ -67,6 +78,13 @@ Root cause found: hidden `.env` on Montreal overriding dynamic caps.
 | `01215ec` | Notification accuracy (real caps, no Gamma) |
 | `bb2c9d7` | SITREP W/L from DB (survives restarts) |
 | `3896fca` | Notification TODOs doc |
+| `c248fdc` | v8.1.1: NORMAL gate at T-70/T-60 |
+| `1cb1bcc` | Enhanced SITREP with recent trades + pending |
+| `4cc8e72` | SITREP shows recent skips with reason |
+| `f8ff7e4` | SITREP trade IDs (window close time) |
+| `475e125` | Fill data persists to DB + midnight W/L query |
+| `5eff911` | v8.1.2: NORMAL gate ALL late offsets + trade analysis doc |
+| `41cf0d0` | PDFs added to analyses/ |
 
 ## Gate & Cap Config (LIVE as of 13:19 UTC)
 
