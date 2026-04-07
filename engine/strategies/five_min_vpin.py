@@ -2720,9 +2720,16 @@ class FiveMinVPINStrategy(BaseStrategy):
                     if filled:
                         _matched_shares = float(size_matched)
                         if _matched_shares > 0:
-                            _actual_fill = round(order.stake_usd / _matched_shares, 4)
+                            # Fill price = our limit price (CLOB can't fill above limit)
+                            # NOT stake/shares which gives wrong result on partial fills
+                            _limit_submitted = float(order.metadata.get("v81_entry_cap", PRICE_CAP))
+                            _actual_fill = _limit_submitted
+                            _actual_cost = round(_matched_shares * _limit_submitted, 2)
                             order.price = str(_actual_fill)
+                            order.stake_usd = _actual_cost  # Correct stake to actual cost
                             order.metadata["actual_fill_price"] = _actual_fill
+                            order.metadata["actual_cost"] = _actual_cost
+                            order.metadata["shares_filled"] = _matched_shares
                         self._log.info("trade.gtc_verified", order_id=order.order_id[:20], filled=True)
                         if self._alerter:
                             asyncio.create_task(self._alerter.send_entry_alert(order))
