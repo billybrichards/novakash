@@ -924,14 +924,24 @@ class FiveMinVPINStrategy(BaseStrategy):
                     cap=_v81_cap,
                 )
 
+                # Tight DECISIVE: v2.2 HIGH + agrees + CASCADE + strong delta
+                _is_cascade = current_vpin >= 0.65
+                _is_strong_delta = abs(delta_pct) >= 0.05 if delta_pct else False
+
                 if not _v2_high:
                     signal = None
                     self._last_skip_reason = f"v8.1: v2.2 LOW conf ({_v2_p:.2f}) at T-{eval_offset}"
                 elif not _v2_agrees:
                     signal = None
                     self._last_skip_reason = f"v8.1: v2.2 DISAGREES (v2={_v2_dir} vs v8={_v8_dir}) at T-{eval_offset}"
+                elif not _is_cascade:
+                    signal = None
+                    self._last_skip_reason = f"v8.1: not CASCADE (VPIN {current_vpin:.3f} < 0.65) at T-{eval_offset}"
+                elif not _is_strong_delta:
+                    signal = None
+                    self._last_skip_reason = f"v8.1: delta too weak ({abs(delta_pct):.4f}% < 0.05%) at T-{eval_offset}"
                 else:
-                    # v2.2 HIGH + agrees → upgrade to DECISIVE, set dynamic cap
+                    # Tight DECISIVE: v2.2 HIGH + agrees + CASCADE + delta≥5bp
                     signal.confidence = "DECISIVE"
                     signal.entry_reason = f"v2.2_early_T{eval_offset}"
                     signal.v81_entry_cap = _v81_cap
