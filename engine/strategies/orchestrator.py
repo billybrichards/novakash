@@ -2704,6 +2704,13 @@ class Orchestrator:
                             shadow_pnl=round(shadow_pnl, 2),
                             shadow_would_win=shadow_would_win,
                         )
+                        # v8.1.2: Also update window_predictions with oracle result
+                        try:
+                            await self._db.update_window_prediction_outcome(
+                                window_ts, asset, oracle_direction
+                            )
+                        except Exception:
+                            pass
 
                         # Send Telegram notification
                         window_id = f"{asset}-{window_ts}"
@@ -2784,6 +2791,67 @@ class Orchestrator:
 
             except Exception as exc:
                 log.error("shadow_resolution_loop.error", error=str(exc)[:120])
+
+            # v8.1.2: Also resolve ALL window_predictions without oracle_winner
+            # This catches windows that had no shadow signal (e.g. CALM regime skips)
+            try:
+                if self._db._pool:
+                    import time as _time
+                    _cutoff = int(_time.time()) - 600  # last 10 min
+                    async with self._db._pool.acquire() as _conn:
+                        _unresolved = await _conn.fetch("""
+                            SELECT window_ts, asset FROM window_predictions
+                            WHERE oracle_winner IS NULL AND window_ts > $1 AND window_ts < $2
+                            LIMIT 5
+                        """, _cutoff, int(_time.time()) - 60)  # at least 60s old
+
+                    for _row in _unresolved:
+                        _wts = _row["window_ts"]
+                        _asset = _row["asset"]
+                        _slug = f"{_asset.lower()}-updown-5m-{_wts}"
+                        try:
+                            import aiohttp as _aio2
+                            async with _aio2.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as _s:
+                                async with _s.get(
+                                    f"https://gamma-api.polymarket.com/events?slug={_slug}",
+                                    timeout=_aio2.ClientTimeout(total=10)
+                                ) as _r:
+                                    if _r.status == 200:
+                                        _d = await _r.json()
+                                        if _d and isinstance(_d, list) and _d[0].get("markets"):
+                                            _m = _d[0]["markets"][0]
+                                            if _m.get("resolved"):
+                                                _op = _m.get("outcomePrices", [])
+                                                if len(_op) >= 2:
+                                                    _up = float(_op[0])
+                                                    _dn = float(_op[1])
+                                                    if _up >= 0.99:
+                                                        _winner = "UP"
+                                                    elif _dn >= 0.99:
+                                                        _winner = "DOWN"
+                                                    else:
+                                                        continue
+                                                    # Update both tables
+                                                    await self._db.update_window_prediction_outcome(
+                                                        _wts, _asset, _winner
+                                                    )
+                                                    # Also update window_snapshots.poly_winner
+                                                    try:
+                                                        async with self._db._pool.acquire() as _c2:
+                                                            await _c2.execute(
+                                                                "UPDATE window_snapshots SET poly_winner=$1 "
+                                                                "WHERE window_ts=$2 AND asset=$3 AND poly_winner IS NULL",
+                                                                _winner.capitalize(), _wts, _asset
+                                                            )
+                                                    except Exception:
+                                                        pass
+                                                    log.info("prediction_resolution.resolved",
+                                                             window_ts=_wts, winner=_winner)
+                            await asyncio.sleep(0.5)
+                        except Exception:
+                            pass
+            except Exception as _pred_exc:
+                log.debug("prediction_resolution.error", error=str(_pred_exc)[:100])
 
             # Wait 30s between sweeps
             try:
