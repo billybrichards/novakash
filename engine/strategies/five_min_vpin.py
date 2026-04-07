@@ -696,7 +696,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 if _v2_pre and "probability_up" in _v2_pre:
                     window_snapshot["v2_probability_up"] = round(float(_v2_pre["probability_up"]), 4)
                     window_snapshot["v2_direction"] = "UP" if float(_v2_pre["probability_up"]) > 0.5 else "DOWN"
-      window_snapshot["v2_model_version"] = _v2_pre.get("model_version", "")
+                    window_snapshot["v2_model_version"] = _v2_pre.get("model_version", "")
                     window_snapshot["eval_offset"] = _eval_offset
                     # v2.2: Store full timesfm quantile surface if available
                     _timesfm = _v2_pre.get("timesfm", {})
