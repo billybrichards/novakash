@@ -26,6 +26,7 @@ import LiveTrading from './pages/LiveTrading.jsx';
 import AnalysisLibrary from './pages/AnalysisLibrary.jsx';
 import FactoryFloor from './pages/FactoryFloor.jsx';
 import Recommendations from './pages/Recommendations.jsx';
+import ExecutionHQ from './pages/execution-hq/ExecutionHQ.jsx';
 
 export default function App() {
   return (
@@ -68,6 +69,7 @@ export default function App() {
             <Route path="live" element={<LiveTrading />} />
             <Route path="analysis" element={<AnalysisLibrary />} />
             <Route path="factory" element={<FactoryFloor />} />
+            <Route path="execution-hq" element={<ExecutionHQ />} />
             <Route path="recommendations" element={<Recommendations />} />
           </Route>
 

@@ -14,6 +14,7 @@ import { useApi } from '../hooks/useApi.js';
 const NAV_ITEMS = [
   // ── Trading ──
   { path: '/dashboard',       label: 'Dashboard',  icon: '📊' },
+  { path: '/execution-hq',   label: 'Execution HQ', icon: '⚡', highlight: true, isNew: true },
   { path: '/factory',         label: 'Factory Floor', icon: '🏭', highlight: true },
   { path: '/v58',             label: 'Trade Monitor', icon: '🎯', highlight: true },
   { path: '/live',            label: 'Live Trading', icon: '💰', highlight: true },
@@ -357,11 +358,13 @@ export default function Layout() {
             marginLeft: 'auto',
             fontSize: 8,
             fontFamily: 'IBM Plex Mono, monospace',
-            color: 'rgba(6,182,212,0.4)',
+            color: item.isNew ? '#06b6d4' : 'rgba(6,182,212,0.4)',
             letterSpacing: '0.06em',
-            border: '1px solid rgba(6,182,212,0.2)',
+            border: `1px solid ${item.isNew ? 'rgba(6,182,212,0.5)' : 'rgba(6,182,212,0.2)'}`,
             borderRadius: 3,
             padding: '1px 4px',
+            background: item.isNew ? 'rgba(6,182,212,0.15)' : 'transparent',
+            animation: item.isNew ? 'pulse 2s infinite' : 'none',
           }}>NEW</span>
         )}
       </Link>
