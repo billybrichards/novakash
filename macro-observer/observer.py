@@ -515,6 +515,264 @@ def _fallback_signal() -> dict:
     }
 
 
+# ─── Window Evaluator (v8.1.2) ────────────────────────────────────────────────
+# Runs alongside the observer. After each oracle resolution, evaluates the window
+# with full context and sends an analysis card to Telegram.
+
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+EVAL_INTERVAL = int(os.environ.get("EVAL_INTERVAL", "60"))
+
+
+async def send_telegram(text: str) -> bool:
+    """Send a message via Telegram Bot API."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        log.warning("evaluator.no_telegram_config")
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        async with aiohttp.ClientSession() as sess:
+            async with sess.post(url, json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True,
+            }, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                return resp.status == 200
+    except Exception as exc:
+        log.warning("evaluator.telegram_failed", error=str(exc)[:100])
+        return False
+
+
+async def fetch_window_context(pool: asyncpg.Pool, window_ts: int, asset: str = "BTC") -> dict:
+    """Gather all context for a resolved window."""
+    ctx = {}
+    async with pool.acquire() as conn:
+        # Window prediction
+        ctx["prediction"] = await conn.fetchrow(
+            "SELECT * FROM window_predictions WHERE window_ts=$1 AND asset=$2",
+            window_ts, asset
+        )
+        # Window snapshot
+        ctx["snapshot"] = await conn.fetchrow(
+            "SELECT * FROM window_snapshots WHERE window_ts=$1 AND asset=$2 AND timeframe='5m'",
+            window_ts, asset
+        )
+        # Gate audit (all checkpoints)
+        ctx["gates"] = await conn.fetch(
+            "SELECT eval_offset, decision, gate_failed, vpin, delta_pct "
+            "FROM gate_audit WHERE window_ts=$1 AND asset=$2 "
+            "ORDER BY eval_offset DESC",
+            window_ts, asset
+        )
+        # Trade (if any)
+        ctx["trade"] = await conn.fetchrow(
+            "SELECT direction, outcome, entry_price, stake_usd, pnl_usd, "
+            "metadata->>'actual_fill_price' as fill, metadata->>'size_matched' as shares, "
+            "metadata->>'entry_reason' as reason, metadata->>'v81_entry_cap' as cap "
+            "FROM trades WHERE metadata->>'window_ts'=$1 AND outcome IS NOT NULL "
+            "ORDER BY created_at DESC LIMIT 1",
+            str(window_ts)
+        )
+        # Previous 3 windows for streak context
+        ctx["prev_windows"] = await conn.fetch(
+            "SELECT window_ts, direction, poly_winner, trade_placed, vpin, skip_reason "
+            "FROM window_snapshots WHERE window_ts < $1 AND asset=$2 AND timeframe='5m' "
+            "ORDER BY window_ts DESC LIMIT 3",
+            window_ts, asset
+        )
+        # Latest macro signal
+        ctx["macro"] = await conn.fetchrow(
+            "SELECT macro_bias, macro_confidence, macro_reasoning "
+            "FROM macro_signals ORDER BY created_at DESC LIMIT 1"
+        )
+    return ctx
+
+
+def build_eval_prompt(window_ts: int, ctx: dict) -> str:
+    """Build the structured prompt for Claude Sonnet evaluation."""
+    pred = ctx.get("prediction") or {}
+    snap = ctx.get("snapshot") or {}
+    trade = ctx.get("trade")
+    gates = ctx.get("gates") or []
+    prev = ctx.get("prev_windows") or []
+    macro = ctx.get("macro") or {}
+
+    oracle = pred.get("oracle_winner") or snap.get("poly_winner") or "?"
+    ti_dir = pred.get("tiingo_direction", "?")
+    cl_dir = pred.get("chainlink_direction", "?")
+    ti_correct = pred.get("tiingo_correct")
+    cl_correct = pred.get("chainlink_correct")
+    sig_dir = pred.get("our_signal_direction") or snap.get("direction", "?")
+    vpin = pred.get("vpin_at_close") or snap.get("vpin") or 0
+    regime = pred.get("regime") or snap.get("regime", "?")
+    v2_dir = pred.get("v2_direction", "?")
+    v2_prob = pred.get("v2_probability")
+
+    # Gate audit table
+    gate_lines = []
+    for g in gates:
+        offset = g.get("eval_offset", "?")
+        dec = g.get("decision", "?")
+        failed = g.get("gate_failed", "")
+        gvpin = g.get("vpin", 0)
+        gdelta = g.get("delta_pct", 0)
+        gate_lines.append(f"T-{offset}: {dec} {'(' + failed + ')' if failed else ''} VPIN={gvpin:.3f} d={gdelta:+.4f}%")
+
+    # Trade info
+    if trade:
+        trade_info = (
+            f"TRADED: {trade['direction']} at ${float(trade.get('fill') or trade.get('entry_price') or 0):.2f}, "
+            f"{trade.get('shares', '?')} shares, cap ${trade.get('cap', '?')}\n"
+            f"Outcome: {trade['outcome']}, P&L: ${float(trade.get('pnl_usd') or 0):.2f}"
+        )
+    elif pred.get("bid_unfilled"):
+        trade_info = f"BID UNFILLED: signal passed gates, placed on CLOB at ${pred.get('our_entry_price', '?')}, no counterparty"
+    else:
+        skip = pred.get("skip_reason") or snap.get("skip_reason", "?")
+        trade_info = f"SKIPPED: {skip}"
+
+    # Previous windows
+    prev_lines = []
+    for p in prev:
+        pw = p.get("poly_winner", "?")
+        pd = p.get("direction", "?")
+        pt = "TRADED" if p.get("trade_placed") else "SKIP"
+        correct = "correct" if pd and pw and pd.upper() == pw.upper() else "wrong"
+        prev_lines.append(f"{pt} {pd} → oracle {pw} ({correct})")
+
+    prompt = f"""Analyse this resolved 5-min BTC window:
+
+WINDOW: {window_ts} | Oracle resolved: {oracle}
+Signal: {sig_dir} at VPIN {vpin:.3f} ({regime})
+v2.2: {v2_dir} P={v2_prob:.2f if v2_prob else '?'} | Tiingo: {ti_dir} ({'correct' if ti_correct else 'wrong'}) | Chainlink: {cl_dir} ({'correct' if cl_correct else 'wrong'})
+
+GATE AUDIT ({len(gates)} checkpoints):
+{chr(10).join(gate_lines[:10])}{'... +' + str(len(gates)-10) + ' more' if len(gates) > 10 else ''}
+
+{trade_info}
+
+MACRO: bias={macro.get('macro_bias', '?')}, conf={macro.get('macro_confidence', '?')}
+
+PREVIOUS 3 WINDOWS:
+{chr(10).join(prev_lines) if prev_lines else 'No history'}
+
+Evaluate concisely (4-5 sentences):
+1. Was our signal/gate decision correct?
+2. Key factor that determined the outcome (VPIN trend, delta flip, v2.2 accuracy)?
+3. If traded: was entry timing and price optimal?
+4. One actionable insight for the next window."""
+
+    return prompt
+
+
+async def evaluate_resolved_windows(pool: asyncpg.Pool):
+    """Find newly resolved windows and evaluate them."""
+    try:
+        async with pool.acquire() as conn:
+            # Find windows with oracle_winner set but not yet evaluated
+            # Use a simple marker: check if we've already sent an eval
+            rows = await conn.fetch("""
+                SELECT wp.window_ts, wp.asset, wp.oracle_winner
+                FROM window_predictions wp
+                WHERE wp.oracle_winner IS NOT NULL
+                  AND wp.created_at > NOW() - INTERVAL '15 minutes'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM telegram_notifications tn
+                    WHERE tn.notification_type = 'ai_window_eval'
+                      AND tn.window_id = CONCAT('eval-', wp.window_ts::text)
+                  )
+                ORDER BY wp.window_ts DESC
+                LIMIT 1
+            """)
+
+        if not rows:
+            return
+
+        for row in rows:
+            wts = row["window_ts"]
+            asset = row["asset"]
+            oracle = row["oracle_winner"]
+
+            log.info("evaluator.evaluating", window_ts=wts, oracle=oracle)
+
+            ctx = await fetch_window_context(pool, wts, asset)
+            prompt = build_eval_prompt(wts, ctx)
+
+            # Call Claude Sonnet
+            try:
+                client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+                resp = client.messages.create(
+                    model=ANTHROPIC_MODEL,
+                    max_tokens=400,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                analysis = resp.content[0].text.strip()
+            except Exception as exc:
+                log.warning("evaluator.anthropic_failed", error=str(exc)[:100])
+                analysis = "AI evaluation unavailable"
+
+            # Build Telegram card
+            pred = ctx.get("prediction") or {}
+            trade = ctx.get("trade")
+            ti_ok = "correct" if pred.get("tiingo_correct") else "wrong"
+            cl_ok = "correct" if pred.get("chainlink_correct") else "wrong"
+
+            from datetime import datetime as _dt
+            wtime = _dt.fromtimestamp(wts + 300, tz=timezone.utc).strftime("%H:%M")
+
+            if trade:
+                outcome_emoji = "WIN" if trade["outcome"] == "WIN" else "LOSS"
+                outcome_icon = "✅" if trade["outcome"] == "WIN" else "❌"
+                pnl = float(trade.get("pnl_usd") or 0)
+                trade_line = f"{outcome_icon} *{outcome_emoji}* `${pnl:+.2f}` at ${float(trade.get('fill') or trade.get('entry_price') or 0):.2f}"
+            elif pred.get("bid_unfilled"):
+                trade_line = "⏳ BID UNFILLED — no counterparty at cap"
+            else:
+                trade_line = f"🚫 SKIPPED — {(pred.get('skip_reason') or '?')[:50]}"
+
+            card = (
+                f"🔬 *{wtime} BTC* — Oracle: *{oracle}*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{trade_line}\n"
+                f"Tiingo: {pred.get('tiingo_direction', '?')} ({ti_ok}) | "
+                f"Chainlink: {pred.get('chainlink_direction', '?')} ({cl_ok})\n"
+                f"\n"
+                f"{analysis}\n"
+            )
+
+            sent = await send_telegram(card)
+
+            # Mark as evaluated
+            if sent:
+                try:
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            "INSERT INTO telegram_notifications (bot_id, location, window_id, "
+                            "notification_type, message_text) VALUES ($1, $2, $3, $4, $5)",
+                            "macro-observer", "evaluator", f"eval-{wts}",
+                            "ai_window_eval", card[:500]
+                        )
+                except Exception:
+                    pass
+
+            log.info("evaluator.sent", window_ts=wts, oracle=oracle, sent=sent)
+
+    except Exception as exc:
+        log.error("evaluator.error", error=str(exc)[:200])
+
+
+async def evaluator_loop(pool: asyncpg.Pool):
+    """Background loop that evaluates resolved windows."""
+    log.info("evaluator.started", interval=EVAL_INTERVAL)
+    while True:
+        try:
+            await evaluate_resolved_windows(pool)
+        except Exception as exc:
+            log.error("evaluator.loop_error", error=str(exc)[:200])
+        await asyncio.sleep(EVAL_INTERVAL)
+
+
 # ─── Main Loop ────────────────────────────────────────────────────────────────
 
 async def run_observer():
@@ -522,6 +780,13 @@ async def run_observer():
 
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=5)
     await init_db(pool)
+
+    # Start window evaluator as background task
+    if TELEGRAM_BOT_TOKEN and ANTHROPIC_API_KEY:
+        asyncio.create_task(evaluator_loop(pool))
+        log.info("macro_observer.evaluator_enabled")
+    else:
+        log.warning("macro_observer.evaluator_disabled", reason="missing TELEGRAM_BOT_TOKEN or ANTHROPIC_API_KEY")
 
     async with aiohttp.ClientSession() as session:
         while True:
