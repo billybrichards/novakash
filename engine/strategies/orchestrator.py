@@ -2364,16 +2364,43 @@ class Orchestrator:
                         except Exception:
                             wallet_str = ""
                         
+                        # v8.1: Show our engine's trade data from DB (not Polymarket aggregate)
+                        _our_shares = ""
+                        _our_fill = ""
+                        _our_pnl = pnl_str
+                        _our_cost = f"${cost:.2f}"
+                        try:
+                            if self._db._pool:
+                                async with self._db._pool.acquire() as conn:
+                                    _our_row = await conn.fetchrow(
+                                        """SELECT metadata, stake_usd, pnl_usd, outcome
+                                           FROM trades WHERE outcome IS NOT NULL
+                                           AND created_at > NOW() - INTERVAL '15 minutes'
+                                           ORDER BY created_at DESC LIMIT 1"""
+                                    )
+                                    if _our_row:
+                                        import json as _json2
+                                        _m = _json2.loads(_our_row["metadata"]) if isinstance(_our_row["metadata"], str) else _our_row["metadata"]
+                                        _our_shares = f"Shares: `{_m.get('size_matched', '?')}`\n"
+                                        _fp = _m.get('actual_fill_price')
+                                        _our_fill = f"Fill: `${float(_fp):.4f}`\n" if _fp else f"Entry: `${avg_price:.4f}`\n"
+                                        _our_cost = f"${float(_our_row['stake_usd']):.2f}"
+                                        if _our_row['pnl_usd']:
+                                            _p = float(_our_row['pnl_usd'])
+                                            _our_pnl = f"+${_p:.2f}" if _p >= 0 else f"-${abs(_p):.2f}"
+                        except Exception:
+                            pass
+                        
                         msg = (
                             f"{emoji} *{outcome} — BTC* (💰 LIVE)\n"
                             f"🕐 `{now_str}`\n"
                             f"\n"
-                            f"📊 *Result (from Polymarket)*\n"
-                            f"Shares: `{size:.1f}`\n"
-                            f"Entry: `${avg_price:.4f}`\n"
-                            f"Cost: `${cost:.2f}`\n"
+                            f"📊 *Result*\n"
+                            f"{_our_shares}"
+                            f"{_our_fill}"
+                            f"Cost: `{_our_cost}`\n"
                             f"Payout: `${value:.2f}`\n"
-                            f"PnL: `{pnl_str}`\n"
+                            f"PnL: `{_our_pnl}`\n"
                             f"{trade_info}"
                             f"{wallet_str}"
                         )
