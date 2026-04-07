@@ -2,6 +2,69 @@
 
 ---
 
+## v9.0 — FAK + Source Agreement Gate + Continuous Eval
+
+### Summary
+Complete strategy overhaul based on 1,762 oracle-verified evaluations. Replaces FOK with FAK orders, adds Chainlink+Tiingo source agreement as hard gate, continuous 10s evaluation from T-240 to T-60, and empirical two-tier dynamic caps.
+
+### Key Evidence (all Polymarket oracle verified)
+- **CL+TI Agree: 94.7% WR** (161/170 windows) vs **9.1% WR when disagree**
+- **Golden zone T-130..T-60: 93-100% agreement WR** (83W/6L on 89 windows)
+- **LIVE $0.55-$0.65 fills: 86% WR** (+$48) — the profitable sweet spot
+- **OAK/CEDAR probability: binary garbage** (0.009 or 0.991 at all offsets)
+
+### Changes
+
+| Component | v8.1.2 | v9.0 |
+|-----------|--------|------|
+| Order type | FOK (Fill-Or-Kill) | **FAK (Fill-And-Kill)** — partial fills OK |
+| Eval offsets | 4 fixed (240,180,120,60) | **19 continuous** (every 10s T-240..T-60) |
+| Direction gate | None (delta_pct only) | **CL+TI agreement** (hard gate) |
+| Cap tiers | 4 tiers ($0.55-$0.73) | **2 tiers** ($0.55 early, $0.65 golden) |
+| VPIN gate | 0.45 flat | **Tiered**: 0.65 early (CASCADE), 0.45 golden |
+| OAK/CEDAR gate | v2.2 HIGH + agrees | **Removed** (binary output, useless) |
+| TWAP override | Feature-flagged OFF | **Removed** (net harmful) |
+| TimesFM gate | Feature-flagged OFF | **Removed** (47.8% accuracy) |
+
+### Environment Variables
+
+```env
+# v9.0 (enable all for full v9.0)
+V9_SOURCE_AGREEMENT=true
+V9_CAPS_ENABLED=true
+V9_CAP_EARLY=0.55
+V9_CAP_GOLDEN=0.65
+V9_VPIN_EARLY=0.65
+V9_VPIN_LATE=0.45
+ORDER_TYPE=FAK
+FIVE_MIN_EVAL_OFFSETS=240,230,220,210,200,190,180,170,160,150,140,130,120,110,100,90,80,70,60
+
+# Rollback to v8.1.2
+V9_SOURCE_AGREEMENT=false
+V9_CAPS_ENABLED=false
+ORDER_TYPE=FOK
+FIVE_MIN_EVAL_OFFSETS=240,180,120,60
+```
+
+### Bug Fixes
+- **Fixed:** `fok_ladder.py` line 121 — `best_ask_check = best_ask` used variable before it was defined (NameError). Pi bonus logic now runs after initial book query.
+
+### Expected Performance
+| Metric | v8.1.2 | v9.0 |
+|--------|--------|------|
+| Trades/day | ~30 | ~12-15 |
+| Win rate | 65% | ~93% (golden zone) |
+| EV/trade ($10) | -$0.84 | +$2.76 |
+
+### Files Modified
+- `engine/execution/fok_ladder.py` — FAK support, pi bonus fix, partial fill handling
+- `engine/execution/polymarket_client.py` — `place_market_order()` with configurable OrderType
+- `engine/strategies/five_min_vpin.py` — Source agreement gate, v9 dynamic caps
+- `engine/config/runtime_config.py` — v9 config vars
+- `engine/config/constants.py` — Continuous eval offsets
+
+---
+
 ## v8.1 — Early Entry with v2.2 + Dynamic Caps
 
 ### Summary
