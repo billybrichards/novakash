@@ -40,6 +40,7 @@ from data.feeds.clob_feed import CLOBFeed
 from data.feeds.coinglass_api import CoinGlassAPIFeed
 from data.feeds.coinglass_enhanced import CoinGlassEnhancedFeed
 from evaluation.claude_evaluator import ClaudeEvaluator
+from evaluation.post_resolution_evaluator import PostResolutionEvaluator
 from data.feeds.polymarket_ws import PolymarketWebSocketFeed
 from data.feeds.polymarket_5min import Polymarket5MinFeed
 from polymarket_browser.service import PlaywrightService
@@ -173,7 +174,7 @@ class Orchestrator:
         # Wire alerter references now that risk_manager and poly_client exist
         self._alerter.set_risk_manager(self._risk_manager)
         self._alerter.set_poly_client(self._poly_client)
-        self._alerter.set_location("MTL", self._settings.engine_version if hasattr(self._settings, "engine_version") else "v7.1")
+        self._alerter.set_location("MTL", "v8.0")
 
         # ── Builder Relayer Redeemer ──────────────────────────────────────────
         from execution.redeemer import PositionRedeemer
@@ -218,6 +219,16 @@ class Orchestrator:
                 db_client=self._db,
             )
             log.info("orchestrator.claude_evaluator_enabled")
+
+        # ── Post-Resolution AI Evaluator (Sonnet, runs after shadow resolution) ─
+        self._post_resolution_evaluator = None
+        if settings.anthropic_api_key:
+            self._post_resolution_evaluator = PostResolutionEvaluator(
+                api_key=settings.anthropic_api_key,
+                db_client=self._db,
+                alerter=self._alerter,
+            )
+            log.info("orchestrator.post_resolution_evaluator_enabled")
 
         # ── Strategies ─────────────────────────────────────────────────────────
         self._arb_strategy = SubDollarArbStrategy(
@@ -316,6 +327,16 @@ class Orchestrator:
         if self._timesfm_client and self._five_min_strategy:
             self._five_min_strategy._timesfm = self._timesfm_client
             log.info("orchestrator.timesfm_injected_into_five_min")
+
+        # v8.1: Inject TimesFM v2.2 client for early entry (calibrated probability)
+        _v2_enabled = os.environ.get("V2_EARLY_ENTRY_ENABLED", "true").lower() == "true"
+        if _v2_enabled and self._five_min_strategy:
+            from signals.timesfm_v2_client import TimesFMV2Client
+            _v2_url = os.environ.get("TIMESFM_V2_URL", "http://3.98.114.0:8080")
+            self._five_min_strategy._timesfm_v2 = TimesFMV2Client(base_url=_v2_url)
+            log.info("orchestrator.v2_early_entry_enabled", url=_v2_url)
+        else:
+            log.info("orchestrator.v2_early_entry_disabled")
 
         # TickRecorder is not yet available at __init__ (pool not connected)
         # It is injected in start() after pool is live.
@@ -643,7 +664,49 @@ class Orchestrator:
             asyncio.create_task(self._resolution_loop(), name="resolution_poller")
         )
 
-        # 6b. Polymarket reconciliation loop (every 5 min) — live mode only
+        # 6b. Shadow trade resolution loop (every 30s) — evaluates skipped windows
+        self._tasks.append(
+            asyncio.create_task(
+                self._shadow_resolution_loop(), name="shadow_resolution"
+            )
+        )
+
+        # 6c. Ensure shadow columns exist in window_snapshots
+        try:
+            await self._db.ensure_shadow_columns()
+        except Exception as exc:
+            log.warning("orchestrator.ensure_shadow_columns_failed", error=str(exc))
+
+        # 6c2. Ensure post-resolution analysis table exists
+        try:
+            await self._db.ensure_post_resolution_table()
+        except Exception as exc:
+            log.warning("orchestrator.ensure_post_resolution_table_failed", error=str(exc))
+
+        try:
+            await self._db.ensure_window_predictions_table()
+        except Exception as exc:
+            log.warning("orchestrator.ensure_window_predictions_table_failed", error=str(exc))
+
+        # 6d. Ensure v8.0 columns exist in trades table
+        try:
+            await self._db.ensure_v8_trade_columns()
+        except Exception as exc:
+            log.warning("orchestrator.ensure_v8_trade_columns_failed", error=str(exc))
+
+        # 6f. Recover open trades from previous sessions (startup trade recovery)
+        try:
+            recovered = await self._order_manager.recover_open_trades(self._db)
+            log.info("orchestrator.trades_recovered", count=recovered)
+            if recovered > 0:
+                await self._alerter.send_raw_message(
+                    f"♻️ *Trade Recovery*\nRecovered `{recovered}` open trade(s) from previous session.\n"
+                    f"Oracle polling will resolve them automatically."
+                )
+        except Exception as exc:
+            log.warning("orchestrator.trade_recovery_failed", error=str(exc))
+
+        # 6e. Polymarket reconciliation loop (every 5 min) — live mode only
         if not self._settings.paper_mode:
             self._tasks.append(
                 asyncio.create_task(
@@ -1145,19 +1208,22 @@ class Orchestrator:
                     _ai = None
                     if self._alerter._anthropic_api_key:
                         try:
+                            # v8.0: Tiingo-based prompt, Sonnet model, adequate tokens
+                            _dir_word = "UP" if _d > 0 else "DOWN"
                             _prompt = (
-                                f"BTC 5m window {t_label}: "
-                                f"VPIN {_vpin:.3f} ({_regime}), delta {_d:+.4f}%, "
-                                f"TWAP {_tw_dir or '?'} {_tw_agree}/3, "
-                                f"TimesFM {_tsf_dir or '?'} {_tsf_conf:.0%}, "
-                                f"CG taker {_cg_taker:.0f}% buy, funding {_cg_fund:.0f}%/yr. "
-                                f"1 sentence: what does this signal suggest about the next {int(_remaining):.0f}s?"
+                                f"BTC 5m window at {t_label} ({int(_remaining)}s left). "
+                                f"Tiingo delta: {_d:+.4f}% → {_dir_word}. "
+                                f"VPIN: {_vpin:.3f} ({_regime}). "
+                                f"CG: taker {_cg_taker:.0f}% buy, funding {_cg_fund:.0f}%/yr. "
+                                f"CLOB: UP ${_snap_gamma_up:.2f} / DOWN ${_snap_gamma_down:.2f}. "
+                                f"1 sentence: signal strength and key risk."
                             )
                             import aiohttp as _ah
                             async with _ah.ClientSession() as _sess:
                                 async with _sess.post(
                                     "https://api.anthropic.com/v1/messages",
-                                    json={"model": "claude-haiku-4-5", "max_tokens": 80,
+                                    json={"model": "claude-sonnet-4-6", "max_tokens": 150,
+                                          "system": "You are a crypto trading analyst for Polymarket 5-min prediction markets. Be concise. 1-2 sentences max.",
                                           "messages": [{"role": "user", "content": _prompt}]},
                                     headers={"x-api-key": self._alerter._anthropic_api_key,
                                              "anthropic-version": "2023-06-01"},
@@ -1292,8 +1358,14 @@ class Orchestrator:
                     window_key=window_key,
                     eval_offset=eval_offset,
                 )
-                # G1 & G3: Queue window for staggered execution
-                await self._execution_queue.put((window, self._aggregator))
+                # v8.0: Direct evaluation — no staggered queue delay.
+                # Staggered loop was for multi-asset batching (BTC+ETH+SOL).
+                # BTC-only: evaluate immediately for fastest FOK execution.
+                try:
+                    state = await self._aggregator.get_state()
+                    await self._five_min_strategy._evaluate_window(window, state)
+                except Exception as exc:
+                    log.warning("five_min.direct_eval_error", asset=window.asset, error=str(exc)[:200])
             elif state_value != "ACTIVE":
                 log.info("five_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
             if len(self._five_min_strategy._recent_windows) > 20:
@@ -1406,7 +1478,11 @@ class Orchestrator:
                         _direction = "UP" if order.direction == "YES" else "DOWN"
                         _open_p = meta.get("window_open_price", 0) or 0
                         _close_p = float(self._order_manager._current_btc_price or 0)
-                        _actual = "UP" if _close_p >= _open_p else "DOWN"
+                        # Determine actual direction from oracle outcome, not live price
+                        if order.outcome == "WIN":
+                            _actual = _direction  # We won = oracle agreed with our direction
+                        else:
+                            _actual = "DOWN" if _direction == "UP" else "UP"  # We lost = oracle went opposite
                         _delta = (_close_p - _open_p) / _open_p * 100 if _open_p else 0
                         _vpin = self._five_min_strategy._vpin.current_vpin if self._five_min_strategy and self._five_min_strategy._vpin else 0
                         # Win streak from risk manager
@@ -1460,6 +1536,10 @@ class Orchestrator:
                                     "gamma_up": meta.get("gamma_up_price"),
                                     "gamma_down": meta.get("gamma_down_price"),
                                     "cg_data": meta.get("cg_modifier_reason", ""),
+                                    # v8.0 fields
+                                    "delta_source": meta.get("delta_source", "?"),
+                                    "delta_pct": meta.get("delta_pct", 0),
+                                    "actual_direction": _oc,  # Oracle resolved direction
                                 }
                                 async def _send_outcome_ai(_wid=_wid, _dir=_dir, _ep=_ep, _oc=_oc, _pnl=_pnl, _oid=_oid, _wd=_wd):
                                     try:
@@ -1666,18 +1746,26 @@ class Orchestrator:
                         daily_sign = "+" if daily_pnl >= 0 else ""
                         status_emoji = "🛑" if killed else "🟢"
 
-                        # Fetch position outcomes
-                        # Use order manager for wins/losses (works for both paper and live)
+                        # Fetch position outcomes from DB (survives restarts)
                         real_wins = 0
                         real_losses = 0
                         open_positions_val = 0
                         try:
+                            if self._db._pool:
+                                async with self._db._pool.acquire() as conn:
+                                    row = await conn.fetchrow(
+                                        "SELECT "
+                                        "  SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as w, "
+                                        "  SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as l "
+                                        "FROM trades WHERE outcome IS NOT NULL "
+                                        "AND created_at > DATE_TRUNC('day', NOW())"
+                                    )
+                                    if row:
+                                        real_wins = int(row['w'] or 0)
+                                        real_losses = int(row['l'] or 0)
+                            # Open positions from order manager
                             for oid, o in self._order_manager._orders.items():
-                                if o.outcome == "WIN":
-                                    real_wins += 1
-                                elif o.outcome == "LOSS":
-                                    real_losses += 1
-                                elif o.status.value in ("OPEN", "FILLED"):
+                                if o.status.value in ("OPEN", "FILLED"):
                                     open_positions_val += o.stake_usd
                         except Exception:
                             pass
@@ -1709,24 +1797,141 @@ class Orchestrator:
                             else "CALM"
                         )
 
+                        # v8.1: Enhanced SITREP with recent trades + pending positions
+                        _recent_block = ""
+                        _pending_block = ""
+                        _pnl_from_wallet = 0.0
+                        try:
+                            if self._db._pool:
+                                async with self._db._pool.acquire() as conn:
+                                    # Recent 5 trades
+                                    _recent = await conn.fetch(
+                                        """SELECT direction, outcome, status,
+                                           metadata->>'entry_reason' as reason,
+                                           metadata->>'v81_entry_cap' as cap,
+                                           metadata->>'window_ts' as wts,
+                                           created_at AT TIME ZONE 'UTC' as placed,
+                                           ROUND(stake_usd::numeric, 2) as stake,
+                                           ROUND(pnl_usd::numeric, 2) as pnl
+                                        FROM trades WHERE created_at > NOW() - INTERVAL '2 hours'
+                                        ORDER BY created_at DESC LIMIT 5"""
+                                    )
+                                    if _recent:
+                                        _lines = []
+                                        for r in _recent:
+                                            _dir = "⬆️" if r['direction'] == 'YES' else "⬇️"
+                                            _out = {"WIN": "✅", "LOSS": "❌"}.get(r['outcome'] or '', "⏳")
+                                            _cap = f"${float(r['cap']):.2f}" if r['cap'] else "?"
+                                            _rsn = (r['reason'] or '?')[-15:]
+                                            # Window end time as ID (e.g. "14:10 BTC")
+                                            _wid = ""
+                                            try:
+                                                from datetime import datetime, timezone
+                                                _wts = int(r['wts']) + 300  # window_ts + 5min = close time
+                                                _wid = datetime.fromtimestamp(_wts, tz=timezone.utc).strftime("%H:%M")
+                                            except Exception:
+                                                try:
+                                                    _wid = r['placed'].strftime("%H:%M")
+                                                except Exception:
+                                                    pass
+                                            if r['outcome']:
+                                                _p = float(r['pnl'] or 0)
+                                                _pstr = f"`{'+' if _p>=0 else ''}${_p:.2f}`"
+                                            elif r['status'] == 'EXPIRED':
+                                                _pstr = "unfilled"
+                                                _out = "⏭"
+                                            elif r['status'] == 'SKIPPED':
+                                                _pstr = f"skip: {(r.get('skip_reason') or '?')[:30]}"
+                                                _out = "🚫"
+                                            else:
+                                                _pstr = "⏳open"
+                                            _lines.append(f"{_out}{_dir} `{_wid}` {_cap} {_rsn} {_pstr}")
+                                        _recent_block = "\n📝 *Recent trades:*\n" + "\n".join(_lines) + "\n"
+                                    
+                                    # Recent skips (from window_snapshots)
+                                    _skips = await conn.fetch(
+                                        """SELECT direction, skip_reason, 
+                                           window_ts, ROUND(vpin::numeric, 3) as vpin
+                                        FROM window_snapshots 
+                                        WHERE trade_placed = false AND skip_reason IS NOT NULL
+                                          AND window_ts > EXTRACT(EPOCH FROM NOW() - INTERVAL '15 minutes')
+                                        ORDER BY window_ts DESC LIMIT 3"""
+                                    )
+                                    if _skips:
+                                        _slines = []
+                                        for s in _skips:
+                                            _dir = "⬆️" if s['direction'] == 'UP' else "⬇️"
+                                            _wid = ""
+                                            try:
+                                                from datetime import datetime, timezone
+                                                _wts = int(s['window_ts']) + 300
+                                                _wid = datetime.fromtimestamp(_wts, tz=timezone.utc).strftime("%H:%M")
+                                            except Exception:
+                                                pass
+                                            _sr = (s['skip_reason'] or '?')[:45]
+                                            _slines.append(f"🚫{_dir} `{_wid}` {_sr}")
+                                        _recent_block += "📝 *Recent skips:*\n" + "\n".join(_slines) + "\n"
+
+                                    # Pending positions (OPEN/FILLED not yet resolved)
+                                    _pending = await conn.fetch(
+                                        """SELECT direction, metadata->>'v81_entry_cap' as cap,
+                                           metadata->>'entry_reason' as reason,
+                                           metadata->>'window_ts' as wts,
+                                           ROUND(stake_usd::numeric, 2) as stake,
+                                           metadata->>'market_slug' as slug
+                                        FROM trades WHERE status IN ('OPEN', 'FILLED')
+                                        AND created_at > NOW() - INTERVAL '1 hour'
+                                        ORDER BY created_at"""
+                                    )
+                                    if _pending:
+                                        _plines = []
+                                        _total_risk = 0
+                                        _total_upside = 0
+                                        for p in _pending:
+                                            _dir = "⬆️" if p['direction'] == 'YES' else "⬇️"
+                                            _cap = float(p['cap']) if p['cap'] else 0.73
+                                            _stk = float(p['stake'])
+                                            _win_est = _stk * (1 - _cap) / _cap
+                                            _total_risk += _stk
+                                            _total_upside += _win_est
+                                            _wid = ""
+                                            try:
+                                                from datetime import datetime, timezone
+                                                _wts = int(p['wts']) + 300
+                                                _wid = datetime.fromtimestamp(_wts, tz=timezone.utc).strftime("%H:%M")
+                                            except Exception:
+                                                pass
+                                            _plines.append(f"{_dir} `{_wid} BTC` ${_cap:.2f} risk `${_stk:.2f}` → win `+${_win_est:.2f}`")
+                                        _pending_block = (
+                                            f"\n⏳ *Pending ({len(_pending)}):*\n"
+                                            + "\n".join(_plines)
+                                            + f"\nIf all win: `+${_total_upside:.2f}` | If all lose: `-${_total_risk:.2f}`\n"
+                                        )
+
+                                    # Real P&L from wallet
+                                    _pnl_from_wallet = wallet - baseline
+                        except Exception:
+                            pass
+
+                        _wr = (real_wins/(real_wins+real_losses)*100) if (real_wins+real_losses)>0 else 0
+                        
                         sitrep = (
                             f"📋 *5-MIN SITREP* ({status_emoji} {'KILLED' if killed else 'ACTIVE'}) {mode_label}\n"
-                            f"\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━━\n"
                             + (
-                                f"🏦 Cash: `${wallet:.2f}` USDC\n"
-                                f"📊 Positions: `${open_positions_val:.2f}`\n"
-                                f"💰 Portfolio: `${portfolio:.2f}`\n"
+                                f"🏦 Wallet: `${wallet:.2f}` USDC _(CLOB verified)_\n"
+                                f"📈 P&L: `${_pnl_from_wallet:+.2f}` from `${baseline:.0f}` start\n"
                                 if not self._settings.paper_mode else
                                 f"💰 Bankroll: `${bankroll:.2f}`\n"
                             ) +
-                            f"📈 P&L: `${real_pnl:+.2f}` (from `${baseline:.0f}`)\n"
                             f"\n"
-                            f"✅ Wins: `{real_wins}` | ❌ Losses: `{real_losses}`\n"
-                            f"📉 Drawdown: `{drawdown:.1%}`\n"
+                            f"📊 *24h Record:* `{real_wins}W/{real_losses}L` (`{_wr:.0f}%` WR)\n"
+                            + _recent_block
+                            + _pending_block +
                             f"\n"
-                            f"🔬 VPIN: `{vpin:.4f}` | Regime: `{vpin_regime}`\n"
+                            f"🔬 VPIN: `{vpin:.4f}` | `{vpin_regime}`\n"
                             + cg_block +
-                            f"🔗 Binance: `{'✅' if binance_ok else '❌'}` | BTC: `${self._order_manager._current_btc_price:,.2f}`\n"
+                            f"BTC: `${self._order_manager._current_btc_price:,.2f}`\n"
                         )
 
                         await self._alerter.send_raw_message(sitrep)
@@ -2289,21 +2494,50 @@ class Orchestrator:
                         except Exception:
                             wallet_str = ""
                         
+                        # v8.1: Show our engine's trade data from DB (not Polymarket aggregate)
+                        _our_shares = ""
+                        _our_fill = ""
+                        _our_pnl = pnl_str
+                        _our_cost = f"${cost:.2f}"
+                        try:
+                            if self._db._pool:
+                                async with self._db._pool.acquire() as conn:
+                                    _our_row = await conn.fetchrow(
+                                        """SELECT metadata, stake_usd, pnl_usd, outcome
+                                           FROM trades WHERE outcome IS NOT NULL
+                                           AND created_at > NOW() - INTERVAL '15 minutes'
+                                           ORDER BY created_at DESC LIMIT 1"""
+                                    )
+                                    if _our_row:
+                                        import json as _json2
+                                        _m = _json2.loads(_our_row["metadata"]) if isinstance(_our_row["metadata"], str) else _our_row["metadata"]
+                                        _our_shares = f"Shares: `{_m.get('size_matched', '?')}`\n"
+                                        _fp = _m.get('actual_fill_price')
+                                        _our_fill = f"Fill: `${float(_fp):.4f}`\n" if _fp else f"Entry: `${avg_price:.4f}`\n"
+                                        _our_cost = f"${float(_our_row['stake_usd']):.2f}"
+                                        if _our_row['pnl_usd']:
+                                            _p = float(_our_row['pnl_usd'])
+                                            _our_pnl = f"+${_p:.2f}" if _p >= 0 else f"-${abs(_p):.2f}"
+                        except Exception:
+                            pass
+                        
                         msg = (
                             f"{emoji} *{outcome} — BTC* (💰 LIVE)\n"
                             f"🕐 `{now_str}`\n"
                             f"\n"
-                            f"📊 *Result (from Polymarket)*\n"
-                            f"Shares: `{size:.1f}`\n"
-                            f"Entry: `${avg_price:.4f}`\n"
-                            f"Cost: `${cost:.2f}`\n"
+                            f"📊 *Result*\n"
+                            f"{_our_shares}"
+                            f"{_our_fill}"
+                            f"Cost: `{_our_cost}`\n"
                             f"Payout: `${value:.2f}`\n"
-                            f"PnL: `{pnl_str}`\n"
+                            f"PnL: `{_our_pnl}`\n"
                             f"{trade_info}"
                             f"{wallet_str}"
                         )
-                        
-                        await self._alerter.send_system_alert(msg, level="info")
+
+                        # Use send_raw_message — send_system_alert wraps text in backticks
+                        # which breaks multi-line markdown formatting.
+                        await self._alerter.send_raw_message(msg)
                         log.info(
                             "position_monitor.resolved",
                             condition_id=cid[:20] + "...",
@@ -2322,6 +2556,317 @@ class Orchestrator:
                 break
             except asyncio.TimeoutError:
                 pass
+
+    # ── Shadow Trade Resolution Loop ─────────────────────────────────────────
+
+    async def _shadow_resolution_loop(self) -> None:
+        """
+        Every 30s: resolve oracle outcomes for skipped (shadow) windows.
+
+        For each recent skipped window (trade_placed=FALSE) with a shadow signal
+        that hasn't been oracle-resolved yet, query the Polymarket Gamma API to
+        check whether the market settled UP or DOWN. Then:
+          - Compute shadow P&L (what we would have won/lost)
+          - Write oracle_outcome, shadow_pnl, shadow_would_win to DB
+          - Send Telegram notification
+
+        Rate limiting: batch all windows, one API call per window, 0.5s delay between.
+        Resolution typically happens ~4 min after window close (oracle lag).
+        """
+        import aiohttp as _aiohttp
+
+        POLL_INTERVAL = 30  # seconds between sweeps
+        API_DELAY = 0.5    # seconds between Gamma API calls (rate limit)
+        STAKE_USD = 5.0    # shadow stake for P&L calculation
+        FEE_MULT = 0.98    # 2% fee on winnings
+
+        log.info("shadow_resolution_loop.started")
+
+        while not self._shutdown_event.is_set():
+            try:
+                # Fetch unresolved skipped windows from last 10 min
+                unresolved = await self._db.get_unresolved_shadow_windows(minutes_back=10)
+
+                if unresolved:
+                    log.debug(
+                        "shadow_resolution.checking",
+                        count=len(unresolved),
+                    )
+
+                for row in unresolved:
+                    if self._shutdown_event.is_set():
+                        break
+
+                    window_ts = row["window_ts"]
+                    asset = row.get("asset", "BTC")
+                    timeframe = row.get("timeframe", "5m")
+                    shadow_dir = row.get("shadow_trade_direction")
+                    entry_price = row.get("shadow_trade_entry_price")
+                    skip_reason = row.get("skip_reason") or "unknown"
+                    confidence_raw = row.get("confidence")
+
+                    # Map confidence float → tier label
+                    confidence_tier = "LOW"
+                    if confidence_raw is not None:
+                        if confidence_raw >= 0.80:
+                            confidence_tier = "HIGH"
+                        elif confidence_raw >= 0.60:
+                            confidence_tier = "MODERATE"
+
+                    if not shadow_dir or entry_price is None:
+                        continue
+
+                    # Build Gamma API slug: btc-updown-5m-{window_ts}
+                    slug = f"{asset.lower()}-updown-{timeframe}-{window_ts}"
+                    url = f"https://gamma-api.polymarket.com/events?slug={slug}"
+
+                    try:
+                        async with _aiohttp.ClientSession(
+                            headers={"User-Agent": "Mozilla/5.0"}
+                        ) as session:
+                            async with session.get(
+                                url,
+                                timeout=_aiohttp.ClientTimeout(total=10),
+                            ) as resp:
+                                if resp.status != 200:
+                                    log.debug(
+                                        "shadow_resolution.api_error",
+                                        slug=slug,
+                                        status=resp.status,
+                                    )
+                                    await asyncio.sleep(API_DELAY)
+                                    continue
+
+                                data = await resp.json()
+                    except Exception as api_exc:
+                        log.debug(
+                            "shadow_resolution.api_exception",
+                            slug=slug,
+                            error=str(api_exc)[:80],
+                        )
+                        await asyncio.sleep(API_DELAY)
+                        continue
+
+                    # Parse response
+                    try:
+                        if not data or not isinstance(data, list) or not data[0].get("markets"):
+                            # Market not found yet — skip until next sweep
+                            await asyncio.sleep(API_DELAY)
+                            continue
+
+                        market = data[0]["markets"][0]
+
+                        # Check if resolved — Gamma may not set resolved=true
+                        # for 5-min markets, so also check outcomePrices directly
+                        if not market.get("resolved") and not any(
+                            str(p) in ("0", "1", "1.0", "0.0") for p in market.get("outcomePrices", [])
+                        ):
+                            # Not settled yet — oracle hasn't closed
+                            await asyncio.sleep(API_DELAY)
+                            continue
+
+                        # outcomePrices: [1, 0] = UP won, [0, 1] = DOWN won
+                        outcome_prices = market.get("outcomePrices", [])
+                        if len(outcome_prices) < 2:
+                            await asyncio.sleep(API_DELAY)
+                            continue
+
+                        # Polymarket UP is outcomes[0], DOWN is outcomes[1]
+                        try:
+                            up_price_final = float(outcome_prices[0])
+                            down_price_final = float(outcome_prices[1])
+                        except (ValueError, TypeError):
+                            await asyncio.sleep(API_DELAY)
+                            continue
+
+                        # Determine oracle winner
+                        if up_price_final >= 0.99:
+                            oracle_direction = "UP"
+                        elif down_price_final >= 0.99:
+                            oracle_direction = "DOWN"
+                        else:
+                            # Not yet fully settled (prices not at 0/1)
+                            await asyncio.sleep(API_DELAY)
+                            continue
+
+                        # Compute shadow P&L
+                        shadow_would_win = (shadow_dir == oracle_direction)
+                        if shadow_would_win:
+                            # Win: (1 - entry_price) * stake * fee_mult
+                            shadow_pnl = (1.0 - float(entry_price)) * STAKE_USD * FEE_MULT
+                        else:
+                            # Loss: -entry_price * stake
+                            shadow_pnl = -float(entry_price) * STAKE_USD
+
+                        # Persist to DB
+                        await self._db.update_shadow_resolution(
+                            window_ts=window_ts,
+                            asset=asset,
+                            timeframe=timeframe,
+                            oracle_outcome=oracle_direction,
+                            shadow_pnl=round(shadow_pnl, 2),
+                            shadow_would_win=shadow_would_win,
+                        )
+                        # v8.1.2: Also update window_predictions with oracle result
+                        try:
+                            await self._db.update_window_prediction_outcome(
+                                window_ts, asset, oracle_direction
+                            )
+                        except Exception:
+                            pass
+
+                        # Send Telegram notification
+                        window_id = f"{asset}-{window_ts}"
+                        await self._alerter.send_shadow_resolution(
+                            window_id=window_id,
+                            direction=shadow_dir,
+                            entry_price=float(entry_price),
+                            oracle_direction=oracle_direction,
+                            shadow_pnl=round(shadow_pnl, 2),
+                            skip_reason=skip_reason,
+                            confidence_tier=confidence_tier,
+                        )
+
+                        log.info(
+                            "shadow_resolution.resolved",
+                            window_ts=window_ts,
+                            asset=asset,
+                            shadow_dir=shadow_dir,
+                            oracle_direction=oracle_direction,
+                            shadow_would_win=shadow_would_win,
+                            shadow_pnl=f"{shadow_pnl:+.2f}",
+                        )
+
+                        # ── Post-Resolution AI Analysis ───────────────────────
+                        # Run Sonnet analysis of ALL eval ticks for this window.
+                        # Only for recent windows (last 15 min), rate-limited to
+                        # 1 analysis per 60 seconds to avoid API spam.
+                        if self._post_resolution_evaluator:
+                            try:
+                                # Fetch eval ticks from gate_audit / in-memory history
+                                _eval_ticks = []
+                                # Try in-memory window_eval_history first (most complete)
+                                if self._five_min_strategy and hasattr(
+                                    self._five_min_strategy, "_window_eval_history"
+                                ):
+                                    _wkey = f"{asset}-{window_ts}"
+                                    _eval_ticks = list(
+                                        self._five_min_strategy._window_eval_history.get(
+                                            _wkey, []
+                                        )
+                                    )
+                                # Fall back to DB gate_audit table
+                                if not _eval_ticks:
+                                    _eval_ticks = await self._db.get_eval_ticks_for_window(
+                                        window_ts=window_ts,
+                                        asset=asset,
+                                        timeframe=timeframe,
+                                    )
+                                # Schedule analysis as a background task (non-blocking)
+                                asyncio.create_task(
+                                    self._post_resolution_evaluator.analyse_window(
+                                        window_ts=window_ts,
+                                        asset=asset,
+                                        timeframe=timeframe,
+                                        oracle_direction=oracle_direction,
+                                        eval_ticks=_eval_ticks or None,
+                                    )
+                                )
+                                log.debug(
+                                    "shadow_resolution.post_eval_scheduled",
+                                    window_ts=window_ts,
+                                    n_ticks=len(_eval_ticks),
+                                )
+                            except Exception as _pe:
+                                log.warning(
+                                    "shadow_resolution.post_eval_error",
+                                    error=str(_pe)[:100],
+                                )
+
+                    except Exception as parse_exc:
+                        log.warning(
+                            "shadow_resolution.parse_error",
+                            slug=slug,
+                            error=str(parse_exc)[:120],
+                        )
+
+                    await asyncio.sleep(API_DELAY)
+
+            except Exception as exc:
+                log.error("shadow_resolution_loop.error", error=str(exc)[:120])
+
+            # v8.1.2: Also resolve ALL window_predictions without oracle_winner
+            # This catches windows that had no shadow signal (e.g. CALM regime skips)
+            try:
+                if self._db._pool:
+                    import time as _time
+                    _cutoff = int(_time.time()) - 1800  # last 30 min
+                    async with self._db._pool.acquire() as _conn:
+                        _unresolved = await _conn.fetch("""
+                            SELECT window_ts, asset FROM window_predictions
+                            WHERE oracle_winner IS NULL AND window_ts > $1 AND window_ts < $2
+                            LIMIT 5
+                        """, _cutoff, int(_time.time()) - 60)  # at least 60s old
+
+                    for _row in _unresolved:
+                        _wts = _row["window_ts"]
+                        _asset = _row["asset"]
+                        _slug = f"{_asset.lower()}-updown-5m-{_wts}"
+                        try:
+                            import aiohttp as _aio2
+                            async with _aio2.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as _s:
+                                async with _s.get(
+                                    f"https://gamma-api.polymarket.com/events?slug={_slug}",
+                                    timeout=_aio2.ClientTimeout(total=10)
+                                ) as _r:
+                                    if _r.status == 200:
+                                        _d = await _r.json()
+                                        if _d and isinstance(_d, list) and _d[0].get("markets"):
+                                            _m = _d[0]["markets"][0]
+                                            if _m.get("resolved") or any(str(p) in ("0", "1", "1.0", "0.0") for p in _m.get("outcomePrices", [])):
+                                                _op = _m.get("outcomePrices", [])
+                                                if len(_op) >= 2:
+                                                    _up = float(_op[0])
+                                                    _dn = float(_op[1])
+                                                    if _up >= 0.99:
+                                                        _winner = "UP"
+                                                    elif _dn >= 0.99:
+                                                        _winner = "DOWN"
+                                                    else:
+                                                        continue
+                                                    # Update both tables
+                                                    await self._db.update_window_prediction_outcome(
+                                                        _wts, _asset, _winner
+                                                    )
+                                                    # Also update window_snapshots.poly_winner
+                                                    try:
+                                                        async with self._db._pool.acquire() as _c2:
+                                                            await _c2.execute(
+                                                                "UPDATE window_snapshots SET poly_winner=$1 "
+                                                                "WHERE window_ts=$2 AND asset=$3 AND poly_winner IS NULL",
+                                                                _winner.capitalize(), _wts, _asset
+                                                            )
+                                                    except Exception:
+                                                        pass
+                                                    log.info("prediction_resolution.resolved",
+                                                             window_ts=_wts, winner=_winner)
+                            await asyncio.sleep(0.5)
+                        except Exception:
+                            pass
+            except Exception as _pred_exc:
+                log.debug("prediction_resolution.error", error=str(_pred_exc)[:100])
+
+            # Wait 30s between sweeps
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=float(POLL_INTERVAL),
+                )
+                break
+            except asyncio.TimeoutError:
+                pass  # Normal — continue loop
+
+        log.info("shadow_resolution_loop.stopped")
 
     # ── G1 & G3: Staggered Execution + Single Best Signal ────────────────────
 

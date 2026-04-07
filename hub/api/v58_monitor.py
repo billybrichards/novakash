@@ -115,6 +115,21 @@ def _row_to_window(row: Any) -> dict:
         "v71_regime": row.get("v71_regime"),
         "v71_correct": bool(row.get("v71_correct")) if row.get("v71_correct") is not None else None,
         "v71_pnl": _safe_float(row.get("v71_pnl")),
+        # v8.0 execution metadata
+        "delta_source": row.get("delta_source"),
+        "execution_mode": row.get("execution_mode"),
+        "fok_attempts": row.get("fok_attempts"),
+        "fok_fill_step": row.get("fok_fill_step"),
+        "clob_fill_price": _safe_float(row.get("clob_fill_price")),
+        "gates_passed": row.get("gates_passed"),
+        "gate_failed": row.get("gate_failed"),
+        "confidence_tier": row.get("confidence_tier"),
+        # Shadow resolution
+        "shadow_trade_direction": row.get("shadow_trade_direction"),
+        "shadow_trade_entry_price": _safe_float(row.get("shadow_trade_entry_price")),
+        "oracle_outcome": row.get("oracle_outcome"),
+        "shadow_pnl": _safe_float(row.get("shadow_pnl")),
+        "shadow_would_win": bool(row.get("shadow_would_win")) if row.get("shadow_would_win") is not None else None,
     }
 
 
@@ -143,7 +158,11 @@ async def get_windows(
                     twap_direction, twap_agreement_score, twap_gamma_gate,
                     timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
                     gamma_up_price, gamma_down_price, engine_version,
-                    v71_would_trade, v71_skip_reason, v71_regime, v71_correct, v71_pnl
+                    v71_would_trade, v71_skip_reason, v71_regime, v71_correct, v71_pnl,
+                    delta_source, execution_mode, fok_attempts, fok_fill_step, clob_fill_price,
+                    gates_passed, gate_failed, confidence_tier,
+                    shadow_trade_direction, shadow_trade_entry_price,
+                    oracle_outcome, shadow_pnl, shadow_would_win
                 FROM window_snapshots
                 WHERE asset = :asset AND timeframe = '5m'
                 ORDER BY window_ts DESC
@@ -160,7 +179,11 @@ async def get_windows(
                     twap_direction, twap_agreement_score, twap_gamma_gate,
                     timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
                     gamma_up_price, gamma_down_price, engine_version,
-                    v71_would_trade, v71_skip_reason, v71_regime, v71_correct, v71_pnl
+                    v71_would_trade, v71_skip_reason, v71_regime, v71_correct, v71_pnl,
+                    delta_source, execution_mode, fok_attempts, fok_fill_step, clob_fill_price,
+                    gates_passed, gate_failed, confidence_tier,
+                    shadow_trade_direction, shadow_trade_entry_price,
+                    oracle_outcome, shadow_pnl, shadow_would_win
                 FROM window_snapshots
                 WHERE timeframe = '5m'
                 ORDER BY window_ts DESC
@@ -721,6 +744,12 @@ def _calc_outcome_row(row: Any) -> dict:
         "v71_pnl": final_v71_pnl,
         "poly_outcome": poly_outcome,
         "resolution_source": "polymarket" if poly_outcome else "binance_t60",
+        # v8.0 fields — COALESCE window_snapshot with trades metadata fallback
+        "delta_source": row.get("delta_source"),
+        "execution_mode": row.get("execution_mode"),
+        "fok_attempts": row.get("fok_attempts") or row.get("t_fok_attempts"),
+        "fok_fill_step": row.get("fok_fill_step") or row.get("t_fok_fill_step"),
+        "clob_fill_price": _safe_float(row.get("clob_fill_price")) or _safe_float(row.get("t_clob_fill_price")),
     })
     return base
 
@@ -756,8 +785,15 @@ async def get_outcomes(
                 ws.engine_version,
                 ws.vpin, ws.regime, ws.confidence,
                 ws.v71_would_trade, ws.v71_skip_reason, ws.v71_regime, ws.v71_correct, ws.v71_pnl,
+                ws.delta_source, ws.execution_mode,
+                ws.fok_attempts, ws.fok_fill_step, ws.clob_fill_price,
+                ws.shadow_trade_direction, ws.shadow_trade_entry_price,
+                ws.oracle_outcome, ws.shadow_pnl, ws.shadow_would_win,
                 t.outcome AS poly_outcome,
-                t.direction AS trade_direction
+                t.direction AS trade_direction,
+                (t.metadata::json->>'fok_attempts')::int AS t_fok_attempts,
+                (t.metadata::json->>'fok_fill_step')::int AS t_fok_fill_step,
+                (t.metadata::json->>'clob_fill_price')::float AS t_clob_fill_price
             FROM window_snapshots ws
             LEFT JOIN LATERAL (
                 SELECT up_price, down_price
@@ -768,7 +804,7 @@ async def get_outcomes(
                 LIMIT 1
             ) ms ON true
             LEFT JOIN LATERAL (
-                SELECT outcome, direction
+                SELECT outcome, direction, metadata
                 FROM trades
                 WHERE strategy = 'five_min_vpin'
                   AND (metadata::json->>'window_ts')::bigint = ws.window_ts
@@ -2073,3 +2109,151 @@ async def get_wallet_status(
         }
     except Exception as exc:
         return {"error": str(exc)}
+
+
+# ─── Execution HQ endpoint ─────────────────────────────────────────────────
+
+@router.get("/v58/execution-hq")
+async def get_execution_hq(
+    limit: int = Query(200, ge=1, le=500),
+    shadow_only: bool = Query(False),
+    asset: Optional[str] = Query(None),
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    Combined endpoint for the Execution HQ dashboard.
+
+    Returns:
+    - windows: recent window snapshots with all columns including shadow resolution
+    - shadow_stats: aggregate stats on missed opportunities
+    - recent_trades: last 20 trades for execution log
+    - system: current engine state (bankroll, mode, status)
+    """
+    try:
+        # ── Windows with shadow data ──────────────────────────────────────
+        # Build WHERE clauses safely using parameterised conditions
+        conditions = ["timeframe = '5m'"]
+        params: dict = {"limit": limit}
+
+        if asset:
+            conditions.append("asset = :asset")
+            params["asset"] = asset
+        if shadow_only:
+            conditions.append("shadow_would_win = TRUE")
+            conditions.append("trade_placed = FALSE")
+
+        where_clause = " AND ".join(conditions)
+
+        q = text(f"""
+            SELECT
+                window_ts, asset, timeframe,
+                open_price, close_price, delta_pct, vpin,
+                regime, direction, confidence,
+                trade_placed, skip_reason,
+                twap_direction, twap_agreement_score, twap_gamma_gate,
+                timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
+                gamma_up_price, gamma_down_price, engine_version,
+                v71_would_trade, v71_skip_reason, v71_regime, v71_correct, v71_pnl,
+                delta_source, execution_mode, fok_attempts, fok_fill_step, clob_fill_price,
+                gates_passed, gate_failed, confidence_tier,
+                shadow_trade_direction, shadow_trade_entry_price,
+                oracle_outcome, shadow_pnl, shadow_would_win
+            FROM window_snapshots
+            WHERE {where_clause}
+            ORDER BY window_ts DESC
+            LIMIT :limit
+        """)
+        result = await session.execute(q, params)
+        rows = result.mappings().all()
+        windows = [_row_to_window(r) for r in rows]
+
+        # ── Shadow stats (always unfiltered for aggregate view) ───────────
+        stats_conditions = ["timeframe = '5m'"]
+        stats_params: dict = {}
+        if asset:
+            stats_conditions.append("asset = :asset")
+            stats_params["asset"] = asset
+
+        stats_where = " AND ".join(stats_conditions)
+
+        sq = text(f"""
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE trade_placed = FALSE AND shadow_trade_direction IS NOT NULL
+                ) AS total_skipped_with_shadow,
+                COUNT(*) FILTER (WHERE shadow_would_win = TRUE) AS shadow_wins,
+                COUNT(*) FILTER (
+                    WHERE shadow_would_win = FALSE AND oracle_outcome IS NOT NULL
+                ) AS shadow_losses,
+                COALESCE(SUM(shadow_pnl) FILTER (WHERE shadow_would_win = TRUE), 0) AS pnl_missed,
+                COALESCE(SUM(shadow_pnl) FILTER (
+                    WHERE shadow_would_win = FALSE AND oracle_outcome IS NOT NULL
+                ), 0) AS pnl_avoided,
+                COUNT(*) FILTER (WHERE trade_placed = TRUE) AS total_traded,
+                COUNT(*) AS total_windows
+            FROM window_snapshots
+            WHERE {stats_where}
+        """)
+        sresult = await session.execute(sq, stats_params)
+        srow = sresult.mappings().first()
+
+        total_with_shadow = int(srow["total_skipped_with_shadow"] or 0)
+        shadow_wins = int(srow["shadow_wins"] or 0)
+        shadow_losses = int(srow["shadow_losses"] or 0)
+
+        shadow_stats = {
+            "total_skipped_with_shadow": total_with_shadow,
+            "shadow_wins": shadow_wins,
+            "shadow_losses": shadow_losses,
+            "shadow_win_rate": round(shadow_wins / max(shadow_wins + shadow_losses, 1) * 100, 1),
+            "pnl_missed": round(float(srow["pnl_missed"] or 0), 2),
+            "pnl_avoided": round(float(srow["pnl_avoided"] or 0), 2),
+            "total_traded": int(srow["total_traded"] or 0),
+            "total_windows": int(srow["total_windows"] or 0),
+        }
+
+        # ── Recent trades (execution log) ─────────────────────────────────
+        tq = text("""
+            SELECT id, strategy, direction, entry_price, stake_usd,
+                   outcome, pnl_usd, created_at, status
+            FROM trades
+            WHERE strategy = 'five_min_vpin'
+            ORDER BY created_at DESC
+            LIMIT 20
+        """)
+        tresult = await session.execute(tq)
+        trows = tresult.mappings().all()
+        recent_trades = [{
+            "id": r["id"],
+            "direction": r["direction"],
+            "entry_price": _safe_float(r["entry_price"]),
+            "stake_usd": _safe_float(r["stake_usd"]),
+            "outcome": r["outcome"],
+            "pnl_usd": _safe_float(r["pnl_usd"]),
+            "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+            "status": r["status"],
+        } for r in trows]
+
+        # ── System state ──────────────────────────────────────────────────
+        sys_q = text("SELECT state, paper_enabled, live_enabled FROM system_state WHERE id = 1")
+        sys_result = await session.execute(sys_q)
+        sys_row = sys_result.mappings().first()
+        system_state = {}
+        if sys_row:
+            state_json = sys_row["state"] or {}
+            system_state = {
+                "bankroll": _safe_float(state_json.get("bankroll")),
+                "paper_mode": bool(sys_row["paper_enabled"]),
+                "live_enabled": bool(sys_row["live_enabled"]),
+                "engine_status": state_json.get("status", "unknown"),
+            }
+
+        return {
+            "windows": windows,
+            "shadow_stats": shadow_stats,
+            "recent_trades": recent_trades,
+            "system": system_state,
+        }
+    except Exception as exc:
+        return {"windows": [], "shadow_stats": {}, "recent_trades": [], "system": {}, "error": str(exc)}

@@ -183,7 +183,27 @@ Integrated into orchestrator startup sequence. VPIN warms within seconds.
 - All `/trading-config/*` endpoints are valid — backed by `hub/api/trading_config.py`
 - `useApi()` hook supports both `api.get()` and `api('GET', url)` calling conventions
 
-### Macro Observer — Engine Integration (Phase 2)
+
+### v8.0 DB Migration
+**Status:** TODO — run before first v8.0 deploy
+**File:** `migrations/add_v8_columns.sql`
+**Columns:** delta_source, execution_mode, fok_attempts, fok_fill_step, clob_fill_price,
+confidence_tier, entry_time_offset, gates_passed, gate_failed
+
+### v8.0 Telegram Notification Overhaul
+**Status:** TODO — current notifications are average, need complete redesign
+**What:** Redesign all 6 notification types for v8.0:
+1. Window Evaluation Card — shows all source prices (Tiingo/CL/BN/CLOB), gate results
+2. FOK Ladder Progress — real-time step-by-step fill attempts
+3. Outcome Card — WIN/LOSS with delta source attribution, session running totals
+4. Skip Card — which gate failed, would-have-won tracking
+5. Session Summary (hourly) — WR, P&L, fill rate, source accuracy comparison
+6. Divergence Alert — triggered when CL-BN spread spikes
+**Files:** `engine/alerts/telegram.py`
+**Priority:** Implement alongside Phase 1+2 code changes
+
+### Macro Observer — Investigation (DO NOT WIRE INTO TRADING)
+**Status:** TODO — collecting data, not gating
 **Status:** TODO — Service built (feat/macro-observer), pending engine wiring
 **What:** Engine reads latest `macro_signals` row from DB each window evaluation and applies:
 - Mode 1 (Neutral <50%): no changes
@@ -253,3 +273,55 @@ Binance alone diverges 57% of the time vs oracle direction.
 - Cross-reference query ready in `docs/DATA_FEEDS.md` (Chainlink vs Binance diff)
 **Next:** Run alignment analysis after 48h of data collection — compare
 Chainlink open→close direction vs Polymarket oracle resolution for each window
+
+### Tiingo Data Source
+**Status:** DONE — feed built, integrated into engine (see Tiingo Integration above)
+**Key:** 3f4456e457a4184d76c58a1320d8e1b214c3ab16
+**Endpoints:**
+- Top-of-book (real-time): `https://api.tiingo.com/tiingo/crypto/top?tickers=btcusd`
+- 5min candles: `https://api.tiingo.com/tiingo/crypto/prices?tickers=btcusd`
+- Shows exchange source (GDAX, BULLISH, etc.)
+
+**Why useful:**
+- Multi-exchange price view — our Binance price may differ from oracle's source
+- Could explain "direction correct but oracle disagreed" losses
+- Cross-reference with Polymarket oracle resolution
+- Add as data column in countdown_evaluations (tiingo_price at each stage)
+
+**Integration:** Add to data collector or engine heartbeat as supplementary price feed
+
+---
+
+## v8.0 Completed (April 6, 2026)
+
+- [x] Tiingo delta as primary direction source
+- [x] FOK execution ladder (5 attempts, +$0.02 bump)
+- [x] FOK → GTC fallback when CLOB book empty
+- [x] TWAP override feature-flagged OFF
+- [x] TimesFM feature-flagged OFF (TIMESFM_ENABLED=false)
+- [x] CLOB feed sort fix (best ask, not worst)
+- [x] CLOB poll interval 2s (was 10s)
+- [x] T-70/T-60 dual eval (retry after skip)
+- [x] Direct eval (bypass staggered queue)
+- [x] Cap/floor gate blocks before execution
+- [x] All notification cards v8.0 format
+- [x] AI evaluators: Sonnet (was Opus/Haiku)
+- [x] Gate audit tracking + confidence tiers
+- [x] Session running totals in outcome cards
+- [x] Execution audit documented (docs/V8_EXECUTION_AUDIT.md)
+
+## v8.1 Completed (April 7, 2026)
+
+- [x] DECISIVE early entry (T-240/T-180/T-120/T-60 cascade) — v2.2 + v8 agreement gate
+- [x] Dynamic entry caps per offset ($0.55/$0.60/$0.65/$0.73)
+- [x] TimesFM v2.2 client (calibrated probability from Montreal EC2)
+- [x] trade_placed flag fix — backfill migration run (465 windows fixed)
+- [x] Historical data migration — reconcile 803 orphaned trades from v7.1
+
+## v8.2 Backlog
+
+- [ ] Dead code cleanup — remove _execute_from_signal (~250 lines), duplicate imports
+- [ ] FOK fill rate monitoring — if <5% FOK fill rate, swap primary to GTC
+- [ ] Activity API reconciliation — cross-check CLOB matched orders vs DB
+- [ ] Macro observer wired into engine (data collection only, not gating)
+- [ ] Delta threshold recalibration for Tiingo (needs 48h data)

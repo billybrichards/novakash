@@ -12,25 +12,28 @@ import { useApi } from '../hooks/useApi.js';
  */
 
 const NAV_ITEMS = [
+  // ── Trading ──
   { path: '/dashboard',       label: 'Dashboard',  icon: '📊' },
+  { path: '/execution-hq',   label: 'Execution HQ', icon: '⚡', highlight: true, isNew: true },
   { path: '/factory',         label: 'Factory Floor', icon: '🏭', highlight: true },
-  { path: '/timesfm',         label: 'TimesFM',    icon: '🔮', highlight: true },
   { path: '/indicators',      label: 'Indicators', icon: '📈', highlight: true },
-  { path: '/v58',             label: 'v7 Monitor', icon: '🎯', highlight: true },
+  { path: '/v58',             label: 'Trade Monitor', icon: '🎯', highlight: true },
+  { path: '/live',            label: 'Live Trading', icon: '💰', highlight: true },
+  { path: '/paper',           label: 'Paper',      icon: '📄' },
+  // ── Analysis ──
+  { path: '/timesfm',         label: 'TimesFM v2', icon: '🔮', highlight: true },
   { path: '/windows',         label: 'Window Results', icon: '📊', highlight: true },
   { path: '/strategy',        label: 'Strategy Analysis', icon: '🧪', highlight: true },
-  { path: '/live',            label: 'Live Trading', icon: '💰', highlight: true },
-  { path: '/analysis',        label: 'Analysis',   icon: '📚', highlight: true },
-  { path: '/paper',           label: 'Paper',      icon: '📄' },
-  { path: '/positions',       label: 'Positions',  icon: '📍' },
+  { path: '/recommendations', label: 'Recalibration', icon: '🎚️', highlight: true },
   { path: '/trades',          label: 'Trades',     icon: '📋' },
   { path: '/signals',         label: 'Signals',    icon: '📡' },
   { path: '/pnl',             label: 'P&L',        icon: '💰' },
+  // ── System ──
+  { path: '/positions',       label: 'Positions',  icon: '📍' },
   { path: '/risk',            label: 'Risk',       icon: '🛡️', highlight: true },
   { path: '/system',          label: 'System',     icon: '🖥️' },
   { path: '/trading-config',  label: 'Config',     icon: '⚙️', highlight: true },
-  { path: '/playwright',      label: 'Account',    icon: '👁' },
-  { path: '/changelog',       label: 'Changelog',  icon: '📝', highlight: true },
+  { path: '/changelog',       label: 'Changelog',  icon: '📝' },
 ];
 
 // Bottom tab bar items (mobile) — 5 most important
@@ -356,11 +359,13 @@ export default function Layout() {
             marginLeft: 'auto',
             fontSize: 8,
             fontFamily: 'IBM Plex Mono, monospace',
-            color: 'rgba(6,182,212,0.4)',
+            color: item.isNew ? '#06b6d4' : 'rgba(6,182,212,0.4)',
             letterSpacing: '0.06em',
-            border: '1px solid rgba(6,182,212,0.2)',
+            border: `1px solid ${item.isNew ? 'rgba(6,182,212,0.5)' : 'rgba(6,182,212,0.2)'}`,
             borderRadius: 3,
             padding: '1px 4px',
+            background: item.isNew ? 'rgba(6,182,212,0.15)' : 'transparent',
+            animation: item.isNew ? 'pulse 2s infinite' : 'none',
           }}>NEW</span>
         )}
       </Link>

@@ -157,6 +157,46 @@ curl http://16.52.148.255:8080/forecast | python3 -m json.tool
 
 ---
 
+## Frontend (AWS — Montreal)
+
+The frontend is a static Vite/React build served by nginx on a t3.small EC2 instance in Montreal (`99.79.41.246`). Nginx proxies `/api/`, `/auth/`, `/ws/` to the Railway hub.
+
+### Connect
+```bash
+ssh -i ~/.ssh/novakash-local-rsa.pem ubuntu@99.79.41.246
+```
+
+### Redeploy (from local machine)
+```bash
+# 1. Build
+cd frontend && npm run build
+
+# 2. Package and upload
+tar czf /tmp/frontend-dist.tar.gz -C dist .
+scp -i ~/.ssh/novakash-local-rsa.pem /tmp/frontend-dist.tar.gz ubuntu@99.79.41.246:/tmp/
+
+# 3. Deploy on instance
+ssh -i ~/.ssh/novakash-local-rsa.pem ubuntu@99.79.41.246 \
+  "sudo rm -rf /var/www/frontend/* && \
+   sudo tar xzf /tmp/frontend-dist.tar.gz -C /var/www/frontend && \
+   sudo chown -R www-data:www-data /var/www/frontend && \
+   sudo systemctl restart nginx"
+```
+
+### Verify
+```bash
+curl -sI http://99.79.41.246            # 200 OK, index.html
+curl -s http://99.79.41.246/api/health  # Proxied to Railway hub
+```
+
+### Nginx Config
+Location: `/etc/nginx/conf.d/frontend.conf`
+
+To edit: `ssh ... then sudo nano /etc/nginx/conf.d/frontend.conf`
+After edits: `sudo nginx -t && sudo systemctl restart nginx`
+
+---
+
 ## Database Migrations
 
 Migrations are in `hub/db/migrations/`. To run a migration:

@@ -260,17 +260,18 @@ class Polymarket5MinFeed:
                 # Emit window signal at OPEN so strategy can start monitoring
                 await self._emit_window_signal(window)
         
-        elif window.state == WindowState.ACTIVE:
+        elif window.state in (WindowState.ACTIVE, WindowState.CLOSING):
             # ── Countdown re-emissions at T-180, T-120, T-90 ─────────────
             # Re-emit window signal at countdown milestones so orchestrator can send alerts
-            _countdown_milestones = [180, 120, 90]
-            if not hasattr(window, '_countdown_emitted'):
-                window._countdown_emitted = set()
-            for _ms in _countdown_milestones:
-                if remaining <= _ms and _ms not in window._countdown_emitted:
-                    window._countdown_emitted.add(_ms)
-                    await self._emit_window_signal(window)
-                    break  # Only one per tick
+            if window.state == WindowState.ACTIVE:
+                _countdown_milestones = [180, 120, 90]
+                if not hasattr(window, '_countdown_emitted'):
+                    window._countdown_emitted = set()
+                for _ms in _countdown_milestones:
+                    if remaining <= _ms and _ms not in window._countdown_emitted:
+                        window._countdown_emitted.add(_ms)
+                        await self._emit_window_signal(window)
+                        break  # Only one per tick
             
             # ── Multi-offset evaluation signals ──────────────────────────
             # Emit CLOSING signal at each configured eval offset (T-90, T-60, etc.)
@@ -292,7 +293,9 @@ class Polymarket5MinFeed:
                     window.state = WindowState.CLOSING
                     await self._emit_state_change(window.asset, window.window_ts, window.state)
                     await self._emit_window_signal(window)
-                    break  # One emission per tick — next offset fires next tick
+                    # Don't break — check remaining offsets in same tick
+                    # so T-60 retry fires even if T-70 and T-60 both became
+                    # eligible between ticks
 
             # Window expired
             if remaining <= 0:

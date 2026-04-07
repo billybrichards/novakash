@@ -74,18 +74,24 @@ class DBClient:
                 order_id, strategy, venue, market_slug, direction,
                 entry_price, stake_usd, fee_usd, status, outcome,
                 payout_usd, pnl_usd, created_at, resolved_at, metadata, mode,
-                is_live
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+                is_live,
+                engine_version, clob_order_id, fill_price, fill_size, execution_mode
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+                      $18,$19,$20,$21,$22)
             ON CONFLICT (order_id) DO UPDATE SET
-                status      = EXCLUDED.status,
-                outcome     = EXCLUDED.outcome,
-                payout_usd  = EXCLUDED.payout_usd,
-                pnl_usd     = EXCLUDED.pnl_usd,
-                resolved_at = EXCLUDED.resolved_at,
-                is_live     = EXCLUDED.is_live,
-                entry_price = EXCLUDED.entry_price,
-                stake_usd   = EXCLUDED.stake_usd,
-                metadata    = EXCLUDED.metadata
+                status         = EXCLUDED.status,
+                outcome        = EXCLUDED.outcome,
+                payout_usd     = EXCLUDED.payout_usd,
+                pnl_usd        = EXCLUDED.pnl_usd,
+                resolved_at    = EXCLUDED.resolved_at,
+                is_live        = EXCLUDED.is_live,
+                entry_price    = EXCLUDED.entry_price,
+                stake_usd      = EXCLUDED.stake_usd,
+                metadata       = EXCLUDED.metadata,
+                clob_order_id  = COALESCE(EXCLUDED.clob_order_id, trades.clob_order_id),
+                fill_price     = COALESCE(EXCLUDED.fill_price, trades.fill_price),
+                fill_size      = COALESCE(EXCLUDED.fill_size, trades.fill_size),
+                execution_mode = COALESCE(EXCLUDED.execution_mode, trades.execution_mode)
         """
 
         try:
@@ -101,6 +107,13 @@ class DBClient:
                 if isinstance(order.resolved_at, (int, float))
                 else order.resolved_at
             )
+
+            # Extract v8.0 fields from metadata if present
+            meta = order.metadata or {}
+            clob_order_id = meta.get("clob_order_id") or meta.get("order_id")
+            fill_price = meta.get("fill_price") or meta.get("avg_price")
+            fill_size = meta.get("fill_size") or meta.get("size_matched")
+            execution_mode = meta.get("execution_mode", "paper")
 
             async with self._pool.acquire() as conn:
                 await conn.execute(
@@ -122,6 +135,12 @@ class DBClient:
                     json.dumps(order.metadata),
                     "live" if order.order_id.startswith("0x") else "paper",
                     not order.order_id.startswith("5min-") and not order.order_id.startswith("manual-paper"),
+                    # v8.0 fields
+                    "v8.0",
+                    clob_order_id,
+                    float(fill_price) if fill_price is not None else None,
+                    float(fill_size) if fill_size is not None else None,
+                    execution_mode,
                 )
             log.debug("db.trade_written", order_id=order.order_id)
         except Exception as exc:
@@ -555,6 +574,14 @@ class DBClient:
                     ("market_mid_price", "DOUBLE PRECISION"),
                     ("market_volume", "DOUBLE PRECISION"),
                     ("market_liquidity", "DOUBLE PRECISION"),
+                    # v8.0: engine metadata + gate audit + shadow trade tracking
+                    ("engine_version", "VARCHAR(10)"),
+                    ("delta_source", "VARCHAR(10)"),
+                    ("confidence_tier", "VARCHAR(10)"),
+                    ("gates_passed", "TEXT"),
+                    ("gate_failed", "VARCHAR(20)"),
+                    ("shadow_trade_direction", "VARCHAR(4)"),
+                    ("shadow_trade_entry_price", "DOUBLE PRECISION"),
                 ]:
                     try:
                         await conn.execute(f"ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS {col} {col_type}")
@@ -608,7 +635,13 @@ class DBClient:
                         v71_would_trade, v71_skip_reason, v71_regime,
                         is_live,
                         gamma_up_price, gamma_down_price,
-                        delta_chainlink, delta_tiingo, delta_binance, price_consensus
+                        delta_chainlink, delta_tiingo, delta_binance, price_consensus,
+                        engine_version, delta_source, confidence_tier,
+                        gates_passed, gate_failed,
+                        shadow_trade_direction, shadow_trade_entry_price,
+                        v2_probability_up, v2_direction, v2_agrees,
+                        v2_model_version, eval_offset,
+                        v2_quantiles, v2_quantiles_at_close
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,
                         $9,$10,$11,$12,$13,$14,$15,$16,$17,
@@ -621,15 +654,33 @@ class DBClient:
                         $59,$60,$61,
                         $62,
                         $63,$64,
-                        $65,$66,$67,$68
+                        $65,$66,$67,$68,
+                        $69,$70,$71,
+                        $72,$73,
+                        $74,$75,$76,$77,$78,
+                        $79,$80,$81,$82
                     )
-                    ON CONFLICT (window_ts, asset, timeframe) DO UPDATE SET
-                        gamma_up_price   = COALESCE(EXCLUDED.gamma_up_price, window_snapshots.gamma_up_price),
-                        gamma_down_price = COALESCE(EXCLUDED.gamma_down_price, window_snapshots.gamma_down_price),
-                        delta_chainlink  = COALESCE(EXCLUDED.delta_chainlink, window_snapshots.delta_chainlink),
-                        delta_tiingo     = COALESCE(EXCLUDED.delta_tiingo, window_snapshots.delta_tiingo),
-                        delta_binance    = COALESCE(EXCLUDED.delta_binance, window_snapshots.delta_binance),
-                        price_consensus  = COALESCE(EXCLUDED.price_consensus, window_snapshots.price_consensus)
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        gamma_up_price         = COALESCE(EXCLUDED.gamma_up_price, window_snapshots.gamma_up_price),
+                        gamma_down_price       = COALESCE(EXCLUDED.gamma_down_price, window_snapshots.gamma_down_price),
+                        delta_chainlink        = COALESCE(EXCLUDED.delta_chainlink, window_snapshots.delta_chainlink),
+                        delta_tiingo           = COALESCE(EXCLUDED.delta_tiingo, window_snapshots.delta_tiingo),
+                        delta_binance          = COALESCE(EXCLUDED.delta_binance, window_snapshots.delta_binance),
+                        price_consensus        = COALESCE(EXCLUDED.price_consensus, window_snapshots.price_consensus),
+                        engine_version         = COALESCE(EXCLUDED.engine_version, window_snapshots.engine_version),
+                        delta_source           = COALESCE(EXCLUDED.delta_source, window_snapshots.delta_source),
+                        confidence_tier        = COALESCE(EXCLUDED.confidence_tier, window_snapshots.confidence_tier),
+                        gates_passed           = COALESCE(EXCLUDED.gates_passed, window_snapshots.gates_passed),
+                        gate_failed            = COALESCE(EXCLUDED.gate_failed, window_snapshots.gate_failed),
+                        shadow_trade_direction = COALESCE(EXCLUDED.shadow_trade_direction, window_snapshots.shadow_trade_direction),
+                        shadow_trade_entry_price = COALESCE(EXCLUDED.shadow_trade_entry_price, window_snapshots.shadow_trade_entry_price),
+                        v2_probability_up      = COALESCE(EXCLUDED.v2_probability_up, window_snapshots.v2_probability_up),
+                        v2_direction           = COALESCE(EXCLUDED.v2_direction, window_snapshots.v2_direction),
+                        v2_agrees              = COALESCE(EXCLUDED.v2_agrees, window_snapshots.v2_agrees),
+                        v2_model_version       = COALESCE(EXCLUDED.v2_model_version, window_snapshots.v2_model_version),
+                        eval_offset            = COALESCE(EXCLUDED.eval_offset, window_snapshots.eval_offset),
+                        v2_quantiles           = COALESCE(EXCLUDED.v2_quantiles, window_snapshots.v2_quantiles),
+                        v2_quantiles_at_close  = COALESCE(EXCLUDED.v2_quantiles_at_close, window_snapshots.v2_quantiles_at_close)
                     """,
                     snapshot.get("window_ts"),
                     snapshot.get("asset", "BTC"),
@@ -704,6 +755,22 @@ class DBClient:
                     snapshot.get("delta_tiingo"),
                     snapshot.get("delta_binance"),
                     snapshot.get("price_consensus"),
+                    # v8.0: engine metadata + gate audit + shadow trade
+                    snapshot.get("engine_version", "v8.0"),
+                    snapshot.get("delta_source"),
+                    snapshot.get("confidence_tier"),
+                    snapshot.get("gates_passed"),
+                    snapshot.get("gate_failed"),
+                    snapshot.get("shadow_trade_direction"),
+                    snapshot.get("shadow_trade_entry_price"),
+                    # v8.1: OAK (v2.2) early entry gate
+                    snapshot.get("v2_probability_up"),
+                    snapshot.get("v2_direction"),
+                    snapshot.get("v2_agrees"),
+                    snapshot.get("v2_model_version"),
+                    snapshot.get("eval_offset"),
+                    snapshot.get("v2_quantiles"),
+                    snapshot.get("v2_quantiles_at_close"),
                 )
             log.debug(
                 "db.window_snapshot_written",
@@ -859,6 +926,29 @@ class DBClient:
         except Exception:
             return None
 
+    async def get_latest_macro_signal(self) -> dict | None:
+        """Get the most recent macro observer signal (< 5 min old)."""
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT bias, confidence, direction_gate, reasoning "
+                    "FROM macro_signals "
+                    "WHERE created_at > NOW() - INTERVAL '5 minutes' "
+                    "ORDER BY created_at DESC LIMIT 1",
+                )
+                if row:
+                    return {
+                        "macro_bias": row["bias"],
+                        "macro_confidence": f"{row['confidence']}%",
+                        "macro_gate": row["direction_gate"],
+                        "macro_reasoning": row["reasoning"][:100] if row["reasoning"] else "",
+                    }
+                return None
+        except Exception:
+            return None
+
     async def get_latest_clob_prices(self, asset: str = "BTC") -> dict | None:
         """Get the most recent CLOB book prices for an asset."""
         if not self._pool:
@@ -898,6 +988,54 @@ class DBClient:
         async with self._pool.acquire() as conn:
             row = await conn.fetchval(query, target)
         return float(row or 0)
+
+    async def get_open_trades(self, hours_back: int = 24) -> list[dict]:
+        """Get OPEN trades from the last N hours for recovery on startup.
+
+        Args:
+            hours_back: How many hours back to look (default 24).
+
+        Returns:
+            List of trade row dicts with keys: order_id, direction, entry_price,
+            stake_usd, metadata, created_at, strategy, venue, market_slug, fee_usd.
+        """
+        if not self._pool:
+            return []
+        try:
+            from datetime import timezone, timedelta
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT order_id, direction, entry_price, stake_usd,
+                           metadata, created_at, strategy, venue, market_slug, fee_usd
+                    FROM trades
+                    WHERE status = 'OPEN'
+                      AND created_at > $1
+                    ORDER BY created_at ASC
+                    """,
+                    cutoff,
+                )
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            log.error("db.get_open_trades_failed", error=str(exc))
+            return []
+
+    async def mark_trade_expired(self, order_id: str) -> None:
+        """Mark a trade as EXPIRED in the DB (used by startup reconciliation)."""
+        if not self._pool:
+            return
+        try:
+            from datetime import timezone
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE trades SET status = 'EXPIRED', resolved_at = $1 WHERE order_id = $2",
+                    datetime.now(timezone.utc),
+                    order_id,
+                )
+            log.info("db.trade_marked_expired", order_id=order_id[:24] if len(order_id) > 24 else order_id)
+        except Exception as exc:
+            log.error("db.mark_trade_expired_failed", order_id=order_id, error=str(exc))
 
     # ─── Manual Trade Queue (v5.8 Dashboard) ─────────────────────────────
 
@@ -973,6 +1111,27 @@ class DBClient:
             import structlog
             structlog.get_logger().error("db.trade_placed_update_failed", window_ts=window_ts, asset=asset, error=str(exc))
 
+    async def update_window_fok_data(
+        self, window_ts: int, asset: str, timeframe: str,
+        execution_mode: str, fok_attempts: int, fok_fill_step: int, clob_fill_price: float,
+    ) -> None:
+        """Write FOK execution details to window_snapshot after a successful fill."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """UPDATE window_snapshots
+                       SET execution_mode = $4, fok_attempts = $5,
+                           fok_fill_step = $6, clob_fill_price = $7
+                       WHERE window_ts = $1 AND asset = $2 AND timeframe = $3""",
+                    window_ts, asset, timeframe,
+                    execution_mode, fok_attempts, fok_fill_step, clob_fill_price,
+                )
+        except Exception as exc:
+            import structlog
+            structlog.get_logger().error("db.fok_data_update_failed", window_ts=window_ts, error=str(exc))
+
     async def update_window_skip_reason(self, window_ts: int, asset: str, timeframe: str, skip_reason: str) -> None:
         """Update skip_reason on a window_snapshot after evaluation."""
         if not self._pool:
@@ -1032,3 +1191,619 @@ class DBClient:
             "action": "TRADE" if data.get("trade_placed") else "SKIP",
             "notes": data.get("analysis", "")[:2000] if data.get("analysis") else None,
         })
+
+    # ─── Shadow Trade Resolution ──────────────────────────────────────────────
+
+    async def ensure_shadow_columns(self) -> None:
+        """Add shadow trade resolution columns to window_snapshots if missing."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                for col, col_type in [
+                    ("shadow_trade_direction", "VARCHAR(4)"),
+                    ("shadow_trade_entry_price", "DOUBLE PRECISION"),
+                    ("oracle_outcome", "VARCHAR(4)"),
+                    ("shadow_pnl", "DOUBLE PRECISION"),
+                    ("shadow_would_win", "BOOLEAN"),
+                ]:
+                    await conn.execute(
+                        f"ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS {col} {col_type}"
+                    )
+            log.info("db.shadow_columns_ensured")
+        except Exception as exc:
+            log.warning("db.ensure_shadow_columns_failed", error=str(exc))
+
+    async def ensure_v8_trade_columns(self) -> None:
+        """Add v8.0 columns to trades table if missing (idempotent)."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                for col, col_type in [
+                    ("engine_version", "VARCHAR(10)"),
+                    ("clob_order_id", "VARCHAR(128)"),
+                    ("fill_price", "DOUBLE PRECISION"),
+                    ("fill_size", "DOUBLE PRECISION"),
+                    ("execution_mode", "VARCHAR(20)"),
+                    ("is_live", "BOOLEAN DEFAULT FALSE"),
+                ]:
+                    await conn.execute(
+                        f"ALTER TABLE trades ADD COLUMN IF NOT EXISTS {col} {col_type}"
+                    )
+            log.info("db.v8_trade_columns_ensured")
+        except Exception as exc:
+            log.warning("db.ensure_v8_trade_columns_failed", error=str(exc))
+
+    async def get_unresolved_shadow_windows(self, minutes_back: int = 10) -> list:
+        """
+        Get recent skipped windows that haven't been shadow-resolved yet.
+
+        Returns window_snapshots rows where:
+          - trade_placed = FALSE (skipped)
+          - shadow_trade_direction IS NOT NULL
+          - oracle_outcome IS NULL (not yet resolved)
+          - window_ts > now() - interval (recent enough to query)
+        """
+        if not self._pool:
+            return []
+        try:
+            cutoff_ts = int(__import__("time").time()) - (minutes_back * 60)
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT window_ts, asset, timeframe,
+                           shadow_trade_direction, shadow_trade_entry_price,
+                           skip_reason, confidence
+                    FROM window_snapshots
+                    WHERE trade_placed = FALSE
+                      AND shadow_trade_direction IS NOT NULL
+                      AND oracle_outcome IS NULL
+                      AND window_ts > $1
+                    ORDER BY window_ts DESC
+                    LIMIT 20
+                    """,
+                    cutoff_ts,
+                )
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            log.warning("db.get_unresolved_shadow_windows_failed", error=str(exc))
+            return []
+
+    async def update_shadow_resolution(
+        self,
+        window_ts: int,
+        asset: str,
+        timeframe: str,
+        oracle_outcome: str,
+        shadow_pnl: float,
+        shadow_would_win: bool,
+    ) -> None:
+        """
+        Update a skipped window with oracle resolution for shadow trade analysis.
+
+        Args:
+            window_ts:       Window open timestamp (unix int)
+            asset:           e.g. "BTC"
+            timeframe:       e.g. "5m"
+            oracle_outcome:  "UP" or "DOWN" (what Polymarket oracle resolved)
+            shadow_pnl:      Simulated P&L if the trade had been placed
+            shadow_would_win: True if shadow_trade_direction matched oracle_outcome
+        """
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE window_snapshots
+                    SET oracle_outcome  = $1,
+                        shadow_pnl      = $2,
+                        shadow_would_win = $3
+                    WHERE window_ts = $4 AND asset = $5 AND timeframe = $6
+                    """,
+                    oracle_outcome,
+                    shadow_pnl,
+                    shadow_would_win,
+                    window_ts,
+                    asset,
+                    timeframe,
+                )
+            log.debug(
+                "db.shadow_resolution_updated",
+                window_ts=window_ts,
+                asset=asset,
+                oracle_outcome=oracle_outcome,
+                shadow_pnl=f"{shadow_pnl:+.2f}",
+                shadow_would_win=shadow_would_win,
+            )
+        except Exception as exc:
+            log.error("db.update_shadow_resolution_failed", error=str(exc))
+
+    async def write_gate_audit(self, data: dict) -> None:
+        """
+        Write a gate audit record for every window evaluation (v8.0).
+
+        Records all gate pass/fail results so signal analysis can identify which
+        gate is blocking trades and whether skipped windows would have been winners.
+
+        Args:
+            data: dict with keys matching gate_audit table columns.
+        """
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO gate_audit (
+                        window_ts, asset, timeframe, engine_version,
+                        delta_source, eval_offset,
+                        open_price, tiingo_open, tiingo_close,
+                        delta_tiingo, delta_binance, delta_chainlink, delta_pct,
+                        vpin, regime,
+                        gate_vpin, gate_delta, gate_cg, gate_floor, gate_cap,
+                        gate_passed, gate_failed, gates_passed_list,
+                        decision, skip_reason
+                    ) VALUES (
+                        $1, $2, $3, $4,
+                        $5, $25,
+                        $6, $7, $8,
+                        $9, $10, $11, $12,
+                        $13, $14,
+                        $15, $16, $17, $18, $19,
+                        $20, $21, $22,
+                        $23, $24
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        engine_version      = EXCLUDED.engine_version,
+                        delta_source        = EXCLUDED.delta_source,
+                        open_price          = EXCLUDED.open_price,
+                        tiingo_open         = EXCLUDED.tiingo_open,
+                        tiingo_close        = EXCLUDED.tiingo_close,
+                        delta_tiingo        = EXCLUDED.delta_tiingo,
+                        delta_binance       = EXCLUDED.delta_binance,
+                        delta_chainlink     = EXCLUDED.delta_chainlink,
+                        delta_pct           = EXCLUDED.delta_pct,
+                        vpin                = EXCLUDED.vpin,
+                        regime              = EXCLUDED.regime,
+                        gate_vpin           = EXCLUDED.gate_vpin,
+                        gate_delta          = EXCLUDED.gate_delta,
+                        gate_cg             = EXCLUDED.gate_cg,
+                        gate_floor          = EXCLUDED.gate_floor,
+                        gate_cap            = EXCLUDED.gate_cap,
+                        gate_passed         = EXCLUDED.gate_passed,
+                        gate_failed         = EXCLUDED.gate_failed,
+                        gates_passed_list   = EXCLUDED.gates_passed_list,
+                        decision            = EXCLUDED.decision,
+                        skip_reason         = EXCLUDED.skip_reason,
+                        evaluated_at        = NOW()
+                    """,
+                    int(data.get("window_ts", 0)),
+                    data.get("asset", "BTC"),
+                    data.get("timeframe", "5m"),
+                    data.get("engine_version", "v8.0"),
+                    data.get("delta_source"),
+                    float(data["open_price"]) if data.get("open_price") is not None else None,
+                    float(data["tiingo_open"]) if data.get("tiingo_open") is not None else None,
+                    float(data["tiingo_close"]) if data.get("tiingo_close") is not None else None,
+                    float(data["delta_tiingo"]) if data.get("delta_tiingo") is not None else None,
+                    float(data["delta_binance"]) if data.get("delta_binance") is not None else None,
+                    float(data["delta_chainlink"]) if data.get("delta_chainlink") is not None else None,
+                    float(data["delta_pct"]) if data.get("delta_pct") is not None else None,
+                    float(data["vpin"]) if data.get("vpin") is not None else None,
+                    data.get("regime"),
+                    str(data["gate_vpin"]) if data.get("gate_vpin") is not None else None,  # VARCHAR
+                    str(data["gate_delta"]) if data.get("gate_delta") is not None else None,  # VARCHAR
+                    bool(data["gate_cg"]) if data.get("gate_cg") is not None else None,  # BOOLEAN
+                    str(data["gate_floor"]) if data.get("gate_floor") is not None else None,  # VARCHAR
+                    str(data["gate_cap"]) if data.get("gate_cap") is not None else None,  # VARCHAR
+                    bool(data.get("gate_passed", False)),
+                    data.get("gate_failed"),
+                    data.get("gates_passed_list"),
+                    data.get("decision", "SKIP"),
+                    data.get("skip_reason"),
+                    data.get("eval_offset"),
+                )
+        except Exception as exc:
+            log.warning("db.write_gate_audit_failed", error=str(exc)[:200])
+
+    async def write_signal_evaluation(self, data: dict) -> None:
+        """
+        Write comprehensive signal evaluation data for every window evaluation point.
+        
+        Captures ALL signal data at each eval_offset: all price sources, all deltas,
+        OAK full probability surface (quantiles), all gates, and market microstructure.
+        
+        Args:
+            data: dict with keys matching signal_evaluations table columns.
+        """
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        clob_up_bid, clob_up_ask, clob_down_bid, clob_down_ask,
+                        binance_price, tiingo_open, tiingo_close, chainlink_price,
+                        delta_pct, delta_tiingo, delta_binance, delta_chainlink, delta_source,
+                        vpin, regime, clob_spread, clob_mid,
+                        v2_probability_up, v2_direction, v2_agrees, v2_high_conf,
+                        v2_model_version, v2_quantiles, v2_quantiles_at_close,
+                        gate_vpin_passed, gate_delta_passed, gate_cg_passed,
+                        gate_twap_passed, gate_timesfm_passed, gate_passed,
+                        gate_failed, decision,
+                        twap_delta, twap_direction, twap_gamma_agree
+                    ) VALUES (
+                        $1, $2, $3, $4,
+                        $5, $6, $7, $8,
+                        $9, $10, $11, $12,
+                        $13, $14, $15, $16, $17,
+                        $18, $19, $20, $21,
+                        $22, $23, $24, $25,
+                        $26, $27, $28,
+                        $29, $30, $31,
+                        $32, $33, $34, $35,
+                        $36, $37, $38, $39
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        clob_up_bid           = EXCLUDED.clob_up_bid,
+                        clob_up_ask           = EXCLUDED.clob_up_ask,
+                        clob_down_bid         = EXCLUDED.clob_down_bid,
+                        clob_down_ask         = EXCLUDED.clob_down_ask,
+                        binance_price         = EXCLUDED.binance_price,
+                        tiingo_open           = EXCLUDED.tiingo_open,
+                        tiingo_close          = EXCLUDED.tiingo_close,
+                        chainlink_price       = EXCLUDED.chainlink_price,
+                        delta_pct             = EXCLUDED.delta_pct,
+                        delta_tiingo          = EXCLUDED.delta_tiingo,
+                        delta_binance         = EXCLUDED.delta_binance,
+                        delta_chainlink       = EXCLUDED.delta_chainlink,
+                        delta_source          = EXCLUDED.delta_source,
+                        vpin                  = EXCLUDED.vpin,
+                        regime                = EXCLUDED.regime,
+                        clob_spread           = EXCLUDED.clob_spread,
+                        clob_mid              = EXCLUDED.clob_mid,
+                        v2_probability_up     = EXCLUDED.v2_probability_up,
+                        v2_direction          = EXCLUDED.v2_direction,
+                        v2_agrees             = EXCLUDED.v2_agrees,
+                        v2_high_conf          = EXCLUDED.v2_high_conf,
+                        v2_model_version      = EXCLUDED.v2_model_version,
+                        v2_quantiles          = EXCLUDED.v2_quantiles,
+                        v2_quantiles_at_close = EXCLUDED.v2_quantiles_at_close,
+                        gate_vpin_passed      = EXCLUDED.gate_vpin_passed,
+                        gate_delta_passed     = EXCLUDED.gate_delta_passed,
+                        gate_cg_passed        = EXCLUDED.gate_cg_passed,
+                        gate_twap_passed      = EXCLUDED.gate_twap_passed,
+                        gate_timesfm_passed   = EXCLUDED.gate_timesfm_passed,
+                        gate_passed           = EXCLUDED.gate_passed,
+                        gate_failed           = EXCLUDED.gate_failed,
+                        decision              = EXCLUDED.decision,
+                        twap_delta            = EXCLUDED.twap_delta,
+                        twap_direction        = EXCLUDED.twap_direction,
+                        twap_gamma_agree      = EXCLUDED.twap_gamma_agree,
+                        evaluated_at          = NOW()
+                    """,
+                    int(data.get("window_ts", 0)),
+                    data.get("asset", "BTC"),
+                    data.get("timeframe", "5m"),
+                    data.get("eval_offset"),
+                    float(data["clob_up_bid"]) if data.get("clob_up_bid") is not None else None,
+                    float(data["clob_up_ask"]) if data.get("clob_up_ask") is not None else None,
+                    float(data["clob_down_bid"]) if data.get("clob_down_bid") is not None else None,
+                    float(data["clob_down_ask"]) if data.get("clob_down_ask") is not None else None,
+                    float(data["binance_price"]) if data.get("binance_price") is not None else None,
+                    float(data["tiingo_open"]) if data.get("tiingo_open") is not None else None,
+                    float(data["tiingo_close"]) if data.get("tiingo_close") is not None else None,
+                    float(data["chainlink_price"]) if data.get("chainlink_price") is not None else None,
+                    float(data["delta_pct"]) if data.get("delta_pct") is not None else None,
+                    float(data["delta_tiingo"]) if data.get("delta_tiingo") is not None else None,
+                    float(data["delta_binance"]) if data.get("delta_binance") is not None else None,
+                    float(data["delta_chainlink"]) if data.get("delta_chainlink") is not None else None,
+                    data.get("delta_source"),
+                    float(data["vpin"]) if data.get("vpin") is not None else None,
+                    data.get("regime"),
+                    float(data["clob_spread"]) if data.get("clob_spread") is not None else None,
+                    float(data["clob_mid"]) if data.get("clob_mid") is not None else None,
+                    float(data["v2_probability_up"]) if data.get("v2_probability_up") is not None else None,
+                    data.get("v2_direction"),
+                    bool(data["v2_agrees"]) if data.get("v2_agrees") is not None else None,
+                    bool(data["v2_high_conf"]) if data.get("v2_high_conf") is not None else None,
+                    data.get("v2_model_version"),
+                    data.get("v2_quantiles"),  # JSONB (already serialized as JSON string)
+                    data.get("v2_quantiles_at_close"),  # JSONB
+                    bool(data["gate_vpin_passed"]) if data.get("gate_vpin_passed") is not None else None,
+                    bool(data["gate_delta_passed"]) if data.get("gate_delta_passed") is not None else None,
+                    bool(data["gate_cg_passed"]) if data.get("gate_cg_passed") is not None else None,
+                    bool(data["gate_twap_passed"]) if data.get("gate_twap_passed") is not None else None,
+                    bool(data["gate_timesfm_passed"]) if data.get("gate_timesfm_passed") is not None else None,
+                    bool(data.get("gate_passed", False)),
+                    data.get("gate_failed"),
+                    data.get("decision", "SKIP"),
+                    float(data["twap_delta"]) if data.get("twap_delta") is not None else None,
+                    data.get("twap_direction"),
+                    bool(data["twap_gamma_agree"]) if data.get("twap_gamma_agree") is not None else None
+                )
+        except Exception as exc:
+            log.warning("db.write_signal_evaluation_failed", error=str(exc)[:200])
+
+    # ── Post-Resolution AI Analysis ──────────────────────────────────────────
+
+    async def ensure_post_resolution_table(self) -> None:
+        """
+        Ensure post_resolution_analyses table exists (idempotent).
+        Also adds ai_post_analysis columns to window_snapshots if missing.
+        """
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS post_resolution_analyses (
+                        id                SERIAL PRIMARY KEY,
+                        window_ts         BIGINT NOT NULL,
+                        asset             VARCHAR(10) NOT NULL DEFAULT 'BTC',
+                        timeframe         VARCHAR(5)  NOT NULL DEFAULT '5m',
+                        oracle_direction  VARCHAR(4),
+                        n_ticks           INTEGER DEFAULT 0,
+                        missed_profit_usd DOUBLE PRECISION DEFAULT 0,
+                        blocked_loss_usd  DOUBLE PRECISION DEFAULT 0,
+                        cap_too_tight     BOOLEAN DEFAULT FALSE,
+                        gate_recommendation TEXT,
+                        ai_post_analysis  TEXT,
+                        analysed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE (window_ts, asset, timeframe)
+                    )
+                    """
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_pra_window_ts ON post_resolution_analyses(window_ts)"
+                )
+                # Also add summary columns to window_snapshots for quick access
+                for col, col_type in [
+                    ("ai_post_analysis", "TEXT"),
+                    ("missed_profit_usd", "DOUBLE PRECISION"),
+                    ("blocked_loss_usd", "DOUBLE PRECISION"),
+                    ("cap_too_tight", "BOOLEAN"),
+                    ("gate_recommendation", "TEXT"),
+                ]:
+                    await conn.execute(
+                        f"ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS {col} {col_type}"
+                    )
+            log.info("db.post_resolution_table_ensured")
+        except Exception as exc:
+            log.warning("db.ensure_post_resolution_table_failed", error=str(exc))
+
+    # ── Window Predictions (Tiingo + Chainlink at T-0) ───────────────────
+
+    async def ensure_window_predictions_table(self) -> None:
+        """Create window_predictions table for tracking predicted vs actual outcomes."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS window_predictions (
+                        window_ts         BIGINT NOT NULL,
+                        asset             VARCHAR(10) NOT NULL DEFAULT 'BTC',
+                        timeframe         VARCHAR(5)  NOT NULL DEFAULT '5m',
+                        tiingo_open       DOUBLE PRECISION,
+                        tiingo_close      DOUBLE PRECISION,
+                        chainlink_open    DOUBLE PRECISION,
+                        chainlink_close   DOUBLE PRECISION,
+                        tiingo_direction  VARCHAR(4),
+                        chainlink_direction VARCHAR(4),
+                        our_signal_direction VARCHAR(4),
+                        v2_direction      VARCHAR(4),
+                        v2_probability    DOUBLE PRECISION,
+                        vpin_at_close     DOUBLE PRECISION,
+                        regime            VARCHAR(15),
+                        trade_placed      BOOLEAN DEFAULT FALSE,
+                        our_direction     VARCHAR(4),
+                        our_entry_price   DOUBLE PRECISION,
+                        bid_unfilled      BOOLEAN DEFAULT FALSE,
+                        skip_reason       TEXT,
+                        oracle_winner     VARCHAR(4),
+                        tiingo_correct    BOOLEAN,
+                        chainlink_correct BOOLEAN,
+                        our_signal_correct BOOLEAN,
+                        created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE (window_ts, asset, timeframe)
+                    )
+                """)
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_wp_window_ts ON window_predictions(window_ts)"
+                )
+            log.info("db.window_predictions_table_ensured")
+        except Exception as exc:
+            log.warning("db.ensure_window_predictions_failed", error=str(exc))
+
+    async def write_window_prediction(self, data: dict) -> None:
+        """Write or update a window prediction record."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO window_predictions (
+                        window_ts, asset, timeframe,
+                        tiingo_open, tiingo_close,
+                        chainlink_open, chainlink_close,
+                        tiingo_direction, chainlink_direction,
+                        our_signal_direction, v2_direction, v2_probability,
+                        vpin_at_close, regime,
+                        trade_placed, our_direction, our_entry_price,
+                        bid_unfilled, skip_reason
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                    ON CONFLICT (window_ts, asset, timeframe) DO UPDATE SET
+                        tiingo_close = EXCLUDED.tiingo_close,
+                        chainlink_close = EXCLUDED.chainlink_close,
+                        tiingo_direction = EXCLUDED.tiingo_direction,
+                        chainlink_direction = EXCLUDED.chainlink_direction,
+                        our_signal_direction = EXCLUDED.our_signal_direction,
+                        v2_direction = EXCLUDED.v2_direction,
+                        v2_probability = EXCLUDED.v2_probability,
+                        vpin_at_close = EXCLUDED.vpin_at_close,
+                        regime = EXCLUDED.regime,
+                        trade_placed = EXCLUDED.trade_placed,
+                        our_direction = EXCLUDED.our_direction,
+                        our_entry_price = EXCLUDED.our_entry_price,
+                        bid_unfilled = EXCLUDED.bid_unfilled,
+                        skip_reason = EXCLUDED.skip_reason
+                """,
+                    int(data.get("window_ts", 0)),
+                    data.get("asset", "BTC"),
+                    data.get("timeframe", "5m"),
+                    data.get("tiingo_open"),
+                    data.get("tiingo_close"),
+                    data.get("chainlink_open"),
+                    data.get("chainlink_close"),
+                    data.get("tiingo_direction"),
+                    data.get("chainlink_direction"),
+                    data.get("our_signal_direction"),
+                    data.get("v2_direction"),
+                    data.get("v2_probability"),
+                    data.get("vpin_at_close"),
+                    data.get("regime"),
+                    data.get("trade_placed", False),
+                    data.get("our_direction"),
+                    data.get("our_entry_price"),
+                    data.get("bid_unfilled", False),
+                    data.get("skip_reason"),
+                )
+        except Exception as exc:
+            log.warning("db.write_window_prediction_failed", error=str(exc)[:120])
+
+    async def update_window_prediction_outcome(self, window_ts: int, asset: str,
+                                                oracle_winner: str) -> None:
+        """After oracle resolution, update the prediction with actual outcome."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                _winner = oracle_winner.upper()
+                await conn.execute("""
+                    UPDATE window_predictions SET
+                        oracle_winner = $4::varchar,
+                        tiingo_correct = (tiingo_direction = $4::varchar),
+                        chainlink_correct = (chainlink_direction = $4::varchar),
+                        our_signal_correct = (our_signal_direction = $4::varchar)
+                    WHERE window_ts = $1 AND asset = $2 AND timeframe = $3
+                """, window_ts, asset, "5m", oracle_winner.upper())
+        except Exception as exc:
+            log.warning("db.update_prediction_outcome_failed", error=str(exc)[:120])
+
+    async def store_post_resolution_analysis(self, result: dict) -> None:
+        """
+        Persist post-resolution AI analysis to DB.
+
+        Writes to post_resolution_analyses table and also updates window_snapshots
+        with summary columns for quick dashboard access.
+        """
+        if not self._pool:
+            return
+        try:
+            window_ts = int(result["window_ts"])
+            asset = result.get("asset", "BTC")
+            timeframe = result.get("timeframe", "5m")
+            oracle_direction = result.get("oracle_direction")
+            n_ticks = int(result.get("n_ticks", 0))
+            missed_profit = float(result.get("missed_profit_usd", 0.0))
+            blocked_loss = float(result.get("blocked_loss_usd", 0.0))
+            cap_too_tight = bool(result.get("cap_too_tight", False))
+            gate_rec = result.get("gate_recommendation")
+            ai_text = result.get("ai_post_analysis", "")
+
+            async with self._pool.acquire() as conn:
+                # Upsert into post_resolution_analyses
+                await conn.execute(
+                    """
+                    INSERT INTO post_resolution_analyses (
+                        window_ts, asset, timeframe,
+                        oracle_direction, n_ticks,
+                        missed_profit_usd, blocked_loss_usd,
+                        cap_too_tight, gate_recommendation, ai_post_analysis
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    ON CONFLICT (window_ts, asset, timeframe) DO UPDATE SET
+                        oracle_direction  = EXCLUDED.oracle_direction,
+                        n_ticks           = EXCLUDED.n_ticks,
+                        missed_profit_usd = EXCLUDED.missed_profit_usd,
+                        blocked_loss_usd  = EXCLUDED.blocked_loss_usd,
+                        cap_too_tight     = EXCLUDED.cap_too_tight,
+                        gate_recommendation = EXCLUDED.gate_recommendation,
+                        ai_post_analysis  = EXCLUDED.ai_post_analysis,
+                        analysed_at       = NOW()
+                    """,
+                    window_ts, asset, timeframe,
+                    oracle_direction, n_ticks,
+                    missed_profit, blocked_loss,
+                    cap_too_tight, gate_rec, ai_text[:4000] if ai_text else None,
+                )
+                # Update summary columns in window_snapshots
+                await conn.execute(
+                    """
+                    UPDATE window_snapshots
+                    SET ai_post_analysis  = $1,
+                        missed_profit_usd = $2,
+                        blocked_loss_usd  = $3,
+                        cap_too_tight     = $4,
+                        gate_recommendation = $5
+                    WHERE window_ts = $6 AND asset = $7 AND timeframe = $8
+                    """,
+                    ai_text[:4000] if ai_text else None,
+                    missed_profit,
+                    blocked_loss,
+                    cap_too_tight,
+                    gate_rec,
+                    window_ts, asset, timeframe,
+                )
+            log.debug(
+                "db.post_resolution_stored",
+                window_ts=window_ts,
+                missed=f"+${missed_profit:.2f}",
+                avoided=f"-${blocked_loss:.2f}",
+                cap_too_tight=cap_too_tight,
+            )
+        except Exception as exc:
+            log.warning("db.store_post_resolution_failed", error=str(exc)[:120])
+
+    async def get_eval_ticks_for_window(
+        self,
+        window_ts: int,
+        asset: str,
+        timeframe: str,
+    ) -> list:
+        """
+        Fetch all evaluation ticks for a window from gate_audit table.
+        Falls back to constructing from window_eval_history if gate_audit is empty.
+        """
+        if not self._pool:
+            return []
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        eval_offset        AS offset,
+                        skip_reason,
+                        vpin,
+                        delta_pct,
+                        regime,
+                        gate_failed,
+                        gate_passed,
+                        decision
+                    FROM gate_audit
+                    WHERE window_ts = $1
+                      AND asset     = $2
+                      AND timeframe = $3
+                    ORDER BY eval_offset DESC NULLS LAST
+                    """,
+                    window_ts, asset, timeframe,
+                )
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            log.debug("db.get_eval_ticks_failed", error=str(exc)[:80])
+            return []

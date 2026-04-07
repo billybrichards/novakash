@@ -1,0 +1,160 @@
+# CHANGELOG — April 7, 2026
+
+## Session Results
+
+```
+Starting wallet:  $130.82 USDC
+Ending wallet:    $164.16 USDC
+PROFIT:           +$33.34 (+25.5%)
+
+Resolved: 40 trades (28W/12L — 70.0% WR)
+Expired:  47 orders (unfilled, zero cost)
+Open:     0
+```
+
+## Timeline
+
+### Phase 1: v8.0→v8.1 Deployment (20:21–01:00 UTC, Apr 6-7)
+- 15+ bugs found and fixed in execution path
+- FOK ladder, GTC fallback, multi-offset eval deployed
+- v2.2 gate extended to ALL offsets
+
+### Phase 2: Pre-Fix Trading (00:00–09:50 UTC)
+- **23W/9L (71.9% WR)**
+- ALL fills at ~$0.73 due to ORDER_PRICING_MODE=cap + V81_CAP_T240=0.73 in .env
+- Avg win: +$2.90, Avg loss: -$8.50
+- v8_standard trades (no v2.2 gate) accounted for 7/9 losses
+
+### Phase 3: Pricing Fix (09:50 UTC)
+Root cause found: hidden `.env` on Montreal overriding dynamic caps.
+- `V81_CAP_T240=0.73` → fixed to `0.55`
+- `ORDER_PRICING_MODE=cap` → removed (dead code now)
+- FOK decimal precision fixed (was 100% failure rate)
+- Fill price calc fixed (was stake/shares, now uses limit price)
+- RFQ cap fixed (was hardcoded, now uses dynamic cap)
+
+### Phase 4: Post-Fix Trading (09:50–13:10 UTC)
+- **6W/4L (60% WR)** — lower WR but much better economics
+- Avg win: +$5.85 (2x improvement from $2.90)
+- Fills at $0.65 instead of $0.73
+- All 3 T-70 losses were NORMAL regime (weakest signals)
+
+### Phase 6: NORMAL Gate at T-70/T-60 (13:19 UTC)
+- **v8.1.1:** Block NORMAL regime (VPIN < 0.55) at T-70 and T-60
+- 3 post-fix losses were NORMAL at T-70 (VPIN 0.49, 0.54, 0.49)
+
+### Phase 7: NORMAL Gate Extended to ALL Late Offsets (16:10 UTC)
+- **v8.1.2:** Block NORMAL (VPIN < 0.55) at ALL offsets <120 (was only T-70/T-60)
+- 4th NORMAL loss at T-100 (VPIN 0.487) prompted the extension
+- Would have saved $48.60 across 4 losses today
+- Deployed commit `5eff911`
+
+### Phase 8: Data Persistence + Backfill (15:20 UTC)
+- Fill data now persists to DB after CLOB poll (was in-memory only, lost on restart)
+- Unfilled orders marked EXPIRED (were stuck as OPEN forever)
+- Backfilled 11 trades with missing fill data from cap prices
+- Cleaned 183 stale OPEN trades from old engine runs
+- SITREP W/L queries from midnight (was rolling 24h pulling yesterday's trades)
+
+### Phase 5: Chrome Kill (12:40 UTC)
+- Discovered Google Chrome running since Apr 4 with Polymarket open on VNC
+- Chrome's Polymarket session was creating additional positions on the same wallet
+- Killed Chrome — wallet jumped from $79 to $164 as positions resolved
+- Now only our engine trades on the wallet
+
+## Commits (develop branch)
+
+| Commit | Description |
+|--------|-------------|
+| `6f232d2` | FOK decimal precision + GTC uses dynamic cap |
+| `78110de` | gate_audit type mismatch fix |
+| `2ce445e` | trade_placed flag in actual execute path |
+| `54a477d` | Cap bands: T-70=$0.73, T-240=$0.55 |
+| `d10bbdb` | 8x-pricing-execution docs |
+| `089c56e` | Post-fix analysis report |
+| `1496d9e` | RFQ dynamic cap + GTC fill notification + session reload |
+| `bfd50ac` | Result notification uses DB not Polymarket aggregate |
+| `1a3308a` | Fill price calc (limit price, not stake/shares) |
+| `01215ec` | Notification accuracy (real caps, no Gamma) |
+| `bb2c9d7` | SITREP W/L from DB (survives restarts) |
+| `3896fca` | Notification TODOs doc |
+| `c248fdc` | v8.1.1: NORMAL gate at T-70/T-60 |
+| `1cb1bcc` | Enhanced SITREP with recent trades + pending |
+| `4cc8e72` | SITREP shows recent skips with reason |
+| `f8ff7e4` | SITREP trade IDs (window close time) |
+| `475e125` | Fill data persists to DB + midnight W/L query |
+| `5eff911` | v8.1.2: NORMAL gate ALL late offsets + trade analysis doc |
+| `41cf0d0` | PDFs added to analyses/ |
+
+## Gate & Cap Config (LIVE as of 16:10 UTC — v8.1.2)
+
+```
+Offset          Cap     VPIN Requirement        Applied Since
+T-240..T-180    $0.55   CASCADE (≥0.65)         09:50 UTC
+T-170..T-120    $0.60   CASCADE (≥0.65)         09:50 UTC
+T-110..T-80     $0.65   TRANSITION+ (≥0.55)     16:10 UTC ← v8.1.2
+T-70..T-60      $0.73   TRANSITION+ (≥0.55)     13:19 UTC (v8.1.1→v8.1.2)
+```
+
+All offsets require v2.2 HIGH confidence + direction agreement.
+Early offsets (≥120) additionally require CASCADE + delta≥5bp for DECISIVE.
+ALL late offsets (<120) require TRANSITION+ (VPIN≥0.55) — v8.1.2.
+
+**Skip reason format:** `v8.1.2: NORMAL at T-{offset} (VPIN {value} < 0.55)`
+
+### v8.1.2 vs v8.1.1 comparison
+- v8.1.1: only blocked NORMAL at T-70/T-60 (offset <= 70)
+- v8.1.2: blocks NORMAL at ALL late offsets (<120, i.e. T-110 through T-60)
+- Impact: catches the T-100 NORMAL loss (11:18, -$9.26) that v8.1.1 missed
+
+## Loss Prevention Analysis
+
+Of 12 losses, **5 would have been BLOCKED** by today's v2.2 gate fix:
+
+| Time | Stake | Reason | Prevention |
+|------|-------|--------|-----------|
+| 01:28 | $8.35 | `v8_standard` — no v2.2 gate | ✅ BLOCKED |
+| 02:28 | $9.19 | `v8_standard` — no v2.2 gate | ✅ BLOCKED |
+| 02:53 | $8.50 | `v8_standard` — no v2.2 gate | ✅ BLOCKED |
+| 03:29 | $8.62 | `v8_standard` — NORMAL, no v2.2 | ✅ BLOCKED |
+| 03:54 | $8.43 | `v8_standard` — NORMAL, no v2.2 | ✅ BLOCKED |
+| | **$43.09 saved** | | |
+
+**2 more should be blocked** (next iteration):
+
+| Time | Stake | Reason | Suggestion |
+|------|-------|--------|-----------|
+| 10:33 | $12.40 | NORMAL (VPIN 0.49) at T-70 | Block NORMAL at T-70/T-60 |
+| 11:14 | $14.20 | NORMAL (VPIN 0.54) at T-70 | Block NORMAL at T-70/T-60 |
+| | **$26.60 saveable** | | |
+
+**5 losses legitimate** — CASCADE/TRANSITION with v2.2 agreeing. Market was wrong.
+
+**Ceiling if all 7 prevented:** +$33.34 + $43.09 + $26.60 = **+$103.03**
+
+## DB Table Health (verified 12:50 UTC)
+
+| Table | Status | Detail |
+|-------|--------|--------|
+| gate_audit | ✅ | 213 rows/hr, 13 windows, offsets 60-240 |
+| window_snapshots | ✅ | 12/hr, trades + skips + resolutions |
+| telegram_notifications | ✅ | 44/hr, 8 notification types |
+| trades | ✅ | entry_reason, v81_entry_cap, clob_order_id on all |
+| post_resolution_analyses | ✅ | AI analysis after each window |
+| ticks_clob | ✅ | CLOB prices every 2s |
+
+## Known Issues
+
+1. **DB pnl_usd unreliable** — pre-fix values used wrong fill price calc. Wallet is ground truth.
+2. **NORMAL regime at T-70** — both post-fix losses were VPIN 0.49/0.54. Consider requiring TRANSITION+ at late offsets.
+3. **Gamma ↑$0.500 ↓$0.500** still shows in window header — cosmetic, not used for pricing.
+4. ~~STARTING_BANKROLL in .env~~ — updated to $164.16 ✅
+
+## Files on Develop
+
+- `docs/CHANGELOG-apr7.md` — this file
+- `docs/8x-pricing-execution.md` — execution audit + resolution
+- `docs/analyses/2026-04-07-overnight-session.md` — overnight analysis
+- `docs/analyses/2026-04-07-pricing-fix-report.md` — post-fix report
+- `docs/LIVE_DATA_RULES.md` — data analysis rules for all agents
+- `docs/TODO-notifications.md` — notification fix tracker (10 fixed, 5 remaining)

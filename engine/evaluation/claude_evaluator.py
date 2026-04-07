@@ -95,13 +95,7 @@ class ClaudeEvaluator:
 {self._format_cg(cg_snapshot)}
 
 ## Your Analysis
-Evaluate in 3-4 sentences:
-1. Was the direction call correct based on the data?
-2. Any contradictions between signals (VPIN vs CG data vs delta)?
-3. Was the entry price reasonable?
-4. What would you have done differently?
-
-Be concise and objective. No hedging — give a clear verdict."""
+2-3 sentences: Was the direction call justified? Key risk factor."""
 
         try:
             analysis = await self._call_claude(prompt)
@@ -123,10 +117,13 @@ Be concise and objective. No hedging — give a clear verdict."""
                     else:
                         status_label = "⏳ PLACED"
                     
+                    # v8.1: Show cap price (what we submitted), not Gamma (stale/indicative)
+                    _cap = signal.get("v81_entry_cap", 0.73) if isinstance(signal, dict) else getattr(signal, "v81_entry_cap", 0.73)
+                    _reason = signal.get("entry_reason", "") if isinstance(signal, dict) else getattr(signal, "entry_reason", "")
                     msg = (
                         f"{emoji} *AI Assessment — {asset} {timeframe} {status_label}*\n"
                         f"Direction: {direction} | δ={delta_pct:+.4f}% | VPIN={vpin:.3f}\n"
-                        f"Gamma: ${gamma_bestask:.2f} [{price_source}] | Entry: ${token_price:.4f}\n\n"
+                        f"Limit: `${_cap:.2f}` | {_reason}\n\n"
                         f"{_escape_telegram_md(analysis)}"
                     )
                     try:
@@ -235,7 +232,7 @@ In 2-3 sentences: Was this a good trade regardless of outcome? Did the signals s
         }
         payload = {
             "model": "claude-sonnet-4-20250514",
-            "max_tokens": 300,
+            "max_tokens": 200,
             "messages": [{"role": "user", "content": prompt}],
         }
         

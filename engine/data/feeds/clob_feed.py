@@ -7,7 +7,7 @@ Gamma API's bestAsk can be stale/smoothed. CLOB is live.
 
 MUST run on Montreal only (Polymarket geo-blocked elsewhere).
 
-Polls every 10 seconds per active window (rate-limited to avoid CLOB spam).
+Polls every 2 seconds (configurable via CLOB_POLL_INTERVAL env var).
 Stores to ticks_clob table.
 """
 
@@ -22,7 +22,7 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-POLL_INTERVAL = 10  # seconds — CLOB book doesn't change faster than this for 5-min markets
+POLL_INTERVAL = int(os.environ.get("CLOB_POLL_INTERVAL", "2"))  # seconds — need fresh prices for FOK/GTC
 
 
 class CLOBFeed:
@@ -75,14 +75,16 @@ class CLOBFeed:
             client = self._poly._clob_client
 
             # Fetch UP token book
+            # CLOB asks are sorted DESCENDING — best (lowest) ask is LAST
+            # CLOB bids are sorted DESCENDING — best (highest) bid is FIRST
             up_book = await asyncio.to_thread(client.get_order_book, window.up_token_id)
             up_best_bid = float(up_book.bids[0].price) if up_book.bids else None
-            up_best_ask = float(up_book.asks[0].price) if up_book.asks else None
+            up_best_ask = float(sorted(up_book.asks, key=lambda x: float(x.price))[0].price) if up_book.asks else None
 
             # Fetch DOWN token book
             down_book = await asyncio.to_thread(client.get_order_book, window.down_token_id)
             down_best_bid = float(down_book.bids[0].price) if down_book.bids else None
-            down_best_ask = float(down_book.asks[0].price) if down_book.asks else None
+            down_best_ask = float(sorted(down_book.asks, key=lambda x: float(x.price))[0].price) if down_book.asks else None
 
             up_spread = (up_best_ask - up_best_bid) if (up_best_ask and up_best_bid) else None
             down_spread = (down_best_ask - down_best_bid) if (down_best_ask and down_best_bid) else None

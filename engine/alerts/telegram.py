@@ -135,7 +135,7 @@ class TelegramAlerter:
         gamma_up: float = None,
         gamma_down: float = None,
     ) -> tuple:
-        """Send MANDATORY trade decision + optional AI analysis (separated)."""
+        """v8.0 Window Evaluation Card — TRADE or SKIP with full source attribution."""
         from datetime import datetime, timezone
         
         window_time = "?"
@@ -152,57 +152,284 @@ class TelegramAlerter:
         regime = signal.get("regime", "?")
         mode = self._mode_tag()
         
-        live_warn = "\n⚠️ *REAL MONEY ORDER WILL BE PLACED*\n" if not self._paper_mode and decision == "TRADE" else ""
+        # v8.0 multi-source data
+        delta_source = signal.get("delta_source", "?")
+        delta_tiingo = signal.get("delta_tiingo")
+        delta_binance = signal.get("delta_binance")
+        delta_chainlink = signal.get("delta_chainlink")
+        tiingo_close = signal.get("tiingo_close")
+        chainlink_price = signal.get("chainlink_price")
+        binance_price = signal.get("binance_price")
+        gates_passed = signal.get("gates_passed", "")
+        gate_failed = signal.get("gate_failed")
+        confidence_tier = signal.get("confidence_tier", "?")
+        macro_bias = signal.get("macro_bias", "N/A")
+        macro_confidence = signal.get("macro_confidence", "")
         
-        # Gamma + fill likelihood
-        gamma_line = ""
-        fill_line = ""
-        if gamma_up is not None and gamma_down is not None:
-            entry = gamma_down if direction in ("DOWN", "NO") else gamma_up
-            cap = 0.73
-            floor = 0.30
-            if entry < floor:
-                fill_line = f"⛔ FLOOR BLOCKED (${entry:.2f} < ${floor})\n"
-            elif entry > cap:
-                fill_line = f"⛔ CAP BLOCKED (${entry:.2f} > ${cap})\n"
+        # Build source prices line
+        prices = []
+        if tiingo_close: prices.append(f"TI=${tiingo_close:,.0f}")
+        if chainlink_price: prices.append(f"CL=${chainlink_price:,.0f}")
+        if binance_price: prices.append(f"BN=${binance_price:,.0f}")
+        prices_line = " | ".join(prices) if prices else "N/A"
+        
+        # Build gates line — only show signal gates (VPIN, DELTA, CG)
+        # Floor/Cap from Gamma are indicative only, not real CLOB book
+        gate_icons = ""
+        for g in ["vpin", "delta", "cg"]:
+            if gate_failed and g == gate_failed:
+                gate_icons += f"❌{g.upper()} "
+            elif g in (gates_passed or ""):
+                gate_icons += f"✅{g.upper()} "
+        if not gate_icons:
+            gate_icons = "N/A"
+        
+        # Real CLOB book price + Gamma indicative
+        entry_line = ""
+        clob_up = signal.get("clob_up_ask")
+        clob_dn = signal.get("clob_down_ask")
+        if clob_up or clob_dn:
+            _clob_entry = clob_dn if direction in ("DOWN", "NO") else clob_up
+            if _clob_entry and _clob_entry < 10:  # sanity check
+                _clob_rr = (1 - _clob_entry) / _clob_entry if _clob_entry > 0 else 0
+                entry_line = f"📊 CLOB: ↑`${clob_up:.3f}` ↓`${clob_dn:.3f}`"
+                if 0.30 <= _clob_entry <= 0.73:
+                    entry_line += f" | R/R `1:{_clob_rr:.1f}`\n"
+                elif _clob_entry > 0.73:
+                    entry_line += f" ⛔ >`$0.73`\n"
+                else:
+                    entry_line += f" ⛔ <`$0.30`\n"
             else:
-                rr = (1 - entry) / entry if entry > 0 else 0
-                fill_line = f"💰 Entry: `${entry:.3f}` | R/R: `1:{rr:.1f}` | Will place at `${entry + 0.02:.3f}`\n"
-            gamma_line = f"Gamma: ↑`${gamma_up:.3f}` ↓`${gamma_down:.3f}`\n"
+                entry_line = f"📊 CLOB: no book\n"
+        elif gamma_up is not None and gamma_down is not None:
+            entry = gamma_down if direction in ("DOWN", "NO") else gamma_up
+            rr = (1 - entry) / entry if entry > 0 else 0
+            entry_line = f"💱 Gamma: `${entry:.3f}` R/R `1:{rr:.1f}` _(indicative)_\n"
         
+        # Delta display with source
+        delta_str = f"{delta:+.4f}%" if delta else "?"
+        src_short = delta_source.replace("_rest_candle", "").replace("_db_tick", "(db)").replace("_fallback", "(fb)")
+        
+        emoji = "🎯" if decision == "TRADE" else "⏭"
+        
+        # v8.1 early entry info
+        _eval_offset = signal.get("eval_offset")
+        _entry_reason = signal.get("entry_reason", "v8_standard")
+        _v2_p = signal.get("v2_probability_up")
+        _v2_dir = signal.get("v2_direction")
+        _v2_agrees = signal.get("v2_agrees")
+        _v81_cap = signal.get("v81_entry_cap")
+
+        v81_line = ""
+        if _v2_p is not None:
+            _v2_conf = "HIGH" if (_v2_p > 0.65 or _v2_p < 0.35) else "LOW"
+            _agree_icon = "✅" if _v2_agrees else "❌"
+            v81_line = (
+                f"🔮 v2.2: P(UP)=`{_v2_p:.3f}` → `{_v2_dir}` {_agree_icon} "
+                f"({_v2_conf})\n"
+            )
+
+        offset_line = ""
+        if _eval_offset and _eval_offset != 60:
+            offset_line = f"⏱ Entry: `T-{_eval_offset}s` | cap `${_v81_cap:.2f}`\n" if _v81_cap else f"⏱ Entry: `T-{_eval_offset}s`\n"
+
         decision_text = (
-            f"{'🎯' if decision == 'TRADE' else '⏭'} *{decision}* — Window {window_time}  {mode}\n"
-            f"`{window_id}`\n{live_warn}\n"
-            f"Direction: `{direction}`\n"
-            f"Delta: `{delta:+.4f}%`\n"
-            f"VPIN: `{vpin:.3f}` — `{regime}`\n"
-            f"{gamma_line}"
-            f"{fill_line}"
+            f"{emoji} *{decision}* — BTC 5m | {window_time} | {self._engine_version}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 Signal: `{direction}` | {src_short} Δ `{delta_str}`\n"
+            f"📈 VPIN: `{vpin:.3f}` | `{regime}`\n"
+            f"🔗 {prices_line}\n"
+            f"{entry_line}"
+            f"{v81_line}"
+            f"{offset_line}"
+            f"🧠 Macro: `{macro_bias}` `{macro_confidence}`"
+            f"{' — ' + signal.get('macro_gate', '') if signal.get('macro_gate') else ''}\n"
+            f"\n⚡ Gates: {gate_icons}\n"
+            f"🎖 Confidence: `{confidence_tier}`\n"
         )
-        if reason:
-            decision_text += f"Reason: _{reason}_\n"
+        
+        if decision == "SKIP" and reason:
+            decision_text += f"\n❌ _{reason[:200]}_\n"
+        
+        if not self._paper_mode and decision == "TRADE":
+            decision_text += f"\n🟢 *ORDER SENT → awaiting fill*  {mode}\n"
         
         decision_msg_id = await self._send_with_id(decision_text)
+        await self._log_notification("trade_decision_v8", decision_text, f"{window_id}", telegram_message_id=decision_msg_id)
         
-        # AI analysis (separate, can timeout without blocking)
+        # AI analysis (shorter in v8.0 — 1 sentence max)
         analysis_msg_id = None
         if decision == "TRADE":
             try:
                 prompt = (
-                    f"BTC 5-min trade decision. Direction: {direction}. "
-                    f"Delta: {delta:+.4f}%. VPIN: {vpin:.3f} ({regime}). "
-                    f"In 1-2 sentences: likelihood of win, key risks?"
+                    f"BTC 5m {direction} trade. Tiingo Δ{delta_str}, VPIN {vpin:.2f} ({regime}). "
+                    f"Source: {delta_source}. 1 sentence: win probability + key risk."
                 )
-                ai_text, ai_source = await self._ai.assess(prompt, timeout_s=8)
-                analysis_card = (
-                    f"🤖 *AI Assessment* — `{ai_source.upper()}`\n"
-                    f"_{ai_text}_\n"
-                )
+                ai_text, ai_source = await self._ai.assess(prompt, timeout_s=6)
+                analysis_card = f"🤖 `{ai_source.upper()}` — _{ai_text[:300]}_"
                 analysis_msg_id = await self._send_with_id(analysis_card)
             except Exception as exc:
                 self._log.warning("ai.decision_analysis_failed", error=str(exc)[:100])
         
         return decision_msg_id, analysis_msg_id
+
+    # ── Consolidated Window Summary (replaces 19 individual skip alerts) ────────
+
+    async def send_window_summary(
+        self,
+        window_id: str,
+        eval_history: list,
+        traded: bool = False,
+        trade_offset: int = None,
+    ) -> Optional[int]:
+        """
+        Send one consolidated summary card per window instead of one alert per eval tick.
+
+        If traded=False: shows ALL SKIPPED with grouped skip reasons.
+        If traded=True:  shows TRADE at trade_offset with condensed skip summary.
+        """
+        if not eval_history:
+            return None
+
+        # Parse window time from window_id (format: "BTC-1712345678")
+        window_time = "?"
+        asset = "BTC"
+        try:
+            parts = window_id.split("-", 1)
+            asset = parts[0]
+            ts = int(parts[1])
+            window_time = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%H:%M UTC")
+        except Exception:
+            pass
+
+        n_evals = len(eval_history)
+
+        # Use data from the most recent (lowest offset) entry for headline metrics
+        latest = sorted(eval_history, key=lambda x: x.get("offset") or 9999)[0]
+        vpin = latest.get("vpin") or 0.0
+        delta_pct = latest.get("delta_pct") or 0.0
+        regime = latest.get("regime") or "?"
+        v2_p = latest.get("v2_p")
+        v2_dir = latest.get("v2_dir") or "?"
+        v2_agrees = latest.get("v2_agrees")
+        confidence = latest.get("confidence") or "?"
+
+        # Build v2.2 line
+        if v2_p is not None:
+            _v2_pct = int(round(v2_p * 100))
+            _agree_icon = "✅ AGREE" if v2_agrees else "❌ DISAGREE"
+            v2_line = f"🔮 v2.2: `{v2_dir}` `{_v2_pct}%` | v8: `{('UP' if delta_pct > 0 else 'DOWN')}` — {_agree_icon}\n"
+        else:
+            v2_line = ""
+
+        regime_emoji = {"CASCADE": "🌊", "TRANSITION": "🔄", "NORMAL": "📊", "CALM": "😴"}.get(regime, "📊")
+        delta_str = f"{delta_pct:+.4f}%" if delta_pct else "?"
+
+        # ── Group consecutive skip reasons ────────────────────────────────────
+        def _group_reasons(history: list) -> list[str]:
+            """Collapse consecutive same-reason entries into T-X..T-Y ranges."""
+            if not history:
+                return []
+            # Sort by offset descending (T-240 first)
+            sorted_h = sorted(history, key=lambda x: x.get("offset") or 0, reverse=True)
+            groups = []
+            current_reason = None
+            current_start = None
+            current_end = None
+            for entry in sorted_h:
+                offset = entry.get("offset")
+                raw_reason = entry.get("skip_reason") or "unknown"
+                # Normalise reason for grouping: strip offset-specific details
+                # e.g. "v8.1: not CASCADE (VPIN 0.612 < 0.65) at T-240" → "not CASCADE"
+                reason_key = raw_reason
+                if " at T-" in reason_key:
+                    reason_key = reason_key[:reason_key.rfind(" at T-")].strip()
+                # Also normalise CLOB values: "CLOB CAP: UP ask $0.57 > $0.55" → "CLOB cap"
+                if "CLOB CAP" in reason_key.upper():
+                    # Extract the ask price for display
+                    try:
+                        _ask_part = reason_key.split("ask $")[1].split(" >")[0]
+                        _cap_part = reason_key.split("> $")[1].split()[0] if "> $" in reason_key else "?"
+                        reason_key = f"CLOB cap (${_ask_part} > ${_cap_part})"
+                    except Exception:
+                        reason_key = "CLOB cap"
+                elif "CLOB FLOOR" in reason_key.upper():
+                    reason_key = "CLOB floor"
+                # Shorten common patterns
+                elif "v8.1: not CASCADE" in reason_key:
+                    _vpin_val = None
+                    try:
+                        _vpin_val = reason_key.split("VPIN ")[1].split(")")[0]
+                    except Exception:
+                        pass
+                    reason_key = f"not CASCADE (VPIN {_vpin_val})" if _vpin_val else "not CASCADE"
+                elif "v8.1: delta too weak" in reason_key:
+                    reason_key = "delta too weak"
+                elif "v2.2 DISAGREES" in reason_key:
+                    reason_key = "v2.2 disagrees"
+                elif "v2.2 LOW conf" in reason_key:
+                    reason_key = "v2.2 low conf"
+                elif "VPIN" in reason_key and "< gate" in reason_key:
+                    reason_key = "VPIN below gate"
+                elif "TWAP GATE" in reason_key:
+                    reason_key = "TWAP gate"
+                elif "CG VETO" in reason_key.upper():
+                    reason_key = "CG veto"
+                elif "Gates passed but signal None" in reason_key:
+                    reason_key = "signal None"
+
+                if reason_key != current_reason:
+                    if current_reason is not None:
+                        if current_start == current_end:
+                            groups.append(f"T-{current_start}: {current_reason}")
+                        else:
+                            groups.append(f"T-{current_start}..T-{current_end}: {current_reason}")
+                    current_reason = reason_key
+                    current_start = offset
+                    current_end = offset
+                else:
+                    current_end = offset
+
+            if current_reason is not None:
+                if current_start == current_end:
+                    groups.append(f"T-{current_start}: {current_reason}")
+                else:
+                    groups.append(f"T-{current_start}..T-{current_end}: {current_reason}")
+            return groups
+
+        reason_groups = _group_reasons(eval_history)
+
+        # ── Format the card ───────────────────────────────────────────────────
+        if not traded:
+            # ALL SKIPPED card
+            skip_reasons_text = "\n".join(f"  {r}" for r in reason_groups) if reason_groups else "  (unknown)"
+            msg = (
+                f"📋 *{asset} 5m* | {window_time} | {self._engine_version}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Evaluated: `{n_evals}` offsets — *ALL SKIPPED*\n"
+                f"{v2_line}"
+                f"📈 VPIN: `{vpin:.3f}` {regime_emoji} `{regime}` | Δ `{delta_str}`\n"
+                f"🎖 Confidence: `{confidence}`\n"
+                f"\n*Skip reasons:*\n{skip_reasons_text}\n"
+            )
+        else:
+            # TRADED card — show prior skips in compact form
+            n_skipped = n_evals  # history only contains skips
+            skip_reasons_compact = ", ".join(reason_groups) if reason_groups else "none"
+            trade_line = f"🎯 TRADE at T-{trade_offset}" if trade_offset else "🎯 TRADE"
+            msg = (
+                f"📋 *{asset} 5m* | {window_time} | {self._engine_version}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Evaluated: `{n_evals + 1}` offsets | {trade_line}\n"
+                f"{v2_line}"
+                f"📈 VPIN: `{vpin:.3f}` {regime_emoji} `{regime}` | Δ `{delta_str}`\n"
+                f"🎖 Confidence: `{confidence}`\n"
+                f"\nSkipped `{n_skipped}`: _{skip_reasons_compact}_\n"
+            )
+
+        msg_id = await self._send_with_id(msg)
+        await self._log_notification("window_summary", msg, window_id, telegram_message_id=msg_id)
+        return msg_id
 
     # ── Clean 5-Stage Lifecycle Notifications ─────────────────────────────────
 
@@ -359,36 +586,31 @@ class TelegramAlerter:
         gamma_at_decision: Gamma at T-70 for comparison
         """
         try:
-            mode = self._mode_tag()
             direction = "DOWN" if getattr(order, "direction", "") == "NO" else "UP"
             stake = getattr(order, "stake_usd", 0)
-            oid = getattr(order, "order_id", "?")
             cost = fill_price * shares
             rr = round((1 - fill_price) / fill_price, 1) if fill_price > 0 else 0
             profit_if_win = round((1 - fill_price) * shares * 0.98, 2)
 
-            lines = [
-                f"💰 *ORDER FILLED*  {mode}",
-                f"`{oid[:24]}...`",
-                f"",
-                f"Direction: `{direction}`",
-                f"Fill: `${fill_price:.4f}` × `{shares:.2f}` shares",
-                f"Cost: `${cost:.2f}` | Stake: `${stake:.2f}`",
-                f"R/R: `1:{rr}` | If WIN: `+${profit_if_win:.2f}`",
-            ]
+            # v8.0 FOK metadata
+            fok_step = getattr(order, "fok_fill_step", None)
+            fok_attempts = getattr(order, "fok_attempts", None)
+            delta_source = getattr(order, "delta_source", "?")
+            src_short = delta_source.replace("_rest_candle", "").replace("_db_tick", "(db)") if delta_source else "?"
 
-            if gamma_at_fill and gamma_at_decision:
-                gf = gamma_at_fill.get("gamma_down" if direction == "DOWN" else "gamma_up", fill_price)
-                gd = gamma_at_decision.get("gamma_down" if direction == "DOWN" else "gamma_up", fill_price)
-                diff = gf - gd
-                lines.append(f"Gamma @ fill `${gf:.3f}` vs decision `${gd:.3f}` ({diff:+.3f})")
+            fok_line = ""
+            if fok_step is not None and fok_attempts is not None:
+                fok_line = f"⚡ FOK step `{fok_step}/{fok_attempts}`\n"
 
-            if ai_text:
-                lines += ["", f"🤖 _{ai_text}_"]
-
-            lines += ["", self._footer()]
-
-            text = "\n".join(lines)
+            text = (
+                f"💰 *FILLED* — BTC 5m {direction} | {self._engine_version}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Fill: `${fill_price:.4f}` × `{shares:.2f}` shares\n"
+                f"Cost: `${cost:.2f}` | R/R `1:{rr}`\n"
+                f"If WIN: `+${profit_if_win:.2f}`\n"
+                f"{fok_line}"
+                f"Source: `{src_short}` | Mode: `{'gtc' if not fok_step else 'fok'}`\n"
+            )
             msg_id = await self._send_with_id(text)
             await self._log_notification("order_filled", text, telegram_message_id=msg_id)
             return msg_id
@@ -443,6 +665,175 @@ class TelegramAlerter:
             return msg_id
         except Exception as exc:
             self._log.warning("telegram.send_trade_result_failed", error=str(exc)[:100])
+            return None
+
+    async def send_post_resolution_analysis(
+        self,
+        window_id: str,
+        oracle_direction: str,
+        eval_ticks: list,
+        ai_analysis: str,
+        missed_profit: float = 0.0,
+        blocked_loss: float = 0.0,
+        cap_too_tight: bool = False,
+    ) -> Optional[int]:
+        """
+        🔬 POST-RESOLUTION — Full AI analysis of all skipped window ticks.
+
+        Format:
+            🔬 POST-RESOLUTION — BTC 5m | 07:15 UTC | v8.0
+            ━━━━━━━━━━━━━━━━━━━━━━
+            Oracle: DOWN ✅
+            Evaluated: 19 ticks | Traded: 0 | Skipped: 19
+
+            Missed profits:
+            T-240 skip (CLOB $0.52 > cap $0.55): would WIN +$4.41
+            T-210 skip (not CASCADE): would WIN +$3.20
+            T-110 skip (v2.2 disagrees): would LOSE -$8.50
+
+            🤖 Sonnet: "Cap at T-240 was $0.03 too tight..."
+        """
+        try:
+            # Parse window time
+            window_time = "?"
+            asset = "BTC"
+            try:
+                parts = window_id.split("-", 1)
+                asset = parts[0]
+                ts = int(parts[1])
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                window_time = dt.strftime("%H:%M UTC")
+            except Exception:
+                pass
+
+            n_ticks = len(eval_ticks)
+            n_traded = sum(1 for t in eval_ticks if t.get("decision") == "TRADE")
+            n_skipped = n_ticks - n_traded
+
+            # Oracle emoji: would our signal have been correct?
+            # We show ✅ if ANY tick would have won (missed opportunity)
+            # and ❌ if all were correctly blocked
+            n_would_win = sum(1 for t in eval_ticks if t.get("would_win") is True)
+            oracle_emoji = "✅" if n_would_win > 0 else "✓"
+
+            # Build tick breakdown lines (only show meaningful ones)
+            tick_lines = []
+            for t in eval_ticks:
+                if t.get("pnl_label") and "no CLOB price" not in t.get("pnl_label", ""):
+                    offset = t.get("offset", "?")
+                    skip_reason = (t.get("skip_reason") or "unknown")[:40]
+                    clob = t.get("clob_ask")
+                    pnl_label = t.get("pnl_label", "")
+                    clob_str = f" CLOB ${clob:.2f}" if clob is not None else ""
+                    tick_lines.append(f"T-{offset} ({skip_reason}{clob_str}): {pnl_label}")
+
+            # Limit to 6 most informative lines to keep message readable
+            tick_lines = tick_lines[:6]
+
+            cap_warning = " ⚠️ CAP TOO TIGHT" if cap_too_tight else ""
+
+            pnl_summary = ""
+            if missed_profit > 0:
+                pnl_summary += f"Missed: `+${missed_profit:.2f}`"
+            if blocked_loss > 0:
+                sep = " | " if pnl_summary else ""
+                pnl_summary += f"{sep}Avoided: `-${blocked_loss:.2f}`"
+
+            text = (
+                f"🔬 *POST-RESOLUTION — {asset} 5m | {window_time} | {self._engine_version}*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Oracle: `{oracle_direction}` {oracle_emoji}{cap_warning}\n"
+                f"Evaluated: `{n_ticks}` ticks | Traded: `{n_traded}` | Skipped: `{n_skipped}`\n"
+            )
+
+            if pnl_summary:
+                text += f"{pnl_summary}\n"
+
+            if tick_lines:
+                text += f"\n*Tick breakdown:*\n"
+                text += "\n".join(f"  _{line}_" for line in tick_lines) + "\n"
+
+            if ai_analysis:
+                # Truncate to ~250 chars for Telegram readability
+                ai_snippet = ai_analysis[:250].strip()
+                if len(ai_analysis) > 250:
+                    ai_snippet += "…"
+                text += f"\n🤖 _Sonnet: \"{ai_snippet}\"_\n"
+
+            msg_id = await self._send_with_id(text)
+            await self._log_notification(
+                "post_resolution_analysis", text, window_id, telegram_message_id=msg_id
+            )
+            return msg_id
+
+        except Exception as exc:
+            self._log.warning(
+                "telegram.send_post_resolution_failed", error=str(exc)[:100]
+            )
+            return None
+
+    async def send_shadow_resolution(
+        self,
+        window_id: str,
+        direction: str,
+        entry_price: float,
+        oracle_direction: str,
+        shadow_pnl: float,
+        skip_reason: str,
+        confidence_tier: str,
+    ) -> Optional[int]:
+        """
+        👻 SHADOW — notify when a skipped window's oracle outcome is resolved.
+
+        Shows whether the skipped trade would have won or lost, helping Billy
+        evaluate if our gates are too aggressive.
+
+        Format (correct signal):
+            👻 SHADOW — BTC 5m | 21:55 UTC | v8.0
+            ━━━━━━━━━━━━━━━━━━━━━━━━
+            Signal was: UP @ $0.32 (HIGH)
+            Oracle resolved: UP ✅
+            Shadow P&L: +$3.33 (missed profit)
+            Skip reason: delta 0.004% < 0.020%
+
+        Format (wrong signal):
+            👻 SHADOW — BTC 5m | 21:55 UTC | v8.0
+            ━━━━━━━━━━━━━━━━━━━━━━━━
+            Signal was: DOWN @ $0.67 (MODERATE)
+            Oracle resolved: UP ❌
+            Shadow P&L: -$3.35 (avoided loss)
+            Skip reason: VPIN 0.43 < gate 0.45
+        """
+        try:
+            window_time = "?"
+            try:
+                ts = int(window_id.split("-")[1])
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                window_time = dt.strftime("%H:%M UTC")
+            except Exception:
+                pass
+
+            signal_correct = (direction == oracle_direction)
+            oracle_emoji = "✅" if signal_correct else "❌"
+            pnl_sign = "+" if shadow_pnl >= 0 else ""
+            pnl_label = "missed profit" if shadow_pnl > 0 else "avoided loss"
+
+            text = (
+                f"👻 *SHADOW — BTC 5m | {window_time} | {self._engine_version}*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Signal was: `{direction}` @ `${entry_price:.2f}` (`{confidence_tier}`)\n"
+                f"Oracle resolved: `{oracle_direction}` {oracle_emoji}\n"
+                f"Shadow P&L: `{pnl_sign}${shadow_pnl:.2f}` ({pnl_label})\n"
+                f"Skip reason: _{skip_reason[:100]}_\n"
+            )
+
+            msg_id = await self._send_with_id(text)
+            await self._log_notification(
+                "shadow_resolution", text, window_id, telegram_message_id=msg_id
+            )
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_shadow_resolution_failed", error=str(exc)[:100])
             return None
 
     async def send_redemption(
@@ -501,74 +892,85 @@ class TelegramAlerter:
         pnl_sign = "+" if pnl_usd >= 0 else ""
         mode = self._mode_tag()
         
-        # Build comprehensive outcome card
-        outcome_lines = [
-            f"{emoji} *{outcome}* — Window {window_time}  {mode}",
-            f"`{window_id}`",
-            "",
-            f"▸ Direction: `{decision}` @ `${entry_price:.3f}`",
-            f"▸ P&L: `{pnl_sign}${pnl_usd:.2f}`",
-        ]
+        # v8.0 session tracking — reload from DB on first call
+        if not hasattr(self, '_session_wins'):
+            self._session_wins = 0
+            self._session_losses = 0
+            self._session_pnl = 0.0
+            # Backfill from DB so restarts don't reset counters (synchronous)
+            if self._db_client:
+                try:
+                    async with self._db_client._pool.acquire() as conn:
+                        row = await conn.fetchrow(
+                            "SELECT "
+                            "  SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as w, "
+                            "  SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as l, "
+                            "  COALESCE(SUM(pnl_usd), 0) as pnl "
+                            "FROM trades WHERE outcome IS NOT NULL "
+                            "AND created_at > DATE_TRUNC('day', NOW())"
+                        )
+                        if row:
+                            self._session_wins = int(row['w'] or 0)
+                            self._session_losses = int(row['l'] or 0)
+                            self._session_pnl = float(row['pnl'] or 0)
+                except Exception:
+                    pass  # Fall back to zero counters
+        if outcome == "WIN":
+            self._session_wins += 1
+        else:
+            self._session_losses += 1
+        self._session_pnl += pnl_usd
+        total = self._session_wins + self._session_losses
+        wr = (self._session_wins / total * 100) if total > 0 else 0
         
-        if wd.get("open_price") and wd.get("close_price"):
-            delta = ((wd["close_price"] - wd["open_price"]) / wd["open_price"]) * 100
-            actual = "UP" if wd["close_price"] > wd["open_price"] else "DOWN"
-            outcome_lines.append(f"▸ BTC: `${wd['open_price']:,.2f}` → `${wd['close_price']:,.2f}` ({actual} {delta:+.3f}%)")
+        # v8.0 source attribution
+        delta_source = wd.get("delta_source", "?")
+        delta_val = wd.get("delta_pct", 0)
+        src_short = delta_source.replace("_rest_candle", "").replace("_db_tick", "(db)") if delta_source else "?"
         
-        if wd.get("vpin") is not None:
-            regime = wd.get("regime", "?")
-            outcome_lines.append(f"▸ VPIN: `{wd['vpin']:.3f}` ({regime})")
+        oracle_note = ""
+        if outcome == "LOSS" and wd.get("actual_direction"):
+            oracle_note = f"\nOracle: `{wd['actual_direction']}` ← {src_short} was wrong"
         
-        if wd.get("gamma_up") and wd.get("gamma_down"):
-            outcome_lines.append(f"▸ Gamma: ↑`${wd['gamma_up']:.2f}` ↓`${wd['gamma_down']:.2f}`")
+        # v8.1: Show actual fill price (may differ from submitted entry)
+        _fill_price = wd.get("actual_fill_price")
+        _entry_reason = wd.get("entry_reason", "")
+        _fill_line = f"Entry: `${entry_price:.3f}`"
+        if _fill_price and abs(float(_fill_price) - entry_price) > 0.001:
+            _fill_line = f"Submitted: `${entry_price:.3f}` → Fill: `${float(_fill_price):.4f}`"
+        elif _fill_price:
+            _fill_line = f"Fill: `${float(_fill_price):.4f}`"
         
-        # Signal agreement summary
-        signals = []
-        if wd.get("timesfm_direction"):
-            tsfm_agree = "✓" if wd["timesfm_direction"] == decision else "✗"
-            signals.append(f"TsFM:{wd['timesfm_direction']}{tsfm_agree}")
-        if wd.get("twap_direction"):
-            twap_agree = "✓" if wd["twap_direction"] == decision else "✗"
-            signals.append(f"TWAP:{wd['twap_direction']}{twap_agree}")
-        if signals:
-            outcome_lines.append(f"▸ Signals: {' | '.join(signals)}")
+        _reason_tag = f" | `{_entry_reason}`" if _entry_reason else ""
         
-        outcome_text = "\n".join(outcome_lines)
+        outcome_text = (
+            f"{emoji} *{outcome}* — BTC 5m | {window_time} | {self._engine_version}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Direction: `{decision}` ({src_short} Δ `{delta_val:+.4f}%`)\n"
+            f"{_fill_line} | P&L: `{pnl_sign}${pnl_usd:.2f}`{_reason_tag}"
+            f"{oracle_note}\n"
+            f"📊 Session: `{self._session_wins}W/{self._session_losses}L ({wr:.1f}%)` | `{'+' if self._session_pnl >= 0 else ''}${self._session_pnl:.2f}`\n"
+        )
+        
         outcome_msg_id = await self._send_with_id(outcome_text)
+        await self._log_notification("outcome_v8", outcome_text, window_id, telegram_message_id=outcome_msg_id)
         
-        # AI analysis (separate, can timeout without blocking)
+        # AI analysis — shorter in v8.0 (1-2 sentences)
         analysis_msg_id = None
         try:
-            # Build comprehensive prompt with all window data
-            prompt_parts = [
-                f"BTC 5-min trade: {decision} @ ${entry_price:.3f} → {outcome} (P&L: ${pnl_usd:.2f}).",
-            ]
-            if wd.get("vpin") is not None:
-                prompt_parts.append(f"VPIN: {wd['vpin']:.3f} ({wd.get('regime', '?')}).")
-            if wd.get("delta_pct") is not None:
-                prompt_parts.append(f"Delta at T-60: {wd['delta_pct']:+.4f}%.")
-            if wd.get("open_price") and wd.get("close_price"):
-                prompt_parts.append(f"BTC: ${wd['open_price']:,.2f} → ${wd['close_price']:,.2f}.")
-            if wd.get("timesfm_direction"):
-                conf = wd.get("timesfm_confidence", 0)
-                prompt_parts.append(f"TimesFM predicted {wd['timesfm_direction']} ({conf:.0%} conf).")
-            if wd.get("twap_direction"):
-                prompt_parts.append(f"TWAP: {wd['twap_direction']} (agreement: {wd.get('twap_agreement', '?')}/3).")
-            if wd.get("cg_data"):
-                prompt_parts.append(f"CoinGlass: {wd['cg_data']}.")
-            
-            prompt_parts.append(
-                "In 2-3 sentences: Why did this trade win/lose? "
-                "Was the signal quality good? Any red flags we should have caught? "
-                "Would a TimesFM disagreement gate have helped?"
+            _ti = wd.get("delta_tiingo")
+            _bn = wd.get("delta_binance")
+            _src_detail = ""
+            if _ti is not None and _bn is not None:
+                _src_detail = f" Tiingo Δ{_ti:+.4f}%, Binance Δ{_bn:+.4f}%."
+            prompt = (
+                f"BTC 5m {decision} @ ${entry_price:.3f} → {outcome} ({pnl_sign}${pnl_usd:.2f}). "
+                f"Source: {delta_source}. VPIN: {wd.get('vpin', '?')}.{_src_detail} "
+                f"Oracle: {wd.get('actual_direction', '?')}. "
+                f"1 sentence: why did this {'win' if outcome == 'WIN' else 'lose'}?"
             )
-            
-            prompt = " ".join(prompt_parts)
-            ai_text, ai_source = await self._ai.assess(prompt, timeout_s=10)
-            analysis_card = (
-                f"📊 *Post-Trade Analysis* — `{ai_source.upper()}`\n"
-                f"_{ai_text}_\n"
-            )
+            ai_text, ai_source = await self._ai.assess(prompt, timeout_s=6)
+            analysis_card = f"🤖 `{ai_source.upper()}` — _{ai_text[:300]}_"
             analysis_msg_id = await self._send_with_id(analysis_card)
         except Exception as exc:
             self._log.warning("ai.outcome_analysis_failed", error=str(exc)[:100])
@@ -588,10 +990,65 @@ class TelegramAlerter:
     # ── Location / identity ────────────────────────────────────────────────────
 
     _location: str = "MTL"
-    _engine_version: str = "v7.1"
+    _engine_version: str = "v8.0"
     _db_client = None  # injected after construction
 
-    def set_location(self, location: str, version: str = "v7.1") -> None:
+    async def send_session_summary(self) -> Optional[int]:
+        """v8.0 Session Summary Card — call periodically or on demand."""
+        try:
+            w = getattr(self, '_session_wins', 0)
+            l = getattr(self, '_session_losses', 0)
+            pnl = getattr(self, '_session_pnl', 0.0)
+            total = w + l
+            wr = (w / total * 100) if total > 0 else 0
+            pnl_sign = "+" if pnl >= 0 else ""
+            text = (
+                f"📋 *Session Summary* | {self._engine_version}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Trades: `{total}` | `{w}W/{l}L` (`{wr:.1f}%`)\n"
+                f"P&L: `{pnl_sign}${pnl:.2f}`\n"
+                f"Delta source: `tiingo`\n"
+                f"FOK: `enabled` | TWAP: `off` | TimesFM: `off`\n"
+            )
+            return await self._send_with_id(text)
+        except Exception as exc:
+            self._log.warning("telegram.session_summary_failed", error=str(exc)[:100])
+            return None
+
+    async def send_fok_exhausted(self, window_id: str, attempts: int, prices: list, abort_reason: str = "", dynamic_cap: float = 0.73) -> Optional[int]:
+        """v8.1 FOK Ladder — no fill, falling back to GTC with dynamic cap."""
+        try:
+            from datetime import datetime, timezone
+            window_time = "?"
+            try:
+                ts = int(window_id.split('-')[1])
+                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                window_time = dt.strftime('%H:%M UTC')
+            except Exception:
+                pass
+            if attempts == 0:
+                reason_clean = abort_reason or "no book liquidity"
+                reason_clean = reason_clean.split("for token")[0].strip() if "for token" in reason_clean else reason_clean
+                text = (
+                    f"🔄 *FOK → GTC* — BTC 5m | {window_time} | {self._engine_version}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"CLOB book: `{reason_clean[:60]}`\n"
+                    f"→ GTC limit at cap (`${dynamic_cap:.2f}`)\n"
+                )
+            else:
+                price_str = " → ".join([f"${p:.3f}" for p in prices[:5]])
+                text = (
+                    f"🔄 *FOK → GTC* — BTC 5m | {window_time} | {self._engine_version}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"FOK: `{attempts}` killed | Prices: `{price_str}`\n"
+                    f"→ GTC limit at cap (`${dynamic_cap:.2f}`)\n"
+                )
+            return await self._send_with_id(text)
+        except Exception as exc:
+            self._log.warning("telegram.fok_exhausted_failed", error=str(exc)[:100])
+            return None
+
+    def set_location(self, location: str, version: str = "v8.0") -> None:
         self._location = location
         self._engine_version = version
 
@@ -617,7 +1074,6 @@ class TelegramAlerter:
         if not self._db_client:
             return
         try:
-            from sqlalchemy import text as _text
             async with self._db_client._pool.acquire() as conn:
                 await conn.execute(
                     """INSERT INTO telegram_notifications
@@ -629,7 +1085,7 @@ class TelegramAlerter:
                     telegram_message_id,
                 )
         except Exception as exc:
-            self._log.debug("telegram.log_notification_failed", error=str(exc)[:80])
+            self._log.warning("telegram.log_notification_failed", error=str(exc)[:80])
 
     # ── Window lifecycle notifications ─────────────────────────────────────────
 
@@ -642,13 +1098,9 @@ class TelegramAlerter:
         gamma_up: float,
         gamma_down: float,
     ) -> None:
-        """Sent once when a new window opens."""
+        """v8.0 Window Open — compact card."""
         from datetime import datetime, timezone
         
-        mode = self._mode_tag()
-        g_skew = "BALANCED" if abs(gamma_up - gamma_down) < 0.03 else ("UP leaning" if gamma_up > gamma_down else "DOWN leaning")
-        
-        # Extract window time from ID (e.g., "BTC-1775416200" → "19:10 UTC")
         window_time = "?"
         try:
             ts = int(window_id.split('-')[1])
@@ -657,14 +1109,11 @@ class TelegramAlerter:
         except:
             pass
         
+        skew = "BALANCED" if abs(gamma_up - gamma_down) < 0.03 else ("↑ UP" if gamma_up > gamma_down else "↓ DOWN")
         text = (
-            f"🪟 *WINDOW OPEN — {asset} {timeframe}*  `{window_time}`  {mode}\n"
-            f"`{window_id}`\n"
-            f"\n"
-            f"Open: `${open_price:,.2f}`\n"
-            f"Gamma: UP `${gamma_up:.3f}` / DOWN `${gamma_down:.3f}`  `{g_skew}`\n"
-            f"\n"
-            f"{self._footer(window_id)}"
+            f"🪟 *{asset} {timeframe}* | {window_time} | {self._engine_version}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Open: `${open_price:,.2f}` | Gamma: ↑`${gamma_up:.3f}` ↓`${gamma_down:.3f}` `{skew}`\n"
         )
         msg_id = await self._send_with_id(text)
         await self._log_notification("window_open", text, window_id, telegram_message_id=msg_id)
@@ -711,22 +1160,18 @@ class TelegramAlerter:
         except:
             pass
 
+        # v8.0 compact snapshot card
+        _dir_emoji = "▲" if delta_pct > 0 else "▼"
+        _dir = "UP" if delta_pct > 0 else "DOWN"
         caption_lines = [
-            f"⏱ *{t_label}* — Window `{window_time}` — {window_id}",
-            f"",
-            f"{'▲' if delta_pct > 0 else '▼'} `{delta_sign}{delta_pct:.4f}%`  |  VPIN `{vpin:.3f}` `{vpin_regime}`",
+            f"⏱ *{t_label}* — BTC {window_time} | {self._engine_version}",
+            f"━━━━━━━━━━━━━━━━━━━━━━",
+            f"Tiingo: Δ `{delta_sign}{delta_pct:.4f}%` {_dir_emoji} `{_dir}`",
+            f"VPIN: `{vpin:.3f}` `{vpin_regime}` | Gamma: ↑`${gamma_up:.3f}` ↓`${gamma_down:.3f}`",
         ]
-        if twap_direction:
-            caption_lines.append(f"TWAP `{twap_direction}` {twap_agreement}/3  |  Gamma UP `${gamma_up:.3f}` / DN `${gamma_down:.3f}`")
-        if timesfm_direction:
-            caption_lines.append(f"TimesFM `{timesfm_direction}` {timesfm_confidence:.0%}")
-        if conflict:
-            caption_lines.append(f"⚠ SIGNAL CONFLICT")
+        # No more SIGNAL CONFLICT — TWAP/TimesFM disabled in v8.0
         if ai_commentary:
-            caption_lines.append(f"")
-            caption_lines.append(f"🤖 _{ai_commentary}_")
-        caption_lines.append(f"")
-        caption_lines.append(self._footer(window_id))
+            caption_lines.append(f"🤖 _{ai_commentary[:200]}_")
 
         caption = "\n".join(caption_lines)
 
@@ -791,21 +1236,21 @@ class TelegramAlerter:
     ) -> None:
         """Full resolution report with what-if P&L table at each T-point."""
         result_e = "✅" if outcome == "WIN" else "❌"
-        arrow = "▲" if actual_direction == "UP" else "▼"
         correct = actual_direction == direction
         confirm = "✓" if correct else "✗"
         pnl_sign = "+" if pnl_usd >= 0 else ""
-        streak_str = (f"  Streak: `{win_streak}W`" if win_streak > 0
-                      else f"  Streak: `{loss_streak}L`" if loss_streak > 0 else "")
+        streak_str = (f" | `{win_streak}W streak`" if win_streak > 0
+                      else f" | `{loss_streak}L streak`" if loss_streak > 0 else "")
 
         lines = [
-            f"{result_e} *{outcome} — {asset} {timeframe}*  {self._mode_tag()}",
-            f"`{window_id}`",
-            f"",
-            f"{arrow} {direction} @ `${entry_price:.3f}` → resolved {actual_direction} {confirm}",
+            f"{result_e} *{outcome}* — {asset} {timeframe} | {self._engine_version}",
+            f"━━━━━━━━━━━━━━━━━━━━━━",
+            f"Bet: `{direction}` @ `${entry_price:.3f}` → Oracle: `{actual_direction}` {confirm}",
             f"P&L: `{pnl_sign}${pnl_usd:.2f}`{streak_str}",
+            f"BTC: `${open_price:,.2f}` → `${close_price:,.2f}` (Δ `{delta_pct:+.4f}%`)",
+            f"VPIN: `{vpin:.3f}` `{regime}`",
             f"",
-            f"*What-if P&L at each entry point:*",
+            f"*Entry prices by checkpoint:*",
         ]
 
         # What-if table
@@ -975,11 +1420,13 @@ class TelegramAlerter:
 
             # Trade / skip
             if trade_placed:
-                _price = token_price or (_g_down if _dir == "DOWN" else _g_up)
+                _v81_cap = signal.get("v81_entry_cap") if signal else None
+                _price = _v81_cap or token_price or (_g_down if _dir == "DOWN" else _g_up)
                 _stake = stake_usd or 4.0
                 _token = "NO" if _dir == "DOWN" else "YES"
                 _win = (1.0 - _price) * _stake * 0.98
-                lines.append(f"⚡ *PLACED {_token} @ `${_price:.3f}`*")
+                _reason = (signal.get("entry_reason", "") if signal else "") or ""
+                lines.append(f"⚡ *PLACED {_token} limit `${_price:.2f}`* | `{_reason}`")
                 lines.append(f"Stake `${_stake:.2f}` → Win `+${_win:.2f}`")
             else:
                 _short_reason = (skip_reason or "—")[:80]
@@ -1131,8 +1578,32 @@ class TelegramAlerter:
             self._log.warning("telegram.send_trade_alert_failed", error=str(exc))
 
     async def send_entry_alert(self, order: "Order") -> None:
-        """Legacy alias — entry is now included in window_report, this is a no-op."""
-        pass
+        """Send GTC fill confirmation when CLOB matches our order."""
+        try:
+            meta = order.metadata or {}
+            fill_price = meta.get("actual_fill_price", "?")
+            cap = meta.get("v81_entry_cap", "?")
+            reason = meta.get("entry_reason", "?")
+            wait_s = meta.get("fill_wait_seconds", "?")
+            direction = "⬇️ DOWN" if order.direction == "NO" else "⬆️ UP"
+            size = meta.get("size_matched", "?")
+            
+            msg = (
+                f"✅ **GTC FILLED**\n"
+                f"─────────────\n"
+                f"{direction} | `{reason}`\n"
+                f"💰 Fill: `${float(fill_price):.4f}` (cap `${float(cap):.2f}`)\n"
+                f"📦 Size: `{size}` shares | Stake: `${order.stake_usd:.2f}`\n"
+                f"⏱ Filled in `{wait_s}s`\n"
+            )
+            await self._send_telegram(msg)
+            await self._log_notification(
+                notification_type="gtc_fill",
+                message_text=msg,
+                window_id=meta.get("market_slug"),
+            )
+        except Exception as exc:
+            structlog.get_logger().warning("telegram.entry_alert_failed", error=str(exc)[:100])
 
     # Backwards compat for v6.0 window reports
     async def send_timesfm_window_report(self, **kwargs) -> None:
@@ -1203,24 +1674,38 @@ class TelegramAlerter:
             elif loss_streak >= 2:
                 streak_ctx = f"Coming off a {loss_streak}-loss streak. "
 
+            # v8.0: include delta source and multi-source data
+            delta_source = meta.get("delta_source", "?")
+            delta_tiingo = meta.get("delta_tiingo")
+            delta_binance = meta.get("delta_binance")
+            delta_chainlink = meta.get("delta_chainlink")
+            confidence_tier = meta.get("confidence_tier", "?")
+            gates = meta.get("gates_passed", "")
+            gate_failed = meta.get("gate_failed", "")
+
+            source_ctx = f"Delta source: {delta_source}. "
+            if delta_tiingo is not None and delta_binance is not None:
+                source_ctx += f"Tiingo Δ{delta_tiingo:+.4f}%, Binance Δ{delta_binance:+.4f}%"
+                if delta_chainlink is not None:
+                    source_ctx += f", Chainlink Δ{delta_chainlink:+.4f}%"
+                source_ctx += ". "
+
             prompt = (
-                f"{asset} {timeframe} trade on Polymarket prediction market.\n"
-                f"Regime: {regime}  VPIN: {vpin:.3f}  Delta: {delta_pct:+.4f}%\n"
-                f"Direction bet: {direction}  Entry price: ${tp:.3f}  "
-                f"Open: ${open_price:,.2f}  Close: ${close_price:,.2f}\n"
-                f"Outcome: {outcome}  PnL: ${pnl:+.2f}\n"
-                f"Entry: {entry_reason}\n"
-                f"{twap_ctx}{tfm_ctx}{streak_ctx}"
-                f"\nWrite 1-2 tight sentences assessing the entry quality and outcome."
+                f"{asset} {timeframe} v8.0 trade. "
+                f"Regime: {regime}, VPIN: {vpin:.3f}, Delta: {delta_pct:+.4f}%\n"
+                f"Direction: {direction}, Entry: ${tp:.3f}, Confidence: {confidence_tier}\n"
+                f"BTC: ${open_price:,.2f}→${close_price:,.2f}. Outcome: {outcome}, PnL: ${pnl:+.2f}\n"
+                f"{source_ctx}{streak_ctx}"
+                f"1 sentence: was this a good entry? Key factor in the {outcome.lower()}."
             )
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     "https://api.anthropic.com/v1/messages",
                     json={
-                        "model": "claude-haiku-4-5",
-                        "max_tokens": 120,
-                        "system": "You are a crypto trading analyst. Be concise and specific.",
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 100,
+                        "system": "You are a crypto trading analyst for Polymarket 5-min prediction markets. The engine uses Tiingo as primary delta source (oracle-aligned). Be concise.",
                         "messages": [{"role": "user", "content": prompt}],
                     },
                     headers={
@@ -1270,7 +1755,9 @@ class TelegramAlerter:
     async def send_system_alert(self, message: str, level: str = "info") -> None:
         emoji = {"info": "🟢", "warning": "🟡", "error": "🔴", "critical": "🔴"}.get(level, "🟢")
         try:
-            await self._send(f"{emoji} *System*\n`{message}`")
+            text = f"{emoji} *System*\n{message}"
+            await self._send(text)
+            await self._log_notification(f"system_{level}", text[:2000])
         except Exception:
             pass
 
@@ -1285,6 +1772,7 @@ class TelegramAlerter:
         Used for sitreps and system notifications that should always go through."""
         try:
             await self._send(text)
+            await self._log_notification("raw_message", text[:2000])
         except Exception:
             pass
 
@@ -1512,7 +2000,7 @@ class DualAIAssessment:
             "content-type": "application/json",
         }
         payload = {
-            "model": "claude-opus-4-6",
+            "model": "claude-sonnet-4-6",
             "max_tokens": 200,
             "messages": [{"role": "user", "content": prompt}],
         }
