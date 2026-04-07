@@ -1201,8 +1201,18 @@ class FiveMinVPINStrategy(BaseStrategy):
                     cap=_v81_cap,
                 )
 
+                # v9.0: When v9 caps are enabled and passed, bypass old v8.1 gates
+                # v9.0 agreement + VPIN tier already handled direction + cap
+                _v9_bypass = (os.environ.get("V9_CAPS_ENABLED", "false").lower() == "true"
+                              and '_v9_cap' in locals() and _v9_cap is not None)
+                if _v9_bypass:
+                    self._log.info("v9.bypass_v8_gates", offset=eval_offset,
+                        v9_tier=_v9_tier, v9_cap=f"${_v9_cap:.2f}")
+                    signal.v81_entry_cap = _v9_cap
+                    _order_type = os.environ.get("ORDER_TYPE", "FAK").upper()
+                    signal.entry_reason = f"v9_{_v9_tier}_T{eval_offset}_{_order_type}"
                 # Gate 1: v2.2 must be HIGH confidence (all offsets)
-                if not _v2_high:
+                elif not _v2_high:
                     signal = None
                     self._last_skip_reason = f"v2.2 LOW conf ({_v2_p:.2f}) at T-{eval_offset}"
                 # Gate 2: v2.2 must agree with v8 direction (all offsets)
