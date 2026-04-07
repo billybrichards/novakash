@@ -1437,6 +1437,124 @@ class DBClient:
         except Exception as exc:
             log.warning("db.ensure_post_resolution_table_failed", error=str(exc))
 
+    # ── Window Predictions (Tiingo + Chainlink at T-0) ───────────────────
+
+    async def ensure_window_predictions_table(self) -> None:
+        """Create window_predictions table for tracking predicted vs actual outcomes."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS window_predictions (
+                        window_ts         BIGINT NOT NULL,
+                        asset             VARCHAR(10) NOT NULL DEFAULT 'BTC',
+                        timeframe         VARCHAR(5)  NOT NULL DEFAULT '5m',
+                        tiingo_open       DOUBLE PRECISION,
+                        tiingo_close      DOUBLE PRECISION,
+                        chainlink_open    DOUBLE PRECISION,
+                        chainlink_close   DOUBLE PRECISION,
+                        tiingo_direction  VARCHAR(4),
+                        chainlink_direction VARCHAR(4),
+                        our_signal_direction VARCHAR(4),
+                        v2_direction      VARCHAR(4),
+                        v2_probability    DOUBLE PRECISION,
+                        vpin_at_close     DOUBLE PRECISION,
+                        regime            VARCHAR(15),
+                        trade_placed      BOOLEAN DEFAULT FALSE,
+                        our_direction     VARCHAR(4),
+                        our_entry_price   DOUBLE PRECISION,
+                        bid_unfilled      BOOLEAN DEFAULT FALSE,
+                        skip_reason       TEXT,
+                        oracle_winner     VARCHAR(4),
+                        tiingo_correct    BOOLEAN,
+                        chainlink_correct BOOLEAN,
+                        our_signal_correct BOOLEAN,
+                        created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE (window_ts, asset, timeframe)
+                    )
+                """)
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_wp_window_ts ON window_predictions(window_ts)"
+                )
+            log.info("db.window_predictions_table_ensured")
+        except Exception as exc:
+            log.warning("db.ensure_window_predictions_failed", error=str(exc))
+
+    async def write_window_prediction(self, data: dict) -> None:
+        """Write or update a window prediction record."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO window_predictions (
+                        window_ts, asset, timeframe,
+                        tiingo_open, tiingo_close,
+                        chainlink_open, chainlink_close,
+                        tiingo_direction, chainlink_direction,
+                        our_signal_direction, v2_direction, v2_probability,
+                        vpin_at_close, regime,
+                        trade_placed, our_direction, our_entry_price,
+                        bid_unfilled, skip_reason
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                    ON CONFLICT (window_ts, asset, timeframe) DO UPDATE SET
+                        tiingo_close = EXCLUDED.tiingo_close,
+                        chainlink_close = EXCLUDED.chainlink_close,
+                        tiingo_direction = EXCLUDED.tiingo_direction,
+                        chainlink_direction = EXCLUDED.chainlink_direction,
+                        our_signal_direction = EXCLUDED.our_signal_direction,
+                        v2_direction = EXCLUDED.v2_direction,
+                        v2_probability = EXCLUDED.v2_probability,
+                        vpin_at_close = EXCLUDED.vpin_at_close,
+                        regime = EXCLUDED.regime,
+                        trade_placed = EXCLUDED.trade_placed,
+                        our_direction = EXCLUDED.our_direction,
+                        our_entry_price = EXCLUDED.our_entry_price,
+                        bid_unfilled = EXCLUDED.bid_unfilled,
+                        skip_reason = EXCLUDED.skip_reason
+                """,
+                    int(data.get("window_ts", 0)),
+                    data.get("asset", "BTC"),
+                    data.get("timeframe", "5m"),
+                    data.get("tiingo_open"),
+                    data.get("tiingo_close"),
+                    data.get("chainlink_open"),
+                    data.get("chainlink_close"),
+                    data.get("tiingo_direction"),
+                    data.get("chainlink_direction"),
+                    data.get("our_signal_direction"),
+                    data.get("v2_direction"),
+                    data.get("v2_probability"),
+                    data.get("vpin_at_close"),
+                    data.get("regime"),
+                    data.get("trade_placed", False),
+                    data.get("our_direction"),
+                    data.get("our_entry_price"),
+                    data.get("bid_unfilled", False),
+                    data.get("skip_reason"),
+                )
+        except Exception as exc:
+            log.warning("db.write_window_prediction_failed", error=str(exc)[:120])
+
+    async def update_window_prediction_outcome(self, window_ts: int, asset: str,
+                                                oracle_winner: str) -> None:
+        """After oracle resolution, update the prediction with actual outcome."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE window_predictions SET
+                        oracle_winner = $4,
+                        tiingo_correct = (tiingo_direction = $4),
+                        chainlink_correct = (chainlink_direction = $4),
+                        our_signal_correct = (our_signal_direction = $4)
+                    WHERE window_ts = $1 AND asset = $2 AND timeframe = $3
+                """, window_ts, asset, "5m", oracle_winner.upper())
+        except Exception as exc:
+            log.warning("db.update_prediction_outcome_failed", error=str(exc)[:120])
+
     async def store_post_resolution_analysis(self, result: dict) -> None:
         """
         Persist post-resolution AI analysis to DB.
