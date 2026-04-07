@@ -427,5 +427,75 @@ The reason early offsets looked bad in Section 10 was we compared against $0.73 
 **Confidence:** MEDIUM-HIGH (pre-v8 evidence + theoretical basis)
 **Action:** Recommend 24h A/B test. Set `ORDER_PRICING_MODE=bestask` for one trading day.
 
-*Next review: April 8, 2026 09:00 UTC (48h of v8.1 data)*
-*Update this doc with fresh numbers then.*
+---
+
+## 13. Day Summary — April 7, 2026
+
+### Wallet
+- Start: $130.82 USDC
+- Peak: $164.16 (after Chrome kill resolved zombie positions)
+- Current: ~$111 free USDC + ~$240 in 22 open positions
+- 2 redeemable zombie positions from Chrome (Apr 2): -$43.77 confirmed loss
+
+### Trade Results (all live, resolved)
+
+| Era | W | L | WR | P&L | Notes |
+|-----|---|---|------|-------|-------|
+| pre-v8 | 13 | 22 | 37.1% | -$84.92 | Paper-era execution, no v2.2 |
+| v8_standard | 8 | 5 | 61.5% | -$21.99 | v8 without v2.2 gate |
+| **v2.2 gated** | **22** | **9** | **71.0%** | **-$8.53** | THE config |
+
+### v2.2 Gated — Scenario Analysis
+
+| Scenario | W | L | WR | P&L |
+|----------|---|---|------|-------|
+| As-is (all v2.2) | 22 | 9 | 71.0% | -$8.53 |
+| **Block NORMAL at T-70/T-60 (v8.1.1)** | **21** | **6** | **77.8%** | **+$26.55** |
+| Block ALL NORMAL | 15 | 5 | 75.0% | +$20.27 |
+
+### T-70 NORMAL: The Proven Loss Pattern
+
+**0 wins, 3 losses, -$38.13** — every T-70 NORMAL trade lost.
+
+| Time | VPIN | Entry | P&L |
+|------|------|-------|-----|
+| 10:33 | 0.491 | $0.730 | -$12.58 |
+| 11:14 | 0.542 | $0.730 | -$14.40 |
+| 13:04 | 0.494 | $0.690 | -$11.15 |
+
+v8.1.1 gate deployed 13:19 UTC — blocks NORMAL at T-70/T-60. First post-gate T-70 trade: TRANSITION (0.604) → WIN +$1.95.
+
+### Key Fixes Deployed Today
+
+1. Dynamic caps working — .env override removed
+2. FOK decimal fixed — was 100% failure rate
+3. GTC uses dynamic cap — not hardcoded $0.73
+4. Fill price calc fixed — was stake/shares, now limit price
+5. Chrome zombie killed — VNC Chrome trading on same wallet since Apr 4
+6. NORMAL gate at T-70/T-60 — v8.1.1 blocks weak late signals
+7. Win size doubled — $2.90 avg → $5.85 avg post pricing fix
+
+### Gate & Cap Config (LIVE as of 13:19 UTC)
+
+```
+Offset          Cap      VPIN Required      Since
+T-240..T-180    $0.55    CASCADE (>=0.65)   09:50 UTC
+T-170..T-120    $0.60    CASCADE (>=0.65)   09:50 UTC
+T-110..T-80     $0.65    v2.2 agrees        09:50 UTC
+T-70..T-60      $0.73    TRANSITION+ (>=0.55) 13:19 UTC (v8.1.1)
+```
+
+### Montreal Rules Reminder
+
+ALL Polymarket API calls MUST originate from Montreal (15.223.247.178 / ca-central-1).
+Never call CLOB, Gamma, wallet, or order APIs from local machines.
+Code changes: push to develop -> pull on Montreal -> restart engine.
+
+### Known Issues
+
+1. RFQ cap — still uses runtime config, not dynamic cap per offset
+2. DB pnl_usd — pre-fix values used wrong calc. Wallet is ground truth.
+3. 2 zombie positions — redeemable from Apr 2 Chrome. Need redemption from Montreal.
+4. v2.2 model — constant P(UP) output, not truly per-window calibrated
+
+*Next review: April 8, 2026 09:00 UTC*
