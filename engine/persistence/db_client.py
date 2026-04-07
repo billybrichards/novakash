@@ -660,7 +660,7 @@ class DBClient:
                         $74,$75,$76,$77,$78,
                         $79,$80,$81,$82
                     )
-                    ON CONFLICT (window_ts, asset, timeframe) DO UPDATE SET
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
                         gamma_up_price         = COALESCE(EXCLUDED.gamma_up_price, window_snapshots.gamma_up_price),
                         gamma_down_price       = COALESCE(EXCLUDED.gamma_down_price, window_snapshots.gamma_down_price),
                         delta_chainlink        = COALESCE(EXCLUDED.delta_chainlink, window_snapshots.delta_chainlink),
