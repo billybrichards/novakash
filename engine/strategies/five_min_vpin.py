@@ -701,9 +701,11 @@ class FiveMinVPINStrategy(BaseStrategy):
                     # v2.2: Store full timesfm quantile surface if available
                     _timesfm = _v2_pre.get("timesfm", {})
                     if _timesfm and _timesfm.get("quantiles"):
-                        window_snapshot["v2_quantiles"] = _timesfm["quantiles"]
+                        import json
+                        window_snapshot["v2_quantiles"] = json.dumps(_timesfm["quantiles"])
                     if _timesfm and _timesfm.get("quantiles_at_close"):
-                        window_snapshot["v2_quantiles_at_close"] = _timesfm["quantiles_at_close"]
+                        import json
+                        window_snapshot["v2_quantiles_at_close"] = json.dumps(_timesfm["quantiles_at_close"])
             except Exception as e:
                 self._log.warning("v2.probability.fetch_failed", error_str=str(e)[:100])
 
