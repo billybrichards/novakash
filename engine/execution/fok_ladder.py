@@ -1,17 +1,20 @@
 """
-FOK Execution Ladder — v8.0 Phase 2
+Price Ladder — v9.0
 
-Fill-or-Kill order ladder for Polymarket CLOB.
+Configurable order execution ladder for Polymarket CLOB.
+Supports FAK (Fill-And-Kill), FOK (Fill-Or-Kill), and GTC order types.
 
-Instead of a single GTC/GTD order at a stale Gamma price, the FOK ladder:
-  1. Queries the live CLOB book for the best ask
-  2. Submits a FOK at that price
-  3. If killed (not immediately filled), waits FOK_INTERVAL_S, refreshes the book,
-     bumps price by FOK_BUMP, and retries — up to FOK_ATTEMPTS times
-  4. Returns a structured result with fill price, step, and attempts used
+v9.0 default: FAK — fills what exists at ≤ limit price, cancels remainder.
+With dynamic caps ($0.55/$0.65), FAK is safe from terrible fills.
 
-This replaces the single GTC placement in five_min_vpin.py when FOK_ENABLED=true.
-The existing GTC path is preserved as a fallback.
+Flow:
+  1. Query live CLOB book for best ask
+  2. Submit FAK/FOK at cap + π cents (if within threshold)
+  3. If killed/partial, wait interval, refresh book, bump, retry
+  4. Return structured result with fill price, shares matched, attempts
+
+Order type configurable via ORDER_TYPE env var (FAK/FOK/GTC).
+GTC fallback in strategy if ladder exhausts all attempts.
 
 CRITICAL: All CLOB operations go through PolymarketClient — NO direct HTTP calls here.
 """
@@ -46,15 +49,12 @@ FOK_INTERVAL_S_DEFAULT = 2.0
 FOK_BUMP_DEFAULT = 0.01
 FOK_PI_BONUS_CENTS_DEFAULT = 0.0314  # π cents
 FOK_PI_PERCENT_THRESHOLD_DEFAULT = 3.14  # π%
-
-
-def _env_float(key: str, default: float) -> float:
-    return float(os.environ.get(key, default))
+ORDER_TYPE_DEFAULT = "FAK"  # v9.0 default: Fill-And-Kill
 
 
 @dataclass
 class FOKResult:
-    """Result from a FOK ladder execution."""
+    """Result from a price ladder execution (FAK/FOK)."""
     filled: bool
     fill_price: Optional[float]
     fill_step: Optional[int]        # Which attempt number filled (1-indexed)
@@ -63,47 +63,43 @@ class FOKResult:
     order_id: Optional[str]
     attempted_prices: list[float] = field(default_factory=list)
     abort_reason: Optional[str] = None  # Set when ladder aborts before first attempt
+    partial: bool = False  # True if FAK partial fill (size_matched < requested)
+    order_type: str = "FAK"  # Which order type was used
 
 
 class FOKLadder:
     """
-    Fill-or-Kill execution ladder.
+    Price execution ladder (v9.0 — supports FAK/FOK/GTC).
 
-    Queries the live CLOB book and attempts to fill at progressively higher
-    prices (up to FOK_ATTEMPTS times), bumping by FOK_BUMP each miss.
+    Queries the live CLOB book and attempts to fill at cap + π cents,
+    retrying up to FOK_ATTEMPTS times with price bumps.
+
+    Default order type: FAK (Fill-And-Kill) — fills partial liquidity safely.
+    Configurable via ORDER_TYPE env var.
 
     All CLOB operations delegate to PolymarketClient — no direct HTTP calls.
-
-    Args:
-        poly_client: Initialised PolymarketClient instance.
     """
 
     def __init__(self, poly_client: "PolymarketClient") -> None:
         self._poly = poly_client
-        self._log = logger.bind(component="fok_ladder")
-
-        # Config: read from env each time execute() is called so hot-reload works
-        # (but store here for logging convenience)
-        self._max_attempts = _env_int("FOK_ATTEMPTS", FOK_ATTEMPTS_DEFAULT)
-        self._interval_s = _env_float("FOK_INTERVAL_S", FOK_INTERVAL_S_DEFAULT)
-        self._bump = _env_float("FOK_BUMP", FOK_BUMP_DEFAULT)
+        self._log = logger.bind(component="price_ladder")
 
     async def execute(
         self,
         token_id: str,
         direction: str,
         stake_usd: float,
-        max_price: float = 0.73,
+        max_price: float = 0.65,
         min_price: float = 0.30,
     ) -> FOKResult:
         """
-        Execute FOK ladder for a BUY order.
+        Execute price ladder for a BUY order.
 
         Args:
             token_id: CLOB outcome token ID.
             direction: "BUY" (always BUY — we buy YES or NO tokens).
             stake_usd: Notional USD to spend.
-            max_price: Hard cap — abort if best_ask > max_price.
+            max_price: Hard cap (dynamic per v9.0 tier).
             min_price: Hard floor — abort if best_ask < min_price.
 
         Returns:
@@ -115,35 +111,11 @@ class FOKLadder:
         bump = _env_float("FOK_BUMP", FOK_BUMP_DEFAULT)
         pi_bonus_cents = _env_float("FOK_PI_BONUS_CENTS", FOK_PI_BONUS_CENTS_DEFAULT)
         pi_percent_threshold = _env_float("FOK_PI_PERCENT_THRESHOLD", FOK_PI_PERCENT_THRESHOLD_DEFAULT)
+        order_type = os.environ.get("ORDER_TYPE", ORDER_TYPE_DEFAULT).upper()
 
-        # Calculate effective max_price with pi bonus if CLOB is close enough
-        # Check initial book state to see if we qualify for pi bonus
-        best_ask_check = best_ask
-        
-        # Pi bonus: if CLOB is within π% of base cap, allow up to cap+π cents
+        # Pi bonus: allow up to cap+π cents
         pi_threshold_price = max_price * (1 + pi_percent_threshold / 100)
         effective_max_price = max_price + pi_bonus_cents
-        
-        self._log.info(
-            "fok_ladder.pi_bonus_check",
-            base_max_price=f"${max_price:.4f}",
-            best_ask=f"${best_ask_check:.4f}",
-            pi_threshold=f"${pi_threshold_price:.4f}",
-            pi_bonus=f"${pi_bonus_cents:.4f}",
-            effective_max=f"${effective_max_price:.4f}",
-            within_threshold=best_ask_check <= pi_threshold_price,
-        )
-
-        self._log.info(
-            "fok_ladder.start",
-            token_id=token_id[:20] + "..." if len(token_id) > 20 else token_id,
-            stake_usd=f"${stake_usd:.2f}",
-            max_price=f"${max_price:.4f}",
-            min_price=f"${min_price:.4f}",
-            max_attempts=max_attempts,
-            interval_s=interval_s,
-            bump=f"${bump:.4f}",
-        )
 
         attempted_prices: list[float] = []
 
@@ -151,145 +123,120 @@ class FOKLadder:
         try:
             best_ask = await self._poly.get_clob_best_ask(token_id)
         except Exception as exc:
-            self._log.warning("fok_ladder.book_error_initial", error=str(exc)[:200])
+            self._log.warning("price_ladder.book_error", error=str(exc)[:200])
             return FOKResult(
-                filled=False,
-                fill_price=None,
-                fill_step=None,
-                shares=None,
-                attempts=0,
-                order_id=None,
-                attempted_prices=[],
+                filled=False, fill_price=None, fill_step=None, shares=None,
+                attempts=0, order_id=None, attempted_prices=[],
                 abort_reason=f"book_error: {str(exc)[:100]}",
+                order_type=order_type,
             )
 
         # ── Step 2: Price bounds check ────────────────────────────────────
         if best_ask < min_price:
-            self._log.warning(
-                "fok_ladder.abort_floor",
-                best_ask=f"${best_ask:.4f}",
-                floor=f"${min_price:.4f}",
-            )
+            self._log.warning("price_ladder.abort_floor",
+                best_ask=f"${best_ask:.4f}", floor=f"${min_price:.4f}")
             return FOKResult(
-                filled=False,
-                fill_price=None,
-                fill_step=None,
-                shares=None,
-                attempts=0,
-                order_id=None,
-                attempted_prices=[],
+                filled=False, fill_price=None, fill_step=None, shares=None,
+                attempts=0, order_id=None, attempted_prices=[],
                 abort_reason=f"best_ask ${best_ask:.4f} < floor ${min_price:.4f}",
+                order_type=order_type,
             )
 
-        # FOK mode: start at effective_max_price (with pi bonus if applicable)
-        # CLOB may drop quickly, or there may be hidden liquidity at our price
-        current_price = min(best_ask_check, effective_max_price) if best_ask_check <= pi_threshold_price else max_price
-
-        if best_ask_check <= pi_threshold_price:
-            self._log.info(
-                "fok_ladder.clob_within_pi_threshold",
-                best_ask=f"${best_ask_check:.4f}",
-                threshold=f"${pi_threshold_price:.4f}",
-                starting_at=f"${current_price:.4f}",
-                note=f'FOK will attempt fills up to ${effective_max_price:.4f} (cap+π cents)',
-            )
-        elif best_ask_check > max_price:
-            self._log.info(
-                "fok_ladder.clob_above_cap",
-                best_ask=f"${best_ask_check:.4f}",
-                starting_at=f"${current_price:.4f}",
-                note="FOK will attempt fills at cap; CLOB may drop or hidden liquidity may exist",
-            )
+        # ── Step 2b: Pi bonus check (now AFTER best_ask is known) ────────
+        within_pi = best_ask <= pi_threshold_price
+        if within_pi:
+            current_price = min(best_ask, effective_max_price)
         else:
-            self._log.info(
-                "fok_ladder.clob_at_or_below_cap",
-                best_ask=f"${best_ask_check:.4f}",
-                starting_at=f"${current_price:.4f}",
-            )
+            current_price = max_price
 
-        # ── Steps 3–6: FOK attempt loop ───────────────────────────────────
+        self._log.info(
+            "price_ladder.start",
+            order_type=order_type,
+            token_id=token_id[:20] + "...",
+            stake_usd=f"${stake_usd:.2f}",
+            base_cap=f"${max_price:.4f}",
+            effective_cap=f"${effective_max_price:.4f}",
+            best_ask=f"${best_ask:.4f}",
+            within_pi=within_pi,
+            starting_price=f"${current_price:.4f}",
+            max_attempts=max_attempts,
+        )
+
+        # ── Steps 3–6: Attempt loop (FAK/FOK) ─────────────────────────────
+        import math
+
         for attempt in range(1, max_attempts + 1):
-            # Cap each attempt at effective_max_price (with pi bonus if applicable)
             attempt_price = min(round(current_price, 4), effective_max_price)
-            # Enforce 2dp strictness for CLOB compliance
-            attempt_price = round(attempt_price, 2)
+            attempt_price = round(attempt_price, 2)  # CLOB requires 2dp
             attempted_prices.append(attempt_price)
 
-            # Calculate size for this attempt
-            # CLOB requires for BUY: maker_amount (price*size) max 2 decimals,
-            # taker_amount (size) max 4 decimals.
-            # We iterate size downward until price*size is clean to 2dp.
-            import math
+            # Size calculation: floor to 2dp, adjust until maker_amount is clean
             size = math.floor(stake_usd / attempt_price * 100) / 100
             for _adj in range(100):
                 _maker = round(attempt_price * size, 6)
                 if abs(_maker - round(_maker, 2)) < 1e-9:
                     break
                 size -= 0.01
-            size = max(size, 0.01)  # safety floor
+            size = max(size, 0.01)
 
             self._log.info(
-                "fok_ladder.attempt",
+                "price_ladder.attempt",
                 attempt=attempt,
-                max_attempts=max_attempts,
+                order_type=order_type,
                 price=f"${attempt_price:.4f}",
                 size=f"{size:.2f}",
-                token_id=token_id[:20] + "..." if len(token_id) > 20 else token_id,
             )
 
-            # ── Step 3: Submit FOK ────────────────────────────────────────
+            # ── Submit order (FAK or FOK via configurable type) ──────────
             try:
-                fok_result = await self._poly.place_fok_order(
+                result = await self._poly.place_market_order(
                     token_id=token_id,
                     price=attempt_price,
                     size=size,
+                    order_type=order_type,
                 )
             except Exception as exc:
-                self._log.warning(
-                    "fok_ladder.order_error",
-                    attempt=attempt,
-                    price=f"${attempt_price:.4f}",
-                    error=str(exc)[:200],
-                )
-               # Non-fatal — retry on exception (CLOB may drop)
+                self._log.warning("price_ladder.order_error",
+                    attempt=attempt, error=str(exc)[:200])
                 if attempt < max_attempts:
                     await asyncio.sleep(interval_s)
                     try:
                         current_price = await self._poly.get_clob_best_ask(token_id)
-                        # Keep trying at effective_max_price (CLOB may drop)
                         current_price = min(current_price + bump, effective_max_price)
                     except Exception:
-                        # Book query failed — keep trying at cap
                         current_price = min(attempt_price + bump, effective_max_price)
                     continue
                 else:
                     break
 
-            filled = fok_result.get("filled", False)
-            size_matched = fok_result.get("size_matched", 0.0)
-            order_id = fok_result.get("order_id")
+            filled = result.get("filled", False)
+            size_matched = float(result.get("size_matched", 0.0) or 0.0)
+            order_id = result.get("order_id")
 
             self._log.info(
-                "fok_ladder.attempt_result",
+                "price_ladder.result",
                 attempt=attempt,
+                order_type=order_type,
                 price=f"${attempt_price:.4f}",
                 filled=filled,
-                size_matched=size_matched,
+                size_matched=f"{size_matched:.2f}",
+                requested=f"{size:.2f}",
                 order_id=str(order_id)[:20] if order_id else "none",
             )
 
-            # ── Step 4: Check fill ────────────────────────────────────────
-            if filled and float(size_matched) > 0:
-                actual_shares = float(size_matched)
+            # ── Check fill (FAK may partial-fill) ────────────────────────
+            if size_matched > 0:
+                actual_shares = size_matched
                 actual_fill_price = round(stake_usd / actual_shares, 4) if actual_shares > 0 else attempt_price
+                is_partial = actual_shares < (size * 0.95)  # >5% shortfall = partial
 
                 self._log.info(
-                    "fok_ladder.filled",
+                    "price_ladder.filled",
                     attempt=attempt,
+                    order_type=order_type,
                     fill_price=f"${actual_fill_price:.4f}",
-                    shares=f"{actual_shares:.4f}",
-                    total_attempts=attempt,
-                    attempted_prices=attempted_prices,
+                    shares=f"{actual_shares:.2f}",
+                    partial=is_partial,
                 )
 
                 return FOKResult(
@@ -300,54 +247,30 @@ class FOKLadder:
                     attempts=attempt,
                     order_id=str(order_id) if order_id else None,
                     attempted_prices=attempted_prices,
+                    partial=is_partial,
+                    order_type=order_type,
                 )
 
-            # ── Step 5: FOK was killed — prepare next attempt ─────────────
+            # ── Killed / zero fill — prepare next attempt ────────────────
             if attempt < max_attempts:
-                self._log.info(
-                    "fok_ladder.killed_retry",
-                    attempt=attempt,
-                    price=f"${attempt_price:.4f}",
-                    wait_s=interval_s,
-                    next_bump=f"${bump:.4f}",
-                )
+                self._log.info("price_ladder.retry",
+                    attempt=attempt, wait_s=interval_s)
                 await asyncio.sleep(interval_s)
-
-                 # ── Step 5 cont: Refresh book and bump ────────────────────
                 try:
                     fresh_ask = await self._poly.get_clob_best_ask(token_id)
-                    # Use fresh book price as base, then bump
                     current_price = min(fresh_ask + bump, effective_max_price)
-                    self._log.info(
-                        "fok_ladder.fresh_book",
-                        fresh_ask=f"${fresh_ask:.4f}",
-                        next_price=f"${current_price:.4f}",
-                    )
-                except Exception as exc:
-                    # Book query failed — bump from last price
+                except Exception:
                     current_price = min(attempt_price + bump, effective_max_price)
-                    self._log.debug(
-                        "fok_ladder.fresh_book_failed",
-                        fallback_price=f"${current_price:.4f}",
-                        error=str(exc)[:100],
-                    )
 
-                # Cap at effective_max_price (with pi bonus if applicable)
-                current_price = min(current_price, effective_max_price)
-
-        # ── Step 7: All attempts exhausted ───────────────────────────────
-        self._log.warning(
-            "fok_ladder.exhausted",
+        # ── All attempts exhausted ───────────────────────────────────────
+        self._log.warning("price_ladder.exhausted",
+            order_type=order_type,
             attempts=len(attempted_prices),
-            attempted_prices=[f"${p:.4f}" for p in attempted_prices],
-        )
+            prices=[f"${p:.4f}" for p in attempted_prices])
 
         return FOKResult(
-            filled=False,
-            fill_price=None,
-            fill_step=None,
-            shares=None,
-            attempts=len(attempted_prices),
-            order_id=None,
+            filled=False, fill_price=None, fill_step=None, shares=None,
+            attempts=len(attempted_prices), order_id=None,
             attempted_prices=attempted_prices,
+            order_type=order_type,
         )

@@ -188,6 +188,14 @@ class RuntimeConfig:
         # Forecast is still fetched and logged for monitoring when timesfm_enabled=True.
         self.timesfm_agreement_enabled: bool = os.environ.get("TIMESFM_AGREEMENT_ENABLED", "false").lower() == "true"
 
+        # ── v9.0: Source agreement + dynamic caps ───────────────────────────
+        # V9_SOURCE_AGREEMENT: CL+TI direction must agree (94.7% WR when agree, 9.1% when disagree)
+        self.v9_source_agreement: bool = os.environ.get("V9_SOURCE_AGREEMENT", "false").lower() == "true"
+        # V9_CAPS_ENABLED: Two-tier dynamic caps based on empirical agreement WR
+        self.v9_caps_enabled: bool = os.environ.get("V9_CAPS_ENABLED", "false").lower() == "true"
+        # ORDER_TYPE: FAK (Fill-And-Kill), FOK (Fill-Or-Kill), or GTC
+        self.order_type: str = os.environ.get("ORDER_TYPE", "FAK").upper()
+
         # ── Sync metadata ─────────────────────────────────────────────────
         self._active_config_id: Optional[int] = None
         self._active_config_name: Optional[str] = None

@@ -533,8 +533,99 @@ class FiveMinVPINStrategy(BaseStrategy):
             except Exception as exc:
                 self._log.debug("evaluate.timesfm_fetch_failed", error=str(exc))
 
-        # Evaluate signal (with TWAP override for direction + TimesFM agreement)
-        signal = self._evaluate_signal(window, current_price, current_vpin, delta_pct, twap_result=twap_result, timesfm_forecast=timesfm_forecast)
+        # ── v9.0 Source Agreement Gate ────────────────────────────────────
+        # When CL+TI agree on direction, WR = 94.7%. When they disagree, 9.1%.
+        # This is the single most impactful filter. Feature-flagged for rollback.
+        _v9_agreement = os.environ.get("V9_SOURCE_AGREEMENT", "false").lower() == "true"
+        _v9_source_agree = None  # None=unknown, True=agree, False=disagree
+        _v9_direction_override = None
+
+        if delta_chainlink is not None and delta_tiingo is not None:
+            _cl_dir = "UP" if delta_chainlink > 0 else "DOWN"
+            _ti_dir = "UP" if delta_tiingo > 0 else "DOWN"
+            _v9_source_agree = (_cl_dir == _ti_dir)
+
+            if _v9_source_agree:
+                _v9_direction_override = _cl_dir  # Both agree → use shared direction
+                self._log.info("v9.source_agree", cl=_cl_dir, ti=_ti_dir,
+                    delta_cl=f"{delta_chainlink:+.4f}%", delta_ti=f"{delta_tiingo:+.4f}%")
+            else:
+                self._log.info("v9.source_disagree", cl=_cl_dir, ti=_ti_dir,
+                    delta_cl=f"{delta_chainlink:+.4f}%", delta_ti=f"{delta_tiingo:+.4f}%",
+                    gate_active=_v9_agreement)
+                if _v9_agreement:
+                    self._last_skip_reason = f"v9: CL={_cl_dir} TI={_ti_dir} DISAGREE"
+                    # Log to signal_evaluations before skipping
+                    if self._db:
+                        try:
+                            await self._db.write_signal_evaluation(
+                                window_ts=window.window_ts, asset=window.asset,
+                                timeframe="5m", eval_offset=getattr(window, 'eval_offset', None),
+                                delta_chainlink=delta_chainlink, delta_tiingo=delta_tiingo,
+                                delta_binance=delta_binance, vpin=current_vpin,
+                                regime=_snap_regime if '_snap_regime' in dir() else None,
+                                decision="SKIP", gate_failed="source_disagree",
+                            )
+                        except Exception:
+                            pass
+                    signal = None
+                    # Skip directly — don't evaluate further
+                    tf = "15m" if window.duration_secs == 900 else "5m"
+                    # Jump to snapshot recording (below)
+                    # We still need to record the window snapshot, so we can't return here.
+                    # Set signal=None and let the existing flow handle it.
+
+        # ── v9.0 Dynamic Caps (two-tier) ────────────────────────────────
+        # Replace v8.1 four-tier caps with empirical agreement-WR-based tiers.
+        _v9_caps = os.environ.get("V9_CAPS_ENABLED", "false").lower() == "true"
+        _v9_cap = None
+        _v9_tier = None
+        _eval_offset = getattr(window, 'eval_offset', None)
+
+        if _v9_caps and _eval_offset is not None:
+            _v9_cap_early = float(os.environ.get("V9_CAP_EARLY", "0.55"))
+            _v9_cap_golden = float(os.environ.get("V9_CAP_GOLDEN", "0.65"))
+            _v9_vpin_early = float(os.environ.get("V9_VPIN_EARLY", "0.65"))
+            _v9_vpin_late = float(os.environ.get("V9_VPIN_LATE", "0.45"))
+
+            if _eval_offset > 130:
+                # Early zone: CASCADE only (VPIN >= 0.65)
+                if current_vpin >= _v9_vpin_early:
+                    _v9_cap = _v9_cap_early
+                    _v9_tier = "EARLY_CASCADE"
+                else:
+                    _v9_tier = "EARLY_SKIP"
+                    if _v9_agreement and _v9_source_agree:
+                        # Agree but VPIN too low for early — skip
+                        self._last_skip_reason = f"v9: early offset T-{_eval_offset} VPIN {current_vpin:.2f} < {_v9_vpin_early}"
+                        signal = None
+            else:
+                # Golden zone (T-130..T-60): VPIN >= 0.45
+                if current_vpin >= _v9_vpin_late:
+                    _v9_cap = _v9_cap_golden
+                    _v9_tier = "GOLDEN"
+                else:
+                    _v9_tier = "GOLDEN_SKIP"
+                    if _v9_agreement:
+                        self._last_skip_reason = f"v9: golden zone VPIN {current_vpin:.2f} < {_v9_vpin_late}"
+                        signal = None
+
+            self._log.info("v9.cap_tier", tier=_v9_tier, cap=f"${_v9_cap:.2f}" if _v9_cap else "SKIP",
+                offset=_eval_offset, vpin=f"{current_vpin:.3f}")
+
+        # Evaluate signal (with TWAP and TimesFM — dead gates will be cleaned up)
+        # Skip evaluation if v9.0 already decided to skip
+        if not ((_v9_agreement and _v9_source_agree is False) or
+                (_v9_caps and _v9_tier and "SKIP" in _v9_tier)):
+            signal = self._evaluate_signal(window, current_price, current_vpin, delta_pct, twap_result=twap_result, timesfm_forecast=timesfm_forecast)
+            # Override direction with v9.0 source agreement direction
+            if signal and _v9_direction_override and _v9_agreement:
+                signal.direction = _v9_direction_override
+            # Override cap with v9.0 tier cap
+            if signal and _v9_cap is not None:
+                signal.v81_entry_cap = _v9_cap
+        else:
+            signal = None
 
         tf = "15m" if window.duration_secs == 900 else "5m"
 

@@ -52,10 +52,11 @@ FIVE_MIN_MODE: str = os.environ.get("FIVE_MIN_MODE", "safe")
 FIVE_MIN_ENTRY_OFFSET: int = _env_int("FIVE_MIN_ENTRY_OFFSET", 60)  # seconds before close (legacy — use FIVE_MIN_EVAL_OFFSETS for multi-window)
 
 # Multi-offset evaluation: comma-separated list of T-minus values
-# v8.1: Default "240,180,120,60" → cascade from T-240s (cheapest entry) to T-60s (fallback)
-# Early offsets (>=120s) require v2.2 HIGH CONF + v8 direction agreement
-# _last_executed_window dedup gate prevents double-trading the same window
-_eval_offsets_raw = os.environ.get("FIVE_MIN_EVAL_OFFSETS", "240,180,120,60")
+# v9.0: Continuous eval every 10s from T-240 to T-60 (18 evaluations per window).
+# First moment all gates pass → FAK at dynamic cap → done (one trade per window).
+# v8.1 default was "240,180,120,60" (4 fixed offsets).
+# Override via FIVE_MIN_EVAL_OFFSETS env var. Rollback: set to "240,180,120,60".
+_eval_offsets_raw = os.environ.get("FIVE_MIN_EVAL_OFFSETS", "240,230,220,210,200,190,180,170,160,150,140,130,120,110,100,90,80,70,60")
 FIVE_MIN_EVAL_OFFSETS: list[int] = sorted(
     [int(x.strip()) for x in _eval_offsets_raw.split(",") if x.strip().isdigit()],
     reverse=True,  # largest offset first (earliest in window)

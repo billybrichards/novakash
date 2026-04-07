@@ -633,9 +633,127 @@ class PolymarketClient:
             "order_id": str(order_id),
         }
 
+    async def place_market_order(
+        self,
+        token_id: str,
+        price: float,
+        size: float,
+        order_type: str = "FAK",
+    ) -> dict:
+        """Submit a market order with configurable type (FAK/FOK).
+
+        This is the v9.0 unified entry point used by the price ladder.
+        Delegates to place_fok_order() with the appropriate OrderType.
+
+        Args:
+            token_id: CLOB outcome token ID.
+            price: Worst-price limit (slippage cap).
+            size: Number of shares to buy.
+            order_type: "FAK" (Fill-And-Kill) or "FOK" (Fill-Or-Kill).
+
+        Returns:
+            dict with keys: filled (bool), size_matched (float), order_id (str).
+        """
+        # FAK and FOK share the same submission logic — only OrderType differs.
+        # The py-clob-client SDK supports both via OrderType enum.
+        if self.paper_mode:
+            # Paper mode: simulate fill at requested price
+            import math
+            _sim_size = math.floor(size * 100) / 100
+            return {
+                "filled": True,
+                "size_matched": _sim_size,
+                "order_id": f"paper-{order_type.lower()}-{uuid.uuid4().hex[:8]}",
+            }
+
+        if not self._clob_client:
+            raise RuntimeError("CLOB client not connected — call connect() first")
+
+        stake_usd = price * size
+        if stake_usd > LIVE_MAX_TRADE_USD:
+            raise ValueError(f"Trade stake ${stake_usd:.2f} exceeds cap ${LIVE_MAX_TRADE_USD:.2f}")
+
+        from py_clob_client.clob_types import OrderArgs, OrderType
+        from py_clob_client.order_builder.constants import BUY
+
+        client = self._clob_client
+
+        import math
+        _price = round(price, 4)
+        _size = math.floor(size * 100) / 100
+        for _adj in range(100):
+            _maker = round(_price * _size, 6)
+            if abs(_maker - round(_maker, 2)) < 1e-9:
+                break
+            _size -= 0.01
+        _size = max(_size, 0.01)
+        if _size <= 0:
+            return {"filled": False, "size_matched": 0, "order_id": None}
+
+        order_args = OrderArgs(
+            token_id=token_id,
+            price=float(f"{_price:.4f}"),
+            size=float(f"{_size:.2f}"),
+            side=BUY,
+        )
+
+        # Select order type from SDK enum
+        ot = order_type.upper()
+        if ot == "FAK":
+            sdk_type = OrderType.FAK
+        elif ot == "FOK":
+            sdk_type = OrderType.FOK
+        else:
+            sdk_type = OrderType.FOK  # fallback to FOK for safety
+
+        def _sign_and_submit():
+            signed = client.create_order(order_args)
+            return client.post_order(signed, sdk_type)
+
+        self._log.info(
+            "place_market_order.submitting",
+            order_type=ot,
+            token_id=token_id[:20] + "...",
+            price=f"${price:.4f}",
+            size=f"{size:.2f}",
+        )
+
+        response = await asyncio.to_thread(_sign_and_submit)
+
+        if isinstance(response, dict):
+            order_id = response.get("orderID") or response.get("id") or f"{ot.lower()}-{uuid.uuid4().hex[:12]}"
+            status = response.get("status", "UNKNOWN")
+            size_matched_raw = response.get("size_matched", "0")
+        else:
+            order_id = getattr(response, "orderID", None) or getattr(response, "id", None) or f"{ot.lower()}-{uuid.uuid4().hex[:12]}"
+            status = getattr(response, "status", "UNKNOWN")
+            size_matched_raw = getattr(response, "size_matched", "0")
+
+        try:
+            size_matched = float(size_matched_raw) if size_matched_raw else 0.0
+        except (ValueError, TypeError):
+            size_matched = 0.0
+
+        filled = size_matched > 0 or status in ("MATCHED", "FILLED")
+
+        self._log.info(
+            "place_market_order.result",
+            order_type=ot,
+            filled=filled,
+            size_matched=size_matched,
+            order_id=str(order_id)[:20],
+            status=status,
+        )
+
+        return {
+            "filled": filled,
+            "size_matched": size_matched,
+            "order_id": str(order_id),
+        }
+
     async def get_order_book_spread(self, token_id: str) -> float:
         """Get the best ask - best bid spread for a token.
-        
+
         Returns spread in price units (e.g. 0.02 = 2¢ spread).
         Returns 0.02 as default if book can't be read.
         """
