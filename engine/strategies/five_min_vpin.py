@@ -1020,8 +1020,65 @@ class FiveMinVPINStrategy(BaseStrategy):
                     "twap_direction": window_snapshot.get("twap_direction"),
                     "twap_gamma_agree": window_snapshot.get("twap_gamma_agree"),
                 }))
-            except Exception as _ga_exc:
-                self._log.debug("db.gate_audit_write_failed", error=str(_ga_exc)[:80])
+            
+            # ── Comprehensive signal evaluation capture ──
+            try:
+                _clob_up_bid = window_snapshot.get("clob_up_bid")
+                _clob_up_ask = window_snapshot.get("clob_up_ask")
+                _clob_dn_bid = window_snapshot.get("clob_down_bid")
+                _clob_dn_ask = window_snapshot.get("clob_down_ask")
+                _clob_spread = (_clob_up_ask - _clob_up_bid) if _clob_up_ask and _clob_up_bid else None
+                _clob_mid = ((_clob_up_bid + _clob_up_ask) / 2) if _clob_up_bid and _clob_up_ask else None
+                
+                asyncio.create_task(self._db.write_signal_evaluation({
+                    "window_ts": window.window_ts,
+                    "asset": window.asset,
+                    "timeframe": tf,
+                    "eval_offset": eval_offset,
+                    # Prices
+                    "clob_up_bid": _clob_up_bid,
+                    "clob_up_ask": _clob_up_ask,
+                    "clob_down_bid": _clob_dn_bid,
+                    "clob_down_ask": _clob_dn_ask,
+                    "binance_price": window_snapshot.get("binance_price"),
+                    "tiingo_open": _tiingo_open,
+                    "tiingo_close": _tiingo_close,
+                    "chainlink_price": window_snapshot.get("chainlink_open"),
+                    # Deltas
+                    "delta_pct": delta_pct,
+                    "delta_tiingo": delta_tiingo,
+                    "delta_binance": delta_binance,
+                    "delta_chainlink": delta_chainlink,
+                    "delta_source": _price_source_used,
+                    # Market microstructure
+                    "vpin": current_vpin,
+                    "regime": _snap_regime,
+                    "clob_spread": _clob_spread,
+                    "clob_mid": _clob_mid,
+                    # OAK/v2.2 full predictions
+                    "v2_probability_up": window_snapshot.get("v2_probability_up"),
+                    "v2_direction": window_snapshot.get("v2_direction"),
+                    "v2_agrees": window_snapshot.get("v2_agrees"),
+                    "v2_high_conf": window_snapshot.get("v2_direction") is not None and (window_snapshot.get("v2_probability_up", 0) > 0.65 or window_snapshot.get("v2_probability_up", 1) < 0.35),
+                    "v2_model_version": window_snapshot.get("v2_model_version"),
+                    "v2_quantiles": window_snapshot.get("v2_quantiles"),
+                    "v2_quantiles_at_close": window_snapshot.get("v2_quantiles_at_close"),
+                    # Gates
+                    "gate_vpin_passed": _vpin_gate_result == "PASS",
+                    "gate_delta_passed": _delta_gate_result == "PASS",
+                    "gate_cg_passed": _cg_gate_passed,
+                    "gate_twap_passed": not _twap_gate_blocked_actual,
+                    "gate_timesfm_passed": not _timesfm_gate_blocked_actual,
+                    "gate_passed": _all_passed,
+                    "gate_failed": _gate_failed_name,
+                    "decision": "TRADE" if _all_passed else "SKIP",
+                    # TWAP
+                    "twap_delta": window_snapshot.get("twap_delta_pct"),
+                    "twap_direction": window_snapshot.get("twap_direction"),
+                    "twap_gamma_agree": window_snapshot.get("twap_gamma_agree"),
+                }))
+            except Exception as _sig_exc:
+                self._log.warning("db.signal_evaluation_write_failed", error=str(_sig_exc)[:100])
 
         # ── v8.1 Early Entry Gate ────────────────────────────────────────────
         # At offsets >= 120s, require v2.2 HIGH CONF + v8 direction agreement.
