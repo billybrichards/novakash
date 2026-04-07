@@ -302,6 +302,7 @@ WHERE poly_winner IS NOT NULL AND delta_tiingo IS NOT NULL AND delta_binance IS 
 | Apr 7 10:30 | Entry price analysis | $0.60-$0.69 = 100% WR. <$0.40 = 31% WR. | Cheap entries ≠ better. Keep $0.73 GTC. |
 | Apr 7 11:00 | CLOB liquidity surface | 100% ask presence at T-120+, $0.51-0.55 asks. Book thins after T-60. | R8: bestask pricing could unlock early entry EV. |
 | Apr 7 11:30 | Fill price verification | ALL wins fill at $0.73 (CLOB match), real cost $0.74 w/fees. $0.85+ fills = too thin margin (3pp vs 15pp). | Keep $0.73 cap. Do NOT raise. |
+| Apr 7 12:00 | CLOB phantom liquidity | Book shows $0.50 asks but they're phantom — 10% fill rate at book price, 67% at $0.73. v8.1 ONLY fills at $0.70+ (25/25). | $0.73 IS the real market price. Cap mode confirmed optimal. |
 
 ---
 
