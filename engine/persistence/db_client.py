@@ -1408,6 +1408,127 @@ class DBClient:
         except Exception as exc:
             log.warning("db.write_gate_audit_failed", error=str(exc)[:200])
 
+    async def write_signal_evaluation(self, data: dict) -> None:
+        """
+        Write comprehensive signal evaluation data for every window evaluation point.
+        
+        Captures ALL signal data at each eval_offset: all price sources, all deltas,
+        OAK full probability surface (quantiles), all gates, and market microstructure.
+        
+        Args:
+            data: dict with keys matching signal_evaluations table columns.
+        """
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        clob_up_bid, clob_up_ask, clob_down_bid, clob_down_ask,
+                        binance_price, tiingo_open, tiingo_close, chainlink_price,
+                        delta_pct, delta_tiingo, delta_binance, delta_chainlink, delta_source,
+                        vpin, regime, clob_spread, clob_mid,
+                        v2_probability_up, v2_direction, v2_agrees, v2_high_conf,
+                        v2_model_version, v2_quantiles, v2_quantiles_at_close,
+                        gate_vpin_passed, gate_delta_passed, gate_cg_passed,
+                        gate_twap_passed, gate_timesfm_passed, gate_passed,
+                        gate_failed, decision,
+                        twap_delta, twap_direction, twap_gamma_agree
+                    ) VALUES (
+                        $1, $2, $3, $4,
+                        $5, $6, $7, $8,
+                        $9, $10, $11, $12,
+                        $13, $14, $15, $16, $17,
+                        $18, $19, $20, $21,
+                        $22, $23, $24, $25,
+                        $26, $27, $28,
+                        $29, $30, $31,
+                        $32, $33, $34, $35,
+                        $36, $37, $38
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        clob_up_bid           = EXCLUDED.clob_up_bid,
+                        clob_up_ask           = EXCLUDED.clob_up_ask,
+                        clob_down_bid         = EXCLUDED.clob_down_bid,
+                        clob_down_ask         = EXCLUDED.clob_down_ask,
+                        binance_price         = EXCLUDED.binance_price,
+                        tiingo_open           = EXCLUDED.tiingo_open,
+                        tiingo_close          = EXCLUDED.tiingo_close,
+                        chainlink_price       = EXCLUDED.chainlink_price,
+                        delta_pct             = EXCLUDED.delta_pct,
+                        delta_tiingo          = EXCLUDED.delta_tiingo,
+                        delta_binance         = EXCLUDED.delta_binance,
+                        delta_chainlink       = EXCLUDED.delta_chainlink,
+                        delta_source          = EXCLUDED.delta_source,
+                        vpin                  = EXCLUDED.vpin,
+                        regime                = EXCLUDED.regime,
+                        clob_spread           = EXCLUDED.clob_spread,
+                        clob_mid              = EXCLUDED.clob_mid,
+                        v2_probability_up     = EXCLUDED.v2_probability_up,
+                        v2_direction          = EXCLUDED.v2_direction,
+                        v2_agrees             = EXCLUDED.v2_agrees,
+                        v2_high_conf          = EXCLUDED.v2_high_conf,
+                        v2_model_version      = EXCLUDED.v2_model_version,
+                        v2_quantiles          = EXCLUDED.v2_quantiles,
+                        v2_quantiles_at_close = EXCLUDED.v2_quantiles_at_close,
+                        gate_vpin_passed      = EXCLUDED.gate_vpin_passed,
+                        gate_delta_passed     = EXCLUDED.gate_delta_passed,
+                        gate_cg_passed        = EXCLUDED.gate_cg_passed,
+                        gate_twap_passed      = EXCLUDED.gate_twap_passed,
+                        gate_timesfm_passed   = EXCLUDED.gate_timesfm_passed,
+                        gate_passed           = EXCLUDED.gate_passed,
+                        gate_failed           = EXCLUDED.gate_failed,
+                        decision              = EXCLUDED.decision,
+                        twap_delta            = EXCLUDED.twap_delta,
+                        twap_direction        = EXCLUDED.twap_direction,
+                        twap_gamma_agree      = EXCLUDED.twap_gamma_agree,
+                        evaluated_at          = NOW()
+                    """,
+                    int(data.get("window_ts", 0)),
+                    data.get("asset", "BTC"),
+                    data.get("timeframe", "5m"),
+                    data.get("eval_offset"),
+                    float(data["clob_up_bid"]) if data.get("clob_up_bid") is not None else None,
+                    float(data["clob_up_ask"]) if data.get("clob_up_ask") is not None else None,
+                    float(data["clob_down_bid"]) if data.get("clob_down_bid") is not None else None,
+                    float(data["clob_down_ask"]) if data.get("clob_down_ask") is not None else None,
+                    float(data["binance_price"]) if data.get("binance_price") is not None else None,
+                    float(data["tiingo_open"]) if data.get("tiingo_open") is not None else None,
+                    float(data["tiingo_close"]) if data.get("tiingo_close") is not None else None,
+                    float(data["chainlink_price"]) if data.get("chainlink_price") is not None else None,
+                    float(data["delta_pct"]) if data.get("delta_pct") is not None else None,
+                    float(data["delta_tiingo"]) if data.get("delta_tiingo") is not None else None,
+                    float(data["delta_binance"]) if data.get("delta_binance") is not None else None,
+                    float(data["delta_chainlink"]) if data.get("delta_chainlink") is not None else None,
+                    data.get("delta_source"),
+                    float(data["vpin"]) if data.get("vpin") is not None else None,
+                    data.get("regime"),
+                    float(data["clob_spread"]) if data.get("clob_spread") is not None else None,
+                    float(data["clob_mid"]) if data.get("clob_mid") is not None else None,
+                    float(data["v2_probability_up"]) if data.get("v2_probability_up") is not None else None,
+                    data.get("v2_direction"),
+                    bool(data["v2_agrees"]) if data.get("v2_agrees") is not None else None,
+                    bool(data["v2_high_conf"]) if data.get("v2_high_conf") is not None else None,
+                    data.get("v2_model_version"),
+                    data.get("v2_quantiles"),  # JSONB (already serialized as JSON string)
+                    data.get("v2_quantiles_at_close"),  # JSONB
+                    bool(data["gate_vpin_passed"]) if data.get("gate_vpin_passed") is not None else None,
+                    bool(data["gate_delta_passed"]) if data.get("gate_delta_passed") is not None else None,
+                    bool(data["gate_cg_passed"]) if data.get("gate_cg_passed") is not None else None,
+                    bool(data["gate_twap_passed"]) if data.get("gate_twap_passed") is not None else None,
+                    bool(data["gate_timesfm_passed"]) if data.get("gate_timesfm_passed") is not None else None,
+                    bool(data.get("gate_passed", False)),
+                    data.get("gate_failed"),
+                    data.get("decision", "SKIP"),
+                    float(data["twap_delta"]) if data.get("twap_delta") is not None else None,
+                    data.get("twap_direction"),
+                    bool(data["twap_gamma_agree"]) if data.get("twap_gamma_agree") is not None else None,
+                )
+        except Exception as exc:
+            log.warning("db.write_signal_evaluation_failed", error=str(exc)[:200])
+
     # ── Post-Resolution AI Analysis ──────────────────────────────────────────
 
     async def ensure_post_resolution_table(self) -> None:
