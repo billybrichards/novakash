@@ -72,12 +72,48 @@ T-110..T-80     $0.65   09:50 UTC
 T-70..T-60      $0.73   09:50 UTC
 ```
 
+## Loss Prevention Analysis
+
+Of 12 losses, **5 would have been BLOCKED** by today's v2.2 gate fix:
+
+| Time | Stake | Reason | Prevention |
+|------|-------|--------|-----------|
+| 01:28 | $8.35 | `v8_standard` — no v2.2 gate | ✅ BLOCKED |
+| 02:28 | $9.19 | `v8_standard` — no v2.2 gate | ✅ BLOCKED |
+| 02:53 | $8.50 | `v8_standard` — no v2.2 gate | ✅ BLOCKED |
+| 03:29 | $8.62 | `v8_standard` — NORMAL, no v2.2 | ✅ BLOCKED |
+| 03:54 | $8.43 | `v8_standard` — NORMAL, no v2.2 | ✅ BLOCKED |
+| | **$43.09 saved** | | |
+
+**2 more should be blocked** (next iteration):
+
+| Time | Stake | Reason | Suggestion |
+|------|-------|--------|-----------|
+| 10:33 | $12.40 | NORMAL (VPIN 0.49) at T-70 | Block NORMAL at T-70/T-60 |
+| 11:14 | $14.20 | NORMAL (VPIN 0.54) at T-70 | Block NORMAL at T-70/T-60 |
+| | **$26.60 saveable** | | |
+
+**5 losses legitimate** — CASCADE/TRANSITION with v2.2 agreeing. Market was wrong.
+
+**Ceiling if all 7 prevented:** +$33.34 + $43.09 + $26.60 = **+$103.03**
+
+## DB Table Health (verified 12:50 UTC)
+
+| Table | Status | Detail |
+|-------|--------|--------|
+| gate_audit | ✅ | 213 rows/hr, 13 windows, offsets 60-240 |
+| window_snapshots | ✅ | 12/hr, trades + skips + resolutions |
+| telegram_notifications | ✅ | 44/hr, 8 notification types |
+| trades | ✅ | entry_reason, v81_entry_cap, clob_order_id on all |
+| post_resolution_analyses | ✅ | AI analysis after each window |
+| ticks_clob | ✅ | CLOB prices every 2s |
+
 ## Known Issues
 
 1. **DB pnl_usd unreliable** — pre-fix values used wrong fill price calc. Wallet is ground truth.
 2. **NORMAL regime at T-70** — both post-fix losses were VPIN 0.49/0.54. Consider requiring TRANSITION+ at late offsets.
 3. **Gamma ↑$0.500 ↓$0.500** still shows in window header — cosmetic, not used for pricing.
-4. **STARTING_BANKROLL in .env** needs updating to $164.16 for accurate drawdown tracking.
+4. ~~STARTING_BANKROLL in .env~~ — updated to $164.16 ✅
 
 ## Files on Develop
 
@@ -85,5 +121,5 @@ T-70..T-60      $0.73   09:50 UTC
 - `docs/8x-pricing-execution.md` — execution audit + resolution
 - `docs/analyses/2026-04-07-overnight-session.md` — overnight analysis
 - `docs/analyses/2026-04-07-pricing-fix-report.md` — post-fix report
-- `docs/LIVE_DATA_RULES.md` — data analysis rules
-- `docs/TODO-notifications.md` — notification fix tracker
+- `docs/LIVE_DATA_RULES.md` — data analysis rules for all agents
+- `docs/TODO-notifications.md` — notification fix tracker (10 fixed, 5 remaining)
