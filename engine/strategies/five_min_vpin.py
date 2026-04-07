@@ -989,6 +989,22 @@ class FiveMinVPINStrategy(BaseStrategy):
                 window_snapshot["v2_direction"] = _v2_dir
                 window_snapshot["v2_agrees"] = _v2_agrees
                 window_snapshot["v2_model_version"] = _v2_result.get("model_version", "")
+                window_snapshot["eval_offset"] = eval_offset
+                # v2.2: Store full quantile surface
+                _timesfm = _v2_result.get("timesfm", {})
+                if _timesfm and _timesfm.get("quantiles"):
+                    import json
+                    window_snapshot["v2_quantiles"] = json.dumps(_timesfm["quantiles"])
+                if _timesfm and _timesfm.get("quantiles_at_close"):
+                    import json
+                    window_snapshot["v2_quantiles_at_close"] = json.dumps(_timesfm["quantiles_at_close"])
+                
+                # Write snapshot immediately for this eval_offset
+                if self._db is not None:
+                    try:
+                        await self._db.write_window_snapshot(window_snapshot)
+                    except Exception as _snap_exc:
+                        self._log.warning("db.v2_snapshot_write_failed", error=str(_snap_exc)[:80], offset=eval_offset)
 
                 self._log.info(
                     "v81.early_gate",
