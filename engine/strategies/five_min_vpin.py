@@ -53,12 +53,20 @@ log = structlog.get_logger(__name__)
 # T-120 (84.3%) → $0.65        | T-60  (78.8%) → $0.73 (current)
 # Feature-flagged via V2_EARLY_ENTRY_ENABLED env var.
 import os as _os
-V81_ENTRY_CAPS: dict[int, float] = {
-    240: float(_os.environ.get("V81_CAP_T240", "0.55")),
-    180: float(_os.environ.get("V81_CAP_T180", "0.60")),
-    120: float(_os.environ.get("V81_CAP_T120", "0.65")),
-    60:  float(_os.environ.get("V81_CAP_T60", "0.73")),
-}
+_CAP_T240 = float(_os.environ.get("V81_CAP_T240", "0.55"))
+_CAP_T180 = float(_os.environ.get("V81_CAP_T180", "0.60"))
+_CAP_T120 = float(_os.environ.get("V81_CAP_T120", "0.65"))
+_CAP_T60 = float(_os.environ.get("V81_CAP_T60", "0.73"))
+
+def _get_v81_cap(offset: int) -> float:
+    """Dynamic cap per eval offset — bands map to cap tiers."""
+    if offset >= 180: return _CAP_T240   # T-240 to T-180: $0.55
+    if offset >= 120: return _CAP_T180   # T-180 to T-120: $0.60
+    if offset >= 60:  return _CAP_T120   # T-120 to T-60:  $0.65
+    return _CAP_T60                       # T-60:           $0.73
+
+# Legacy dict for backward compat
+V81_ENTRY_CAPS: dict[int, float] = {240: _CAP_T240, 180: _CAP_T180, 120: _CAP_T120, 60: _CAP_T60}
 
 
 @dataclass
@@ -884,7 +892,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         # Dynamic entry cap per offset: T-240=$0.55, T-180=$0.60, T-120=$0.65, T-60=$0.73
         _v81_active = False
         if eval_offset and eval_offset >= 120 and signal is not None and self._timesfm_v2 is not None:
-            _v81_cap = V81_ENTRY_CAPS.get(eval_offset, 0.73)
+            _v81_cap = _get_v81_cap(eval_offset)
             _v81_active = True
             _v8_dir = signal.direction  # capture before any mutation
             try:

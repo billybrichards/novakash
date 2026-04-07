@@ -252,7 +252,7 @@ class TelegramAlerter:
             decision_text += f"\n❌ _{reason[:200]}_\n"
         
         if not self._paper_mode and decision == "TRADE":
-            decision_text += f"\n🟢 *PLACING ORDER*  {mode}\n"
+            decision_text += f"\n🟢 *ORDER SENT → awaiting fill*  {mode}\n"
         
         decision_msg_id = await self._send_with_id(decision_text)
         
