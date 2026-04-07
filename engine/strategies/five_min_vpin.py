@@ -59,11 +59,17 @@ _CAP_T120 = float(_os.environ.get("V81_CAP_T120", "0.65"))
 _CAP_T60 = float(_os.environ.get("V81_CAP_T60", "0.73"))
 
 def _get_v81_cap(offset: int) -> float:
-    """Dynamic cap per eval offset — bands map to cap tiers."""
+    """Dynamic cap per eval offset — bands map to cap tiers.
+    
+    T-240..T-180: $0.55 — earliest entries, cheapest cap
+    T-170..T-120: $0.60 — mid-early
+    T-110..T-80:  $0.65 — mid-late
+    T-70..T-60:   $0.73 — final offsets, max cap (most certainty)
+    """
     if offset >= 180: return _CAP_T240   # T-240 to T-180: $0.55
-    if offset >= 120: return _CAP_T180   # T-180 to T-120: $0.60
-    if offset >= 60:  return _CAP_T120   # T-120 to T-60:  $0.65
-    return _CAP_T60                       # T-60:           $0.73
+    if offset >= 120: return _CAP_T180   # T-170 to T-120: $0.60
+    if offset >= 80:  return _CAP_T120   # T-110 to T-80:  $0.65
+    return _CAP_T60                       # T-70, T-60:     $0.73
 
 # Legacy dict for backward compat
 V81_ENTRY_CAPS: dict[int, float] = {240: _CAP_T240, 180: _CAP_T180, 120: _CAP_T120, 60: _CAP_T60}
@@ -1092,8 +1098,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                     if _clob:
                         _dir = signal.direction
                         _clob_ask = _clob.get("clob_up_ask") if _dir == "UP" else _clob.get("clob_down_ask")
-                        # v8.1: Use dynamic cap from eval offset, not hardcoded $0.73
-                        _dynamic_cap = getattr(signal, 'v81_entry_cap', 0.73) if signal else 0.73
+                        # v8.1: Use dynamic cap from eval offset
+                        _dynamic_cap = _get_v81_cap(eval_offset) if eval_offset else 0.73
                         if _clob_ask and _clob_ask > _dynamic_cap:
                             self._log.info("evaluate.clob_cap_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}", cap=f"${_dynamic_cap:.2f}")
                             self._last_skip_reason = f"CLOB CAP: {_dir} ask ${_clob_ask:.3f} > ${_dynamic_cap:.2f}"
