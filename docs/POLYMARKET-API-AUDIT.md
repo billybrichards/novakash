@@ -483,14 +483,117 @@ trades = httpx.get(
 
 ---
 
+## CLOB `/data/trades` Full Schema (Confirmed)
+
+From CLOB API OpenAPI spec (`GET /data/trades`):
+
+```json
+{
+  "id": "trade-123",                         // unique trade/fill ID
+  "taker_order_id": "0xabc...",              // order that triggered the match
+  "market": "0x<condition_id>",
+  "asset_id": "<token_id>",
+  "side": "BUY",
+  "size": "100000000",                       // in micro-USDC (divide by 1e6 for USDC)
+  "fee_rate_bps": "30",
+  "price": "0.5",
+  "status": "TRADE_STATUS_CONFIRMED",        // or RETRYING, FAILED
+  "match_time": "1700000000",
+  "last_update": "1700000000",
+  "outcome": "YES",
+  "bucket_index": 0,
+  "owner": "f4f247b7-4ac7-ff29-a152-04fda0a8755a",
+  "maker_address": "0x1234...",
+  "transaction_hash": "0xabcd...",
+  "trader_side": "TAKER",
+  "maker_orders": []                         // array of maker order IDs matched against
+}
+```
+
+> ⚠️ **Size is in micro-units.** Divide `size` by 1,000,000 to get USDC/shares.
+> The `taker_order_id` links this fill back to the originating order in our DB.
+
+---
+
+## Relayer / Builder Order Flow
+
+The **Relayer API** (`https://relayer-v2.polymarket.com`) handles gasless transactions. Relevant for us if we use the builder flow:
+
+### `GET /transactions` — Get Recent Relayer Transactions
+```
+URL: https://relayer-v2.polymarket.com/transactions
+Auth: Builder API Keys or Relayer API Keys
+```
+
+Headers (Builder auth):
+```
+POLY_BUILDER_API_KEY
+POLY_BUILDER_TIMESTAMP
+POLY_BUILDER_PASSPHRASE
+POLY_BUILDER_SIGNATURE
+```
+
+Returns transaction objects with fields:
+```json
+{
+  "transactionID": "uuid",
+  "transactionHash": "0x...",
+  "from": "0x...",
+  "to": "0x...",
+  "proxyAddress": "0x...",
+  "state": "STATE_CONFIRMED | STATE_PENDING | STATE_FAILED",
+  "type": "SAFE | PROXY",
+  "owner": "0x...",
+  "createdAt": "2024-07-14T21:13:08Z",
+  "updatedAt": "2024-07-14T21:13:46Z"
+}
+```
+
+**Relayer rate limit:** 25 req / 1 min (much tighter — do not poll frequently)
+
+### `GET /transactions?id=<txId>` — Single Transaction Lookup
+```
+URL: https://relayer-v2.polymarket.com/transactions?id=<transactionID>
+Auth: Builder API Keys or Relayer API Keys
+```
+
+---
+
+## Streaming / WebSocket API
+
+### `GET /live-activity/events/<token_id>` — CLOB Live Events
+```
+URL: https://clob.polymarket.com/live-activity/events/<token_id>
+Auth: None required (public)
+```
+
+This endpoint streams live order book events (fills, orders placed/cancelled) for a specific token. Used by the Polymarket UI. Could be used for real-time fill detection instead of polling.
+
+> ⚠️ **Recommendation:** For our reconciliation service, **don't rely on websocket as primary**. Use it as a supplement to catch fast fills between poll cycles. The 30s polling loop via REST is safer and stateless.
+
+There is **no official WebSocket API documented** for user-specific order status updates. The CLOB does emit events via server-sent events (SSE) for market-level activity, but user-level authenticated streaming is not documented.
+
+---
+
 ## Open Questions / Gaps
 
-1. **CLOB `/data/orders` — does it include historical cancelled/expired orders?** Docs are ambiguous. Testing needed. If not, we may need to track order lifecycle ourselves and only query CLOB for current state.
+1. **CLOB `/data/orders` — does it include historical cancelled/expired orders?** Docs are ambiguous. Testing needed. If not, we may need to track order lifecycle ourselves and only query CLOB for current state. Working assumption: **only LIVE orders are returned** — use `/data/trades` for MATCHED history.
 
-2. **WebSocket streams** — Docs mention real-time order events via `GET /live-activity/events/<token_id>`. This could replace polling for balance/order sync. Worth investigating for the sync service.
+2. **`/data/trades` vs `/trades`** — Both exist. CLOB `/data/trades` appears more complete (includes `transaction_hash`, `maker_order_id`, `taker_order_id`). Data API `/trades` is public and simpler. We should use CLOB for reconciliation, Data API as a cross-check.
 
-3. **`/data/trades` vs `/trades`** — Both exist. CLOB `/data/trades` appears more complete (includes `transaction_hash`, `maker_order_id`). Data API `/trades` is public and simpler. We should use CLOB for reconciliation, Data API as a cross-check.
+3. **Accounting snapshot freshness** — Unknown how frequently the snapshot ZIP is regenerated. Not suitable for real-time use, only cold-start bootstrap.
 
-4. **Accounting snapshot freshness** — Unknown how frequently the snapshot ZIP is regenerated. Not suitable for real-time use, only cold-start bootstrap.
+4. **Proxy wallet vs maker address** — Some wallets use a proxy/funder pattern. The `proxyWallet` field in Data API vs `maker_address` in CLOB may need mapping. Confirm which address we're tracking.
 
-5. **Proxy wallet vs maker address** — Some wallets use a proxy/funder pattern. The `proxyWallet` field in Data API vs `maker_address` in CLOB may need mapping. Confirm which address we're tracking.
+5. **`size` units in CLOB trades** — Confirmed as micro-units (1e6 = 1 share/USDC). The Data API `/trades` uses whole units. Be careful when joining across APIs.
+
+6. **`maker_orders` in CLOB trade response** — This array links the taker fill back to all maker orders it matched against. Potentially useful for multi-fill order reconciliation.
+
+7. **Relayer vs CLOB order placement** — If we use the builder/relayer flow for gasless order submission, order IDs assigned by the Relayer may differ from CLOB order IDs until confirmed. Need to track Relayer `transactionID` → CLOB `order_id` mapping.
+
+---
+
+## Last Updated
+
+**2026-04-07** — Initial comprehensive audit written.
+**2026-04-07** (revision) — Added confirmed CLOB trade schema, Relayer API details, streaming API notes, clarified open questions.
