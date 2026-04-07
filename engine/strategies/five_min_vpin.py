@@ -2529,9 +2529,15 @@ class FiveMinVPINStrategy(BaseStrategy):
         PRICE_CAP = getattr(signal, 'v81_entry_cap', _default_cap)  # v8.1: dynamic cap per offset
         PRICE_FLOOR = float(os.environ.get("PRICE_FLOOR", "0.30"))
         
+        clob_order_id = None
+        _rfq_fill_price = None
+        _used_rfq = False
+        _fok_result = None
+        price = Decimal("0.50")  # Default — overwritten by FOK fill or GTC
+        
         # Pi bonus: if FOK exhausted, use cap+π cents for GTC (when CLOB was within π% of cap)
         _pi_bonus_cents = float(os.environ.get("FOK_PI_BONUS_CENTS", "0.0314"))  # π cents
-        _gtc_price = PRICE_CAP + _pi_bonus_cents if clob_order_id is None and hasattr(signal, '_fok_exhausted') else PRICE_CAP
+        _gtc_price = PRICE_CAP + _pi_bonus_cents if hasattr(signal, '_fok_exhausted') else PRICE_CAP
         _gtc_price = round(_gtc_price, 2)  # Enforce 2dp
         
         self._log.info(
@@ -2555,12 +2561,6 @@ class FiveMinVPINStrategy(BaseStrategy):
         if not rl_allowed:
             self._log.warning("guardrail.rate_limit.blocked", reason=rl_reason)
             return
-
-        clob_order_id = None
-        _rfq_fill_price = None
-        _used_rfq = False
-        _fok_result = None
-        price = Decimal("0.50")  # Default — overwritten by FOK fill or GTC
 
         if runtime.fok_enabled and not self._poly.paper_mode:
             # ── FOK path ──────────────────────────────────────────────────
