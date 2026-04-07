@@ -958,6 +958,11 @@ class FiveMinVPINStrategy(BaseStrategy):
                     "decision": "TRADE" if _all_passed else "SKIP",
                     "skip_reason": None if _all_passed else _actual_skip_reason[:500],
                     "eval_offset": eval_offset,
+                    # v8.1: OAK v2.2 data (may be None if not evaluated yet)
+                    "v2_probability_up": window_snapshot.get("v2_probability_up"),
+                    "v2_direction": window_snapshot.get("v2_direction"),
+                    "v2_agrees": window_snapshot.get("v2_agrees"),
+                    "v2_high_conf": window_snapshot.get("v2_direction") is not None and (window_snapshot.get("v2_probability_up", 0) > 0.65 or window_snapshot.get("v2_probability_up", 1) < 0.35),
                 }))
             except Exception as _ga_exc:
                 self._log.debug("db.gate_audit_write_failed", error=str(_ga_exc)[:80])
