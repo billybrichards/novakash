@@ -991,8 +991,14 @@ class FiveMinVPINStrategy(BaseStrategy):
                         signal.v81_entry_cap = _v81_cap
                 else:
                     # Late offsets (<120): v2.2 HIGH + agrees is enough
-                    signal.entry_reason = f"v2.2_confirmed_T{eval_offset}"
-                    signal.v81_entry_cap = _v81_cap
+                    # v8.1.1: T-70/T-60 require TRANSITION+ (VPIN≥0.55)
+                    # Three NORMAL losses at T-70 on Apr 7 (VPIN 0.49, 0.54, 0.49)
+                    if eval_offset <= 70 and current_vpin < 0.55:
+                        signal = None
+                        self._last_skip_reason = f"v8.1.1: NORMAL at T-{eval_offset} (VPIN {current_vpin:.3f} < 0.55)"
+                    else:
+                        signal.entry_reason = f"v2.2_confirmed_T{eval_offset}"
+                        signal.v81_entry_cap = _v81_cap
                     self._log.info(
                         "v81.early_entry_approved",
                         offset=eval_offset,

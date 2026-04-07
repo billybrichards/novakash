@@ -33,11 +33,17 @@ Root cause found: hidden `.env` on Montreal overriding dynamic caps.
 - Fill price calc fixed (was stake/shares, now uses limit price)
 - RFQ cap fixed (was hardcoded, now uses dynamic cap)
 
-### Phase 4: Post-Fix Trading (09:50–12:45 UTC)
-- **5W/3L (62.5% WR)** — lower WR but much better economics
+### Phase 4: Post-Fix Trading (09:50–13:10 UTC)
+- **6W/4L (60% WR)** — lower WR but much better economics
 - Avg win: +$5.85 (2x improvement from $2.90)
 - Fills at $0.65 instead of $0.73
-- Both T-70 losses were NORMAL regime (weakest signals)
+- All 3 T-70 losses were NORMAL regime (weakest signals)
+
+### Phase 6: NORMAL Gate at T-70/T-60 (13:19 UTC)
+- **v8.1.1:** Block NORMAL regime (VPIN < 0.55) at T-70 and T-60
+- All 3 post-fix losses were NORMAL at T-70 (VPIN 0.49, 0.54, 0.49)
+- Requires TRANSITION+ (VPIN ≥ 0.55) for final offsets
+- Would have saved ~$37 today
 
 ### Phase 5: Chrome Kill (12:40 UTC)
 - Discovered Google Chrome running since Apr 4 with Polymarket open on VNC
@@ -62,15 +68,19 @@ Root cause found: hidden `.env` on Montreal overriding dynamic caps.
 | `bb2c9d7` | SITREP W/L from DB (survives restarts) |
 | `3896fca` | Notification TODOs doc |
 
-## Dynamic Cap Schedule (LIVE)
+## Gate & Cap Config (LIVE as of 13:19 UTC)
 
 ```
-Offset          Cap     Applied Since
-T-240..T-180    $0.55   09:50 UTC
-T-170..T-120    $0.60   09:50 UTC
-T-110..T-80     $0.65   09:50 UTC  
-T-70..T-60      $0.73   09:50 UTC
+Offset          Cap     VPIN Requirement     Applied Since
+T-240..T-180    $0.55   CASCADE (≥0.65)      09:50 UTC
+T-170..T-120    $0.60   CASCADE (≥0.65)      09:50 UTC
+T-110..T-80     $0.65   v2.2 agrees          09:50 UTC  
+T-70..T-60      $0.73   TRANSITION+ (≥0.55)  13:19 UTC ← NEW (v8.1.1)
 ```
+
+Note: All offsets require v2.2 HIGH confidence + direction agreement.
+Early offsets (≥120) additionally require CASCADE + delta≥5bp for DECISIVE.
+T-70/T-60 now additionally require TRANSITION+ (was allowing NORMAL).
 
 ## Loss Prevention Analysis
 
