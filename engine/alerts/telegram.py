@@ -1045,7 +1045,6 @@ class TelegramAlerter:
         if not self._db_client:
             return
         try:
-            from sqlalchemy import text as _text
             async with self._db_client._pool.acquire() as conn:
                 await conn.execute(
                     """INSERT INTO telegram_notifications
@@ -1057,7 +1056,7 @@ class TelegramAlerter:
                     telegram_message_id,
                 )
         except Exception as exc:
-            self._log.debug("telegram.log_notification_failed", error=str(exc)[:80])
+            self._log.warning("telegram.log_notification_failed", error=str(exc)[:80])
 
     # ── Window lifecycle notifications ─────────────────────────────────────────
 
