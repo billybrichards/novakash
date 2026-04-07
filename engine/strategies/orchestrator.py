@@ -1835,10 +1835,37 @@ class Orchestrator:
                                             elif r['status'] == 'EXPIRED':
                                                 _pstr = "unfilled"
                                                 _out = "⏭"
+                                            elif r['status'] == 'SKIPPED':
+                                                _pstr = f"skip: {(r.get('skip_reason') or '?')[:30]}"
+                                                _out = "🚫"
                                             else:
                                                 _pstr = "⏳open"
                                             _lines.append(f"{_out}{_dir} `{_wid}` {_cap} {_rsn} {_pstr}")
-                                        _recent_block = "\n📝 *Recent:*\n" + "\n".join(_lines) + "\n"
+                                        _recent_block = "\n📝 *Recent trades:*\n" + "\n".join(_lines) + "\n"
+                                    
+                                    # Recent skips (from window_snapshots)
+                                    _skips = await conn.fetch(
+                                        """SELECT direction, skip_reason, 
+                                           window_ts, ROUND(vpin::numeric, 3) as vpin
+                                        FROM window_snapshots 
+                                        WHERE trade_placed = false AND skip_reason IS NOT NULL
+                                          AND window_ts > EXTRACT(EPOCH FROM NOW() - INTERVAL '15 minutes')
+                                        ORDER BY window_ts DESC LIMIT 3"""
+                                    )
+                                    if _skips:
+                                        _slines = []
+                                        for s in _skips:
+                                            _dir = "⬆️" if s['direction'] == 'UP' else "⬇️"
+                                            _wid = ""
+                                            try:
+                                                from datetime import datetime, timezone
+                                                _wts = int(s['window_ts']) + 300
+                                                _wid = datetime.fromtimestamp(_wts, tz=timezone.utc).strftime("%H:%M")
+                                            except Exception:
+                                                pass
+                                            _sr = (s['skip_reason'] or '?')[:45]
+                                            _slines.append(f"🚫{_dir} `{_wid}` {_sr}")
+                                        _recent_block += "📝 *Recent skips:*\n" + "\n".join(_slines) + "\n"
 
                                     # Pending positions (OPEN/FILLED not yet resolved)
                                     _pending = await conn.fetch(
