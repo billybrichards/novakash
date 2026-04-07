@@ -1807,3 +1807,139 @@ class DBClient:
         except Exception as exc:
             log.debug("db.get_eval_ticks_failed", error=str(exc)[:80])
             return []
+
+    async def write_clob_execution_log(self, data: dict) -> None:
+        """
+        Log comprehensive CLOB execution data for every FOK attempt, GTC placement, fill, or kill.
+        
+        Captures: target price/size, CLOB state at execution, execution mode, ladder attempts,
+        fill details, error messages, and latency.
+        """
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO clob_execution_log (
+                        asset, timeframe, window_ts, outcome, token_id,
+                        direction, strategy, eval_offset,
+                        target_price, target_size, max_price, min_price,
+                        clob_best_ask, clob_best_bid,
+                        execution_mode, fok_attempt_num, fok_max_attempts,
+                        status, fill_price, fill_size, order_id,
+                        error_code, error_message, latency_ms, metadata
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                        $13, $14, $15, $16, $17, $18, $19, $20, $21,
+                        $22, $23, $24, $25
+                    )
+                    ON CONFLICT (window_ts, outcome, ts, execution_mode, fok_attempt_num)
+                    DO NOTHING
+                    """,
+                    data.get("asset", "BTC"),
+                    data.get("timeframe", "5m"),
+                    int(data.get("window_ts", 0)),
+                    data.get("outcome", "UP"),
+                    data.get("token_id"),
+                    data.get("direction", "BUY"),
+                    data.get("strategy"),
+                    data.get("eval_offset"),
+                    float(data["target_price"]) if data.get("target_price") is not None else None,
+                    float(data["target_size"]) if data.get("target_size") is not None else None,
+                    float(data["max_price"]) if data.get("max_price") is not None else None,
+                    float(data["min_price"]) if data.get("min_price") is not None else None,
+                    float(data["clob_best_ask"]) if data.get("clob_best_ask") is not None else None,
+                    float(data["clob_best_bid"]) if data.get("clob_best_bid") is not None else None,
+                    data.get("execution_mode", "FOK"),
+                    data.get("fok_attempt_num"),
+                    data.get("fok_max_attempts"),
+                    data.get("status", "submitted"),
+                    float(data["fill_price"]) if data.get("fill_price") is not None else None,
+                    float(data["fill_size"]) if data.get("fill_size") is not None else None,
+                    data.get("order_id"),
+                    data.get("error_code"),
+                    data.get("error_message"),
+                    data.get("latency_ms"),
+                    data.get("metadata", {})
+                )
+        except Exception as exc:
+            log.warning("db.write_clob_execution_log_failed", error=str(exc)[:200])
+
+    async def write_fok_ladder_attempt(self, data: dict) -> None:
+        """Log individual FOK ladder attempt within an execution."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO fok_ladder_attempts (
+                        execution_log_id, attempt_num, attempt_price, attempt_size,
+                        clob_best_ask, clob_best_bid,
+                        status, fill_size, fill_price,
+                        error_message, attempt_duration_ms
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+                    )
+                    ON CONFLICT (execution_log_id, attempt_num) DO NOTHING
+                    """,
+                    data.get("execution_log_id"),
+                    data.get("attempt_num"),
+                    float(data["attempt_price"]) if data.get("attempt_price") is not None else None,
+                    float(data["attempt_size"]) if data.get("attempt_size") is not None else None,
+                    float(data["clob_best_ask"]) if data.get("clob_best_ask") is not None else None,
+                    float(data["clob_best_bid"]) if data.get("clob_best_bid") is not None else None,
+                    data.get("status", "attempted"),
+                    float(data["fill_size"]) if data.get("fill_size") is not None else None,
+                    float(data["fill_price"]) if data.get("fill_price") is not None else None,
+                    data.get("error_message"),
+                    data.get("attempt_duration_ms")
+                )
+        except Exception as exc:
+            log.warning("db.write_fok_ladder_attempt_failed", error=str(exc)[:200])
+
+    async def write_clob_book_snapshot(self, data: dict) -> None:
+        """Log complete CLOB book snapshot on every poll (not just during execution)."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO clob_book_snapshots (
+                        asset, timeframe, window_ts,
+                        up_token_id, down_token_id,
+                        up_best_bid, up_best_ask, up_bid_depth, up_ask_depth,
+                        down_best_bid, down_best_ask, down_bid_depth, down_ask_depth,
+                        up_spread, down_spread, mid_price,
+                        up_bids_top5, up_asks_top5, down_bids_top5, down_asks_top5
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                        $14, $15, $16, $17, $18, $19, $20
+                    )
+                    ON CONFLICT (window_ts, up_token_id, down_token_id, ts) DO NOTHING
+                    """,
+                    data.get("asset", "BTC"),
+                    data.get("timeframe", "5m"),
+                    int(data.get("window_ts", 0)),
+                    data.get("up_token_id"),
+                    data.get("down_token_id"),
+                    float(data["up_best_bid"]) if data.get("up_best_bid") is not None else None,
+                    float(data["up_best_ask"]) if data.get("up_best_ask") is not None else None,
+                    float(data["up_bid_depth"]) if data.get("up_bid_depth") is not None else None,
+                    float(data["up_ask_depth"]) if data.get("up_ask_depth") is not None else None,
+                    float(data["down_best_bid"]) if data.get("down_best_bid") is not None else None,
+                    float(data["down_best_ask"]) if data.get("down_best_ask") is not None else None,
+                    float(data["down_bid_depth"]) if data.get("down_bid_depth") is not None else None,
+                    float(data["down_ask_depth"]) if data.get("down_ask_depth") is not None else None,
+                    float(data["up_spread"]) if data.get("up_spread") is not None else None,
+                    float(data["down_spread"]) if data.get("down_spread") is not None else None,
+                    float(data["mid_price"]) if data.get("mid_price") is not None else None,
+                    data.get("up_bids_top5", []),
+                    data.get("up_asks_top5", []),
+                    data.get("down_bids_top5", []),
+                    data.get("down_asks_top5", [])
+                )
+        except Exception as exc:
+            log.warning("db.write_clob_book_snapshot_failed", error=str(exc)[:200])
