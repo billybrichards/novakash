@@ -804,22 +804,8 @@ class FiveMinVPINStrategy(BaseStrategy):
         if self._db is not None:
             try:
                 await self._db.write_window_snapshot(window_snapshot)
-                # v8.1: Update v2.2 fields separately (not in main INSERT to avoid breaking it)
-                _v2_fields = {k: window_snapshot.get(k) for k in 
-                    ["v2_probability_up", "v2_direction", "v2_agrees", "v2_model_version", "eval_offset"]
-                    if window_snapshot.get(k) is not None}
-                if _v2_fields and self._db._pool:
-                    try:
-                        _sets = ", ".join(f"{k} = ${i+4}" for i, k in enumerate(_v2_fields.keys()))
-                        _vals = [window_snapshot["window_ts"], window_snapshot.get("asset", "BTC"), 
-                                 window_snapshot.get("timeframe", "5m")] + list(_v2_fields.values())
-                        async with self._db._pool.acquire() as conn:
-                            await conn.execute(
-                                f"UPDATE window_snapshots SET {_sets} WHERE window_ts=$1 AND asset=$2 AND timeframe=$3",
-                                *_vals
-                            )
-                    except Exception as e:
-                        self._log.warning("v2.db_update_failed", error=str(e)[:100], window_ts=window_snapshot.get("window_ts"))
+                # v8.1: OAK (v2.2) fields are now included in the INSERT above
+                # No separate UPDATE needed
             except Exception as exc:
                 self._log.warning("db.snapshot_write_failed", error=str(exc)[:80])
 

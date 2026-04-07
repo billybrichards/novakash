@@ -638,7 +638,9 @@ class DBClient:
                         delta_chainlink, delta_tiingo, delta_binance, price_consensus,
                         engine_version, delta_source, confidence_tier,
                         gates_passed, gate_failed,
-                        shadow_trade_direction, shadow_trade_entry_price
+                        shadow_trade_direction, shadow_trade_entry_price,
+                        v2_probability_up, v2_direction, v2_agrees,
+                        v2_model_version, eval_offset
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,
                         $9,$10,$11,$12,$13,$14,$15,$16,$17,
@@ -654,7 +656,8 @@ class DBClient:
                         $65,$66,$67,$68,
                         $69,$70,$71,
                         $72,$73,
-                        $74,$75
+                        $74,$75,$76,$77,$78,
+                        $79,$80
                     )
                     ON CONFLICT (window_ts, asset, timeframe) DO UPDATE SET
                         gamma_up_price         = COALESCE(EXCLUDED.gamma_up_price, window_snapshots.gamma_up_price),
@@ -669,7 +672,12 @@ class DBClient:
                         gates_passed           = COALESCE(EXCLUDED.gates_passed, window_snapshots.gates_passed),
                         gate_failed            = COALESCE(EXCLUDED.gate_failed, window_snapshots.gate_failed),
                         shadow_trade_direction = COALESCE(EXCLUDED.shadow_trade_direction, window_snapshots.shadow_trade_direction),
-                        shadow_trade_entry_price = COALESCE(EXCLUDED.shadow_trade_entry_price, window_snapshots.shadow_trade_entry_price)
+                        shadow_trade_entry_price = COALESCE(EXCLUDED.shadow_trade_entry_price, window_snapshots.shadow_trade_entry_price),
+                        v2_probability_up      = COALESCE(EXCLUDED.v2_probability_up, window_snapshots.v2_probability_up),
+                        v2_direction           = COALESCE(EXCLUDED.v2_direction, window_snapshots.v2_direction),
+                        v2_agrees              = COALESCE(EXCLUDED.v2_agrees, window_snapshots.v2_agrees),
+                        v2_model_version       = COALESCE(EXCLUDED.v2_model_version, window_snapshots.v2_model_version),
+                        eval_offset            = COALESCE(EXCLUDED.eval_offset, window_snapshots.eval_offset)
                     """,
                     snapshot.get("window_ts"),
                     snapshot.get("asset", "BTC"),
@@ -752,6 +760,12 @@ class DBClient:
                     snapshot.get("gate_failed"),
                     snapshot.get("shadow_trade_direction"),
                     snapshot.get("shadow_trade_entry_price"),
+                    # v8.1: OAK (v2.2) early entry gate
+                    snapshot.get("v2_probability_up"),
+                    snapshot.get("v2_direction"),
+                    snapshot.get("v2_agrees"),
+                    snapshot.get("v2_model_version"),
+                    snapshot.get("eval_offset"),
                 )
             log.debug(
                 "db.window_snapshot_written",

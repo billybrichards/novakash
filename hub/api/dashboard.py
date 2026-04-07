@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth.jwt import TokenData
 from auth.middleware import get_current_user
 from db.database import get_session
-from db.models import DailyPnL, Signal, SystemState, Trade
+from db.models import DailyPnL, Signal, SystemState, Trade, window_snapshots
 from services.dashboard_service import DashboardService
 
 router = APIRouter()
@@ -546,4 +546,87 @@ async def get_tier_stats(
             })
         return out
     except Exception:
+        return []
+
+
+# ─── OAK (v2.2) monitoring endpoints ───────────────────────────────────────────
+
+@router.get("/dashboard/oak-latest")
+async def get_oak_latest(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    Latest OAK (v2.2) prediction from window_snapshots.
+    Returns {probability_up, probability_down, direction, model_version, timestamp}
+    """
+    try:
+        from sqlalchemy import desc
+        
+        # Get latest window_snapshot with v2.2 data
+        result = await session.execute(
+            select(window_snapshots.c.v2_probability_up,
+                   window_snapshots.c.v2_direction,
+                   window_snapshots.c.v2_model_version,
+                   window_snapshots.c.window_ts)
+            .where(window_snapshots.c.v2_probability_up.isnot(None))
+            .order_by(desc(window_snapshots.c.window_ts))
+            .limit(1)
+        )
+        row = result.first()
+        
+        if not row:
+            return {"status": "no_data"}
+        
+        p_up = float(row.v2_probability_up) if row.v2_probability_up is not None else None
+        p_down = 1.0 - p_up if p_up is not None else None
+        
+        return {
+            "probability_up": p_up,
+            "probability_down": p_down,
+            "direction": row.v2_direction,
+            "model_version": row.v2_model_version,
+            "timestamp": float(row.window_ts) if row.window_ts else None,
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@router.get("/dashboard/oak-history")
+async def get_oak_history(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+    limit: int = 50,
+) -> list:
+    """
+    OAK (v2.2) prediction history from window_snapshots.
+    Returns [{window_ts, probability_up, direction, v2_agrees, outcome}]
+    """
+    try:
+        from sqlalchemy import desc
+        
+        result = await session.execute(
+            select(window_snapshots.c.window_ts,
+                   window_snapshots.c.v2_probability_up,
+                   window_snapshots.c.v2_direction,
+                   window_snapshots.c.v2_agrees,
+                   window_snapshots.c.outcome)
+            .where(window_snapshots.c.v2_probability_up.isnot(None))
+            .order_by(desc(window_snapshots.c.window_ts))
+            .limit(limit)
+        )
+        rows = result.fetchall()
+        
+        return [
+            {
+                "window_ts": float(r.window_ts) if r.window_ts else None,
+                "probability_up": float(r.v2_probability_up) if r.v2_probability_up is not None else None,
+                "direction": r.v2_direction,
+                "v2_agrees": r.v2_agrees,
+                "outcome": r.outcome,
+                "is_correct": (r.v2_direction == r.outcome) if r.v2_direction and r.outcome else None,
+            }
+            for r in rows
+        ]
+    except Exception as e:
         return []
