@@ -528,4 +528,123 @@ CEDAR improves OAK by +5-9pp at every delta bucket. Largest gains at T-90 (+9.7p
 
 ### Full analysis: `docs/analyses/2026-04-07-cedar-gate-analysis.md`
 
+---
+
+## 15. Apr 7 Full Day Analysis — v8.2.3 Recommendations
+
+**Generated:** 2026-04-07 18:05 UTC  
+**Data:** 43 resolved trades, 17:30 UTC cut-off
+
+### Performance Summary
+
+| Metric | Value |
+|--------|-------|
+| Total Trades | 43 |
+| Wins | 29 |
+| Losses | 14 |
+| WR | 67.4% |
+| **Net P&L** | **-$35.00** |
+| Wallet Start | $130.82 |
+| Wallet End | $67.08 |
+
+**67% WR but losing $35? The $0.73 cap is the killer.**
+
+### Performance by Cap Level
+
+| Cap | Trades | Wins | WR | P&L |
+|-----|--------|------|-----|-----|
+| $0.55 | 3 | 3 | 100% | +$12.05 |
+| $0.60 | 1 | 0 | 0% | -$9.50 |
+| $0.65 | 16 | 13 | 81.3% | +$26.44 |
+| **$0.73** | **23** | **13** | **56.5%** | **-$63.99** |
+
+**At $0.73 cap:** 56.5% WR, -$63.99. Breakeven requires 73%+ WR.  
+**At $0.65 cap:** 81.3% WR, +$26.44. Breakeven requires 55%+ WR.
+
+### Performance by Regime
+
+| Regime | Trades | Wins | WR | P&L | Avg Cap |
+|--------|--------|------|-----|-----|---------|
+| TRANS | 15 | 12 | 80.0% | +$23.61 | $0.67 |
+| CASCADE | 14 | 9 | 64.3% | -$14.21 | $0.70 |
+| **NORMAL** | **14** | **8** | **57.1%** | **-$44.39** | **$0.68** |
+
+**TRANS is the only profitable regime** (80% WR).  
+**NORMAL is bleeding** (57% WR, -$44.39).  
+**CASCADE is neutral** (64% WR, -$14.21 at $0.70 avg cap).
+
+### v8.2.2 Impact: What Would Have Happened
+
+| Scenario | Trades | Wins | Losses | WR | P&L |
+|----------|--------|------|--------|-----|-----|
+| Actual (current) | 43 | 29 | 14 | 67.4% | **-$35.00** |
+| v8.2.2 (NORMAL block @ T<120) | 33 | 23 | 10 | 69.7% | **-$4.44** |
+| **v8.2.2 + $0.65 cap max** | **12** | **10** | **2** | **83.3%** | **+$30.92** |
+
+**v8.2.2 blocked:** 6 wins (+$17.00) + 4 losses (-$47.55) = **net saved $30.55**
+
+**The 6 wins v8.2.2 blocked:**
+- 04:58 — VPIN 0.499, $0.65, +$2.68
+- 05:33 — VPIN 0.531, $0.65, +$2.75
+- 05:38 — VPIN 0.533, $0.65, +$2.63
+- 06:18 — VPIN 0.470, $0.65, +$2.70
+- 07:04 — VPIN 0.538, $0.65, +$3.06
+- 08:08 — VPIN 0.512, $0.65, +$3.18
+
+**The 4 losses v8.2.2 blocked:**
+- 10:33 — VPIN 0.491, $0.73, -$12.58
+- 11:14 — VPIN 0.542, $0.73, -$14.40
+- 11:18 — VPIN 0.487, $0.65, -$9.42
+- 13:04 — VPIN 0.494, $0.73, -$11.15
+
+**v8.2.2 made the right call.** Blocking 6 wins for 4 losses is worth it: +$17.00 vs -$47.55.
+
+### v8.2.3: Refined Rules
+
+**Instead of v8.2.2's "block NORMAL @ T<120" (catches 10 trades), use:**
+
+1. **Block NORMAL at T<70** — Only block the really late NORMAL trades
+2. **Keep $0.65 cap max** — No $0.73 cap anywhere
+3. **Require v2.2 HIGH confidence for NORMAL** — Only allow NORMAL when v2.2 is HIGH
+
+**Expected results:**
+- ~15 trades, ~12 wins, ~3 losses
+- ~80% WR, ~+$25 P&L
+
+### The 17:23 Loss That Got Through
+
+| Time | VPIN | Regime | Cap | Result | Why v8.2.2 Didn't Block |
+|------|------|--------|-----|--------|-------------------------|
+| 17:23 | 0.551 | TRANS | $0.65 | LOSS | VPIN 0.551 >= 0.55 → TRANSITION, not NORMAL |
+
+This trade was **0.001 above the 0.55 threshold** — borderline NORMAL but technically TRANSITION.
+
+**Fix:** Raise TRANSITION threshold to **0.60** — this trade would have been blocked.
+
+### Recommendations
+
+1. **Cap all trades at $0.65** — 81% WR at $0.65 is profitable, 56% WR at $0.73 is not
+2. **Block NORMAL at T<70** — Not T<120 (captures 6 wins at T≥70)
+3. **Raise TRANSITION threshold to 0.60** — Blocks 0.551 edge cases
+4. **Debug CoinGlass veto** — Not firing when it should
+5. **Reduce stake to $5** — Until WR > 70%
+
+**Full analysis: `docs/analyses/2026-04-07-full-day-analysis.md`**
+
+---
+
+## 16. Gate Config — v8.2.3 (Recommended)
+
+| Offset | Cap | VPIN Required | Notes |
+|--------|-----|---------------|-------|
+| T-240..T-180 | $0.55 | CASCADE (>=0.65) | Early entries, 100% WR (3/3) |
+| T-170..T-120 | $0.60 | CASCADE (>=0.65) | 0% WR (0/1) — small N |
+| T-110..T-80 | $0.65 | TRANSITION+ (>=0.55) | 66.7% WR (4/6) |
+| **T-70..T-60** | **$0.65** | **TRANSITION+ (>=0.60)** | **BLOCK NORMAL (was 16.7% WR at $0.73)** |
+
+**v8.2.3 changes:**
+1. Remove $0.73 cap entirely — max cap $0.65 at all offsets
+2. Block NORMAL (VPIN<0.55) at T<70 only (not T<120)
+3. Raise TRANSITION threshold to 0.60 (catches 0.551 edge cases)
+
 *Next review: April 8, 2026 09:00 UTC*
