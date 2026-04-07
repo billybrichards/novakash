@@ -1544,12 +1544,13 @@ class DBClient:
             return
         try:
             async with self._pool.acquire() as conn:
+                _winner = oracle_winner.upper()
                 await conn.execute("""
                     UPDATE window_predictions SET
-                        oracle_winner = $4,
-                        tiingo_correct = (tiingo_direction = $4),
-                        chainlink_correct = (chainlink_direction = $4),
-                        our_signal_correct = (our_signal_direction = $4)
+                        oracle_winner = $4::varchar,
+                        tiingo_correct = (tiingo_direction = $4::varchar),
+                        chainlink_correct = (chainlink_direction = $4::varchar),
+                        our_signal_correct = (our_signal_direction = $4::varchar)
                     WHERE window_ts = $1 AND asset = $2 AND timeframe = $3
                 """, window_ts, asset, "5m", oracle_winner.upper())
         except Exception as exc:
