@@ -2656,8 +2656,11 @@ class Orchestrator:
 
                         market = data[0]["markets"][0]
 
-                        # Check if resolved
-                        if not market.get("resolved"):
+                        # Check if resolved — Gamma may not set resolved=true
+                        # for 5-min markets, so also check outcomePrices directly
+                        if not market.get("resolved") and not any(
+                            str(p) in ("0", "1", "1.0", "0.0") for p in market.get("outcomePrices", [])
+                        ):
                             # Not settled yet — oracle hasn't closed
                             await asyncio.sleep(API_DELAY)
                             continue
@@ -2820,7 +2823,7 @@ class Orchestrator:
                                         _d = await _r.json()
                                         if _d and isinstance(_d, list) and _d[0].get("markets"):
                                             _m = _d[0]["markets"][0]
-                                            if _m.get("resolved"):
+                                            if _m.get("resolved") or any(str(p) in ("0", "1", "1.0", "0.0") for p in _m.get("outcomePrices", [])):
                                                 _op = _m.get("outcomePrices", [])
                                                 if len(_op) >= 2:
                                                     _up = float(_op[0])
