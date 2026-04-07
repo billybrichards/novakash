@@ -6,24 +6,13 @@
 
 ## P0 — Data Accuracy (Montreal engine)
 
-- [ ] **Create `window_predictions` table** on Railway DB
-  - Schema in `PLAN-phase2-evaluation.md`
-  - Captures Tiingo + Chainlink close prices at T-0 each window
-  - Tracks predicted vs actual direction per source
-
-- [ ] **Capture Tiingo close at T-0** in `five_min_vpin.py`
-  - At window close (T-0), record tiingo_close price
-  - Calculate predicted direction (close > open = UP)
-  - Write to window_predictions
-
-- [ ] **Capture Chainlink close at T-0**
-  - Query Chainlink contract at window close
-  - Same predicted direction calc
-  - Write to window_predictions alongside Tiingo
-
-- [ ] **After oracle resolution: update accuracy**
-  - When poly_winner arrives, update window_predictions.oracle_winner
-  - Set tiingo_correct, chainlink_correct, our_signal_correct booleans
+- [x] **Create `window_predictions` table** ✅ deployed, 201 rows backfilled
+- [x] **Capture Tiingo close at T-0** ✅ writes every window
+- [x] **Capture Chainlink close at T-0** ✅ writes every window
+- [x] **After oracle resolution: update accuracy** ✅ shadow resolver + order_manager
+- [x] **Shadow resolution for ALL windows** ✅ resolves skipped + traded + unfilled
+- [x] **Gate summary in predictions** ✅ gate_summary, gates_total, gates_passed, gate_trade_offset
+- [x] **Backfill Apr 7 data** ✅ 200/201 resolved, accuracy tracked per source
 
 ## P0 — Notification Fixes (telegram.py + orchestrator.py)
 
@@ -68,27 +57,15 @@
 
 ## P1 — AI Window Evaluator (macro-observer on Railway)
 
-- [ ] **Add `/evaluate-window` endpoint** to macro-observer
-  - Accepts window_ts, queries all relevant DB tables
-  - Builds structured prompt for Claude Sonnet
-  - Returns evaluation text
-
-- [ ] **Structured prompt** (see `PLAN-phase2-evaluation.md` section 3)
-  - Gate audit (19 checkpoints)
-  - Trade/skip details
-  - Tiingo vs Chainlink predictions
-  - Macro context (OI, funding, L/S)
-  - Previous 3 windows for streak context
-
-- [ ] **Telegram delivery**
-  - After evaluation, send card via Telegram bot
-  - Rate limit: 1 per 60s
-  - Only for windows that resolved (not pending)
-
-- [ ] **Deploy updated macro-observer to Railway**
-  - Add DB connection to Railway DB
-  - Add Anthropic API key for Sonnet calls
-  - Add Telegram bot token for sending
+- [x] **Evaluator loop in macro-observer** ✅ auto-deployed to Railway
+  - Polls DB every 60s for newly resolved windows
+  - Queries window_predictions, gate_audit, trades, macro_signals, prev 3 windows
+  - Calls Claude Sonnet with structured prompt
+  - Sends evaluation card to Telegram
+  - Deduped via telegram_notifications (ai_window_eval type)
+- [ ] **Set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID** on Railway env vars
+  - Evaluator stays disabled until these are set
+- [ ] **Monitor first evaluations** — verify card quality and accuracy
 
 ## P1 — Notification Merge (telegram.py)
 
