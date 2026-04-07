@@ -1,14 +1,36 @@
 # v8.x Performance Monitor & Recalibration Recommendations
 
 **Created:** April 7, 2026 09:00 UTC
-**Data range:** April 5 23:04 to April 7 08:34 UTC (~33 hours of live trading)
+**Last updated:** April 7, 2026 13:30 UTC
+**Data range:** April 5 23:04 to April 7 13:07 UTC (~38 hours live)
 **Status:** LIVE on Montreal (Railway engine, AWS frontend)
+**Wallet:** $164.16 USDC (verified after Chrome kill at 12:40 UTC)
 
 ---
 
 ## 1. Executive Summary
 
-v8.1 with v2.2 gate is the only profitable configuration. All other eras are net negative.
+**Overall resolved: 41W/35L (53.9% WR), P&L: -$113.01 (DB), wallet +$33.34 (ground truth)**
+
+DB P&L is unreliable due to pre-fix fill price calculation errors. **Wallet is ground truth: $130.82 → $164.16 = +$33.34 (+25.5%).**
+
+### By Era
+
+| Era | W | L | WR | DB P&L | Status |
+|-----|---|---|------|--------|--------|
+| pre-v8 (Binance) | 13 | 22 | 37.1% | -$84.92 | Dead era |
+| v8_standard (no v2.2) | 8 | 5 | 61.5% | -$21.99 | v2.2 gate now blocks these |
+| **v2.2 gated** | **20** | **8** | **71.4%** | **-$6.10** | **Active config** |
+
+### v2.2 Gated — Without NORMAL@T-70/T-60 Losses
+
+| Config | W | L | WR | P&L |
+|--------|---|---|------|------|
+| Current (all v2.2) | 20 | 8 | 71.4% | -$6.10 |
+| **Block NORMAL at T-70/T-60** | **19** | **5** | **79.2%** | **+$28.98** |
+| Block ALL NORMAL | 13 | 4 | 76.5% | +$22.70 |
+
+**Blocking NORMAL at T-70/T-60 would swing P&L by +$35.08.** This is the single highest-impact change available.
 
 | Era | Wins | Losses | WR | P&L | Avg Entry |
 |-----|------|--------|------|-------|-----------|
@@ -100,17 +122,22 @@ All GTC orders fill at ~$0.73 regardless of the v8.1 dynamic cap. This is becaus
 
 **v2.2 blocked 55 evaluations.** Of the resolved ones, 75% were correct blocks (3 correct vs 1 missed win from DISAGREE). Too few resolved to draw strong conclusions.
 
-### v2.2 Pass Rate by Offset
+### v2.2 Pass Rate by Offset (updated 13:30 UTC)
 
-| Offset | Trades | Wins | Losses | WR |
-|--------|--------|------|--------|------|
-| T-240 | 5 | 4 | 1 | 80% |
-| T-210 | 1 | 1 | 0 | 100% |
-| T-190 | 2 | 2 | 0 | 100% |
-| T-180 | 3 | 1 | 1 | 50% |
-| T-120 | 2 | 1 | 0 | 100% |
-| T-110 | 3 | 1 | 0 | 100% |
-| T-100 | 2 | 2 | 0 | 100% |
+| Offset | W | L | Total | WR | P&L | Notes |
+|--------|---|---|-------|------|-------|-------|
+| T-240 | 4 | 1 | 5 | 80% | +$5.31 | |
+| T-210 | 1 | 0 | 1 | 100% | +$2.92 | |
+| T-190 | 2 | 0 | 2 | 100% | +$5.88 | |
+| T-180 | 1 | 1 | 2 | 50% | -$3.33 | |
+| T-170 | 0 | 1 | 1 | 0% | -$9.50 | |
+| T-120 | 1 | 0 | 1 | 100% | +$3.11 | |
+| T-110 | 4 | 0 | 4 | 100% | +$20.06 | Best offset |
+| T-100 | 2 | 2 | 4 | 50% | -$13.23 | |
+| T-90 | 3 | 0 | 3 | 100% | +$10.28 | |
+| T-80 | 1 | 0 | 1 | 100% | +$7.47 | |
+| **T-70** | **0** | **3** | **3** | **0%** | **-$38.13** | **ALL NORMAL, ALL LOSS** |
+| T-60 | 1 | 0 | 1 | 100% | +$3.06 | |
 | T-90 | 3 | 2 | 0 | 100% |
 | T-60 | 4 | 1 | 0 | 100% |
 
@@ -154,15 +181,39 @@ This seems counterintuitive (cheaper = worse?), but it makes sense:
 - **Confidence:** LOW (N=30 total, small sample)
 - **Action:** Wait for 72h more data.
 
-### R4: Consider NOT Trading in NORMAL Regime (Controversial)
-- **Evidence:** NORMAL has 75% signal accuracy but low volume/conviction.
-- **Counter-evidence:** All 8 NORMAL trades won (100% WR on trades). v2.2 gate filters well here.
-- **Proposal:** HOLD — NORMAL + v2.2 agree is working perfectly.
-- **Confidence:** LOW (N=8)
-- **Action:** No change.
+### R4: Block NORMAL Regime at T-70 and T-60 (UPGRADED: IMPLEMENT)
+
+**CRITICAL FINDING — updated 13:30 UTC with new data.**
+
+**Evidence (N=28 v2.2 trades by regime + offset):**
+
+| Regime | Offset | W | L | WR | P&L | Action |
+|--------|--------|---|---|------|-------|--------|
+| CASCADE | T-240..T-120 | 8 | 3 | 73% | +$4.88 | Keep |
+| CASCADE | T-110..T-70 | 1 | 1 | 50% | -$3.91 | Keep (small N) |
+| TRANSITION | T-240..T-60 | 6 | 1 | 86% | +$25.07 | Keep |
+| NORMAL | T-240..T-80 | 6 | 1 | 86% | +$12.76 | Keep |
+| **NORMAL** | **T-70/T-60** | **1** | **3** | **25%** | **-$37.07** | **BLOCK** |
+
+**T-70 NORMAL is 0W/3L = 0% WR, -$38.13 in losses.** All three:
+- 10:33 — VPIN 0.491, NO, -$12.58
+- 11:14 — VPIN 0.542, NO, -$14.40
+- 13:04 — VPIN 0.494, NO, -$11.15
+
+**Pattern:** At T-70 with low VPIN (NORMAL), the signal has no conviction but we trade anyway because v2.2 rubber-stamps. The window has only 70 seconds left — not enough time for the signal to play out if the market is uncertain.
+
+**Impact of blocking:**
+- Current v2.2 WR: 20W/8L = 71.4%, P&L: -$6.10
+- After blocking NORMAL@T-70/T-60: **19W/5L = 79.2%, P&L: +$28.98**
+- P&L swing: **+$35.08**
+
+**Proposal:** At T-70 and T-60, require VPIN >= 0.55 (TRANSITION or CASCADE). Skip NORMAL.
+- **Confidence:** HIGH (0W/3L at T-70 NORMAL, pattern is clear)
+- **Risk:** Lose ~1 win from NORMAL@T-60 (had 1W/0L). Net effect still +$35 positive.
+- **Action:** IMPLEMENT. One-line gate addition in `_evaluate_window()`.
 
 ### R5: Monitor CASCADE Regime Closely
-- **Evidence:** 45.5% raw signal accuracy in CASCADE. v2.2 gate is doing heavy lifting.
+- **Evidence:** CASCADE v2.2 trades: 9W/4L = 69% WR. Viable but not dominant.
 - **Risk:** If v2.2 model degrades, CASCADE trades will lose.
 - **Proposal:** Add monitoring alert if CASCADE WR drops below 60% over 20+ trades.
 - **Confidence:** MEDIUM
@@ -303,6 +354,9 @@ WHERE poly_winner IS NOT NULL AND delta_tiingo IS NOT NULL AND delta_binance IS 
 | Apr 7 11:00 | CLOB liquidity surface | 100% ask presence at T-120+, $0.51-0.55 asks. Book thins after T-60. | R8: bestask pricing could unlock early entry EV. |
 | Apr 7 11:30 | Fill price verification | ALL wins fill at $0.73 (CLOB match), real cost $0.74 w/fees. $0.85+ fills = too thin margin (3pp vs 15pp). | Keep $0.73 cap. Do NOT raise. |
 | Apr 7 12:00 | CLOB phantom liquidity (CORRECTED) | Cap mode converts ALL submissions to $0.73 — we've never tested real bestask GTC. Pre-v8 bestask filled at $0.51-$0.59 but without v2.2 gate. FOK ladder: 0% fill rate (decimal bug or MM withdrawal). | R8 upgraded: test bestask + v2.2 combo. |
+| Apr 7 09:50-12:45 | Other agent: pricing fix session | Fixed .env caps, FOK decimal, fill price calc, RFQ cap. Post-fix avg win $5.85 (2x pre-fix). Chrome zombie killed → wallet +$85. | 15+ commits on develop. |
+| Apr 7 12:45 | Session results (CHANGELOG-apr7) | $130.82 → $164.16 = +$33.34 (+25.5%). 28W/12L (70% WR). 47 expired orders (zero cost). | Wallet is ground truth, not DB P&L. |
+| Apr 7 13:30 | T-70 NORMAL loss analysis | T-70 NORMAL: 0W/3L = 0% WR, -$38.13. VPIN 0.49-0.54. v2.2 rubber-stamps. | **R4 UPGRADED: BLOCK NORMAL at T-70/T-60. Would swing P&L +$35.** |
 
 ---
 
