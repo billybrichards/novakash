@@ -777,6 +777,22 @@ class FiveMinVPINStrategy(BaseStrategy):
         if self._db is not None:
             try:
                 await self._db.write_window_snapshot(window_snapshot)
+                # v8.1: Update v2.2 fields separately (not in main INSERT to avoid breaking it)
+                _v2_fields = {k: window_snapshot.get(k) for k in 
+                    ["v2_probability_up", "v2_direction", "v2_agrees", "v2_model_version", "eval_offset"]
+                    if window_snapshot.get(k) is not None}
+                if _v2_fields and self._db._pool:
+                    try:
+                        _sets = ", ".join(f"{k} = ${i+4}" for i, k in enumerate(_v2_fields.keys()))
+                        _vals = [window_snapshot["window_ts"], window_snapshot.get("asset", "BTC"), 
+                                 window_snapshot.get("timeframe", "5m")] + list(_v2_fields.values())
+                        async with self._db._pool.acquire() as conn:
+                            await conn.execute(
+                                f"UPDATE window_snapshots SET {_sets} WHERE window_ts=$1 AND asset=$2 AND timeframe=$3",
+                                *_vals
+                            )
+                    except Exception:
+                        pass
             except Exception as exc:
                 self._log.warning("db.snapshot_write_failed", error=str(exc)[:80])
 
@@ -1006,6 +1022,13 @@ class FiveMinVPINStrategy(BaseStrategy):
                                 "confidence_tier": window_snapshot.get("confidence_tier", "?"),
                                 "macro_bias": window_snapshot.get("macro_bias", "N/A"),
                                 "macro_confidence": window_snapshot.get("macro_confidence", ""),
+                                "macro_gate": window_snapshot.get("macro_gate", ""),
+                                "clob_up_ask": window_snapshot.get("clob_up_ask"),
+                                "clob_down_ask": window_snapshot.get("clob_down_ask"),
+                                "v2_probability_up": window_snapshot.get("v2_probability_up"),
+                                "v2_direction": window_snapshot.get("v2_direction"),
+                                "v2_agrees": window_snapshot.get("v2_agrees"),
+                                "eval_offset": eval_offset,
                             }
                             
                             # Send skip decision (no AI analysis for skipped trades)
@@ -1074,7 +1097,11 @@ class FiveMinVPINStrategy(BaseStrategy):
                                         "delta_source": window_snapshot.get("delta_source", "?"), "gates_passed": window_snapshot.get("gates_passed", ""),
                                         "gate_failed": "clob_price", "confidence_tier": window_snapshot.get("confidence_tier", "?"),
                                         "macro_bias": window_snapshot.get("macro_bias", "N/A"), "macro_confidence": window_snapshot.get("macro_confidence", ""),
-                                        "macro_gate": window_snapshot.get("macro_gate", "")},
+                                        "macro_gate": window_snapshot.get("macro_gate", ""),
+                                        "v2_probability_up": window_snapshot.get("v2_probability_up"),
+                                        "v2_direction": window_snapshot.get("v2_direction"), "v2_agrees": window_snapshot.get("v2_agrees"),
+                                        "clob_up_ask": window_snapshot.get("clob_up_ask"), "clob_down_ask": window_snapshot.get("clob_down_ask"),
+                                        "eval_offset": eval_offset},
                                 decision="SKIP", reason=_skip_reason[:100],
                                 gamma_up=window_snapshot.get("gamma_up_price"), gamma_down=window_snapshot.get("gamma_down_price"),
                             )
