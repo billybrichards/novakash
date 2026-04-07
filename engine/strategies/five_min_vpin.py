@@ -2617,6 +2617,16 @@ class FiveMinVPINStrategy(BaseStrategy):
         
         await self._om.register_order(order)
         
+        # Update window_snapshot trade_placed flag
+        if self._db:
+            try:
+                tf = "15m" if window.duration_secs == 900 else "5m"
+                asyncio.create_task(self._db.update_window_trade_placed(
+                    window_ts=window.window_ts, asset=window.asset, timeframe=tf
+                ))
+            except Exception:
+                pass
+        
         self._log.info(
             "trade.submitted",
             order_id=order.order_id,

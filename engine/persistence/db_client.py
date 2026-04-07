@@ -1387,7 +1387,7 @@ class DBClient:
                     data.get("eval_offset"),
                 )
         except Exception as exc:
-            log.debug("db.write_gate_audit_failed", error=str(exc)[:120])
+            log.warning("db.write_gate_audit_failed", error=str(exc)[:200])
 
     # ── Post-Resolution AI Analysis ──────────────────────────────────────────
 
