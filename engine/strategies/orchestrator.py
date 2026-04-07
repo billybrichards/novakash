@@ -1848,14 +1848,16 @@ class Orchestrator:
                                             _lines.append(f"{_out}{_dir} `{_wid}` {_cap} {_rsn} {_pstr}")
                                         _recent_block = "\n📝 *Recent trades:*\n" + "\n".join(_lines) + "\n"
                                     
-                                    # Recent skips (from window_snapshots)
+                                    # Recent skips — deduplicated by window_ts (v9.0 has 19 evals per window)
+                                    # Show the LAST skip reason per window (lowest offset = closest to close)
                                     _skips = await conn.fetch(
-                                        """SELECT direction, skip_reason, 
+                                        """SELECT DISTINCT ON (window_ts) direction, skip_reason,
                                            window_ts, ROUND(vpin::numeric, 3) as vpin
-                                        FROM window_snapshots 
+                                        FROM window_snapshots
                                         WHERE trade_placed = false AND skip_reason IS NOT NULL
                                           AND window_ts > EXTRACT(EPOCH FROM NOW() - INTERVAL '15 minutes')
-                                        ORDER BY window_ts DESC LIMIT 3"""
+                                        ORDER BY window_ts DESC, id DESC
+                                        LIMIT 3"""
                                     )
                                     if _skips:
                                         _slines = []
