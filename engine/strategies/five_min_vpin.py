@@ -523,6 +523,21 @@ class FiveMinVPINStrategy(BaseStrategy):
             except Exception as exc:
                 self._log.debug("evaluate.timesfm_fetch_failed", error=str(exc))
 
+        # v8.1: Query v2.2 for display in ALL notifications (before signal eval)
+        eval_offset = getattr(window, "eval_offset", None)
+        if self._timesfm_v2 is not None and eval_offset:
+            try:
+                _v2_pre = await self._timesfm_v2.get_probability(
+                    asset=window.asset, seconds_to_close=eval_offset
+                )
+                if _v2_pre and "probability_up" in _v2_pre:
+                    window_snapshot["v2_probability_up"] = round(float(_v2_pre["probability_up"]), 4)
+                    window_snapshot["v2_direction"] = "UP" if float(_v2_pre["probability_up"]) > 0.5 else "DOWN"
+                    window_snapshot["v2_model_version"] = _v2_pre.get("model_version", "")
+                    window_snapshot["eval_offset"] = eval_offset
+            except Exception:
+                pass
+
         # Evaluate signal (with TWAP override for direction + TimesFM agreement)
         signal = self._evaluate_signal(window, current_price, current_vpin, delta_pct, twap_result=twap_result, timesfm_forecast=timesfm_forecast)
 
