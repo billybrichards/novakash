@@ -633,6 +633,86 @@ This trade was **0.001 above the 0.55 threshold** — borderline NORMAL but tech
 
 ---
 
+## 16. Version Comparison — v8.1.2 vs v8.2.2 vs v8.2.3
+
+### Complete Configuration Comparison
+
+| Setting | v8.1.2 (Current Baseline) | v8.2.2 (Deployed 18:09 UTC) | v8.2.3 (Proposed) |
+|---------|---------------------------|-----------------------------|-------------------|
+| **V81_CAP_T240** | $0.55 | $0.55 | $0.55 |
+| **V81_CAP_T180** | $0.55 | $0.55 | $0.55 |
+| **V81_CAP_T120** | $0.60 | $0.60 | $0.60 |
+| **V81_CAP_T60** | **$0.73** | **$0.65** | **$0.65** |
+| **BET_FRACTION** | **7.3%** | **5.0%** | **5.0%** |
+| **NORMAL Block** | T<120 (VPIN<0.55) | T<120 (VPIN<0.55) | **T<70** (VPIN<0.55) |
+| **TRANSITION Threshold** | VPIN ≥ 0.55 | VPIN ≥ 0.55 | **VPIN ≥ 0.60** |
+| **Apr 7 Trades** | 43 | 12 | ~15 |
+| **Apr 7 WR** | 67.4% | 83.3% | ~80% |
+| **Apr 7 P&L** | **-$35.00** | **+$30.92** | **~+$25** |
+
+### What Changed in Each Version
+
+#### v8.1.2 → v8.2.2
+
+| Change | Before | After | Impact |
+|--------|--------|-------|--------|
+| Max cap (T-70/T-60) | $0.73 | $0.65 | -$0.08 per trade |
+| Bet fraction | 7.3% | 5.0% | -2.3% stake size |
+| NORMAL block | T<120 | T<120 | No change |
+| TRANSITION threshold | 0.55 | 0.55 | No change |
+
+**v8.2.2 blocked 31 trades (23 at $0.73 cap + 8 NORMAL @ T<120):**
+- 23 $0.73 cap trades: 13W/10L, -$63.99
+- 8 NORMAL @ T<120 trades: 6W/4L, +$30.55 net saved
+
+**Net effect:** 43 → 12 trades, -$35 → +$30.92 P&L
+
+#### v8.2.2 → v8.2.3 (Proposed)
+
+| Change | v8.2.2 | v8.2.3 | Impact |
+|--------|--------|--------|--------|
+| NORMAL block | T<120 | T<70 | Allows T-70 to T-110 NORMAL trades |
+| TRANSITION threshold | 0.55 | 0.60 | Blocks 0.551-0.599 edge cases |
+
+**v8.2.3 would allow:**
+- 6 wins at T-70 to T-110 (NORMAL, $0.65 cap): +$17.00
+- 1 loss at T-110 (NORMAL, $0.65 cap): -$9.42
+- Net: +$7.58 for ~3 more trades
+
+**v8.2.3 would still block:**
+- 4 losses at T<70 (NORMAL): -$47.55
+- 17:23 loss at T-110 (VPIN 0.551) — blocked by 0.60 threshold
+
+### Decision Framework
+
+| Scenario | Choose | Rationale |
+|----------|--------|-----------|
+| Maximize WR | v8.2.2 | 83% WR, 12 trades, +$30.92 |
+| Maximize trades with profit | v8.2.3 | ~15 trades, ~80% WR, ~+$25 |
+| Minimize risk | v8.2.2 | 12 trades, 83% WR, no edge cases |
+| Capture more upside | v8.2.3 | Allows NORMAL at T≥70 |
+
+### Current Deployment Status
+
+**Live on Montreal (as of 18:09 UTC):** v8.2.2
+
+**Config verified:**
+```
+BET_FRACTION=0.05
+V81_CAP_T240=0.55
+V81_CAP_T180=0.55
+V81_CAP_T120=0.60
+V81_CAP_T60=0.65
+```
+
+**Wallet:** $70.14 USDC (up from $67.08 - some trades resolved)
+
+**Recommendation:** Monitor v8.2.2 for 24-48h. If 83% WR holds, consider v8.2.3 refinement. If WR drops below 70%, maintain v8.2.2.
+
+**Full analysis: `docs/analyses/2026-04-07-v822-refinement.md`**
+
+---
+
 ## 16. Gate Config — v8.2.3 (Recommended)
 
 | Offset | Cap | VPIN Required | Notes |
