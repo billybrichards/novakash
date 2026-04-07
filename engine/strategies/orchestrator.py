@@ -1444,7 +1444,11 @@ class Orchestrator:
                         _direction = "UP" if order.direction == "YES" else "DOWN"
                         _open_p = meta.get("window_open_price", 0) or 0
                         _close_p = float(self._order_manager._current_btc_price or 0)
-                        _actual = "UP" if _close_p >= _open_p else "DOWN"
+                        # Determine actual direction from oracle outcome, not live price
+                        if order.outcome == "WIN":
+                            _actual = _direction  # We won = oracle agreed with our direction
+                        else:
+                            _actual = "DOWN" if _direction == "UP" else "UP"  # We lost = oracle went opposite
                         _delta = (_close_p - _open_p) / _open_p * 100 if _open_p else 0
                         _vpin = self._five_min_strategy._vpin.current_vpin if self._five_min_strategy and self._five_min_strategy._vpin else 0
                         # Win streak from risk manager
