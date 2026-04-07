@@ -17,8 +17,17 @@ export const T = {
   white: '#fff',
 };
 
-// Gate names for the audit matrix
+// Gate names for the audit matrix — v9.0 pipeline
 export const GATES = [
+  'gate_agreement',
+  'gate_vpin',
+  'gate_delta',
+  'gate_cg_veto',
+  'gate_cap',
+];
+
+// Legacy gates kept for backwards compat with pre-v9 windows
+export const LEGACY_GATES = [
   'gate_vpin',
   'gate_delta',
   'gate_cg_veto',
@@ -32,13 +41,18 @@ export const GATES = [
 // Evaluation checkpoint offsets (seconds before window close)
 export const CHECKPOINTS = [240, 230, 220, 210, 200, 190, 180, 170, 160, 150, 140, 130, 120, 110, 100, 90, 80, 70, 60];
 
-// Entry price caps by offset
-export const getEntryCap = (t) => {
-  if (t > 180) return 0.55;
-  if (t > 120) return 0.60;
-  if (t > 60) return 0.65;
-  return 0.73;
+// v9.0 two-tier dynamic entry caps
+// EARLY_CASCADE: T-240..T-130, VPIN >= 0.65 -> $0.55
+// GOLDEN:        T-130..T-60,  VPIN >= 0.45 -> $0.65
+export const getEntryCap = (t, vpin) => {
+  if (t > 130) return 0.55;  // Early zone
+  if (t > 60) return 0.65;   // Golden zone
+  return 0.73;                // Post-eval (shouldn't trade here)
 };
+
+// Pi bonus: cap + 3.14 cents when CLOB is within pi% of cap
+export const PI_BONUS_CENTS = 0.0314;
+export const getCapWithPi = (cap) => Math.round((cap + PI_BONUS_CENTS) * 100) / 100;
 
 // Window status helpers
 export const windowStatusColor = (w) => {

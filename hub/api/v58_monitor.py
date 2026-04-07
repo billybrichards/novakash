@@ -72,6 +72,79 @@ def _safe_float(v: Any) -> Optional[float]:
         return None
 
 
+# ─── v9.0 field derivation helpers ───────────────────────────────────────────
+
+def _derive_source_agreement(row: Any) -> Optional[bool]:
+    """Derive whether Chainlink + Tiingo agree on direction from their deltas."""
+    dc = _safe_float(row.get("delta_chainlink"))
+    dt = _safe_float(row.get("delta_tiingo"))
+    if dc is None or dt is None:
+        return None
+    cl_dir = "UP" if dc > 0 else "DOWN"
+    ti_dir = "UP" if dt > 0 else "DOWN"
+    return cl_dir == ti_dir
+
+
+def _derive_eval_tier(row: Any) -> Optional[str]:
+    """Derive the v9.0 eval tier from VPIN + regime/confidence_tier.
+
+    EARLY_CASCADE: VPIN >= 0.65 (high informed flow, early offsets)
+    GOLDEN: VPIN >= 0.45 (T-130..T-60 golden zone)
+    Returns None if data insufficient.
+    """
+    vpin = _safe_float(row.get("vpin"))
+    regime = row.get("regime")
+    tier = row.get("confidence_tier")
+    if vpin is None:
+        return None
+    if vpin >= 0.65 and regime in ("CASCADE", "TRANSITION"):
+        return "EARLY_CASCADE"
+    if vpin >= 0.45:
+        return "GOLDEN"
+    return None
+
+
+def _derive_v9_cap(row: Any) -> Optional[float]:
+    """Derive the v9.0 dynamic entry cap used for this window."""
+    tier = _derive_eval_tier(row)
+    if tier == "EARLY_CASCADE":
+        return 0.55
+    if tier == "GOLDEN":
+        return 0.65
+    return None
+
+
+def _derive_order_type(row: Any) -> Optional[str]:
+    """Derive order type from execution_mode or engine_version."""
+    exe = row.get("execution_mode")
+    ev = row.get("engine_version") or ""
+    if exe:
+        exe_upper = str(exe).upper()
+        if "FAK" in exe_upper:
+            return "FAK"
+        if "FOK" in exe_upper:
+            return "FOK"
+        if "GTC" in exe_upper:
+            return "GTC"
+    # v9.0+ uses FAK by default
+    if "v9" in ev.lower():
+        return "FAK"
+    if row.get("fok_attempts") is not None:
+        return "FOK"
+    return None
+
+
+def _derive_partial_fill(row: Any) -> Optional[bool]:
+    """Detect FAK partial fill: fill_step < total attempts."""
+    fok_attempts = row.get("fok_attempts")
+    fok_fill_step = row.get("fok_fill_step")
+    fill_price = _safe_float(row.get("clob_fill_price"))
+    if fill_price is not None and fok_attempts is not None and fok_fill_step is not None:
+        # If filled on first step of multiple, it might be partial
+        return fok_fill_step < fok_attempts
+    return None
+
+
 def _row_to_window(row: Any) -> dict:
     """Map a window_snapshots row (RowMapping) to a serialisable dict."""
     # window_ts is BIGINT (unix epoch seconds), not a datetime
@@ -130,6 +203,16 @@ def _row_to_window(row: Any) -> dict:
         "oracle_outcome": row.get("oracle_outcome"),
         "shadow_pnl": _safe_float(row.get("shadow_pnl")),
         "shadow_would_win": bool(row.get("shadow_would_win")) if row.get("shadow_would_win") is not None else None,
+        # Poly outcome from trades table (WIN/LOSS)
+        "poly_outcome": row.get("poly_outcome"),
+        # v9.0 fields — derived from existing columns
+        "delta_chainlink": _safe_float(row.get("delta_chainlink")),
+        "delta_tiingo": _safe_float(row.get("delta_tiingo")),
+        "source_agreement": _derive_source_agreement(row),
+        "eval_tier": _derive_eval_tier(row),
+        "v9_cap": _derive_v9_cap(row),
+        "order_type": _derive_order_type(row),
+        "partial_fill": _derive_partial_fill(row),
     }
 
 
@@ -2133,35 +2216,46 @@ async def get_execution_hq(
     try:
         # ── Windows with shadow data ──────────────────────────────────────
         # Build WHERE clauses safely using parameterised conditions
-        conditions = ["timeframe = '5m'"]
+        conditions = ["ws.timeframe = '5m'"]
         params: dict = {"limit": limit}
 
         if asset:
-            conditions.append("asset = :asset")
+            conditions.append("ws.asset = :asset")
             params["asset"] = asset
         if shadow_only:
-            conditions.append("shadow_would_win = TRUE")
-            conditions.append("trade_placed = FALSE")
+            conditions.append("ws.shadow_would_win = TRUE")
+            conditions.append("ws.trade_placed = FALSE")
 
         where_clause = " AND ".join(conditions)
 
         q = text(f"""
             SELECT
-                window_ts, asset, timeframe,
-                open_price, close_price, delta_pct, vpin,
-                regime, direction, confidence,
-                trade_placed, skip_reason,
-                twap_direction, twap_agreement_score, twap_gamma_gate,
-                timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
-                gamma_up_price, gamma_down_price, engine_version,
-                v71_would_trade, v71_skip_reason, v71_regime, v71_correct, v71_pnl,
-                delta_source, execution_mode, fok_attempts, fok_fill_step, clob_fill_price,
-                gates_passed, gate_failed, confidence_tier,
-                shadow_trade_direction, shadow_trade_entry_price,
-                oracle_outcome, shadow_pnl, shadow_would_win
-            FROM window_snapshots
+                ws.window_ts, ws.asset, ws.timeframe,
+                ws.open_price, ws.close_price, ws.delta_pct, ws.vpin,
+                ws.regime, ws.direction, ws.confidence,
+                ws.trade_placed, ws.skip_reason,
+                ws.twap_direction, ws.twap_agreement_score, ws.twap_gamma_gate,
+                ws.timesfm_direction, ws.timesfm_confidence, ws.timesfm_predicted_close, ws.timesfm_agreement,
+                ws.gamma_up_price, ws.gamma_down_price, ws.engine_version,
+                ws.v71_would_trade, ws.v71_skip_reason, ws.v71_regime, ws.v71_correct, ws.v71_pnl,
+                ws.delta_source, ws.execution_mode, ws.fok_attempts, ws.fok_fill_step, ws.clob_fill_price,
+                ws.gates_passed, ws.gate_failed, ws.confidence_tier,
+                ws.shadow_trade_direction, ws.shadow_trade_entry_price,
+                ws.oracle_outcome, ws.shadow_pnl, ws.shadow_would_win,
+                ws.delta_chainlink, ws.delta_tiingo, ws.price_consensus,
+                t.outcome AS poly_outcome
+            FROM window_snapshots ws
+            LEFT JOIN LATERAL (
+                SELECT outcome
+                FROM trades
+                WHERE strategy = 'five_min_vpin'
+                  AND (metadata::json->>'window_ts')::bigint = ws.window_ts
+                  AND outcome IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) t ON true
             WHERE {where_clause}
-            ORDER BY window_ts DESC
+            ORDER BY ws.window_ts DESC
             LIMIT :limit
         """)
         result = await session.execute(q, params)
@@ -2249,11 +2343,81 @@ async def get_execution_hq(
                 "engine_status": state_json.get("status", "unknown"),
             }
 
+        # ── v9.0 WR stats (source agreement windows only) ──────────────
+        v9_stats = {"wins": 0, "losses": 0, "wr_pct": 0.0, "total_trades": 0}
+        try:
+            v9q = text("""
+                SELECT
+                    COUNT(*) FILTER (WHERE t.outcome = 'WIN') AS wins,
+                    COUNT(*) FILTER (WHERE t.outcome = 'LOSS') AS losses,
+                    COUNT(*) AS total
+                FROM trades t
+                WHERE t.strategy = 'five_min_vpin'
+                  AND t.outcome IS NOT NULL
+                  AND t.engine_version LIKE 'v9%'
+            """)
+            v9r = await session.execute(v9q)
+            v9row = v9r.mappings().first()
+            if v9row:
+                w = int(v9row["wins"] or 0)
+                l = int(v9row["losses"] or 0)
+                v9_stats = {
+                    "wins": w,
+                    "losses": l,
+                    "total_trades": int(v9row["total"] or 0),
+                    "wr_pct": round(w / max(w + l, 1) * 100, 1),
+                }
+        except Exception:
+            # v9 stats are supplementary — don't fail the whole endpoint
+            pass
+
+        # ── v9.0 signal_evaluations gate data for recent windows ──────
+        v9_gate_data = {}
+        try:
+            gq = text("""
+                SELECT
+                    window_ts, eval_offset,
+                    gate_vpin_passed, gate_delta_passed, gate_cg_passed,
+                    gate_passed, gate_failed, decision,
+                    delta_chainlink, delta_tiingo, delta_source,
+                    vpin, regime
+                FROM signal_evaluations
+                WHERE window_ts >= (
+                    SELECT COALESCE(MAX(window_ts) - 1800, 0)
+                    FROM signal_evaluations
+                )
+                ORDER BY window_ts DESC, eval_offset DESC
+                LIMIT 500
+            """)
+            gresult = await session.execute(gq)
+            grows = gresult.mappings().all()
+            for gr in grows:
+                wts = int(gr["window_ts"]) if gr["window_ts"] else 0
+                offset = int(gr["eval_offset"]) if gr["eval_offset"] else 0
+                if wts not in v9_gate_data:
+                    v9_gate_data[wts] = {}
+                v9_gate_data[wts][offset] = {
+                    "gate_vpin": "pass" if gr.get("gate_vpin_passed") else "fail",
+                    "gate_delta": "pass" if gr.get("gate_delta_passed") else "fail",
+                    "gate_cg_veto": "pass" if gr.get("gate_cg_passed") else "fail",
+                    "gate_agreement": "pass" if _derive_source_agreement(gr) else ("fail" if _derive_source_agreement(gr) is False else "unknown"),
+                    "gate_cap": "pass" if gr.get("gate_passed") else "fail",
+                    "gate_passed": bool(gr.get("gate_passed")),
+                    "gate_failed": gr.get("gate_failed"),
+                    "decision": gr.get("decision"),
+                    "vpin": _safe_float(gr.get("vpin")),
+                    "regime": gr.get("regime"),
+                }
+        except Exception:
+            pass
+
         return {
             "windows": windows,
             "shadow_stats": shadow_stats,
             "recent_trades": recent_trades,
             "system": system_state,
+            "v9_stats": v9_stats,
+            "v9_gate_data": v9_gate_data,
         }
     except Exception as exc:
         return {"windows": [], "shadow_stats": {}, "recent_trades": [], "system": {}, "error": str(exc)}

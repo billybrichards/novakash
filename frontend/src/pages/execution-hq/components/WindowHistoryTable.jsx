@@ -75,11 +75,11 @@ export default function WindowHistoryTable({ windows, onSelectWindow, selectedTs
             <tr style={{ borderBottom: `1px solid ${T.cardBorder}`, color: T.textMuted }}>
               <th style={{ padding: '6px 8px', textAlign: 'left' }}>Time</th>
               <th style={{ padding: '6px 8px', textAlign: 'center' }}>Status</th>
+              <th style={{ padding: '6px 8px', textAlign: 'center' }}>Agree</th>
               <th style={{ padding: '6px 8px', textAlign: 'center' }}>Dir</th>
-              <th style={{ padding: '6px 8px', textAlign: 'right' }}>Delta</th>
+              <th style={{ padding: '6px 8px', textAlign: 'center' }}>Tier</th>
+              <th style={{ padding: '6px 8px', textAlign: 'center' }}>Type</th>
               <th style={{ padding: '6px 8px', textAlign: 'right' }}>VPIN</th>
-              <th style={{ padding: '6px 8px', textAlign: 'center' }}>Regime</th>
-              <th style={{ padding: '6px 8px', textAlign: 'center' }}>Shadow</th>
               <th style={{ padding: '6px 8px', textAlign: 'right' }}>PnL</th>
               <th style={{ padding: '6px 8px', textAlign: 'left' }}>Reason</th>
             </tr>
@@ -105,7 +105,7 @@ export default function WindowHistoryTable({ windows, onSelectWindow, selectedTs
                   onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = 'rgba(30,41,59,0.5)'; }}
                   onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
                 >
-                  <td style={{ padding: '6px 8px', color: T.text }}>{fmtTime(w.window_ts)}</td>
+                  <td style={{ padding: '6px 8px', color: T.text, fontFamily: "'JetBrains Mono', monospace" }}>{fmtTime(w.window_ts)}</td>
                   <td style={{ padding: '6px 8px', textAlign: 'center' }}>
                     <span style={{
                       display: 'inline-block', padding: '2px 8px', borderRadius: 2,
@@ -115,30 +115,43 @@ export default function WindowHistoryTable({ windows, onSelectWindow, selectedTs
                       border: `1px solid ${statusColor}40`,
                     }}>{statusLabel}</span>
                   </td>
-                  <td style={{ padding: '6px 8px', textAlign: 'center', color: w.direction === 'UP' ? T.green : T.red }}>
-                    {w.direction || '—'}
-                  </td>
-                  <td style={{ padding: '6px 8px', textAlign: 'right', color: T.text }}>{fmtPct(w.delta_pct)}</td>
-                  <td style={{ padding: '6px 8px', textAlign: 'right', color: T.text }}>{w.vpin?.toFixed(3) ?? '—'}</td>
-                  <td style={{ padding: '6px 8px', textAlign: 'center', color: T.textMuted }}>{w.regime || '—'}</td>
+                  {/* v9.0 Source Agreement badge */}
                   <td style={{ padding: '6px 8px', textAlign: 'center' }}>
-                    {w.shadow_would_win === true && (
-                      <span style={{ color: T.amber, fontWeight: 700 }}>WOULD WIN</span>
+                    {w.source_agreement === true && (
+                      <span style={{ color: T.green, fontWeight: 700, fontSize: 12 }}>{'\u2713'}</span>
                     )}
-                    {w.shadow_would_win === false && w.oracle_outcome && (
-                      <span style={{ color: T.textDim }}>correct skip</span>
+                    {w.source_agreement === false && (
+                      <span style={{ color: T.red, fontWeight: 700, fontSize: 12 }}>{'\u2717'}</span>
                     )}
-                    {w.shadow_would_win === null && w.trade_placed && (
-                      <span style={{ color: T.textDim }}>—</span>
+                    {w.source_agreement == null && (
+                      <span style={{ color: T.textDim }}>{'\u2014'}</span>
                     )}
                   </td>
-                  <td style={{ padding: '6px 8px', textAlign: 'right', color: pnlColor, fontWeight: 600 }}>
+                  <td style={{ padding: '6px 8px', textAlign: 'center', color: w.direction === 'UP' ? T.green : T.red }}>
+                    {w.direction || '\u2014'}
+                  </td>
+                  {/* v9.0 Eval Tier badge */}
+                  <td style={{ padding: '6px 8px', textAlign: 'center' }}>
+                    {w.eval_tier === 'EARLY_CASCADE' && (
+                      <span style={{ fontSize: 8, padding: '1px 6px', borderRadius: 2, background: 'rgba(245,158,11,0.15)', color: T.amber, border: '1px solid rgba(245,158,11,0.3)' }}>EARLY</span>
+                    )}
+                    {w.eval_tier === 'GOLDEN' && (
+                      <span style={{ fontSize: 8, padding: '1px 6px', borderRadius: 2, background: 'rgba(168,85,247,0.15)', color: T.purple, border: '1px solid rgba(168,85,247,0.3)' }}>GOLDEN</span>
+                    )}
+                    {!w.eval_tier && <span style={{ color: T.textDim }}>{'\u2014'}</span>}
+                  </td>
+                  {/* v9.0 Order Type */}
+                  <td style={{ padding: '6px 8px', textAlign: 'center', color: w.order_type === 'FAK' ? T.purple : T.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>
+                    {w.order_type || '\u2014'}
+                  </td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right', color: T.text, fontFamily: "'JetBrains Mono', monospace" }}>{w.vpin?.toFixed(3) ?? '\u2014'}</td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right', color: pnlColor, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>
                     {fmtUsd(pnl)}
                   </td>
                   <td style={{
                     padding: '6px 8px', color: T.textMuted,
-                    maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }}>{w.skip_reason || (w.trade_placed ? 'Executed' : '—')}</td>
+                    maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>{w.skip_reason || (w.trade_placed ? 'Executed' : '\u2014')}</td>
                 </tr>
               );
             })}
