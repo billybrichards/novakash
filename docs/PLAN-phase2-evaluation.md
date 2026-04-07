@@ -295,6 +295,8 @@ VPIN: 0.78 → 0.49 (collapsed during window)
 - [ ] SITREP every 15 min (not 5)
 - [ ] Add "gates saved" running counter
 - [ ] Show Tiingo vs Chainlink predicted outcome
+- [ ] Distinct indicators: SKIP (no signal) vs BID UNFILLED (signal good, no liquidity) vs TRADED
+- [ ] Unfilled bids show: cap, direction, CLOB ask at time, why no fill
 
 ### Phase 2D — Stale Code Removal
 - [ ] Remove `_execute_from_signal` (521 dead lines)
@@ -305,9 +307,20 @@ VPIN: 0.78 → 0.49 (collapsed during window)
 
 ---
 
-## 6. Questions for Billy
+## 6. Updated Gate Config (v8.1.2)
 
-1. **NORMAL gate at T-80..T-110?** — The 11:18 loss was NORMAL at T-100. Extend gate?
-2. **Bet fraction** — At $99 wallet, 7.3% = $7.22/trade. Want to reduce to 5% while testing?
-3. **Macro-observer on Railway** — Current service just reads macro signals. OK to add the evaluator endpoint there? Or separate service?
-4. **Notification timing** — Kill window_open entirely? And SITREP every 15 min OK?
+NORMAL gate extended to ALL late offsets (was T-70/T-60 only):
+
+```
+Early offsets (>=120): CASCADE + delta>=5bp + v2.2 HIGH + agrees → DECISIVE
+Late offsets (<120):   TRANSITION+ (VPIN>=0.55) + v2.2 HIGH + agrees
+                       NORMAL regime (VPIN<0.55) BLOCKED at ALL late offsets
+```
+
+v8.1.2 blocks 4 losses ($48.60) vs v8.1.1 which only blocked 3 ($38.13).
+
+## 7. Questions for Billy
+
+1. **Bet fraction** — At $110 wallet, 7.3% = ~$8/trade. Drop to 5% while testing?
+2. **Macro-observer on Railway** — OK to add the evaluator endpoint there? Or separate service?
+3. **Notification timing** — Kill window_open entirely? SITREP every 15 min?
