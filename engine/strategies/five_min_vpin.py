@@ -533,21 +533,6 @@ class FiveMinVPINStrategy(BaseStrategy):
             except Exception as exc:
                 self._log.debug("evaluate.timesfm_fetch_failed", error=str(exc))
 
-        # v8.1: Query v2.2 for display in ALL notifications (before signal eval)
-        eval_offset = getattr(window, "eval_offset", None)
-        if self._timesfm_v2 is not None and eval_offset:
-            try:
-                _v2_pre = await self._timesfm_v2.get_probability(
-                    asset=window.asset, seconds_to_close=eval_offset
-                )
-                if _v2_pre and "probability_up" in _v2_pre:
-                    window_snapshot["v2_probability_up"] = round(float(_v2_pre["probability_up"]), 4)
-                    window_snapshot["v2_direction"] = "UP" if float(_v2_pre["probability_up"]) > 0.5 else "DOWN"
-                    window_snapshot["v2_model_version"] = _v2_pre.get("model_version", "")
-                    window_snapshot["eval_offset"] = eval_offset
-            except Exception:
-                pass
-
         # Evaluate signal (with TWAP override for direction + TimesFM agreement)
         signal = self._evaluate_signal(window, current_price, current_vpin, delta_pct, twap_result=twap_result, timesfm_forecast=timesfm_forecast)
 
@@ -699,6 +684,23 @@ class FiveMinVPINStrategy(BaseStrategy):
             ),
         }
 
+        # ── v8.1: Query v2.2 for early entry gate data (AFTER window_snapshot created) ───
+        # This fetch populates window_snapshot with v2.2 data that will be written to DB.
+        # Used for: (1) early entry gate at T>=120, (2) dashboard display, (3) analysis.
+        _eval_offset = getattr(window, "eval_offset", None)
+        if self._timesfm_v2 is not None and _eval_offset:
+            try:
+                _v2_pre = await self._timesfm_v2.get_probability(
+                    asset=window.asset, seconds_to_close=_eval_offset
+                )
+                if _v2_pre and "probability_up" in _v2_pre:
+                    window_snapshot["v2_probability_up"] = round(float(_v2_pre["probability_up"]), 4)
+                    window_snapshot["v2_direction"] = "UP" if float(_v2_pre["probability_up"]) > 0.5 else "DOWN"
+                    window_snapshot["v2_model_version"] = _v2_pre.get("model_version", "")
+                    window_snapshot["eval_offset"] = _eval_offset
+            except Exception as e:
+                self._log.warning("v2.probability.fetch_failed", error=str(e)[:100])
+
         # ── v8.0: Compute gate results + confidence tier for notifications ────
         _vpin_passed = current_vpin >= _runtime.five_min_vpin_gate
         _delta_thresh = (
@@ -816,8 +818,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                                 f"UPDATE window_snapshots SET {_sets} WHERE window_ts=$1 AND asset=$2 AND timeframe=$3",
                                 *_vals
                             )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self._log.warning("v2.db_update_failed", error=str(e)[:100], window_ts=window_snapshot.get("window_ts"))
             except Exception as exc:
                 self._log.warning("db.snapshot_write_failed", error=str(exc)[:80])
 
