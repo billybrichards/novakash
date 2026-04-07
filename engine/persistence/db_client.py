@@ -1435,7 +1435,7 @@ class DBClient:
                         gate_vpin_passed, gate_delta_passed, gate_cg_passed,
                         gate_twap_passed, gate_timesfm_passed, gate_passed,
                         gate_failed, decision,
-                        twap_delta, twap_direction, twap_gamma_agree
+                        twap_delta, twap_direction, twap_gamma_agree, evaluated_at
                     ) VALUES (
                         $1, $2, $3, $4,
                         $5, $6, $7, $8,
@@ -1446,7 +1446,7 @@ class DBClient:
                         $26, $27, $28,
                         $29, $30, $31,
                         $32, $33, $34, $35,
-                        $36, $37, $38
+                        $36, $37, $38, $39
                     )
                     ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
                         clob_up_bid           = EXCLUDED.clob_up_bid,
@@ -1525,6 +1525,7 @@ class DBClient:
                     float(data["twap_delta"]) if data.get("twap_delta") is not None else None,
                     data.get("twap_direction"),
                     bool(data["twap_gamma_agree"]) if data.get("twap_gamma_agree") is not None else None,
+                    NOW()
                 )
         except Exception as exc:
             log.warning("db.write_signal_evaluation_failed", error=str(exc)[:200])
