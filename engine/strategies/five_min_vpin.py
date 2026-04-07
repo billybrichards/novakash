@@ -1215,6 +1215,7 @@ class FiveMinVPINStrategy(BaseStrategy):
 
         if signal is not None:
             # Also check fresh CLOB price before committing to trade
+            # v8.1: When FOK is enabled, only check floor (not cap) - FOK will ladder down
             if self._db:
                 try:
                     _clob = await self._db.get_latest_clob_prices(window.asset)
@@ -1223,14 +1224,24 @@ class FiveMinVPINStrategy(BaseStrategy):
                         _clob_ask = _clob.get("clob_up_ask") if _dir == "UP" else _clob.get("clob_down_ask")
                         # v8.1: Use dynamic cap from eval offset
                         _dynamic_cap = _get_v81_cap(eval_offset) if eval_offset else 0.73
-                        if _clob_ask and _clob_ask > _dynamic_cap:
-                            self._log.info("evaluate.clob_cap_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}", cap=f"${_dynamic_cap:.2f}")
-                            self._last_skip_reason = f"CLOB CAP: {_dir} ask ${_clob_ask:.3f} > ${_dynamic_cap:.2f}"
-                            signal = None
-                        elif _clob_ask and _clob_ask < 0.30:
-                            self._log.info("evaluate.clob_floor_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}")
-                            self._last_skip_reason = f"CLOB FLOOR: {_dir} ask ${_clob_ask:.3f} < $0.30"
-                            signal = None
+                        # FOK-enabled: only block on floor (CLOB too cheap = bad value)
+                        # GTC mode: block on both cap and floor
+                        if runtime.fok_enabled:
+                            # FOK mode: only check floor
+                            if _clob_ask and _clob_ask < 0.30:
+                                self._log.info("evaluate.clob_floor_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}")
+                                self._last_skip_reason = f"CLOB FLOOR: {_dir} ask ${_clob_ask:.3f} < $0.30"
+                                signal = None
+                        else:
+                            # GTC mode: check both cap and floor
+                            if _clob_ask and _clob_ask > _dynamic_cap:
+                                self._log.info("evaluate.clob_cap_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}", cap=f"${_dynamic_cap:.2f}")
+                                self._last_skip_reason = f"CLOB CAP: {_dir} ask ${_clob_ask:.3f} > ${_dynamic_cap:.2f}"
+                                signal = None
+                            elif _clob_ask and _clob_ask < 0.30:
+                                self._log.info("evaluate.clob_floor_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}")
+                                self._last_skip_reason = f"CLOB FLOOR: {_dir} ask ${_clob_ask:.3f} < $0.30"
+                                signal = None
                 except Exception:
                     pass  # Don't block trade if DB read fails
 
