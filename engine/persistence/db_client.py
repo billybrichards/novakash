@@ -1435,7 +1435,7 @@ class DBClient:
                         gate_vpin_passed, gate_delta_passed, gate_cg_passed,
                         gate_twap_passed, gate_timesfm_passed, gate_passed,
                         gate_failed, decision,
-                        twap_delta, twap_direction, twap_gamma_agree, evaluated_at
+                        twap_delta, twap_direction, twap_gamma_agree
                     ) VALUES (
                         $1, $2, $3, $4,
                         $5, $6, $7, $8,
