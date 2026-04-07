@@ -916,6 +916,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                     "gates_passed_list": ",".join(_gates_passed) if _gates_passed else "",
                     "decision": "TRADE" if _all_passed else "SKIP",
                     "skip_reason": None if _all_passed else _actual_skip_reason[:500],
+                    "eval_offset": eval_offset,
                 }))
             except Exception as _ga_exc:
                 self._log.debug("db.gate_audit_write_failed", error=str(_ga_exc)[:80])

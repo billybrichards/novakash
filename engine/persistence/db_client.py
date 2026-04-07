@@ -1319,7 +1319,7 @@ class DBClient:
                     """
                     INSERT INTO gate_audit (
                         window_ts, asset, timeframe, engine_version,
-                        delta_source,
+                        delta_source, eval_offset,
                         open_price, tiingo_open, tiingo_close,
                         delta_tiingo, delta_binance, delta_chainlink, delta_pct,
                         vpin, regime,
@@ -1328,7 +1328,7 @@ class DBClient:
                         decision, skip_reason
                     ) VALUES (
                         $1, $2, $3, $4,
-                        $5,
+                        $5, $25,
                         $6, $7, $8,
                         $9, $10, $11, $12,
                         $13, $14,
@@ -1336,7 +1336,7 @@ class DBClient:
                         $20, $21, $22,
                         $23, $24
                     )
-                    ON CONFLICT (window_ts, asset, timeframe) DO UPDATE SET
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
                         engine_version      = EXCLUDED.engine_version,
                         delta_source        = EXCLUDED.delta_source,
                         open_price          = EXCLUDED.open_price,
@@ -1384,6 +1384,7 @@ class DBClient:
                     data.get("gates_passed_list"),
                     data.get("decision", "SKIP"),
                     data.get("skip_reason"),
+                    data.get("eval_offset"),
                 )
         except Exception as exc:
             log.debug("db.write_gate_audit_failed", error=str(exc)[:120])
