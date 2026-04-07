@@ -1524,8 +1524,7 @@ class DBClient:
                     data.get("decision", "SKIP"),
                     float(data["twap_delta"]) if data.get("twap_delta") is not None else None,
                     data.get("twap_direction"),
-                    bool(data["twap_gamma_agree"]) if data.get("twap_gamma_agree") is not None else None,
-                    NOW()
+                    bool(data["twap_gamma_agree"]) if data.get("twap_gamma_agree") is not None else None
                 )
         except Exception as exc:
             log.warning("db.write_signal_evaluation_failed", error=str(exc)[:200])
