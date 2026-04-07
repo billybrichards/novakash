@@ -1423,11 +1423,13 @@ class TelegramAlerter:
 
             # Trade / skip
             if trade_placed:
-                _price = token_price or (_g_down if _dir == "DOWN" else _g_up)
+                _v81_cap = signal.get("v81_entry_cap") if signal else None
+                _price = _v81_cap or token_price or (_g_down if _dir == "DOWN" else _g_up)
                 _stake = stake_usd or 4.0
                 _token = "NO" if _dir == "DOWN" else "YES"
                 _win = (1.0 - _price) * _stake * 0.98
-                lines.append(f"⚡ *PLACED {_token} @ `${_price:.3f}`*")
+                _reason = (signal.get("entry_reason", "") if signal else "") or ""
+                lines.append(f"⚡ *PLACED {_token} limit `${_price:.2f}`* | `{_reason}`")
                 lines.append(f"Stake `${_stake:.2f}` → Win `+${_win:.2f}`")
             else:
                 _short_reason = (skip_reason or "—")[:80]

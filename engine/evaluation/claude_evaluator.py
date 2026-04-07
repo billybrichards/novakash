@@ -117,10 +117,13 @@ class ClaudeEvaluator:
                     else:
                         status_label = "⏳ PLACED"
                     
+                    # v8.1: Show cap price (what we submitted), not Gamma (stale/indicative)
+                    _cap = signal.get("v81_entry_cap", 0.73) if isinstance(signal, dict) else getattr(signal, "v81_entry_cap", 0.73)
+                    _reason = signal.get("entry_reason", "") if isinstance(signal, dict) else getattr(signal, "entry_reason", "")
                     msg = (
                         f"{emoji} *AI Assessment — {asset} {timeframe} {status_label}*\n"
                         f"Direction: {direction} | δ={delta_pct:+.4f}% | VPIN={vpin:.3f}\n"
-                        f"Gamma: ${gamma_bestask:.2f} [{price_source}] | Entry: ${token_price:.4f}\n\n"
+                        f"Limit: `${_cap:.2f}` | {_reason}\n\n"
                         f"{_escape_telegram_md(analysis)}"
                     )
                     try:

@@ -2599,13 +2599,16 @@ class FiveMinVPINStrategy(BaseStrategy):
         except Exception:
             _entry_reason_detail = f"T-{FIVE_MIN_ENTRY_OFFSET}s signal — delta {signal.delta_pct:+.4f}%, VPIN {signal.current_vpin:.4f}"
 
+        # v8.1: Record actual submission price, not CLOB cascade price
+        _recorded_price = str(_rfq_fill_price) if _rfq_fill_price else str(PRICE_CAP)
+        
         # Create order
         order = Order(
             order_id=order_id,
             strategy=self.name,
             venue="polymarket",
             direction=direction,
-            price=str(price),
+            price=_recorded_price,
             stake_usd=stake,
             fee_usd=fee_usd,
             status=OrderStatus.OPEN,
@@ -2738,8 +2741,9 @@ class FiveMinVPINStrategy(BaseStrategy):
                         if self._alerter:
                             asyncio.create_task(self._alerter.send_system_alert(
                                 f"❌ GTC NOT FILLED — {window.asset} {tf}\n"
-                                f"Direction: {direction} at ${float(price):.4f}\n"
-                                f"Waited {elapsed}s — no fill",
+                                f"Direction: {direction} | Limit: `${PRICE_CAP:.2f}`\n"
+                                f"CLOB ask was: `${float(price):.4f}`\n"
+                                f"Waited {elapsed}s — expired unfilled",
                                 level="warning",
                             ))
                 except Exception as exc:
