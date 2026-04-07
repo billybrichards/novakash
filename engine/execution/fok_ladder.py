@@ -155,24 +155,16 @@ class FOKLadder:
                 abort_reason=f"best_ask ${best_ask:.4f} < floor ${min_price:.4f}",
             )
 
-        if best_ask > max_price:
-            self._log.warning(
-                "fok_ladder.abort_cap",
-                best_ask=f"${best_ask:.4f}",
-                cap=f"${max_price:.4f}",
-            )
-            return FOKResult(
-                filled=False,
-                fill_price=None,
-                fill_step=None,
-                shares=None,
-                attempts=0,
-                order_id=None,
-                attempted_prices=[],
-                abort_reason=f"best_ask ${best_ask:.4f} > cap ${max_price:.4f}",
-            )
+        # FOK mode: start at max_price (our cap) and attempt fills
+        # CLOB may drop quickly, or there may be hidden liquidity at our price
+        current_price = max_price
 
-        current_price = best_ask
+        self._log.info(
+            "fok_ladder.clob_above_cap",
+            best_ask=f"${best_ask:.4f}",
+            starting_at=f"${current_price:.4f}",
+            note="FOK will attempt fills at cap; CLOB may drop or hidden liquidity may exist",
+        )
 
         # ── Steps 3–6: FOK attempt loop ───────────────────────────────────
         for attempt in range(1, max_attempts + 1):
@@ -295,14 +287,8 @@ class FOKLadder:
                         error=str(exc)[:100],
                     )
 
-                # Abort early if we've already hit the cap
-                if current_price >= max_price and attempt_price >= max_price:
-                    self._log.info(
-                        "fok_ladder.cap_reached",
-                        price=f"${current_price:.4f}",
-                        cap=f"${max_price:.4f}",
-                    )
-                    break
+                # Cap at max_price (keep trying at cap even if CLOB is higher)
+                current_price = min(current_price, max_price)
 
         # ── Step 7: All attempts exhausted ───────────────────────────────
         self._log.warning(
