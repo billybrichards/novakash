@@ -302,7 +302,7 @@ WHERE poly_winner IS NOT NULL AND delta_tiingo IS NOT NULL AND delta_binance IS 
 | Apr 7 10:30 | Entry price analysis | $0.60-$0.69 = 100% WR. <$0.40 = 31% WR. | Cheap entries ≠ better. Keep $0.73 GTC. |
 | Apr 7 11:00 | CLOB liquidity surface | 100% ask presence at T-120+, $0.51-0.55 asks. Book thins after T-60. | R8: bestask pricing could unlock early entry EV. |
 | Apr 7 11:30 | Fill price verification | ALL wins fill at $0.73 (CLOB match), real cost $0.74 w/fees. $0.85+ fills = too thin margin (3pp vs 15pp). | Keep $0.73 cap. Do NOT raise. |
-| Apr 7 12:00 | CLOB phantom liquidity | Book shows $0.50 asks but they're phantom — 10% fill rate at book price, 67% at $0.73. v8.1 ONLY fills at $0.70+ (25/25). | $0.73 IS the real market price. Cap mode confirmed optimal. |
+| Apr 7 12:00 | CLOB phantom liquidity (CORRECTED) | Cap mode converts ALL submissions to $0.73 — we've never tested real bestask GTC. Pre-v8 bestask filled at $0.51-$0.59 but without v2.2 gate. FOK ladder: 0% fill rate (decimal bug or MM withdrawal). | R8 upgraded: test bestask + v2.2 combo. |
 
 ---
 
@@ -341,15 +341,37 @@ When comparing gated WR against breakeven at **actual CLOB ask prices** ($0.50-0
 
 The reason early offsets looked bad in Section 10 was we compared against $0.73 breakeven. But the real market ask is $0.50-0.55.
 
-### R8: Consider bestask Pricing Mode
+### R8: Test bestask Pricing Mode (UPGRADED from MONITOR to INVESTIGATE)
 
-**Proposal:** Switch `ORDER_PRICING_MODE` from `cap` to `bestask`.
-- Currently: GTC submits at $0.73 → fills at $0.73 → breakeven 73% → only T-60 clears it.
-- Proposed: GTC submits at CLOB ask + $0.02 bump → fills at ~$0.53 → breakeven 53% → ALL offsets clear it.
-- **Expected impact:** Same trades, same accuracy, but 20-30% cheaper fills. P&L per win doubles from ~$2.70 to ~$4.70.
-- **Risk:** Lower fill rate (maybe 70-80% vs current 100%). Market makers may not match at their posted ask.
-- **Confidence:** MEDIUM (CLOB data shows $0.50-0.55 asks exist; unknown if they'd actually fill)
-- **Action:** MONITOR. Needs A/B test or paper trial. Do NOT change without testing.
+**Key finding:** Cap mode (`ORDER_PRICING_MODE=cap`) converts ALL GTC submissions to $0.73 regardless of book price. We have NEVER tested a real bestask GTC under v8.1.
+
+**Evidence:**
+- `entry_price` in DB is the CLOB/Gamma indicative price ($0.50-$0.65)
+- `actual_fill_price` is ALWAYS $0.73 — because `place_order()` overrides to cap
+- Pre-v8.1 bestask mode DID fill at book price ($0.51-$0.59) — liquidity IS real
+- FOK ladder has 0% fill rate (5/5 killed every time) — likely decimal bug or MM withdrawal on FOK type
+- FOK prices DECREASE across attempts ($0.59→$0.47→$0.33) = MMs pulling quotes on seeing FOK
+
+**Proposal:** Switch to `ORDER_PRICING_MODE=bestask` for ONE day.
+- Submit GTC at CLOB best ask + $0.02 bump, capped at $0.73
+- v2.2 gate stays ON (88% WR filter unchanged)
+- If book ask is $0.50, submit at $0.52. If no fill, order expires at window close (GTD).
+- If book ask is $0.70, submit at $0.72. Close to cap anyway.
+
+**Expected impact:**
+- Fills at $0.50-$0.55 instead of $0.73 → profit per win DOUBLES ($4.50 vs $2.70)
+- Fill rate may drop from ~90% to ~60% (some orders won't match)
+- Net P&L: fewer trades × higher profit per trade = likely positive
+- Even at 60% fill rate × 88% WR × $4.50/win = better than 90% × 88% × $2.70/win
+
+**Why FOK fails but GTC might succeed:**
+- FOK is aggressive (fill immediately or cancel) — MMs see it and pull quotes
+- GTC rests on the book — MMs can fill at their pace within the GTD window
+- Pre-v8 GTC at book price DID fill (5 confirmed fills at $0.51-$0.59)
+
+**Risk:** Fill rate drops too much. Mitigated by GTD expiry (order auto-cancels at window close).
+**Confidence:** MEDIUM-HIGH (pre-v8 evidence + theoretical basis)
+**Action:** Recommend 24h A/B test. Set `ORDER_PRICING_MODE=bestask` for one trading day.
 
 *Next review: April 8, 2026 09:00 UTC (48h of v8.1 data)*
 *Update this doc with fresh numbers then.*
