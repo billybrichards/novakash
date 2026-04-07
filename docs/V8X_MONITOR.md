@@ -300,6 +300,54 @@ WHERE poly_winner IS NOT NULL AND delta_tiingo IS NOT NULL AND delta_binance IS 
 | Apr 7 10:30 | Subwindow accuracy surface | Peak accuracy T-20 to T-60 (73-76%). T-80+ drops below BE. | New R7: concentrate to T-10-T-70. Monitor. |
 | Apr 7 10:30 | Tiingo vs Binance H2H | Tiingo 67.6% vs Binance 54.1% on same 37 windows. | Tiingo confirmed as best source. |
 | Apr 7 10:30 | Entry price analysis | $0.60-$0.69 = 100% WR. <$0.40 = 31% WR. | Cheap entries ≠ better. Keep $0.73 GTC. |
+| Apr 7 11:00 | CLOB liquidity surface | 100% ask presence at T-120+, $0.51-0.55 asks. Book thins after T-60. | R8: bestask pricing could unlock early entry EV. |
+
+---
+
+## 12. CLOB Liquidity Surface (April 7 Update)
+
+**Method:** Analysed ticks_clob data (CLOB order book snapshots every ~2s) for BTC 5m windows since April 6.
+
+### Ask Presence & Price by Subwindow
+
+| T-minus | Ask Presence | Avg UP Ask | Avg DN Ask | Avg Spread |
+|---------|-------------|-----------|-----------|-----------|
+| T-270 | 100% | $0.533 | $0.549 | $0.53 |
+| T-240 | 100% | $0.534 | $0.540 | $0.53 |
+| T-180 | 100% | $0.520 | $0.558 | $0.53 |
+| T-120 | 99% | $0.514 | $0.558 | $0.51 |
+| T-90 | 97% | $0.509 | $0.548 | $0.51 |
+| T-60 | 95% | $0.513 | $0.531 | $0.53 |
+| T-30 | 91% | $0.499 | $0.515 | $0.53 |
+| T-0 | 80% | $0.409 | $0.447 | $0.53 |
+
+### Combined Accuracy + Liquidity Surface
+
+| Zone | T-minus | Gated WR | CLOB Ask | Fill % | BE at Ask | **Margin** |
+|------|---------|----------|----------|--------|-----------|-----------|
+| EARLY | T-240 | 56.0% | $0.53 | 100% | 53% | **+3pp** |
+| EARLY | T-180 | 61.7% | $0.52 | 100% | 52% | **+10pp** |
+| **MID** | **T-120** | **66.5%** | **$0.51** | **99%** | **51%** | **+16pp** |
+| **MID** | **T-90** | **66.3%** | **$0.51** | **97%** | **51%** | **+15pp** |
+| **LATE** | **T-60** | **74.3%** | **$0.51** | **95%** | **51%** | **+23pp** |
+| LATE | T-30 | 70.5% | $0.50 | 91% | 50% | +21pp |
+| CLOSE | T-0 | 73.5% | $0.41 | 80% | 41% | +33pp (unfillable) |
+
+### Key Insight: Every Offset is +EV at Market Ask
+
+When comparing gated WR against breakeven at **actual CLOB ask prices** ($0.50-0.55), not our $0.73 GTC submission price, every offset from T-240 to T-30 has positive margin.
+
+The reason early offsets looked bad in Section 10 was we compared against $0.73 breakeven. But the real market ask is $0.50-0.55.
+
+### R8: Consider bestask Pricing Mode
+
+**Proposal:** Switch `ORDER_PRICING_MODE` from `cap` to `bestask`.
+- Currently: GTC submits at $0.73 → fills at $0.73 → breakeven 73% → only T-60 clears it.
+- Proposed: GTC submits at CLOB ask + $0.02 bump → fills at ~$0.53 → breakeven 53% → ALL offsets clear it.
+- **Expected impact:** Same trades, same accuracy, but 20-30% cheaper fills. P&L per win doubles from ~$2.70 to ~$4.70.
+- **Risk:** Lower fill rate (maybe 70-80% vs current 100%). Market makers may not match at their posted ask.
+- **Confidence:** MEDIUM (CLOB data shows $0.50-0.55 asks exist; unknown if they'd actually fill)
+- **Action:** MONITOR. Needs A/B test or paper trial. Do NOT change without testing.
 
 *Next review: April 8, 2026 09:00 UTC (48h of v8.1 data)*
 *Update this doc with fresh numbers then.*
