@@ -208,14 +208,16 @@ class FOKLadder:
                     price=f"${attempt_price:.4f}",
                     error=str(exc)[:200],
                 )
-                # Non-fatal — continue to next attempt if cap not exceeded
-                if attempt < max_attempts and attempt_price < max_price:
+               # Non-fatal — retry on exception (CLOB may drop)
+                if attempt < max_attempts:
                     await asyncio.sleep(interval_s)
                     try:
                         current_price = await self._poly.get_clob_best_ask(token_id)
+                        # Keep trying at max_price (CLOB may drop)
                         current_price = min(current_price + bump, max_price)
                     except Exception:
-                        current_price = min(attempt_price + bump, max_price)
+                        # Book query failed — keep trying at cap
+                        current_price = max_price
                     continue
                 else:
                     break
