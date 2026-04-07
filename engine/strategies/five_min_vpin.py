@@ -2388,6 +2388,13 @@ class FiveMinVPINStrategy(BaseStrategy):
         _default_cap = float(os.environ.get("FOK_PRICE_CAP", "0.73"))
         PRICE_CAP = getattr(signal, 'v81_entry_cap', _default_cap)  # v8.1: dynamic cap per offset
         PRICE_FLOOR = float(os.environ.get("PRICE_FLOOR", "0.30"))
+        self._log.info(
+            "execute.cap_debug",
+            signal_cap=getattr(signal, 'v81_entry_cap', 'NOT_SET'),
+            default=_default_cap,
+            resolved=PRICE_CAP,
+            reason=getattr(signal, 'entry_reason', '?'),
+        )
 
         # ── Guardrails ────────────────────────────────────────────────────────
         if self._geoblock_check_fn and self._geoblock_check_fn():
