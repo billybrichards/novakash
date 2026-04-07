@@ -95,7 +95,7 @@ class ClaudeEvaluator:
 {self._format_cg(cg_snapshot)}
 
 ## Your Analysis
-Reply in EXACTLY 1 sentence. Was the direction justified? Key risk."""
+2-3 sentences: Was the direction call justified? Key risk factor."""
 
         try:
             analysis = await self._call_claude(prompt)
@@ -229,7 +229,7 @@ In 2-3 sentences: Was this a good trade regardless of outcome? Did the signals s
         }
         payload = {
             "model": "claude-sonnet-4-20250514",
-            "max_tokens": 80,
+            "max_tokens": 200,
             "messages": [{"role": "user", "content": prompt}],
         }
         

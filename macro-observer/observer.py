@@ -37,7 +37,7 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
 ANTHROPIC_TIMEOUT = int(os.environ.get("ANTHROPIC_TIMEOUT", "10"))
 
-ANTHROPIC_MODEL = "claude-sonnet-4-5"
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
 ANTHROPIC_MAX_TOKENS = 300
 
 COINBASE_URL = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
