@@ -498,4 +498,34 @@ Code changes: push to develop -> pull on Montreal -> restart engine.
 3. 2 zombie positions — redeemable from Apr 2 Chrome. Need redemption from Montreal.
 4. v2.2 model — constant P(UP) output, not truly per-window calibrated
 
+---
+
+## 14. CEDAR Model + Chainlink Gate Analysis (April 7, 17:30 UTC)
+
+### CEDAR vs OAK (test-set)
+
+CEDAR improves OAK by +5-9pp at every delta bucket. Largest gains at T-90 (+9.7pp) and T-120 (+9.0pp). CEDAR is deployed at staging endpoint `/v2/probability/cedar` on Montreal.
+
+### The Chainlink Gate Discovery (N=200 resolved windows)
+
+| Gate Strategy | Windows | Wins | WR |
+|--------------|---------|------|------|
+| Raw engine signal | 200 | 130 | 65.0% |
+| Tiingo agrees with engine | 145 | 119 | 82.1% |
+| **Chainlink agrees with engine** | **134** | **124** | **92.5%** |
+| All 3 sources agree | 122 | 113 | 92.6% |
+
+**When engine DISAGREES with Chainlink: 9.1% WR (6/66).** Almost guaranteed loss.
+
+**Why:** Polymarket resolves against Chainlink oracle. Betting WITH Chainlink's trajectory = betting WITH the judge.
+
+### New Recommendations
+
+- **R9:** Add Chainlink direction agreement gate — 92.5% WR, HIGH confidence (N=134)
+- **R10:** Promote CEDAR after 48h live comparison — +5-9pp over OAK
+- **R11:** Consider Chainlink as PRIMARY delta source over Tiingo
+- **R12:** Hard block when engine vs Chainlink disagree
+
+### Full analysis: `docs/analyses/2026-04-07-cedar-gate-analysis.md`
+
 *Next review: April 8, 2026 09:00 UTC*
