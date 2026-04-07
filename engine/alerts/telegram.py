@@ -255,6 +255,7 @@ class TelegramAlerter:
             decision_text += f"\n🟢 *ORDER SENT → awaiting fill*  {mode}\n"
         
         decision_msg_id = await self._send_with_id(decision_text)
+        await self._log_notification("trade_decision_v8", decision_text, f"{window_id}", telegram_message_id=decision_msg_id)
         
         # AI analysis (shorter in v8.0 — 1 sentence max)
         analysis_msg_id = None
@@ -660,6 +661,7 @@ class TelegramAlerter:
         )
         
         outcome_msg_id = await self._send_with_id(outcome_text)
+        await self._log_notification("outcome_v8", outcome_text, window_id, telegram_message_id=outcome_msg_id)
         
         # AI analysis — shorter in v8.0 (1-2 sentences)
         analysis_msg_id = None
@@ -1436,7 +1438,9 @@ class TelegramAlerter:
     async def send_system_alert(self, message: str, level: str = "info") -> None:
         emoji = {"info": "🟢", "warning": "🟡", "error": "🔴", "critical": "🔴"}.get(level, "🟢")
         try:
-            await self._send(f"{emoji} *System*\n`{message}`")
+            text = f"{emoji} *System*\n{message}"
+            await self._send(text)
+            await self._log_notification(f"system_{level}", text[:2000])
         except Exception:
             pass
 
@@ -1451,6 +1455,7 @@ class TelegramAlerter:
         Used for sitreps and system notifications that should always go through."""
         try:
             await self._send(text)
+            await self._log_notification("raw_message", text[:2000])
         except Exception:
             pass
 
