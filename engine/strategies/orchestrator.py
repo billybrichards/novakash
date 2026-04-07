@@ -2800,7 +2800,7 @@ class Orchestrator:
             try:
                 if self._db._pool:
                     import time as _time
-                    _cutoff = int(_time.time()) - 600  # last 10 min
+                    _cutoff = int(_time.time()) - 1800  # last 30 min
                     async with self._db._pool.acquire() as _conn:
                         _unresolved = await _conn.fetch("""
                             SELECT window_ts, asset FROM window_predictions
