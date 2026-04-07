@@ -945,7 +945,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             _skip_reason = getattr(self, '_last_skip_reason', '') or ""
             self._last_skip_reason = ""  # Reset after use
             if not _skip_reason:
-                _skip_reason = "Signal evaluation returned None (unknown reason)"
+                _skip_reason = f"Gates passed but signal None (VPIN {current_vpin:.3f}, delta {delta_pct:+.4f}%)"
             # Update snapshot with actual reason
             window_snapshot["skip_reason"] = _skip_reason
             if self._db:
@@ -1027,9 +1027,11 @@ class FiveMinVPINStrategy(BaseStrategy):
                     if _clob:
                         _dir = signal.direction
                         _clob_ask = _clob.get("clob_up_ask") if _dir == "UP" else _clob.get("clob_down_ask")
-                        if _clob_ask and _clob_ask > 0.73:
-                            self._log.info("evaluate.clob_cap_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}")
-                            self._last_skip_reason = f"CLOB CAP: {_dir} ask ${_clob_ask:.3f} > $0.73"
+                        # v8.1: Use dynamic cap from eval offset, not hardcoded $0.73
+                        _dynamic_cap = getattr(signal, 'v81_entry_cap', 0.73) if signal else 0.73
+                        if _clob_ask and _clob_ask > _dynamic_cap:
+                            self._log.info("evaluate.clob_cap_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}", cap=f"${_dynamic_cap:.2f}")
+                            self._last_skip_reason = f"CLOB CAP: {_dir} ask ${_clob_ask:.3f} > ${_dynamic_cap:.2f}"
                             signal = None
                         elif _clob_ask and _clob_ask < 0.30:
                             self._log.info("evaluate.clob_floor_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}")
@@ -2337,6 +2339,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                         asyncio.create_task(self._alerter.send_fok_exhausted(
                             _wkey, _fok_result.attempts, _fok_result.attempted_prices,
                             abort_reason=_fok_result.abort_reason or "",
+                            dynamic_cap=PRICE_CAP,
                         ))
                     # Fall through to GTC with Gamma price
             except Exception as fok_exc:

@@ -721,8 +721,8 @@ class TelegramAlerter:
             self._log.warning("telegram.session_summary_failed", error=str(exc)[:100])
             return None
 
-    async def send_fok_exhausted(self, window_id: str, attempts: int, prices: list, abort_reason: str = "") -> Optional[int]:
-        """v8.0 FOK Ladder — no fill, falling back to GTC."""
+    async def send_fok_exhausted(self, window_id: str, attempts: int, prices: list, abort_reason: str = "", dynamic_cap: float = 0.73) -> Optional[int]:
+        """v8.1 FOK Ladder — no fill, falling back to GTC with dynamic cap."""
         try:
             from datetime import datetime, timezone
             window_time = "?"
@@ -733,14 +733,13 @@ class TelegramAlerter:
             except Exception:
                 pass
             if attempts == 0:
-                # Clean up abort reason — remove raw token IDs
                 reason_clean = abort_reason or "no book liquidity"
                 reason_clean = reason_clean.split("for token")[0].strip() if "for token" in reason_clean else reason_clean
                 text = (
                     f"🔄 *FOK → GTC* — BTC 5m | {window_time} | {self._engine_version}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"CLOB book: `{reason_clean[:60]}`\n"
-                    f"→ GTC limit at cap ($0.73)\n"
+                    f"→ GTC limit at cap (`${dynamic_cap:.2f}`)\n"
                 )
             else:
                 price_str = " → ".join([f"${p:.3f}" for p in prices[:5]])
@@ -748,7 +747,7 @@ class TelegramAlerter:
                     f"🔄 *FOK → GTC* — BTC 5m | {window_time} | {self._engine_version}\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"FOK: `{attempts}` killed | Prices: `{price_str}`\n"
-                    f"→ GTC limit at cap ($0.73)\n"
+                    f"→ GTC limit at cap (`${dynamic_cap:.2f}`)\n"
                 )
             return await self._send_with_id(text)
         except Exception as exc:
