@@ -126,3 +126,88 @@ No rollback needed — this is a bug fix. Old behaviour was incorrect for FOK ex
 
 ### Branch
 `hotfix/fok-ladder-cap-handling` → merged to `develop` (commit: c08a39e)
+
+---
+
+## v8.1.3 — π Bonus for FOK Ladder and GTC Fallback
+
+### Summary
+When CLOB best ask is within π% (3.14%) of the dynamic cap, the FOK ladder attempts fills up to **cap+π cents** (0.0314). GTC fallback also uses cap+π cents when FOK exhausts. This increases fill rate while maintaining +EV at tight caps.
+
+### Rationale
+
+**Problem:** CLOB often sits 1-3% above our cap (e.g., cap=$0.55, CLOB=$0.56-0.57). Our FOK at cap gets killed immediately, GTC at cap never fills.
+
+**Solution:** If CLOB is within π% of cap, allow FOK to attempt up to cap+π cents. The marginal price increase (3.14¢) is offset by the dramatically improved fill probability.
+
+**Key insight:** With proper caps, FOK/FAK are safe from disaster (Apr 2 88-98¢ fills). The cap is the worst-price limit — FOK cannot execute above it.
+
+### Live Evidence
+
+**Before π bonus:**
+```
+Cap = $0.55 (T-240)
+CLOB = $0.75
+FOK attempts: 0 → immediate kill
+GTC at $0.55 → never fills (CLOB too high)
+```
+
+**After π bonus (when CLOB within π%):**
+```
+Cap = $0.55
+CLOB = $0.56 (1.8% above cap → within π%)
+FOK attempts up to $0.58 (cap+π, 2dp)
+GTC at $0.58 if FOK exhausts
+```
+
+### Changes
+
+#### feat: π bonus constants (`engine/execution/fok_ladder.py`)
+- `FOK_PI_BONUS_CENTS = 0.0314` (π cents)
+- `FOK_PI_PERCENT_THRESHOLD = 3.14` (π%)
+- Environment variables: `FOK_PI_BONUS_CENTS`, `FOK_PI_PERCENT_THRESHOLD`
+
+#### feat: π bonus logic (`engine/execution/fok_ladder.py`)
+- Check if CLOB best ask ≤ cap × (1 + π/100)
+- If yes: FOK attempts up to cap+π cents (2dp enforced)
+- If no: FOK attempts at cap only
+- Logs `fok_ladder.pi_bonus_check` and `clob_within_pi_threshold`
+
+#### feat: GTC fallback with π (`engine/strategies/five_min_vpin.py`)
+- Track `_fok_exhausted` flag when FOK exhausts
+- GTC uses cap+π cents if `_fok_exhausted` is set
+- Logs `execute.gtc_submit` with π bonus applicability
+
+#### docs: Order execution strategy (`docs/ORDER_EXECUTION_STRATEGY.md`)
+- Complete FOK/FAK/GTC reference with Polymarket docs link
+- Montreal VPS execution rules
+- Dynamic cap table and safety guards
+- Monitoring commands
+
+### Behaviour Change
+
+| Scenario | Before | After |
+|----------|--------|-------|
+| CLOB ≤ cap | FOK at cap | FOK at cap |
+| CLOB within π% of cap | FOK at cap | FOK at cap+π cents |
+| CLOB > cap+π% | FOK at cap | FOK at cap |
+| FOK exhausts, CLOB within π% | GTC at cap | GTC at cap+π cents |
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FOK_PI_BONUS_CENTS` | `0.0314` | π cents added to cap when CLOB within π% |
+| `FOK_PI_PERCENT_THRESHOLD` | `3.14` | π% threshold for CLOB proximity check |
+| `FOK_ATTEMPTS` | `5` | Max FOK retry attempts |
+| `FOK_INTERVAL_S` | `2.0` | Seconds between FOK retries |
+
+### References
+
+- [Polymarket CLOB Docs - Create Order](https://docs.polymarket.com/trading/orders/create) — FOK/FAK/GTD/GTC definitions
+- [Order Execution Strategy Guide](./ORDER_EXECUTION_STRATEGY.md) — Complete implementation details
+- [CLOB Audit Logging](./CLOB_AUDIT_LOGGING.md) — Audit table schema (pending migration)
+
+### Branch
+`feature/pi-bonus-fok-ladder` → merged to `develop` (commit: bf5be8e)
+Bug fix for scope issue: `4e38c81`
