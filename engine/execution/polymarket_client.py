@@ -951,14 +951,14 @@ class PolymarketClient:
             self._log.warning("rfq.failed", error=str(exc)[:200])
             return (None, None)
 
-    async def place_market_order(
+    async def place_market_order_legacy(
         self,
         token_id: str,
         side: str,
         amount_usd: float,
         price: Decimal,
     ) -> str:
-        """Low-level CLOB market order.
+        """Low-level CLOB market order (LEGACY — use place_market_order for v9.0 FAK/FOK).
 
         Args:
             token_id: CLOB token ID for the outcome (YES or NO token).

@@ -1067,11 +1067,13 @@ class TelegramAlerter:
                 window_time = dt.strftime('%H:%M UTC')
             except Exception:
                 pass
+            import os as _os
+            _ot = _os.environ.get("ORDER_TYPE", "FAK").upper()
             if attempts == 0:
                 reason_clean = abort_reason or "no book liquidity"
                 reason_clean = reason_clean.split("for token")[0].strip() if "for token" in reason_clean else reason_clean
                 text = (
-                    f"🔄 *FOK → GTC* — BTC 5m | {window_time} | {self._engine_version}\n"
+                    f"🔄 *{_ot} → GTC* — BTC 5m | {window_time} | v9.0\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"CLOB book: `{reason_clean[:60]}`\n"
                     f"→ GTC limit at cap (`${dynamic_cap:.2f}`)\n"
@@ -1079,9 +1081,9 @@ class TelegramAlerter:
             else:
                 price_str = " → ".join([f"${p:.3f}" for p in prices[:5]])
                 text = (
-                    f"🔄 *FOK → GTC* — BTC 5m | {window_time} | {self._engine_version}\n"
+                    f"🔄 *{_ot} → GTC* — BTC 5m | {window_time} | v9.0\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"FOK: `{attempts}` killed | Prices: `{price_str}`\n"
+                    f"{_ot}: `{attempts}` killed | Prices: `{price_str}`\n"
                     f"→ GTC limit at cap (`${dynamic_cap:.2f}`)\n"
                 )
             return await self._send_with_id(text)
