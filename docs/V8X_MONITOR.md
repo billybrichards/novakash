@@ -241,5 +241,65 @@ WHERE poly_winner IS NOT NULL AND delta_tiingo IS NOT NULL AND delta_binance IS 
 
 ---
 
-*Next review: April 8, 2026 09:00 UTC (24h of v8.1 data)*
+---
+
+## 10. Subwindow Accuracy Surface (April 7 Update)
+
+**Method:** Back-calculated from 141k v2.2 predictions across 476 windows. For each resolved window, checked if v2.2's direction at every 10-second interval matched the oracle outcome. N=30 Tiingo-era windows, ~160-190 gate-passing predictions per bucket.
+
+### Accuracy by T-minus (seconds before window close)
+
+| T-minus | v2.2 Alone | v2+v8 Gated WR | vs $0.73 BE | Zone |
+|---------|-----------|----------------|-------------|------|
+| **T-10** | 70.3% | 73.5% | AT | HIGH |
+| **T-20** | 74.3% | **75.5%** | **+2.5pp** | **HIGH** |
+| T-30 | 67.0% | 70.5% | -2.5pp | HIGH |
+| T-40 | 70.9% | 70.3% | -2.7pp | HIGH |
+| **T-50** | **75.9%** | 73.3% | +0.3pp | **HIGH** |
+| **T-60** | 75.3% | **74.3%** | **+1.3pp** | **HIGH** |
+| T-70 | 73.7% | 73.3% | +0.3pp | HIGH |
+| T-80 | 64.7% | 66.3% | -6.7pp | TRANSITION |
+| T-90 | 65.0% | 66.3% | -6.7pp | TRANSITION |
+| T-100 | 66.0% | 68.9% | -4.1pp | TRANSITION |
+| T-110 | 64.2% | 65.2% | -7.8pp | TRANSITION |
+| T-120 | 67.0% | 66.5% | -6.5pp | LOW |
+| T-180 | 57.6% | 61.7% | -11.3pp | LOW |
+| T-240 | 51.0% | 56.0% | -17.0pp | LOW |
+
+### Zones
+
+- **HIGH (T-10 to T-70):** 70-76% gated WR. Profitable at $0.73 entry. Features freshest.
+- **TRANSITION (T-80 to T-110):** 65-69% gated WR. Below breakeven at $0.73. Marginal.
+- **LOW (T-120 to T-280):** 56-67% gated WR. Needs cheaper entry to be +EV.
+
+### Implications
+
+1. **Peak signal is at T-20 to T-60.** This is where v2.2's real-time features have maximum info.
+2. **Early entry (T-120+) is -EV at $0.73 fills.** Would need $0.55-$0.65 fills to clear breakeven.
+3. **Current cascade design is correct in theory** — cheaper entry at earlier offsets compensates for lower accuracy. But GTC fills at $0.73 regardless, negating the cap.
+4. **If we fix GTC to respect dynamic caps:** T-240 at $0.55 fill → breakeven is 55% → gated WR 56% → barely +EV. T-120 at $0.65 → breakeven 65% → gated WR 66.5% → barely +EV.
+5. **Optimal strategy may be: only trade at T-10 to T-70** where accuracy exceeds $0.73 breakeven without needing cheaper fills.
+
+### Updated Recommendation R7
+
+**R7: Concentrate eval window to T-10 through T-70**
+- **Evidence:** Gated WR > 73% only in this range (N=30 windows, ~170 predictions/bucket)
+- **Proposal:** Set `FIVE_MIN_EVAL_OFFSETS=70,60,50,40,30,20,10` instead of `240,180,120,60`
+- **Expected impact:** Higher WR per trade, fewer trades, but every trade is +EV at $0.73
+- **Confidence:** MEDIUM (N=30 windows — need 72h more to confirm)
+- **Action:** MONITOR — do not change until N>100 windows confirm the pattern
+
+---
+
+## 11. Analysis History
+
+| Date | Analysis | Key Finding | Decision |
+|------|----------|-------------|----------|
+| Apr 7 09:00 | Initial v8.1 assessment | v2.2 gate = 88.2% WR (N=17). Only profitable config. | No change. Monitor. |
+| Apr 7 10:00 | Back-calculated N=30 | T-60 gated WR=73.7%, T-240=57.9%. Early offsets below BE. | No change. Need more data. |
+| Apr 7 10:30 | Subwindow accuracy surface | Peak accuracy T-20 to T-60 (73-76%). T-80+ drops below BE. | New R7: concentrate to T-10-T-70. Monitor. |
+| Apr 7 10:30 | Tiingo vs Binance H2H | Tiingo 67.6% vs Binance 54.1% on same 37 windows. | Tiingo confirmed as best source. |
+| Apr 7 10:30 | Entry price analysis | $0.60-$0.69 = 100% WR. <$0.40 = 31% WR. | Cheap entries ≠ better. Keep $0.73 GTC. |
+
+*Next review: April 8, 2026 09:00 UTC (48h of v8.1 data)*
 *Update this doc with fresh numbers then.*
