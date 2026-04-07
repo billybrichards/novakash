@@ -65,6 +65,28 @@
 - All 5 post-fix wins had v2.2 HIGH + agrees
 - v2.2 disagreements correctly skipping ~60% of windows
 
+### 6. 🔬 Signal Source Accuracy (200 resolved windows, Apr 7)
+
+| Source | Accuracy | N | Notes |
+|--------|----------|---|-------|
+| **Chainlink** | **92.0%** | 200 | Oracle IS Chainlink — near-perfect |
+| **Tiingo** | **81.5%** | 200 | Strong but 10% gap to oracle |
+| **Our Signal** | **65.0%** | 200 | VPIN+delta at T-70, 27% gap to oracle |
+
+**Key insight:** The 27% accuracy gap between our signal (65%) and Chainlink (92%) is
+almost entirely a **timing gap**. We evaluate at T-70 (70 seconds before close) but
+the oracle settles at T-0. In 70 seconds, BTC can move enough to flip the direction.
+
+**Implication:** Our signal is right 65% of the time when measured 70s early.
+The v2.2 gate lifts actual trade WR to ~70% by filtering out low-confidence signals.
+The remaining gap to Chainlink's 92% is the **irreducible timing risk** of predicting
+70 seconds ahead.
+
+**Possible improvements:**
+- Evaluate closer to T-0 (T-30? T-15?) — but CLOB liquidity dries up
+- Use Chainlink live price at T-10 as a final confirmation gate
+- Weight Tiingo more heavily than our VPIN signal (81% vs 65%)
+
 ---
 
 ## Decisions Needed
