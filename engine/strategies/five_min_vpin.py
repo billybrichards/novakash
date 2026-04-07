@@ -1285,6 +1285,13 @@ class FiveMinVPINStrategy(BaseStrategy):
                 "clob_ask": _clob_ask_val,
                 "confidence": window_snapshot.get("confidence_tier"),
                 "regime": _snap_regime,
+                # v9.0 fields
+                "cl_dir": _cl_dir if '_cl_dir' in locals() else None,
+                "ti_dir": _ti_dir if '_ti_dir' in locals() else None,
+                "delta_chainlink": delta_chainlink if 'delta_chainlink' in locals() else None,
+                "delta_tiingo": delta_tiingo if 'delta_tiingo' in locals() else None,
+                "v9_tier": _v9_tier if '_v9_tier' in locals() else None,
+                "v9_cap": _v9_cap if '_v9_cap' in locals() else None,
             })
             # At the final offset (min of configured offsets), send consolidated summary
             _min_offset = min(FIVE_MIN_EVAL_OFFSETS) if FIVE_MIN_EVAL_OFFSETS else 60
@@ -1382,6 +1389,13 @@ class FiveMinVPINStrategy(BaseStrategy):
                 "clob_ask": _clob_ask_val2,
                 "confidence": window_snapshot.get("confidence_tier"),
                 "regime": _snap_regime,
+                # v9.0 fields
+                "cl_dir": _cl_dir if '_cl_dir' in locals() else None,
+                "ti_dir": _ti_dir if '_ti_dir' in locals() else None,
+                "delta_chainlink": delta_chainlink if 'delta_chainlink' in locals() else None,
+                "delta_tiingo": delta_tiingo if 'delta_tiingo' in locals() else None,
+                "v9_tier": _v9_tier if '_v9_tier' in locals() else None,
+                "v9_cap": _v9_cap if '_v9_cap' in locals() else None,
             })
             # At the final offset, send the consolidated summary
             _min_offset2 = min(FIVE_MIN_EVAL_OFFSETS) if FIVE_MIN_EVAL_OFFSETS else 60

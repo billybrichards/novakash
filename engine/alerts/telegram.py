@@ -314,16 +314,36 @@ class TelegramAlerter:
         v2_agrees = latest.get("v2_agrees")
         confidence = latest.get("confidence") or "?"
 
-        # Build v2.2 line
-        if v2_p is not None:
+        # v9.0 source agreement line (replaces v2.2 line)
+        _cl_dir = latest.get("cl_dir")
+        _ti_dir = latest.get("ti_dir")
+        _delta_cl = latest.get("delta_chainlink")
+        _delta_ti = latest.get("delta_tiingo")
+
+        if _cl_dir and _ti_dir:
+            _agree = _cl_dir == _ti_dir
+            _agree_icon = "✅ AGREE" if _agree else "❌ DISAGREE"
+            _cl_delta_s = f"Δ{_delta_cl:+.3f}%" if _delta_cl else ""
+            _ti_delta_s = f"Δ{_delta_ti:+.3f}%" if _delta_ti else ""
+            source_line = f"🔗 CL: `{_cl_dir}` {_cl_delta_s} | TI: `{_ti_dir}` {_ti_delta_s} — {_agree_icon}\n"
+        elif v2_p is not None:
+            # Fallback to v2.2 if no CL/TI data
             _v2_pct = int(round(v2_p * 100))
             _agree_icon = "✅ AGREE" if v2_agrees else "❌ DISAGREE"
-            v2_line = f"🔮 v2.2: `{v2_dir}` `{_v2_pct}%` | v8: `{('UP' if delta_pct > 0 else 'DOWN')}` — {_agree_icon}\n"
+            source_line = f"🔮 v2.2: `{v2_dir}` `{_v2_pct}%` | v8: `{('UP' if delta_pct > 0 else 'DOWN')}` — {_agree_icon}\n"
         else:
-            v2_line = ""
+            source_line = ""
 
         regime_emoji = {"CASCADE": "🌊", "TRANSITION": "🔄", "NORMAL": "📊", "CALM": "😴"}.get(regime, "📊")
         delta_str = f"{delta_pct:+.4f}%" if delta_pct else "?"
+
+        # v9 tier info
+        _v9_tier = latest.get("v9_tier")
+        _v9_cap = latest.get("v9_cap")
+        tier_line = ""
+        if _v9_tier:
+            _cap_s = f"${_v9_cap:.2f}" if _v9_cap else "—"
+            tier_line = f"📐 Tier: `{_v9_tier}` | Cap: `{_cap_s}`\n"
 
         # ── Group consecutive skip reasons ────────────────────────────────────
         def _group_reasons(history: list) -> list[str]:
@@ -375,6 +395,27 @@ class TelegramAlerter:
                     reason_key = "TWAP gate"
                 elif "CG VETO" in reason_key.upper():
                     reason_key = "CG veto"
+                # v9.0 skip reasons
+                elif "v9: CL=" in reason_key and "DISAGREE" in reason_key:
+                    # Extract directions: "v9: CL=DOWN TI=UP DISAGREE"
+                    try:
+                        _cl = reason_key.split("CL=")[1].split(" ")[0]
+                        _ti = reason_key.split("TI=")[1].split(" ")[0]
+                        reason_key = f"CL={_cl} TI={_ti} DISAGREE"
+                    except Exception:
+                        reason_key = "source disagree"
+                elif "v9: early offset" in reason_key:
+                    try:
+                        _vp = reason_key.split("VPIN ")[1].split(" ")[0]
+                        reason_key = f"v9: early VPIN {_vp} < 0.65"
+                    except Exception:
+                        reason_key = "v9: early VPIN too low"
+                elif "v9: golden zone" in reason_key:
+                    try:
+                        _vp = reason_key.split("VPIN ")[1].split(" ")[0]
+                        reason_key = f"v9: VPIN {_vp} < 0.45"
+                    except Exception:
+                        reason_key = "v9: golden VPIN too low"
                 elif "Gates passed but signal None" in reason_key:
                     reason_key = "signal None"
 
@@ -401,30 +442,30 @@ class TelegramAlerter:
 
         # ── Format the card ───────────────────────────────────────────────────
         if not traded:
-            # ALL SKIPPED card
+            # ALL SKIPPED card — v9.0 format
             skip_reasons_text = "\n".join(f"  {r}" for r in reason_groups) if reason_groups else "  (unknown)"
             msg = (
-                f"📋 *{asset} 5m* | {window_time} | {self._engine_version}\n"
+                f"📋 *{asset} 5m* | {window_time} | v9.0\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Evaluated: `{n_evals}` offsets — *ALL SKIPPED*\n"
-                f"{v2_line}"
+                f"⏭ `{n_evals}` evals — *ALL SKIPPED*\n"
+                f"{source_line}"
+                f"{tier_line}"
                 f"📈 VPIN: `{vpin:.3f}` {regime_emoji} `{regime}` | Δ `{delta_str}`\n"
-                f"🎖 Confidence: `{confidence}`\n"
                 f"\n*Skip reasons:*\n{skip_reasons_text}\n"
             )
         else:
-            # TRADED card — show prior skips in compact form
-            n_skipped = n_evals  # history only contains skips
+            # TRADED card — v9.0 format with condensed skip summary
+            n_skipped = n_evals
             skip_reasons_compact = ", ".join(reason_groups) if reason_groups else "none"
-            trade_line = f"🎯 TRADE at T-{trade_offset}" if trade_offset else "🎯 TRADE"
+            trade_line = f"🎯 FAK at T-{trade_offset}" if trade_offset else "🎯 TRADE"
             msg = (
-                f"📋 *{asset} 5m* | {window_time} | {self._engine_version}\n"
+                f"📋 *{asset} 5m* | {window_time} | v9.0\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Evaluated: `{n_evals + 1}` offsets | {trade_line}\n"
-                f"{v2_line}"
+                f"{trade_line} (after `{n_skipped}` skips)\n"
+                f"{source_line}"
+                f"{tier_line}"
                 f"📈 VPIN: `{vpin:.3f}` {regime_emoji} `{regime}` | Δ `{delta_str}`\n"
-                f"🎖 Confidence: `{confidence}`\n"
-                f"\nSkipped `{n_skipped}`: _{skip_reasons_compact}_\n"
+                f"\n_Prior skips: {skip_reasons_compact}_\n"
             )
 
         msg_id = await self._send_with_id(msg)
