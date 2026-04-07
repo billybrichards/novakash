@@ -705,7 +705,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                     if _timesfm and _timesfm.get("quantiles_at_close"):
                         window_snapshot["v2_quantiles_at_close"] = _timesfm["quantiles_at_close"]
             except Exception as e:
-                self._log.warning("v2.probability.fetch_failed", error=str(e)[:100])
+                self._log.warning("v2.probability.fetch_failed", error_str=str(e)[:100])
 
         # ── v8.0: Compute gate results + confidence tier for notifications ────
         _vpin_passed = current_vpin >= _runtime.five_min_vpin_gate
@@ -1044,7 +1044,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 # v2.2 service down — skip early entry, fall through to next offset
                 signal = None
                 self._last_skip_reason = f"v8.1: v2.2 unavailable at T-{eval_offset}: {str(_v2_exc)[:50]}"
-                self._log.warning("v81.v2_service_error", offset=eval_offset, error=str(_v2_exc)[:80])
+                self._log.warning("v81.v2_service_error", offset=eval_offset, error_str=str(_v2_exc)[:80])
 
         if signal is None:
             # v7.1: Use the actual skip reason set at the point of rejection
