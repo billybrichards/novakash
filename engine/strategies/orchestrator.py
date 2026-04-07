@@ -672,6 +672,18 @@ class Orchestrator:
         except Exception as exc:
             log.warning("orchestrator.ensure_v8_trade_columns_failed", error=str(exc))
 
+        # 6f. Recover open trades from previous sessions (startup trade recovery)
+        try:
+            recovered = await self._order_manager.recover_open_trades(self._db)
+            log.info("orchestrator.trades_recovered", count=recovered)
+            if recovered > 0:
+                await self._alerter.send_raw_message(
+                    f"♻️ *Trade Recovery*\nRecovered `{recovered}` open trade(s) from previous session.\n"
+                    f"Oracle polling will resolve them automatically."
+                )
+        except Exception as exc:
+            log.warning("orchestrator.trade_recovery_failed", error=str(exc))
+
         # 6e. Polymarket reconciliation loop (every 5 min) — live mode only
         if not self._settings.paper_mode:
             self._tasks.append(
@@ -2348,8 +2360,10 @@ class Orchestrator:
                             f"{trade_info}"
                             f"{wallet_str}"
                         )
-                        
-                        await self._alerter.send_system_alert(msg, level="info")
+
+                        # Use send_raw_message — send_system_alert wraps text in backticks
+                        # which breaks multi-line markdown formatting.
+                        await self._alerter.send_raw_message(msg)
                         log.info(
                             "position_monitor.resolved",
                             condition_id=cid[:20] + "...",

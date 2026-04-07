@@ -149,6 +149,127 @@ class OrderManager:
         # Persist to DB (non-blocking — don't hold the lock)
         await self._persist_trade(order)
 
+    async def recover_open_trades(self, db) -> int:
+        """On startup, load OPEN trades from DB and register them for resolution polling.
+
+        Fetches all OPEN trades created in the last 24 hours and re-registers them
+        in the in-memory order book so poll_resolutions() can resolve them.
+        Trades older than 10 minutes are also reconciled against the Polymarket CLOB:
+          - CANCELED/EXPIRED → marked EXPIRED in DB
+          - MATCHED (has fill) → recorded as filled and left for oracle resolution
+
+        Args:
+            db: DBClient instance (must already be connected).
+
+        Returns:
+            Number of trades successfully recovered and registered.
+        """
+        open_rows = await db.get_open_trades(hours_back=24)
+        if not open_rows:
+            self._log.info("order_manager.recover.no_open_trades")
+            return 0
+
+        recovered = 0
+        now = time.time()
+
+        for row in open_rows:
+            order_id = row["order_id"]
+
+            # Skip if already tracked (e.g. placed this session before recovery ran)
+            async with self._lock:
+                if order_id in self._orders:
+                    continue
+
+            # Build Order from DB row
+            import json as _json
+            meta_raw = row.get("metadata")
+            if isinstance(meta_raw, str):
+                try:
+                    meta = _json.loads(meta_raw)
+                except Exception:
+                    meta = {}
+            elif isinstance(meta_raw, dict):
+                meta = meta_raw
+            else:
+                meta = {}
+
+            created_at_raw = row.get("created_at")
+            if created_at_raw is None:
+                created_ts = now
+            elif hasattr(created_at_raw, "timestamp"):
+                created_ts = created_at_raw.timestamp()
+            else:
+                created_ts = float(created_at_raw)
+
+            age_secs = now - created_ts
+
+            # ── Reconcile stale trades (> 10 minutes old) against CLOB ──────
+            if age_secs > 600 and self._poly_client and order_id.startswith("0x"):
+                try:
+                    clob_status = await self._poly_client.get_order_status(order_id)
+                    clob_state = (clob_status.get("status") or "").upper()
+                    size_matched = float(clob_status.get("size_matched", "0") or "0")
+
+                    if clob_state in ("CANCELED", "UNMATCHED", "EXPIRED") and size_matched == 0:
+                        # Never filled — mark expired in DB, skip registration
+                        await db.mark_trade_expired(order_id)
+                        self._log.info(
+                            "order_manager.recover.expired",
+                            order_id=order_id[:24] + "..." if len(order_id) > 24 else order_id,
+                            clob_state=clob_state,
+                            age_secs=int(age_secs),
+                        )
+                        continue
+                    elif size_matched > 0 and clob_state != "OPEN":
+                        # Partially or fully matched — update metadata so oracle can resolve
+                        meta["fill_price"] = clob_status.get("price") or meta.get("fill_price")
+                        meta["fill_size"] = size_matched
+                        meta["execution_mode"] = "live"
+                        self._log.info(
+                            "order_manager.recover.matched",
+                            order_id=order_id[:24] + "..." if len(order_id) > 24 else order_id,
+                            size_matched=size_matched,
+                        )
+                    # If still OPEN on CLOB — fall through and register normally
+                except Exception as exc:
+                    self._log.warning(
+                        "order_manager.recover.clob_check_failed",
+                        order_id=order_id[:24] + "..." if len(order_id) > 24 else order_id,
+                        error=str(exc),
+                    )
+                    # Proceed with registration anyway — oracle will resolve it
+
+            order = Order(
+                order_id=order_id,
+                venue=row.get("venue") or "polymarket",
+                strategy=row.get("strategy") or "five_min_vpin",
+                direction=row.get("direction") or "YES",
+                price=str(row.get("entry_price") or "0.5"),
+                stake_usd=float(row.get("stake_usd") or 0),
+                fee_usd=float(row.get("fee_usd") or 0),
+                status=OrderStatus.OPEN,
+                created_at=created_ts,
+                market_id=row.get("market_slug") or meta.get("market_slug", ""),
+                metadata=meta,
+            )
+
+            # Register without re-persisting (already in DB)
+            async with self._lock:
+                self._orders[order_id] = order
+                self._total_orders += 1
+
+            recovered += 1
+            self._log.info(
+                "order_manager.recovered",
+                order_id=order_id[:24] + "..." if len(order_id) > 24 else order_id,
+                strategy=order.strategy,
+                direction=order.direction,
+                age_mins=f"{age_secs / 60:.1f}",
+            )
+
+        self._log.info("order_manager.recovery_complete", recovered=recovered, total_found=len(open_rows))
+        return recovered
+
     async def register_retry_order_id(self, retry_id: str, original_id: str) -> None:
         """Register a retry order ID as an alias for the original order.
 

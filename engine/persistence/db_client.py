@@ -970,6 +970,54 @@ class DBClient:
             row = await conn.fetchval(query, target)
         return float(row or 0)
 
+    async def get_open_trades(self, hours_back: int = 24) -> list[dict]:
+        """Get OPEN trades from the last N hours for recovery on startup.
+
+        Args:
+            hours_back: How many hours back to look (default 24).
+
+        Returns:
+            List of trade row dicts with keys: order_id, direction, entry_price,
+            stake_usd, metadata, created_at, strategy, venue, market_slug, fee_usd.
+        """
+        if not self._pool:
+            return []
+        try:
+            from datetime import timezone, timedelta
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT order_id, direction, entry_price, stake_usd,
+                           metadata, created_at, strategy, venue, market_slug, fee_usd
+                    FROM trades
+                    WHERE status = 'OPEN'
+                      AND created_at > $1
+                    ORDER BY created_at ASC
+                    """,
+                    cutoff,
+                )
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            log.error("db.get_open_trades_failed", error=str(exc))
+            return []
+
+    async def mark_trade_expired(self, order_id: str) -> None:
+        """Mark a trade as EXPIRED in the DB (used by startup reconciliation)."""
+        if not self._pool:
+            return
+        try:
+            from datetime import timezone
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE trades SET status = 'EXPIRED', resolved_at = $1 WHERE order_id = $2",
+                    datetime.now(timezone.utc),
+                    order_id,
+                )
+            log.info("db.trade_marked_expired", order_id=order_id[:24] if len(order_id) > 24 else order_id)
+        except Exception as exc:
+            log.error("db.mark_trade_expired_failed", order_id=order_id, error=str(exc))
+
     # ─── Manual Trade Queue (v5.8 Dashboard) ─────────────────────────────
 
     async def poll_pending_live_trades(self) -> list:
