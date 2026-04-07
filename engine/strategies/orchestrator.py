@@ -1741,18 +1741,26 @@ class Orchestrator:
                         daily_sign = "+" if daily_pnl >= 0 else ""
                         status_emoji = "🛑" if killed else "🟢"
 
-                        # Fetch position outcomes
-                        # Use order manager for wins/losses (works for both paper and live)
+                        # Fetch position outcomes from DB (survives restarts)
                         real_wins = 0
                         real_losses = 0
                         open_positions_val = 0
                         try:
+                            if self._db._pool:
+                                async with self._db._pool.acquire() as conn:
+                                    row = await conn.fetchrow(
+                                        "SELECT "
+                                        "  SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as w, "
+                                        "  SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as l "
+                                        "FROM trades WHERE outcome IS NOT NULL "
+                                        "AND created_at > NOW() - INTERVAL '24 hours'"
+                                    )
+                                    if row:
+                                        real_wins = int(row['w'] or 0)
+                                        real_losses = int(row['l'] or 0)
+                            # Open positions from order manager
                             for oid, o in self._order_manager._orders.items():
-                                if o.outcome == "WIN":
-                                    real_wins += 1
-                                elif o.outcome == "LOSS":
-                                    real_losses += 1
-                                elif o.status.value in ("OPEN", "FILLED"):
+                                if o.status.value in ("OPEN", "FILLED"):
                                     open_positions_val += o.stake_usd
                         except Exception:
                             pass

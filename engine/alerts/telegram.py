@@ -897,25 +897,22 @@ class TelegramAlerter:
             self._session_wins = 0
             self._session_losses = 0
             self._session_pnl = 0.0
-            # Backfill from DB so restarts don't reset counters
+            # Backfill from DB so restarts don't reset counters (synchronous)
             if self._db_client:
                 try:
-                    import asyncio as _aio
-                    async def _load_session():
-                        async with self._db_client._pool.acquire() as conn:
-                            row = await conn.fetchrow(
-                                "SELECT "
-                                "  SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as w, "
-                                "  SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as l, "
-                                "  COALESCE(SUM(pnl_usd), 0) as pnl "
-                                "FROM trades WHERE outcome IS NOT NULL "
-                                "AND created_at > NOW() - INTERVAL '24 hours'"
-                            )
-                            if row:
-                                self._session_wins = int(row['w'] or 0)
-                                self._session_losses = int(row['l'] or 0)
-                                self._session_pnl = float(row['pnl'] or 0)
-                    _aio.get_event_loop().create_task(_load_session())
+                    async with self._db_client._pool.acquire() as conn:
+                        row = await conn.fetchrow(
+                            "SELECT "
+                            "  SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as w, "
+                            "  SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as l, "
+                            "  COALESCE(SUM(pnl_usd), 0) as pnl "
+                            "FROM trades WHERE outcome IS NOT NULL "
+                            "AND created_at > NOW() - INTERVAL '24 hours'"
+                        )
+                        if row:
+                            self._session_wins = int(row['w'] or 0)
+                            self._session_losses = int(row['l'] or 0)
+                            self._session_pnl = float(row['pnl'] or 0)
                 except Exception:
                     pass  # Fall back to zero counters
         if outcome == "WIN":
