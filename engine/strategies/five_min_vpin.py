@@ -964,8 +964,11 @@ class FiveMinVPINStrategy(BaseStrategy):
                     "v2_agrees": window_snapshot.get("v2_agrees"),
                     "v2_high_conf": window_snapshot.get("v2_direction") is not None and (window_snapshot.get("v2_probability_up", 0) > 0.65 or window_snapshot.get("v2_probability_up", 1) < 0.35),
                 }))
-            
-            # ── Comprehensive signal evaluation capture ──
+            except Exception as _gate_exc:
+                self._log.warning("db.gate_audit_write_failed", error=str(_gate_exc)[:100])
+
+        # ── Comprehensive signal evaluation capture ──
+        if self._db is not None:
             try:
                 _clob_up_bid = window_snapshot.get("clob_up_bid")
                 _clob_up_ask = window_snapshot.get("clob_up_ask")
