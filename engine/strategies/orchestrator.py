@@ -1753,7 +1753,7 @@ class Orchestrator:
                                         "  SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as w, "
                                         "  SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as l "
                                         "FROM trades WHERE outcome IS NOT NULL "
-                                        "AND created_at > NOW() - INTERVAL '24 hours'"
+                                        "AND created_at > DATE_TRUNC('day', NOW())"
                                     )
                                     if row:
                                         real_wins = int(row['w'] or 0)

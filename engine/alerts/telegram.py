@@ -907,7 +907,7 @@ class TelegramAlerter:
                             "  SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as l, "
                             "  COALESCE(SUM(pnl_usd), 0) as pnl "
                             "FROM trades WHERE outcome IS NOT NULL "
-                            "AND created_at > NOW() - INTERVAL '24 hours'"
+                            "AND created_at > DATE_TRUNC('day', NOW())"
                         )
                         if row:
                             self._session_wins = int(row['w'] or 0)

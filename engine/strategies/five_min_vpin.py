@@ -2740,10 +2740,18 @@ class FiveMinVPINStrategy(BaseStrategy):
                             order.metadata["actual_cost"] = _actual_cost
                             order.metadata["shares_filled"] = _matched_shares
                         self._log.info("trade.gtc_verified", order_id=order.order_id[:20], filled=True)
+                        # v8.1.1: Persist updated fill data back to DB
+                        if self._om:
+                            asyncio.create_task(self._om._persist_trade(order))
                         if self._alerter:
                             asyncio.create_task(self._alerter.send_entry_alert(order))
                     else:
                         self._log.warning("trade.gtc_not_filled", order_id=order.order_id[:20], waited=f"{elapsed}s")
+                        # Mark as expired in DB
+                        order.status = OrderStatus.EXPIRED
+                        order.metadata["clob_status"] = "EXPIRED_UNFILLED"
+                        if self._om:
+                            asyncio.create_task(self._om._persist_trade(order))
                         if self._alerter:
                             asyncio.create_task(self._alerter.send_system_alert(
                                 f"❌ GTC NOT FILLED — {window.asset} {tf}\n"
