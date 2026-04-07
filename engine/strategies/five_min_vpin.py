@@ -2356,12 +2356,12 @@ class FiveMinVPINStrategy(BaseStrategy):
                         _clob = await self._db.get_latest_clob_prices(window.asset)
                         if _clob:
                             _clob_ask = _clob.get("clob_down_ask") if direction == "NO" else _clob.get("clob_up_ask")
-                            if _clob_ask and 0.30 <= _clob_ask <= 0.73:
+                            if _clob_ask and PRICE_FLOOR <= _clob_ask <= PRICE_CAP:
                                 price = Decimal(str(round(_clob_ask, 4)))
                                 _got_price = True
-                                self._log.info("execute.clob_db_price", price=f"${_clob_ask:.4f}", direction=direction, source="ticks_clob")
+                                self._log.info("execute.clob_db_price", price=f"${_clob_ask:.4f}", direction=direction, source="ticks_clob", cap=f"${PRICE_CAP:.2f}")
                             elif _clob_ask:
-                                self._log.info("execute.clob_db_price_out_of_range", price=f"${_clob_ask:.4f}", direction=direction)
+                                self._log.info("execute.clob_db_price_out_of_range", price=f"${_clob_ask:.4f}", direction=direction, cap=f"${PRICE_CAP:.2f}")
                     except Exception as _clob_exc:
                         self._log.debug("execute.clob_db_error", error=str(_clob_exc)[:100])
                 
@@ -2384,7 +2384,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                                             _outcome_raw = _json.loads(_outcome_raw)
                                         if _outcome_raw and len(_outcome_raw) >= 2:
                                             _gp = float(_outcome_raw[0]) if direction == "YES" else float(_outcome_raw[1])
-                                            if 0.30 <= _gp <= 0.73:
+                                            if PRICE_FLOOR <= _gp <= PRICE_CAP:
                                                 price = Decimal(str(round(_gp, 4)))
                                                 _got_price = True
                                                 self._log.info("execute.gamma_fallback_price", price=f"${_gp:.4f}", direction=direction)
