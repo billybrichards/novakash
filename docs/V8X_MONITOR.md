@@ -301,6 +301,7 @@ WHERE poly_winner IS NOT NULL AND delta_tiingo IS NOT NULL AND delta_binance IS 
 | Apr 7 10:30 | Tiingo vs Binance H2H | Tiingo 67.6% vs Binance 54.1% on same 37 windows. | Tiingo confirmed as best source. |
 | Apr 7 10:30 | Entry price analysis | $0.60-$0.69 = 100% WR. <$0.40 = 31% WR. | Cheap entries ≠ better. Keep $0.73 GTC. |
 | Apr 7 11:00 | CLOB liquidity surface | 100% ask presence at T-120+, $0.51-0.55 asks. Book thins after T-60. | R8: bestask pricing could unlock early entry EV. |
+| Apr 7 11:30 | Fill price verification | ALL wins fill at $0.73 (CLOB match), real cost $0.74 w/fees. $0.85+ fills = too thin margin (3pp vs 15pp). | Keep $0.73 cap. Do NOT raise. |
 
 ---
 
