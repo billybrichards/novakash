@@ -640,7 +640,8 @@ class DBClient:
                         gates_passed, gate_failed,
                         shadow_trade_direction, shadow_trade_entry_price,
                         v2_probability_up, v2_direction, v2_agrees,
-                        v2_model_version, eval_offset
+                        v2_model_version, eval_offset,
+                        v2_quantiles, v2_quantiles_at_close
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,
                         $9,$10,$11,$12,$13,$14,$15,$16,$17,
@@ -657,7 +658,7 @@ class DBClient:
                         $69,$70,$71,
                         $72,$73,
                         $74,$75,$76,$77,$78,
-                        $79,$80
+                        $79,$80,$81,$82
                     )
                     ON CONFLICT (window_ts, asset, timeframe) DO UPDATE SET
                         gamma_up_price         = COALESCE(EXCLUDED.gamma_up_price, window_snapshots.gamma_up_price),
@@ -677,7 +678,9 @@ class DBClient:
                         v2_direction           = COALESCE(EXCLUDED.v2_direction, window_snapshots.v2_direction),
                         v2_agrees              = COALESCE(EXCLUDED.v2_agrees, window_snapshots.v2_agrees),
                         v2_model_version       = COALESCE(EXCLUDED.v2_model_version, window_snapshots.v2_model_version),
-                        eval_offset            = COALESCE(EXCLUDED.eval_offset, window_snapshots.eval_offset)
+                        eval_offset            = COALESCE(EXCLUDED.eval_offset, window_snapshots.eval_offset),
+                        v2_quantiles           = COALESCE(EXCLUDED.v2_quantiles, window_snapshots.v2_quantiles),
+                        v2_quantiles_at_close  = COALESCE(EXCLUDED.v2_quantiles_at_close, window_snapshots.v2_quantiles_at_close)
                     """,
                     snapshot.get("window_ts"),
                     snapshot.get("asset", "BTC"),
@@ -766,6 +769,8 @@ class DBClient:
                     snapshot.get("v2_agrees"),
                     snapshot.get("v2_model_version"),
                     snapshot.get("eval_offset"),
+                    snapshot.get("v2_quantiles"),
+                    snapshot.get("v2_quantiles_at_close"),
                 )
             log.debug(
                 "db.window_snapshot_written",

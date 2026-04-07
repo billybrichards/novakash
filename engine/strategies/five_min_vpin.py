@@ -696,8 +696,14 @@ class FiveMinVPINStrategy(BaseStrategy):
                 if _v2_pre and "probability_up" in _v2_pre:
                     window_snapshot["v2_probability_up"] = round(float(_v2_pre["probability_up"]), 4)
                     window_snapshot["v2_direction"] = "UP" if float(_v2_pre["probability_up"]) > 0.5 else "DOWN"
-                    window_snapshot["v2_model_version"] = _v2_pre.get("model_version", "")
+      window_snapshot["v2_model_version"] = _v2_pre.get("model_version", "")
                     window_snapshot["eval_offset"] = _eval_offset
+                    # v2.2: Store full timesfm quantile surface if available
+                    _timesfm = _v2_pre.get("timesfm", {})
+                    if _timesfm and _timesfm.get("quantiles"):
+                        window_snapshot["v2_quantiles"] = _timesfm["quantiles"]
+                    if _timesfm and _timesfm.get("quantiles_at_close"):
+                        window_snapshot["v2_quantiles_at_close"] = _timesfm["quantiles_at_close"]
             except Exception as e:
                 self._log.warning("v2.probability.fetch_failed", error=str(e)[:100])
 
