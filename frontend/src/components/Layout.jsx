@@ -22,6 +22,7 @@ const NAV_ITEMS = [
   { path: '/timesfm',         label: 'TimesFM v2', icon: '🔮', highlight: true },
   { path: '/windows',         label: 'Window Results', icon: '📊', highlight: true },
   { path: '/strategy',        label: 'Strategy Analysis', icon: '🧪', highlight: true },
+  { path: '/recommendations', label: 'Recalibration', icon: '🎚️', highlight: true },
   { path: '/trades',          label: 'Trades',     icon: '📋' },
   { path: '/signals',         label: 'Signals',    icon: '📡' },
   { path: '/pnl',             label: 'P&L',        icon: '💰' },
