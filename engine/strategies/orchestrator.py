@@ -1804,6 +1804,8 @@ class Orchestrator:
                                         """SELECT direction, outcome, status,
                                            metadata->>'entry_reason' as reason,
                                            metadata->>'v81_entry_cap' as cap,
+                                           metadata->>'window_ts' as wts,
+                                           created_at AT TIME ZONE 'UTC' as placed,
                                            ROUND(stake_usd::numeric, 2) as stake,
                                            ROUND(pnl_usd::numeric, 2) as pnl
                                         FROM trades WHERE created_at > NOW() - INTERVAL '2 hours'
@@ -1815,22 +1817,34 @@ class Orchestrator:
                                             _dir = "⬆️" if r['direction'] == 'YES' else "⬇️"
                                             _out = {"WIN": "✅", "LOSS": "❌"}.get(r['outcome'] or '', "⏳")
                                             _cap = f"${float(r['cap']):.2f}" if r['cap'] else "?"
-                                            _rsn = (r['reason'] or '?')[-15:]  # last 15 chars
+                                            _rsn = (r['reason'] or '?')[-15:]
+                                            # Window end time as ID (e.g. "14:10 BTC")
+                                            _wid = ""
+                                            try:
+                                                from datetime import datetime, timezone
+                                                _wts = int(r['wts']) + 300  # window_ts + 5min = close time
+                                                _wid = datetime.fromtimestamp(_wts, tz=timezone.utc).strftime("%H:%M")
+                                            except Exception:
+                                                try:
+                                                    _wid = r['placed'].strftime("%H:%M")
+                                                except Exception:
+                                                    pass
                                             if r['outcome']:
                                                 _p = float(r['pnl'] or 0)
                                                 _pstr = f"`{'+' if _p>=0 else ''}${_p:.2f}`"
                                             elif r['status'] == 'EXPIRED':
-                                                _pstr = "expired"
+                                                _pstr = "unfilled"
                                                 _out = "⏭"
                                             else:
-                                                _pstr = "pending"
-                                            _lines.append(f"{_out}{_dir} {_cap} {_rsn} {_pstr}")
+                                                _pstr = "⏳open"
+                                            _lines.append(f"{_out}{_dir} `{_wid}` {_cap} {_rsn} {_pstr}")
                                         _recent_block = "\n📝 *Recent:*\n" + "\n".join(_lines) + "\n"
 
                                     # Pending positions (OPEN/FILLED not yet resolved)
                                     _pending = await conn.fetch(
                                         """SELECT direction, metadata->>'v81_entry_cap' as cap,
                                            metadata->>'entry_reason' as reason,
+                                           metadata->>'window_ts' as wts,
                                            ROUND(stake_usd::numeric, 2) as stake,
                                            metadata->>'market_slug' as slug
                                         FROM trades WHERE status IN ('OPEN', 'FILLED')
@@ -1848,7 +1862,14 @@ class Orchestrator:
                                             _win_est = _stk * (1 - _cap) / _cap
                                             _total_risk += _stk
                                             _total_upside += _win_est
-                                            _plines.append(f"{_dir} ${_cap:.2f} risk `${_stk:.2f}` → win `+${_win_est:.2f}`")
+                                            _wid = ""
+                                            try:
+                                                from datetime import datetime, timezone
+                                                _wts = int(p['wts']) + 300
+                                                _wid = datetime.fromtimestamp(_wts, tz=timezone.utc).strftime("%H:%M")
+                                            except Exception:
+                                                pass
+                                            _plines.append(f"{_dir} `{_wid} BTC` ${_cap:.2f} risk `${_stk:.2f}` → win `+${_win_est:.2f}`")
                                         _pending_block = (
                                             f"\n⏳ *Pending ({len(_pending)}):*\n"
                                             + "\n".join(_plines)
