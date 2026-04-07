@@ -727,4 +727,38 @@ V81_CAP_T60=0.65
 2. Block NORMAL (VPIN<0.55) at T<70 only (not T<120)
 3. Raise TRANSITION threshold to 0.60 (catches 0.551 edge cases)
 
+---
+
+## 16. End-of-Day Summary — April 7, 2026 18:30 UTC
+
+### Wallet & P&L
+- **Start:** $130.82 → **End:** ~$67 → **Loss: -$64 (-49%)**
+- v2.2 gated: 23W/10L (69.7%), -$14.78
+- Pre-v8: 13W/22L (37.1%), -$84.92
+- v8_standard: 8W/5L (61.5%), -$21.99
+
+### Root Causes
+1. $0.73 cap: 56.5% WR, -$64 | $0.65 cap: 81.3% WR, +$26
+2. NORMAL T-70: 0W/4L, -$49. Gate deployed too late.
+3. Pre-v8 trades: -$85 (no v2.2 gate)
+4. Chrome zombie: -$44 (Apr 2 positions)
+
+### Key Discoveries
+1. **Chainlink gate:** 93.5% WR (N=169) when TI+CL deltas agree
+2. **Full stack T-130→T-60:** 97-100% WR with TI+CL+TRANS+v2.2
+3. **CEDAR model:** +5-9pp over OAK. Live ticks flowing (2041).
+4. **$0.65 max cap:** Immediate P&L fix
+
+### CEDAR Status
+- 2041 ticks, 8 windows. Accumulating for 48h comparison.
+- Endpoint `/v2/probability/cedar` live on Montreal.
+
+### Handoff for Next Agent
+1. CEDAR ticks accumulating — compare vs OAK after 24h
+2. v9.0 proposal ready (V9_PROPOSAL.md) — 20 lines, feature-flagged
+3. $0.65 cap change — env var, immediate improvement
+4. Chainlink agreement gate — most impactful new gate
+5. Montreal rules: all Polymarket API from Montreal ONLY
+6. 2 zombie positions redeemable from Apr 2 Chrome
+
 *Next review: April 8, 2026 09:00 UTC*
