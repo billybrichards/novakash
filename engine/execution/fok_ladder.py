@@ -181,10 +181,17 @@ class FOKLadder:
             attempted_prices.append(attempt_price)
 
             # Calculate size for this attempt
-            # CLOB requires: maker (size) max 2 decimals, taker (cost) max 4 decimals
-            # Floor the size to ensure cost = size * price doesn't exceed 4 decimals
+            # CLOB requires for BUY: maker_amount (price*size) max 2 decimals,
+            # taker_amount (size) max 4 decimals.
+            # We iterate size downward until price*size is clean to 2dp.
             import math
-            size = math.floor(stake_usd / attempt_price * 100) / 100  # Floor to 2 decimals
+            size = math.floor(stake_usd / attempt_price * 100) / 100
+            for _adj in range(100):
+                _maker = round(attempt_price * size, 6)
+                if abs(_maker - round(_maker, 2)) < 1e-9:
+                    break
+                size -= 0.01
+            size = max(size, 0.01)  # safety floor
 
             self._log.info(
                 "fok_ladder.attempt",

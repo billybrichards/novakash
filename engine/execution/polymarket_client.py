@@ -355,23 +355,28 @@ class PolymarketClient:
         #
         # This approach: ONE order, good price, accept miss if no fill.
 
-        PRICE_CAP = float(os.environ.get("FOK_PRICE_CAP", "0.73"))
+        # v8.1: GTC limit price = strategy's dynamic cap for this offset.
+        # The strategy passes the correct per-window cap via the `price` arg
+        # (which comes from v81_entry_cap). We use that directly as our limit.
+        # This replaces the old env-var-based pricing modes.
         PRICE_FLOOR = float(os.environ.get("PRICE_FLOOR", "0.30"))
-        BUMP = float(os.environ.get("FOK_BUMP", "0.02"))
-        PRICING_MODE = os.environ.get("ORDER_PRICING_MODE", "cap")
-
-        # Two pricing modes:
-        # "cap"     — submit at cap price (current, fills at cap or market)
-        # "bestask" — submit at Gamma bestAsk + bump (fills near market, cap as ceiling)
-        if PRICING_MODE == "bestask":
-            limit_price = round(float(price) + BUMP, 4)  # price = Gamma bestAsk from strategy
-            limit_price = max(limit_price, PRICE_FLOOR)   # floor: never below $0.30
-            limit_price = min(limit_price, PRICE_CAP)      # cap: never above $0.73
-        else:
-            # "cap" mode — submit at cap (legacy behaviour)
-            limit_price = PRICE_CAP
+        
+        # The price from strategy is the CLOB best ask or Gamma price.
+        # We submit a GTC at the window's dynamic cap so we fill at market
+        # price (which will be ≤ cap). The cap is passed via FIVE_MIN_MAX_ENTRY_PRICE
+        # or inferred from the strategy signal.
+        limit_price = round(float(price), 4)
+        limit_price = max(limit_price, PRICE_FLOOR)
 
         order_size = round(stake_usd / limit_price, 2)
+        # Fix maker_amount precision: price * size must have ≤ 2 decimal places
+        for _adj in range(100):
+            _maker = round(limit_price * order_size, 6)
+            if abs(_maker - round(_maker, 2)) < 1e-9:
+                break
+            order_size -= 0.01
+        order_size = max(order_size, 0.01)
+        
         _order_type = OrderType.GTD if expiration > 0 else OrderType.GTC
 
         order_args = OrderArgs(
@@ -389,11 +394,8 @@ class PolymarketClient:
 
         self._log.info(
             "place_order.order_strategy",
-            pricing_mode=PRICING_MODE,
             limit_price=f"${limit_price:.4f}",
-            gamma_price=f"${float(price):.4f}",
-            bump=f"{BUMP:.2f}",
-            cap=f"${PRICE_CAP:.2f}",
+            strategy_price=f"${float(price):.4f}",
             floor=f"${PRICE_FLOOR:.2f}",
             size=f"{order_size:.2f}",
             order_type=str(_order_type),
@@ -564,11 +566,15 @@ class PolymarketClient:
         import math
         _price = round(price, 4)
         _size = math.floor(size * 100) / 100  # Floor to 2 decimals
+        # CLOB requires maker_amount (price*size) to have ≤ 2 decimal places
+        for _adj in range(100):
+            _maker = round(_price * _size, 6)
+            if abs(_maker - round(_maker, 2)) < 1e-9:
+                break
+            _size -= 0.01
+        _size = max(_size, 0.01)
         if _size <= 0:
             return {"filled": False, "size_matched": 0, "order_id": None}
-        # Pass size as string with exactly 2 decimals to prevent py_clob_client
-        # from introducing floating-point precision errors internally.
-        # The CLOB API rejects sizes with >2 decimal places.
         _size_str = f"{_size:.2f}"
         _price_str = f"{_price:.4f}"
 

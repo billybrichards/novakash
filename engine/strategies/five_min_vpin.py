@@ -2537,10 +2537,15 @@ class FiveMinVPINStrategy(BaseStrategy):
                     self._log.warning("trade.rfq_error", error=str(rfq_exc)[:100])
             
             if not clob_order_id:
+                # v8.1: Submit GTC at the dynamic cap for this window/offset.
+                # This way we fill at whatever the market price is (≤ cap).
+                # Previously we sent the CLOB best ask ($0.34-0.60) but
+                # place_order overrode it to $0.73 anyway.
+                _gtc_limit = Decimal(str(round(PRICE_CAP, 4)))
                 try:
                     clob_order_id = await self._poly.place_order(
                         market_slug=market_slug, direction=direction,
-                        price=price, stake_usd=stake, token_id=token_id,
+                        price=_gtc_limit, stake_usd=stake, token_id=token_id,
                     )
                     self._record_order_placed()
                     self._on_order_success()
