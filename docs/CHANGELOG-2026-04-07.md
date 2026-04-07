@@ -85,3 +85,44 @@ No code changes needed — all feature-flagged.
 
 ### Branch
 `claude/v81-early-entry` → merged to `develop`
+
+---
+
+## v8.1.2 — FOK Ladder Cap Handling Fix
+
+### Problem
+FOK ladder was aborting immediately when CLOB best_ask > max_price, preventing any fill attempts at our cap price. This meant orders would never be placed even when CLOB might drop or hidden liquidity existed at our price.
+
+### Live Evidence
+```
+2026-04-07T20:28:42.231805Z  fok_ladder.start: max_price=$0.65, stake=$4.18
+2026-04-07T20:28:42.335289Z  fok_ladder.clob_above_cap: best_ask=$0.93 → starting at $0.65
+2026-04-07T20:28:42.335484Z  fok_ladder.attempt: Attempt 1 at $0.65, size=6.40 tokens
+2026-04-07T20:28:42.741549Z  fok_ladder.order_error: FOK killed (no liquidity at $0.65)
+2026-04-07T20:28:43.252744Z  place_order.live_submitted: GTC fallback at $0.65
+```
+
+### Changes
+
+#### fix: FOK ladder cap logic (`engine/execution/fok_ladder.py`)
+- **Removed premature abort** when `best_ask > max_price`
+- **Start ladder at max_price** even when CLOB is higher
+- **Removed early break** when already at cap (keep retrying at cap)
+- FOK ladder now attempts fills at cap price on each retry
+- Falls back to GTC at cap when all FOK attempts exhausted
+
+### Behaviour Change
+
+**Before:**
+- CLOB $0.93, cap $0.65 → abort immediately, no order placed
+
+**After:**
+- CLOB $0.93, cap $0.65 → FOK attempts at $0.65
+- If CLOB drops or hidden liquidity exists → FOK fills
+- If no liquidity → FOK killed, falls back to GTC at cap
+
+### Rollback
+No rollback needed — this is a bug fix. Old behaviour was incorrect for FOK execution.
+
+### Branch
+`hotfix/fok-ladder-cap-handling` → merged to `develop` (commit: c08a39e)
