@@ -1,8 +1,8 @@
 # v8.x Pricing & Execution Audit
 
-**Date:** April 7, 2026, 09:25 UTC
+**Date:** April 7, 2026, 09:25 UTC (updated 09:50 UTC with root cause + fix)
 **Auditor:** Novakash2
-**Status:** 🔴 CRITICAL — Two systemic issues found
+**Status:** ✅ FIXED — Three systemic issues found and resolved
 
 ---
 
@@ -158,6 +158,73 @@ The `entry_price` column in the `trades` table stores what the strategy WANTED t
 | 06:18 | $0.63 | $0.73 | +$0.10 overpay |
 
 **Any analysis using `entry_price` for P&L calculations is WRONG.** Always use `metadata->>'actual_fill_price'`.
+
+---
+
+---
+
+## Resolution (09:50 UTC)
+
+### Root Cause: Hidden `.env` on Montreal
+
+A 72-line `.env` file at `/home/novakash/novakash/engine/.env` was loading via `dotenv` at startup, overriding all code defaults:
+
+```bash
+V81_CAP_T240=0.73        # Overrode default $0.55 → ALL early entries capped at $0.73
+ORDER_PRICING_MODE=cap   # Forced every GTC to submit at $0.73 cap
+FOK_PRICE_CAP=0.73       # FOK ladder cap also $0.73
+```
+
+The `.env` was loaded by both `main.py` (line 17, `override=True`) and `runtime_config.py` (line 33, `override=False`). Module-level variables in `five_min_vpin.py` read from `os.environ` AFTER dotenv loaded them.
+
+### Fixes Applied
+
+| Fix | Commit | What Changed |
+|-----|--------|-------------|
+| FOK decimal precision | `6f232d2` | Size iterated until `price*size` has ≤2 decimals |
+| GTC uses strategy cap | `6f232d2` | `_execute_trade` passes `PRICE_CAP` (from signal) to `place_order` |
+| `.env` caps corrected | Montreal only | `V81_CAP_T240=0.55`, `ORDER_PRICING_MODE=bestask` |
+| Cap bands fixed | `54a477d` | T-70/T-60 → $0.73 (were $0.65), T-110..T-80 → $0.65 |
+| `__pycache__` cleared | Montreal only | Stale bytecode was caching old $0.73 values |
+| gate_audit type fix | `78110de` | VARCHAR vs BOOLEAN mismatch, column widths |
+| trade_placed flag | `2ce445e` | Added to `_execute_trade` (was only in dead method) |
+
+### New Cap Schedule (LIVE as of 09:50 UTC)
+
+```
+Offset          Cap     Breakeven WR    EV at 71% WR (per $9)
+T-240..T-180    $0.55   55.0%           +$1.44
+T-170..T-120    $0.60   60.0%           +$0.99  
+T-110..T-80     $0.65   65.0%           +$0.54
+T-70..T-60      $0.73   73.0%           -$0.18 (marginal)
+```
+
+### `.env` Key Values (Montreal, post-fix)
+
+```bash
+V81_CAP_T240=0.55
+V81_CAP_T180=0.60
+V81_CAP_T120=0.65
+V81_CAP_T60=0.73
+ORDER_PRICING_MODE=bestask
+FOK_PRICE_CAP=0.73
+```
+
+### Expected Behaviour After Fix
+
+1. FOK ladder attempts at CLOB best ask (if liquidity exists) — no more decimal errors
+2. If FOK exhausts / no liquidity → GTC fallback at the **offset's dynamic cap** (not always $0.73)
+3. Early entries (T-240) submit at $0.55 → fill at market price ≤ $0.55
+4. Late entries (T-70) submit at $0.73 → fill at market price ≤ $0.73
+5. If CLOB book is empty (typical), the order sits as a GTC limit until filled or expired
+
+### Monitoring Checklist
+
+- [ ] Next T-240 trade shows `cap $0.55` in notification
+- [ ] Next T-70 trade shows `cap $0.73` in notification
+- [ ] `actual_fill_price` in DB reflects real fill (not always $0.73)
+- [ ] FOK attempts don't fail with decimal precision errors
+- [ ] gate_audit table continues populating (6+ rows per window)
 
 ---
 
