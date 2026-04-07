@@ -704,7 +704,9 @@ class PolymarketClient:
         elif ot == "FOK":
             sdk_type = OrderType.FOK
         else:
-            sdk_type = OrderType.FOK  # fallback to FOK for safety
+            self._log.warning("place_market_order.unknown_order_type",
+                requested=ot, fallback="FOK")
+            sdk_type = OrderType.FOK
 
         def _sign_and_submit():
             signed = client.create_order(order_args)

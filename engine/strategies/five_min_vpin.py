@@ -533,6 +533,17 @@ class FiveMinVPINStrategy(BaseStrategy):
             except Exception as exc:
                 self._log.debug("evaluate.timesfm_fetch_failed", error=str(exc))
 
+        # ── Determine regime early (needed by v9 gate logging) ──────────
+        from config.runtime_config import runtime as _runtime
+        if current_vpin >= _runtime.vpin_cascade_direction_threshold:
+            _snap_regime = "CASCADE"
+        elif current_vpin >= _runtime.vpin_informed_threshold:
+            _snap_regime = "TRANSITION"
+        elif current_vpin >= 0.45:
+            _snap_regime = "NORMAL"
+        else:
+            _snap_regime = "CALM"
+
         # ── v9.0 Source Agreement Gate ────────────────────────────────────
         # When CL+TI agree on direction, WR = 94.7%. When they disagree, 9.1%.
         # This is the single most impactful filter. Feature-flagged for rollback.
@@ -595,8 +606,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                     _v9_tier = "EARLY_CASCADE"
                 else:
                     _v9_tier = "EARLY_SKIP"
-                    if _v9_agreement and _v9_source_agree:
-                        # Agree but VPIN too low for early — skip
+                    if _v9_agreement:
+                        # VPIN too low for early zone — skip regardless of agreement
                         self._last_skip_reason = f"v9: early offset T-{_eval_offset} VPIN {current_vpin:.2f} < {_v9_vpin_early}"
                         signal = None
             else:
@@ -629,16 +640,7 @@ class FiveMinVPINStrategy(BaseStrategy):
 
         tf = "15m" if window.duration_secs == 900 else "5m"
 
-        # ── Determine regime for snapshot (mirrors _evaluate_signal logic) ───
-        from config.runtime_config import runtime as _runtime
-        if current_vpin >= _runtime.vpin_cascade_direction_threshold:
-            _snap_regime = "CASCADE"
-        elif current_vpin >= _runtime.vpin_informed_threshold:
-            _snap_regime = "TRANSITION"
-        elif current_vpin >= 0.45:
-            _snap_regime = "NORMAL"
-        else:
-            _snap_regime = "CALM"
+        # _snap_regime already computed above (before v9 gate block)
 
         # ── Capture CoinGlass snapshot at evaluation time ────────────────────
         # Per-asset CG feed (v5.4d) — fall back to BTC if asset feed unavailable
@@ -1102,8 +1104,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                     "v2_quantiles": window_snapshot.get("v2_quantiles"),
                     "v2_quantiles_at_close": window_snapshot.get("v2_quantiles_at_close"),
                     # Gates
-                    "gate_vpin_passed": _vpin_gate_result == "PASS",
-                    "gate_delta_passed": _delta_gate_result == "PASS",
+                    "gate_vpin_passed": bool(_vpin_gate_result),
+                    "gate_delta_passed": bool(_delta_gate_result),
                     "gate_cg_passed": _cg_gate_passed,
                     "gate_twap_passed": not _twap_gate_blocked_actual,
                     "gate_timesfm_passed": not _timesfm_gate_blocked_actual,
