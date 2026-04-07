@@ -163,8 +163,15 @@ class FOKLadder:
                 order_type=order_type,
             )
         except Exception as exc:
+            err_str = str(exc)
+            # FAK "no orders found to match" is normal — not an error
+            if "no orders found to match" in err_str:
+                self._log.info("price_ladder.no_match",
+                    attempt=attempt, order_type=order_type,
+                    price=f"${price:.2f}", note="no sellers at this price")
+                return {"size_matched": 0, "order_id": None, "filled": False}
             self._log.warning("price_ladder.order_error",
-                attempt=attempt, error=str(exc)[:200])
+                attempt=attempt, error=err_str[:200])
             return None
 
         size_matched = float(result.get("size_matched", 0) or 0)
