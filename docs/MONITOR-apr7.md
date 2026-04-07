@@ -44,11 +44,11 @@
 - Need **65.4% WR** at these fills to break even
 - Post-fix WR is only 50% — **not profitable yet**
 
-### 2. 🟡 NORMAL regime leaking at all offsets
+### 2. ✅ NORMAL regime gate extended (v8.1.2)
 - 4 of 5 post-fix losses were NORMAL regime
-- v8.1.1 blocks NORMAL at T-70/T-60 only
-- The 11:18 loss was NORMAL at T-100 — not blocked
-- **Decision needed:** extend NORMAL gate to ALL late offsets?
+- v8.1.2 blocks NORMAL (VPIN<0.55) at ALL late offsets (<120)
+- Deployed 16:10 UTC — covers T-110 through T-60
+- Skip reason: `v8.1.2: NORMAL at T-{offset} (VPIN {value} < 0.55)`
 
 ### 3. 🟡 Drawdown approaching kill switch
 - Current: -$34.19 (-26.1%) from $130.82
@@ -69,7 +69,6 @@
 
 ## Decisions Needed
 
-- [ ] **Extend NORMAL gate to all offsets?** Blocks 1 more loss ($9.42) but might miss wins at T-80..T-110 with NORMAL VPIN
-- [ ] **Lower T-70/T-60 cap from $0.73?** Reduces loss size but may not fill at all (CLOB thin at late offsets)
+- [x] ~~Extend NORMAL gate to all offsets?~~ **Done — v8.1.2 deployed 16:10 UTC**
 - [ ] **Reduce bet fraction?** Currently 7.3% → losses are $7-14 each. At 5% they'd be $5-10.
-- [ ] **Wait for more data?** Only 10 post-fix trades. N is tiny.
+- [ ] **Wait for more data?** Post-fix + v8.1.2 trades still small N. Need 2-3 days.

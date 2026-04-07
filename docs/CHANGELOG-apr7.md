@@ -86,19 +86,26 @@ Root cause found: hidden `.env` on Montreal overriding dynamic caps.
 | `5eff911` | v8.1.2: NORMAL gate ALL late offsets + trade analysis doc |
 | `41cf0d0` | PDFs added to analyses/ |
 
-## Gate & Cap Config (LIVE as of 13:19 UTC)
+## Gate & Cap Config (LIVE as of 16:10 UTC — v8.1.2)
 
 ```
-Offset          Cap     VPIN Requirement     Applied Since
-T-240..T-180    $0.55   CASCADE (≥0.65)      09:50 UTC
-T-170..T-120    $0.60   CASCADE (≥0.65)      09:50 UTC
-T-110..T-80     $0.65   v2.2 agrees          09:50 UTC  
-T-70..T-60      $0.73   TRANSITION+ (≥0.55)  13:19 UTC ← NEW (v8.1.1)
+Offset          Cap     VPIN Requirement        Applied Since
+T-240..T-180    $0.55   CASCADE (≥0.65)         09:50 UTC
+T-170..T-120    $0.60   CASCADE (≥0.65)         09:50 UTC
+T-110..T-80     $0.65   TRANSITION+ (≥0.55)     16:10 UTC ← v8.1.2
+T-70..T-60      $0.73   TRANSITION+ (≥0.55)     13:19 UTC (v8.1.1→v8.1.2)
 ```
 
-Note: All offsets require v2.2 HIGH confidence + direction agreement.
+All offsets require v2.2 HIGH confidence + direction agreement.
 Early offsets (≥120) additionally require CASCADE + delta≥5bp for DECISIVE.
-T-70/T-60 now additionally require TRANSITION+ (was allowing NORMAL).
+ALL late offsets (<120) require TRANSITION+ (VPIN≥0.55) — v8.1.2.
+
+**Skip reason format:** `v8.1.2: NORMAL at T-{offset} (VPIN {value} < 0.55)`
+
+### v8.1.2 vs v8.1.1 comparison
+- v8.1.1: only blocked NORMAL at T-70/T-60 (offset <= 70)
+- v8.1.2: blocks NORMAL at ALL late offsets (<120, i.e. T-110 through T-60)
+- Impact: catches the T-100 NORMAL loss (11:18, -$9.26) that v8.1.1 missed
 
 ## Loss Prevention Analysis
 
