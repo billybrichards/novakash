@@ -2530,8 +2530,8 @@ class FiveMinVPINStrategy(BaseStrategy):
             
             if not self._poly.paper_mode:
                 _shares = stake / float(price) if float(price) > 0 else 0
-                is_15m = "15m" in market_slug
-                _rfq_cap = runtime.fifteen_min_max_entry_price if is_15m else runtime.five_min_max_entry_price
+                # v8.1: RFQ cap must use dynamic PRICE_CAP per offset, not the env var
+                _rfq_cap = PRICE_CAP
                 try:
                     rfq_id, rfq_price = await self._poly.place_rfq_order(
                         token_id=token_id, direction=direction,

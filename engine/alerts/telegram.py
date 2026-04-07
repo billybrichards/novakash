@@ -892,11 +892,32 @@ class TelegramAlerter:
         pnl_sign = "+" if pnl_usd >= 0 else ""
         mode = self._mode_tag()
         
-        # v8.0 session tracking
+        # v8.0 session tracking — reload from DB on first call
         if not hasattr(self, '_session_wins'):
             self._session_wins = 0
             self._session_losses = 0
             self._session_pnl = 0.0
+            # Backfill from DB so restarts don't reset counters
+            if self._db_client:
+                try:
+                    import asyncio as _aio
+                    async def _load_session():
+                        async with self._db_client._pool.acquire() as conn:
+                            row = await conn.fetchrow(
+                                "SELECT "
+                                "  SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as w, "
+                                "  SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as l, "
+                                "  COALESCE(SUM(pnl_usd), 0) as pnl "
+                                "FROM trades WHERE outcome IS NOT NULL "
+                                "AND created_at > NOW() - INTERVAL '24 hours'"
+                            )
+                            if row:
+                                self._session_wins = int(row['w'] or 0)
+                                self._session_losses = int(row['l'] or 0)
+                                self._session_pnl = float(row['pnl'] or 0)
+                    _aio.get_event_loop().create_task(_load_session())
+                except Exception:
+                    pass  # Fall back to zero counters
         if outcome == "WIN":
             self._session_wins += 1
         else:
@@ -914,11 +935,22 @@ class TelegramAlerter:
         if outcome == "LOSS" and wd.get("actual_direction"):
             oracle_note = f"\nOracle: `{wd['actual_direction']}` ← {src_short} was wrong"
         
+        # v8.1: Show actual fill price (may differ from submitted entry)
+        _fill_price = wd.get("actual_fill_price")
+        _entry_reason = wd.get("entry_reason", "")
+        _fill_line = f"Entry: `${entry_price:.3f}`"
+        if _fill_price and abs(float(_fill_price) - entry_price) > 0.001:
+            _fill_line = f"Submitted: `${entry_price:.3f}` → Fill: `${float(_fill_price):.4f}`"
+        elif _fill_price:
+            _fill_line = f"Fill: `${float(_fill_price):.4f}`"
+        
+        _reason_tag = f" | `{_entry_reason}`" if _entry_reason else ""
+        
         outcome_text = (
             f"{emoji} *{outcome}* — BTC 5m | {window_time} | {self._engine_version}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"Direction: `{decision}` ({src_short} Δ `{delta_val:+.4f}%`)\n"
-            f"Entry: `${entry_price:.3f}` | P&L: `{pnl_sign}${pnl_usd:.2f}`"
+            f"{_fill_line} | P&L: `{pnl_sign}${pnl_usd:.2f}`{_reason_tag}"
             f"{oracle_note}\n"
             f"📊 Session: `{self._session_wins}W/{self._session_losses}L ({wr:.1f}%)` | `{'+' if self._session_pnl >= 0 else ''}${self._session_pnl:.2f}`\n"
         )
@@ -1547,8 +1579,32 @@ class TelegramAlerter:
             self._log.warning("telegram.send_trade_alert_failed", error=str(exc))
 
     async def send_entry_alert(self, order: "Order") -> None:
-        """Legacy alias — entry is now included in window_report, this is a no-op."""
-        pass
+        """Send GTC fill confirmation when CLOB matches our order."""
+        try:
+            meta = order.metadata or {}
+            fill_price = meta.get("actual_fill_price", "?")
+            cap = meta.get("v81_entry_cap", "?")
+            reason = meta.get("entry_reason", "?")
+            wait_s = meta.get("fill_wait_seconds", "?")
+            direction = "⬇️ DOWN" if order.direction == "NO" else "⬆️ UP"
+            size = meta.get("size_matched", "?")
+            
+            msg = (
+                f"✅ **GTC FILLED**\n"
+                f"─────────────\n"
+                f"{direction} | `{reason}`\n"
+                f"💰 Fill: `${float(fill_price):.4f}` (cap `${float(cap):.2f}`)\n"
+                f"📦 Size: `{size}` shares | Stake: `${order.stake_usd:.2f}`\n"
+                f"⏱ Filled in `{wait_s}s`\n"
+            )
+            await self._send_telegram(msg)
+            await self._log_notification(
+                notification_type="gtc_fill",
+                message_text=msg,
+                window_id=meta.get("market_slug"),
+            )
+        except Exception as exc:
+            structlog.get_logger().warning("telegram.entry_alert_failed", error=str(exc)[:100])
 
     # Backwards compat for v6.0 window reports
     async def send_timesfm_window_report(self, **kwargs) -> None:
