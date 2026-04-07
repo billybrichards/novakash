@@ -656,9 +656,11 @@ class FiveMinVPINStrategy(BaseStrategy):
             # Override direction with v9.0 source agreement direction
             if signal and _v9_direction_override and _v9_agreement:
                 signal.direction = _v9_direction_override
-            # Override cap with v9.0 tier cap
+            # Override cap with v9.0 tier cap and entry reason
             if signal and _v9_cap is not None:
                 signal.v81_entry_cap = _v9_cap
+                _order_type = os.environ.get("ORDER_TYPE", "FAK").upper()
+                signal.entry_reason = f"v9_{_v9_tier}_T{_eval_offset}_{_order_type}"
         else:
             signal = None
 
