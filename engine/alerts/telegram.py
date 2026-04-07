@@ -273,6 +273,164 @@ class TelegramAlerter:
         
         return decision_msg_id, analysis_msg_id
 
+    # ── Consolidated Window Summary (replaces 19 individual skip alerts) ────────
+
+    async def send_window_summary(
+        self,
+        window_id: str,
+        eval_history: list,
+        traded: bool = False,
+        trade_offset: int = None,
+    ) -> Optional[int]:
+        """
+        Send one consolidated summary card per window instead of one alert per eval tick.
+
+        If traded=False: shows ALL SKIPPED with grouped skip reasons.
+        If traded=True:  shows TRADE at trade_offset with condensed skip summary.
+        """
+        if not eval_history:
+            return None
+
+        # Parse window time from window_id (format: "BTC-1712345678")
+        window_time = "?"
+        asset = "BTC"
+        try:
+            parts = window_id.split("-", 1)
+            asset = parts[0]
+            ts = int(parts[1])
+            window_time = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%H:%M UTC")
+        except Exception:
+            pass
+
+        n_evals = len(eval_history)
+
+        # Use data from the most recent (lowest offset) entry for headline metrics
+        latest = sorted(eval_history, key=lambda x: x.get("offset") or 9999)[0]
+        vpin = latest.get("vpin") or 0.0
+        delta_pct = latest.get("delta_pct") or 0.0
+        regime = latest.get("regime") or "?"
+        v2_p = latest.get("v2_p")
+        v2_dir = latest.get("v2_dir") or "?"
+        v2_agrees = latest.get("v2_agrees")
+        confidence = latest.get("confidence") or "?"
+
+        # Build v2.2 line
+        if v2_p is not None:
+            _v2_pct = int(round(v2_p * 100))
+            _agree_icon = "✅ AGREE" if v2_agrees else "❌ DISAGREE"
+            v2_line = f"🔮 v2.2: `{v2_dir}` `{_v2_pct}%` | v8: `{('UP' if delta_pct > 0 else 'DOWN')}` — {_agree_icon}\n"
+        else:
+            v2_line = ""
+
+        regime_emoji = {"CASCADE": "🌊", "TRANSITION": "🔄", "NORMAL": "📊", "CALM": "😴"}.get(regime, "📊")
+        delta_str = f"{delta_pct:+.4f}%" if delta_pct else "?"
+
+        # ── Group consecutive skip reasons ────────────────────────────────────
+        def _group_reasons(history: list) -> list[str]:
+            """Collapse consecutive same-reason entries into T-X..T-Y ranges."""
+            if not history:
+                return []
+            # Sort by offset descending (T-240 first)
+            sorted_h = sorted(history, key=lambda x: x.get("offset") or 0, reverse=True)
+            groups = []
+            current_reason = None
+            current_start = None
+            current_end = None
+            for entry in sorted_h:
+                offset = entry.get("offset")
+                raw_reason = entry.get("skip_reason") or "unknown"
+                # Normalise reason for grouping: strip offset-specific details
+                # e.g. "v8.1: not CASCADE (VPIN 0.612 < 0.65) at T-240" → "not CASCADE"
+                reason_key = raw_reason
+                if " at T-" in reason_key:
+                    reason_key = reason_key[:reason_key.rfind(" at T-")].strip()
+                # Also normalise CLOB values: "CLOB CAP: UP ask $0.57 > $0.55" → "CLOB cap"
+                if "CLOB CAP" in reason_key.upper():
+                    # Extract the ask price for display
+                    try:
+                        _ask_part = reason_key.split("ask $")[1].split(" >")[0]
+                        _cap_part = reason_key.split("> $")[1].split()[0] if "> $" in reason_key else "?"
+                        reason_key = f"CLOB cap (${_ask_part} > ${_cap_part})"
+                    except Exception:
+                        reason_key = "CLOB cap"
+                elif "CLOB FLOOR" in reason_key.upper():
+                    reason_key = "CLOB floor"
+                # Shorten common patterns
+                elif "v8.1: not CASCADE" in reason_key:
+                    _vpin_val = None
+                    try:
+                        _vpin_val = reason_key.split("VPIN ")[1].split(")")[0]
+                    except Exception:
+                        pass
+                    reason_key = f"not CASCADE (VPIN {_vpin_val})" if _vpin_val else "not CASCADE"
+                elif "v8.1: delta too weak" in reason_key:
+                    reason_key = "delta too weak"
+                elif "v2.2 DISAGREES" in reason_key:
+                    reason_key = "v2.2 disagrees"
+                elif "v2.2 LOW conf" in reason_key:
+                    reason_key = "v2.2 low conf"
+                elif "VPIN" in reason_key and "< gate" in reason_key:
+                    reason_key = "VPIN below gate"
+                elif "TWAP GATE" in reason_key:
+                    reason_key = "TWAP gate"
+                elif "CG VETO" in reason_key.upper():
+                    reason_key = "CG veto"
+                elif "Gates passed but signal None" in reason_key:
+                    reason_key = "signal None"
+
+                if reason_key != current_reason:
+                    if current_reason is not None:
+                        if current_start == current_end:
+                            groups.append(f"T-{current_start}: {current_reason}")
+                        else:
+                            groups.append(f"T-{current_start}..T-{current_end}: {current_reason}")
+                    current_reason = reason_key
+                    current_start = offset
+                    current_end = offset
+                else:
+                    current_end = offset
+
+            if current_reason is not None:
+                if current_start == current_end:
+                    groups.append(f"T-{current_start}: {current_reason}")
+                else:
+                    groups.append(f"T-{current_start}..T-{current_end}: {current_reason}")
+            return groups
+
+        reason_groups = _group_reasons(eval_history)
+
+        # ── Format the card ───────────────────────────────────────────────────
+        if not traded:
+            # ALL SKIPPED card
+            skip_reasons_text = "\n".join(f"  {r}" for r in reason_groups) if reason_groups else "  (unknown)"
+            msg = (
+                f"📋 *{asset} 5m* | {window_time} | {self._engine_version}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Evaluated: `{n_evals}` offsets — *ALL SKIPPED*\n"
+                f"{v2_line}"
+                f"📈 VPIN: `{vpin:.3f}` {regime_emoji} `{regime}` | Δ `{delta_str}`\n"
+                f"🎖 Confidence: `{confidence}`\n"
+                f"\n*Skip reasons:*\n{skip_reasons_text}\n"
+            )
+        else:
+            # TRADED card — show prior skips in compact form
+            n_skipped = n_evals  # history only contains skips
+            skip_reasons_compact = ", ".join(reason_groups) if reason_groups else "none"
+            trade_line = f"🎯 TRADE at T-{trade_offset}" if trade_offset else "🎯 TRADE"
+            msg = (
+                f"📋 *{asset} 5m* | {window_time} | {self._engine_version}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Evaluated: `{n_evals + 1}` offsets | {trade_line}\n"
+                f"{v2_line}"
+                f"📈 VPIN: `{vpin:.3f}` {regime_emoji} `{regime}` | Δ `{delta_str}`\n"
+                f"🎖 Confidence: `{confidence}`\n"
+                f"\nSkipped `{n_skipped}`: _{skip_reasons_compact}_\n"
+            )
+
+        msg_id = await self._send_with_id(msg)
+        await self._log_notification("window_summary", msg, window_id, telegram_message_id=msg_id)
+        return msg_id
+
     # ── Clean 5-Stage Lifecycle Notifications ─────────────────────────────────
 
     async def send_signal_snapshot(

@@ -30,7 +30,7 @@ from typing import Optional, Callable, Awaitable
 
 import structlog
 
-from config.constants import FIVE_MIN_ENTRY_OFFSET
+from config.constants import FIVE_MIN_ENTRY_OFFSET, FIVE_MIN_EVAL_OFFSETS
 from config.runtime_config import runtime
 from data.models import MarketState
 from data.feeds.polymarket_5min import WindowInfo, WindowState
@@ -128,7 +128,11 @@ class FiveMinVPINStrategy(BaseStrategy):
         
         # Track last executed window to avoid duplicates
         self._last_executed_window: Optional[str] = None
-        
+
+        # Consolidated skip notification history: window_key → list of eval ticks
+        # Instead of sending 19 individual skip alerts, we batch and send one summary.
+        self._window_eval_history: dict[str, list] = {}
+
         # Active window monitoring state (one per window)
         self._active_eval_states: dict[str, EvalWindowState] = {}
         
@@ -1018,55 +1022,53 @@ class FiveMinVPINStrategy(BaseStrategy):
                 reason=_skip_reason[:80],
                 entry=f"T-{FIVE_MIN_ENTRY_OFFSET}s",
             )
-            if self._alerter:
+            # ── Consolidated skip history (replaces individual Telegram alerts) ──
+            _window_key = f"{window.asset}-{window.window_ts}"
+            if _window_key not in self._window_eval_history:
+                self._window_eval_history[_window_key] = []
+            _clob_ask_val = window_snapshot.get("clob_up_ask") if delta_pct and delta_pct > 0 else window_snapshot.get("clob_down_ask")
+            self._window_eval_history[_window_key].append({
+                "offset": eval_offset,
+                "skip_reason": _skip_reason,
+                "vpin": current_vpin,
+                "delta_pct": delta_pct,
+                "v2_p": window_snapshot.get("v2_probability_up"),
+                "v2_dir": window_snapshot.get("v2_direction"),
+                "v2_agrees": window_snapshot.get("v2_agrees"),
+                "clob_ask": _clob_ask_val,
+                "confidence": window_snapshot.get("confidence_tier"),
+                "regime": _snap_regime,
+            })
+            # At the final offset (min of configured offsets), send consolidated summary
+            _min_offset = min(FIVE_MIN_EVAL_OFFSETS) if FIVE_MIN_EVAL_OFFSETS else 60
+            _is_final_offset = (eval_offset is not None and eval_offset <= _min_offset)
+            if self._alerter and _is_final_offset:
                 try:
-                    _implied_dir = "UP" if delta_pct > 0 else "DOWN"
-
-                    async def _send_skip_alert():
+                    _hist = list(self._window_eval_history.get(_window_key, []))
+                    async def _send_summary_all_skip(wk=_window_key, h=_hist):
                         try:
-                            window_id = f"{window.asset}-{window.window_ts}"
-                            signal_dict = {
-                                "direction": _implied_dir,
-                                "delta_pct": delta_pct,
-                                "vpin": current_vpin,
-                                "regime": _snap_regime,
-                                # v8.0 fields
-                                "delta_source": window_snapshot.get("delta_source", "?"),
-                                "delta_tiingo": window_snapshot.get("delta_tiingo"),
-                                "delta_binance": window_snapshot.get("delta_binance"),
-                                "delta_chainlink": window_snapshot.get("delta_chainlink"),
-                                "tiingo_close": window_snapshot.get("tiingo_close"),
-                                "chainlink_price": window_snapshot.get("chainlink_open"),
-                                "binance_price": window_snapshot.get("btc_price"),
-                                "gates_passed": window_snapshot.get("gates_passed", ""),
-                                "gate_failed": window_snapshot.get("gate_failed"),
-                                "confidence_tier": window_snapshot.get("confidence_tier", "?"),
-                                "macro_bias": window_snapshot.get("macro_bias", "N/A"),
-                                "macro_confidence": window_snapshot.get("macro_confidence", ""),
-                                "macro_gate": window_snapshot.get("macro_gate", ""),
-                                "clob_up_ask": window_snapshot.get("clob_up_ask"),
-                                "clob_down_ask": window_snapshot.get("clob_down_ask"),
-                                "v2_probability_up": window_snapshot.get("v2_probability_up"),
-                                "v2_direction": window_snapshot.get("v2_direction"),
-                                "v2_agrees": window_snapshot.get("v2_agrees"),
-                                "eval_offset": eval_offset,
-                            }
-                            
-                            # Send skip decision (no AI analysis for skipped trades)
-                            await self._alerter.send_trade_decision_detailed(
-                                window_id=window_id,
-                                signal=signal_dict,
-                                decision="SKIP",
-                                reason=_skip_reason[:100],
-                                gamma_up=window_snapshot.get("gamma_up_price"),
-                                gamma_down=window_snapshot.get("gamma_down_price"),
+                            await self._alerter.send_window_summary(
+                                window_id=wk,
+                                eval_history=h,
+                                traded=False,
                             )
-                        except Exception as alert_exc:
-                            self._log.error("alert.skip_decision_failed", error=str(alert_exc), window_ts=window.window_ts)
-
-                    asyncio.create_task(_send_skip_alert())
+                        except Exception as _se:
+                            self._log.error("alert.window_summary_failed", error=str(_se), window_key=wk)
+                    asyncio.create_task(_send_summary_all_skip())
                 except Exception:
                     pass
+            # Clean up stale history entries (older than 10 minutes)
+            _now_ts = time.time()
+            _stale_keys = []
+            for _wk in list(self._window_eval_history.keys()):
+                try:
+                    _wts = int(_wk.split("-", 1)[1])
+                    if _now_ts - _wts > 600:
+                        _stale_keys.append(_wk)
+                except Exception:
+                    pass
+            for _wk in _stale_keys:
+                self._window_eval_history.pop(_wk, None)
             return
 
         # ── v8.0: Cap/Floor check from Gamma/CLOB prices ─────────────────────
@@ -1102,36 +1104,80 @@ class FiveMinVPINStrategy(BaseStrategy):
                 except Exception:
                     pass  # Don't block trade if DB read fails
 
-        # If CLOB cap/floor blocked the trade, go through SKIP path
+        # If CLOB cap/floor blocked the trade, append to history and use SKIP path
         if signal is None:
             _skip_reason = getattr(self, '_last_skip_reason', '') or "CLOB price gate"
             self._last_skip_reason = ""
-            if self._alerter:
+            # Append to consolidated eval history (same as gate-skip path)
+            _window_key = f"{window.asset}-{window.window_ts}"
+            if _window_key not in self._window_eval_history:
+                self._window_eval_history[_window_key] = []
+            _clob_ask_val2 = window_snapshot.get("clob_up_ask") if delta_pct and delta_pct > 0 else window_snapshot.get("clob_down_ask")
+            self._window_eval_history[_window_key].append({
+                "offset": eval_offset,
+                "skip_reason": _skip_reason,
+                "vpin": current_vpin,
+                "delta_pct": delta_pct,
+                "v2_p": window_snapshot.get("v2_probability_up"),
+                "v2_dir": window_snapshot.get("v2_direction"),
+                "v2_agrees": window_snapshot.get("v2_agrees"),
+                "clob_ask": _clob_ask_val2,
+                "confidence": window_snapshot.get("confidence_tier"),
+                "regime": _snap_regime,
+            })
+            # At the final offset, send the consolidated summary
+            _min_offset2 = min(FIVE_MIN_EVAL_OFFSETS) if FIVE_MIN_EVAL_OFFSETS else 60
+            _is_final_offset2 = (eval_offset is not None and eval_offset <= _min_offset2)
+            if self._alerter and _is_final_offset2:
                 try:
-                    _implied_dir = "UP" if delta_pct and delta_pct > 0 else "DOWN"
-                    async def _send_clob_skip():
+                    _hist2 = list(self._window_eval_history.get(_window_key, []))
+                    async def _send_clob_summary(wk=_window_key, h=_hist2):
                         try:
-                            window_id = f"{window.asset}-{window.window_ts}"
-                            await self._alerter.send_trade_decision_detailed(
-                                window_id=window_id,
-                                signal={"direction": _implied_dir, "delta_pct": delta_pct, "vpin": current_vpin, "regime": _snap_regime,
-                                        "delta_source": window_snapshot.get("delta_source", "?"), "gates_passed": window_snapshot.get("gates_passed", ""),
-                                        "gate_failed": "clob_price", "confidence_tier": window_snapshot.get("confidence_tier", "?"),
-                                        "macro_bias": window_snapshot.get("macro_bias", "N/A"), "macro_confidence": window_snapshot.get("macro_confidence", ""),
-                                        "macro_gate": window_snapshot.get("macro_gate", ""),
-                                        "v2_probability_up": window_snapshot.get("v2_probability_up"),
-                                        "v2_direction": window_snapshot.get("v2_direction"), "v2_agrees": window_snapshot.get("v2_agrees"),
-                                        "clob_up_ask": window_snapshot.get("clob_up_ask"), "clob_down_ask": window_snapshot.get("clob_down_ask"),
-                                        "eval_offset": eval_offset},
-                                decision="SKIP", reason=_skip_reason[:100],
-                                gamma_up=window_snapshot.get("gamma_up_price"), gamma_down=window_snapshot.get("gamma_down_price"),
+                            await self._alerter.send_window_summary(
+                                window_id=wk,
+                                eval_history=h,
+                                traded=False,
                             )
-                        except Exception:
-                            pass
-                    asyncio.create_task(_send_clob_skip())
+                        except Exception as _se:
+                            self._log.error("alert.window_summary_failed", error=str(_se), window_key=wk)
+                    asyncio.create_task(_send_clob_summary())
                 except Exception:
                     pass
+            # Clean up stale history entries (older than 10 minutes)
+            _now_ts2 = time.time()
+            _stale_keys2 = []
+            for _wk in list(self._window_eval_history.keys()):
+                try:
+                    _wts = int(_wk.split("-", 1)[1])
+                    if _now_ts2 - _wts > 600:
+                        _stale_keys2.append(_wk)
+                except Exception:
+                    pass
+            for _wk in _stale_keys2:
+                self._window_eval_history.pop(_wk, None)
             return
+
+        # ── Send consolidated window summary if we have prior skip history ──────
+        _trade_window_key = f"{window.asset}-{window.window_ts}"
+        if self._alerter and _trade_window_key in self._window_eval_history:
+            try:
+                _trade_hist = list(self._window_eval_history.get(_trade_window_key, []))
+                _trade_offset_val = eval_offset
+                async def _send_trade_summary(wk=_trade_window_key, h=_trade_hist, to=_trade_offset_val):
+                    try:
+                        await self._alerter.send_window_summary(
+                            window_id=wk,
+                            eval_history=h,
+                            traded=True,
+                            trade_offset=to,
+                        )
+                    except Exception as _se:
+                        self._log.error("alert.window_summary_trade_failed", error=str(_se), window_key=wk)
+                asyncio.create_task(_send_trade_summary())
+            except Exception:
+                pass
+            # Remove from history since we've sent the summary
+            self._window_eval_history.pop(_trade_window_key, None)
 
         # ── Send trade decision + dual-AI analysis (non-blocking) ──────────────
         if self._alerter:
