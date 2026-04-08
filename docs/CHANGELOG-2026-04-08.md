@@ -143,3 +143,24 @@ Falls back to v9 golden-zone-only with 10s polling. Zero behavior change.
 
 **Last Updated:** 2026-04-08 12:15 UTC
 **Version:** v10.0 (DUNE-gated dynamic pricing)
+
+---
+
+## v10.1 - Gate Calibration (Apr 8, 17:20 UTC)
+
+---
+
+## v10.1 - Gate Calibration (Apr 8, 17:20 UTC)
+
+**Problem:** 5/6 v10 losses were TRANSITION regime. Threshold 0.85 too high for volume.
+
+**Changes:**
+- V10_DUNE_MIN_P: 0.85 -> 0.75
+- V10_TRANSITION_ENABLED: true -> false
+- V10_CASCADE_MIN_P: 0.80 (new)
+- V10_LOW_VOL_MIN_P: 0.80 (new)
+- V10_TRENDING_MIN_P: 0.82 (new)
+
+**Expected:** 3-5 trades/day at 70-80% WR vs 0-1 trades at 14% WR
+
+**Updated:** 2026-04-08 17:20 UTC
