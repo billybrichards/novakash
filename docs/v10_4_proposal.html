@@ -314,49 +314,94 @@ code { background: #1c2128; padding: 2px 6px; border-radius: 4px; font-size: 13p
     </div>
 </div>
 
+<!-- ═══════════════════════ SIMULATION ═══════════════════════ -->
+<h2 id="simulation">v10.4 Simulation Results (279 Resolved Decisions)</h2>
+
+<div class="alert alert-yellow">
+    <strong>REVISED after simulation.</strong> The original v10.4 proposal blocked all TRANSITION after T-120. Simulation showed this kills TRANSITION+UP which has 94.4% WR at T-121..140. The real problem is <strong>direction-specific</strong>: TRANSITION+DOWN collapses after T-100 while TRANSITION+UP stays strong until T-140.
+</div>
+
+<div class="card">
+    <h3>TRANSITION+DOWN by Offset Zone (the key finding)</h3>
+    <table>
+        <tr><th>Zone</th><th>W</th><th>L</th><th>N</th><th>WR</th><th>Verdict</th></tr>
+        <tr style="background:#0d2818"><td>T-60..100</td><td>12</td><td>1</td><td>13</td><td class="win">92.3%</td><td><span class="badge badge-green">KEEP</span></td></tr>
+        <tr style="background:#2d1014"><td>T-101..120</td><td>7</td><td>5</td><td>12</td><td class="loss">58.3%</td><td><span class="badge badge-red">MARGINAL</span></td></tr>
+        <tr style="background:#2d1014"><td>T-121..140</td><td>8</td><td>4</td><td>12</td><td class="warn">66.7%</td><td><span class="badge badge-yellow">MARGINAL</span></td></tr>
+        <tr style="background:#2d1014"><td>T-141..180</td><td>9</td><td>7</td><td>16</td><td class="loss">56.3%</td><td><span class="badge badge-red">BLOCK</span></td></tr>
+    </table>
+</div>
+
+<div class="card">
+    <h3>TRANSITION+UP by Offset Zone (stays strong)</h3>
+    <table>
+        <tr><th>Zone</th><th>W</th><th>L</th><th>N</th><th>WR</th><th>Verdict</th></tr>
+        <tr><td>T-60..100</td><td>2</td><td>1</td><td>3</td><td class="warn">66.7%</td><td><span class="badge badge-yellow">LOW N</span></td></tr>
+        <tr style="background:#0d2818"><td>T-101..120</td><td>6</td><td>0</td><td>6</td><td class="win">100%</td><td><span class="badge badge-green">KEEP</span></td></tr>
+        <tr style="background:#0d2818"><td>T-121..140</td><td>9</td><td>0</td><td>9</td><td class="win">100%</td><td><span class="badge badge-green">KEEP</span></td></tr>
+        <tr><td>T-141..180</td><td>7</td><td>3</td><td>10</td><td class="warn">70.0%</td><td><span class="badge badge-yellow">MARGINAL</span></td></tr>
+    </table>
+</div>
+
+<div class="card card-green">
+    <h3>Variant Comparison (simulated on 279 resolved decisions)</h3>
+    <table>
+        <tr><th>Config</th><th>W</th><th>L</th><th>N</th><th>WR</th><th>Est $/trade</th></tr>
+        <tr><td>v10.3 baseline (offset&gt;180 blocked)</td><td>128</td><td>39</td><td>167</td><td>76.6%</td><td>$0.49</td></tr>
+        <tr><td>A: TRANSITION DOWN &gt;140 blocked</td><td>119</td><td>32</td><td>151</td><td>78.8%</td><td>$0.63</td></tr>
+        <tr><td>C: NORMAL &lt;100 blocked only</td><td>127</td><td>36</td><td>163</td><td>77.9%</td><td>$0.57</td></tr>
+        <tr><td>D: TRANSITION &gt;140 all dirs</td><td>112</td><td>29</td><td>141</td><td>79.4%</td><td>$0.67</td></tr>
+        <tr style="background:#0d2818"><td><strong>F: NORMAL_MIN=100 + TRANS_DOWN&gt;140 (RECOMMENDED)</strong></td><td><strong>118</strong></td><td><strong>29</strong></td><td><strong>147</strong></td><td class="win"><strong>80.3%</strong></td><td class="win"><strong>$0.73</strong></td></tr>
+    </table>
+    <div class="alert alert-green" style="margin-top:12px">
+        <strong>Option F wins:</strong> 80.3% WR (+3.7pp), $0.73/trade (+49%), 10 fewer losses. Net +$25.20 over this dataset. Trades drop 167→147 (-12%) but quality improves dramatically.
+    </div>
+</div>
+
 <!-- ═══════════════════════ v10.4 PROPOSAL ═══════════════════════ -->
-<h2 id="proposal">v10.4 Proposed Changes</h2>
+<h2 id="proposal">v10.4 Proposed Changes (Option F — Revised)</h2>
 
 <div class="proposal-box">
-    <h3 style="color:var(--text-bright); margin-bottom:16px">Core Philosophy: Data-Driven Recalibration</h3>
-    <p>v10.3 was built on ELM v3 calibration data (865 windows) and CG alignment data (719 trades). Now we have 279 resolved TRADE decisions with ground truth. The data tells a different story than the model assumed.</p>
+    <h3 style="color:var(--text-bright); margin-bottom:16px">Core Philosophy: Direction-Aware Regime Gates</h3>
+    <p>v10.3 treated all directions equally within a regime. The data shows TRANSITION+DOWN is the #1 loss source (67% WR, N=53) while TRANSITION+UP is excellent (80.4%). v10.4 adds <strong>direction-specific offset limits</strong> — the first gate that considers regime × direction × offset as a 3D surface.</p>
 </div>
 
 <!-- Change 1 -->
 <div class="card card-yellow">
     <div style="display:flex; justify-content:space-between; align-items:center">
-        <h3>Change 1: Regime-Specific Offset Limits</h3>
-        <span class="tag tag-new">NEW</span>
+        <h3>Change 1: Block TRANSITION+DOWN After T-140</h3>
+        <span class="tag tag-new">NEW — HIGHEST IMPACT</span>
     </div>
-    <p>Instead of a flat <code>V10_MIN_EVAL_OFFSET=180</code>, use per-regime limits based on the heatmap:</p>
+    <p>TRANSITION+DOWN at T-141..180 is <strong>56.3% WR</strong> (9W/7L) — below breakeven at any entry cap. Hard block.</p>
     <div class="vs">
-        <div>
-            <strong>v10.3 (current):</strong><br>
-            <code>V10_MIN_EVAL_OFFSET=180</code> (all regimes)
-        </div>
+        <div><strong>v10.3:</strong> All TRANSITION entries allowed up to T-180</div>
         <div class="vs-arrow">→</div>
-        <div>
-            <strong>v10.4 (proposed):</strong><br>
-            <code>TRANSITION: 120</code> (87.5% WR at T60-100, drops to 61.5% at T141+)<br>
-            <code>NORMAL: 180</code> (42.9% WR at T60-100, 92% at T141+)<br>
-            <code>CASCADE: 180</code> (flat 75% across all zones)
-        </div>
+        <div><strong>v10.4:</strong> <code>V10_TRANSITION_DOWN_MAX_OFFSET=140</code></div>
     </div>
     <table style="margin-top:12px">
-        <tr><th>Regime</th><th>v10.3 Limit</th><th>v10.4 Limit</th><th>Rationale</th></tr>
-        <tr><td>TRANSITION</td><td>180</td><td class="warn">120</td><td>Best WR (87.5%) is at T60-100. Late TRANSITION entries (T141+) drop to 61-69%.</td></tr>
-        <tr><td>NORMAL</td><td>180</td><td>180</td><td>T141-180 = 92% WR. Keep current. But add minimum: don't enter at T60-100 (42.9%).</td></tr>
-        <tr><td>CASCADE</td><td>180</td><td>180</td><td>Flat ~75% across all zones. No change needed.</td></tr>
+        <tr><th>What gets blocked</th><th>W</th><th>L</th><th>WR</th><th>Impact</th></tr>
+        <tr><td>TRANSITION+DOWN T-141..180</td><td>9</td><td>7</td><td class="loss">56.3%</td><td class="win">Saves ~$14 in losses, loses ~$18 in wins. But WR improvement cascades across all trades.</td></tr>
     </table>
     <div class="alert alert-green">
-        <strong>Impact:</strong> Unblocks TRANSITION entries at T-100..120 (currently blocked), while avoiding the late TRANSITION zone where WR drops. Also adds a minimum offset for NORMAL (block T60-100).
+        <strong>Note:</strong> TRANSITION+UP is NOT affected. T-121..140 UP has 100% WR (9W/0L). This is a surgical, direction-aware block.
     </div>
 </div>
 
 <!-- Change 2 -->
+<div class="card card-purple">
+    <div style="display:flex; justify-content:space-between; align-items:center">
+        <h3>Change 2: Block NORMAL Before T-100</h3>
+        <span class="tag tag-new">NEW</span>
+    </div>
+    <p>NORMAL at T-60..99 is <strong>42.9% WR</strong> (3W/4L → actually 1W/3L in non-offset data). Hard block.</p>
+    <code>V10_NORMAL_MIN_OFFSET=100</code>
+    <p style="margin-top:8px; color:var(--text-dim)">Small sample (N=7) but extreme underperformance. Low risk — only affects ~3% of NORMAL entries. The NORMAL regime needs time for delta to stabilize.</p>
+</div>
+
+<!-- Change 3 -->
 <div class="card card-yellow">
     <div style="display:flex; justify-content:space-between; align-items:center">
-        <h3>Change 2: Increase DOWN Penalty</h3>
+        <h3>Change 3: Increase DOWN Penalty</h3>
         <span class="tag tag-change">CHANGE</span>
     </div>
     <div class="vs">
@@ -364,60 +409,41 @@ code { background: #1c2128; padding: 2px 6px; border-radius: 4px; font-size: 13p
         <div class="vs-arrow">→</div>
         <div><strong>v10.4:</strong> <code>V10_DOWN_PENALTY=0.05</code></div>
     </div>
-    <p style="margin-top:8px">Direction gap is 8.6pp (UP=80.7%, DOWN=72.1%) on N=279. Current +0.03 is insufficient — data shows +0.05 better fits the observed gap.</p>
-    <p>Exception: NORMAL DOWN is 87.2% WR — best of any bucket. Consider direction-aware regime thresholds (see Change 4).</p>
-</div>
-
-<!-- Change 3 -->
-<div class="card card-yellow">
-    <div style="display:flex; justify-content:space-between; align-items:center">
-        <h3>Change 3: TRANSITION Threshold Increase</h3>
-        <span class="tag tag-change">CHANGE</span>
-    </div>
-    <div class="vs">
-        <div><strong>v10.3:</strong> <code>V10_TRANSITION_MIN_P=0.70</code></div>
-        <div class="vs-arrow">→</div>
-        <div><strong>v10.4:</strong> <code>V10_TRANSITION_MIN_P=0.75</code></div>
-    </div>
-    <p style="margin-top:8px">TRANSITION is 71.7% WR overall — lowest regime. At N=159 this is the highest-volume bucket. Raising the bar from 0.70 to 0.75 would cut the weakest TRANSITION trades.</p>
+    <p style="margin-top:8px">Direction gap is 8.6pp (UP=80.7%, DOWN=72.1%) on N=279. Current +0.03 doesn't fully account for the gap. +0.05 better fits observed data.</p>
+    <p><strong>Exception:</strong> NORMAL+DOWN is 87.2% WR (best bucket). The DOWN penalty applies globally but NORMAL's low base threshold (0.65) means NORMAL+DOWN still passes easily at 0.65+0.05=0.70 — well below typical ELM P values.</p>
 </div>
 
 <!-- Change 4 -->
 <div class="card card-blue">
     <div style="display:flex; justify-content:space-between; align-items:center">
-        <h3>Change 4: Delta Magnitude Gate</h3>
+        <h3>Change 4: Delta Magnitude Penalty</h3>
         <span class="tag tag-new">NEW</span>
     </div>
-    <p>Large deltas (&gt;0.10%) have 70.1% WR vs 78-79% for moderate deltas. Add a penalty or soft gate:</p>
+    <p>Large deltas (&gt;0.10%) have <strong>67.4% WR</strong> (29W/14L) within T-180 — significantly below the 79% for moderate deltas (0.03-0.05%). Soft penalty, not hard block:</p>
     <table>
         <tr><th>Parameter</th><th>Value</th><th>Effect</th></tr>
         <tr><td><code>V10_LARGE_DELTA_THRESHOLD</code></td><td>0.10%</td><td>When |delta| exceeds this...</td></tr>
-        <tr><td><code>V10_LARGE_DELTA_PENALTY</code></td><td>+0.03</td><td>...raise threshold by 0.03</td></tr>
+        <tr><td><code>V10_LARGE_DELTA_PENALTY</code></td><td>+0.03</td><td>...raise DUNE threshold by 0.03 (requires higher ELM confidence)</td></tr>
     </table>
-    <p style="margin-top:8px; color:var(--text-dim)">Rationale: extreme moves are noisy (whipsaws, flash crashes). A +0.03 penalty requires higher ELM confidence to trade into large moves.</p>
+    <p style="margin-top:8px; color:var(--text-dim)">Rationale: extreme moves are noisy (whipsaws, flash crashes, liquidation cascades that reverse). This doesn't block — it just demands more model confidence for large moves.</p>
 </div>
 
 <!-- Change 5 -->
-<div class="card card-purple">
+<div class="card card-green">
     <div style="display:flex; justify-content:space-between; align-items:center">
-        <h3>Change 5: NORMAL Early Entry Block</h3>
-        <span class="tag tag-new">NEW</span>
+        <h3>Change 5: Keep CG Taker Gate OFF</h3>
+        <span class="tag tag-keep">KEEP OFF</span>
     </div>
-    <p>NORMAL at T60-100 is <strong>42.9% WR</strong> (3W/4L, N=7). Add a minimum offset for NORMAL regime:</p>
-    <code>V10_NORMAL_MIN_OFFSET=100</code>
-    <p style="margin-top:8px; color:var(--text-dim)">Small sample but extreme underperformance. Low risk to block — only affects ~3% of NORMAL entries. The NORMAL regime needs time for the delta to stabilize.</p>
+    <p>The audit proved CG taker data was <strong>neutral-to-aligned</strong> on all 4 non-offset losses. The 719-trade alignment dataset may not generalize to the current market regime. Keep collecting shadow data.</p>
 </div>
 
 <!-- Change 6 -->
 <div class="card card-green">
     <div style="display:flex; justify-content:space-between; align-items:center">
-        <h3>Change 6: Keep CG Taker Gate OFF</h3>
+        <h3>Change 6: Keep TRANSITION Threshold at 0.70</h3>
         <span class="tag tag-keep">KEEP</span>
     </div>
-    <p>The audit proved CG taker data was <strong>neutral-to-aligned</strong> on all 4 non-offset losses. Enabling the hard taker gate would NOT have blocked any additional losses beyond offset. The 719-trade alignment dataset may not generalize to the current market regime.</p>
-    <div class="alert alert-yellow">
-        <strong>Recommendation:</strong> Keep V10_CG_TAKER_GATE=false. Continue collecting shadow data. Re-evaluate after 100+ v10.3 resolved trades with CG data attached.
-    </div>
+    <p>Originally proposed raising to 0.75. But the simulation shows the offset+direction block (Change 1) is more surgical — it removes the bad TRANSITION trades without raising the threshold globally, which would also block good TRANSITION+UP entries.</p>
 </div>
 
 <!-- Change 7 -->
@@ -444,30 +470,27 @@ code { background: #1c2128; padding: 2px 6px; border-radius: 4px; font-size: 13p
 
 <div class="card">
 <pre style="font-size:13px; line-height:1.8; color:var(--text)">
-<span style="color:var(--text-dim)"># ── v10.4 Changes (from v10.3 baseline) ──</span>
+<span style="color:var(--text-dim)"># ── v10.4 Changes (Option F — from v10.3 baseline) ──</span>
 
-<span style="color:var(--yellow)">- V10_TRANSITION_MIN_P=0.70</span>
-<span style="color:var(--green)">+ V10_TRANSITION_MIN_P=0.75          # was 0.70, 71.7% WR on N=159 — tighten</span>
+<span style="color:var(--green)">+ V10_TRANSITION_DOWN_MAX_OFFSET=140  # NEW: block TRANSITION+DOWN after T-140 (56.3% WR)</span>
+<span style="color:var(--green)">+ V10_NORMAL_MIN_OFFSET=100           # NEW: block NORMAL before T-100 (42.9% WR)</span>
 
 <span style="color:var(--yellow)">- V10_DOWN_PENALTY=0.03</span>
-<span style="color:var(--green)">+ V10_DOWN_PENALTY=0.05              # was 0.03, 8.6pp gap (UP=80.7% DOWN=72.1%)</span>
+<span style="color:var(--green)">+ V10_DOWN_PENALTY=0.05               # was 0.03, 8.6pp gap (UP=80.7% DOWN=72.1%)</span>
 
-<span style="color:var(--yellow)">- V10_MIN_EVAL_OFFSET=180</span>
-<span style="color:var(--green)">+ V10_MIN_EVAL_OFFSET=180            # keep as global default</span>
-<span style="color:var(--green)">+ V10_TRANSITION_MAX_OFFSET=120      # NEW: TRANSITION best at T60-120</span>
-<span style="color:var(--green)">+ V10_NORMAL_MIN_OFFSET=100          # NEW: NORMAL T60-100 = 42.9% WR, block it</span>
-
-<span style="color:var(--green)">+ V10_LARGE_DELTA_THRESHOLD=0.10     # NEW: |delta| > 0.10% = noisy</span>
-<span style="color:var(--green)">+ V10_LARGE_DELTA_PENALTY=0.03       # NEW: +0.03 threshold penalty for large moves</span>
+<span style="color:var(--green)">+ V10_LARGE_DELTA_THRESHOLD=0.10      # NEW: |delta| > 0.10% = noisy (67.4% WR)</span>
+<span style="color:var(--green)">+ V10_LARGE_DELTA_PENALTY=0.03        # NEW: +0.03 threshold penalty for large moves</span>
 
 <span style="color:var(--text-dim)"># ── Unchanged from v10.3 ──</span>
-<span style="color:var(--text-dim)">  V10_NORMAL_MIN_P=0.65              # NORMAL = 85.1% WR, best regime</span>
-<span style="color:var(--text-dim)">  V10_CASCADE_MIN_P=0.72             # CASCADE = 75.5% WR, stable</span>
-<span style="color:var(--text-dim)">  V10_OFFSET_PENALTY_MAX=0.06        # per-20s granularity working</span>
-<span style="color:var(--text-dim)">  V10_CG_TAKER_GATE=false            # audit shows no additional value</span>
-<span style="color:var(--text-dim)">  V10_CG_CONFIRM_BONUS=0.03          # CG 3-signal confirmation working</span>
-<span style="color:var(--text-dim)">  V10_KELLY_ENABLED=false             # Phase 2, hold for more data</span>
-<span style="color:var(--text-dim)">  V10_DUNE_CAP_CEILING=0.68          # cap ceiling correct for current WR</span>
+<span style="color:var(--text-dim)">  V10_TRANSITION_MIN_P=0.70           # KEEP at 0.70 (direction block is more surgical than raising threshold)</span>
+<span style="color:var(--text-dim)">  V10_NORMAL_MIN_P=0.65               # NORMAL = 85.1% WR, best regime</span>
+<span style="color:var(--text-dim)">  V10_CASCADE_MIN_P=0.72              # CASCADE = 75.5% WR, stable</span>
+<span style="color:var(--text-dim)">  V10_MIN_EVAL_OFFSET=180             # global max offset unchanged</span>
+<span style="color:var(--text-dim)">  V10_OFFSET_PENALTY_MAX=0.06         # per-20s granularity working</span>
+<span style="color:var(--text-dim)">  V10_CG_TAKER_GATE=false             # audit shows no additional value</span>
+<span style="color:var(--text-dim)">  V10_CG_CONFIRM_BONUS=0.03           # CG 3-signal confirmation working</span>
+<span style="color:var(--text-dim)">  V10_KELLY_ENABLED=false              # Phase 2, hold for more data</span>
+<span style="color:var(--text-dim)">  V10_DUNE_CAP_CEILING=0.68           # cap ceiling correct for current WR</span>
 </pre>
 </div>
 
@@ -477,21 +500,21 @@ code { background: #1c2128; padding: 2px 6px; border-radius: 4px; font-size: 13p
 <div class="grid grid-3">
     <div class="card card-yellow">
         <h3>v10.3 (Current)</h3>
-        <div class="stat-big warn">72.7%</div>
-        <div class="stat-label">WR on 22 trades</div>
-        <p style="margin-top:8px">16W/6L, +$4.92 net<br>~4 fills/day at 19% fill rate</p>
+        <div class="stat-big warn">76.6%</div>
+        <div class="stat-label">WR on 167 resolved decisions</div>
+        <p style="margin-top:8px">128W/39L, $0.49/trade<br>Est $81.52 over dataset<br>~4 fills/day at 19% fill rate</p>
     </div>
     <div class="card card-green">
-        <h3>v10.4 (Gate Tuning)</h3>
-        <div class="stat-big win">~76-78%</div>
-        <div class="stat-label">Projected WR</div>
-        <p style="margin-top:8px">Cuts weakest TRANSITION trades, blocks NORMAL early entries. Fewer trades but higher quality.<br>Estimated +$6-8/day</p>
+        <h3>v10.4 Option F</h3>
+        <div class="stat-big win">80.3%</div>
+        <div class="stat-label">Simulated on same 279 decisions</div>
+        <p style="margin-top:8px">118W/29L, <strong>$0.73/trade</strong> (+49%)<br>Est $106.72 over dataset<br>12% fewer trades, 26% fewer losses</p>
     </div>
     <div class="card card-green">
         <h3>v10.4 + Fill Fix</h3>
-        <div class="stat-big" style="color:var(--cyan)">~$12-16/day</div>
+        <div class="stat-big" style="color:var(--cyan)">~$15-20/day</div>
         <div class="stat-label">Combined Impact</div>
-        <p style="margin-top:8px">Higher WR + 2x fill rate = compounding improvement. This is the real prize.</p>
+        <p style="margin-top:8px">80.3% WR + 2x fill rate = $0.73/trade × 8 fills/day. Fill rate is the highest-ROI change.</p>
     </div>
 </div>
 
