@@ -670,6 +670,55 @@ class FiveMinVPINStrategy(BaseStrategy):
                     except Exception as _sig_exc:
                         self._log.warning("db.v10_trade_signal_eval_failed", error=str(_sig_exc)[:100])
 
+                # Write window_snapshot with TWAP + CG data before executing
+                # (v10 returns early and would skip the v9 snapshot builder)
+                if self._db:
+                    try:
+                        _cg = self._cg_enhanced.snapshot if self._cg_enhanced is not None else None
+                        await self._db.write_window_snapshot({
+                            "window_ts": window.window_ts,
+                            "asset": window.asset,
+                            "timeframe": "5m",
+                            "open_price": open_price,
+                            "close_price": current_price,
+                            "delta_pct": delta_pct,
+                            "delta_chainlink": ctx.delta_chainlink,
+                            "delta_tiingo": ctx.delta_tiingo,
+                            "delta_binance": ctx.delta_binance,
+                            "vpin": current_vpin,
+                            "regime": _snap_regime,
+                            "btc_price": current_price,
+                            "direction": direction,
+                            "confidence": confidence,
+                            "trade_placed": True,
+                            "skip_reason": None,
+                            "engine_version": "v10.3",
+                            "eval_offset": ctx.eval_offset,
+                            # TWAP data (captured before v10 pipeline)
+                            "twap_delta_pct": twap_result.twap_delta_pct if twap_result else None,
+                            "twap_direction": twap_result.twap_direction if twap_result else None,
+                            "twap_agreement_score": twap_result.agreement_score if twap_result else None,
+                            "twap_n_ticks": twap_result.n_ticks if twap_result else None,
+                            # CoinGlass
+                            "cg_connected": _cg.connected if _cg else False,
+                            "cg_oi_usd": _cg.oi_usd if _cg else None,
+                            "cg_oi_delta_pct": _cg.oi_delta_pct_1m if _cg else None,
+                            "cg_long_pct": _cg.long_pct if _cg else None,
+                            "cg_top_long_pct": _cg.top_position_long_pct if _cg else None,
+                            "cg_top_short_pct": _cg.top_position_short_pct if _cg else None,
+                            "cg_taker_buy_usd": _cg.taker_buy_volume_1m if _cg else None,
+                            "cg_taker_sell_usd": _cg.taker_sell_volume_1m if _cg else None,
+                            "cg_funding_rate": _cg.funding_rate if _cg else None,
+                            # Gamma
+                            "gamma_up_price": float(window.up_price) if window.up_price else None,
+                            "gamma_down_price": float(window.down_price) if window.down_price else None,
+                            # DUNE
+                            "v2_probability_up": ctx.dune_probability_up,
+                            "v2_direction": direction,
+                        })
+                    except Exception as _snap_exc:
+                        self._log.warning("db.v10_trade_snapshot_failed", error=str(_snap_exc)[:80])
+
                 # EXECUTE the trade immediately — don't fall through to v9 code
                 await self._execute_trade(state, signal)
                 return  # Done — one trade per window

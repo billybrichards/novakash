@@ -88,3 +88,29 @@ WHERE is_live = true AND outcome IS NULL
 ## Manual Resolution Applied (2026-04-08)
 
 12 orphaned WINs resolved via SQL update. 2 unmatched (#2643, #2782 — tokens fell off CLOB history). Corrected stats: 39W/24L (61.9% WR), -$29.64 PnL (was showing -$48.26 before fix).
+
+---
+
+## Outstanding TODOs
+
+### 1. TWAP Data in v10 Snapshots
+**Status:** FIXED (Apr 8) — v10 TRADE path now writes window_snapshot with TWAP, CG, Gamma data.
+Previously: v10 returned early (line 626) before the v9 snapshot builder, so TWAP columns were NULL for all v10 trades.
+
+### 2. Irreducible Losses at CG-Neutral
+Some losses pass ALL gates because dune_p is genuinely high and CG data is neutral. Examples:
+- TRANSITION T-124 (-$3.99): dune_p=0.78, CG neutral
+- TRANSITION T-180 (-$3.34): dune_p=0.78, CG neutral
+
+**Potential mitigation:** Tighten CG zero-confirm penalty from +0.02 to +0.04, or require at least 1 CG confirm to trade. Monitor `V10_CG_ZERO_CONFIRM_PENALTY` impact.
+
+### 3. Dual Regime Classification Refactor
+Two conflating systems: VPIN-based (CALM/NORMAL/TRANSITION/CASCADE) and volatility-based (LOW_VOL/NORMAL/HIGH_VOL/TRENDING). The VPIN-based one drives gates but the names are misleading (TRANSITION = 85% WR best regime). Consider renaming or unifying.
+
+### 4. CLOB Feed Write Error
+`clob_feed.write_error: INSERT has more target columns than expressions` fires every 2-3s. Non-critical (CLOB tick recorder, not trade writes) but noisy. Fix the INSERT statement column/value mismatch.
+
+### 5. Polymarket Trade History API for Full Reconciliation
+Current CLOB `get_trades()` returns max ~342 fills. Older orphaned positions fall off this window. Consider:
+- Periodic full reconciliation using Polymarket data API
+- Or storing fill history locally for longer-term matching
