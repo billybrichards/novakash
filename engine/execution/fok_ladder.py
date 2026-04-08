@@ -170,6 +170,12 @@ class FOKLadder:
                     attempt=attempt, order_type=order_type,
                     price=f"${price:.2f}", note="no sellers at this price")
                 return {"size_matched": 0, "order_id": None, "filled": False}
+            # "invalid amounts" = precision issue, treat as zero fill
+            if "invalid amounts" in err_str:
+                self._log.info("price_ladder.precision_error",
+                    attempt=attempt, price=f"${price:.2f}", size=f"{size:.2f}",
+                    note="maker_amount precision rejected by CLOB")
+                return {"size_matched": 0, "order_id": None, "filled": False}
             self._log.warning("price_ladder.order_error",
                 attempt=attempt, error=err_str[:200])
             return None
@@ -210,9 +216,10 @@ class FOKLadder:
 
     @staticmethod
     def _calc_size(price: float, stake_usd: float) -> float:
-        """Calculate CLOB-compliant size (2dp, clean maker_amount)."""
-        _price = round(price, 4)
+        """Calculate CLOB-compliant size (2dp price, clean maker_amount ≤2dp)."""
+        _price = round(price, 2)  # CLOB enforces 2dp on FAK/FOK prices
         size = math.floor(stake_usd / _price * 100) / 100
+        # Ensure maker_amount (price × size) is clean to 2dp
         for _ in range(100):
             _maker = round(_price * size, 6)
             if abs(_maker - round(_maker, 2)) < 1e-9:
