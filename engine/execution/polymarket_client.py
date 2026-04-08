@@ -1193,9 +1193,37 @@ class PolymarketClient:
                     "value": size * cur_price,
                     "cost": size * avg_price,
                     "pnl": (size * cur_price) - (size * avg_price),
+                    "tokenId": p.get("tokenId", ""),
+                    "asset": p.get("asset", ""),
                 }
             
             return results
         except Exception as exc:
             self._log.debug("positions.fetch_failed", error=str(exc))
             return {}
+
+    async def get_open_orders(self) -> list[dict]:
+        """Fetch all open/resting orders from the CLOB.
+
+        Paper mode returns all tracked paper orders.
+        Live mode queries the CLOB client for active orders.
+
+        Returns:
+            List of order dicts with keys: id, asset_id, price, size, size_matched, status.
+        """
+        if self.paper_mode:
+            return list(self._paper_orders.values())
+
+        if not self._clob_client:
+            raise RuntimeError("CLOB client not connected — call connect() first")
+
+        def _fetch():
+            return self._clob_client.get_orders()
+
+        raw = await asyncio.to_thread(_fetch)
+        # Normalise: py-clob-client may return a dict with 'data' key or a list
+        if isinstance(raw, dict):
+            return raw.get("data", [])
+        if isinstance(raw, list):
+            return raw
+        return []

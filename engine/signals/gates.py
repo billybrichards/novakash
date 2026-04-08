@@ -150,6 +150,14 @@ class DuneConfidenceGate:
                 reason="no agreed direction (agreement gate must run first)",
             )
 
+        # v10.1: Minimum offset — don't trade too early
+        _min_offset = int(os.environ.get("V10_MIN_EVAL_OFFSET", "180"))
+        if ctx.eval_offset and ctx.eval_offset > _min_offset:
+            return GateResult(
+                passed=False, gate_name=self.name,
+                reason=f"too early: T-{ctx.eval_offset} > T-{_min_offset}",
+            )
+
         # Query DUNE API
         if self._client is None:
             # No client — pass through (shadow mode or disabled)

@@ -95,6 +95,9 @@ class Orchestrator:
         # _position_monitor_loop skips any condition_id already in this set.
         self._resolved_by_order_manager: set = set()
 
+        # ── CLOB Reconciler (v10.2: definitive source of truth) ─────
+        self._reconciler = None
+
         # ── TWAP Tracker (v5.7: time-weighted delta for direction) ─────────
         self._twap_tracker = TWAPTracker(max_windows=50)
 
@@ -711,8 +714,24 @@ class Orchestrator:
         except Exception as exc:
             log.warning("orchestrator.trade_recovery_failed", error=str(exc))
 
-        # 6e. Polymarket reconciliation loop (every 5 min) — live mode only
-        if not self._settings.paper_mode:
+        # 6e. CLOB Reconciler (v10.2) or legacy reconciliation loop
+        _use_reconciler = os.environ.get("RECONCILER_ENABLED", "true").lower() == "true"
+        if not self._settings.paper_mode and _use_reconciler:
+            try:
+                from reconciliation.reconciler import CLOBReconciler
+                self._reconciler = CLOBReconciler(
+                    poly_client=self._poly_client,
+                    db_pool=self._db._pool,
+                    alerter=self._alerter,
+                    shutdown_event=self._shutdown_event,
+                )
+                await self._reconciler.start()
+                log.info("orchestrator.clob_reconciler_started")
+            except Exception as exc:
+                log.error("orchestrator.clob_reconciler_failed", error=str(exc))
+                self._reconciler = None
+        elif not self._settings.paper_mode:
+            # Legacy: old 5-min reconcile loop (fallback when RECONCILER_ENABLED=false)
             self._tasks.append(
                 asyncio.create_task(
                     self._polymarket_reconcile_loop(), name="polymarket_reconciler"
@@ -761,7 +780,8 @@ class Orchestrator:
             except Exception as e:
                 log.error("orchestrator.playwright_start_failed", error=str(e))
 
-        if not self._settings.paper_mode:
+        if not self._settings.paper_mode and not _use_reconciler:
+            # Legacy position monitor (disabled when CLOB reconciler is active)
             self._tasks.append(
                 asyncio.create_task(self._position_monitor_loop(), name="position_monitor")
             )
@@ -792,6 +812,13 @@ class Orchestrator:
     async def stop(self) -> None:
         """Graceful shutdown of all components."""
         log.info("orchestrator.stopping")
+
+        # Stop CLOB Reconciler
+        if self._reconciler:
+            try:
+                await self._reconciler.stop()
+            except Exception as exc:
+                log.warning("orchestrator.reconciler_stop_error", error=str(exc))
 
         # Stop Playwright browser
         if self._playwright:
