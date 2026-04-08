@@ -951,52 +951,8 @@ class PolymarketClient:
             self._log.warning("rfq.failed", error=str(exc)[:200])
             return (None, None)
 
-    async def place_market_order_legacy(
-        self,
-        token_id: str,
-        side: str,
-        amount_usd: float,
-        price: Decimal,
-    ) -> str:
-        """Low-level CLOB market order (LEGACY — use place_market_order for v9.0 FAK/FOK).
 
-        Args:
-            token_id: CLOB token ID for the outcome (YES or NO token).
-            side: "BUY" or "SELL".
-            amount_usd: USD collateral to spend.
-            price: Limit price (used as worst-case for market orders).
-
-        Returns:
-            CLOB order ID.
-        """
-        if self.paper_mode:
-            order_id = f"paper-clob-{uuid.uuid4().hex[:12]}"
-            self._log.info(
-                "place_market_order.paper",
-                token_id=token_id,
-                side=side,
-                amount_usd=amount_usd,
-                price=str(price),
-                order_id=order_id,
-            )
-            return order_id
-
-        if not self._clob_client:
-            raise RuntimeError("CLOB client not connected — call connect() first")
-
-        from py_clob_client.clob_types import MarketOrderArgs
-
-        client = self._clob_client
-        order = MarketOrderArgs(token_id=token_id, amount=amount_usd)
-        resp = await asyncio.to_thread(client.create_and_post_order, order)
-
-        if isinstance(resp, dict):
-            return resp.get("orderID") or resp.get("id") or f"live-{uuid.uuid4().hex[:12]}"
-        return getattr(resp, "orderID", None) or f"live-{uuid.uuid4().hex[:12]}"
-
-    # ------------------------------------------------------------------
-    # Market helpers
-    # ------------------------------------------------------------------
+    # place_market_order_legacy DELETED in v10 cleanup (was duplicate of place_market_order)
 
     def get_current_market_slug(self) -> str:
         """Return the slug for the current 5-minute BTC up/down window.
