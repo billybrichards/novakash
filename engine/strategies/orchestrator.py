@@ -662,6 +662,19 @@ class Orchestrator:
                 )
             )
 
+        # 5c. ELM v3 prediction recorder (all 4 assets, every 30s)
+        if self._five_min_strategy and hasattr(self._five_min_strategy, '_timesfm_v2') and self._five_min_strategy._timesfm_v2:
+            from data.feeds.elm_prediction_recorder import ELMPredictionRecorder
+            _elm_recorder = ELMPredictionRecorder(
+                elm_client=self._five_min_strategy._timesfm_v2,
+                db_pool=self._db._pool if self._db else None,
+                shutdown_event=self._shutdown_event,
+            )
+            self._tasks.append(
+                asyncio.create_task(_elm_recorder.run(), name="elm_prediction_recorder")
+            )
+            log.info("orchestrator.elm_recorder_started", assets=["BTC", "ETH", "SOL", "XRP"])
+
         # 5. Heartbeat task (every 10s)
         self._tasks.append(
             asyncio.create_task(self._heartbeat_loop(), name="heartbeat")
