@@ -1,147 +1,206 @@
-# Things to Monitor — Live Trading
+# Things to Monitor — v10.3 Live Trading
 
-**Last updated:** 2026-04-06
+**Last updated:** 2026-04-08 21:00 UTC
+**Engine version:** v10.3 (ELM v3 + CG taker gate + DOWN penalty)
+**Config:** Full v10.3 — all features active except Kelly sizing
 
-## Price Cap ($0.73)
+---
 
-Cap-blocked trades analysis (Apr 6 morning):
-- 3 wins, 1 loss blocked by $0.73 cap
-- If cap was $0.80: +$2.84 extra but at thin R/R margins ($0.77-0.78 entries)
-- At 77% WR, $0.77 entries barely break even
-- **Decision:** Keep at $0.73 for safety. Revisit if WR consistently >77%
+## 1. Irreducible Losses (Cost of Business)
 
-## Fill Price vs Gamma BestAsk
+Some losses pass ALL gates because the model was genuinely confident and CG data was neutral. These are not bugs — they're the natural variance of a 62%+ WR system.
 
-The CLOB fills at market, not our limit. Monitor:
-- Gamma bestAsk at T-70 vs actual CLOB fill price
-- Market can move drastically in 5-10 seconds (saw $0.49 → $0.10 in 6s)
-- bestAsk pricing mode fills near market — much better than cap mode ($0.73)
-- Track via `countdown_evaluations` table (T-70 gamma vs trade entry_price)
+**Apr 8 examples:**
+- TRANSITION T-124 (-$3.99): dune_p=0.78, threshold=0.732, CG neutral → **PASSED all gates, still lost**
+- TRANSITION T-180 (-$3.34): dune_p=0.78, threshold=0.760, CG neutral → **PASSED all gates, still lost**
 
-## Adverse Selection
+**What to monitor:**
+- If losses with "CG neutral" consistently lose → consider tightening CG confirmation penalty (currently +0.02 for 0 confirms)
+- If losses cluster at specific dune_p ranges (e.g. 0.75-0.80) → the model may be overconfident in that band
+- Track: `SELECT dune_p range, WR` from signal_evaluations weekly
 
-When our token is cheap (<$0.30), the market is 70-90% against us:
-- $0.04 entries: 10.7% WR — market knows something we don't
-- $0.30 floor blocks these, but market can move AFTER we submit
-- Monitor: how many fills end up below $0.30 despite passing the floor at T-70?
+**Acceptable loss rate:** At 62% WR, expect ~4 losses per 10 trades. If WR drops below 55% over 50+ trades, investigate.
 
-## TWAP Override
+```sql
+-- Monitor: losses by CG confirmation count
+SELECT
+    CASE WHEN ws.cg_taker_buy_usd / NULLIF(ws.cg_taker_buy_usd + ws.cg_taker_sell_usd, 0) > 0.55 THEN 'taker_aligned'
+         WHEN ws.cg_taker_sell_usd / NULLIF(ws.cg_taker_buy_usd + ws.cg_taker_sell_usd, 0) > 0.55 THEN 'taker_opposing'
+         ELSE 'taker_neutral' END as taker_status,
+    tb.trade_outcome, count(*), round(sum(tb.pnl_usd)::numeric, 2) as pnl
+FROM trade_bible tb
+JOIN trades t ON t.id = tb.trade_id
+LEFT JOIN window_snapshots ws ON ws.window_ts = CAST(t.metadata->>'window_ts' AS bigint) AND ws.asset = 'BTC'
+WHERE tb.is_live = true AND tb.resolved_at > NOW() - INTERVAL '24 hours'
+GROUP BY 1, 2 ORDER BY 1, 2;
+```
 
-TWAP can flip our direction when it disagrees with delta:
-- Apr 6 10:20: Delta +0.055% (UP) but TWAP overrode to DOWN → LOSS
-- When TWAP overrides and delta strongly disagrees, we bet against current price movement
-- **Consider:** Disable TWAP override when delta > 0.05% in opposite direction
+---
 
-## TimesFM Disagreement
+## 2. CG Taker Gate Effectiveness
 
-When TimesFM strongly disagrees (>90% confidence opposite):
-- 40% WR on disagreement trades vs 85% on agreement
-- Not yet a blocking gate — logged as "timesfm_agreement=False"
-- **Consider:** Add as soft gate — reduce bet size or skip when TsFM disagrees
+**Status:** ENABLED (`V10_CG_TAKER_GATE=true`)
 
-## Oracle vs BTC Price
+The CG taker gate hard-blocks trades when taker flow (>55%) AND smart money (>52%) both oppose our direction. This is our strongest loss filter — 81.7% WR when aligned vs 58.3% when both opposing.
 
-Polymarket oracle can disagree with BTC spot price direction:
-- BTC went DOWN -0.097% but oracle resolved UP (Apr 6 11:00)
-- Engine now resolves ONLY from Polymarket oracle (never Binance)
-- Monitor: how often does oracle disagree with spot? Is there a pattern?
+**What to monitor:**
+- How many trades does it block per day? (Should be ~10-20% of attempts)
+- Of the blocked trades, how many would have won? (check resolved windows)
+- If it blocks too aggressively (>30% of attempts), consider raising `V10_CG_TAKER_OPPOSING_PCT` from 55 to 60
 
-## Entry Timing (T-70 offset)
+```sql
+-- Monitor: gate block rate (from signal_evaluations)
+SELECT gate_failed, count(*),
+       round(count(*)::numeric / sum(count(*)) OVER () * 100, 1) as pct
+FROM signal_evaluations
+WHERE evaluated_at > NOW() - INTERVAL '24 hours' AND decision = 'SKIP'
+GROUP BY gate_failed ORDER BY count(*) DESC;
+```
 
-Changed from T-60 to T-70 on Apr 6:
-- 10 seconds earlier submission → orders hit book before last-minute rushes
-- Monitor: do T-70 fills get better prices than T-60?
-- Check countdown_evaluations: gamma at T-90 vs T-70 vs actual fill
+---
 
-## Redeemer
+## 3. DOWN Direction Penalty
 
-Auto-redemption via Builder Relayer (PROXY type):
-- Working for most positions
-- Some "Failed" attempts on already-settled or stale positions
-- Monitor: are all live wins getting redeemed within 5 min?
+**Status:** ACTIVE (`V10_DOWN_PENALTY=0.03`)
 
-## Daily Loss Limit
+DOWN predictions are 9.3pp less accurate than UP (72.5% vs 81.8%, N=865). The +0.03 threshold penalty compensates.
 
-Set to 60% of bankroll (~$66 at current $111):
-- Was 20% ($24) — too tight, blocked 15 profitable trades for 1.5 hours
-- At $5 max bet, takes 13 consecutive losses to hit 60% limit
-- Monitor: if we hit the limit, was it justified or did we miss profitable windows?
+**What to monitor:**
+- DOWN vs UP WR in live trades — is the gap narrowing with the penalty?
+- If DOWN WR drops below 65%, consider increasing penalty to 0.05
+- If DOWN WR equals UP WR, the penalty is working perfectly
 
-## Multi-Asset Expansion
+```sql
+-- Monitor: UP vs DOWN WR
+SELECT direction,
+       count(*) FILTER (WHERE trade_outcome='WIN') as W,
+       count(*) FILTER (WHERE trade_outcome='LOSS') as L,
+       round(count(*) FILTER (WHERE trade_outcome='WIN')::numeric / count(*) * 100, 1) as wr
+FROM trade_bible WHERE is_live = true AND resolved_at > NOW() - INTERVAL '24 hours'
+GROUP BY direction;
+```
 
-Currently BTC only (5-min). Potential additions:
-- ETH 5-min — same strategy, doubles window count
-- SOL/XRP 5-min — more volume but may have different dynamics  
-- BTC 15-min — FIFTEEN_MIN_ENABLED=false, wider windows, better liquidity
-- Monitor: check market_data for ETH/SOL/XRP WR before enabling
+---
 
-## DB Accuracy
+## 4. Offset Zone Performance
 
-Reconciler runs every 5 min syncing with Polymarket activity API:
-- Fixes entry_price mismatches (engine records limit, PM shows fill)
-- Monitor: how many reconcile.price_mismatch events per day?
-- Target: zero mismatches once fill_price recording is stable
+**What to monitor:**
+- T-60..120 should be highest WR (model most accurate close to window close)
+- T-120..180 should be profitable but lower WR
+- T>180 is BLOCKED by `V10_MIN_EVAL_OFFSET=180` — verify no trades slip through
 
-## Notification Accuracy
+```sql
+-- Monitor: WR by offset zone
+SELECT
+    CASE WHEN se.eval_offset <= 80 THEN 'T-60..80'
+         WHEN se.eval_offset <= 120 THEN 'T-80..120'
+         WHEN se.eval_offset <= 180 THEN 'T-120..180'
+         ELSE 'T-180+' END as zone,
+    count(*) FILTER (WHERE tb.trade_outcome='WIN') as W,
+    count(*) FILTER (WHERE tb.trade_outcome='LOSS') as L,
+    round(sum(tb.pnl_usd)::numeric, 2) as pnl
+FROM signal_evaluations se
+JOIN trades t ON t.metadata->>'window_ts' = se.window_ts::text AND t.is_live = true
+JOIN trade_bible tb ON tb.trade_id = t.id
+WHERE se.decision = 'TRADE' AND se.evaluated_at > NOW() - INTERVAL '24 hours'
+GROUP BY 1 ORDER BY 1;
+```
 
-Reporter bot (position_monitor) shows real Polymarket data.
-Engine notifications may lag or show different prices.
-- Reporter is source of truth for P&L
-- Engine notifications are for lifecycle tracking
-- Monitor: do they converge after reconciler runs?
+---
 
-## UP vs DOWN Asymmetry (Critical Finding Apr 6)
+## 5. Regime Classification Accuracy
 
-Data from 1,335 v7.1-eligible windows:
-- **UP signals: 84.2% WR** (373W/70L)
-- **DOWN signals: 65.2% WR** (580W/310L)
-- Last 24h UP: 96.4% WR (!!)
+**Known issue:** Two conflating regime systems exist:
+- **VPIN-based** (CALM/NORMAL/TRANSITION/CASCADE) — used by v10 gates
+- **Volatility-based** (LOW_VOL/NORMAL/HIGH_VOL/TRENDING) — used by regime_classifier.py
 
-BUT: UP orders never fill on CLOB (0 of 6 resolved). DOWN fills regularly.
-We're effectively a DOWN-only system running at 65% WR.
+The VPIN-based regime is what matters for trading decisions. TRANSITION (VPIN 0.55-0.65) has 85% WR — it's our best regime despite the misleading name.
 
-**TODO:** Investigate UP token liquidity. If UP can't fill, consider:
-- Only trading DOWN in favorable entry zone (30-50¢)
-- Finding liquidity for UP tokens (different order approach?)
-- The 84% WR on UP is being completely wasted
+**What to monitor:**
+- TRANSITION WR should stay >75% — if it drops, VPIN thresholds may need adjustment
+- CASCADE WR (VPIN >0.65) — historically mixed. Watch for deterioration.
+- If VPIN is consistently >0.65 (CASCADE), market may be choppy — consider pausing
 
-## Cap Analysis (Apr 6)
+---
 
-Last 24h with gamma data:
-- $0.73 cap: 69.4% WR, +$5.91
-- $0.77 cap: 70.3% WR, +$7.03  
-- $0.80 cap: 72.5% WR, +$10.24
+## 6. Fill Rate and Minimum Share Size
 
-The 73-80¢ DOWN entries have HIGH WR because the market is confident.
-Consider raising cap to $0.80 for DOWN trades specifically.
+**Status:** Polymarket minimum = 5 shares. Engine enforces min 5 in fok_ladder.py and polymarket_client.py.
 
-## TWAP Override Risk
+**What to monitor:**
+- `ABSOLUTE_MAX_BET=10.0`, `BET_FRACTION=0.075` → at $50 bankroll = $3.75 stake = 5.36 shares at $0.70
+- If bankroll drops below ~$47, stake at $0.70 drops below 5 shares → engine bumps to min 5 (higher risk per trade)
+- Watch for `guardrail.circuit_breaker.4xx` errors in engine log — means Polymarket rejected an order
 
-TWAP can flip direction against current delta:
-- When delta is +0.05% (UP) but TWAP says DOWN → override flips to DOWN
-- This caused at least one loss where we bet DOWN against positive momentum
-- Consider: disable override when delta strongly disagrees (>0.05% opposite)
+---
 
-## DOWN 50-60¢ Entry Zone
+## 7. Reconciler Health
 
-DOWN trades at 50-60¢ entry: only 40% WR (4W/6L)
-This zone is actively losing money. Consider:
-- Tightening DOWN cap to $0.50 max
-- OR requiring higher VPIN (>0.55) for 50-60¢ entries
+**What to monitor:**
+- `reconciler.orphan_check` should fire every 60s with count of orphans found
+- `reconciler.bible_sync` should fire every 60s, syncing trade_bible → trades table
+- `clob_feed.write_error` is a known non-critical error (CLOB tick recorder schema mismatch) — noisy but harmless
+- Orphan count should trend toward 0 over time
 
-## Extended Cap Analysis (Apr 6 15:13 UTC)
+```sql
+-- Monitor: unresolved orphans
+SELECT count(*) as orphans FROM trades
+WHERE is_live = true AND outcome IS NULL
+  AND metadata->>'clob_status' IN ('MATCHED', 'RESTING');
+```
 
-Last 24h DOWN trades with gamma data:
+---
 
-| Cap   | Trades | W/L   | WR    | P&L     | Per Trade |
-|-------|--------|-------|-------|---------|-----------|
-| $0.73 | 36     | 25/11 | 69.4% | +$5.91  | $0.16     |
-| $0.77 | 37     | 26/11 | 70.3% | +$7.03  | $0.19     |
-| $0.80 | 40     | 29/11 | 72.5% | +$10.24 | $0.26     |
-| $0.83 | 41     | 30/11 | 73.2% | +$11.13 | $0.27     |
-| $0.85 | 41     | 30/11 | 73.2% | +$11.13 | $0.27     |
-| $0.90 | 42     | 31/11 | 73.8% | +$11.71 | $0.28     |
+## 8. ELM v3 Model Health
 
-$0.83 is the sweet spot — after that diminishing returns.
-Losses stay flat at 11 regardless of cap (73-83¢ entries are almost all wins).
-Consider raising cap from $0.73 to $0.83 for DOWN trades.
+**Endpoint:** `GET http://3.98.114.0:8080/v2/probability?asset=BTC&seconds_to_close=N`
+**Model:** `V10_DUNE_MODEL=oak` (ELM v3 production, NOT cedar/DUNE)
+
+**What to monitor:**
+- P(UP) distribution should be smooth [0.15-0.85], NOT bimodal (0.01 or 0.99 = wrong model)
+- If model returns errors → engine passes through (no block), but trades are ungated
+- Check model health: `curl http://3.98.114.0:8080/v2/health`
+
+---
+
+## 9. Wallet and Bankroll
+
+**Starting:** $131 (Apr 8)
+**Current:** ~$55-65 (after losses + recovered orphans)
+
+**What to monitor:**
+- Daily loss limit: `DAILY_LOSS_LIMIT_PCT=0.30` (30% = ~$18 at current bankroll)
+- Consecutive loss cooldown: `CONSECUTIVE_LOSS_COOLDOWN=10` (10 losses before pause)
+- If wallet drops below $35, BET_FRACTION=7.5% gives only $2.63 stake → min 5 shares forces $3.50+ per trade → risk concentration increases
+
+---
+
+## 10. SITREP Accuracy
+
+**Fixed Apr 8:** SITREP now reads from `trade_bible` (source of truth) instead of `trades` table.
+
+**What to monitor:**
+- SITREP W/L count should match `SELECT count(*) FROM trade_bible WHERE is_live=true AND resolved_at > DATE_TRUNC('day', NOW())`
+- If mismatch returns → the `_sync_bible_to_trades()` method may be failing
+- Recent wins/losses in SITREP should show entries from trade_bible with correct entry_reason
+
+---
+
+## Quick Health Check SQL
+
+```sql
+-- One-shot health check: run this to see everything
+SELECT 'today' as period,
+    count(*) FILTER (WHERE trade_outcome='WIN') as W,
+    count(*) FILTER (WHERE trade_outcome='LOSS') as L,
+    round(count(*) FILTER (WHERE trade_outcome='WIN')::numeric / NULLIF(count(*),0)*100, 1) as wr,
+    round(sum(pnl_usd)::numeric, 2) as pnl
+FROM trade_bible WHERE is_live = true AND resolved_at > DATE_TRUNC('day', NOW())
+UNION ALL
+SELECT 'last_hour',
+    count(*) FILTER (WHERE trade_outcome='WIN'),
+    count(*) FILTER (WHERE trade_outcome='LOSS'),
+    round(count(*) FILTER (WHERE trade_outcome='WIN')::numeric / NULLIF(count(*),0)*100, 1),
+    round(sum(pnl_usd)::numeric, 2)
+FROM trade_bible WHERE is_live = true AND resolved_at > NOW() - INTERVAL '1 hour';
+```
