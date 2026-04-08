@@ -336,7 +336,7 @@ class CLOBReconciler:
 
         self._state.last_poll_at = now
 
-        # 5. Orphan GTC fill check (every ~60s, not every 2s poll)
+        # 5. Orphan GTC fill check + trade_bible→trades sync (every ~60s)
         now_ts = time.time()
         if now_ts - self._last_orphan_check >= self._orphan_check_interval:
             self._last_orphan_check = now_ts
@@ -345,6 +345,12 @@ class CLOBReconciler:
             except Exception as exc:
                 self._log.warning(
                     "reconciler.orphan_check_error", error=str(exc)[:200]
+                )
+            try:
+                await self._sync_bible_to_trades()
+            except Exception as exc:
+                self._log.warning(
+                    "reconciler.bible_sync_error", error=str(exc)[:200]
                 )
 
     # ------------------------------------------------------------------
@@ -691,6 +697,60 @@ class CLOBReconciler:
         except Exception as exc:
             self._log.debug(
                 "reconciler.notification_failed", error=str(exc)[:100]
+            )
+
+    # ------------------------------------------------------------------
+    # trade_bible → trades table sync
+    # ------------------------------------------------------------------
+
+    async def _sync_bible_to_trades(self) -> None:
+        """Backfill trades table from trade_bible for any resolved trades
+        where trade_bible has outcome but trades table doesn't.
+
+        This ensures the SITREP and all queries against the trades table
+        show accurate win/loss data, even for orphans resolved by the reconciler.
+        """
+        if not self._pool:
+            return
+
+        try:
+            async with self._pool.acquire() as conn:
+                # Find mismatches: trade_bible has outcome, trades doesn't
+                mismatches = await conn.fetch(
+                    """SELECT tb.trade_id, tb.trade_outcome, tb.pnl_usd, tb.resolved_at
+                       FROM trade_bible tb
+                       JOIN trades t ON t.id = tb.trade_id
+                       WHERE tb.trade_outcome IS NOT NULL
+                         AND t.outcome IS NULL
+                         AND tb.is_live = true
+                       LIMIT 20"""
+                )
+
+                if not mismatches:
+                    return
+
+                synced = 0
+                for m in mismatches:
+                    status = "RESOLVED_WIN" if m["trade_outcome"] == "WIN" else "RESOLVED_LOSS"
+                    await conn.execute(
+                        """UPDATE trades
+                           SET outcome = $1, pnl_usd = $2, resolved_at = $3, status = $4
+                           WHERE id = $5 AND outcome IS NULL""",
+                        m["trade_outcome"],
+                        m["pnl_usd"],
+                        m["resolved_at"],
+                        status,
+                        m["trade_id"],
+                    )
+                    synced += 1
+
+                if synced > 0:
+                    self._log.info(
+                        "reconciler.bible_sync", synced=synced,
+                    )
+        except Exception as exc:
+            self._log.warning(
+                "reconciler.bible_sync_error", error=str(exc)[:200]
             )
 
     # ------------------------------------------------------------------

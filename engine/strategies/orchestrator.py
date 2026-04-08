@@ -1793,12 +1793,13 @@ class Orchestrator:
                         try:
                             if self._db._pool:
                                 async with self._db._pool.acquire() as conn:
+                                    # Use trade_bible as source of truth (includes reconciler-resolved orphans)
                                     row = await conn.fetchrow(
                                         "SELECT "
-                                        "  SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as w, "
-                                        "  SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as l "
-                                        "FROM trades WHERE outcome IS NOT NULL "
-                                        "AND created_at > DATE_TRUNC('day', NOW())"
+                                        "  COUNT(*) FILTER (WHERE trade_outcome='WIN') as w, "
+                                        "  COUNT(*) FILTER (WHERE trade_outcome='LOSS') as l "
+                                        "FROM trade_bible WHERE is_live = true "
+                                        "AND resolved_at > DATE_TRUNC('day', NOW())"
                                     )
                                     if row:
                                         real_wins = int(row['w'] or 0)
@@ -1914,24 +1915,22 @@ class Orchestrator:
                                             _slines.append(f"🚫{_dir} `{_wid}` {_sr}")
                                         _recent_block += "📝 *Recent skips:*\n" + "\n".join(_slines) + "\n"
 
-                                    # Recent wins and losses (from trade_bible or trades)
+                                    # Recent wins and losses from trade_bible (source of truth)
                                     _wl_block = ""
                                     try:
                                         _wins = await conn.fetch(
                                             """SELECT direction, ROUND(pnl_usd::numeric, 2) as pnl,
-                                               metadata->>'entry_reason' as reason, resolved_at
-                                            FROM trades WHERE outcome LIKE '%WIN%' AND is_live = true
-                                              AND (resolved_at > NOW() - INTERVAL '6 hours'
-                                                   OR created_at > NOW() - INTERVAL '6 hours')
-                                            ORDER BY COALESCE(resolved_at, created_at) DESC LIMIT 3"""
+                                               entry_reason as reason, resolved_at
+                                            FROM trade_bible WHERE trade_outcome = 'WIN' AND is_live = true
+                                              AND resolved_at > NOW() - INTERVAL '6 hours'
+                                            ORDER BY resolved_at DESC LIMIT 3"""
                                         )
                                         _losses = await conn.fetch(
                                             """SELECT direction, ROUND(pnl_usd::numeric, 2) as pnl,
-                                               metadata->>'entry_reason' as reason, resolved_at
-                                            FROM trades WHERE outcome LIKE '%LOSS%' AND is_live = true
-                                              AND (resolved_at > NOW() - INTERVAL '6 hours'
-                                                   OR created_at > NOW() - INTERVAL '6 hours')
-                                            ORDER BY COALESCE(resolved_at, created_at) DESC LIMIT 3"""
+                                               entry_reason as reason, resolved_at
+                                            FROM trade_bible WHERE trade_outcome = 'LOSS' AND is_live = true
+                                              AND resolved_at > NOW() - INTERVAL '6 hours'
+                                            ORDER BY resolved_at DESC LIMIT 3"""
                                         )
                                         if _wins:
                                             _wlines = []
