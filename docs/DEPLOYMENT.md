@@ -78,31 +78,100 @@ The engine reads from `/home/novakash/novakash/engine/.env` (loaded by `python-d
 2. SSH to Montreal and add to `engine/.env` (actual config, gitignored)
 3. Restart the engine
 
+**SSH access (EC2 Instance Connect — requires fresh temp key):**
 ```bash
-ssh novakash@15.223.247.178
-nano /home/novakash/novakash/engine/.env
-# Edit values
-# Then restart engine
+# Generate temp key and push (60s window)
+ssh-keygen -t ed25519 -f /tmp/ec2_temp_key -N "" -q
+aws ec2-instance-connect send-ssh-public-key \
+  --instance-id i-0785ed930423ae9fd \
+  --instance-os-user ubuntu \
+  --ssh-public-key file:///tmp/ec2_temp_key.pub \
+  --availability-zone ca-central-1b \
+  --region ca-central-1
+
+# SSH as ubuntu (has sudo) — for permission fixes
+ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes \
+  -i /tmp/ec2_temp_key ubuntu@15.223.247.178
+
+# SSH as novakash (app user) — for git pull, env edits
+aws ec2-instance-connect send-ssh-public-key \
+  --instance-id i-0785ed930423ae9fd \
+  --instance-os-user novakash \
+  --ssh-public-key file:///tmp/ec2_temp_key.pub \
+  --availability-zone ca-central-1b \
+  --region ca-central-1
+ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes \
+  -i /tmp/ec2_temp_key novakash@15.223.247.178
 ```
 
-**v10.1 env vars (must be in Montreal's engine/.env):**
+**Common permission issue:** Files in `engine/reconciliation/` may become root-owned if the engine crashes. Fix with:
+```bash
+# SSH as ubuntu
+sudo chown -R novakash:novakash /home/novakash/novakash/
+```
+
+**Full deploy script (run via ubuntu SSH):**
+```bash
+sudo chown -R novakash:novakash /home/novakash/novakash/ 2>/dev/null
+sudo -u novakash bash -c 'cd /home/novakash/novakash && git pull origin develop'
+sudo pkill -9 -f "python3 main.py"; sleep 3
+sudo -u novakash bash -c 'cd /home/novakash/novakash/engine && nohup python3 main.py > /home/novakash/engine.log 2>&1 &'
+sleep 8 && ps aux | grep "python3 main.py" | grep -v grep | wc -l  # Should be 1
+```
+
+**v10.3 env vars (current production on Montreal's engine/.env):**
 ```env
+# Core
 V10_DUNE_ENABLED=true
 V10_DUNE_MODEL=oak
-V10_DUNE_MIN_P=0.75
+V10_DUNE_MIN_P=0.65
 V10_MIN_EVAL_OFFSET=180
-V10_TRANSITION_MIN_P=9.99
-V10_CASCADE_MIN_P=0.80
-V10_NORMAL_MIN_P=0.78
-V10_LOW_VOL_MIN_P=0.78
-V10_TRENDING_MIN_P=0.80
-V10_CALM_MIN_P=0.80
-V10_OFFSET_PENALTY_MAX=0.10
-V10_DUNE_CAP_CEILING=0.70
-V10_DUNE_CAP_FLOOR=0.35
+
+# Regime thresholds (ELM v3 calibrated)
+V10_TRANSITION_MIN_P=0.70
+V10_CASCADE_MIN_P=0.72
+V10_NORMAL_MIN_P=0.65
+V10_LOW_VOL_MIN_P=0.65
+V10_TRENDING_MIN_P=0.72
+V10_CALM_MIN_P=0.72
+
+# Offset + direction penalties
+V10_OFFSET_PENALTY_MAX=0.06
+V10_DOWN_PENALTY=0.03
+
+# CoinGlass (taker gate disabled by default)
+V10_CG_TAKER_GATE=false
+V10_CG_TAKER_OPPOSING_PCT=55
+V10_CG_SMART_OPPOSING_PCT=52
+V10_CG_TAKER_OPPOSING_PENALTY=0.05
+V10_CG_TAKER_ALIGNED_BONUS=0.02
+V10_CG_MAX_AGE_MS=120000
+V10_CG_CONFIRM_BONUS=0.02
+V10_CG_CONFIRM_MIN=2
+V10_MAX_SPREAD_PCT=8
+
+# Dynamic cap + sizing
 V10_DUNE_CAP_MARGIN=0.05
+V10_DUNE_CAP_FLOOR=0.35
+V10_DUNE_CAP_CEILING=0.68
+V10_KELLY_ENABLED=false
+BET_FRACTION=0.075
+ABSOLUTE_MAX_BET=10.0
 FIVE_MIN_EVAL_INTERVAL=2
 ```
+
+**Key files on Montreal:**
+| File | Purpose |
+|------|---------|
+| `/home/novakash/novakash/engine/.env` | **ACTUAL config** (gitignored, only on Montreal) |
+| `/home/novakash/engine.log` | Current engine log |
+| `/home/novakash/engine-v10.1-pre-v10.2.log` | v10.1 log backup (3.9MB) |
+
+**Instance details:**
+- Instance ID: `i-0785ed930423ae9fd`
+- Region: `ca-central-1`, AZ: `ca-central-1b`
+- IP: `15.223.247.178`
+- Key pair name: `novakash-montreal` (PEM not available locally — use EC2 Instance Connect)
 
 ---
 
