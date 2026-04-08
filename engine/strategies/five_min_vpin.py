@@ -573,9 +573,9 @@ class FiveMinVPINStrategy(BaseStrategy):
             )
             pipeline = GatePipeline([
                 SourceAgreementGate(),
-                DuneConfidenceGate(dune_client=self._timesfm_v2),
+                DuneConfidenceGate(dune_client=self._timesfm_v2),  # regime + offset aware
                 CoinGlassVetoGate(),
-                DynamicCapGate(),
+                DynamicCapGate(),  # ceiling $0.70, floor $0.35
             ])
             pipe_result = await pipeline.evaluate(ctx)
             if pipe_result.passed:

@@ -7,9 +7,9 @@ The strategy chains gates in order: Agreement → DUNE → CG Veto → Dynamic C
 Usage:
     gates = GatePipeline([
         SourceAgreementGate(),
-        DuneConfidenceGate(min_p=0.65),
+        DuneConfidenceGate(dune_client=timesfm_v2),
         CoinGlassVetoGate(),
-        DynamicCapGate(margin=0.05, floor=0.30, ceiling=0.75),
+        DynamicCapGate(),
     ])
     result = await gates.evaluate(context)
     if result.passed:
@@ -129,19 +129,70 @@ class SourceAgreementGate:
 class DuneConfidenceGate:
     """G2: DUNE ML model must confirm direction with sufficient confidence.
 
-    Replaces v9's VPIN-based gating. DUNE outputs continuous P(direction)
-    trained on actual oracle outcomes (75.9% accuracy at T-60, 83.5% at T-30).
+    v10.1: Regime-specific thresholds + offset scaling.
+    - TRANSITION regime is hard-blocked (0% WR historically)
+    - Earlier offsets require higher dune_p (less edge farther from close)
+    - Each regime has its own base threshold
+
+    Offset scaling formula:
+        effective_threshold = base_threshold + offset_penalty
+        offset_penalty = max(0, (eval_offset - 60) / 120) * 0.10
+        e.g. T-60: +0.00, T-120: +0.05, T-180: +0.10
 
     Args:
-        min_p: Minimum DUNE P(agreed direction) to trade (default 0.65)
         dune_client: TimesFMV2Client instance for API calls
     """
     name = "dune_confidence"
 
-    def __init__(self, min_p: float = 0.65, dune_client=None):
-        self._min_p = float(os.environ.get("V10_DUNE_MIN_P", str(min_p)))
+    # Regime base thresholds (overridable via env)
+    _REGIME_DEFAULTS = {
+        "TRANSITION": 9.99,   # Hard block — unreachable threshold
+        "CASCADE":    0.80,
+        "NORMAL":     0.78,
+        "LOW_VOL":    0.78,
+        "TRENDING":   0.80,
+        "CALM":       0.80,
+    }
+
+    # Env var names per regime
+    _REGIME_ENV = {
+        "TRANSITION": "V10_TRANSITION_MIN_P",
+        "CASCADE":    "V10_CASCADE_MIN_P",
+        "NORMAL":     "V10_NORMAL_MIN_P",
+        "LOW_VOL":    "V10_LOW_VOL_MIN_P",
+        "TRENDING":   "V10_TRENDING_MIN_P",
+        "CALM":       "V10_CALM_MIN_P",
+    }
+
+    def __init__(self, dune_client=None):
+        self._base_min_p = float(os.environ.get("V10_DUNE_MIN_P", "0.75"))
+        self._offset_penalty_max = float(os.environ.get("V10_OFFSET_PENALTY_MAX", "0.10"))
         self._client = dune_client
         self._log = log.bind(gate="dune_confidence")
+
+        # Load regime-specific thresholds from env (fall back to defaults)
+        self._regime_thresholds: dict[str, float] = {}
+        for regime, default in self._REGIME_DEFAULTS.items():
+            env_key = self._REGIME_ENV[regime]
+            self._regime_thresholds[regime] = float(
+                os.environ.get(env_key, str(default))
+            )
+
+    def _effective_threshold(self, regime: str, eval_offset: Optional[int]) -> float:
+        """Calculate threshold = regime_base + offset_penalty.
+
+        Earlier offsets (farther from close) get a penalty because DUNE accuracy
+        degrades: 83.5% at T-30, 75.9% at T-60, 67.9% at T-180.
+        """
+        base = self._regime_thresholds.get(regime, self._base_min_p)
+
+        if eval_offset is None or eval_offset <= 60:
+            return base
+
+        # Linear penalty: 0 at T-60, max at T-180+
+        penalty = min(self._offset_penalty_max,
+                      (eval_offset - 60) / 120.0 * self._offset_penalty_max)
+        return round(base + penalty, 4)
 
     async def evaluate(self, ctx: GateContext) -> GateResult:
         if not ctx.agreed_direction:
@@ -158,9 +209,20 @@ class DuneConfidenceGate:
                 reason=f"too early: T-{ctx.eval_offset} > T-{_min_offset}",
             )
 
+        # v10.1: Regime-specific threshold (TRANSITION hard-blocked at 9.99)
+        regime = ctx.regime or "NORMAL"
+        threshold = self._effective_threshold(regime, ctx.eval_offset)
+
+        # Fast-reject TRANSITION before even querying DUNE
+        if threshold >= 1.0:
+            return GateResult(
+                passed=False, gate_name=self.name,
+                reason=f"regime {regime} blocked (threshold={threshold:.2f})",
+                data={"regime": regime, "threshold": threshold},
+            )
+
         # Query DUNE API
         if self._client is None:
-            # No client — pass through (shadow mode or disabled)
             return GateResult(
                 passed=True, gate_name=self.name,
                 reason="DUNE client not configured (pass-through)",
@@ -168,8 +230,6 @@ class DuneConfidenceGate:
 
         seconds_to_close = ctx.eval_offset or 60
         try:
-            # ELM v3 is at the production endpoint (model="oak"), NOT cedar
-            # The v3 model was deployed to production /v2/probability
             _model = os.environ.get("V10_DUNE_MODEL", "oak")
             result = await self._client.get_probability(
                 asset=ctx.asset,
@@ -178,7 +238,6 @@ class DuneConfidenceGate:
             )
         except Exception as exc:
             self._log.warning("dune.query_failed", error=str(exc)[:100])
-            # On error, pass through (don't block trades due to API issues)
             return GateResult(
                 passed=True, gate_name=self.name,
                 reason=f"DUNE query failed: {str(exc)[:50]} (pass-through)",
@@ -205,20 +264,22 @@ class DuneConfidenceGate:
             asset=ctx.asset, offset=seconds_to_close,
             p_up=f"{p_up:.4f}", p_down=f"{p_down:.4f}",
             agreed_dir=ctx.agreed_direction, dune_p=f"{dune_p:.4f}",
-            threshold=f"{self._min_p:.2f}",
-            passed=dune_p >= self._min_p)
+            regime=regime, threshold=f"{threshold:.4f}",
+            passed=dune_p >= threshold)
 
-        if dune_p < self._min_p:
+        if dune_p < threshold:
             return GateResult(
                 passed=False, gate_name=self.name,
-                reason=f"DUNE P({ctx.agreed_direction})={dune_p:.3f} < {self._min_p}",
-                data={"dune_p": dune_p, "p_up": p_up, "threshold": self._min_p},
+                reason=f"DUNE P({ctx.agreed_direction})={dune_p:.3f} < {threshold:.3f} ({regime} T-{ctx.eval_offset})",
+                data={"dune_p": dune_p, "p_up": p_up, "threshold": threshold,
+                      "regime": regime, "offset": ctx.eval_offset},
             )
 
         return GateResult(
             passed=True, gate_name=self.name,
-            reason=f"DUNE P({ctx.agreed_direction})={dune_p:.3f} >= {self._min_p}",
-            data={"dune_p": dune_p, "p_up": p_up, "threshold": self._min_p},
+            reason=f"DUNE P({ctx.agreed_direction})={dune_p:.3f} >= {threshold:.3f} ({regime} T-{ctx.eval_offset})",
+            data={"dune_p": dune_p, "p_up": p_up, "threshold": threshold,
+                  "regime": regime, "offset": ctx.eval_offset},
         )
 
 
@@ -317,7 +378,8 @@ class DynamicCapGate:
     """G4: Calculate entry cap from DUNE confidence.
 
     cap = DUNE_P - margin (5pp default)
-    Bounded by floor ($0.30) and ceiling ($0.75).
+    Bounded by floor ($0.35) and ceiling ($0.70).
+    Ceiling lowered from $0.75 — at 70% WR, breakeven is ~$0.70.
 
     Falls back to v9 fixed cap ($0.65) if DUNE not available.
     """
@@ -325,8 +387,8 @@ class DynamicCapGate:
 
     def __init__(self):
         self._margin = float(os.environ.get("V10_DUNE_CAP_MARGIN", "0.05"))
-        self._floor = float(os.environ.get("V10_DUNE_CAP_FLOOR", "0.30"))
-        self._ceiling = float(os.environ.get("V10_DUNE_CAP_CEILING", "0.75"))
+        self._floor = float(os.environ.get("V10_DUNE_CAP_FLOOR", "0.35"))
+        self._ceiling = float(os.environ.get("V10_DUNE_CAP_CEILING", "0.70"))
         self._v9_fallback = float(os.environ.get("V9_CAP_GOLDEN", "0.65"))
 
     async def evaluate(self, ctx: GateContext) -> GateResult:

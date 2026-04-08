@@ -146,21 +146,58 @@ Falls back to v9 golden-zone-only with 10s polling. Zero behavior change.
 
 ---
 
-## v10.1 - Gate Calibration (Apr 8, 17:20 UTC)
+## v10.1 — Regime + Offset Gate Calibration (Apr 8, 18:00 UTC)
 
----
+**Problem:** 7/8 recent trades were losses. Root causes:
+1. TRANSITION regime: 0% WR (5 losses, VPIN 0.55-0.65 = noise, not direction)
+2. T-180 offset: DUNE accuracy only 67.9% at T-180 vs 75.9% at T-60
+3. Flat threshold: same 0.75 for all regimes and offsets — too permissive for weak conditions
+4. Cap ceiling $0.75: at 70% WR, breakeven is ~$0.70 — was entering negative-EV trades
 
-## v10.1 - Gate Calibration (Apr 8, 17:20 UTC)
+**DB-verified loss at 17:32:** dune_p=0.7839, NORMAL regime, T-180, VPIN=0.513. Would need 0.88 under v10.1.
 
-**Problem:** 5/6 v10 losses were TRANSITION regime. Threshold 0.85 too high for volume.
+**Code Changes (gates.py):**
+- `DuneConfidenceGate` now regime-aware with per-regime thresholds
+- Offset penalty: `effective_threshold = regime_base + min(0.10, (offset-60)/120 * 0.10)`
+- TRANSITION hard-blocked at threshold=9.99 (fast-rejected before DUNE API call)
+- `DynamicCapGate` ceiling lowered from $0.75 to $0.70, floor raised from $0.30 to $0.35
 
-**Changes:**
-- V10_DUNE_MIN_P: 0.85 -> 0.75
-- V10_TRANSITION_ENABLED: true -> false
-- V10_CASCADE_MIN_P: 0.80 (new)
-- V10_LOW_VOL_MIN_P: 0.80 (new)
-- V10_TRENDING_MIN_P: 0.82 (new)
+**Configuration:**
+```env
+V10_DUNE_ENABLED=true
+V10_DUNE_MODEL=oak
+V10_DUNE_MIN_P=0.75
+V10_MIN_EVAL_OFFSET=180
 
-**Expected:** 3-5 trades/day at 70-80% WR vs 0-1 trades at 14% WR
+# Regime base thresholds
+V10_TRANSITION_MIN_P=9.99    # hard block
+V10_CASCADE_MIN_P=0.80
+V10_NORMAL_MIN_P=0.78
+V10_LOW_VOL_MIN_P=0.78
+V10_TRENDING_MIN_P=0.80
+V10_CALM_MIN_P=0.80
 
-**Updated:** 2026-04-08 17:20 UTC
+# Offset penalty (earlier = harder)
+V10_OFFSET_PENALTY_MAX=0.10  # T-180 adds +0.10 to threshold
+
+# Cap bounds
+V10_DUNE_CAP_CEILING=0.70    # breakeven at 70% WR
+V10_DUNE_CAP_FLOOR=0.35
+V10_DUNE_CAP_MARGIN=0.05
+```
+
+**Effective threshold examples:**
+| Regime | T-60 | T-90 | T-120 | T-150 | T-180 |
+|--------|------|------|-------|-------|-------|
+| TRANSITION | BLOCKED | BLOCKED | BLOCKED | BLOCKED | BLOCKED |
+| CASCADE | 0.80 | 0.825 | 0.85 | 0.875 | 0.90 |
+| NORMAL | 0.78 | 0.805 | 0.83 | 0.855 | 0.88 |
+
+**Backtested against recent losses (DB-verified):**
+- 7/7 losses BLOCKED, 1 outlier win also blocked (acceptable trade)
+- 9/10 most recent trades blocked — only 1 high-quality trade passes (T-64, NORMAL, dune_p=0.872)
+
+**Env loading note:** Engine loads `engine/.env` (NOT `.env.local`). The `.env` file is gitignored and only exists on Montreal. `.env.local` is a committed reference copy.
+
+**Updated:** 2026-04-08 18:00 UTC
+**Visualization:** `docs/v10_1_decision_surface.html`

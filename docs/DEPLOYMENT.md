@@ -71,12 +71,37 @@ PGPASSWORD=<DB_PASSWORD> psql -h hopper.proxy.rlwy.net -p 35772 -U postgres -d r
 
 ### Environment Variables on Montreal
 
-The engine reads from `/home/novakash/novakash/engine/.env` (or shell environment). To update secrets:
+The engine reads from `/home/novakash/novakash/engine/.env` (loaded by `python-dotenv` in `main.py`).
+
+**IMPORTANT:** `engine/.env` is gitignored and only exists on Montreal. The committed file `engine/.env.local` is a REFERENCE COPY — it is never loaded by the engine. When adding new env vars:
+1. Add to `engine/.env.local` (reference, committed to git)
+2. SSH to Montreal and add to `engine/.env` (actual config, gitignored)
+3. Restart the engine
+
 ```bash
 ssh novakash@15.223.247.178
 nano /home/novakash/novakash/engine/.env
 # Edit values
 # Then restart engine
+```
+
+**v10.1 env vars (must be in Montreal's engine/.env):**
+```env
+V10_DUNE_ENABLED=true
+V10_DUNE_MODEL=oak
+V10_DUNE_MIN_P=0.75
+V10_MIN_EVAL_OFFSET=180
+V10_TRANSITION_MIN_P=9.99
+V10_CASCADE_MIN_P=0.80
+V10_NORMAL_MIN_P=0.78
+V10_LOW_VOL_MIN_P=0.78
+V10_TRENDING_MIN_P=0.80
+V10_CALM_MIN_P=0.80
+V10_OFFSET_PENALTY_MAX=0.10
+V10_DUNE_CAP_CEILING=0.70
+V10_DUNE_CAP_FLOOR=0.35
+V10_DUNE_CAP_MARGIN=0.05
+FIVE_MIN_EVAL_INTERVAL=2
 ```
 
 ---
