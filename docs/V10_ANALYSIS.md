@@ -180,3 +180,40 @@ FROM trade_bible GROUP BY hr ORDER BY hr;
 ```
 
 Tag in conversations: use `bible` or `source-of-truth` to reference `trade_bible` table.
+
+---
+
+## 🚨 LIVE TRADES ANALYSIS — Apr 8 15:42-16:40 UTC
+
+**v10 Production Performance (dune_p >= 0.75 threshold):**
+
+| Time | dune_p | Regime | Cap | Result |
+|------|--------|--------|-----|--------|
+| 15:47 | 0.759 | TRANSITION | /bin/bash.71 | LOSS |
+| 15:52 | 0.771 | TRANSITION | /bin/bash.72 | LOSS |
+| 15:58 | 0.828 | TRANSITION | /bin/bash.75 | LOSS |
+| 16:07 | 0.784 | TRANSITION | /bin/bash.73 | LOSS |
+| 16:13 | 0.838 | TRANSITION | /bin/bash.75 | LOSS |
+| 16:22 | 0.784 | TRANSITION | /bin/bash.73 | WIN |
+| 16:28 | 0.807 | CASCADE | /bin/bash.75 | LOSS |
+| 16:32 | 0.771 | TRANSITION | /bin/bash.72 | PENDING |
+
+**Result: 1W/6L — 14% WR** (all losses had dune_p 0.75-0.83, T-180)
+
+### Root Cause
+
+1. **dune_p threshold too low** — 0.75 is letting in weak signals
+2. **TRANSITION regime leaky** — 5/6 losses were TRANSITION
+3. **T-180 timing** — all trades at T-180, not enough edge
+
+### Immediate Fix (APPLIED 16:49 UTC)
+
+
+
+### Recommendations
+
+- Raise threshold to 0.85 (DONE)
+- Consider disabling TRANSITION or requiring dune_p >= 0.90
+- Consider T-120 entry with 0.80 threshold if trade count too low
+
+---
