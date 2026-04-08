@@ -1862,7 +1862,7 @@ class Orchestrator:
                                             _dir = "⬆️" if r['direction'] == 'YES' else "⬇️"
                                             _out = {"WIN": "✅", "LOSS": "❌"}.get(r['outcome'] or '', "⏳")
                                             _cap = f"${float(r['cap']):.2f}" if r['cap'] else "?"
-                                            _rsn = (r['reason'] or '?')[-15:]
+                                            _rsn = (r['reason'] or '?')[-25:]
                                             # Window end time as ID (e.g. "14:10 BTC")
                                             _wid = ""
                                             try:
