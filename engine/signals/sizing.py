@@ -76,8 +76,8 @@ def compute_position_size(
     # Direction quality: DOWN predictions are 9.3pp less accurate (N=865)
     dir_mult = 1.0 if direction == "UP" else 0.85
 
-    # CoinGlass confirmation: +15% when 2+ derivatives signals agree
-    cg_mult = 1.15 if cg_confirms >= cg_confirm_min else 1.0
+    # CoinGlass confirmation: +20% when 2+ derivatives signals agree (was 15%, strengthened)
+    cg_mult = 1.20 if cg_confirms >= cg_confirm_min else 1.0
 
     # Regime quality: NORMAL/LOW_VOL are stable; others get 15% reduction
     regime_mult = 1.0 if regime in ("NORMAL", "LOW_VOL") else 0.85
