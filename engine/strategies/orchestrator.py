@@ -1893,16 +1893,18 @@ class Orchestrator:
                                         _wins = await conn.fetch(
                                             """SELECT direction, ROUND(pnl_usd::numeric, 2) as pnl,
                                                metadata->>'entry_reason' as reason, resolved_at
-                                            FROM trades WHERE outcome = 'WIN' AND is_live = true
-                                              AND resolved_at > NOW() - INTERVAL '6 hours'
-                                            ORDER BY resolved_at DESC LIMIT 3"""
+                                            FROM trades WHERE outcome LIKE '%WIN%' AND is_live = true
+                                              AND (resolved_at > NOW() - INTERVAL '6 hours'
+                                                   OR created_at > NOW() - INTERVAL '6 hours')
+                                            ORDER BY COALESCE(resolved_at, created_at) DESC LIMIT 3"""
                                         )
                                         _losses = await conn.fetch(
                                             """SELECT direction, ROUND(pnl_usd::numeric, 2) as pnl,
                                                metadata->>'entry_reason' as reason, resolved_at
-                                            FROM trades WHERE outcome = 'LOSS' AND is_live = true
-                                              AND resolved_at > NOW() - INTERVAL '6 hours'
-                                            ORDER BY resolved_at DESC LIMIT 3"""
+                                            FROM trades WHERE outcome LIKE '%LOSS%' AND is_live = true
+                                              AND (resolved_at > NOW() - INTERVAL '6 hours'
+                                                   OR created_at > NOW() - INTERVAL '6 hours')
+                                            ORDER BY COALESCE(resolved_at, created_at) DESC LIMIT 3"""
                                         )
                                         if _wins:
                                             _wlines = []
