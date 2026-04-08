@@ -544,70 +544,128 @@ class FiveMinVPINStrategy(BaseStrategy):
         else:
             _snap_regime = "CALM"
 
-        # ── v9.0 Source Agreement Gate ────────────────────────────────────
-        # When CL+TI agree on direction, WR = 94.7%. When they disagree, 9.1%.
-        # This is the single most impactful filter. Feature-flagged for rollback.
-        _v9_agreement = os.environ.get("V9_SOURCE_AGREEMENT", "false").lower() == "true"
-        _v9_source_agree = None  # None=unknown, True=agree, False=disagree
-        _v9_direction_override = None
-
-        if delta_chainlink is not None and delta_tiingo is not None:
-            _cl_dir = "UP" if delta_chainlink > 0 else "DOWN"
-            _ti_dir = "UP" if delta_tiingo > 0 else "DOWN"
-            _v9_source_agree = (_cl_dir == _ti_dir)
-
-            if _v9_source_agree:
-                _v9_direction_override = _cl_dir  # Both agree → use shared direction
-                self._log.info("v9.source_agree", cl=_cl_dir, ti=_ti_dir,
-                    delta_cl=f"{delta_chainlink:+.4f}%", delta_ti=f"{delta_tiingo:+.4f}%")
+        # ── v10 DUNE-Gated Pipeline (when V10_DUNE_ENABLED=true) ─────────
+        # Replaces v9's inline gates with clean composable pipeline.
+        # Falls through to v9 inline gates when disabled.
+        _v10_enabled = os.environ.get("V10_DUNE_ENABLED", "false").lower() == "true"
+        if _v10_enabled:
+            from signals.gates import (
+                GateContext, GatePipeline, SourceAgreementGate,
+                DuneConfidenceGate, CoinGlassVetoGate, DynamicCapGate,
+            )
+            _cg = self._cg_enhanced.snapshot if self._cg_enhanced is not None else None
+            ctx = GateContext(
+                delta_chainlink=delta_chainlink if 'delta_chainlink' in locals() else None,
+                delta_tiingo=delta_tiingo if 'delta_tiingo' in locals() else None,
+                delta_binance=delta_binance if 'delta_binance' in locals() else None,
+                delta_pct=delta_pct, vpin=current_vpin, regime=_snap_regime,
+                asset=window.asset, eval_offset=getattr(window, 'eval_offset', None),
+                window_ts=window.window_ts, cg_snapshot=_cg,
+            )
+            pipeline = GatePipeline([
+                SourceAgreementGate(),
+                DuneConfidenceGate(dune_client=self._timesfm_v2),
+                CoinGlassVetoGate(),
+                DynamicCapGate(),
+            ])
+            pipe_result = await pipeline.evaluate(ctx)
+            if pipe_result.passed:
+                direction = pipe_result.direction
+                confidence = "HIGH" if (ctx.dune_probability_up and
+                    max(ctx.dune_probability_up, 1-ctx.dune_probability_up) > 0.75) else "MODERATE"
+                _order_type = os.environ.get("ORDER_TYPE", "FAK").upper()
+                signal = FiveMinSignal(
+                    window=window, current_price=current_price, current_vpin=current_vpin,
+                    delta_pct=delta_pct, confidence=confidence, direction=direction,
+                    cg_modifier=0.0,
+                    entry_reason=f"v10_DUNE_{_snap_regime}_T{ctx.eval_offset}_{_order_type}",
+                    v81_entry_cap=pipe_result.cap or 0.65,
+                )
+                self._log.info("v10.trade", direction=direction,
+                    cap=f"${pipe_result.cap:.2f}" if pipe_result.cap else "?",
+                    dune_p=f"{pipe_result.dune_p:.3f}" if pipe_result.dune_p else "N/A",
+                    regime=_snap_regime, offset=ctx.eval_offset)
             else:
-                self._log.info("v9.source_disagree", cl=_cl_dir, ti=_ti_dir,
-                    delta_cl=f"{delta_chainlink:+.4f}%", delta_ti=f"{delta_tiingo:+.4f}%",
-                    gate_active=_v9_agreement)
-                if _v9_agreement:
-                    self._last_skip_reason = f"v9: CL={_cl_dir} TI={_ti_dir} DISAGREE"
-                    # Log to signal_evaluations before skipping
-                    if self._db:
-                        try:
-                            await self._db.write_signal_evaluation(
-                                window_ts=window.window_ts, asset=window.asset,
-                                timeframe="5m", eval_offset=getattr(window, 'eval_offset', None),
-                                delta_chainlink=delta_chainlink, delta_tiingo=delta_tiingo,
-                                delta_binance=delta_binance, vpin=current_vpin,
-                                regime=_snap_regime,
-                                decision="SKIP", gate_failed="source_disagree",
-                            )
-                        except Exception:
-                            pass
-                    # Telegram notification for source disagreement (once per window)
-                    _disagree_key = f"{window.asset}-{window.window_ts}-disagree"
-                    if not hasattr(self, '_v9_disagree_notified'):
-                        self._v9_disagree_notified = set()
-                    if self._alerter and _disagree_key not in self._v9_disagree_notified:
-                        self._v9_disagree_notified.add(_disagree_key)
-                        # Clean old keys (>10min)
-                        _now = time.time()
-                        self._v9_disagree_notified = {
-                            k for k in self._v9_disagree_notified
-                            if _now - int(k.rsplit("-", 1)[0].rsplit("-", 1)[-1]) < 600
-                        }
-                        _offset = getattr(window, 'eval_offset', '?')
-                        async def _send_disagree_alert():
+                signal = None
+                self._last_skip_reason = pipe_result.skip_reason or "v10 gate failed"
+                if self._db:
+                    try:
+                        await self._db.write_signal_evaluation(
+                            window_ts=window.window_ts, asset=window.asset,
+                            timeframe="5m", eval_offset=getattr(window, 'eval_offset', None),
+                            delta_chainlink=ctx.delta_chainlink, delta_tiingo=ctx.delta_tiingo,
+                            delta_binance=ctx.delta_binance, vpin=current_vpin,
+                            regime=_snap_regime, decision="SKIP",
+                            gate_failed=pipe_result.failed_gate or "unknown",
+                        )
+                    except Exception:
+                        pass
+        else:
+
+            # ── v9.0 Source Agreement Gate ────────────────────────────────────
+            # When CL+TI agree on direction, WR = 94.7%. When they disagree, 9.1%.
+            # This is the single most impactful filter. Feature-flagged for rollback.
+            _v9_agreement = os.environ.get("V9_SOURCE_AGREEMENT", "false").lower() == "true"
+            _v9_source_agree = None  # None=unknown, True=agree, False=disagree
+            _v9_direction_override = None
+
+            if delta_chainlink is not None and delta_tiingo is not None:
+                _cl_dir = "UP" if delta_chainlink > 0 else "DOWN"
+                _ti_dir = "UP" if delta_tiingo > 0 else "DOWN"
+                _v9_source_agree = (_cl_dir == _ti_dir)
+
+                if _v9_source_agree:
+                    _v9_direction_override = _cl_dir  # Both agree → use shared direction
+                    self._log.info("v9.source_agree", cl=_cl_dir, ti=_ti_dir,
+                        delta_cl=f"{delta_chainlink:+.4f}%", delta_ti=f"{delta_tiingo:+.4f}%")
+                else:
+                    self._log.info("v9.source_disagree", cl=_cl_dir, ti=_ti_dir,
+                        delta_cl=f"{delta_chainlink:+.4f}%", delta_ti=f"{delta_tiingo:+.4f}%",
+                        gate_active=_v9_agreement)
+                    if _v9_agreement:
+                        self._last_skip_reason = f"v9: CL={_cl_dir} TI={_ti_dir} DISAGREE"
+                        # Log to signal_evaluations before skipping
+                        if self._db:
                             try:
-                                await self._alerter.send_message(
-                                    f"🔀 SOURCE DISAGREE — {window.asset} 5m\n"
-                                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"Chainlink: {_cl_dir} (Δ {delta_chainlink:+.4f}%)\n"
-                                    f"Tiingo: {_ti_dir} (Δ {delta_tiingo:+.4f}%)\n"
-                                    f"VPIN: {current_vpin:.3f} | {_snap_regime}\n"
-                                    f"Offset: T-{_offset}\n"
-                                    f"Action: ⏭ SKIP (9.1% WR when disagree)\n"
-                                    f"\n📍 MTL  {window.asset}-{window.window_ts}  v9.0"
+                                await self._db.write_signal_evaluation(
+                                    window_ts=window.window_ts, asset=window.asset,
+                                    timeframe="5m", eval_offset=getattr(window, 'eval_offset', None),
+                                    delta_chainlink=delta_chainlink, delta_tiingo=delta_tiingo,
+                                    delta_binance=delta_binance, vpin=current_vpin,
+                                    regime=_snap_regime,
+                                    decision="SKIP", gate_failed="source_disagree",
                                 )
                             except Exception:
                                 pass
-                        asyncio.create_task(_send_disagree_alert())
-                    signal = None
+                        # Telegram notification for source disagreement (once per window)
+                        _disagree_key = f"{window.asset}-{window.window_ts}-disagree"
+                        if not hasattr(self, '_v9_disagree_notified'):
+                            self._v9_disagree_notified = set()
+                        if self._alerter and _disagree_key not in self._v9_disagree_notified:
+                            self._v9_disagree_notified.add(_disagree_key)
+                            # Clean old keys (>10min)
+                            _now = time.time()
+                            self._v9_disagree_notified = {
+                                k for k in self._v9_disagree_notified
+                                if _now - int(k.rsplit("-", 1)[0].rsplit("-", 1)[-1]) < 600
+                            }
+                            _offset = getattr(window, 'eval_offset', '?')
+                            async def _send_disagree_alert():
+                                try:
+                                    await self._alerter.send_message(
+                                        f"🔀 SOURCE DISAGREE — {window.asset} 5m\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"Chainlink: {_cl_dir} (Δ {delta_chainlink:+.4f}%)\n"
+                                        f"Tiingo: {_ti_dir} (Δ {delta_tiingo:+.4f}%)\n"
+                                        f"VPIN: {current_vpin:.3f} | {_snap_regime}\n"
+                                        f"Offset: T-{_offset}\n"
+                                        f"Action: ⏭ SKIP (9.1% WR when disagree)\n"
+                                        f"\n📍 MTL  {window.asset}-{window.window_ts}  v9.0"
+                                    )
+                                except Exception:
+                                    pass
+                            asyncio.create_task(_send_disagree_alert())
+                        signal = None
                     tf = "15m" if window.duration_secs == 900 else "5m"
 
         # ── v9.0 Dynamic Caps (two-tier) ────────────────────────────────
