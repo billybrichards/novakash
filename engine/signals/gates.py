@@ -220,7 +220,7 @@ class DuneConfidenceGate:
                 reason="no agreed direction (agreement gate must run first)",
             )
 
-        # Minimum offset — don't trade too early
+        # Global minimum offset — don't trade too early
         _min_offset = int(os.environ.get("V10_MIN_EVAL_OFFSET", "180"))
         if ctx.eval_offset and ctx.eval_offset > _min_offset:
             return GateResult(
@@ -229,6 +229,27 @@ class DuneConfidenceGate:
             )
 
         regime = ctx.regime or "NORMAL"
+
+        # v10.4: per-regime offset limits
+        # NORMAL before T-100: 25% WR (1W/3L), too early for low-VPIN regime
+        _normal_min = int(os.environ.get("V10_NORMAL_MIN_OFFSET", "0"))
+        if regime == "NORMAL" and _normal_min > 0 and ctx.eval_offset and ctx.eval_offset > _normal_min:
+            return GateResult(
+                passed=False, gate_name=self.name,
+                reason=f"NORMAL too early: T-{ctx.eval_offset} > T-{_normal_min}",
+                data={"regime": regime, "offset": ctx.eval_offset, "limit": _normal_min},
+            )
+
+        # TRANSITION+DOWN after T-140: 56.3% WR, collapses while UP stays strong
+        _trans_down_max = int(os.environ.get("V10_TRANSITION_MAX_DOWN_OFFSET", "0"))
+        if (regime == "TRANSITION" and _trans_down_max > 0
+                and ctx.agreed_direction == "DOWN"
+                and ctx.eval_offset and ctx.eval_offset > _trans_down_max):
+            return GateResult(
+                passed=False, gate_name=self.name,
+                reason=f"TRANSITION+DOWN too early: T-{ctx.eval_offset} > T-{_trans_down_max}",
+                data={"regime": regime, "direction": "DOWN", "offset": ctx.eval_offset, "limit": _trans_down_max},
+            )
         threshold = self._effective_threshold(ctx, regime, ctx.eval_offset)
 
         # Fast-reject if threshold is unreachable
