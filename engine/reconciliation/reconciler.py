@@ -360,23 +360,40 @@ class CLOBReconciler:
         matched_reason = None
         matched_token_id = None
 
+        # Extract token_id from position data for exact matching
+        _pos_token_id = str(data.get("tokenId", ""))
+
         if self._pool:
             try:
                 async with self._pool.acquire() as conn:
-                    # Primary: match by token_id in metadata (exact)
-                    # We look for trades that haven't been resolved yet
-                    match = await conn.fetchrow(
-                        """SELECT id, metadata->>'entry_reason' as reason,
-                                  metadata->>'token_id' as token_id
-                           FROM trades
-                           WHERE status IN ('OPEN', 'FILLED', 'EXPIRED')
-                             AND is_live = true
-                             AND metadata->>'token_id' IS NOT NULL
-                             AND outcome IS NULL
-                           ORDER BY created_at DESC LIMIT 10""",
-                    )
+                    # Primary: EXACT match by token_id from Polymarket position
+                    match = None
+                    if _pos_token_id:
+                        match = await conn.fetchrow(
+                            """SELECT id, metadata->>'entry_reason' as reason,
+                                      metadata->>'token_id' as token_id
+                               FROM trades
+                               WHERE metadata->>'token_id' = $1
+                                 AND is_live = true
+                                 AND outcome IS NULL
+                               ORDER BY created_at DESC LIMIT 1""",
+                            _pos_token_id,
+                        )
+                    # Fallback: cost-based match (tighter tolerance)
+                    if not match:
+                        match = await conn.fetchrow(
+                            """SELECT id, metadata->>'entry_reason' as reason,
+                                      metadata->>'token_id' as token_id
+                               FROM trades
+                               WHERE status IN ('OPEN', 'FILLED')
+                                 AND is_live = true
+                                 AND outcome IS NULL
+                                 AND ABS(CAST(stake_usd AS numeric) - $1) < 0.5
+                               ORDER BY created_at DESC LIMIT 1""",
+                            cost,
+                        )
 
-                    if match and match["token_id"]:
+                    if match:
                         matched_trade_id = match["id"]
                         matched_reason = match["reason"]
                         matched_token_id = match["token_id"]
