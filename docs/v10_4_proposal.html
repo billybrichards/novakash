@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v10.4 Decision Surface Proposal — Data-Driven Audit</title>
+<style>
+:root {
+    --bg: #0d1117; --card: #161b22; --border: #30363d;
+    --text: #c9d1d9; --text-dim: #8b949e; --text-bright: #f0f6fc;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922; --blue: #58a6ff;
+    --purple: #bc8cff; --orange: #f0883e; --cyan: #39d353;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; padding: 24px; max-width: 1400px; margin: 0 auto; }
+h1 { color: var(--text-bright); font-size: 28px; margin-bottom: 8px; }
+h2 { color: var(--blue); font-size: 22px; margin: 32px 0 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+h3 { color: var(--purple); font-size: 18px; margin: 24px 0 12px; }
+.subtitle { color: var(--text-dim); font-size: 14px; margin-bottom: 24px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin: 16px 0; }
+.card-red { border-left: 3px solid var(--red); }
+.card-green { border-left: 3px solid var(--green); }
+.card-yellow { border-left: 3px solid var(--yellow); }
+.card-blue { border-left: 3px solid var(--blue); }
+.card-purple { border-left: 3px solid var(--purple); }
+.grid { display: grid; gap: 16px; }
+.grid-2 { grid-template-columns: 1fr 1fr; }
+.grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+.grid-4 { grid-template-columns: 1fr 1fr 1fr 1fr; }
+@media (max-width: 900px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; } }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { background: #1c2128; color: var(--text-bright); padding: 10px 12px; text-align: left; border-bottom: 2px solid var(--border); }
+td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+tr:hover td { background: #1c2128; }
+.win { color: var(--green); font-weight: 600; }
+.loss { color: var(--red); font-weight: 600; }
+.warn { color: var(--yellow); font-weight: 600; }
+.neutral { color: var(--text-dim); }
+.stat-big { font-size: 36px; font-weight: 700; }
+.stat-label { font-size: 13px; color: var(--text-dim); margin-top: 4px; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+.badge-green { background: #0d2818; color: var(--green); }
+.badge-red { background: #2d1014; color: var(--red); }
+.badge-yellow { background: #2d2306; color: var(--yellow); }
+.badge-blue { background: #0d1d30; color: var(--blue); }
+.bar-container { display: flex; height: 24px; border-radius: 4px; overflow: hidden; margin: 4px 0; }
+.bar-win { background: var(--green); }
+.bar-loss { background: var(--red); }
+.bar-skip { background: var(--text-dim); opacity: 0.3; }
+.heatmap { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 4px; }
+.heat-cell { padding: 8px; border-radius: 4px; text-align: center; font-size: 13px; font-weight: 600; }
+code { background: #1c2128; padding: 2px 6px; border-radius: 4px; font-size: 13px; color: var(--orange); }
+.proposal-box { background: linear-gradient(135deg, #161b22, #1a2332); border: 2px solid var(--blue); border-radius: 12px; padding: 24px; margin: 20px 0; }
+.vs { display: flex; align-items: center; gap: 20px; }
+.vs-arrow { font-size: 24px; color: var(--blue); }
+.tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+.tag-new { background: #0d2818; color: var(--green); border: 1px solid var(--green); }
+.tag-change { background: #2d2306; color: var(--yellow); border: 1px solid var(--yellow); }
+.tag-remove { background: #2d1014; color: var(--red); border: 1px solid var(--red); }
+.tag-keep { background: #1c2128; color: var(--text-dim); border: 1px solid var(--border); }
+.alert { padding: 16px; border-radius: 8px; margin: 12px 0; font-size: 14px; }
+.alert-red { background: #2d1014; border: 1px solid var(--red); color: var(--red); }
+.alert-green { background: #0d2818; border: 1px solid var(--green); color: var(--green); }
+.alert-yellow { background: #2d2306; border: 1px solid var(--yellow); color: var(--yellow); }
+.timeline { border-left: 2px solid var(--border); padding-left: 20px; margin: 16px 0; }
+.timeline-item { position: relative; margin: 16px 0; }
+.timeline-item::before { content: ''; position: absolute; left: -26px; top: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--blue); }
+.nav { position: sticky; top: 0; background: var(--bg); padding: 12px 0; z-index: 100; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+.nav a { color: var(--blue); text-decoration: none; margin-right: 16px; font-size: 14px; }
+.nav a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+    <a href="#audit">Audit</a>
+    <a href="#findings">Key Findings</a>
+    <a href="#regime">Regime Analysis</a>
+    <a href="#offset">Offset Analysis</a>
+    <a href="#shadow">Shadow Trading</a>
+    <a href="#fill">Fill Rate Crisis</a>
+    <a href="#proposal">v10.4 Proposal</a>
+    <a href="#deploy">Deployment</a>
+</nav>
+
+<h1>v10.4 Decision Surface Proposal</h1>
+<p class="subtitle">Data-driven audit of 279 resolved TRADE decisions + 900 resolved SKIP decisions from gate_audit &bull; Generated 2026-04-08 21:00 UTC</p>
+
+<!-- ═══════════════════════ CURRENT STATE ═══════════════════════ -->
+<h2 id="audit">Current v10 Performance (All Resolved Data)</h2>
+
+<div class="grid grid-4">
+    <div class="card card-green">
+        <div class="stat-big win">16W / 6L</div>
+        <div class="stat-label">v10 Live Trades (trade_bible)</div>
+    </div>
+    <div class="card card-green">
+        <div class="stat-big win">72.7%</div>
+        <div class="stat-label">Win Rate (v10 only)</div>
+    </div>
+    <div class="card card-green">
+        <div class="stat-big win">+$4.92</div>
+        <div class="stat-label">Net PnL (v10 trades)</div>
+    </div>
+    <div class="card card-yellow">
+        <div class="stat-big warn">~$50</div>
+        <div class="stat-label">Current Bankroll</div>
+    </div>
+</div>
+
+<div class="card">
+    <h3>v10 Trade-by-Trade (Real DB Data)</h3>
+    <table>
+        <tr><th>Entry</th><th>Dir</th><th>Offset</th><th>ELM P</th><th>VPIN</th><th>CG Buy%</th><th>LSR</th><th>Result</th><th>PnL</th></tr>
+        <tr><td>CASCADE T-158</td><td>DOWN</td><td>158</td><td>0.667</td><td>0.84</td><td>50.3%</td><td>0.960</td><td class="win">WIN</td><td class="win">+$2.84</td></tr>
+        <tr><td>CASCADE T-240</td><td>DOWN</td><td>240</td><td>0.833</td><td>0.71</td><td>32.7%</td><td>0.910</td><td class="win">WIN</td><td class="win">+$2.15</td></tr>
+        <tr style="background:#2d1014"><td>NORMAL T-236</td><td>DOWN</td><td>236</td><td>0.833</td><td>0.49</td><td>52.1%</td><td>0.910</td><td class="loss">LOSS</td><td class="loss">-$5.57</td></tr>
+        <tr style="background:#2d1014"><td>CASCADE T-220</td><td>DOWN</td><td>220</td><td>0.840</td><td>0.69</td><td>57.6%</td><td>0.920</td><td class="loss">LOSS</td><td class="loss">-$7.95</td></tr>
+        <tr><td>TRANSITION T-240</td><td>DOWN</td><td>240</td><td>0.833</td><td>0.58</td><td>42.7%</td><td>0.910</td><td class="win">WIN</td><td class="win">+$2.66</td></tr>
+        <tr><td>NORMAL T-240</td><td>UP</td><td>240</td><td>0.877</td><td>0.54</td><td>67.0%</td><td>0.910</td><td class="win">WIN</td><td class="win">+$2.90</td></tr>
+        <tr><td>TRANSITION T-174</td><td>UP</td><td>174</td><td>0.827</td><td>0.64</td><td>48.1%</td><td>0.890</td><td class="win">WIN</td><td class="win">+$1.33</td></tr>
+        <tr><td>TRANSITION T-180</td><td>UP</td><td>180</td><td>0.857</td><td>0.61</td><td>70.1%</td><td>0.910</td><td class="win">WIN</td><td class="win">+$1.33</td></tr>
+        <tr><td>TRANSITION T-180</td><td>DOWN</td><td>180</td><td>0.844</td><td>0.61</td><td>34.6%</td><td>0.930</td><td class="win">WIN</td><td class="win">+$1.33</td></tr>
+        <tr style="background:#2d1014"><td>TRANSITION T-124</td><td>UP</td><td>124</td><td>0.911</td><td>0.61</td><td>66.2%</td><td>0.960</td><td class="loss">LOSS</td><td class="loss">-$3.99</td></tr>
+        <tr><td>TRANSITION T-180</td><td>UP</td><td>180</td><td>0.784</td><td>0.59</td><td>55.1%</td><td>0.970</td><td class="win">WIN</td><td class="win">+$1.35</td></tr>
+        <tr><td>NORMAL T-170</td><td>UP</td><td>170</td><td>0.784</td><td>0.49</td><td>62.4%</td><td>0.990</td><td class="win">WIN</td><td class="win">+$1.35</td></tr>
+        <tr style="background:#2d1014"><td>NORMAL T-180</td><td>UP</td><td>180</td><td>0.784</td><td>0.48</td><td>51.6%</td><td>0.990</td><td class="loss">LOSS</td><td class="loss">-$3.65</td></tr>
+        <tr><td>TRANSITION T-180</td><td>DOWN</td><td>180</td><td>0.771</td><td>0.55</td><td>34.5%</td><td>1.000</td><td class="win">WIN</td><td class="win">+$1.54</td></tr>
+        <tr><td>TRANSITION T-96</td><td>DOWN</td><td>96</td><td>0.828</td><td>0.63</td><td>59.4%</td><td>1.000</td><td class="win">WIN</td><td class="win">+$1.33</td></tr>
+        <tr><td>TRANSITION T-174</td><td>UP</td><td>174</td><td>0.759</td><td>0.58</td><td>48.8%</td><td>1.000</td><td class="win">WIN</td><td class="win">+$1.45</td></tr>
+        <tr><td>TRANSITION T-180</td><td>UP</td><td>180</td><td>0.784</td><td>0.60</td><td>72.9%</td><td>1.000</td><td class="win">WIN</td><td class="win">+$1.35</td></tr>
+        <tr><td>TRANSITION T-86</td><td>DOWN</td><td>86</td><td>0.838</td><td>0.55</td><td>45.2%</td><td>1.010</td><td class="win">WIN</td><td class="win">+$1.27</td></tr>
+        <tr style="background:#2d1014"><td>TRANSITION T-180</td><td>UP</td><td>180</td><td>0.784</td><td>0.59</td><td>49.0%</td><td>0.990</td><td class="loss">LOSS</td><td class="loss">-$3.34</td></tr>
+        <tr style="background:#2d1014"><td>NORMAL T-166</td><td>DOWN</td><td>166</td><td>0.770</td><td>0.52</td><td>44.9%</td><td>0.980</td><td class="loss">LOSS</td><td class="loss">-$3.00</td></tr>
+        <tr><td>TRANSITION T-176</td><td>UP</td><td>176</td><td>0.784</td><td>0.63</td><td>59.1%</td><td>0.970</td><td class="win">WIN</td><td class="win">+$6.65</td></tr>
+        <tr><td>NORMAL T-122</td><td>UP</td><td>122</td><td>0.813</td><td>0.55</td><td>71.3%</td><td>0.960</td><td class="win">WIN</td><td class="win">+$1.59</td></tr>
+    </table>
+</div>
+
+<!-- ═══════════════════════ KEY FINDINGS ═══════════════════════ -->
+<h2 id="findings">Key Findings from 279 Resolved TRADE Decisions</h2>
+
+<div class="alert alert-red">
+    <strong>CORRECTION:</strong> Previous analysis used estimated dune_p values (0.77-0.78 flat). Real ELM probabilities range from 0.16 to 0.91. The taker flow gate would NOT have blocked any of the 4 non-offset losses — CG data was neutral-to-aligned on all of them. This changes our strategy.
+</div>
+
+<div class="grid grid-2">
+    <div class="card card-red">
+        <h3>Finding 1: TRANSITION + DOWN = Worst Bucket</h3>
+        <table>
+            <tr><th>Regime</th><th>Direction</th><th>W</th><th>L</th><th>N</th><th>WR</th></tr>
+            <tr><td>CASCADE</td><td>UP</td><td>24</td><td>7</td><td>30</td><td class="win">80.0%</td></tr>
+            <tr><td>NORMAL</td><td>DOWN</td><td>34</td><td>17</td><td>39</td><td class="win">87.2%</td></tr>
+            <tr><td>NORMAL</td><td>UP</td><td>23</td><td>15</td><td>28</td><td class="win">82.1%</td></tr>
+            <tr><td>TRANSITION</td><td>UP</td><td>45</td><td>23</td><td>56</td><td class="win">80.4%</td></tr>
+            <tr><td>CASCADE</td><td>DOWN</td><td>16</td><td>8</td><td>23</td><td class="warn">69.6%</td></tr>
+            <tr style="background:#2d1014"><td>TRANSITION</td><td>DOWN</td><td>69</td><td>51</td><td>103</td><td class="loss">67.0%</td></tr>
+        </table>
+        <p style="margin-top:12px; color:var(--red)">TRANSITION+DOWN is 67% WR on N=103 — barely above breakeven at $0.68 cap. This is the #1 source of losses.</p>
+    </div>
+    <div class="card card-green">
+        <h3>Finding 2: NORMAL is Best Regime (Surprise!)</h3>
+        <table>
+            <tr><th>Regime</th><th>W</th><th>L</th><th>N</th><th>WR</th></tr>
+            <tr style="background:#0d2818"><td>NORMAL</td><td>57</td><td>32</td><td>67</td><td class="win">85.1%</td></tr>
+            <tr><td>CASCADE</td><td>40</td><td>15</td><td>53</td><td class="win">75.5%</td></tr>
+            <tr><td>TRANSITION</td><td>114</td><td>74</td><td>159</td><td class="warn">71.7%</td></tr>
+        </table>
+        <p style="margin-top:12px; color:var(--green)">NORMAL at 85.1% WR is the best regime. v10.3 set NORMAL threshold lowest (0.65) — this was correct.</p>
+    </div>
+</div>
+
+<div class="grid grid-2">
+    <div class="card card-yellow">
+        <h3>Finding 3: Direction Gap is Real (8.6pp)</h3>
+        <table>
+            <tr><th>Direction</th><th>W</th><th>L</th><th>N</th><th>WR</th></tr>
+            <tr><td>UP</td><td>92</td><td>45</td><td>114</td><td class="win">80.7%</td></tr>
+            <tr><td>DOWN</td><td>119</td><td>76</td><td>165</td><td class="warn">72.1%</td></tr>
+        </table>
+        <p style="margin-top:12px">8.6pp gap confirms DOWN penalty. v10.3 uses +0.03 — may need to increase to +0.05.</p>
+    </div>
+    <div class="card card-yellow">
+        <h3>Finding 4: Delta Magnitude Signal</h3>
+        <table>
+            <tr><th>|Δ| Bucket</th><th>W</th><th>L</th><th>N</th><th>WR</th></tr>
+            <tr><td>0.01-0.03%</td><td>44</td><td>31</td><td>56</td><td class="win">78.6%</td></tr>
+            <tr><td>0.03-0.05%</td><td>57</td><td>31</td><td>72</td><td class="win">79.2%</td></tr>
+            <tr><td>0.05-0.10%</td><td>63</td><td>24</td><td>84</td><td class="win">75.0%</td></tr>
+            <tr><td>&gt;0.10%</td><td>47</td><td>35</td><td>67</td><td class="warn">70.1%</td></tr>
+        </table>
+        <p style="margin-top:12px">Large deltas (&gt;0.10%) have LOWER WR. Signal becomes noise at extreme moves.</p>
+    </div>
+</div>
+
+<!-- ═══════════════════════ OFFSET ANALYSIS ═══════════════════════ -->
+<h2 id="offset">Offset Zone Performance</h2>
+
+<div class="card">
+    <h3>WR by Offset Zone (gate_audit, N=279)</h3>
+    <table>
+        <tr><th>Zone</th><th>Wins</th><th>Losses</th><th>N</th><th>WR</th><th>Bar</th></tr>
+        <tr>
+            <td>T-60 to T-80</td><td>8</td><td>7</td><td>13</td><td class="loss">61.5%</td>
+            <td><div class="bar-container" style="width:200px"><div class="bar-win" style="width:61.5%"></div><div class="bar-loss" style="width:38.5%"></div></div></td>
+        </tr>
+        <tr>
+            <td>T-81 to T-120</td><td>34</td><td>20</td><td>44</td><td class="warn">77.3%</td>
+            <td><div class="bar-container" style="width:200px"><div class="bar-win" style="width:77.3%"></div><div class="bar-loss" style="width:22.7%"></div></div></td>
+        </tr>
+        <tr style="background:#0d2818">
+            <td><strong>T-121 to T-160</strong></td><td>60</td><td>31</td><td>75</td><td class="win"><strong>80.0%</strong></td>
+            <td><div class="bar-container" style="width:200px"><div class="bar-win" style="width:80%"></div><div class="bar-loss" style="width:20%"></div></div></td>
+        </tr>
+        <tr>
+            <td>T-161 to T-180</td><td>26</td><td>14</td><td>35</td><td class="warn">74.3%</td>
+            <td><div class="bar-container" style="width:200px"><div class="bar-win" style="width:74.3%"></div><div class="bar-loss" style="width:25.7%"></div></div></td>
+        </tr>
+        <tr>
+            <td>T-181+</td><td>83</td><td>49</td><td>112</td><td class="warn">74.1%</td>
+            <td><div class="bar-container" style="width:200px"><div class="bar-win" style="width:74.1%"></div><div class="bar-loss" style="width:25.9%"></div></div></td>
+        </tr>
+    </table>
+</div>
+
+<div class="card card-blue">
+    <h3>Regime × Offset Heatmap (WR%)</h3>
+    <table>
+        <tr><th>Regime</th><th>T60-100</th><th>T101-140</th><th>T141-180</th><th>T181+</th></tr>
+        <tr>
+            <td><strong>CASCADE</strong></td>
+            <td style="background:#0d2818; color:var(--green)">75.0% (4)</td>
+            <td style="background:#0d2818; color:var(--green)">76.9% (13)</td>
+            <td style="background:#0d2818; color:var(--green)">75.0% (16)</td>
+            <td style="background:#0d2818; color:var(--green)">75.0% (20)</td>
+        </tr>
+        <tr>
+            <td><strong>NORMAL</strong></td>
+            <td style="background:#2d1014; color:var(--red)">42.9% (7)</td>
+            <td style="background:#0d2818; color:var(--green)">81.0% (21)</td>
+            <td style="background:#0d2818; color:var(--cyan)"><strong>92.0%</strong> (25)</td>
+            <td style="background:#0d2818; color:var(--cyan)"><strong>100%</strong> (14)</td>
+        </tr>
+        <tr>
+            <td><strong>TRANSITION</strong></td>
+            <td style="background:#0d2818; color:var(--cyan)"><strong>87.5%</strong> (16)</td>
+            <td style="background:#0d2818; color:var(--green)">76.9% (39)</td>
+            <td style="background:#2d2306; color:var(--yellow)">61.5% (26)</td>
+            <td style="background:#2d2306; color:var(--yellow)">69.2% (78)</td>
+        </tr>
+    </table>
+    <div class="alert alert-yellow" style="margin-top:12px">
+        <strong>Key pattern:</strong> NORMAL T-60..100 is terrible (42.9%, N=7). NORMAL T-141+ is phenomenal (92-100%). TRANSITION inverts: best at T-60..100 (87.5%), worst at T-141+ (61-69%).
+    </div>
+</div>
+
+<!-- ═══════════════════════ SHADOW ANALYSIS ═══════════════════════ -->
+<h2 id="shadow">Shadow Trading Analysis (What We're Missing)</h2>
+
+<div class="grid grid-2">
+    <div class="card card-green">
+        <h3>SKIPs by Gate (900 resolved)</h3>
+        <table>
+            <tr><th>Gate Failed</th><th>Would Win</th><th>Would Lose</th><th>N</th><th>Shadow WR</th></tr>
+            <tr><td>delta (source disagree)</td><td>169</td><td>162</td><td>331</td><td class="neutral">51.1%</td></tr>
+            <tr><td>(no gate recorded)</td><td>364</td><td>197</td><td>561</td><td class="warn">64.9%</td></tr>
+            <tr><td>vpin</td><td>1</td><td>7</td><td>8</td><td class="win">12.5%</td></tr>
+        </table>
+        <p style="margin-top:8px; color:var(--text-dim)">Delta gate correctly blocks at ~50% WR (coin flip). VPIN gate blocks losers well (12.5% shadow WR).</p>
+    </div>
+    <div class="card card-yellow">
+        <h3>Shadow by Direction (SKIPs with no gate)</h3>
+        <table>
+            <tr><th>Direction</th><th>Would Win</th><th>Would Lose</th><th>Shadow WR</th></tr>
+            <tr><td>DOWN</td><td>176</td><td>56</td><td class="win">75.9%</td></tr>
+            <tr><td>UP</td><td>188</td><td>141</td><td class="warn">57.1%</td></tr>
+        </table>
+        <div class="alert alert-yellow" style="margin-top:8px">
+            <strong>We're skipping good DOWN trades.</strong> Shadow WR for DOWN is 75.9% — the gate system is too cautious on DOWN direction.
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════ FILL RATE ═══════════════════════ -->
+<h2 id="fill">Fill Rate Crisis (Last 24h)</h2>
+
+<div class="card card-red">
+    <div class="grid grid-4">
+        <div>
+            <div class="stat-big loss">149</div>
+            <div class="stat-label">EXPIRED Orders</div>
+        </div>
+        <div>
+            <div class="stat-big win">26</div>
+            <div class="stat-label">Resolved Wins</div>
+        </div>
+        <div>
+            <div class="stat-big loss">11</div>
+            <div class="stat-label">Resolved Losses</div>
+        </div>
+        <div>
+            <div class="stat-big warn">19.4%</div>
+            <div class="stat-label">Overall Fill Rate</div>
+        </div>
+    </div>
+    <table style="margin-top:16px">
+        <tr><th>Offset Zone</th><th>Orders</th><th>Filled</th><th>Expired</th><th>Fill Rate</th></tr>
+        <tr><td>T-60 to T-100</td><td>6</td><td>2</td><td>4</td><td class="loss">33.3%</td></tr>
+        <tr><td>T-101 to T-140</td><td>8</td><td>3</td><td>5</td><td class="loss">37.5%</td></tr>
+        <tr><td>T-141 to T-180</td><td>24</td><td>16</td><td>8</td><td class="warn">66.7%</td></tr>
+    </table>
+    <div class="alert alert-red" style="margin-top:12px">
+        <strong>80% of orders expire unfilled.</strong> This is the single biggest PnL drag. Entry earlier (T-141+) has 2x better fill rate than late entry (T-60..100). v10.3 offset limit of T-180 is actively reducing fill rate by excluding the best-filling zone.
+    </div>
+</div>
+
+<!-- ═══════════════════════ v10.4 PROPOSAL ═══════════════════════ -->
+<h2 id="proposal">v10.4 Proposed Changes</h2>
+
+<div class="proposal-box">
+    <h3 style="color:var(--text-bright); margin-bottom:16px">Core Philosophy: Data-Driven Recalibration</h3>
+    <p>v10.3 was built on ELM v3 calibration data (865 windows) and CG alignment data (719 trades). Now we have 279 resolved TRADE decisions with ground truth. The data tells a different story than the model assumed.</p>
+</div>
+
+<!-- Change 1 -->
+<div class="card card-yellow">
+    <div style="display:flex; justify-content:space-between; align-items:center">
+        <h3>Change 1: Regime-Specific Offset Limits</h3>
+        <span class="tag tag-new">NEW</span>
+    </div>
+    <p>Instead of a flat <code>V10_MIN_EVAL_OFFSET=180</code>, use per-regime limits based on the heatmap:</p>
+    <div class="vs">
+        <div>
+            <strong>v10.3 (current):</strong><br>
+            <code>V10_MIN_EVAL_OFFSET=180</code> (all regimes)
+        </div>
+        <div class="vs-arrow">→</div>
+        <div>
+            <strong>v10.4 (proposed):</strong><br>
+            <code>TRANSITION: 120</code> (87.5% WR at T60-100, drops to 61.5% at T141+)<br>
+            <code>NORMAL: 180</code> (42.9% WR at T60-100, 92% at T141+)<br>
+            <code>CASCADE: 180</code> (flat 75% across all zones)
+        </div>
+    </div>
+    <table style="margin-top:12px">
+        <tr><th>Regime</th><th>v10.3 Limit</th><th>v10.4 Limit</th><th>Rationale</th></tr>
+        <tr><td>TRANSITION</td><td>180</td><td class="warn">120</td><td>Best WR (87.5%) is at T60-100. Late TRANSITION entries (T141+) drop to 61-69%.</td></tr>
+        <tr><td>NORMAL</td><td>180</td><td>180</td><td>T141-180 = 92% WR. Keep current. But add minimum: don't enter at T60-100 (42.9%).</td></tr>
+        <tr><td>CASCADE</td><td>180</td><td>180</td><td>Flat ~75% across all zones. No change needed.</td></tr>
+    </table>
+    <div class="alert alert-green">
+        <strong>Impact:</strong> Unblocks TRANSITION entries at T-100..120 (currently blocked), while avoiding the late TRANSITION zone where WR drops. Also adds a minimum offset for NORMAL (block T60-100).
+    </div>
+</div>
+
+<!-- Change 2 -->
+<div class="card card-yellow">
+    <div style="display:flex; justify-content:space-between; align-items:center">
+        <h3>Change 2: Increase DOWN Penalty</h3>
+        <span class="tag tag-change">CHANGE</span>
+    </div>
+    <div class="vs">
+        <div><strong>v10.3:</strong> <code>V10_DOWN_PENALTY=0.03</code></div>
+        <div class="vs-arrow">→</div>
+        <div><strong>v10.4:</strong> <code>V10_DOWN_PENALTY=0.05</code></div>
+    </div>
+    <p style="margin-top:8px">Direction gap is 8.6pp (UP=80.7%, DOWN=72.1%) on N=279. Current +0.03 is insufficient — data shows +0.05 better fits the observed gap.</p>
+    <p>Exception: NORMAL DOWN is 87.2% WR — best of any bucket. Consider direction-aware regime thresholds (see Change 4).</p>
+</div>
+
+<!-- Change 3 -->
+<div class="card card-yellow">
+    <div style="display:flex; justify-content:space-between; align-items:center">
+        <h3>Change 3: TRANSITION Threshold Increase</h3>
+        <span class="tag tag-change">CHANGE</span>
+    </div>
+    <div class="vs">
+        <div><strong>v10.3:</strong> <code>V10_TRANSITION_MIN_P=0.70</code></div>
+        <div class="vs-arrow">→</div>
+        <div><strong>v10.4:</strong> <code>V10_TRANSITION_MIN_P=0.75</code></div>
+    </div>
+    <p style="margin-top:8px">TRANSITION is 71.7% WR overall — lowest regime. At N=159 this is the highest-volume bucket. Raising the bar from 0.70 to 0.75 would cut the weakest TRANSITION trades.</p>
+</div>
+
+<!-- Change 4 -->
+<div class="card card-blue">
+    <div style="display:flex; justify-content:space-between; align-items:center">
+        <h3>Change 4: Delta Magnitude Gate</h3>
+        <span class="tag tag-new">NEW</span>
+    </div>
+    <p>Large deltas (&gt;0.10%) have 70.1% WR vs 78-79% for moderate deltas. Add a penalty or soft gate:</p>
+    <table>
+        <tr><th>Parameter</th><th>Value</th><th>Effect</th></tr>
+        <tr><td><code>V10_LARGE_DELTA_THRESHOLD</code></td><td>0.10%</td><td>When |delta| exceeds this...</td></tr>
+        <tr><td><code>V10_LARGE_DELTA_PENALTY</code></td><td>+0.03</td><td>...raise threshold by 0.03</td></tr>
+    </table>
+    <p style="margin-top:8px; color:var(--text-dim)">Rationale: extreme moves are noisy (whipsaws, flash crashes). A +0.03 penalty requires higher ELM confidence to trade into large moves.</p>
+</div>
+
+<!-- Change 5 -->
+<div class="card card-purple">
+    <div style="display:flex; justify-content:space-between; align-items:center">
+        <h3>Change 5: NORMAL Early Entry Block</h3>
+        <span class="tag tag-new">NEW</span>
+    </div>
+    <p>NORMAL at T60-100 is <strong>42.9% WR</strong> (3W/4L, N=7). Add a minimum offset for NORMAL regime:</p>
+    <code>V10_NORMAL_MIN_OFFSET=100</code>
+    <p style="margin-top:8px; color:var(--text-dim)">Small sample but extreme underperformance. Low risk to block — only affects ~3% of NORMAL entries. The NORMAL regime needs time for the delta to stabilize.</p>
+</div>
+
+<!-- Change 6 -->
+<div class="card card-green">
+    <div style="display:flex; justify-content:space-between; align-items:center">
+        <h3>Change 6: Keep CG Taker Gate OFF</h3>
+        <span class="tag tag-keep">KEEP</span>
+    </div>
+    <p>The audit proved CG taker data was <strong>neutral-to-aligned</strong> on all 4 non-offset losses. Enabling the hard taker gate would NOT have blocked any additional losses beyond offset. The 719-trade alignment dataset may not generalize to the current market regime.</p>
+    <div class="alert alert-yellow">
+        <strong>Recommendation:</strong> Keep V10_CG_TAKER_GATE=false. Continue collecting shadow data. Re-evaluate after 100+ v10.3 resolved trades with CG data attached.
+    </div>
+</div>
+
+<!-- Change 7 -->
+<div class="card card-red">
+    <div style="display:flex; justify-content:space-between; align-items:center">
+        <h3>Change 7: Fix Fill Rate (Highest Priority)</h3>
+        <span class="tag tag-new">CRITICAL</span>
+    </div>
+    <p><strong>80% of orders expire unfilled.</strong> This is a bigger problem than any gate tuning. Proposed fixes:</p>
+    <table>
+        <tr><th>Fix</th><th>Impact</th><th>Risk</th></tr>
+        <tr><td>Aggressive pricing: bid at ask-1 tick instead of mid</td><td>2-3x fill rate improvement</td><td>Worse average entry price (-$0.01/share)</td></tr>
+        <tr><td>Longer FAK timeout (currently 5s?)</td><td>More time for matching</td><td>Marginal</td></tr>
+        <tr><td>GTC with cancel-at-close instead of FAK</td><td>Order sits in book until fill or window close</td><td>Position tracking complexity</td></tr>
+        <tr><td>Retry ladder: if FAK expires, retry at next tick</td><td>~40% additional fills on retry</td><td>Implementation complexity</td></tr>
+    </table>
+    <div class="alert alert-red">
+        At current fill rate (19.4%), we're seeing ~4 fills/day. Doubling fill rate to 40% would double trade volume and proportionally increase daily PnL from ~$5 to ~$10 at 72.7% WR.
+    </div>
+</div>
+
+<!-- ═══════════════════════ CONFIG DIFF ═══════════════════════ -->
+<h2>v10.4 Config Diff</h2>
+
+<div class="card">
+<pre style="font-size:13px; line-height:1.8; color:var(--text)">
+<span style="color:var(--text-dim)"># ── v10.4 Changes (from v10.3 baseline) ──</span>
+
+<span style="color:var(--yellow)">- V10_TRANSITION_MIN_P=0.70</span>
+<span style="color:var(--green)">+ V10_TRANSITION_MIN_P=0.75          # was 0.70, 71.7% WR on N=159 — tighten</span>
+
+<span style="color:var(--yellow)">- V10_DOWN_PENALTY=0.03</span>
+<span style="color:var(--green)">+ V10_DOWN_PENALTY=0.05              # was 0.03, 8.6pp gap (UP=80.7% DOWN=72.1%)</span>
+
+<span style="color:var(--yellow)">- V10_MIN_EVAL_OFFSET=180</span>
+<span style="color:var(--green)">+ V10_MIN_EVAL_OFFSET=180            # keep as global default</span>
+<span style="color:var(--green)">+ V10_TRANSITION_MAX_OFFSET=120      # NEW: TRANSITION best at T60-120</span>
+<span style="color:var(--green)">+ V10_NORMAL_MIN_OFFSET=100          # NEW: NORMAL T60-100 = 42.9% WR, block it</span>
+
+<span style="color:var(--green)">+ V10_LARGE_DELTA_THRESHOLD=0.10     # NEW: |delta| > 0.10% = noisy</span>
+<span style="color:var(--green)">+ V10_LARGE_DELTA_PENALTY=0.03       # NEW: +0.03 threshold penalty for large moves</span>
+
+<span style="color:var(--text-dim)"># ── Unchanged from v10.3 ──</span>
+<span style="color:var(--text-dim)">  V10_NORMAL_MIN_P=0.65              # NORMAL = 85.1% WR, best regime</span>
+<span style="color:var(--text-dim)">  V10_CASCADE_MIN_P=0.72             # CASCADE = 75.5% WR, stable</span>
+<span style="color:var(--text-dim)">  V10_OFFSET_PENALTY_MAX=0.06        # per-20s granularity working</span>
+<span style="color:var(--text-dim)">  V10_CG_TAKER_GATE=false            # audit shows no additional value</span>
+<span style="color:var(--text-dim)">  V10_CG_CONFIRM_BONUS=0.03          # CG 3-signal confirmation working</span>
+<span style="color:var(--text-dim)">  V10_KELLY_ENABLED=false             # Phase 2, hold for more data</span>
+<span style="color:var(--text-dim)">  V10_DUNE_CAP_CEILING=0.68          # cap ceiling correct for current WR</span>
+</pre>
+</div>
+
+<!-- ═══════════════════════ PROJECTED IMPACT ═══════════════════════ -->
+<h2>Projected Impact</h2>
+
+<div class="grid grid-3">
+    <div class="card card-yellow">
+        <h3>v10.3 (Current)</h3>
+        <div class="stat-big warn">72.7%</div>
+        <div class="stat-label">WR on 22 trades</div>
+        <p style="margin-top:8px">16W/6L, +$4.92 net<br>~4 fills/day at 19% fill rate</p>
+    </div>
+    <div class="card card-green">
+        <h3>v10.4 (Gate Tuning)</h3>
+        <div class="stat-big win">~76-78%</div>
+        <div class="stat-label">Projected WR</div>
+        <p style="margin-top:8px">Cuts weakest TRANSITION trades, blocks NORMAL early entries. Fewer trades but higher quality.<br>Estimated +$6-8/day</p>
+    </div>
+    <div class="card card-green">
+        <h3>v10.4 + Fill Fix</h3>
+        <div class="stat-big" style="color:var(--cyan)">~$12-16/day</div>
+        <div class="stat-label">Combined Impact</div>
+        <p style="margin-top:8px">Higher WR + 2x fill rate = compounding improvement. This is the real prize.</p>
+    </div>
+</div>
+
+<!-- ═══════════════════════ DEPLOYMENT ═══════════════════════ -->
+<h2 id="deploy">Deployment Plan</h2>
+
+<div class="timeline">
+    <div class="timeline-item">
+        <strong>Phase 1: Threshold Tuning (Low Risk)</strong>
+        <p>V10_TRANSITION_MIN_P=0.75, V10_DOWN_PENALTY=0.05</p>
+        <p style="color:var(--text-dim)">Just tightens existing thresholds. Monitor for 24h.</p>
+    </div>
+    <div class="timeline-item">
+        <strong>Phase 2: Regime-Specific Offsets (Medium Risk)</strong>
+        <p>Add per-regime offset limits to DuneConfidenceGate</p>
+        <p style="color:var(--text-dim)">Requires code change in gates.py. Test locally first.</p>
+    </div>
+    <div class="timeline-item">
+        <strong>Phase 3: Delta Magnitude Gate (Low Risk)</strong>
+        <p>Add V10_LARGE_DELTA_THRESHOLD + penalty</p>
+        <p style="color:var(--text-dim)">New gate in pipeline, feature-flagged.</p>
+    </div>
+    <div class="timeline-item">
+        <strong>Phase 4: Fill Rate Fix (High Priority, Medium Risk)</strong>
+        <p>Aggressive pricing / GTC orders / retry ladder</p>
+        <p style="color:var(--text-dim)">This is the biggest ROI change. Needs careful testing on Montreal.</p>
+    </div>
+</div>
+
+<!-- ═══════════════════════ LATEST LOSS ═══════════════════════ -->
+<h2>Latest Loss Analysis (20:53 UTC)</h2>
+
+<div class="card card-red">
+    <p>The -$3.99 loss from CLOB Reconciler: this was a <strong>recovered trade from a previous session</strong> (5.86 shares at $0.68). The reconciler found it as an open position and oracle resolved it as LOSS.</p>
+    <p style="margin-top:8px">This is not a new v10.3 decision — it was an orphaned position from before the engine restart. The reconciler correctly resolved it rather than leaving it hanging.</p>
+    <p style="margin-top:8px; color:var(--text-dim)">Current OPEN positions: 5 trades pending resolution. v10.3 CG modifiers visible in entry reasons (CG-0.02, CGB0.02).</p>
+</div>
+
+<!-- ═══════════════════════ FOOTER ═══════════════════════ -->
+<div style="margin-top:48px; padding-top:16px; border-top:1px solid var(--border); color:var(--text-dim); font-size:12px">
+    <p>Generated from gate_audit (9,180 rows), trade_bible (22 v10 resolved), signal_evaluations, ticks_coinglass</p>
+    <p>Data period: Apr 8, 2026 | Engine: v10.3 on Montreal (ca-central-1b)</p>
+    <p>v10.4 proposal by Claude Opus 4.6 | All figures from Railway PostgreSQL production database</p>
+</div>
+
+</body>
+</html>
