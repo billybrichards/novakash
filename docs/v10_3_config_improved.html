@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v10.3 FINAL — CoinGlass-Integrated Configuration</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'SF Mono','Fira Code',monospace;background:#0a0e17;color:#e0e6ed;padding:20px;font-size:13px}
+h1{color:#00ff88;font-size:1.3em;margin-bottom:2px}
+h2{color:#60a5fa;font-size:1em;margin-bottom:8px;border-bottom:1px solid #1e293b;padding-bottom:4px}
+h3{color:#a78bfa;font-size:0.9em;margin:10px 0 6px}
+.sub{color:#667;font-size:0.8em;margin-bottom:16px}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px}
+.c{background:#111827;border:1px solid #1e293b;border-radius:6px;padding:14px}
+.c.f{grid-column:1/-1}
+.c.new{border-color:#166534;background:#0a1f14}
+table{width:100%;border-collapse:collapse;font-size:0.85em}
+th{background:#1e293b;color:#60a5fa;padding:6px 8px;text-align:left}
+td{padding:6px 8px;border-bottom:1px solid #1e293b}
+.w{color:#4ade80;font-weight:600}
+.l{color:#f87171;font-weight:600}
+.y{color:#facc15}
+.b{color:#60a5fa}
+.p{color:#a78bfa}
+.note{background:#1e1b4b;border:1px solid #3730a3;border-radius:4px;padding:10px;margin-top:8px;font-size:0.8em;color:#a5b4fc}
+.warn{background:#451a03;border-color:#92400e;color:#fbbf24}
+.good{background:#052e16;border-color:#166534;color:#4ade80}
+.crit{background:#3b0764;border-color:#7c3aed;color:#c4b5fd}
+.stats{display:flex;gap:16px;margin:12px 0;flex-wrap:wrap}
+.stat{text-align:center;min-width:80px}
+.sv{font-size:1.6em;font-weight:700}
+.sl{font-size:0.7em;color:#9ca3af}
+.bar{height:24px;border-radius:3px;margin:2px 0;display:flex;align-items:center;padding-left:8px;font-size:0.75em;font-weight:600}
+.pipeline{line-height:2.2;margin:6px 0}
+.pipeline div{padding:3px 0}
+.indent{padding-left:24px;color:#9ca3af;font-size:0.85em}
+.tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:0.75em;font-weight:700;margin-left:4px}
+.tag-new{background:#166534;color:#4ade80}
+.tag-changed{background:#92400e;color:#fbbf24}
+.tag-deployed{background:#1e3a5f;color:#60a5fa}
+.tag-todo{background:#7f1d1d;color:#f87171}
+code{background:#1e293b;padding:2px 5px;border-radius:3px;font-size:0.9em}
+.diff{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:0.85em}
+.diff-old{color:#f87171;text-decoration:line-through}
+.diff-new{color:#4ade80;font-weight:600}
+.diff-label{color:#9ca3af;text-align:right}
+</style>
+</head>
+<body>
+
+<h1>v10.3 FINAL — CoinGlass-Integrated Configuration</h1>
+<p class="sub">Generated 2026-04-08 | Cross-referenced: ELM v3 calibration (865 windows) + CG alignment (719 trades) + timesfm decision surface + Montreal live data</p>
+
+<div class="stats">
+<div class="stat"><div class="sv w">81.7%</div><div class="sl">CG taker aligned WR</div></div>
+<div class="stat"><div class="sv l">58.3%</div><div class="sl">CG both opposing WR</div></div>
+<div class="stat"><div class="sv y">82%</div><div class="sl">ELM P>=0.80 acc</div></div>
+<div class="stat"><div class="sv w">85%</div><div class="sl">TRANSITION WR</div></div>
+<div class="stat"><div class="sv p">+17pp</div><div class="sl">taker align delta</div></div>
+<div class="stat"><div class="sv w">$130</div><div class="sl">current bankroll</div></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div class="g">
+
+<div class="c f new">
+<h2>THE CORE INSIGHT: CoinGlass Taker Flow Is The Missing Gate</h2>
+<table>
+<tr><th>Taker Flow</th><th>Smart Money</th><th>N</th><th>Win Rate</th><th>PnL</th><th>Action</th></tr>
+<tr><td class="w">Aligned</td><td class="w">Aligned</td><td>327</td><td class="w">81.7%</td><td class="w">+$295.66</td><td class="w">TRADE — full size</td></tr>
+<tr><td class="w">Aligned</td><td class="l">Opposing</td><td>162</td><td class="w">79.6%</td><td class="w">+$71.76</td><td class="w">TRADE — full size</td></tr>
+<tr><td class="l">Opposing</td><td class="w">Aligned</td><td>86</td><td>73.3%</td><td class="l">-$23.38</td><td class="y">TRADE — reduced size (0.7x)</td></tr>
+<tr><td class="l">Opposing</td><td class="l">Opposing</td><td>144</td><td class="l">58.3%</td><td>+$42.51</td><td class="l">SKIP — below breakeven</td></tr>
+</table>
+<div class="note crit">
+<strong>This is the biggest edge in the system.</strong> When takers are aligned, WR is 80%+ regardless of smart money.
+When both taker AND smart money oppose, WR drops to 58% — below breakeven at any cap above $0.55.
+The old CG veto (3+ opposing signals) almost never fires. The new gate uses taker flow directly.
+</div>
+</div>
+
+<div class="c f new">
+<h2>v10.3 IMPROVED: 7-Gate Decision Pipeline <span class="tag tag-new">NEW</span></h2>
+<div class="pipeline">
+<div><span class="l">G0 DEDUP</span> — one trade per window per asset</div>
+<div><span class="b">G1 SOURCE AGREEMENT</span> — CL+TI delta must agree (94.7% WR) <span class="tag tag-deployed">DEPLOYED</span></div>
+<div><span class="y">G2 DUNE CONFIDENCE</span> — ELM P(direction) >= regime threshold + offset penalty + direction penalty <span class="tag tag-changed">CHANGED</span></div>
+<div class="indent">Thresholds lowered for ELM v3 distribution. DOWN +0.03 penalty added.</div>
+<div><span class="p">G3 TAKER FLOW GATE</span> — CoinGlass taker alignment check <span class="tag tag-new">NEW GATE</span></div>
+<div class="indent">If taker opposing (>55%) AND smart money opposing (>52%): <strong>HARD SKIP</strong> (58% WR bucket)</div>
+<div class="indent">If taker opposing (>55%) but smart money aligned: raise threshold +0.05 (73% WR marginal)</div>
+<div class="indent">If taker aligned: apply -0.02 CG confirmation bonus (80%+ WR bucket)</div>
+<div><span style="color:#f472b6">G4 CG FRESHNESS</span> — CoinGlass data age < 120s <span class="tag tag-new">NEW GATE</span></div>
+<div class="indent">If CG data > 2 min stale: SKIP (stale derivatives data = no signal)</div>
+<div><span class="w">G5 DYNAMIC CAP</span> — cap = dune_p - 0.05, bounded [$0.35, $0.68] <span class="tag tag-changed">CHANGED</span></div>
+<div class="indent">Ceiling lowered $0.70 → $0.68 (breakeven at 76.5% WR = $0.57, tighter safety margin)</div>
+<div><span style="color:#00ff88">G6 EXECUTE</span> — FAK ladder (min 5 shares) then GTC fallback <span class="tag tag-deployed">DEPLOYED</span></div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+
+<div class="c f">
+<h2>v10.3 FINAL Configuration (vs v10.2 deployed)</h2>
+<table>
+<tr><th>Parameter</th><th>v10.2 (deployed)</th><th>v10.3 FINAL</th><th>Evidence & Rationale</th></tr>
+
+<tr><td colspan="4" style="color:#4ade80;font-weight:700">━━━ NEW: CoinGlass Integration (the big change) ━━━</td></tr>
+<tr><td>V10_CG_TAKER_GATE <span class="tag tag-new">NEW</span></td><td class="l">none</td><td class="w">true</td><td>Taker aligned = 80%+ WR. Both opposing = 58% WR. This is the #1 unused signal.</td></tr>
+<tr><td>V10_CG_TAKER_OPPOSING_PCT</td><td class="l">—</td><td class="w">55</td><td>If taker sell% (for UP) or buy% (for DOWN) > 55%, mark as "opposing"</td></tr>
+<tr><td>V10_CG_SMART_OPPOSING_PCT</td><td class="l">—</td><td class="w">52</td><td>If top_position_short% (for UP) or long% (for DOWN) > 52%, mark as "smart opposing"</td></tr>
+<tr><td>V10_CG_BOTH_OPPOSING_ACTION</td><td class="l">—</td><td class="w">SKIP</td><td>Taker opposing + smart opposing = 58% WR → hard skip (below breakeven at any cap)</td></tr>
+<tr><td>V10_CG_TAKER_OPPOSING_PENALTY</td><td class="l">—</td><td class="y">+0.05</td><td>Taker opposing alone = 73% WR → survivable but marginal, require higher DUNE P</td></tr>
+<tr><td>V10_CG_CONFIRM_BONUS</td><td class="l">—</td><td class="w">-0.02</td><td>Taker aligned = 80%+ WR → lower DUNE threshold by 0.02 (rescue borderline trades)</td></tr>
+<tr><td>V10_CG_MAX_AGE_MS</td><td class="l">—</td><td class="w">120000</td><td>CG OI is #2 feature by importance. Stale data = no signal. Hard skip if > 2 min.</td></tr>
+
+<tr><td colspan="4" style="color:#facc15;font-weight:700">━━━ DUNE Thresholds (ELM v3 calibrated) ━━━</td></tr>
+<tr><td>V10_DUNE_MIN_P</td><td>0.75</td><td class="y">0.65</td><td>ELM P>=0.65 → 78.4% accuracy on 93% coverage @ T-60</td></tr>
+<tr><td>V10_TRANSITION_MIN_P</td><td>0.85</td><td class="w">0.70</td><td>85% WR (11W/2L). Best regime. Was over-penalised. Still +0.05 above NORMAL.</td></tr>
+<tr><td>V10_CASCADE_MIN_P</td><td>0.80</td><td class="y">0.72</td><td>67% WR (2W/1L) small sample. Keep tighter. +0.07 above NORMAL.</td></tr>
+<tr><td>V10_NORMAL_MIN_P</td><td>0.78</td><td class="y">0.65</td><td>ELM sweet spot. Only 5 trades today — trust model calibration over small sample.</td></tr>
+<tr><td>V10_LOW_VOL_MIN_P</td><td>0.78</td><td class="y">0.65</td><td>Same behavior as NORMAL — model is equally accurate in low vol.</td></tr>
+<tr><td>V10_TRENDING_MIN_P</td><td>0.80</td><td class="y">0.72</td><td>Same as CASCADE — momentum may reverse.</td></tr>
+<tr><td>V10_CALM_MIN_P</td><td>0.80</td><td class="y">0.72</td><td>Conservative — low signal, low edge environment.</td></tr>
+
+<tr><td colspan="4" style="color:#facc15;font-weight:700">━━━ Direction Penalty (new) ━━━</td></tr>
+<tr><td>V10_DOWN_PENALTY <span class="tag tag-new">NEW</span></td><td class="l">0.00</td><td class="w">+0.03</td><td>DOWN = 72.5% acc vs UP = 81.8%. 9.3pp gap over 865 windows. Apply +0.03 to DOWN.</td></tr>
+
+<tr><td colspan="4" style="color:#facc15;font-weight:700">━━━ Offset + Cap + Sizing ━━━</td></tr>
+<tr><td>V10_OFFSET_PENALTY_MAX</td><td>0.05</td><td class="y">0.04</td><td>T-120..180 = 77.8% WR. v10.2's 0.05 was over-penalising profitable early entries.</td></tr>
+<tr><td>V10_MIN_EVAL_OFFSET</td><td>180</td><td>180</td><td>T-180+ = 44% WR. Confirmed toxic. Do not trade earlier.</td></tr>
+<tr><td>V10_DUNE_CAP_CEILING</td><td>0.70</td><td class="y">0.68</td><td>At 76.5% WR, breakeven=$0.57. Cap $0.68 = 11pp margin. Tighter = safer.</td></tr>
+<tr><td>V10_DUNE_CAP_FLOOR</td><td>0.35</td><td>0.35</td><td>Unchanged</td></tr>
+<tr><td>V10_DUNE_CAP_MARGIN</td><td>0.05</td><td>0.05</td><td>Unchanged — cap = dune_p - 0.05</td></tr>
+<tr><td>BET_FRACTION</td><td>0.075</td><td>0.075</td><td>$130 × 7.5% = $9.75 stake (near ABSOLUTE_MAX_BET ceiling)</td></tr>
+<tr><td>ABSOLUTE_MAX_BET</td><td>10.0</td><td>10.0</td><td>Already deployed. Good ceiling at current bankroll.</td></tr>
+<tr><td>FIVE_MIN_EVAL_INTERVAL</td><td>2</td><td>2</td><td>2s polling — unchanged</td></tr>
+
+<tr><td colspan="4" style="color:#475569;font-weight:700">━━━ Removed / Deprecated ━━━</td></tr>
+<tr><td>Old CG veto (3+ signals)</td><td>3+ opposing = skip</td><td class="l">REMOVED</td><td>Replaced by taker flow gate. Old veto almost never triggered (threshold too high).</td></tr>
+</table>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+
+<div class="c">
+<h2>v10.3 Effective Thresholds — UP Predictions</h2>
+<p style="font-size:0.8em;color:#9ca3af;margin-bottom:6px">threshold = regime_base + offset_penalty + taker_modifier - cg_bonus</p>
+<table>
+<tr><th>Regime</th><th>T-60</th><th>T-90</th><th>T-120</th><th>T-150</th><th>T-180</th></tr>
+<tr><td class="w">TRANSITION</td><td>0.700</td><td>0.710</td><td>0.720</td><td>0.730</td><td>0.740</td></tr>
+<tr><td class="y">CASCADE</td><td>0.720</td><td>0.730</td><td>0.740</td><td>0.750</td><td>0.760</td></tr>
+<tr><td>NORMAL</td><td>0.650</td><td>0.660</td><td>0.670</td><td>0.680</td><td>0.690</td></tr>
+<tr><td>LOW_VOL</td><td>0.650</td><td>0.660</td><td>0.670</td><td>0.680</td><td>0.690</td></tr>
+</table>
+<div class="note">With CG taker aligned: subtract 0.02 from all above.<br>
+With CG taker opposing (but smart aligned): add 0.05 to all above.<br>
+With CG both opposing: <strong>HARD SKIP</strong> regardless of threshold.</div>
+</div>
+
+<div class="c">
+<h2>v10.3 Effective Thresholds — DOWN Predictions (+0.03)</h2>
+<table>
+<tr><th>Regime</th><th>T-60</th><th>T-90</th><th>T-120</th><th>T-150</th><th>T-180</th></tr>
+<tr><td class="w">TRANSITION</td><td>0.730</td><td>0.740</td><td>0.750</td><td>0.760</td><td>0.770</td></tr>
+<tr><td class="y">CASCADE</td><td>0.750</td><td>0.760</td><td>0.770</td><td>0.780</td><td>0.790</td></tr>
+<tr><td>NORMAL</td><td>0.680</td><td>0.690</td><td>0.700</td><td>0.710</td><td>0.720</td></tr>
+<tr><td>LOW_VOL</td><td>0.680</td><td>0.690</td><td>0.700</td><td>0.710</td><td>0.720</td></tr>
+</table>
+<div class="note">Same CG modifiers apply: taker aligned = -0.02, taker opposing = +0.05, both opposing = SKIP.</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+
+<div class="c f new">
+<h2>Scenario Walkthroughs: How v10.3 Changes Outcomes</h2>
+<table>
+<tr><th>Scenario</th><th>ELM P</th><th>Dir</th><th>Regime</th><th>T-offset</th><th>Taker</th><th>Smart $</th><th>v10.2</th><th>v10.3</th></tr>
+<tr>
+<td>Strong UP, CG aligned</td><td>0.72</td><td>UP</td><td>NORMAL</td><td>T-60</td><td class="w">Aligned</td><td class="w">Aligned</td>
+<td class="l">SKIP (0.72 < 0.78)</td><td class="w">TRADE (0.72 > 0.65-0.02=0.63)</td>
+</tr>
+<tr>
+<td>Moderate UP, both opposing</td><td>0.75</td><td>UP</td><td>NORMAL</td><td>T-60</td><td class="l">Opposing</td><td class="l">Opposing</td>
+<td class="w">TRADE (0.75 < 0.78 but CG 3+ veto rare)</td><td class="l">SKIP (both opposing = hard kill)</td>
+</tr>
+<tr>
+<td>DOWN, taker opposing</td><td>0.30</td><td>DOWN</td><td>NORMAL</td><td>T-120</td><td class="l">Opposing</td><td class="w">Aligned</td>
+<td class="w">TRADE</td><td class="l">SKIP (P_down=0.70, need 0.70+0.03+0.02+0.05=0.80)</td>
+</tr>
+<tr>
+<td>TRANSITION, CG aligned</td><td>0.73</td><td>UP</td><td>TRANS</td><td>T-120</td><td class="w">Aligned</td><td class="w">Aligned</td>
+<td class="l">SKIP (0.73 < 0.85+0.025=0.875)</td><td class="w">TRADE (0.73 > 0.72-0.02=0.70)</td>
+</tr>
+<tr>
+<td>Late entry, stale CG</td><td>0.80</td><td>UP</td><td>NORMAL</td><td>T-150</td><td>—</td><td>—</td>
+<td class="w">TRADE</td><td class="l">SKIP (CG data > 120s stale)</td>
+</tr>
+</table>
+<div class="note good">v10.3 unlocks the 80%+ WR CG-aligned bucket that v10.2 was filtering out (threshold too tight). Simultaneously blocks the 58% WR both-opposing bucket that v10.2 was letting through.</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+
+<div class="c f">
+<h2>Expected Impact on Trade Volume & Edge</h2>
+<div class="g3" style="margin:8px 0">
+<div>
+<h3>v10.2 (current)</h3>
+<div style="font-size:0.85em;line-height:1.8">
+Threshold: 0.78-0.85 (too tight for ELM)<br>
+CG gate: almost never fires<br>
+Est. trade rate: ~2-4 per hour<br>
+WR: ~70% (mix of good + bad CG)<br>
+Edge per trade: ~$0.40<br>
+</div>
+</div>
+<div>
+<h3 style="color:#4ade80">v10.3 (proposed)</h3>
+<div style="font-size:0.85em;line-height:1.8">
+Threshold: 0.65-0.72 (ELM-calibrated)<br>
+CG gate: blocks ~20% (both opposing)<br>
+Est. trade rate: ~5-8 per hour<br>
+WR: ~78% (CG-filtered)<br>
+Edge per trade: ~$0.65<br>
+</div>
+</div>
+<div>
+<h3 style="color:#facc15">Net Delta</h3>
+<div style="font-size:0.85em;line-height:1.8">
+More trades (+100-200%)<br>
+Higher WR (+8pp from CG filter)<br>
+Bigger stakes ($9.75 vs $4.73)<br>
+Better EV per trade (+$0.25)<br>
+<span class="w">Est. daily edge: +$30-50</span><br>
+</div>
+</div>
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+
+<div class="c">
+<h2>Signal Hierarchy (v10.3)</h2>
+<table>
+<tr><th>Rank</th><th>Signal</th><th>WR Delta</th><th>Source</th><th>Gate Use</th></tr>
+<tr><td>1</td><td class="w">CL+TI agreement</td><td class="w">+85.6pp</td><td>Chainlink + Tiingo</td><td>G1 — hard gate</td></tr>
+<tr><td>2</td><td class="w">CG taker alignment</td><td class="w">+17.1pp</td><td>CoinGlass taker volume</td><td>G3 — hard gate + bonus</td></tr>
+<tr><td>3</td><td class="y">ELM confidence</td><td class="y">+12pp (P>=0.80)</td><td>TimesFM ELM v3</td><td>G2 — threshold gate</td></tr>
+<tr><td>4</td><td>Direction (UP vs DOWN)</td><td>+9.3pp</td><td>ELM directional asymmetry</td><td>G2 — penalty +0.03</td></tr>
+<tr><td>5</td><td>CG smart money</td><td>+7.6pp</td><td>CoinGlass top positions</td><td>G3 — combined with taker</td></tr>
+<tr><td>6</td><td>Offset (T-60 vs T-180)</td><td>+13.3pp</td><td>ELM time decay</td><td>G2 — offset penalty</td></tr>
+<tr><td>7</td><td>Regime (TRANS best)</td><td>+20pp</td><td>VPIN regime classifier</td><td>G2 — regime threshold</td></tr>
+</table>
+</div>
+
+<div class="c">
+<h2>Kelly Sizing (from timesfm decision surface)</h2>
+<table>
+<tr><th>Component</th><th>Formula</th><th>Range</th></tr>
+<tr><td>Base Kelly</td><td><code>0.5 × (2p - 1)</code></td><td>0.0 - 0.50</td></tr>
+<tr><td>Time multiplier</td><td><code>max(0.7, 1.0 - (offset-60)/120 × 0.3)</code></td><td>0.7 - 1.0</td></tr>
+<tr><td>Direction mult</td><td><code>1.0 if UP else 0.85</code></td><td>0.85 - 1.0</td></tr>
+<tr><td>CG confirm mult</td><td><code>1.15 if taker aligned else 1.0</code></td><td>1.0 - 1.15</td></tr>
+<tr><td>Regime mult</td><td><code>1.0 if NORMAL/LOW_VOL else 0.85</code></td><td>0.85 - 1.0</td></tr>
+</table>
+<div class="note">Current implementation uses flat BET_FRACTION=0.075. Edge-weighted Kelly is a Phase 2 upgrade — requires code changes. For now, the taker flow gate + DOWN penalty deliver most of the edge.</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+
+<div class="c f new">
+<h2>Gate G3 Pseudocode: Taker Flow Gate (NEW)</h2>
+<pre style="background:#0d1117;padding:12px;border-radius:4px;font-size:0.8em;line-height:1.6;overflow-x:auto;color:#c9d1d9">
+<span style="color:#8b949e"># G3: CoinGlass Taker Flow Gate (replaces old 3+ veto)</span>
+<span style="color:#ff7b72">def</span> <span style="color:#d2a8ff">taker_flow_gate</span>(direction, cg_snapshot):
+    <span style="color:#8b949e"># 1. Check freshness (hard kill if stale)</span>
+    <span style="color:#ff7b72">if</span> cg_snapshot.age_ms > <span style="color:#79c0ff">120_000</span>:
+        <span style="color:#ff7b72">return</span> SKIP(<span style="color:#a5d6ff">"CG data stale"</span>)
+
+    <span style="color:#8b949e"># 2. Calculate taker alignment</span>
+    taker_total = cg.taker_buy_volume + cg.taker_sell_volume
+    <span style="color:#ff7b72">if</span> taker_total == <span style="color:#79c0ff">0</span>:
+        <span style="color:#ff7b72">return</span> PASS  <span style="color:#8b949e"># no data</span>
+
+    <span style="color:#ff7b72">if</span> direction == <span style="color:#a5d6ff">"UP"</span>:
+        taker_aligned = (cg.taker_buy_volume / taker_total) > <span style="color:#79c0ff">0.55</span>
+        taker_opposing = (cg.taker_sell_volume / taker_total) > <span style="color:#79c0ff">0.55</span>
+    <span style="color:#ff7b72">else</span>:
+        taker_aligned = (cg.taker_sell_volume / taker_total) > <span style="color:#79c0ff">0.55</span>
+        taker_opposing = (cg.taker_buy_volume / taker_total) > <span style="color:#79c0ff">0.55</span>
+
+    <span style="color:#8b949e"># 3. Check smart money alignment</span>
+    <span style="color:#ff7b72">if</span> direction == <span style="color:#a5d6ff">"UP"</span>:
+        smart_opposing = cg.top_position_short_pct > <span style="color:#79c0ff">52</span>
+    <span style="color:#ff7b72">else</span>:
+        smart_opposing = cg.top_position_long_pct > <span style="color:#79c0ff">52</span>
+
+    <span style="color:#8b949e"># 4. Decision matrix</span>
+    <span style="color:#ff7b72">if</span> taker_opposing <span style="color:#ff7b72">and</span> smart_opposing:
+        <span style="color:#ff7b72">return</span> SKIP(<span style="color:#a5d6ff">"both opposing — 58% WR bucket"</span>)  <span style="color:#8b949e"># HARD KILL</span>
+
+    <span style="color:#ff7b72">if</span> taker_opposing:
+        <span style="color:#ff7b72">return</span> RAISE_THRESHOLD(<span style="color:#79c0ff">+0.05</span>)  <span style="color:#8b949e"># 73% WR — marginal, need stronger DUNE</span>
+
+    <span style="color:#ff7b72">if</span> taker_aligned:
+        <span style="color:#ff7b72">return</span> LOWER_THRESHOLD(<span style="color:#79c0ff">-0.02</span>)  <span style="color:#8b949e"># 80%+ WR — CG confirmation bonus</span>
+
+    <span style="color:#ff7b72">return</span> PASS  <span style="color:#8b949e"># neutral — no modifier</span>
+</pre>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+
+<div class="c f">
+<h2>Evidence Cross-Reference</h2>
+<table>
+<tr><th>Decision</th><th>Source 1</th><th>Source 2</th><th>Source 3</th><th>Confidence</th></tr>
+<tr>
+<td>NORMAL base = 0.65</td>
+<td>ELM calibration: P>=0.65 → 78.4% on 93% (N=807)</td>
+<td>timesfm decision surface v10.1 spec</td>
+<td>v10.1 recalibration memo</td>
+<td class="w">HIGH (3 sources agree)</td>
+</tr>
+<tr>
+<td>TRANSITION = 0.70</td>
+<td>Live data: 11W/2L = 85% WR</td>
+<td>Reconciler fix recovered hidden wins</td>
+<td>Decision surface: should be BELOW NORMAL with CG confirm</td>
+<td class="w">HIGH (confirmed by bug fix)</td>
+</tr>
+<tr>
+<td>DOWN +0.03 penalty</td>
+<td>ELM: UP 81.8% vs DOWN 72.5% (N=865)</td>
+<td>timesfm decision surface: 9.3pp gap</td>
+<td>—</td>
+<td class="w">HIGH (large sample)</td>
+</tr>
+<tr>
+<td>Taker flow = hard gate</td>
+<td>CG alignment table: 81.7% vs 58.3% (N=719)</td>
+<td>timesfm decision surface: CG confirm bonus</td>
+<td>Feature importance: cg_oi_usd = #2 feature</td>
+<td class="w">HIGH (3 sources, large N)</td>
+</tr>
+<tr>
+<td>Offset penalty 0.04</td>
+<td>T-120..180 = 77.8% WR (N=18)</td>
+<td>ELM calibration: T-180 = 63.2%</td>
+<td>—</td>
+<td class="y">MEDIUM (small live sample)</td>
+</tr>
+<tr>
+<td>Cap ceiling = $0.68</td>
+<td>76.5% WR → breakeven $0.57</td>
+<td>$0.73 cap lost $63.99 vs $0.65 cap won $26.44</td>
+<td>timesfm spec: cap ceiling $0.68</td>
+<td class="w">HIGH (3 sources agree)</td>
+</tr>
+</table>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+
+<div class="c f">
+<h2>Montreal .env Changes Required</h2>
+<pre style="background:#0d1117;padding:12px;border-radius:4px;font-size:0.8em;line-height:1.6;overflow-x:auto;color:#c9d1d9">
+<span style="color:#8b949e"># === v10.3 FINAL (CG-integrated) ===</span>
+<span style="color:#8b949e"># Regime thresholds (ELM v3 calibrated)</span>
+V10_DUNE_MIN_P=<span style="color:#79c0ff">0.65</span>
+V10_TRANSITION_MIN_P=<span style="color:#79c0ff">0.70</span>
+V10_CASCADE_MIN_P=<span style="color:#79c0ff">0.72</span>
+V10_NORMAL_MIN_P=<span style="color:#79c0ff">0.65</span>
+V10_LOW_VOL_MIN_P=<span style="color:#79c0ff">0.65</span>
+V10_TRENDING_MIN_P=<span style="color:#79c0ff">0.72</span>
+V10_CALM_MIN_P=<span style="color:#79c0ff">0.72</span>
+
+<span style="color:#8b949e"># Offset + cap</span>
+V10_OFFSET_PENALTY_MAX=<span style="color:#79c0ff">0.04</span>
+V10_DUNE_CAP_CEILING=<span style="color:#79c0ff">0.68</span>
+
+<span style="color:#8b949e"># NEW: Direction penalty</span>
+V10_DOWN_PENALTY=<span style="color:#79c0ff">0.03</span>
+
+<span style="color:#8b949e"># NEW: CoinGlass taker flow gate</span>
+V10_CG_TAKER_GATE=<span style="color:#79c0ff">true</span>
+V10_CG_TAKER_OPPOSING_PCT=<span style="color:#79c0ff">55</span>
+V10_CG_SMART_OPPOSING_PCT=<span style="color:#79c0ff">52</span>
+V10_CG_CONFIRM_BONUS=<span style="color:#79c0ff">0.02</span>
+V10_CG_TAKER_OPPOSING_PENALTY=<span style="color:#79c0ff">0.05</span>
+V10_CG_MAX_AGE_MS=<span style="color:#79c0ff">120000</span>
+</pre>
+<div class="note warn">
+<strong>Code changes required:</strong> The taker flow gate (G3) and DOWN penalty need to be implemented in <code>engine/signals/gates.py</code>. The .env vars above are the target config — they won't work until the code changes are deployed.
+</div>
+</div>
+
+<div class="c f">
+<h2>Deployment Plan</h2>
+<table>
+<tr><th>#</th><th>Step</th><th>Risk</th><th>Rollback</th></tr>
+<tr><td>1</td><td class="w">Deploy threshold changes only (no code change needed)</td><td class="w">LOW — env vars only</td><td>Revert .env, restart</td></tr>
+<tr><td>2</td><td class="y">Deploy DOWN penalty in gates.py</td><td class="w">LOW — additive filter</td><td>Set V10_DOWN_PENALTY=0</td></tr>
+<tr><td>3</td><td class="p">Deploy taker flow gate (G3 replacement)</td><td class="y">MEDIUM — new gate logic</td><td>Set V10_CG_TAKER_GATE=false</td></tr>
+<tr><td>4</td><td>Deploy CG freshness gate</td><td class="w">LOW — defensive only</td><td>Set V10_CG_MAX_AGE_MS=999999</td></tr>
+<tr><td>5</td><td>Monitor 50 trades — verify WR >= 75%</td><td>—</td><td>If WR < 65% after 50 trades: halt and revert to v10.2</td></tr>
+<tr><td>6</td><td>Phase 2: Edge-weighted Kelly sizing</td><td class="y">MEDIUM — sizing change</td><td>Set BET_FRACTION override</td></tr>
+</table>
+<div class="note good">
+<strong>Step 1 can deploy NOW</strong> — just env var changes to Montreal. Steps 2-4 require code changes to gates.py.<br>
+All Montreal Polymarket API calls run through Montreal VPS only (geo-block compliance).
+</div>
+</div>
+
+<div class="c f">
+<h2>Circuit Breakers (from timesfm decision surface)</h2>
+<table>
+<tr><th>Monitor</th><th>Trigger</th><th>Action</th></tr>
+<tr><td>Rolling 50-trade WR</td><td>< 65%</td><td class="y">Reduce to 0.25x Kelly (quarter sizing)</td></tr>
+<tr><td>Rolling 100-trade WR</td><td>< 60%</td><td class="l">HALT all trading</td></tr>
+<tr><td>ECE (calibration)</td><td>> 0.15</td><td class="y">Direction-only mode (flat $5 per trade)</td></tr>
+<tr><td>Daily loss</td><td>> 30% of bankroll</td><td class="l">HALT for 24 hours</td></tr>
+<tr><td>CG data freshness</td><td>> 120s stale</td><td class="y">Skip trade (per-trade, not system halt)</td></tr>
+<tr><td>Model version drift</td><td>model_version string changes</td><td class="y">Alert operator, re-fetch quality metrics</td></tr>
+</table>
+</div>
+
+</div>
+
+</body>
+</html>

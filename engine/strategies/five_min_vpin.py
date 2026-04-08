@@ -560,9 +560,14 @@ class FiveMinVPINStrategy(BaseStrategy):
                 return  # Already traded this window
             from signals.gates import (
                 GateContext, GatePipeline, SourceAgreementGate,
-                DuneConfidenceGate, CoinGlassVetoGate, DynamicCapGate,
+                TakerFlowGate, CGConfirmationGate,
+                DuneConfidenceGate, SpreadGate, DynamicCapGate,
+                CoinGlassVetoGate,  # legacy fallback
             )
             _cg = self._cg_enhanced.snapshot if self._cg_enhanced is not None else None
+            # v10.3: pass Gamma prices for spread gate
+            _gamma_up = getattr(self, '_gamma_up_price', None)
+            _gamma_down = getattr(self, '_gamma_down_price', None)
             ctx = GateContext(
                 delta_chainlink=delta_chainlink if 'delta_chainlink' in locals() else None,
                 delta_tiingo=delta_tiingo if 'delta_tiingo' in locals() else None,
@@ -570,12 +575,17 @@ class FiveMinVPINStrategy(BaseStrategy):
                 delta_pct=delta_pct, vpin=current_vpin, regime=_snap_regime,
                 asset=window.asset, eval_offset=getattr(window, 'eval_offset', None),
                 window_ts=window.window_ts, cg_snapshot=_cg,
+                gamma_up_price=_gamma_up, gamma_down_price=_gamma_down,
             )
+            # v10.3: 6-gate decision surface pipeline
+            # Order matters: TakerFlow + CGConfirmation run BEFORE DUNE so modifiers are set
             pipeline = GatePipeline([
-                SourceAgreementGate(),
-                DuneConfidenceGate(dune_client=self._timesfm_v2),  # regime + offset aware
-                CoinGlassVetoGate(),
-                DynamicCapGate(),  # ceiling $0.70, floor $0.35
+                SourceAgreementGate(),          # G1: CL+TI agree (94.7% WR)
+                TakerFlowGate(),                # G2: CG taker hard gate + threshold modifier
+                CGConfirmationGate(),           # G3: CG 3-signal bonus (-0.02)
+                DuneConfidenceGate(dune_client=self._timesfm_v2),  # G4: ELM + all modifiers
+                SpreadGate(),                   # G5: Polymarket spread check
+                DynamicCapGate(),               # G6: cap = dune_p - 0.05, max $0.68
             ])
             pipe_result = await pipeline.evaluate(ctx)
             if pipe_result.passed:
@@ -583,11 +593,17 @@ class FiveMinVPINStrategy(BaseStrategy):
                 confidence = "HIGH" if (ctx.dune_probability_up and
                     max(ctx.dune_probability_up, 1-ctx.dune_probability_up) > 0.75) else "MODERATE"
                 _order_type = os.environ.get("ORDER_TYPE", "FAK").upper()
+                # v10.3: include CG modifier info in entry reason for debugging
+                _cg_tag = ""
+                if ctx.cg_threshold_modifier != 0:
+                    _cg_tag = f"_CG{ctx.cg_threshold_modifier:+.02f}"
+                elif ctx.cg_bonus > 0:
+                    _cg_tag = f"_CGB{ctx.cg_bonus:.02f}"
                 signal = FiveMinSignal(
                     window=window, current_price=current_price, current_vpin=current_vpin,
                     delta_pct=delta_pct, confidence=confidence, direction=direction,
-                    cg_modifier=0.0,
-                    entry_reason=f"v10_DUNE_{_snap_regime}_T{ctx.eval_offset}_{_order_type}",
+                    cg_modifier=ctx.cg_threshold_modifier,
+                    entry_reason=f"v10_DUNE_{_snap_regime}_T{ctx.eval_offset}_{_order_type}{_cg_tag}",
                     v81_entry_cap=pipe_result.cap or 0.65,
                 )
                 # Mark window as traded (dedup for subsequent 2s evals)
