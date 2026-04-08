@@ -197,11 +197,11 @@ class DuneConfidenceGate:
         """
         base = self._regime_thresholds.get(regime, self._base_min_p)
 
-        # Offset penalty: 0.005 per 20 seconds beyond T-60, capped
+        # Offset penalty: linear from 0 at T-60 to max at T-180
         offset_penalty = 0.0
         if eval_offset is not None and eval_offset > 60:
-            excess = eval_offset - 60
-            offset_penalty = min(self._offset_penalty_max, excess * 0.005 / 20)
+            offset_penalty = min(self._offset_penalty_max,
+                                 (eval_offset - 60) / 120.0 * self._offset_penalty_max)
 
         # DOWN penalty: +0.03 (9.3pp accuracy gap, N=865)
         down_penalty = self._down_penalty if ctx.agreed_direction == "DOWN" else 0.0
