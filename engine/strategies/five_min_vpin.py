@@ -132,8 +132,11 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._tick_recorder = None  # TickRecorder injected by orchestrator after start
         self._evaluator = WindowEvaluator()
         
-        # Track last executed window to avoid duplicates
-        self._last_executed_window: Optional[str] = None
+        # CRITICAL: DB-backed dedup — survives engine restarts.
+        # Without this, restarts cause duplicate trades per window.
+        # Bug discovered Apr 8: windows 1775683200 and 1775683800 got 2 trades each.
+        self._traded_windows: set[str] = set()
+        self._last_executed_window: Optional[str] = None  # kept for backward compat
 
         # Consolidated skip notification history: window_key → list of eval ticks
         # Instead of sending 19 individual skip alerts, we batch and send one summary.
@@ -152,6 +155,9 @@ class FiveMinVPINStrategy(BaseStrategy):
         # ── G5: Circuit breaker state ─────────────────────────────────────────
         self._circuit_break_until: float = 0.0
         self._consecutive_errors: int = 0
+
+        # Dedup cleanup counter (runs every ~300 market state ticks = ~5-10 min)
+        self._dedup_cleanup_counter: int = 0
         
         self._log = log.bind(strategy="five_min_vpin")
         
@@ -187,7 +193,20 @@ class FiveMinVPINStrategy(BaseStrategy):
         if not runtime.five_min_enabled:
             self._log.info("strategy.disabled", reason="runtime.five_min_enabled=false")
             return
-        
+
+        # ── Load recently traded windows from DB to survive restarts ─────
+        if self._db:
+            try:
+                self._traded_windows = await self._db.load_recent_traded_windows(hours=2)
+                if self._traded_windows:
+                    self._log.info(
+                        "strategy.dedup_restored",
+                        count=len(self._traded_windows),
+                        windows=sorted(self._traded_windows),
+                    )
+            except Exception as exc:
+                self._log.error("strategy.dedup_restore_failed", error=str(exc))
+
         self._running = True
         self._log.info("strategy.started")
 
@@ -195,6 +214,31 @@ class FiveMinVPINStrategy(BaseStrategy):
         """Stop the strategy."""
         self._running = False
         self._log.info("strategy.stopped")
+
+    def _cleanup_old_traded_windows(self, max_age_seconds: int = 7200) -> None:
+        """Remove traded window keys older than max_age_seconds (default 2h).
+
+        Called periodically to prevent unbounded memory growth.
+        Window keys are "{ASSET}-{unix_ts}", so we parse the timestamp suffix.
+        """
+        import time
+
+        cutoff = int(time.time()) - max_age_seconds
+        stale = {
+            k for k in self._traded_windows
+            if self._parse_window_ts(k) < cutoff
+        }
+        if stale:
+            self._traded_windows -= stale
+            self._log.debug("dedup.cleanup", removed=len(stale), remaining=len(self._traded_windows))
+
+    @staticmethod
+    def _parse_window_ts(key: str) -> int:
+        """Extract the unix timestamp from a window key like 'BTC-1775683200'."""
+        try:
+            return int(key.rsplit("-", 1)[-1])
+        except (ValueError, IndexError):
+            return 0
 
     # ─── Market State Handler ─────────────────────────────────────────────────
 
@@ -210,12 +254,18 @@ class FiveMinVPINStrategy(BaseStrategy):
         """
         if not self._running or not runtime.five_min_enabled:
             return
-        
+
+        # Periodic cleanup of old traded-window keys (every ~300 ticks ≈ 5-10 min)
+        self._dedup_cleanup_counter += 1
+        if self._dedup_cleanup_counter >= 300:
+            self._dedup_cleanup_counter = 0
+            self._cleanup_old_traded_windows()
+
         # Still register windows (needed for token ID lookup)
         if self._pending_windows:
             for window in self._pending_windows:
                 window_key = f"{window.asset}-{window.window_ts}"
-                if window_key not in self._active_eval_states and window_key != self._last_executed_window:
+                if window_key not in self._active_eval_states and window_key not in self._traded_windows:
                     self._active_eval_states[window_key] = EvalWindowState(
                         window_ts=window.window_ts,
                         open_price=window.open_price or 0,
@@ -252,7 +302,8 @@ class FiveMinVPINStrategy(BaseStrategy):
         eval_offset = getattr(window, "eval_offset", None)
 
         # Already TRADED this window — skip evaluation entirely
-        if self._last_executed_window == window_key:
+        # CRITICAL: DB-backed dedup — survives engine restarts.
+        if window_key in self._traded_windows:
             self._log.debug(
                 "window.already_traded",
                 window=window_key,
@@ -554,9 +605,10 @@ class FiveMinVPINStrategy(BaseStrategy):
         # Falls through to v9 inline gates when disabled.
         _v10_enabled = os.environ.get("V10_DUNE_ENABLED", "false").lower() == "true"
         if _v10_enabled:
-            # CRITICAL: one trade per window dedup (prevents 90 trades per window at 2s polling)
+            # CRITICAL: DB-backed dedup — survives engine restarts.
+            # Without this, restarts cause duplicate trades per window.
             _window_key_v10 = f"{window.asset}-{window.window_ts}"
-            if self._last_executed_window == _window_key_v10:
+            if _window_key_v10 in self._traded_windows:
                 return  # Already traded this window
             from signals.gates import (
                 GateContext, GatePipeline, SourceAgreementGate,
@@ -606,8 +658,9 @@ class FiveMinVPINStrategy(BaseStrategy):
                     entry_reason=f"v10_DUNE_{_snap_regime}_T{ctx.eval_offset}_{_order_type}{_cg_tag}",
                     v81_entry_cap=pipe_result.cap or 0.65,
                 )
-                # Mark window as traded (dedup for subsequent 2s evals)
-                self._last_executed_window = _window_key_v10
+                # Mark window as traded (dedup for subsequent 2s evals + restart survival)
+                self._traded_windows.add(_window_key_v10)
+                self._last_executed_window = _window_key_v10  # backward compat
 
                 # v10.3: extract gate data for Telegram alerts + DB logging
                 _v103_gate_data = {}
@@ -1825,8 +1878,9 @@ class FiveMinVPINStrategy(BaseStrategy):
             except Exception:
                 pass
         
-        # Track executed window
-        self._last_executed_window = window_key
+        # Track executed window (DB-backed dedup — survives restarts)
+        self._traded_windows.add(window_key)
+        self._last_executed_window = window_key  # backward compat
 
     def _evaluate_signal(
         self,

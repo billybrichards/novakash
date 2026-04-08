@@ -152,6 +152,41 @@ class DBClient:
         """Alias for write_trade (used by OrderManager)."""
         await self.write_trade(order)
 
+    # ─── Window Dedup Queries ────────────────────────────────────────────────
+
+    async def load_recent_traded_windows(self, hours: int = 2) -> set[str]:
+        """
+        Load recently traded window keys from the trades table.
+
+        Returns a set of "{asset}-{window_ts}" strings for trades placed
+        within the last `hours` hours.  Used by FiveMinVPINStrategy to
+        restore dedup state after an engine restart.
+        """
+        if not self._pool:
+            return set()
+
+        query = """
+            SELECT DISTINCT
+                COALESCE(metadata->>'asset', 'BTC') AS asset,
+                metadata->>'window_ts' AS wts
+            FROM trades
+            WHERE created_at > NOW() - make_interval(hours => $1)
+              AND strategy = 'five_min_vpin'
+        """
+        traded: set[str] = set()
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(query, hours)
+                for r in rows:
+                    wts = r["wts"]
+                    asset = r["asset"] or "BTC"
+                    if wts:
+                        traded.add(f"{asset}-{wts}")
+            log.info("db.loaded_traded_windows", count=len(traded), hours=hours)
+        except Exception as exc:
+            log.error("db.load_traded_windows_failed", error=str(exc))
+        return traded
+
     # ─── Signal Writes ────────────────────────────────────────────────────────
 
     async def write_signal(
@@ -1022,12 +1057,36 @@ class DBClient:
             return []
 
     async def mark_trade_expired(self, order_id: str) -> None:
-        """Mark a trade as EXPIRED in the DB (used by startup reconciliation)."""
+        """Mark a trade as EXPIRED in the DB (used by startup reconciliation).
+
+        Safety: refuses to expire trades that have confirmed CLOB fills
+        (clob_status=MATCHED or shares_filled > 0). Those are real positions
+        that the orphan reconciler will resolve.
+        """
         if not self._pool:
             return
         try:
             from datetime import timezone
             async with self._pool.acquire() as conn:
+                # Guard: do not expire trades with confirmed fills
+                row = await conn.fetchrow(
+                    """SELECT metadata->>'clob_status' as clob_status,
+                              metadata->>'shares_filled' as shares_filled
+                       FROM trades WHERE order_id = $1""",
+                    order_id,
+                )
+                if row:
+                    clob_status = (row["clob_status"] or "").upper()
+                    shares_filled = float(row["shares_filled"] or 0)
+                    if clob_status == "MATCHED" or shares_filled > 0:
+                        log.info(
+                            "db.trade_expire_blocked_has_fill",
+                            order_id=order_id[:24] if len(order_id) > 24 else order_id,
+                            clob_status=clob_status,
+                            shares_filled=shares_filled,
+                        )
+                        return
+
                 await conn.execute(
                     "UPDATE trades SET status = 'EXPIRED', resolved_at = $1 WHERE order_id = $2",
                     datetime.now(timezone.utc),
