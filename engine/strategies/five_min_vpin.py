@@ -549,6 +549,10 @@ class FiveMinVPINStrategy(BaseStrategy):
         # Falls through to v9 inline gates when disabled.
         _v10_enabled = os.environ.get("V10_DUNE_ENABLED", "false").lower() == "true"
         if _v10_enabled:
+            # CRITICAL: one trade per window dedup (prevents 90 trades per window at 2s polling)
+            _window_key_v10 = f"{window.asset}-{window.window_ts}"
+            if self._last_executed_window == _window_key_v10:
+                return  # Already traded this window
             from signals.gates import (
                 GateContext, GatePipeline, SourceAgreementGate,
                 DuneConfidenceGate, CoinGlassVetoGate, DynamicCapGate,
@@ -581,6 +585,9 @@ class FiveMinVPINStrategy(BaseStrategy):
                     entry_reason=f"v10_DUNE_{_snap_regime}_T{ctx.eval_offset}_{_order_type}",
                     v81_entry_cap=pipe_result.cap or 0.65,
                 )
+                # Mark window as traded (dedup for subsequent 2s evals)
+                self._last_executed_window = _window_key_v10
+
                 self._log.info("v10.trade", direction=direction,
                     cap=f"${pipe_result.cap:.2f}" if pipe_result.cap else "?",
                     dune_p=f"{pipe_result.dune_p:.3f}" if pipe_result.dune_p else "N/A",
