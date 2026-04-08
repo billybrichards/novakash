@@ -379,19 +379,8 @@ class CLOBReconciler:
                                ORDER BY created_at DESC LIMIT 1""",
                             _pos_token_id,
                         )
-                    # Fallback: cost-based match (tighter tolerance)
-                    if not match:
-                        match = await conn.fetchrow(
-                            """SELECT id, metadata->>'entry_reason' as reason,
-                                      metadata->>'token_id' as token_id
-                               FROM trades
-                               WHERE status IN ('OPEN', 'FILLED')
-                                 AND is_live = true
-                                 AND outcome IS NULL
-                                 AND ABS(CAST(stake_usd AS numeric) - $1) < 0.5
-                               ORDER BY created_at DESC LIMIT 1""",
-                            cost,
-                        )
+                    # NO cost-based fallback — fuzzy matching causes wrong attribution
+                    # If token_id doesn't match, this is an unlinked position
 
                     if match:
                         matched_trade_id = match["id"]

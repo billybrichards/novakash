@@ -168,10 +168,13 @@ class DuneConfidenceGate:
 
         seconds_to_close = ctx.eval_offset or 60
         try:
+            # ELM v3 is at the production endpoint (model="oak"), NOT cedar
+            # The v3 model was deployed to production /v2/probability
+            _model = os.environ.get("V10_DUNE_MODEL", "oak")
             result = await self._client.get_probability(
                 asset=ctx.asset,
                 seconds_to_close=seconds_to_close,
-                model="cedar",
+                model=_model,
             )
         except Exception as exc:
             self._log.warning("dune.query_failed", error=str(exc)[:100])
