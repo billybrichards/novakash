@@ -2441,22 +2441,58 @@ class Orchestrator:
                         
                         # NEW resolution detected
                         _resolved_conditions.add(cid)
-                        
+
                         size = data["size"]
                         avg_price = data["avgPrice"]
                         cost = data["cost"]
                         value = data["value"]
                         pnl = data["pnl"]
-                        
+
                         from datetime import datetime, timezone
                         now_str = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-                        
+
                         if outcome == "WIN":
                             emoji = "✅"
                             pnl_str = f"+${pnl:.2f}"
                         else:
                             emoji = "❌"
                             pnl_str = f"-${cost:.2f}"
+
+                        # v9.0: Link resolution back to trades table
+                        _matched_trade_id = None
+                        _matched_reason = None
+                        try:
+                            if self._db._pool:
+                                async with self._db._pool.acquire() as _conn:
+                                    # Match by condition_id in market_slug or by cost+direction
+                                    _match = await _conn.fetchrow(
+                                        """SELECT id, metadata->>'entry_reason' as reason,
+                                           metadata->>'v81_entry_cap' as cap
+                                        FROM trades
+                                        WHERE status IN ('OPEN', 'FILLED')
+                                          AND is_live = true
+                                          AND ABS(CAST(stake_usd AS numeric) - $1) < 1.0
+                                        ORDER BY created_at DESC LIMIT 1""",
+                                        cost,
+                                    )
+                                    if _match:
+                                        _matched_trade_id = _match['id']
+                                        _matched_reason = _match['reason']
+                                        # Update trade with resolution
+                                        _status = 'RESOLVED_WIN' if outcome == 'WIN' else 'RESOLVED_LOSS'
+                                        await _conn.execute(
+                                            """UPDATE trades SET outcome = $1, pnl_usd = $2,
+                                               resolved_at = NOW(), status = $3
+                                            WHERE id = $4 AND outcome IS NULL""",
+                                            outcome, pnl if outcome == 'WIN' else -cost,
+                                            _status, _matched_trade_id,
+                                        )
+                                        log.info("position_monitor.trade_linked",
+                                            trade_id=_matched_trade_id,
+                                            reason=_matched_reason,
+                                            outcome=outcome)
+                        except Exception as _link_exc:
+                            log.debug("position_monitor.trade_link_failed", error=str(_link_exc)[:100])
                         
                         # Try to find matching trade in DB for signal details
                         trade_info = ""
@@ -2523,6 +2559,13 @@ class Orchestrator:
                         except Exception:
                             pass
                         
+                        # v9.0: Show entry reason in resolution notification
+                        _reason_line = ""
+                        if _matched_reason:
+                            _reason_line = f"Entry: `{_matched_reason}`\n"
+                        elif trade_info:
+                            pass  # trade_info already has entry reason from fuzzy match
+
                         msg = (
                             f"{emoji} *{outcome} — BTC* (💰 LIVE)\n"
                             f"🕐 `{now_str}`\n"
@@ -2533,6 +2576,7 @@ class Orchestrator:
                             f"Cost: `{_our_cost}`\n"
                             f"Payout: `${value:.2f}`\n"
                             f"PnL: `{_our_pnl}`\n"
+                            f"{_reason_line}"
                             f"{trade_info}"
                             f"{wallet_str}"
                         )
