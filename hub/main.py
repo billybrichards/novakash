@@ -121,3 +121,4 @@ app.include_router(analysis_router, prefix="/api", tags=["analysis"])
 async def health_check() -> dict:
     """Liveness probe."""
     return {"status": "ok"}
+# Hub v10 — deployed 2026-04-08T14:44
