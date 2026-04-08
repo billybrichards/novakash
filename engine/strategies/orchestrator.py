@@ -1874,6 +1874,51 @@ class Orchestrator:
                                             _slines.append(f"🚫{_dir} `{_wid}` {_sr}")
                                         _recent_block += "📝 *Recent skips:*\n" + "\n".join(_slines) + "\n"
 
+                                    # Recent wins and losses (from trade_bible or trades)
+                                    _wl_block = ""
+                                    try:
+                                        _wins = await conn.fetch(
+                                            """SELECT direction, ROUND(pnl_usd::numeric, 2) as pnl,
+                                               metadata->>'entry_reason' as reason, resolved_at
+                                            FROM trades WHERE outcome = 'WIN' AND is_live = true
+                                              AND resolved_at > NOW() - INTERVAL '6 hours'
+                                            ORDER BY resolved_at DESC LIMIT 3"""
+                                        )
+                                        _losses = await conn.fetch(
+                                            """SELECT direction, ROUND(pnl_usd::numeric, 2) as pnl,
+                                               metadata->>'entry_reason' as reason, resolved_at
+                                            FROM trades WHERE outcome = 'LOSS' AND is_live = true
+                                              AND resolved_at > NOW() - INTERVAL '6 hours'
+                                            ORDER BY resolved_at DESC LIMIT 3"""
+                                        )
+                                        if _wins:
+                                            _wlines = []
+                                            for w in _wins:
+                                                _d = "⬆️" if w['direction'] == 'YES' else "⬇️"
+                                                _t = ""
+                                                try:
+                                                    _t = w['resolved_at'].strftime("%H:%M")
+                                                except Exception:
+                                                    pass
+                                                _r = (w['reason'] or '?')[-20:]
+                                                _wlines.append(f"✅{_d} `{_t}` `+${float(w['pnl']):.2f}` {_r}")
+                                            _wl_block += "🏆 *Recent wins:*\n" + "\n".join(_wlines) + "\n"
+                                        if _losses:
+                                            _llines = []
+                                            for l in _losses:
+                                                _d = "⬆️" if l['direction'] == 'YES' else "⬇️"
+                                                _t = ""
+                                                try:
+                                                    _t = l['resolved_at'].strftime("%H:%M")
+                                                except Exception:
+                                                    pass
+                                                _r = (l['reason'] or '?')[-20:]
+                                                _llines.append(f"❌{_d} `{_t}` `-${abs(float(l['pnl'])):.2f}` {_r}")
+                                            _wl_block += "💀 *Recent losses:*\n" + "\n".join(_llines) + "\n"
+                                    except Exception:
+                                        pass
+                                    _recent_block += _wl_block
+
                                     # Pending positions (OPEN/FILLED not yet resolved)
                                     _pending = await conn.fetch(
                                         """SELECT direction, metadata->>'v81_entry_cap' as cap,
