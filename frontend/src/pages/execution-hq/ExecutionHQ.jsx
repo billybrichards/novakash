@@ -78,6 +78,7 @@ export default function ExecutionHQ() {
   const windows = hqData?.windows || [];
   const shadowStats = hqData?.shadow_stats || {};
   const v9Stats = hqData?.v9_stats || {};
+  const v10Stats = hqData?.v10_stats || {};
   const v9GateData = hqData?.v9_gate_data || {};
 
   return (
@@ -142,19 +143,24 @@ export default function ExecutionHQ() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, fontFamily: 'monospace' }}>
-          {/* v9.0 WR counter */}
-          {(v9Stats.wins > 0 || v9Stats.losses > 0) && (
-            <div style={{
-              display: 'flex', flexDirection: 'column', alignItems: 'flex-end',
-              background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.3)',
-              padding: '4px 10px', borderRadius: 4,
-            }}>
-              <span style={{ fontSize: 9, color: T.purple, textTransform: 'uppercase', letterSpacing: '0.05em' }}>v9.0 WR</span>
-              <span style={{ fontSize: 14, fontWeight: 700, color: T.purple, fontFamily: "'JetBrains Mono', monospace" }}>
-                {v9Stats.wins}W/{v9Stats.losses}L = {v9Stats.wr_pct}%
-              </span>
-            </div>
-          )}
+          {/* v10 WR counter (shows v10 DUNE stats if available, otherwise combined) */}
+          {(() => {
+            const stats = (v10Stats.total_trades > 0) ? v10Stats : v9Stats;
+            const label = (v10Stats.total_trades > 0) ? 'v10 DUNE' : 'WR';
+            if (!stats.wins && !stats.losses) return null;
+            return (
+              <div style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'flex-end',
+                background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.3)',
+                padding: '4px 10px', borderRadius: 4,
+              }}>
+                <span style={{ fontSize: 9, color: T.purple, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</span>
+                <span style={{ fontSize: 14, fontWeight: 700, color: T.purple, fontFamily: "'JetBrains Mono', monospace" }}>
+                  {stats.wins}W/{stats.losses}L = {stats.wr_pct}%
+                </span>
+              </div>
+            );
+          })()}
           {/* Shadow stats badge */}
           {shadowStats.shadow_wins > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
@@ -196,10 +202,10 @@ export default function ExecutionHQ() {
 
       {/* Tab content */}
       {(!loading || hqData) && activeTab === 'live' && (
-        <LiveTab hqData={hqData} tick={tick} v9Stats={v9Stats} v9GateData={v9GateData} />
+        <LiveTab hqData={hqData} tick={tick} v9Stats={v9Stats} v9GateData={v9GateData} v10Stats={v10Stats} />
       )}
       {(!loading || hqData) && activeTab === 'retro' && (
-        <RetroTab windows={windows} shadowStats={shadowStats} v9Stats={v9Stats} />
+        <RetroTab windows={windows} shadowStats={shadowStats} v9Stats={v9Stats} v10Stats={v10Stats} />
       )}
     </div>
   );

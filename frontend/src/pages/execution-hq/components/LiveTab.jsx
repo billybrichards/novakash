@@ -5,7 +5,7 @@ import ContinuousFeed from './ContinuousFeed.jsx';
 import CanvasPriceChart from './CanvasPriceChart.jsx';
 import CanvasRiskSurface from './CanvasRiskSurface.jsx';
 import GateAuditMatrix from './GateAuditMatrix.jsx';
-import { getEntryCap, getCapWithPi, PI_BONUS_CENTS, T } from './constants.js';
+import { getEntryCap, getDuneEntryCap, getCapWithPi, PI_BONUS_CENTS, DUNE_MIN_P, DUNE_CAP_MARGIN, V10_MIN_EVAL_OFFSET, T } from './constants.js';
 
 const INITIAL_CANDLES = [
   { open: 0.620, high: 0.640, low: 0.615, close: 0.635 },
@@ -22,7 +22,7 @@ const INITIAL_CANDLES = [
  *   hqData — Data from /api/v58/execution-hq (system, recent_trades, windows)
  *   tick   — Incrementing counter for animation
  */
-export default function LiveTab({ hqData, tick, v9Stats, v9GateData }) {
+export default function LiveTab({ hqData, tick, v9Stats, v9GateData, v10Stats }) {
   const [leftExpanded, setLeftExpanded] = useState(true);
   const [rightExpanded, setRightExpanded] = useState(true);
 
@@ -70,7 +70,11 @@ export default function LiveTab({ hqData, tick, v9Stats, v9GateData }) {
     return () => clearInterval(timer);
   }, []);
 
-  const currentCap = getEntryCap(currentT);
+  // v10: Use DUNE dynamic cap when available, fallback to v9 fixed cap
+  const latestWindow = hqData?.windows?.[0] || {};
+  const duneP = latestWindow.dune_probability_up;
+  const duneCap = latestWindow.dune_cap ?? getDuneEntryCap(duneP);
+  const currentCap = duneCap ?? getEntryCap(currentT);
   const recentTrades = hqData?.recent_trades || [];
   const system = hqData?.system || {};
 
@@ -115,28 +119,35 @@ export default function LiveTab({ hqData, tick, v9Stats, v9GateData }) {
                 }} />
               </div>
             </div>
-            {/* v9.0 two-tier cap + eval tier */}
+            {/* v10 DUNE dynamic cap + confidence */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 12 }}>
               <div style={{ background: 'rgba(30,41,59,0.5)', padding: 8, borderRadius: 4, border: `1px solid ${T.cardBorder}50`, textAlign: 'center' }}>
-                <div style={{ fontSize: 9, color: T.textMuted, fontFamily: 'monospace' }}>v9 CAP</div>
-                <div style={{ fontSize: 18, fontFamily: "'JetBrains Mono', monospace", color: T.amber }}>${currentCap.toFixed(2)}</div>
-                <div style={{ fontSize: 9, color: T.textDim, marginTop: 2 }}>+{PI_BONUS_CENTS * 100}c pi</div>
+                <div style={{ fontSize: 9, color: T.textMuted, fontFamily: 'monospace' }}>v10 DUNE CAP</div>
+                <div style={{ fontSize: 18, fontFamily: "'JetBrains Mono', monospace", color: duneCap != null ? T.cyan : T.amber }}>
+                  ${currentCap.toFixed(2)}
+                </div>
+                <div style={{ fontSize: 9, color: T.textDim, marginTop: 2 }}>
+                  {duneCap != null ? `P-${(DUNE_CAP_MARGIN * 100).toFixed(0)}pp` : 'v9 fallback'}
+                </div>
               </div>
               <div style={{ background: 'rgba(30,41,59,0.5)', padding: 8, borderRadius: 4, border: `1px solid ${T.cardBorder}50`, textAlign: 'center' }}>
-                <div style={{ fontSize: 9, color: T.textMuted, fontFamily: 'monospace' }}>EVAL TIER</div>
+                <div style={{ fontSize: 9, color: T.textMuted, fontFamily: 'monospace' }}>DUNE P(dir)</div>
                 <div style={{
-                  fontSize: 14, fontFamily: 'monospace', fontWeight: 700,
-                  color: currentT > 130 ? T.amber : T.cyan,
-                }}>{currentT > 130 ? 'EARLY' : 'GOLDEN'}</div>
+                  fontSize: 18, fontFamily: "'JetBrains Mono', monospace", fontWeight: 700,
+                  color: duneP != null
+                    ? (Math.max(duneP, 1 - duneP) >= 0.75 ? T.green : Math.max(duneP, 1 - duneP) >= 0.60 ? T.amber : T.red)
+                    : T.textDim,
+                }}>
+                  {duneP != null ? Math.max(duneP, 1 - duneP).toFixed(3) : '--'}
+                </div>
                 <div style={{ fontSize: 9, color: T.textDim, marginTop: 2 }}>
-                  {currentT > 130 ? 'VPIN >= 0.65' : 'VPIN >= 0.45'}
+                  {duneP != null ? (Math.max(duneP, 1 - duneP) >= DUNE_MIN_P ? 'PASS' : 'BELOW MIN') : `min ${DUNE_MIN_P}`}
                 </div>
               </div>
             </div>
-            {/* v9.0 source agreement badge */}
+            {/* v10 source agreement badge */}
             {(() => {
-              const latestW = hqData?.windows?.[0];
-              const agree = latestW?.source_agreement;
+              const agree = latestWindow.source_agreement;
               return (
                 <div style={{
                   marginTop: 12,
@@ -156,14 +167,14 @@ export default function LiveTab({ hqData, tick, v9Stats, v9GateData }) {
                 </div>
               );
             })()}
-            {/* v9 order type indicator */}
+            {/* v10 min eval offset indicator */}
             <div style={{
-              marginTop: 8, background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.2)',
-              padding: 8, borderRadius: 4, fontSize: 10, fontFamily: 'monospace', color: T.purple,
+              marginTop: 8, background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(6,182,212,0.2)',
+              padding: 8, borderRadius: 4, fontSize: 10, fontFamily: 'monospace', color: T.cyan,
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
             }}>
-              <span>ORDER TYPE: FAK (Fill-And-Kill)</span>
-              <span style={{ fontSize: 9, color: T.textDim }}>v9.0</span>
+              <span>MIN EVAL: T-{V10_MIN_EVAL_OFFSET} | FAK</span>
+              <span style={{ fontSize: 9, color: T.textDim }}>v10.0</span>
             </div>
           </Panel>
 
@@ -196,11 +207,11 @@ export default function LiveTab({ hqData, tick, v9Stats, v9GateData }) {
                   <ContinuousFeed name="CoinGlass" hz="15s" latency={800}
                     val={w.regime || '--'} change={0}
                     status={w.regime === 'CASCADE' ? 'warn' : 'ok'} />
-                  <ContinuousFeed name="VPIN" hz="cont"
-                    val={vpin != null ? vpin.toFixed(3) : '--'}
-                    change={vpin != null ? +(vpin * 100).toFixed(0) : 0}
+                  <ContinuousFeed name="DUNE (Cedar)" hz="eval"
+                    val={w.dune_probability_up != null ? `P=${Math.max(w.dune_probability_up, 1-w.dune_probability_up).toFixed(3)}` : (vpin != null ? `VPIN=${vpin.toFixed(3)}` : '--')}
+                    change={w.dune_probability_up != null ? +(Math.max(w.dune_probability_up, 1-w.dune_probability_up) * 100).toFixed(0) : 0}
                     latency={0}
-                    status={vpin != null && vpin >= 0.65 ? 'warn' : 'ok'} />
+                    status={w.dune_probability_up != null && Math.max(w.dune_probability_up, 1-w.dune_probability_up) >= 0.75 ? 'ok' : (w.dune_probability_up != null && Math.max(w.dune_probability_up, 1-w.dune_probability_up) < 0.60 ? 'err' : 'warn')} />
                 </div>
               );
             })()}
@@ -228,7 +239,7 @@ export default function LiveTab({ hqData, tick, v9Stats, v9GateData }) {
 
       {/* CENTER COLUMN */}
       <div style={{ ...getCenterStyle(), gridRow: 'span 6', display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0, transition: 'all 300ms' }}>
-        <Panel title="v9.0 Gate Pipeline — 19 Checkpoints (T-240 to T-60)" icon={Database} style={{ flex: 1.5, minHeight: 0 }}>
+        <Panel title="v10 DUNE Gate Pipeline — 19 Checkpoints (T-240 to T-60)" icon={Database} style={{ flex: 1.5, minHeight: 0 }}>
           <GateAuditMatrix currentT={currentT} v9GateData={v9GateData} />
         </Panel>
 
@@ -253,7 +264,7 @@ export default function LiveTab({ hqData, tick, v9Stats, v9GateData }) {
           <CanvasPriceChart currentT={currentT} currentPrices={currentWindowPrices} pastCandles={pastCandles} />
         </Panel>
 
-        <Panel title="Risk Surface & ODE Parametrization (VPIN x Delta)" icon={Activity} style={{ flex: 1.5, minHeight: 0 }}>
+        <Panel title="Risk Surface (DUNE P x Delta)" icon={Activity} style={{ flex: 1.5, minHeight: 0 }}>
           <div style={{ position: 'relative', width: '100%', height: '100%' }}>
             <CanvasRiskSurface currentT={currentT} />
             <div style={{
@@ -261,9 +272,9 @@ export default function LiveTab({ hqData, tick, v9Stats, v9GateData }) {
               border: `1px solid ${T.cardBorder}`, padding: 8, borderRadius: 4, fontSize: 9, fontFamily: 'monospace',
             }}>
               <div style={{ color: T.cyan, marginBottom: 4 }}>SURFACE_VARS</div>
-              <div>Z: {(0.45 + Math.sin(tick * 0.1) * 0.1).toFixed(3)} (VPIN)</div>
+              <div>Z: {duneP != null ? Math.max(duneP, 1-duneP).toFixed(3) : (0.45 + Math.sin(tick * 0.1) * 0.1).toFixed(3)} (DUNE P)</div>
               <div>X: {(0.01 + Math.cos(tick) * 0.01).toFixed(4)} (delta)</div>
-              <div>OPT: LOCAL_MIN</div>
+              <div>CAP: ${currentCap.toFixed(2)}</div>
             </div>
           </div>
         </Panel>
@@ -273,7 +284,7 @@ export default function LiveTab({ hqData, tick, v9Stats, v9GateData }) {
       {rightExpanded ? (
         <div style={{ gridColumn: 'span 3', gridRow: 'span 6', display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0 }}>
           <Panel
-            title="v9.0 GATE PIPELINE"
+            title="v10 DUNE GATE PIPELINE"
             icon={ShieldCheck}
             style={{ flexShrink: 0, background: 'linear-gradient(to bottom, rgba(15,23,42,1), rgba(168,85,247,0.05))', borderColor: 'rgba(168,85,247,0.3)' }}
             headerRight={
@@ -282,16 +293,48 @@ export default function LiveTab({ hqData, tick, v9Stats, v9GateData }) {
               </button>
             }
           >
-            {/* v9.0 gate pipeline: Agreement -> VPIN Tier -> CG Veto -> Cap -> FAK Result */}
+            {/* v10 gate pipeline: Agreement -> DUNE P>=0.65 -> CG Veto -> Dynamic Cap -> FAK */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {(() => {
-                const latestW = hqData?.windows?.[0] || {};
+                const lw = latestWindow;
+                const lwDuneP = lw.dune_probability_up;
+                const lwDuneDir = lw.dune_direction;
+                const lwDunePDir = lwDuneP != null && lw.source_agreement === true
+                  ? (lw.direction === 'DOWN' ? (1 - lwDuneP) : lwDuneP)
+                  : null;
+                const dunePass = lwDunePDir != null && lwDunePDir >= DUNE_MIN_P;
+                const lwDuneCap = lw.dune_cap ?? getDuneEntryCap(lwDunePDir);
                 const pipelineSteps = [
-                  { label: 'Agreement', key: 'source_agreement', pass: latestW.source_agreement === true, detail: latestW.source_agreement === true ? 'CL+TI' : latestW.source_agreement === false ? 'DISAGREE' : '--' },
-                  { label: 'VPIN Tier', key: 'eval_tier', pass: !!latestW.eval_tier, detail: latestW.eval_tier || '--' },
-                  { label: 'CG Veto', key: 'gate_cg', pass: !latestW.gate_failed || latestW.gate_failed !== 'gate_cg', detail: latestW.gate_failed === 'gate_cg' ? 'VETOED' : 'CLEAR' },
-                  { label: 'Cap', key: 'v9_cap', pass: latestW.v9_cap != null, detail: latestW.v9_cap != null ? `$${latestW.v9_cap.toFixed(2)}` : '--' },
-                  { label: 'FAK Result', key: 'order_type', pass: latestW.trade_placed, detail: latestW.order_type || 'FAK' },
+                  {
+                    label: 'Agreement',
+                    key: 'source_agreement',
+                    pass: lw.source_agreement === true,
+                    detail: lw.source_agreement === true ? 'CL+TI' : lw.source_agreement === false ? 'DISAGREE' : '--',
+                  },
+                  {
+                    label: `DUNE P\u2265${DUNE_MIN_P}`,
+                    key: 'dune_confidence',
+                    pass: dunePass,
+                    detail: lwDunePDir != null ? `P=${lwDunePDir.toFixed(3)}` : '--',
+                  },
+                  {
+                    label: 'CG Veto',
+                    key: 'gate_cg',
+                    pass: !lw.gate_failed || lw.gate_failed !== 'cg_veto',
+                    detail: lw.gate_failed === 'cg_veto' ? 'VETOED' : 'CLEAR',
+                  },
+                  {
+                    label: 'Dynamic Cap',
+                    key: 'dune_cap',
+                    pass: lwDuneCap != null,
+                    detail: lwDuneCap != null ? `$${lwDuneCap.toFixed(2)}` : '--',
+                  },
+                  {
+                    label: 'FAK Result',
+                    key: 'fak_result',
+                    pass: lw.trade_placed,
+                    detail: lw.order_type || 'FAK',
+                  },
                 ];
                 return pipelineSteps.map((step, i) => (
                   <div key={step.key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -313,16 +356,16 @@ export default function LiveTab({ hqData, tick, v9Stats, v9GateData }) {
                   </div>
                 ));
               })()}
-              {/* Fill price + pi bonus display */}
+              {/* Fill price + DUNE cap display */}
               {(() => {
-                const latestW = hqData?.windows?.[0] || {};
-                if (!latestW.clob_fill_price) return null;
-                const piCap = latestW.v9_cap != null ? getCapWithPi(latestW.v9_cap) : null;
+                if (!latestWindow.clob_fill_price) return null;
+                const capVal = latestWindow.dune_cap ?? latestWindow.v9_cap;
+                const piCap = capVal != null ? getCapWithPi(capVal) : null;
                 return (
                   <div style={{ marginTop: 4, padding: 8, background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.2)', borderRadius: 4, fontSize: 10, fontFamily: "'JetBrains Mono', monospace" }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', color: T.text }}>
                       <span>Fill Price</span>
-                      <span style={{ color: T.cyan }}>${latestW.clob_fill_price.toFixed(4)}</span>
+                      <span style={{ color: T.cyan }}>${latestWindow.clob_fill_price.toFixed(4)}</span>
                     </div>
                     {piCap && (
                       <div style={{ display: 'flex', justifyContent: 'space-between', color: T.textMuted, marginTop: 2 }}>
@@ -330,7 +373,7 @@ export default function LiveTab({ hqData, tick, v9Stats, v9GateData }) {
                         <span>${piCap.toFixed(2)}</span>
                       </div>
                     )}
-                    {latestW.partial_fill && (
+                    {latestWindow.partial_fill && (
                       <div style={{ color: T.amber, marginTop: 2 }}>PARTIAL FILL (FAK)</div>
                     )}
                   </div>
@@ -339,17 +382,17 @@ export default function LiveTab({ hqData, tick, v9Stats, v9GateData }) {
             </div>
           </Panel>
 
-          <Panel title="Configuration Toggles" icon={Sliders} style={{ flex: 1, minHeight: 0 }}>
+          <Panel title="v10 Configuration" icon={Sliders} style={{ flex: 1, minHeight: 0 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2, overflowY: 'auto', paddingRight: 4 }}>
-              <div style={{ fontSize: 9, color: T.cyan, fontWeight: 700, marginBottom: 4, borderBottom: `1px solid ${T.cardBorder}`, paddingBottom: 4 }}>VPIN THRESHOLDS</div>
-              {[['VPIN_GATE', '0.45'], ['VPIN_CASCADE', '0.70'], ['VPIN_INFORMED', '0.55']].map(([label, val]) => (
+              <div style={{ fontSize: 9, color: T.cyan, fontWeight: 700, marginBottom: 4, borderBottom: `1px solid ${T.cardBorder}`, paddingBottom: 4 }}>DUNE THRESHOLDS</div>
+              {[['DUNE_MIN_P', `${DUNE_MIN_P}`], ['CAP_MARGIN', `${(DUNE_CAP_MARGIN * 100).toFixed(0)}pp`], ['CAP_FLOOR', `$${(0.30).toFixed(2)}`], ['CAP_CEILING', `$${(0.75).toFixed(2)}`]].map(([label, val]) => (
                 <div key={label} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12, fontFamily: 'monospace' }}>
                   <span style={{ color: T.textMuted }}>{label}</span>
                   <span style={{ color: T.text }}>{val}</span>
                 </div>
               ))}
-              <div style={{ fontSize: 9, color: T.purple, fontWeight: 700, marginTop: 12, marginBottom: 4, borderBottom: `1px solid ${T.cardBorder}`, paddingBottom: 4 }}>v9.0 EXECUTION / FAK</div>
-              {[['ORDER_TYPE', 'FAK'], ['CAP_EARLY', '$0.55'], ['CAP_GOLDEN', '$0.65'], ['PI_BONUS', '+3.14c']].map(([label, val]) => (
+              <div style={{ fontSize: 9, color: T.purple, fontWeight: 700, marginTop: 12, marginBottom: 4, borderBottom: `1px solid ${T.cardBorder}`, paddingBottom: 4 }}>v10 EXECUTION</div>
+              {[['ORDER_TYPE', 'FAK'], ['MIN_EVAL', `T-${V10_MIN_EVAL_OFFSET}`], ['CAP_SOURCE', 'DUNE P-5pp'], ['PI_BONUS', '+3.14c']].map(([label, val]) => (
                 <div key={label} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12, fontFamily: 'monospace' }}>
                   <span style={{ color: T.textMuted }}>{label}</span>
                   <span style={{ color: T.text }}>{val}</span>

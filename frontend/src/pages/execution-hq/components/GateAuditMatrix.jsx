@@ -2,23 +2,22 @@ import React from 'react';
 import { GATES, CHECKPOINTS, T } from './constants.js';
 
 /**
- * GateAuditMatrix — v9.0 gate pipeline heatmap.
+ * GateAuditMatrix — v10 DUNE gate pipeline heatmap.
  *
- * Shows 19 checkpoints (T-240 to T-60) x 5 gates (Agreement, VPIN, Delta, CG Veto, Cap).
+ * Shows 19 checkpoints (T-240 to T-60) x 4 gates (Agreement, DUNE, CG Veto, Cap).
  * Uses real signal_evaluations data when available via v9GateData prop.
  *
  * Props:
  *   currentT     — Current countdown (highlights the active column)
  *   gateData     — Optional: {[checkpoint]: {[gate]: 'pass'|'fail'}} from API
  *   windowData   — Window snapshot with gates_passed / gate_failed strings
- *   v9GateData   — v9 signal_evaluations keyed by window_ts -> offset -> gate results
+ *   v9GateData   — signal_evaluations keyed by window_ts -> offset -> gate results
  */
 
-// Human-readable gate labels for v9.0 pipeline
+// Human-readable gate labels for v10 pipeline
 const GATE_LABELS = {
   'gate_agreement': 'SRC AGREE',
-  'gate_vpin': 'VPIN',
-  'gate_delta': 'DELTA',
+  'gate_dune': 'DUNE',
   'gate_cg_veto': 'CG VETO',
   'gate_cap': 'CAP',
 };
@@ -55,20 +54,20 @@ export default function GateAuditMatrix({ currentT, gateData, windowData, v9Gate
 
   return (
     <div style={{ flex: 1, overflowX: 'auto', overflowY: 'auto' }}>
-      {/* v9.0 pipeline label */}
+      {/* v10 pipeline label */}
       <div style={{
         fontSize: 9, fontFamily: 'monospace', color: T.purple, padding: '4px 8px',
         borderBottom: `1px solid ${T.cardBorder}`, display: 'flex', alignItems: 'center', gap: 8,
         marginBottom: 4,
       }}>
-        <span style={{ fontWeight: 700 }}>v9.0 PIPELINE:</span>
+        <span style={{ fontWeight: 700 }}>v10 PIPELINE:</span>
         <span style={{ color: T.textMuted }}>Agreement</span>
         <span style={{ color: T.textDim }}>{'\u2192'}</span>
-        <span style={{ color: T.textMuted }}>VPIN Tier</span>
+        <span style={{ color: T.cyan }}>DUNE P{'\u2265'}0.65</span>
         <span style={{ color: T.textDim }}>{'\u2192'}</span>
         <span style={{ color: T.textMuted }}>CG Veto</span>
         <span style={{ color: T.textDim }}>{'\u2192'}</span>
-        <span style={{ color: T.textMuted }}>Cap</span>
+        <span style={{ color: T.textMuted }}>Dynamic Cap</span>
         <span style={{ color: T.textDim }}>{'\u2192'}</span>
         <span style={{ color: T.textMuted }}>FAK</span>
       </div>
@@ -99,8 +98,8 @@ export default function GateAuditMatrix({ currentT, gateData, windowData, v9Gate
                 padding: 4, position: 'sticky', left: 0,
                 background: '#0f172a', zIndex: 10,
                 borderRight: '1px solid rgba(30,41,59,1)',
-                color: gate === 'gate_agreement' ? T.purple : 'rgba(203,213,225,1)',
-                fontWeight: gate === 'gate_agreement' ? 700 : 400,
+                color: gate === 'gate_dune' ? T.cyan : gate === 'gate_agreement' ? T.purple : 'rgba(203,213,225,1)',
+                fontWeight: (gate === 'gate_agreement' || gate === 'gate_dune') ? 700 : 400,
               }}>
                 {GATE_LABELS[gate] || gate.replace('gate_', '')}
               </td>
@@ -110,8 +109,8 @@ export default function GateAuditMatrix({ currentT, gateData, windowData, v9Gate
                 const status = getGateStatus(gate, t);
                 const passes = status === 'pass';
 
-                // Tier-aware background: early zone vs golden zone
-                const isEarlyZone = t > 130;
+                // Zone-aware background: pre-eval vs DUNE eval zone
+                const isPreEval = t > 180;
                 let bgColor = 'rgba(30,41,59,0.2)';
                 let dotColor = 'rgba(51,65,85,1)';
 
@@ -129,8 +128,8 @@ export default function GateAuditMatrix({ currentT, gateData, windowData, v9Gate
                     borderLeft: '1px solid rgba(30,41,59,0.5)',
                     background: bgColor,
                     animation: isCurrent ? 'pulse 2s infinite' : 'none',
-                    // Subtle border at the tier boundary (T-130)
-                    borderRight: t === 130 ? `2px solid rgba(168,85,247,0.3)` : undefined,
+                    // Subtle border at the eval zone boundary (T-180)
+                    borderRight: t === 180 ? `2px solid rgba(6,182,212,0.3)` : undefined,
                   }}>
                     <div style={{
                       margin: '0 auto', width: 6, height: 6, borderRadius: '50%',
@@ -143,13 +142,13 @@ export default function GateAuditMatrix({ currentT, gateData, windowData, v9Gate
           ))}
         </tbody>
       </table>
-      {/* Tier labels beneath the table */}
+      {/* v10 zone labels beneath the table */}
       <div style={{ display: 'flex', fontSize: 8, fontFamily: 'monospace', color: T.textDim, marginTop: 4, paddingLeft: 84 }}>
-        <div style={{ flex: 1, textAlign: 'center', borderRight: `1px solid rgba(168,85,247,0.2)`, paddingRight: 4 }}>
-          EARLY ($0.55 cap, VPIN {'\u2265'} 0.65)
+        <div style={{ flex: 1, textAlign: 'center', borderRight: `1px solid rgba(6,182,212,0.2)`, paddingRight: 4 }}>
+          PRE-EVAL (T-240 to T-180, no trades)
         </div>
         <div style={{ flex: 1, textAlign: 'center', paddingLeft: 4 }}>
-          GOLDEN ($0.65 cap, VPIN {'\u2265'} 0.45)
+          DUNE EVAL (T-180 to T-60, cap = P-5pp)
         </div>
       </div>
     </div>

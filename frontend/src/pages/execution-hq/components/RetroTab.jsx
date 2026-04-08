@@ -12,7 +12,7 @@ import { T } from './constants.js';
  *   windows      — Array of window outcomes from /api/v58/execution-hq or /api/v58/outcomes
  *   shadowStats  — Aggregate shadow resolution stats from the API
  */
-export default function RetroTab({ windows, shadowStats, v9Stats }) {
+export default function RetroTab({ windows, shadowStats, v9Stats, v10Stats }) {
   const [selectedWindow, setSelectedWindow] = useState(null);
 
   // Build retrospective chart data from the selected window's checkpoint evaluations
@@ -101,15 +101,24 @@ export default function RetroTab({ windows, shadowStats, v9Stats }) {
         </Panel>
 
         <Panel style={{ background: 'rgba(168,85,247,0.05)', borderColor: 'rgba(168,85,247,0.3)' }}>
-          <div style={{ fontSize: 10, color: T.textMuted, fontFamily: 'monospace', marginBottom: 4 }}>v9.0 WIN RATE</div>
-          <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: T.purple }}>
-            {(v9Stats?.wins || 0) + (v9Stats?.losses || 0) > 0
-              ? `${v9Stats.wr_pct}%`
-              : '\u2014'}
-          </div>
-          <div style={{ fontSize: 11, color: T.textMuted, marginTop: 4, fontFamily: "'JetBrains Mono', monospace" }}>
-            {v9Stats?.wins || 0}W / {v9Stats?.losses || 0}L ({v9Stats?.total_trades || 0} trades)
-          </div>
+          {(() => {
+            // Show v10 stats if available, otherwise fall back to combined v9+v10
+            const stats = (v10Stats?.total_trades > 0) ? v10Stats : v9Stats;
+            const label = (v10Stats?.total_trades > 0) ? 'v10 DUNE WR' : 'WIN RATE';
+            return (
+              <>
+                <div style={{ fontSize: 10, color: T.textMuted, fontFamily: 'monospace', marginBottom: 4 }}>{label}</div>
+                <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: T.purple }}>
+                  {(stats?.wins || 0) + (stats?.losses || 0) > 0
+                    ? `${stats.wr_pct}%`
+                    : '\u2014'}
+                </div>
+                <div style={{ fontSize: 11, color: T.textMuted, marginTop: 4, fontFamily: "'JetBrains Mono', monospace" }}>
+                  {stats?.wins || 0}W / {stats?.losses || 0}L ({stats?.total_trades || 0} trades)
+                </div>
+              </>
+            );
+          })()}
         </Panel>
       </div>
 
