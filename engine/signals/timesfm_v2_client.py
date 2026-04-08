@@ -42,12 +42,20 @@ class TimesFMV2Client:
             self._session = aiohttp.ClientSession(timeout=self._timeout)
         return self._session
 
-    async def get_probability(self, asset: str, seconds_to_close: int) -> dict:
+    async def get_probability(
+        self, asset: str, seconds_to_close: int, model: str = "oak",
+    ) -> dict:
         """
         Get calibrated P(UP) for an asset at a given seconds_to_close.
 
+        Args:
+            asset: "BTC", "ETH", etc.
+            seconds_to_close: seconds until window close (e.g. 60, 120, 240)
+            model: "oak" (production) or "cedar"/"dune" (DUNE staging model)
+
         Returns dict with:
             probability_up: float (0-1, calibrated)
+            probability_down: float (0-1)
             probability_raw: float (0-1, uncalibrated)
             model_version: str
             delta_bucket: int
@@ -56,7 +64,11 @@ class TimesFMV2Client:
             timestamp: float
         """
         session = await self._get_session()
-        url = f"{self._base_url}/v2/probability"
+        # DUNE uses /v2/probability/cedar endpoint, OAK uses /v2/probability
+        if model in ("cedar", "dune"):
+            url = f"{self._base_url}/v2/probability/cedar"
+        else:
+            url = f"{self._base_url}/v2/probability"
         params = {"asset": asset.upper(), "seconds_to_close": seconds_to_close}
 
         try:
