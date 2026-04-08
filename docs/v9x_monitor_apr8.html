@@ -62,6 +62,13 @@
   </div>
 </div>
 
+<div class="warn" style="border-color:rgba(245,158,11,0.4);background:rgba(245,158,11,0.05)">
+  <strong style="color:#f59e0b">CRITICAL CLARIFICATION:</strong> Morning Telegram losses (05:00-10:30 UTC, 9W/11L = -$34) are <strong>NOT v9 trades</strong>.
+  They are old v8 positions resolving on-chain via position_monitor. v9 GTC orders placed overnight: <strong>97 expired unfilled</strong> (no risk, no P&L).
+  <br>Wallet $87.75 = starting $131 - old v8 losses - early CASCADE losses. Golden zone itself is +$18.50.
+  <br><br><strong>Fix deployed:</strong> position_monitor now links resolutions to trades table with v9 attribution.
+</div>
+
 <div class="good">
   <strong>Golden zone is PERFECT.</strong> 6 wins, 0 losses, +$18.50. Every golden zone trade (T-130..T-60, VPIN &ge; 0.45, CL+TI agree) has won.
 </div>
@@ -160,6 +167,57 @@
 </table>
 
 <div class="good">All 3 evaluation tables perfectly synchronized at 1,257 rows. No data gaps.</div>
+
+<h2>Morning Losses — Old v8 Positions (NOT v9)</h2>
+
+<p style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px">Resolved via position_monitor 05:00-10:52 UTC. All from pre-v9 deploy positions.</p>
+
+<table>
+<thead><tr><th>Time</th><th>Outcome</th><th>PnL</th><th>Source</th></tr></thead>
+<tbody>
+  <tr><td>05:23</td><td class="l">LOSS</td><td class="l">-$5.50</td><td class="dim">old v8</td></tr>
+  <tr><td>05:42</td><td class="l">LOSS</td><td class="l">-$5.72</td><td class="dim">old v8</td></tr>
+  <tr><td>05:46</td><td class="l">LOSS</td><td class="l">-$5.42</td><td class="dim">old v8</td></tr>
+  <tr><td>06:23</td><td class="l">LOSS</td><td class="l">-$5.17</td><td class="dim">old v8</td></tr>
+  <tr><td>06:32</td><td class="w">WIN</td><td class="w">+$2.48</td><td class="dim">old v8</td></tr>
+  <tr><td>06:43</td><td class="w">WIN</td><td class="w">+$2.80</td><td class="dim">old v8</td></tr>
+  <tr><td>06:53</td><td class="w">WIN</td><td class="w">+$5.57</td><td class="dim">old v8</td></tr>
+  <tr><td>06:58</td><td class="w">WIN</td><td class="w">+$4.78</td><td class="dim">old v8</td></tr>
+  <tr><td>07:21</td><td class="l">LOSS</td><td class="l">-$16.38</td><td class="dim">old v8 (big hit)</td></tr>
+  <tr><td>07:42</td><td class="w">WIN</td><td class="w">+$2.66</td><td class="dim">old v8</td></tr>
+  <tr><td>08:03</td><td class="w">WIN</td><td class="w">+$5.07</td><td class="dim">old v8</td></tr>
+  <tr><td>08:12</td><td class="w">WIN</td><td class="w">+$4.41</td><td class="dim">old v8</td></tr>
+  <tr><td>08:22</td><td class="l">LOSS</td><td class="l">-$5.61</td><td class="dim">old v8</td></tr>
+  <tr><td>08:33</td><td class="l">LOSS</td><td class="l">-$5.29</td><td class="dim">old v8</td></tr>
+  <tr><td>08:36</td><td class="l">LOSS</td><td class="l">-$5.03</td><td class="dim">old v8</td></tr>
+  <tr><td>09:18</td><td class="w">WIN</td><td class="w">+$8.63</td><td class="dim">old v8</td></tr>
+  <tr><td>09:24</td><td class="l">LOSS</td><td class="l">-$4.29</td><td class="dim">old v8</td></tr>
+  <tr><td>10:03</td><td class="l">LOSS</td><td class="l">-$10.05</td><td class="dim">old v8</td></tr>
+  <tr><td>10:07</td><td class="l">LOSS</td><td class="l">-$4.68</td><td class="dim">old v8</td></tr>
+  <tr><td>10:23</td><td class="w">WIN</td><td class="w">+$2.38</td><td class="dim">old v8</td></tr>
+  <tr><td>10:52</td><td class="w">WIN</td><td class="w">+$2.24</td><td class="dim">old v8</td></tr>
+</tbody>
+</table>
+
+<div style="margin-top:8px;font-size:12px">
+  <strong>Subtotal:</strong> 10W/11L = <span class="l">-$31.72</span> — all old v8 positions, NOT v9 strategy.
+</div>
+
+<h2>Bugs Fixed This Session</h2>
+
+<table>
+<thead><tr><th>Fix</th><th>Before</th><th>After</th></tr></thead>
+<tbody>
+  <tr><td>position_monitor &harr; trades</td><td>Resolutions not written to trades table</td><td class="w">Now updates outcome, pnl, resolved_at, status</td></tr>
+  <tr><td>Resolution notification</td><td>No v9 entry_reason shown</td><td class="w">Shows v9_GOLDEN_T130_FAK etc</td></tr>
+  <tr><td>FAK execution</td><td>5 descending attempts chasing ask</td><td class="w">2-shot: cap &rarr; cap+&pi; &rarr; GTC</td></tr>
+  <tr><td>FAK "no match" error</td><td>Logged as order_error (warning)</td><td class="w">Logged as no_match (info) — expected</td></tr>
+  <tr><td>v8 gate bypass</td><td>v9 golden zone blocked by old CASCADE gate</td><td class="w">v9 caps bypass old v8.1 gates</td></tr>
+  <tr><td>SITREP duplicates</td><td>3 identical skip entries per window</td><td class="w">DISTINCT ON window_ts</td></tr>
+  <tr><td>Telegram FAK label</td><td>Hardcoded "FOK &rarr; GTC"</td><td class="w">Reads ORDER_TYPE env var</td></tr>
+  <tr><td>Pi bonus threshold</td><td>Dead zone between check and max</td><td class="w">Unified: threshold = effective max</td></tr>
+</tbody>
+</table>
 
 <h2>Notification Issues to Fix</h2>
 
