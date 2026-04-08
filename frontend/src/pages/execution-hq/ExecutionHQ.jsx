@@ -3,6 +3,9 @@ import { Radio, History } from 'lucide-react';
 import { useApi } from '../../hooks/useApi.js';
 import LiveTab from './components/LiveTab.jsx';
 import RetroTab from './components/RetroTab.jsx';
+import ManualTradePanel from './components/ManualTradePanel.jsx';
+import TradeTicker from './components/TradeTicker.jsx';
+import TradeToast from './components/TradeToast.jsx';
 import { T } from './components/constants.js';
 
 /**
@@ -179,6 +182,9 @@ export default function ExecutionHQ() {
         </div>
       </header>
 
+      {/* Trade ticker strip */}
+      <TradeTicker recentTrades={hqData?.recent_trades || []} />
+
       {/* Error banner */}
       {error && (
         <div style={{
@@ -205,8 +211,14 @@ export default function ExecutionHQ() {
         <LiveTab hqData={hqData} tick={tick} v9Stats={v9Stats} v9GateData={v9GateData} v10Stats={v10Stats} />
       )}
       {(!loading || hqData) && activeTab === 'retro' && (
-        <RetroTab windows={windows} shadowStats={shadowStats} v9Stats={v9Stats} v10Stats={v10Stats} />
+        <RetroTab windows={windows} shadowStats={shadowStats} v9Stats={v9Stats} v10Stats={v10Stats} recentTrades={hqData?.recent_trades || []} />
       )}
+
+      {/* Trade toast notification (portal) */}
+      <TradeToast recentTrades={hqData?.recent_trades || []} />
+
+      {/* Floating manual trade panel (portal) */}
+      <ManualTradePanel hqData={hqData} />
     </div>
   );
 }

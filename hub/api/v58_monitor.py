@@ -57,6 +57,10 @@ async def ensure_manual_trades_table(session: AsyncSession) -> None:
             resolved_at TIMESTAMPTZ
         )
     """))
+    # Add order_type column if missing (migration-safe)
+    await session.execute(text("""
+        ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS order_type VARCHAR(5) DEFAULT 'FAK'
+    """))
     await session.commit()
 
 
@@ -1154,6 +1158,9 @@ class ManualTradeRequest(BaseModel):
     direction: str          # "UP" or "DOWN"
     mode: str               # "paper" or "live"
     window_ts: Optional[int] = None   # unix timestamp (ms or s)
+    order_type: str = "FAK"           # FAK, FOK, or GTC
+    price_override: Optional[float] = None  # manual entry price override
+    stake_usd: float = 4.0           # stake in USD
 
 
 # ─── Gamma price helper ───────────────────────────────────────────────────────
@@ -1313,8 +1320,11 @@ async def post_manual_trade(
     up_price = gamma.get("up_price")
     down_price = gamma.get("down_price")
 
-    # Determine entry price for chosen direction
-    entry_price = up_price if direction == "UP" else down_price
+    # Determine entry price: use override if provided, else Gamma price
+    if body.price_override is not None and body.price_override > 0:
+        entry_price = body.price_override
+    else:
+        entry_price = up_price if direction == "UP" else down_price
 
     # Fallback: try to get from window_snapshots if Gamma API failed
     if entry_price is None and body.window_ts:
@@ -1346,7 +1356,10 @@ async def post_manual_trade(
 
     # Generate trade ID
     trade_id = f"manual_{uuid.uuid4().hex[:16]}"
-    stake = 4.0
+    stake = body.stake_usd
+    order_type = body.order_type.upper() if body.order_type else "FAK"
+    if order_type not in ("FAK", "FOK", "GTC"):
+        order_type = "FAK"
     status = "open" if mode == "paper" else "pending_live"
 
     # Store in DB
@@ -1354,11 +1367,11 @@ async def post_manual_trade(
         INSERT INTO manual_trades
             (trade_id, window_ts, asset, direction, mode,
              entry_price, gamma_up_price, gamma_down_price,
-             stake_usd, status, created_at)
+             stake_usd, status, order_type, created_at)
         VALUES
             (:trade_id, :window_ts, :asset, :direction, :mode,
              :entry_price, :gamma_up_price, :gamma_down_price,
-             :stake_usd, :status, NOW())
+             :stake_usd, :status, :order_type, NOW())
     """), {
         "trade_id": trade_id,
         "window_ts": body.window_ts,
@@ -1370,6 +1383,7 @@ async def post_manual_trade(
         "gamma_down_price": down_price,
         "stake_usd": stake,
         "status": status,
+        "order_type": order_type,
     })
     await session.commit()
 
@@ -1380,6 +1394,7 @@ async def post_manual_trade(
         "gamma_up_price": up_price,
         "gamma_down_price": down_price,
         "stake": stake,
+        "order_type": order_type,
         "mode": mode,
         "status": status,
         "asset": body.asset,

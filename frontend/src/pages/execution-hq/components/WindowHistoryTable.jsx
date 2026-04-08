@@ -14,10 +14,13 @@ const PAGE_SIZE = 20;
 export default function WindowHistoryTable({ windows, onSelectWindow, selectedTs }) {
   const [page, setPage] = useState(0);
   const [missedOnly, setMissedOnly] = useState(false);
+  const [tradesOnly, setTradesOnly] = useState(false);
 
   const filtered = missedOnly
     ? windows.filter(w => !w.trade_placed && w.shadow_would_win)
-    : windows;
+    : tradesOnly
+      ? windows.filter(w => w.trade_placed)
+      : windows;
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const pageWindows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -47,10 +50,19 @@ export default function WindowHistoryTable({ windows, onSelectWindow, selectedTs
             <input
               type="checkbox"
               checked={missedOnly}
-              onChange={e => { setMissedOnly(e.target.checked); setPage(0); }}
+              onChange={e => { setMissedOnly(e.target.checked); if (e.target.checked) setTradesOnly(false); setPage(0); }}
               style={{ accentColor: T.amber }}
             />
             Missed opportunities only
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', color: T.cyan }}>
+            <input
+              type="checkbox"
+              checked={tradesOnly}
+              onChange={e => { setTradesOnly(e.target.checked); if (e.target.checked) setMissedOnly(false); setPage(0); }}
+              style={{ accentColor: T.cyan }}
+            />
+            Trades only
           </label>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: T.textMuted }}>

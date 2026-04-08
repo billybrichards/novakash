@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { History, ArrowRight } from 'lucide-react';
+import { History, ArrowRight, TrendingUp } from 'lucide-react';
 import Panel from './Panel.jsx';
 import CanvasRetrospective from './CanvasRetrospective.jsx';
 import WindowHistoryTable from './WindowHistoryTable.jsx';
@@ -9,10 +9,11 @@ import { T } from './constants.js';
  * RetroTab — Retrospective window history with shadow resolution analysis.
  *
  * Props:
- *   windows      — Array of window outcomes from /api/v58/execution-hq or /api/v58/outcomes
- *   shadowStats  — Aggregate shadow resolution stats from the API
+ *   windows       — Array of window outcomes from /api/v58/execution-hq or /api/v58/outcomes
+ *   shadowStats   — Aggregate shadow resolution stats from the API
+ *   recentTrades  — Array of recent trade objects for the trade log section
  */
-export default function RetroTab({ windows, shadowStats, v9Stats, v10Stats }) {
+export default function RetroTab({ windows, shadowStats, v9Stats, v10Stats, recentTrades }) {
   const [selectedWindow, setSelectedWindow] = useState(null);
 
   // Build retrospective chart data from the selected window's checkpoint evaluations
@@ -121,6 +122,63 @@ export default function RetroTab({ windows, shadowStats, v9Stats, v10Stats }) {
           })()}
         </Panel>
       </div>
+
+      {/* Recent Trades Log */}
+      {recentTrades && recentTrades.length > 0 && (
+        <Panel title="Recent Trades" icon={TrendingUp} style={{ flexShrink: 0, maxHeight: 180 }}>
+          <div style={{ overflowY: 'auto', flex: 1 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10, fontFamily: 'monospace' }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${T.cardBorder}`, color: T.textMuted }}>
+                  <th style={{ padding: '4px 8px', textAlign: 'left' }}>Time</th>
+                  <th style={{ padding: '4px 8px', textAlign: 'center' }}>Dir</th>
+                  <th style={{ padding: '4px 8px', textAlign: 'right' }}>Entry</th>
+                  <th style={{ padding: '4px 8px', textAlign: 'right' }}>Stake</th>
+                  <th style={{ padding: '4px 8px', textAlign: 'center' }}>Outcome</th>
+                  <th style={{ padding: '4px 8px', textAlign: 'right' }}>PnL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentTrades.slice(0, 10).map((t, i) => {
+                  const outcome = (t.outcome || t.status || '').toUpperCase();
+                  const isWin = outcome.includes('WIN');
+                  const isLoss = outcome.includes('LOSS');
+                  const pnlColor = isWin ? T.green : isLoss ? T.red : T.textMuted;
+                  const outcomeColor = isWin ? T.green : isLoss ? T.red : T.amber;
+                  const outcomeLabel = isWin ? 'WIN' : isLoss ? 'LOSS' : 'OPEN';
+                  return (
+                    <tr key={t.id || i} style={{ borderBottom: `1px solid rgba(30,41,59,0.5)` }}>
+                      <td style={{ padding: '4px 8px', color: T.text, fontFamily: "'JetBrains Mono', monospace" }}>
+                        {t.created_at ? new Date(t.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' }) + ' UTC' : '\u2014'}
+                      </td>
+                      <td style={{ padding: '4px 8px', textAlign: 'center', color: t.direction === 'UP' ? T.green : T.red, fontWeight: 700 }}>
+                        {t.direction || '\u2014'}
+                      </td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", color: T.cyan }}>
+                        ${t.entry_price != null ? t.entry_price.toFixed(4) : '\u2014'}
+                      </td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace", color: T.text }}>
+                        ${t.stake_usd != null ? t.stake_usd.toFixed(2) : '4.00'}
+                      </td>
+                      <td style={{ padding: '4px 8px', textAlign: 'center' }}>
+                        <span style={{
+                          display: 'inline-block', padding: '1px 6px', borderRadius: 2,
+                          fontSize: 9, fontWeight: 700,
+                          background: `${outcomeColor}20`, color: outcomeColor,
+                          border: `1px solid ${outcomeColor}40`,
+                        }}>{outcomeLabel}</span>
+                      </td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right', fontWeight: 600, fontFamily: "'JetBrains Mono', monospace", color: pnlColor }}>
+                        {t.pnl_usd != null ? `${t.pnl_usd >= 0 ? '+' : ''}$${t.pnl_usd.toFixed(2)}` : '\u2014'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
 
       {/* Main content: Table + Chart */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, flex: 1, minHeight: 0 }}>
