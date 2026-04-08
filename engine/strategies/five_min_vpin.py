@@ -544,6 +544,11 @@ class FiveMinVPINStrategy(BaseStrategy):
         else:
             _snap_regime = "CALM"
 
+        # ── Default v9 variables (must exist even when v10 is active) ──────
+        _v9_agreement = False
+        _v9_source_agree = None
+        _v9_direction_override = None
+
         # ── v10 DUNE-Gated Pipeline (when V10_DUNE_ENABLED=true) ─────────
         # Replaces v9's inline gates with clean composable pipeline.
         # Falls through to v9 inline gates when disabled.
@@ -593,6 +598,29 @@ class FiveMinVPINStrategy(BaseStrategy):
                     dune_p=f"{pipe_result.dune_p:.3f}" if pipe_result.dune_p else "N/A",
                     regime=_snap_regime, offset=ctx.eval_offset)
 
+                # Write signal_evaluation with decision='TRADE' before executing
+                if self._db:
+                    try:
+                        await self._db.write_signal_evaluation({
+                            "window_ts": window.window_ts,
+                            "asset": window.asset,
+                            "timeframe": "5m",
+                            "eval_offset": ctx.eval_offset,
+                            "delta_chainlink": ctx.delta_chainlink,
+                            "delta_tiingo": ctx.delta_tiingo,
+                            "delta_binance": ctx.delta_binance,
+                            "delta_pct": delta_pct,
+                            "vpin": current_vpin,
+                            "regime": _snap_regime,
+                            "decision": "TRADE",
+                            "gate_passed": True,
+                            "gate_failed": None,
+                            "v2_probability_up": ctx.dune_probability_up,
+                            "v2_direction": direction,
+                        })
+                    except Exception as _sig_exc:
+                        self._log.warning("db.v10_trade_signal_eval_failed", error=str(_sig_exc)[:100])
+
                 # EXECUTE the trade immediately — don't fall through to v9 code
                 await self._execute_trade(state, signal)
                 return  # Done — one trade per window
@@ -601,16 +629,26 @@ class FiveMinVPINStrategy(BaseStrategy):
                 self._last_skip_reason = pipe_result.skip_reason or "v10 gate failed"
                 if self._db:
                     try:
-                        await self._db.write_signal_evaluation(
-                            window_ts=window.window_ts, asset=window.asset,
-                            timeframe="5m", eval_offset=getattr(window, 'eval_offset', None),
-                            delta_chainlink=ctx.delta_chainlink, delta_tiingo=ctx.delta_tiingo,
-                            delta_binance=ctx.delta_binance, vpin=current_vpin,
-                            regime=_snap_regime, decision="SKIP",
-                            gate_failed=pipe_result.failed_gate or "unknown",
-                        )
+                        await self._db.write_signal_evaluation({
+                            "window_ts": window.window_ts,
+                            "asset": window.asset,
+                            "timeframe": "5m",
+                            "eval_offset": getattr(window, 'eval_offset', None),
+                            "delta_chainlink": ctx.delta_chainlink,
+                            "delta_tiingo": ctx.delta_tiingo,
+                            "delta_binance": ctx.delta_binance,
+                            "delta_pct": delta_pct,
+                            "vpin": current_vpin,
+                            "regime": _snap_regime,
+                            "decision": "SKIP",
+                            "gate_passed": False,
+                            "gate_failed": pipe_result.failed_gate or "unknown",
+                            "v2_probability_up": ctx.dune_probability_up,
+                        })
                     except Exception:
                         pass
+                # v10 skip: don't fall through to v9 code — return after writing snapshot
+                # (the window_snapshot write happens below, so we must NOT return here)
         else:
 
             # ── v9.0 Source Agreement Gate ────────────────────────────────────
@@ -638,14 +676,20 @@ class FiveMinVPINStrategy(BaseStrategy):
                         # Log to signal_evaluations before skipping
                         if self._db:
                             try:
-                                await self._db.write_signal_evaluation(
-                                    window_ts=window.window_ts, asset=window.asset,
-                                    timeframe="5m", eval_offset=getattr(window, 'eval_offset', None),
-                                    delta_chainlink=delta_chainlink, delta_tiingo=delta_tiingo,
-                                    delta_binance=delta_binance, vpin=current_vpin,
-                                    regime=_snap_regime,
-                                    decision="SKIP", gate_failed="source_disagree",
-                                )
+                                await self._db.write_signal_evaluation({
+                                    "window_ts": window.window_ts,
+                                    "asset": window.asset,
+                                    "timeframe": "5m",
+                                    "eval_offset": getattr(window, 'eval_offset', None),
+                                    "delta_chainlink": delta_chainlink,
+                                    "delta_tiingo": delta_tiingo,
+                                    "delta_binance": delta_binance,
+                                    "vpin": current_vpin,
+                                    "regime": _snap_regime,
+                                    "decision": "SKIP",
+                                    "gate_passed": False,
+                                    "gate_failed": "source_disagree",
+                                })
                             except Exception:
                                 pass
                         # Telegram notification for source disagreement (once per window)
@@ -679,59 +723,61 @@ class FiveMinVPINStrategy(BaseStrategy):
                         signal = None
                     tf = "15m" if window.duration_secs == 900 else "5m"
 
-        # ── v9.0 Dynamic Caps (two-tier) ────────────────────────────────
-        # Replace v8.1 four-tier caps with empirical agreement-WR-based tiers.
+        # ── v9.0 Dynamic Caps + Signal Evaluation ─────────────────────────
+        # Skip entirely when v10 is active — v10 already decided TRADE or SKIP above.
+        # Only run v9 caps + _evaluate_signal when v10 is disabled (legacy v9 path).
         _v9_caps = os.environ.get("V9_CAPS_ENABLED", "false").lower() == "true"
         _v9_cap = None
         _v9_tier = None
         _eval_offset = getattr(window, 'eval_offset', None)
 
-        if _v9_caps and _eval_offset is not None:
-            _v9_cap_early = float(os.environ.get("V9_CAP_EARLY", "0.55"))
-            _v9_cap_golden = float(os.environ.get("V9_CAP_GOLDEN", "0.65"))
-            _v9_vpin_early = float(os.environ.get("V9_VPIN_EARLY", "0.65"))
-            _v9_vpin_late = float(os.environ.get("V9_VPIN_LATE", "0.45"))
+        if not _v10_enabled:
+            if _v9_caps and _eval_offset is not None:
+                _v9_cap_early = float(os.environ.get("V9_CAP_EARLY", "0.55"))
+                _v9_cap_golden = float(os.environ.get("V9_CAP_GOLDEN", "0.65"))
+                _v9_vpin_early = float(os.environ.get("V9_VPIN_EARLY", "0.65"))
+                _v9_vpin_late = float(os.environ.get("V9_VPIN_LATE", "0.45"))
 
-            if _eval_offset > 130:
-                # Early zone: CASCADE only (VPIN >= 0.65)
-                if current_vpin >= _v9_vpin_early:
-                    _v9_cap = _v9_cap_early
-                    _v9_tier = "EARLY_CASCADE"
+                if _eval_offset > 130:
+                    # Early zone: CASCADE only (VPIN >= 0.65)
+                    if current_vpin >= _v9_vpin_early:
+                        _v9_cap = _v9_cap_early
+                        _v9_tier = "EARLY_CASCADE"
+                    else:
+                        _v9_tier = "EARLY_SKIP"
+                        if _v9_agreement:
+                            # VPIN too low for early zone — skip regardless of agreement
+                            self._last_skip_reason = f"v9: early offset T-{_eval_offset} VPIN {current_vpin:.2f} < {_v9_vpin_early}"
+                            signal = None
                 else:
-                    _v9_tier = "EARLY_SKIP"
-                    if _v9_agreement:
-                        # VPIN too low for early zone — skip regardless of agreement
-                        self._last_skip_reason = f"v9: early offset T-{_eval_offset} VPIN {current_vpin:.2f} < {_v9_vpin_early}"
-                        signal = None
+                    # Golden zone (T-130..T-60): VPIN >= 0.45
+                    if current_vpin >= _v9_vpin_late:
+                        _v9_cap = _v9_cap_golden
+                        _v9_tier = "GOLDEN"
+                    else:
+                        _v9_tier = "GOLDEN_SKIP"
+                        if _v9_agreement:
+                            self._last_skip_reason = f"v9: golden zone VPIN {current_vpin:.2f} < {_v9_vpin_late}"
+                            signal = None
+
+                self._log.info("v9.cap_tier", tier=_v9_tier, cap=f"${_v9_cap:.2f}" if _v9_cap else "SKIP",
+                    offset=_eval_offset, vpin=f"{current_vpin:.3f}")
+
+            # Evaluate signal (with TWAP and TimesFM — dead gates will be cleaned up)
+            # Skip evaluation if v9.0 already decided to skip
+            if not ((_v9_agreement and _v9_source_agree is False) or
+                    (_v9_caps and _v9_tier and "SKIP" in _v9_tier)):
+                signal = self._evaluate_signal(window, current_price, current_vpin, delta_pct, twap_result=twap_result, timesfm_forecast=timesfm_forecast)
+                # Override direction with v9.0 source agreement direction
+                if signal and _v9_direction_override and _v9_agreement:
+                    signal.direction = _v9_direction_override
+                # Override cap with v9.0 tier cap and entry reason
+                if signal and _v9_cap is not None:
+                    signal.v81_entry_cap = _v9_cap
+                    _order_type = os.environ.get("ORDER_TYPE", "FAK").upper()
+                    signal.entry_reason = f"v9_{_v9_tier}_T{_eval_offset}_{_order_type}"
             else:
-                # Golden zone (T-130..T-60): VPIN >= 0.45
-                if current_vpin >= _v9_vpin_late:
-                    _v9_cap = _v9_cap_golden
-                    _v9_tier = "GOLDEN"
-                else:
-                    _v9_tier = "GOLDEN_SKIP"
-                    if _v9_agreement:
-                        self._last_skip_reason = f"v9: golden zone VPIN {current_vpin:.2f} < {_v9_vpin_late}"
-                        signal = None
-
-            self._log.info("v9.cap_tier", tier=_v9_tier, cap=f"${_v9_cap:.2f}" if _v9_cap else "SKIP",
-                offset=_eval_offset, vpin=f"{current_vpin:.3f}")
-
-        # Evaluate signal (with TWAP and TimesFM — dead gates will be cleaned up)
-        # Skip evaluation if v9.0 already decided to skip
-        if not ((_v9_agreement and _v9_source_agree is False) or
-                (_v9_caps and _v9_tier and "SKIP" in _v9_tier)):
-            signal = self._evaluate_signal(window, current_price, current_vpin, delta_pct, twap_result=twap_result, timesfm_forecast=timesfm_forecast)
-            # Override direction with v9.0 source agreement direction
-            if signal and _v9_direction_override and _v9_agreement:
-                signal.direction = _v9_direction_override
-            # Override cap with v9.0 tier cap and entry reason
-            if signal and _v9_cap is not None:
-                signal.v81_entry_cap = _v9_cap
-                _order_type = os.environ.get("ORDER_TYPE", "FAK").upper()
-                signal.entry_reason = f"v9_{_v9_tier}_T{_eval_offset}_{_order_type}"
-        else:
-            signal = None
+                signal = None
 
         tf = "15m" if window.duration_secs == 900 else "5m"
 

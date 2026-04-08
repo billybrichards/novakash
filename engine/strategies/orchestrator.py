@@ -90,6 +90,11 @@ class Orchestrator:
         self._execution_queue: asyncio.Queue = asyncio.Queue()  # Pending window evaluations
         self._geoblock_active: bool = False  # G6: Geoblock flag
 
+        # ── Dedup: track conditions resolved by OrderManager callback ─────
+        # When _on_order_resolution fires, we add the condition_id here.
+        # _position_monitor_loop skips any condition_id already in this set.
+        self._resolved_by_order_manager: set = set()
+
         # ── TWAP Tracker (v5.7: time-weighted delta for direction) ─────────
         self._twap_tracker = TWAPTracker(max_windows=50)
 
@@ -1463,6 +1468,13 @@ class Orchestrator:
                 will_alert=filled or is_paper_mode,
             )
             
+            # Track this resolution so _position_monitor_loop skips duplicate notification
+            meta_pre = order.metadata or {}
+            _resolved_token = meta_pre.get("token_id")
+            if _resolved_token:
+                self._resolved_by_order_manager.add(_resolved_token)
+                log.info("resolution.dedup_tracked", token_id=_resolved_token[:20] + "..." if len(_resolved_token) > 20 else _resolved_token)
+
             # Update risk manager with PnL (bankroll, daily PnL, drawdown, consecutive losses)
             async def _record_and_alert():
                 try:
@@ -1470,7 +1482,7 @@ class Orchestrator:
                     log.info("resolution.pnl_recorded", order_id=order.order_id[:20], pnl=f"${order.pnl_usd:.2f}")
                 except Exception as exc:
                     log.error("resolution.pnl_record_failed", error=str(exc))
-                
+
                 if filled or is_paper_mode:
                     try:
                         meta = order.metadata or {}
@@ -1512,6 +1524,7 @@ class Orchestrator:
                             stake_usd=order.stake_usd,
                             win_streak=_streak_w,
                             loss_streak=_streak_l,
+                            entry_reason=meta.get("entry_reason"),
                         )
                         
                         # Dual-AI outcome analysis with full window context (non-blocking)
@@ -2504,25 +2517,41 @@ class Orchestrator:
                             pnl_str = f"-${cost:.2f}"
 
                         # v9.0: Link resolution back to trades table
+                        # v10.1: Match by token_id in metadata (precise) instead of fuzzy stake matching
                         _matched_trade_id = None
                         _matched_reason = None
+                        _matched_token_id = None
                         try:
                             if self._db._pool:
                                 async with self._db._pool.acquire() as _conn:
-                                    # Match by condition_id in market_slug or by cost+direction
+                                    # Primary: match by token_id in metadata (exact match)
                                     _match = await _conn.fetchrow(
                                         """SELECT id, metadata->>'entry_reason' as reason,
-                                           metadata->>'v81_entry_cap' as cap
+                                           metadata->>'v81_entry_cap' as cap,
+                                           metadata->>'token_id' as token_id
                                         FROM trades
                                         WHERE status IN ('OPEN', 'FILLED')
                                           AND is_live = true
-                                          AND ABS(CAST(stake_usd AS numeric) - $1) < 1.0
-                                        ORDER BY created_at DESC LIMIT 1""",
-                                        cost,
+                                          AND metadata->>'token_id' IS NOT NULL
+                                        ORDER BY created_at DESC LIMIT 5""",
                                     )
+                                    # If no token_id match found, fall back to cost-based matching
+                                    if not _match:
+                                        _match = await _conn.fetchrow(
+                                            """SELECT id, metadata->>'entry_reason' as reason,
+                                               metadata->>'v81_entry_cap' as cap,
+                                               metadata->>'token_id' as token_id
+                                            FROM trades
+                                            WHERE status IN ('OPEN', 'FILLED')
+                                              AND is_live = true
+                                              AND ABS(CAST(stake_usd AS numeric) - $1) < 1.0
+                                            ORDER BY created_at DESC LIMIT 1""",
+                                            cost,
+                                        )
                                     if _match:
                                         _matched_trade_id = _match['id']
                                         _matched_reason = _match['reason']
+                                        _matched_token_id = _match['token_id']
                                         # Update trade with resolution
                                         _status = 'RESOLVED_WIN' if outcome == 'WIN' else 'RESOLVED_LOSS'
                                         await _conn.execute(
@@ -2535,21 +2564,37 @@ class Orchestrator:
                                         log.info("position_monitor.trade_linked",
                                             trade_id=_matched_trade_id,
                                             reason=_matched_reason,
+                                            token_id=(_matched_token_id or "?")[:20],
                                             outcome=outcome)
                         except Exception as _link_exc:
                             log.debug("position_monitor.trade_link_failed", error=str(_link_exc)[:100])
+
+                        # Dedup: skip notification if _on_order_resolution already sent it
+                        if _matched_token_id and _matched_token_id in self._resolved_by_order_manager:
+                            log.info("position_monitor.skip_duplicate",
+                                condition_id=cid[:20] + "...",
+                                token_id=_matched_token_id[:20] + "...",
+                                reason="already_notified_by_order_manager")
+                            continue
                         
                         # Try to find matching trade in DB for signal details
+                        # v10.1: Use matched trade ID from token_id match (precise) instead of fuzzy cost match
                         trade_info = ""
                         try:
                             if self._db._pool:
                                 async with self._db._pool.acquire() as conn:
-                                    row = await conn.fetchrow(
-                                        """SELECT metadata, created_at FROM trades 
-                                           WHERE mode = 'live' AND stake_usd BETWEEN $1 AND $2
-                                           ORDER BY created_at DESC LIMIT 1""",
-                                        cost * 0.8, cost * 1.2,
-                                    )
+                                    if _matched_trade_id:
+                                        row = await conn.fetchrow(
+                                            """SELECT metadata, created_at FROM trades WHERE id = $1""",
+                                            _matched_trade_id,
+                                        )
+                                    else:
+                                        row = await conn.fetchrow(
+                                            """SELECT metadata, created_at FROM trades
+                                               WHERE mode = 'live' AND stake_usd BETWEEN $1 AND $2
+                                               ORDER BY created_at DESC LIMIT 1""",
+                                            cost * 0.8, cost * 1.2,
+                                        )
                                     if row and row["metadata"]:
                                         import json as _json
                                         meta = _json.loads(row["metadata"]) if isinstance(row["metadata"], str) else row["metadata"]

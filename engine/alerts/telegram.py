@@ -1276,6 +1276,7 @@ class TelegramAlerter:
         win_streak: int = 0,
         loss_streak: int = 0,
         ai_commentary: Optional[str] = None,
+        entry_reason: Optional[str] = None,
     ) -> None:
         """Full resolution report with what-if P&L table at each T-point."""
         result_e = "✅" if outcome == "WIN" else "❌"
@@ -1285,6 +1286,8 @@ class TelegramAlerter:
         streak_str = (f" | `{win_streak}W streak`" if win_streak > 0
                       else f" | `{loss_streak}L streak`" if loss_streak > 0 else "")
 
+        reason_line = f"Entry: `{entry_reason}`\n" if entry_reason else ""
+
         lines = [
             f"{result_e} *{outcome}* — {asset} {timeframe} | {self._engine_version}",
             f"━━━━━━━━━━━━━━━━━━━━━━",
@@ -1292,6 +1295,10 @@ class TelegramAlerter:
             f"P&L: `{pnl_sign}${pnl_usd:.2f}`{streak_str}",
             f"BTC: `${open_price:,.2f}` → `${close_price:,.2f}` (Δ `{delta_pct:+.4f}%`)",
             f"VPIN: `{vpin:.3f}` `{regime}`",
+        ]
+        if reason_line:
+            lines.append(reason_line.rstrip())
+        lines += [
             f"",
             f"*Entry prices by checkpoint:*",
         ]
