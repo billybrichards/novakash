@@ -186,6 +186,45 @@ WHERE is_live = true AND outcome IS NULL
 
 ---
 
+## 11. CG Bonus Impact (Dampened Apr 8 22:15 UTC)
+
+CG bonuses were halved after observing them rescue borderline losses:
+- `V10_CG_TAKER_ALIGNED_BONUS`: 0.02 → **0.01** (taker flow aligned with direction)
+- `V10_CG_CONFIRM_BONUS`: 0.03 → **0.01** (2+ of 3 CG signals confirm)
+
+Max combined bonus is now -0.02 (was -0.04). This means a trade at dune_p=0.80 vs threshold=0.82 will no longer be rescued by CG alignment.
+
+**What to monitor:**
+- Do losses with `_CG-0.01` in entry_reason decrease vs `_CG-0.02` era?
+- Are legitimate wins being blocked that CG would have rescued?
+- If WR improves but trade count drops significantly, bonuses may be too tight
+
+---
+
+## 12. Hourly Automated Monitoring Cron
+
+A cron fires every hour at :47 past the hour. It evaluates:
+
+1. **Today's totals** from trade_bible (source of truth)
+2. **Last hour performance** — immediate trend detection
+3. **By regime breakdown** — flags if CASCADE is bleeding
+4. **Every loss in last 2 hours** — full v10.4 threshold check:
+   - Calculates effective threshold (base + offset + DOWN + CG modifiers)
+   - Identifies if v10.4 would have blocked (old vs new trade)
+   - Flags recovered orphan trades vs genuine v10.4 decisions
+   - Notes irreducible losses (model confident but wrong)
+5. **Wallet and orphan count** — data integrity
+6. **Engine health via Montreal SSH** — process count, errors, DUNE failures, ELM recorder status
+
+**What to look for in cron reports:**
+- WR trending below 55% over 20+ trades → thresholds need tightening
+- CASCADE WR below 40% → consider raising `V10_CASCADE_MIN_P` further
+- "DUNE query failed" appearing → model service may be down
+- Orphan count rising → reconciler may have a matching issue
+- CG bonuses rescuing losses → consider dampening further
+
+---
+
 ## Quick Health Check SQL
 
 ```sql
