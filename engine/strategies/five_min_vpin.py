@@ -592,6 +592,10 @@ class FiveMinVPINStrategy(BaseStrategy):
                     cap=f"${pipe_result.cap:.2f}" if pipe_result.cap else "?",
                     dune_p=f"{pipe_result.dune_p:.3f}" if pipe_result.dune_p else "N/A",
                     regime=_snap_regime, offset=ctx.eval_offset)
+
+                # EXECUTE the trade immediately — don't fall through to v9 code
+                await self._execute_trade(state, signal)
+                return  # Done — one trade per window
             else:
                 signal = None
                 self._last_skip_reason = pipe_result.skip_reason or "v10 gate failed"
