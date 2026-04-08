@@ -233,5 +233,5 @@ class FOKLadder:
                 break
             size -= 0.01
         # Enforce Polymarket minimum order size
-        size = max(size, FOKPriceLadder.POLY_MIN_SHARES)
+        size = max(size, FOKLadder.POLY_MIN_SHARES)
         return size
