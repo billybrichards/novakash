@@ -2532,7 +2532,7 @@ class Orchestrator:
                                            metadata->>'v81_entry_cap' as cap,
                                            metadata->>'token_id' as token_id
                                         FROM trades
-                                        WHERE status IN ('OPEN', 'FILLED')
+                                        WHERE status IN ('OPEN', 'FILLED', 'EXPIRED')
                                           AND is_live = true
                                           AND metadata->>'token_id' IS NOT NULL
                                         ORDER BY created_at DESC LIMIT 5""",
@@ -2544,9 +2544,9 @@ class Orchestrator:
                                                metadata->>'v81_entry_cap' as cap,
                                                metadata->>'token_id' as token_id
                                             FROM trades
-                                            WHERE status IN ('OPEN', 'FILLED')
+                                            WHERE status IN ('OPEN', 'FILLED', 'EXPIRED')
                                               AND is_live = true
-                                              AND ABS(CAST(stake_usd AS numeric) - $1) < 1.0
+                                              AND ABS(CAST(stake_usd AS numeric) - $1) < 0.5
                                             ORDER BY created_at DESC LIMIT 1""",
                                             cost,
                                         )

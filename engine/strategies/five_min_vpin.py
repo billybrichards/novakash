@@ -2528,30 +2528,27 @@ class FiveMinVPINStrategy(BaseStrategy):
                         if self._alerter:
                             asyncio.create_task(self._alerter.send_entry_alert(order))
                     else:
-                        self._log.warning("trade.gtc_not_filled", order_id=order.order_id[:20], waited=f"{elapsed}s")
-                        # Mark as expired in DB
-                        order.status = OrderStatus.EXPIRED
-                        order.metadata["clob_status"] = "EXPIRED_UNFILLED"
+                        # v10.1: Do NOT mark as EXPIRED yet — the GTC/GTD is still alive
+                        # on Polymarket until GTD expiry (window_ts + duration + 120s).
+                        # A market maker may fill it between now and GTD expiry.
+                        # Keep status as OPEN so position_monitor can link it when it resolves.
+                        self._log.info("trade.gtc_still_resting",
+                            order_id=order.order_id[:20],
+                            waited=f"{elapsed}s",
+                            note="GTC still on CLOB — position_monitor will track resolution")
+                        order.metadata["clob_status"] = "RESTING"
+                        order.metadata["poll_exhausted"] = True
+                        order.metadata["fill_wait_seconds"] = elapsed
+                        # Keep status OPEN — do NOT set to EXPIRED
                         if self._om:
                             asyncio.create_task(self._om._persist_trade(order))
-                        # v8.1.2: Mark prediction as bid_unfilled
-                        if self._db:
-                            try:
-                                async with self._db._pool.acquire() as _conn:
-                                    await _conn.execute(
-                                        "UPDATE window_predictions SET bid_unfilled=true, trade_placed=false "
-                                        "WHERE window_ts=$1 AND asset=$2",
-                                        window.window_ts, window.asset
-                                    )
-                            except Exception:
-                                pass
                         if self._alerter:
                             asyncio.create_task(self._alerter.send_system_alert(
-                                f"❌ GTC NOT FILLED — {window.asset} {tf}\n"
+                                f"⏳ GTC RESTING — {window.asset} {tf}\n"
                                 f"Direction: {direction} | Limit: `${PRICE_CAP:.2f}`\n"
                                 f"CLOB ask was: `${float(price):.4f}`\n"
-                                f"Waited {elapsed}s — expired unfilled",
-                                level="warning",
+                                f"Waited {elapsed}s — order still on book, tracking continues",
+                                level="info",
                             ))
                 except Exception as exc:
                     self._log.warning("trade.verify_failed", error=str(exc)[:100])
