@@ -629,6 +629,21 @@ class CLOBReconciler:
                         matched_reason = match["reason"]
                         matched_token_id = match["token_id"]
 
+                        # Use per-trade stake from DB, not Polymarket aggregate cost
+                        trade_row = await conn.fetchrow(
+                            "SELECT stake_usd, entry_price FROM trades WHERE id = $1",
+                            matched_trade_id,
+                        )
+                        trade_stake = float(trade_row["stake_usd"]) if trade_row and trade_row["stake_usd"] else cost
+                        trade_entry = float(trade_row["entry_price"]) if trade_row and trade_row["entry_price"] else avg_price
+                        trade_shares = trade_stake / trade_entry if trade_entry > 0 else size
+
+                        # PnL from per-trade data: WIN = shares - stake, LOSS = -stake
+                        if outcome == "WIN":
+                            trade_pnl = round(trade_shares - trade_stake, 4)
+                        else:
+                            trade_pnl = round(-trade_stake, 4)
+
                         await conn.execute(
                             """UPDATE trades SET outcome = $1, pnl_usd = $2,
                                       resolved_at = NOW(),
@@ -637,7 +652,7 @@ class CLOBReconciler:
                                                ELSE 'RESOLVED_LOSS' END
                                WHERE id = $3 AND outcome IS NULL""",
                             outcome,
-                            pnl,
+                            trade_pnl,
                             matched_trade_id,
                         )
                         self._log.info(
@@ -645,7 +660,8 @@ class CLOBReconciler:
                             trade_id=matched_trade_id,
                             token_id=matched_token_id[:20] if matched_token_id else "?",
                             outcome=outcome,
-                            pnl=f"${pnl:.2f}",
+                            pnl=f"${trade_pnl:.2f}",
+                            poly_cost=f"${cost:.2f}",
                         )
                     else:
                         self._log.warning(
@@ -662,14 +678,27 @@ class CLOBReconciler:
                     error=str(exc)[:100],
                 )
 
-        # Send Telegram notification
+        # Send Telegram notification (use per-trade data when matched, Polymarket aggregate as fallback)
         try:
+            if matched_trade_id and 'trade_pnl' in dir():
+                _notify_pnl = trade_pnl
+                _notify_shares = trade_shares
+                _notify_price = trade_entry
+                _notify_cost = trade_stake
+                _source = "CLOB Reconciler"
+            else:
+                _notify_pnl = pnl
+                _notify_shares = size
+                _notify_price = avg_price
+                _notify_cost = cost
+                _source = "CLOB Reconciler (aggregate)"
+
             if outcome == "WIN":
                 emoji = "WIN"
-                pnl_str = f"+${pnl:.2f}"
+                pnl_str = f"+${_notify_pnl:.2f}"
             else:
                 emoji = "LOSS"
-                pnl_str = f"-${cost:.2f}"
+                pnl_str = f"-${_notify_cost:.2f}"
 
             reason_line = ""
             if matched_reason:
@@ -684,14 +713,14 @@ class CLOBReconciler:
                 f"`{now_str}`\n"
                 f"\n"
                 f"*Result*\n"
-                f"Shares: `{size:.2f}`\n"
-                f"Avg Price: `${avg_price:.4f}`\n"
-                f"Cost: `${cost:.2f}`\n"
+                f"Shares: `{_notify_shares:.2f}`\n"
+                f"Avg Price: `${_notify_price:.4f}`\n"
+                f"Cost: `${_notify_cost:.2f}`\n"
                 f"P&L: `{pnl_str}`\n"
                 f"{reason_line}"
                 f"{wallet_str}\n"
                 f"\n"
-                f"_Source: CLOB Reconciler_"
+                f"_Source: {_source}_"
             )
             await self._alerter.send_raw_message(msg)
         except Exception as exc:
