@@ -1227,3 +1227,33 @@ class PolymarketClient:
         if isinstance(raw, list):
             return raw
         return []
+
+    async def get_trade_history(self) -> list[dict]:
+        """Fetch filled trade history from the CLOB.
+
+        Each fill dict includes asset_id (token_id), outcome, side, price,
+        size, match_time, and status.  Used by the reconciler to detect
+        orphaned GTC fills that the engine missed during its polling window.
+
+        Paper mode returns an empty list (no real fills to fetch).
+
+        Returns:
+            List of fill dicts from the CLOB trade history API.
+        """
+        if self.paper_mode:
+            return []
+
+        if not self._clob_client:
+            raise RuntimeError("CLOB client not connected — call connect() first")
+
+        def _fetch():
+            return self._clob_client.get_trades()
+
+        raw = await asyncio.to_thread(_fetch)
+
+        # Normalise: API may return dict with 'data' key or a list directly
+        if isinstance(raw, dict):
+            return raw.get("data", [])
+        if isinstance(raw, list):
+            return raw
+        return []

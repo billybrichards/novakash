@@ -201,3 +201,64 @@ V10_DUNE_CAP_MARGIN=0.05
 
 **Updated:** 2026-04-08 18:00 UTC
 **Visualization:** `docs/v10_1_decision_surface.html`
+
+---
+
+## v10.2 — Recalibration After Reconciler Data Fix (Apr 8, 19:50 UTC)
+
+**Discovery:** 12 WINs worth +$18.62 were hidden by a reconciler bug. Trades with confirmed CLOB fills (`clob_status=MATCHED`, `shares_filled > 0`) were marked EXPIRED with no outcome. This made TRANSITION look like 0% WR when it was actually **83% WR**.
+
+**Data correction:**
+- 12 orphaned trades resolved via CLOB trade history API cross-reference
+- Corrected Apr 8 stats: **39W/24L (61.9% WR)** vs SITREP-reported 8W/7L (53%)
+- trade_bible auto-populated via DB trigger on trades update
+
+**v10.1 was over-calibrated:**
+- v10.1 would block ALL 12 recovered wins (+$18.62 blocked) AND 6 losses (-$27.50 blocked)
+- Net: +$3.33 profit left on table — v10.1 was slightly too aggressive
+- Root cause: calibration was based on incomplete data (hidden wins)
+
+**v10.2 changes:**
+
+| Parameter | v10.1 | v10.2 | Why |
+|-----------|-------|-------|-----|
+| `V10_TRANSITION_MIN_P` | 9.99 (hard block) | **0.85** | Actual 83% WR, not 0% |
+| `V10_OFFSET_PENALTY_MAX` | 0.10 | **0.05** | Early offsets were profitable, over-penalised |
+| All other thresholds | unchanged | unchanged | Still sound |
+
+**v10.2 effective thresholds:**
+
+| Regime | T-60 | T-90 | T-120 | T-150 | T-180 |
+|--------|------|------|-------|-------|-------|
+| TRANSITION | 0.850 | 0.863 | 0.875 | 0.888 | 0.900 |
+| CASCADE | 0.800 | 0.813 | 0.825 | 0.838 | 0.850 |
+| NORMAL | 0.780 | 0.793 | 0.805 | 0.818 | 0.830 |
+
+**Reconciler fix (concurrent):**
+- Added `get_trade_history()` to polymarket_client — fetches CLOB fill history with oracle outcomes
+- Reconciler now checks for orphaned EXPIRED+MATCHED trades every 60s
+- Matches by token_id to CLOB fills, determines WIN/LOSS, updates trades table
+- Prevents status=EXPIRED when clob_status=MATCHED (trade actually filled)
+
+**Configuration:**
+```env
+V10_DUNE_ENABLED=true
+V10_DUNE_MODEL=oak
+V10_DUNE_MIN_P=0.75
+V10_MIN_EVAL_OFFSET=180
+V10_TRANSITION_MIN_P=0.85
+V10_CASCADE_MIN_P=0.80
+V10_NORMAL_MIN_P=0.78
+V10_LOW_VOL_MIN_P=0.78
+V10_TRENDING_MIN_P=0.80
+V10_CALM_MIN_P=0.80
+V10_OFFSET_PENALTY_MAX=0.05
+V10_DUNE_CAP_CEILING=0.70
+V10_DUNE_CAP_FLOOR=0.35
+V10_DUNE_CAP_MARGIN=0.05
+FIVE_MIN_EVAL_INTERVAL=2
+```
+
+**Engine log backup:** `/home/novakash/engine-v10.1-pre-v10.2.log` (3.9MB)
+
+**Updated:** 2026-04-08 19:50 UTC

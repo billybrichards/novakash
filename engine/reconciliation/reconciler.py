@@ -42,6 +42,7 @@ class CLOBReconciler:
 
     On new resolution: matches to trades by token_id, updates outcome/pnl.
     Every 5 minutes: sends a reconciliation report to Telegram.
+    Every 60s: checks for orphaned GTC fills via CLOB trade history API.
     """
 
     def __init__(
@@ -71,6 +72,10 @@ class CLOBReconciler:
 
         self._poll_task: Optional[asyncio.Task] = None
         self._report_task: Optional[asyncio.Task] = None
+
+        # Orphan check runs every ~60s, not every 2s poll
+        self._last_orphan_check: float = 0.0
+        self._orphan_check_interval: float = 60.0
 
         self._log = log.bind(component="clob_reconciler")
 
@@ -331,6 +336,217 @@ class CLOBReconciler:
 
         self._state.last_poll_at = now
 
+        # 5. Orphan GTC fill check (every ~60s, not every 2s poll)
+        now_ts = time.time()
+        if now_ts - self._last_orphan_check >= self._orphan_check_interval:
+            self._last_orphan_check = now_ts
+            try:
+                await self._resolve_orphaned_fills()
+            except Exception as exc:
+                self._log.warning(
+                    "reconciler.orphan_check_error", error=str(exc)[:200]
+                )
+
+    # ------------------------------------------------------------------
+    # Orphan GTC fill resolution
+    # ------------------------------------------------------------------
+
+    async def _resolve_orphaned_fills(self) -> None:
+        """Find trades marked EXPIRED/OPEN with confirmed CLOB fills, resolve them.
+
+        Queries DB for trades that have clob_status=MATCHED but no outcome,
+        then cross-references the CLOB trade history API to determine the
+        oracle resolution (WIN/LOSS) and update the trade record.
+        """
+        if not self._pool:
+            return
+
+        # 1. Find orphaned trades in DB
+        try:
+            async with self._pool.acquire() as conn:
+                orphans = await conn.fetch(
+                    """SELECT id, order_id, direction,
+                              metadata->>'token_id' as token_id,
+                              metadata->>'clob_status' as clob_status,
+                              metadata->>'shares_filled' as shares_filled,
+                              metadata->>'entry_reason' as entry_reason,
+                              stake_usd
+                       FROM trades
+                       WHERE status IN ('EXPIRED', 'OPEN', 'FILLED')
+                         AND (metadata->>'clob_status' IN ('MATCHED', 'RESTING')
+                              OR (COALESCE(NULLIF(metadata->>'shares_filled', ''), '0')::numeric > 0))
+                         AND outcome IS NULL
+                         AND is_live = true
+                       ORDER BY created_at DESC
+                       LIMIT 50""",
+                )
+        except Exception as exc:
+            self._log.warning(
+                "reconciler.orphan_query_error", error=str(exc)[:200]
+            )
+            return
+
+        if not orphans:
+            return
+
+        self._log.info("reconciler.orphan_check", count=len(orphans))
+
+        # 2. Fetch CLOB trade history (confirms fills) + position outcomes (resolution)
+        try:
+            fills = await self._poly.get_trade_history()
+        except Exception as exc:
+            self._log.warning(
+                "reconciler.orphan_fills_error", error=str(exc)[:200]
+            )
+            fills = []
+
+        try:
+            positions = await self._poly.get_position_outcomes()
+        except Exception as exc:
+            self._log.warning(
+                "reconciler.orphan_positions_error", error=str(exc)[:200]
+            )
+            positions = {}
+
+        if not fills and not positions:
+            self._log.debug("reconciler.orphan_no_data")
+            return
+
+        # Build lookup: asset_id -> fill data (most recent fill wins)
+        fill_by_asset: dict[str, dict] = {}
+        for f in fills:
+            aid = f.get("asset_id", "")
+            if aid:
+                fill_by_asset[aid] = f
+
+        # Build lookup: tokenId -> position data (includes resolution status)
+        pos_by_token: dict[str, dict] = {}
+        for _cid, pdata in positions.items():
+            tid = pdata.get("tokenId", "")
+            if tid:
+                pos_by_token[tid] = pdata
+
+        # 3. Match orphans to fills/positions and resolve
+        resolved_count = 0
+        for orphan in orphans:
+            token_id = orphan["token_id"]
+            if not token_id:
+                continue
+
+            # Match by token_id — use startswith for length-mismatch tolerance
+            matched_fill = None
+            for aid, fill_data in fill_by_asset.items():
+                if aid.startswith(token_id) or token_id.startswith(aid):
+                    matched_fill = fill_data
+                    break
+
+            # Also check positions for this token_id
+            matched_pos = None
+            for tid, pdata in pos_by_token.items():
+                if tid.startswith(token_id) or token_id.startswith(tid):
+                    matched_pos = pdata
+                    break
+
+            if not matched_fill and not matched_pos:
+                continue
+
+            # Determine resolution from position data (source of truth)
+            # Position curPrice >= 0.99 = WIN, <= 0.01 = LOSS
+            pos_outcome = matched_pos.get("outcome", "OPEN") if matched_pos else None
+            fill_price = float(matched_fill.get("price", 0)) if matched_fill else 0
+            fill_size = float(matched_fill.get("size", 0)) if matched_fill else 0
+            cost = float(orphan["stake_usd"] or 0)
+            shares = float(orphan["shares_filled"] or 0) if orphan["shares_filled"] else fill_size
+
+            if pos_outcome not in ("WIN", "LOSS"):
+                # Market hasn't resolved yet — skip for now
+                continue
+
+            # Position outcome is already WIN/LOSS from get_position_outcomes()
+            # WIN means curPrice >= 0.99 (token pays $1), LOSS means curPrice <= 0.01
+            is_win = pos_outcome == "WIN"
+            if is_win:
+                outcome = "WIN"
+                pnl = shares - cost  # shares pay out $1 each on win
+                status = "RESOLVED_WIN"
+            else:
+                outcome = "LOSS"
+                pnl = -cost
+                status = "RESOLVED_LOSS"
+
+            # 4. Update DB
+            try:
+                async with self._pool.acquire() as conn:
+                    await conn.execute(
+                        """UPDATE trades
+                           SET outcome = $1, pnl_usd = $2,
+                               resolved_at = NOW(), status = $3
+                           WHERE id = $4 AND outcome IS NULL""",
+                        outcome,
+                        pnl,
+                        status,
+                        orphan["id"],
+                    )
+                resolved_count += 1
+
+                self._log.info(
+                    "reconciler.orphan_resolved",
+                    trade_id=orphan["id"],
+                    token_id=token_id[:20],
+                    outcome=outcome,
+                    pnl=f"${pnl:.2f}",
+                )
+
+                # Track for 5-min report
+                if is_win:
+                    self._report_wins.append(pnl)
+                else:
+                    self._report_losses.append(cost)
+
+            except Exception as exc:
+                self._log.warning(
+                    "reconciler.orphan_update_error",
+                    trade_id=orphan["id"],
+                    error=str(exc)[:100],
+                )
+                continue
+
+            # 5. Send Telegram notification
+            try:
+                now_str = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+                pnl_str = f"+${pnl:.2f}" if is_win else f"-${cost:.2f}"
+                emoji = "WIN" if is_win else "LOSS"
+                reason_line = ""
+                if orphan["entry_reason"]:
+                    reason_line = f"Entry: `{orphan['entry_reason']}`\n"
+
+                trade_direction = (orphan["direction"] or "YES").upper()
+                msg = (
+                    f"*{emoji} -- ORPHAN RESOLVED* (GTC fill)\n"
+                    f"`{now_str}`\n"
+                    f"\n"
+                    f"Direction: `{trade_direction}`\n"
+                    f"Resolution: `{pos_outcome}`\n"
+                    f"Shares: `{shares:.2f}` @ `${fill_price:.4f}`\n"
+                    f"Cost: `${cost:.2f}`\n"
+                    f"P&L: `{pnl_str}`\n"
+                    f"{reason_line}"
+                    f"\n"
+                    f"_Source: CLOB Orphan Reconciler_"
+                )
+                await self._alerter.send_raw_message(msg)
+            except Exception as exc:
+                self._log.debug(
+                    "reconciler.orphan_notify_failed", error=str(exc)[:100]
+                )
+
+        if resolved_count > 0:
+            self._log.info(
+                "reconciler.orphan_check_complete",
+                resolved=resolved_count,
+                checked=len(orphans),
+            )
+
     # ------------------------------------------------------------------
     # Resolution handler
     # ------------------------------------------------------------------
@@ -379,8 +595,28 @@ class CLOBReconciler:
                                ORDER BY created_at DESC LIMIT 1""",
                             _pos_token_id,
                         )
-                    # NO cost-based fallback — fuzzy matching causes wrong attribution
-                    # If token_id doesn't match, this is an unlinked position
+
+                    # Prefix match fallback: token_id may differ by 1 char in length
+                    if not match and _pos_token_id and len(_pos_token_id) > 10:
+                        match = await conn.fetchrow(
+                            """SELECT id, metadata->>'entry_reason' as reason,
+                                      metadata->>'token_id' as token_id
+                               FROM trades
+                               WHERE is_live = true
+                                 AND outcome IS NULL
+                                 AND metadata->>'token_id' IS NOT NULL
+                                 AND (metadata->>'token_id' LIKE $1 || '%'
+                                      OR $2 LIKE metadata->>'token_id' || '%')
+                               ORDER BY created_at DESC LIMIT 1""",
+                            _pos_token_id[:60],
+                            _pos_token_id,
+                        )
+                        if match:
+                            self._log.info(
+                                "reconciler.prefix_match",
+                                pos_token=_pos_token_id[:20],
+                                db_token=(match["token_id"] or "")[:20],
+                            )
 
                     if match:
                         matched_trade_id = match["id"]
@@ -393,11 +629,10 @@ class CLOBReconciler:
                                       status = CASE WHEN $1 = 'WIN'
                                                THEN 'RESOLVED_WIN'
                                                ELSE 'RESOLVED_LOSS' END
-                               WHERE metadata->>'token_id' = $3
-                                 AND outcome IS NULL""",
+                               WHERE id = $3 AND outcome IS NULL""",
                             outcome,
                             pnl,
-                            matched_token_id,
+                            matched_trade_id,
                         )
                         self._log.info(
                             "reconciler.trade_resolved",
@@ -407,44 +642,13 @@ class CLOBReconciler:
                             pnl=f"${pnl:.2f}",
                         )
                     else:
-                        # Fallback: cost-based matching
-                        fallback = await conn.fetchrow(
-                            """SELECT id, metadata->>'entry_reason' as reason,
-                                      metadata->>'token_id' as token_id
-                               FROM trades
-                               WHERE status IN ('OPEN', 'FILLED', 'EXPIRED')
-                                 AND is_live = true
-                                 AND outcome IS NULL
-                                 AND ABS(CAST(stake_usd AS numeric) - $1) < 0.5
-                               ORDER BY created_at DESC LIMIT 1""",
-                            cost,
+                        self._log.warning(
+                            "reconciler.no_trade_match",
+                            condition_id=condition_id[:20],
+                            pos_token=_pos_token_id[:20] if _pos_token_id else "?",
+                            cost=f"${cost:.2f}",
+                            outcome=outcome,
                         )
-                        if fallback:
-                            matched_trade_id = fallback["id"]
-                            matched_reason = fallback["reason"]
-                            matched_token_id = fallback["token_id"]
-                            await conn.execute(
-                                """UPDATE trades SET outcome = $1, pnl_usd = $2,
-                                          resolved_at = NOW(), status = $3
-                                   WHERE id = $4 AND outcome IS NULL""",
-                                outcome,
-                                pnl,
-                                status,
-                                matched_trade_id,
-                            )
-                            self._log.info(
-                                "reconciler.trade_resolved_fallback",
-                                trade_id=matched_trade_id,
-                                outcome=outcome,
-                                pnl=f"${pnl:.2f}",
-                            )
-                        else:
-                            self._log.warning(
-                                "reconciler.no_trade_match",
-                                condition_id=condition_id[:20],
-                                cost=f"${cost:.2f}",
-                                outcome=outcome,
-                            )
             except Exception as exc:
                 self._log.warning(
                     "reconciler.resolve_db_error",

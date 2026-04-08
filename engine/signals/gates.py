@@ -129,15 +129,16 @@ class SourceAgreementGate:
 class DuneConfidenceGate:
     """G2: DUNE ML model must confirm direction with sufficient confidence.
 
-    v10.1: Regime-specific thresholds + offset scaling.
-    - TRANSITION regime is hard-blocked (0% WR historically)
-    - Earlier offsets require higher dune_p (less edge farther from close)
+    v10.2: Regime-specific thresholds + softened offset scaling.
+    - TRANSITION softened to 0.85 base (was 9.99 hard-block in v10.1)
+      Actual TRANSITION WR = 83% — hidden wins revealed by reconciler fix
+    - Offset penalty reduced from 0.10 to 0.05 (early offsets were over-penalised)
     - Each regime has its own base threshold
 
     Offset scaling formula:
         effective_threshold = base_threshold + offset_penalty
-        offset_penalty = max(0, (eval_offset - 60) / 120) * 0.10
-        e.g. T-60: +0.00, T-120: +0.05, T-180: +0.10
+        offset_penalty = max(0, (eval_offset - 60) / 120) * 0.05
+        e.g. T-60: +0.00, T-120: +0.025, T-180: +0.05
 
     Args:
         dune_client: TimesFMV2Client instance for API calls
@@ -145,8 +146,9 @@ class DuneConfidenceGate:
     name = "dune_confidence"
 
     # Regime base thresholds (overridable via env)
+    # v10.2: TRANSITION softened from 9.99 to 0.85 (actual 83% WR, was hidden by reconciler bug)
     _REGIME_DEFAULTS = {
-        "TRANSITION": 9.99,   # Hard block — unreachable threshold
+        "TRANSITION": 0.85,
         "CASCADE":    0.80,
         "NORMAL":     0.78,
         "LOW_VOL":    0.78,
@@ -166,7 +168,7 @@ class DuneConfidenceGate:
 
     def __init__(self, dune_client=None):
         self._base_min_p = float(os.environ.get("V10_DUNE_MIN_P", "0.75"))
-        self._offset_penalty_max = float(os.environ.get("V10_OFFSET_PENALTY_MAX", "0.10"))
+        self._offset_penalty_max = float(os.environ.get("V10_OFFSET_PENALTY_MAX", "0.05"))
         self._client = dune_client
         self._log = log.bind(gate="dune_confidence")
 
@@ -209,11 +211,11 @@ class DuneConfidenceGate:
                 reason=f"too early: T-{ctx.eval_offset} > T-{_min_offset}",
             )
 
-        # v10.1: Regime-specific threshold (TRANSITION hard-blocked at 9.99)
+        # v10.2: Regime-specific threshold
         regime = ctx.regime or "NORMAL"
         threshold = self._effective_threshold(regime, ctx.eval_offset)
 
-        # Fast-reject TRANSITION before even querying DUNE
+        # Fast-reject if threshold is unreachable (e.g. hard-blocked regime)
         if threshold >= 1.0:
             return GateResult(
                 passed=False, gate_name=self.name,
