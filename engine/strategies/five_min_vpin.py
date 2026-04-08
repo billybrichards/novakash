@@ -609,10 +609,43 @@ class FiveMinVPINStrategy(BaseStrategy):
                 # Mark window as traded (dedup for subsequent 2s evals)
                 self._last_executed_window = _window_key_v10
 
+                # v10.3: extract gate data for Telegram alerts + DB logging
+                _v103_gate_data = {}
+                for _gr in pipe_result.gate_results:
+                    if _gr.gate_name == "dune_confidence":
+                        _v103_gate_data["v103_dune_p"] = _gr.data.get("dune_p")
+                        _v103_gate_data["v103_threshold"] = _gr.data.get("threshold")
+                        _v103_gate_data["v103_threshold_base"] = self._regime_thresholds_cache.get(_snap_regime) if hasattr(self, '_regime_thresholds_cache') else None
+                        _v103_gate_data["v103_down_penalty"] = _gr.data.get("down_penalty", 0)
+                        _v103_gate_data["v103_cg_modifier"] = _gr.data.get("cg_modifier", 0)
+                        _v103_gate_data["v103_cg_bonus"] = _gr.data.get("cg_bonus", 0)
+                    elif _gr.gate_name == "taker_flow":
+                        _v103_gate_data["v103_taker_status"] = (
+                            "both_opposing" if _gr.data.get("taker_opposing") and _gr.data.get("smart_opposing")
+                            else "opposing" if _gr.data.get("taker_opposing")
+                            else "aligned" if _gr.data.get("taker_aligned")
+                            else "neutral"
+                        )
+                        _v103_gate_data["v103_taker_buy_pct"] = _gr.data.get("buy_pct", 50)
+                        _v103_gate_data["v103_taker_sell_pct"] = 100 - _gr.data.get("buy_pct", 50)
+                    elif _gr.gate_name == "cg_confirmation":
+                        _v103_gate_data["v103_cg_confirms"] = _gr.data.get("confirms", 0)
+                        _v103_gate_data["v103_cg_details"] = _gr.data.get("details", [])
+                    elif _gr.gate_name == "spread_gate":
+                        _v103_gate_data["v103_spread_pct"] = _gr.data.get("spread_pct")
+                _v103_gate_data["v103_gate_results"] = [
+                    {"name": g.gate_name, "passed": g.passed, "reason": g.reason[:60]}
+                    for g in pipe_result.gate_results
+                ]
+                # Store on signal object so alert builder can access it
+                signal._v10_gate_data = _v103_gate_data
+
                 self._log.info("v10.trade", direction=direction,
                     cap=f"${pipe_result.cap:.2f}" if pipe_result.cap else "?",
                     dune_p=f"{pipe_result.dune_p:.3f}" if pipe_result.dune_p else "N/A",
-                    regime=_snap_regime, offset=ctx.eval_offset)
+                    regime=_snap_regime, offset=ctx.eval_offset,
+                    cg_taker=_v103_gate_data.get("v103_taker_status", "?"),
+                    cg_confirms=_v103_gate_data.get("v103_cg_confirms", 0))
 
                 # Write signal_evaluation with decision='TRADE' before executing
                 if self._db:
@@ -1599,6 +1632,12 @@ class FiveMinVPINStrategy(BaseStrategy):
             async def _send_trade_alert():
                 try:
                     window_id = f"{window.asset}-{window.window_ts}"
+                    # v10.3: extract gate result data for Telegram alerts
+                    _v103_data = getattr(signal, '_v10_gate_data', {}) or {}
+                    if not _v103_data:
+                        # Fallback: try window_snapshot
+                        _v103_data = {k: v for k, v in window_snapshot.items() if k.startswith("v103_")}
+
                     signal_dict = {
                         "direction": signal.direction,
                         "delta_pct": delta_pct,
@@ -1627,6 +1666,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                         "entry_reason": getattr(signal, 'entry_reason', 'v8_standard'),
                         "eval_offset": eval_offset,
                         "v81_entry_cap": getattr(signal, 'v81_entry_cap', None),
+                        # v10.3 gate pipeline data
+                        **_v103_data,
                     }
                     reason = f"VPIN {current_vpin:.3f} ({_snap_regime}), delta {delta_pct:+.4f}%"
                     
