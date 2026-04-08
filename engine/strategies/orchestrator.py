@@ -675,6 +675,20 @@ class Orchestrator:
             )
             log.info("orchestrator.elm_recorder_started", assets=["BTC", "ETH", "SOL", "XRP"])
 
+        # 5d. Polymarket trade history reconciler (every 5 min)
+        if self._poly_client and self._db and self._db._pool:
+            from reconciliation.poly_trade_history import PolyTradeHistoryReconciler
+            _poly_hist = PolyTradeHistoryReconciler(
+                poly_client=self._poly_client,
+                db_pool=self._db._pool,
+                alerter=self._alerter,
+                shutdown_event=self._shutdown_event,
+            )
+            self._tasks.append(
+                asyncio.create_task(_poly_hist.run(), name="poly_trade_history")
+            )
+            log.info("orchestrator.poly_trade_history_started")
+
         # 5. Heartbeat task (every 10s)
         self._tasks.append(
             asyncio.create_task(self._heartbeat_loop(), name="heartbeat")
