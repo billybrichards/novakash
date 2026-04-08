@@ -277,15 +277,16 @@ class DuneConfidenceGate:
             )
         except Exception as exc:
             self._log.warning("dune.query_failed", error=str(exc)[:100])
+            # BLOCK on DUNE failure — never trade without model confidence
             return GateResult(
-                passed=True, gate_name=self.name,
-                reason=f"DUNE query failed: {str(exc)[:50]} (pass-through)",
+                passed=False, gate_name=self.name,
+                reason=f"DUNE query failed: {str(exc)[:50]} (BLOCKED)",
             )
 
         if not result or "probability_up" not in result:
             return GateResult(
-                passed=True, gate_name=self.name,
-                reason="DUNE returned invalid response (pass-through)",
+                passed=False, gate_name=self.name,
+                reason="DUNE returned invalid response (BLOCKED)",
             )
 
         p_up = float(result["probability_up"])
