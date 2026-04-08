@@ -719,6 +719,30 @@ class FiveMinVPINStrategy(BaseStrategy):
                     except Exception as _snap_exc:
                         self._log.warning("db.v10_trade_snapshot_failed", error=str(_snap_exc)[:80])
 
+                # Write gate_audit for v10 TRADE (v9 path writes its own, v10 was skipping)
+                if self._db:
+                    try:
+                        asyncio.create_task(self._db.write_gate_audit({
+                            "window_ts": window.window_ts,
+                            "asset": window.asset,
+                            "timeframe": "5m",
+                            "engine_version": "v10.3",
+                            "direction": direction,
+                            "delta_pct": delta_pct,
+                            "delta_tiingo": ctx.delta_tiingo,
+                            "delta_binance": ctx.delta_binance,
+                            "delta_chainlink": ctx.delta_chainlink,
+                            "vpin": current_vpin,
+                            "regime": _snap_regime,
+                            "gate_passed": True,
+                            "decision": "TRADE",
+                            "eval_offset": ctx.eval_offset,
+                            "v2_probability_up": ctx.dune_probability_up,
+                            "v2_direction": ctx.dune_direction,
+                        }))
+                    except Exception:
+                        pass
+
                 # EXECUTE the trade immediately — don't fall through to v9 code
                 await self._execute_trade(state, signal)
                 return  # Done — one trade per window
@@ -743,6 +767,32 @@ class FiveMinVPINStrategy(BaseStrategy):
                             "gate_failed": pipe_result.failed_gate or "unknown",
                             "v2_probability_up": ctx.dune_probability_up,
                         })
+                    except Exception:
+                        pass
+                # Write gate_audit for v10 SKIP (includes direction the model would have picked)
+                if self._db:
+                    try:
+                        _skip_dir = ctx.agreed_direction or ctx.dune_direction
+                        asyncio.create_task(self._db.write_gate_audit({
+                            "window_ts": window.window_ts,
+                            "asset": window.asset,
+                            "timeframe": "5m",
+                            "engine_version": "v10.3",
+                            "direction": _skip_dir,
+                            "delta_pct": delta_pct,
+                            "delta_tiingo": ctx.delta_tiingo,
+                            "delta_binance": ctx.delta_binance,
+                            "delta_chainlink": ctx.delta_chainlink,
+                            "vpin": current_vpin,
+                            "regime": _snap_regime,
+                            "gate_passed": False,
+                            "gate_failed": pipe_result.failed_gate or "unknown",
+                            "decision": "SKIP",
+                            "skip_reason": (pipe_result.skip_reason or "")[:500],
+                            "eval_offset": getattr(window, 'eval_offset', None),
+                            "v2_probability_up": ctx.dune_probability_up,
+                            "v2_direction": ctx.dune_direction,
+                        }))
                     except Exception:
                         pass
                 # v10 skip: don't fall through to v9 code — return after writing snapshot
