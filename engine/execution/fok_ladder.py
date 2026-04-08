@@ -214,9 +214,16 @@ class FOKLadder:
             partial=is_partial, order_type=order_type,
         )
 
+    # Polymarket minimum order size (shares). Orders below this are rejected with 400.
+    POLY_MIN_SHARES: float = 5.0
+
     @staticmethod
     def _calc_size(price: float, stake_usd: float) -> float:
-        """Calculate CLOB-compliant size (2dp price, clean maker_amount ≤2dp)."""
+        """Calculate CLOB-compliant size (2dp price, clean maker_amount ≤2dp).
+
+        Enforces Polymarket minimum of 5 shares. If calculated size < 5,
+        bumps up to 5 (the stake will be slightly higher than requested).
+        """
         _price = round(price, 2)  # CLOB enforces 2dp on FAK/FOK prices
         size = math.floor(stake_usd / _price * 100) / 100
         # Ensure maker_amount (price × size) is clean to 2dp
@@ -225,4 +232,6 @@ class FOKLadder:
             if abs(_maker - round(_maker, 2)) < 1e-9:
                 break
             size -= 0.01
-        return max(size, 0.01)
+        # Enforce Polymarket minimum order size
+        size = max(size, FOKPriceLadder.POLY_MIN_SHARES)
+        return size

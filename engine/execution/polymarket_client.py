@@ -375,7 +375,8 @@ class PolymarketClient:
             if abs(_maker - round(_maker, 2)) < 1e-9:
                 break
             order_size -= 0.01
-        order_size = max(order_size, 0.01)
+        # Enforce Polymarket minimum order size (5 shares)
+        order_size = max(order_size, 5.0)
         
         _order_type = OrderType.GTD if expiration > 0 else OrderType.GTC
 
