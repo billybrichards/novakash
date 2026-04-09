@@ -289,7 +289,7 @@ class CLOBReconciler:
             positions.append(
                 OpenPosition(
                     condition_id=cid,
-                    token_id=data.get("tokenId", ""),
+                    token_id=data.get("asset", "") or data.get("tokenId", ""),
                     size=data["size"],
                     avg_price=data["avgPrice"],
                     cost=data["cost"],
@@ -426,9 +426,10 @@ class CLOBReconciler:
                 fill_by_asset[aid] = f
 
         # Build lookup: tokenId -> position data (includes resolution status)
+        # Polymarket data API returns CLOB token ID in "asset" field, NOT "tokenId"
         pos_by_token: dict[str, dict] = {}
         for _cid, pdata in positions.items():
-            tid = pdata.get("tokenId", "")
+            tid = pdata.get("asset", "") or pdata.get("tokenId", "")
             if tid:
                 pos_by_token[tid] = pdata
 
@@ -583,7 +584,8 @@ class CLOBReconciler:
         matched_token_id = None
 
         # Extract token_id from position data for exact matching
-        _pos_token_id = str(data.get("tokenId", ""))
+        # Polymarket data API returns CLOB token ID in "asset" field, NOT "tokenId"
+        _pos_token_id = str(data.get("asset", "") or data.get("tokenId", ""))
 
         if self._pool:
             try:
@@ -622,6 +624,26 @@ class CLOBReconciler:
                                 "reconciler.prefix_match",
                                 pos_token=_pos_token_id[:20],
                                 db_token=(match["token_id"] or "")[:20],
+                            )
+
+                    # Fallback: match by approximate cost + recency when token matching fails
+                    if not match and cost > 0:
+                        match = await conn.fetchrow(
+                            """SELECT id, metadata->>'entry_reason' as reason,
+                                      metadata->>'token_id' as token_id
+                               FROM trades
+                               WHERE is_live = true
+                                 AND outcome IS NULL
+                                 AND ABS(stake_usd - $1) < 0.50
+                               ORDER BY created_at DESC LIMIT 1""",
+                            cost,
+                        )
+                        if match:
+                            self._log.info(
+                                "reconciler.cost_fallback_match",
+                                trade_id=match["id"],
+                                cost=f"${cost:.2f}",
+                                condition_id=condition_id[:20],
                             )
 
                     if match:
@@ -664,12 +686,19 @@ class CLOBReconciler:
                             poly_cost=f"${cost:.2f}",
                         )
                     else:
+                        # Log raw position data for debugging match failures
+                        _raw_keys = list(data.keys())
                         self._log.warning(
                             "reconciler.no_trade_match",
                             condition_id=condition_id[:20],
                             pos_token=_pos_token_id[:20] if _pos_token_id else "?",
+                            raw_asset=str(data.get("asset", ""))[:30],
+                            raw_tokenId=str(data.get("tokenId", ""))[:30],
+                            raw_keys=str(_raw_keys)[:100],
                             cost=f"${cost:.2f}",
                             outcome=outcome,
+                            size=size,
+                            avg_price=avg_price,
                         )
             except Exception as exc:
                 self._log.warning(
@@ -680,7 +709,7 @@ class CLOBReconciler:
 
         # Send Telegram notification (use per-trade data when matched, Polymarket aggregate as fallback)
         try:
-            if matched_trade_id and 'trade_pnl' in dir():
+            if matched_trade_id:
                 _notify_pnl = trade_pnl
                 _notify_shares = trade_shares
                 _notify_price = trade_entry

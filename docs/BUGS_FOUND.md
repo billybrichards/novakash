@@ -87,3 +87,58 @@ during this session.  To get the actual condition IDs that are failing, run:
 ```bash
 ssh novakash@15.223.247.178 "grep -a 'redeem.*FAIL\|redeem.*error' /home/novakash/engine.log | tail -30"
 ```
+
+---
+
+## 3. Reconciler Cannot Match Polymarket Positions to DB Trades (Apr 8, 2026)
+
+**Severity:** CRITICAL (trades resolve on Polymarket but outcomes never written to trades table)
+
+**Symptom:** The reconciler logs `pos_token=?` for 10+ overnight losses, meaning
+`data.get("tokenId", "")` returns an empty string from the Polymarket positions
+API response. Trades resolve on Polymarket but outcomes are never written to the
+trades table, trade_bible stays empty, and SITREP shows wrong W/L counts.
+
+**Root cause (3 bugs):**
+
+1. **Wrong field name from Polymarket data API.** The Polymarket data API
+   (`https://data-api.polymarket.com/positions?user=<addr>`) returns the CLOB
+   token ID in the `asset` field, NOT `tokenId`. The code was using
+   `p.get("tokenId", "")` which returned empty. The engine stores the CLOB token
+   ID (from `window.up_token_id` / `window.down_token_id`) as `token_id` in trade
+   metadata. Since the reconciler extracted empty string from `tokenId`, it could
+   never match.
+
+2. **Unreliable scope check.** `_resolve_position` at line 683 used
+   `'trade_pnl' in dir()` to determine whether per-trade PnL variables were in
+   scope. `dir()` checks module-level names, NOT local variables -- this check
+   was always unreliable and could silently use aggregate Polymarket cost instead
+   of per-trade stake for notifications.
+
+3. **No fallback matching.** When token_id matching failed (because the field was
+   empty), there was no cost-based or condition_id-based fallback. Every
+   unmatched resolution was silently logged and lost.
+
+**Affected:** Every live trade placed since the data API change -- 10+ overnight
+losses on Apr 8-9 logged `pos_token=?` and were never written to the trades table.
+
+**Fix implemented:**
+
+1. Changed `data.get("tokenId", "")` to `data.get("asset", "") or data.get("tokenId", "")`
+   in 4 locations across `reconciler.py` and 1 location in `polymarket_client.py`
+   (`get_position_outcomes` return dict). The `asset` field is the CLOB token ID
+   that matches what the engine stores in trade metadata.
+
+2. Replaced `'trade_pnl' in dir()` with `if matched_trade_id:` -- a reliable
+   check that the trade was matched and per-trade variables are in scope.
+
+3. Added cost-based fallback matching: if token_id exact and prefix matching both
+   fail, match by approximate `stake_usd` (within $0.50) + recency.
+
+4. Added raw data logging on match failure: logs `raw_asset`, `raw_tokenId`,
+   `raw_keys`, `size`, and `avg_price` so future mismatches can be debugged
+   without SSH access.
+
+**Files changed:**
+- `engine/reconciliation/reconciler.py` -- field name fix (4 locations), fallback match, raw logging, dir() fix
+- `engine/execution/polymarket_client.py` -- `get_position_outcomes()` tokenId field extraction

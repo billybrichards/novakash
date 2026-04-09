@@ -1194,7 +1194,7 @@ class PolymarketClient:
                     "value": size * cur_price,
                     "cost": size * avg_price,
                     "pnl": (size * cur_price) - (size * avg_price),
-                    "tokenId": p.get("tokenId", ""),
+                    "tokenId": p.get("asset", "") or p.get("tokenId", ""),
                     "asset": p.get("asset", ""),
                 }
             
