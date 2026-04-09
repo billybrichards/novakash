@@ -129,8 +129,7 @@ async def run() -> None:
 
     # ── Status HTTP server (for dashboard proxy) ──
     from margin_engine.infrastructure.status_server import StatusServer
-    status_port = int(os.environ.get("MARGIN_STATUS_PORT", "8090"))
-    status_server = StatusServer(portfolio, exchange, port=status_port)
+    status_server = StatusServer(portfolio, exchange, port=settings.status_port)
     await status_server.start()
 
     # ── Graceful shutdown ──

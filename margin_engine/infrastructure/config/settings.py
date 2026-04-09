@@ -49,6 +49,9 @@ class MarginSettings(BaseSettings):
     telegram_chat_id: str = ""
     telegram_enabled: bool = True
 
+    # ── Status server ──
+    status_port: int = 8090
+
     # ── Loop cadence ──
     tick_interval_s: float = 2.0  # position management check interval
 
