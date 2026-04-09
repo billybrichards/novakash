@@ -15,6 +15,8 @@ const NAV_ITEMS = [
   // ── Trading ──
   { path: '/dashboard',       label: 'Dashboard',  icon: '📊' },
   { path: '/execution-hq',   label: 'Execution HQ', icon: '⚡', highlight: true, isNew: true },
+  { path: '/margin',          label: 'Margin Engine', icon: '🏦', highlight: true, isNew: true },
+  { path: '/composite',       label: 'Composite V3', icon: '🧬', highlight: true, isNew: true },
   { path: '/factory',         label: 'Factory Floor', icon: '🏭', highlight: true },
   { path: '/indicators',      label: 'Indicators', icon: '📈', highlight: true },
   { path: '/v58',             label: 'Trade Monitor', icon: '🎯', highlight: true },
