@@ -612,6 +612,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 return  # Already traded this window
             from signals.gates import (
                 GateContext, GatePipeline, SourceAgreementGate,
+                DeltaMagnitudeGate,
                 TakerFlowGate, CGConfirmationGate,
                 DuneConfidenceGate, SpreadGate, DynamicCapGate,
                 CoinGlassVetoGate,  # legacy fallback
@@ -629,15 +630,16 @@ class FiveMinVPINStrategy(BaseStrategy):
                 window_ts=window.window_ts, cg_snapshot=_cg,
                 gamma_up_price=_gamma_up, gamma_down_price=_gamma_down,
             )
-            # v10.3: 6-gate decision surface pipeline
-            # Order matters: TakerFlow + CGConfirmation run BEFORE DUNE so modifiers are set
+            # v10.5: 7-gate decision surface pipeline
+            # Order: Agreement → DeltaMagnitude → TakerFlow → CGConfirm → DUNE → Spread → Cap
             pipeline = GatePipeline([
                 SourceAgreementGate(),          # G1: CL+TI agree (94.7% WR)
-                TakerFlowGate(),                # G2: CG taker hard gate + threshold modifier
-                CGConfirmationGate(),           # G3: CG 3-signal bonus (-0.02)
-                DuneConfidenceGate(dune_client=self._timesfm_v2),  # G4: ELM + all modifiers
-                SpreadGate(),                   # G5: Polymarket spread check
-                DynamicCapGate(),               # G6: cap = dune_p - 0.05, max $0.68
+                DeltaMagnitudeGate(),           # G2: |delta| floor (v10.5 — blocks noise trades)
+                TakerFlowGate(),                # G3: CG taker hard gate + threshold modifier
+                CGConfirmationGate(),           # G4: CG 3-signal bonus (-0.02)
+                DuneConfidenceGate(dune_client=self._timesfm_v2),  # G5: ELM + all modifiers
+                SpreadGate(),                   # G6: Polymarket spread check
+                DynamicCapGate(),               # G7: cap = dune_p - 0.05, max $0.68
             ])
             pipe_result = await pipeline.evaluate(ctx)
             if pipe_result.passed:

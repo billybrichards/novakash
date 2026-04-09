@@ -1,7 +1,7 @@
 """
-v10.3 Gate System — Full decision surface with CoinGlass taker flow integration.
+v10.5 Gate System — Full decision surface with CoinGlass taker flow + delta magnitude.
 
-7-gate pipeline: Agreement → TakerFlow → CGConfirmation → DUNE → Spread → DynamicCap.
+8-gate pipeline: Agreement → DeltaMagnitude → TakerFlow → CGConfirmation → DUNE → Spread → DynamicCap.
 
 Based on:
   - v10.1 Decision Surface spec (timesfm repo, 909 lines)
@@ -137,6 +137,59 @@ class SourceAgreementGate:
             passed=True, gate_name=self.name,
             reason=f"CL={cl_dir} TI={ti_dir} AGREE",
             data={"cl_dir": cl_dir, "ti_dir": ti_dir, "direction": cl_dir},
+        )
+
+
+# ── Delta Magnitude Gate (v10.5) ───────────────────────────────────────────
+
+class DeltaMagnitudeGate:
+    """G2: Delta magnitude must exceed regime-specific floor.
+
+    v10.5: Blocks trades where |delta_pct| is too small — direction
+    agreement is meaningless if price hasn't actually moved.
+
+    Evidence (50 trades, Apr 9 2026):
+      |delta| < 0.01% in TRANSITION: 0W/2L (losses #3250, #3301)
+      |delta| >= 0.01% in TRANSITION: 23W/5L (82.1% WR)
+      CASCADE exempt — forced liq reversals can start at tiny delta.
+    """
+    name = "delta_magnitude"
+
+    def __init__(self):
+        self._global_min = float(os.environ.get("V10_MIN_DELTA_PCT", "0.0"))
+        self._transition_min = float(os.environ.get("V10_TRANSITION_MIN_DELTA", "0.0"))
+        self._log = log.bind(gate="delta_magnitude")
+
+    async def evaluate(self, ctx: GateContext) -> GateResult:
+        abs_delta = abs(ctx.delta_pct) if ctx.delta_pct else 0.0
+        regime = ctx.regime or "NORMAL"
+
+        # CASCADE exempt — tiny deltas are normal pre-liquidation
+        if regime == "CASCADE":
+            return GateResult(
+                passed=True, gate_name=self.name,
+                reason=f"CASCADE exempt (|delta|={abs_delta:.4f}%)",
+            )
+
+        # Regime-specific floor
+        floor = self._global_min
+        if regime == "TRANSITION" and self._transition_min > 0:
+            floor = self._transition_min
+
+        if floor > 0 and abs_delta < floor:
+            self._log.info("delta_magnitude.blocked",
+                regime=regime, abs_delta=f"{abs_delta:.6f}",
+                floor=f"{floor:.4f}")
+            return GateResult(
+                passed=False, gate_name=self.name,
+                reason=f"|delta|={abs_delta:.4f}% < {floor:.4f}% ({regime})",
+                data={"abs_delta": abs_delta, "floor": floor, "regime": regime},
+            )
+
+        return GateResult(
+            passed=True, gate_name=self.name,
+            reason=f"|delta|={abs_delta:.4f}% >= {floor:.4f}% ({regime})",
+            data={"abs_delta": abs_delta, "floor": floor},
         )
 
 
