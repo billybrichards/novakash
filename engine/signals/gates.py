@@ -232,6 +232,8 @@ class DuneConfidenceGate:
     def __init__(self, dune_client=None):
         self._base_min_p = float(os.environ.get("V10_DUNE_MIN_P", "0.65"))
         self._offset_penalty_max = float(os.environ.get("V10_OFFSET_PENALTY_MAX", "0.06"))
+        self._early_penalty_max = float(os.environ.get("V10_OFFSET_PENALTY_EARLY_MAX", "0.0"))
+        self._early_min_conf = float(os.environ.get("V10_EARLY_ENTRY_MIN_CONF", "0.90"))
         self._down_penalty = float(os.environ.get("V10_DOWN_PENALTY", "0.0"))
         self._client = dune_client
         self._log = log.bind(gate="dune_confidence")
@@ -250,11 +252,18 @@ class DuneConfidenceGate:
         """
         base = self._regime_thresholds.get(regime, self._base_min_p)
 
-        # Offset penalty: linear from 0 at T-60 to max at T-180
+        # Offset penalty: two-tier ramp (v10.6)
+        # Tier 1: linear from 0 at T-60 to _offset_penalty_max at T-180
+        # Tier 2: linear from 0 at T-180 to _early_penalty_max at T-200 (steeper)
         offset_penalty = 0.0
         if eval_offset is not None and eval_offset > 60:
-            offset_penalty = min(self._offset_penalty_max,
-                                 (eval_offset - 60) / 120.0 * self._offset_penalty_max)
+            base_penalty = min(self._offset_penalty_max,
+                               (eval_offset - 60) / 120.0 * self._offset_penalty_max)
+            early_penalty = 0.0
+            if eval_offset > 180 and self._early_penalty_max > 0:
+                early_penalty = min(self._early_penalty_max,
+                                    (eval_offset - 180) / 20.0 * self._early_penalty_max)
+            offset_penalty = base_penalty + early_penalty
 
         # DOWN penalty: +0.03 (9.3pp accuracy gap, N=865)
         down_penalty = self._down_penalty if ctx.agreed_direction == "DOWN" else 0.0
@@ -274,12 +283,25 @@ class DuneConfidenceGate:
             )
 
         # Global minimum offset — don't trade too early
-        _min_offset = int(os.environ.get("V10_MIN_EVAL_OFFSET", "180"))
+        _min_offset = int(os.environ.get("V10_MIN_EVAL_OFFSET", "200"))
         if ctx.eval_offset and ctx.eval_offset > _min_offset:
             return GateResult(
                 passed=False, gate_name=self.name,
                 reason=f"too early: T-{ctx.eval_offset} > T-{_min_offset}",
             )
+
+        # v10.6: Early entry zone (T-180..200) requires minimum directional confidence
+        if ctx.eval_offset and ctx.eval_offset > 180 and self._early_min_conf > 0:
+            dir_conf = None
+            if ctx.dune_probability_up is not None and ctx.agreed_direction:
+                p_up = ctx.dune_probability_up
+                dir_conf = p_up if ctx.agreed_direction == "UP" else (1.0 - p_up)
+            if dir_conf is None or dir_conf < self._early_min_conf:
+                return GateResult(
+                    passed=False, gate_name=self.name,
+                    reason=f"early entry T-{ctx.eval_offset}: conf {dir_conf:.3f} < {self._early_min_conf:.2f}" if dir_conf else f"early entry T-{ctx.eval_offset}: no confidence",
+                    data={"offset": ctx.eval_offset, "conf": dir_conf, "min_conf": self._early_min_conf},
+                )
 
         regime = ctx.regime or "NORMAL"
 
@@ -709,21 +731,38 @@ class CoinGlassVetoGate:
 # ── Dynamic Cap Gate ───────────────────────────────────────────────────────
 
 class DynamicCapGate:
-    """G4: Calculate entry cap from DUNE confidence.
+    """G7: Confidence-scaled entry cap (v10.6).
 
-    cap = DUNE_P - margin (5pp default)
-    Bounded by floor ($0.35) and ceiling ($0.68).
-    At 76.5% WR, breakeven is ~$0.57. Ceiling $0.68 = 11pp safety margin.
+    cap = base + (ceiling - base) × (conf - min_conf) / (max_conf - min_conf)
+
+    SEQUOIA outputs smooth 0.65-0.88 probabilities. Higher confidence →
+    willing to pay more (still profitable). Lower confidence → demands
+    cheaper entry (better risk/reward compensates for uncertainty).
+
+    Early entry zone (T-180..200) has a hard cap override to limit risk
+    on low-accuracy early bets.
+
+    Evidence (Apr 9, 56 trades):
+      At $0.68 flat: WIN +$1.60, LOSS -$3.40 (2.1 wins to recover)
+      At $0.55:     WIN +$2.78, LOSS -$3.40 (1.2 wins to recover)
+      Confidence 80-90% = 86% WR, 70-80% = 73% WR — scaling is justified.
 
     Falls back to v9 fixed cap ($0.65) if DUNE not available.
     """
     name = "dynamic_cap"
 
     def __init__(self):
-        self._margin = float(os.environ.get("V10_DUNE_CAP_MARGIN", "0.05"))
+        # Confidence-scaled cap parameters
+        self._scale_base = float(os.environ.get("V10_CAP_SCALE_BASE", "0.48"))
+        self._scale_ceiling = float(os.environ.get("V10_CAP_SCALE_CEILING", "0.72"))
+        self._scale_min_conf = float(os.environ.get("V10_CAP_SCALE_MIN_CONF", "0.65"))
+        self._scale_max_conf = float(os.environ.get("V10_CAP_SCALE_MAX_CONF", "0.88"))
         self._floor = float(os.environ.get("V10_DUNE_CAP_FLOOR", "0.35"))
-        self._ceiling = float(os.environ.get("V10_DUNE_CAP_CEILING", "0.68"))
+        # Early entry zone cap override (T-180..200)
+        self._early_cap_max = float(os.environ.get("V10_EARLY_ENTRY_CAP_MAX", "0.63"))
+        self._early_offset_threshold = int(os.environ.get("V10_EARLY_ENTRY_OFFSET", "180"))
         self._v9_fallback = float(os.environ.get("V9_CAP_GOLDEN", "0.65"))
+        self._log = log.bind(gate="dynamic_cap")
 
     async def evaluate(self, ctx: GateContext) -> GateResult:
         dune_p = None
@@ -734,11 +773,27 @@ class DynamicCapGate:
             dune_p = p_up if ctx.agreed_direction == "UP" else (1.0 - p_up)
 
         if dune_p is not None:
-            cap = round(min(max(dune_p - self._margin, self._floor), self._ceiling), 2)
+            # Confidence-scaled cap: linear interpolation across confidence range
+            conf_range = self._scale_max_conf - self._scale_min_conf
+            if conf_range > 0:
+                t = max(0.0, min(1.0, (dune_p - self._scale_min_conf) / conf_range))
+            else:
+                t = 0.5
+            raw_cap = self._scale_base + (self._scale_ceiling - self._scale_base) * t
+            cap = round(max(raw_cap, self._floor), 2)
+
+            # Early entry zone: hard cap override for T-180..200
+            if ctx.eval_offset and ctx.eval_offset > self._early_offset_threshold:
+                cap = min(cap, self._early_cap_max)
+                cap = round(cap, 2)
+
+            self._log.info("cap.scaled",
+                dune_p=f"{dune_p:.3f}", t=f"{t:.2f}", cap=f"${cap:.2f}",
+                early_zone=bool(ctx.eval_offset and ctx.eval_offset > self._early_offset_threshold))
             return GateResult(
                 passed=True, gate_name=self.name,
-                reason=f"DUNE cap=${cap:.2f} (P={dune_p:.3f} - {self._margin}pp)",
-                data={"cap": cap, "dune_p": dune_p, "source": "dune"},
+                reason=f"cap=${cap:.2f} (P={dune_p:.3f} t={t:.2f} [{self._scale_base:.2f},{self._scale_ceiling:.2f}])",
+                data={"cap": cap, "dune_p": dune_p, "t": t, "source": "scaled"},
             )
         else:
             # Fallback to v9 fixed cap
