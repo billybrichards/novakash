@@ -127,8 +127,16 @@ class WsSignalAdapter(SignalPort):
                         asset=asset,
                         timestamp=float(ts),
                     )
+                    logger.info(
+                        "Signal received: %s %s score=%.3f strength=%.3f",
+                        asset, timescale, float(score), abs(float(score)),
+                    )
                 except ValueError as e:
                     logger.debug("Invalid signal: %s", e)
+            else:
+                logger.warning("Incomplete composite_score: ts=%s score=%s", timescale, score)
 
         elif msg_type == "heartbeat":
             pass  # connection alive
+        else:
+            logger.debug("WS message type: %s", msg_type)

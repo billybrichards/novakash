@@ -48,13 +48,15 @@ class StatusServer:
         await server.stop()
     """
 
-    def __init__(self, portfolio: Portfolio, exchange, port: int = 8090):
+    def __init__(self, portfolio: Portfolio, exchange, port: int = 8090, log_repo=None):
         self._portfolio = portfolio
         self._exchange = exchange
         self._port = port
+        self._log_repo = log_repo
         self._app = web.Application()
         self._app.router.add_get("/status", self._handle_status)
         self._app.router.add_get("/health", self._handle_health)
+        self._app.router.add_get("/logs", self._handle_logs)
         self._runner: web.AppRunner | None = None
 
     async def start(self) -> None:
@@ -118,3 +120,12 @@ class StatusServer:
                 "win_rate": portfolio.win_rate,
             },
         })
+
+    async def _handle_logs(self, request: web.Request) -> web.Response:
+        if not self._log_repo:
+            return web.json_response({"error": "log persistence not configured"}, status=503)
+        limit = int(request.query.get("limit", "100"))
+        level = request.query.get("level")
+        since = int(request.query.get("since_minutes", "60"))
+        rows = await self._log_repo.query(limit=limit, level=level, since_minutes=since)
+        return web.json_response({"logs": rows, "count": len(rows)})

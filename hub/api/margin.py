@@ -55,6 +55,20 @@ async def margin_status(
     return await _proxy_get(MARGIN_ENGINE_URL, "/status")
 
 
+@router.get("/margin/logs")
+async def margin_logs(
+    limit: int = Query(default=100, le=500),
+    level: str | None = Query(default=None),
+    since_minutes: int = Query(default=60, le=1440),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """Proxy to margin engine — persisted log entries."""
+    return await _proxy_get(
+        MARGIN_ENGINE_URL, "/logs",
+        {"limit": limit, "level": level, "since_minutes": since_minutes},
+    )
+
+
 # ─── V3 Composite Signals ──────────────────────────────────────────────────
 
 

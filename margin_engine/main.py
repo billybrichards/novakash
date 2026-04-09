@@ -44,10 +44,19 @@ async def run() -> None:
     dsn = settings.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3, command_timeout=10)
 
-    # ── Repository ──
+    # ── Repositories ──
     from margin_engine.adapters.persistence.pg_repository import PgPositionRepository
     repo = PgPositionRepository(pool)
     await repo.ensure_table()
+
+    from margin_engine.adapters.persistence.pg_log_repository import PgLogRepository, AsyncPgLogHandler
+    log_repo = PgLogRepository(pool)
+    await log_repo.ensure_table()
+
+    # Attach DB log handler to root logger
+    log_handler = AsyncPgLogHandler(log_repo, asyncio.get_running_loop())
+    logging.getLogger().addHandler(log_handler)
+    log_handler.start()
 
     # ── Exchange adapter ──
     if settings.paper_mode:
@@ -129,7 +138,7 @@ async def run() -> None:
 
     # ── Status HTTP server (for dashboard proxy) ──
     from margin_engine.infrastructure.status_server import StatusServer
-    status_server = StatusServer(portfolio, exchange, port=settings.status_port)
+    status_server = StatusServer(portfolio, exchange, port=settings.status_port, log_repo=log_repo)
     await status_server.start()
 
     # ── Graceful shutdown ──
@@ -175,6 +184,7 @@ async def run() -> None:
     finally:
         logger.info("Shutting down margin engine...")
         await status_server.stop()
+        await log_handler.stop()  # flush remaining logs before pool closes
         await signal_adapter.disconnect()
         if hasattr(exchange, "close"):
             await exchange.close()

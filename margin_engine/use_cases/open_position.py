@@ -61,7 +61,7 @@ class OpenPositionUseCase:
         """
         # 1. Signal strength check
         if signal.strength < self._signal_threshold:
-            logger.debug(
+            logger.info(
                 "Signal too weak: %.3f < %.3f (%s)",
                 signal.strength, self._signal_threshold, signal.timescale,
             )
