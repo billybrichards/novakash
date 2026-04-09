@@ -75,9 +75,10 @@ class StatusServer:
         portfolio = self._portfolio
 
         # Get current price for unrealised P&L
-        current_price = None
+        current_price_val = None
         try:
-            current_price = await self._exchange.get_current_price("BTCUSDT")
+            price_obj = await self._exchange.get_current_price("BTCUSDT")
+            current_price_val = price_obj.value if hasattr(price_obj, 'value') else float(price_obj)
         except Exception:
             pass
 
@@ -87,13 +88,14 @@ class StatusServer:
         positions = []
         for p in portfolio.positions:
             d = _position_to_dict(p)
-            if current_price and p.state.value == "OPEN":
-                d["unrealised_pnl"] = p.unrealised_pnl(current_price)
+            if current_price_val and p.state.value == "OPEN":
+                d["unrealised_pnl"] = p.unrealised_pnl(current_price_val)
             positions.append(d)
 
         balance = portfolio.starting_capital.amount
         try:
-            balance = await self._exchange.get_balance()
+            bal = await self._exchange.get_balance()
+            balance = bal.amount if hasattr(bal, 'amount') else float(bal)
         except Exception:
             pass
 
