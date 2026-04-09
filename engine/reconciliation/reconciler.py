@@ -472,14 +472,30 @@ class CLOBReconciler:
             # Position outcome is already WIN/LOSS from get_position_outcomes()
             # WIN means curPrice >= 0.99 (token pays $1), LOSS means curPrice <= 0.01
             is_win = pos_outcome == "WIN"
+
+            # Use per-trade stake from DB for PnL, not position aggregate
+            trade_stake = float(orphan["stake_usd"] or 0)
+            trade_entry = 0.68  # default cap
+            if trade_stake > 0 and cost > 0:
+                trade_shares = trade_stake / trade_entry
+            else:
+                trade_shares = shares  # fallback to position shares
+
             if is_win:
                 outcome = "WIN"
-                pnl = shares - cost  # shares pay out $1 each on win
+                pnl = round(trade_shares - trade_stake, 2) if trade_stake > 0 else round(shares - cost, 2)
                 status = "RESOLVED_WIN"
             else:
                 outcome = "LOSS"
-                pnl = -cost
+                pnl = round(-trade_stake, 2) if trade_stake > 0 else round(-cost, 2)
                 status = "RESOLVED_LOSS"
+
+            # Sanity: if WIN but PnL is negative, something is wrong — skip
+            if is_win and pnl < 0:
+                self._log.warning("reconciler.orphan_pnl_mismatch",
+                    trade_id=orphan["id"], outcome="WIN", pnl=f"${pnl:.2f}",
+                    shares=shares, cost=cost, trade_stake=trade_stake)
+                continue
 
             # 4. Update DB
             try:
