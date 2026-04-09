@@ -127,6 +127,12 @@ async def run() -> None:
         signal_reversal_threshold=settings.signal_reversal_threshold,
     )
 
+    # ── Status HTTP server (for dashboard proxy) ──
+    from margin_engine.infrastructure.status_server import StatusServer
+    status_port = int(os.environ.get("MARGIN_STATUS_PORT", "8090"))
+    status_server = StatusServer(portfolio, exchange, port=status_port)
+    await status_server.start()
+
     # ── Graceful shutdown ──
     shutdown_event = asyncio.Event()
 
@@ -169,6 +175,7 @@ async def run() -> None:
 
     finally:
         logger.info("Shutting down margin engine...")
+        await status_server.stop()
         await signal_adapter.disconnect()
         if hasattr(exchange, "close"):
             await exchange.close()
