@@ -1,0 +1,141 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { useApi } from '../../hooks/useApi.js';
+import { T } from './components/constants.js';
+import PositionsPanel from './components/PositionsPanel.jsx';
+import SignalPanel from './components/SignalPanel.jsx';
+
+/**
+ * MarginEngine — Binance 5x cross-margin dashboard.
+ *
+ * Two tabs:
+ *   - Live: Portfolio stats, open positions, composite signals, P&L
+ *   - History: Closed positions, daily P&L breakdown, win rate trends
+ *
+ * Data sources:
+ *   - /api/margin/status     — Portfolio state, positions, P&L
+ *   - /api/v3/snapshot       — Composite signal scores (proxied from TimesFM)
+ */
+export default function MarginEngine() {
+  const api = useApi();
+  const [activeTab, setActiveTab] = useState('live');
+  const [marginData, setMarginData] = useState(null);
+  const [signalSnapshot, setSignalSnapshot] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const fetchData = async () => {
+    try {
+      const [marginRes, signalRes] = await Promise.allSettled([
+        api('GET', '/margin/status'),
+        api('GET', '/v3/snapshot?asset=BTC'),
+      ]);
+
+      if (marginRes.status === 'fulfilled') {
+        setMarginData(marginRes.value?.data || marginRes.value);
+      }
+      if (signalRes.status === 'fulfilled') {
+        setSignalSnapshot(signalRes.value?.data || signalRes.value);
+      }
+      setError(null);
+    } catch (err) {
+      setError(err.message || 'Failed to fetch');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchData(); }, [api]);
+
+  useEffect(() => {
+    if (activeTab !== 'live') return;
+    const interval = setInterval(fetchData, 5000);
+    return () => clearInterval(interval);
+  }, [activeTab, api]);
+
+  const portfolio = marginData?.portfolio || {};
+  const positions = marginData?.positions || [];
+  const openPositions = positions.filter(p => p.state === 'OPEN');
+  const closedPositions = positions.filter(p => p.state === 'CLOSED');
+  const totalPnl = closedPositions.reduce((sum, p) => sum + (p.realised_pnl || 0), 0);
+  const winRate = closedPositions.length > 0
+    ? (closedPositions.filter(p => p.realised_pnl > 0).length / closedPositions.length * 100).toFixed(1)
+    : '—';
+
+  return (
+    <div style={{ padding: '16px 20px', maxWidth: 1400, margin: '0 auto' }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div>
+          <h1 style={{ fontSize: 16, fontWeight: 800, color: T.white, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+            Binance Margin Engine
+            <span style={{
+              fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
+              background: portfolio.paper_mode ? 'rgba(168,85,247,0.15)' : 'rgba(239,68,68,0.15)',
+              color: portfolio.paper_mode ? T.purple : T.red,
+              border: `1px solid ${portfolio.paper_mode ? 'rgba(168,85,247,0.3)' : 'rgba(239,68,68,0.3)'}`,
+            }}>{portfolio.paper_mode ? 'PAPER' : 'LIVE'}</span>
+            <span style={{
+              fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
+              background: 'rgba(59,130,246,0.15)', color: T.blue, border: '1px solid rgba(59,130,246,0.3)',
+            }}>5x CROSS</span>
+          </h1>
+          <p style={{ fontSize: 9, color: T.textMuted, margin: '2px 0 0' }}>
+            Composite signal → Binance margin | eu-west-2
+          </p>
+        </div>
+
+        {/* Tabs */}
+        <div style={{ display: 'flex', gap: 4 }}>
+          {['live', 'history'].map(tab => (
+            <button key={tab} onClick={() => setActiveTab(tab)} style={{
+              padding: '5px 12px', borderRadius: 5, fontSize: 10, fontWeight: 700,
+              background: activeTab === tab ? 'rgba(6,182,212,0.15)' : 'transparent',
+              color: activeTab === tab ? T.cyan : T.textMuted,
+              border: `1px solid ${activeTab === tab ? 'rgba(6,182,212,0.3)' : T.cardBorder}`,
+              cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.05em',
+            }}>{tab}</button>
+          ))}
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ padding: '8px 12px', marginBottom: 12, borderRadius: 6, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', fontSize: 10, color: T.red }}>
+          {error}
+        </div>
+      )}
+
+      {/* Stats row */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 16 }}>
+        {[
+          { label: 'BALANCE', value: `$${(portfolio.balance || 500).toFixed(2)}`, color: T.white },
+          { label: 'EXPOSURE', value: `$${(portfolio.exposure || 0).toFixed(2)}`, sub: `${((portfolio.exposure || 0) / (portfolio.balance || 500) * 100).toFixed(0)}% of capital`, color: T.cyan },
+          { label: 'OPEN', value: openPositions.length, color: T.cyan },
+          { label: 'TOTAL P&L', value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`, color: totalPnl >= 0 ? T.green : T.red },
+          { label: 'WIN RATE', value: typeof winRate === 'string' ? winRate : `${winRate}%`, color: parseFloat(winRate) > 60 ? T.green : T.amber },
+          { label: 'TRADES', value: closedPositions.length, color: T.textMuted },
+        ].map(({ label, value, sub, color }) => (
+          <div key={label} style={{ background: T.card, border: `1px solid ${T.cardBorder}`, borderRadius: 8, padding: '10px 12px' }}>
+            <div style={{ fontSize: 8, color: T.textMuted, fontWeight: 700, letterSpacing: '0.08em', marginBottom: 4 }}>{label}</div>
+            <div style={{ fontSize: 20, fontWeight: 900, fontFamily: T.mono, color }}>{value}</div>
+            {sub && <div style={{ fontSize: 8, color: T.textDim, marginTop: 2 }}>{sub}</div>}
+          </div>
+        ))}
+      </div>
+
+      {activeTab === 'live' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* Composite signals */}
+          <SignalPanel snapshot={signalSnapshot} />
+
+          {/* Open positions */}
+          <PositionsPanel positions={openPositions} />
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* Closed positions history */}
+          <PositionsPanel positions={closedPositions} />
+        </div>
+      )}
+    </div>
+  );
+}
