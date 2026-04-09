@@ -81,6 +81,11 @@ jobs:
               sudo systemctl enable margin-engine
             fi
 
+            # Ensure keys directory exists
+            sudo mkdir -p /opt/margin-engine/.keys
+            sudo chown ubuntu:ubuntu /opt/margin-engine/.keys
+            sudo chmod 700 /opt/margin-engine/.keys
+
             # Start service
             sudo systemctl start margin-engine
 

@@ -58,7 +58,7 @@ async def run() -> None:
         from margin_engine.adapters.exchange.binance_margin import BinanceMarginAdapter
         exchange = BinanceMarginAdapter(
             api_key=settings.binance_api_key,
-            api_secret=settings.binance_api_secret,
+            private_key_path=settings.binance_private_key_path,
         )
         logger.info("Using LIVE Binance margin adapter")
 

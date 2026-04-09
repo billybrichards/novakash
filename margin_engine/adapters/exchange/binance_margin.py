@@ -1,22 +1,24 @@
 """
-Binance cross-margin adapter — HMAC-SHA256 signed REST API.
+Binance cross-margin adapter — Ed25519 signed REST API.
 
 Implements ExchangePort for real Binance 5x cross-margin trading.
-All requests are signed with the API secret per Binance docs.
+All requests are signed with an Ed25519 private key per Binance docs.
 
 Important: This adapter must run from a Binance-friendly geography
 (UK/EU). The Montreal Polymarket engine CANNOT use this adapter.
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
+import base64
 import logging
 import time
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
 
 import aiohttp
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization
 
 from margin_engine.domain.ports import ExchangePort
 from margin_engine.domain.value_objects import Money, Price, TradeSide
@@ -26,22 +28,31 @@ logger = logging.getLogger(__name__)
 BINANCE_BASE_URL = "https://api.binance.com"
 
 
+def _load_ed25519_key(path: str) -> Ed25519PrivateKey:
+    """Load an Ed25519 private key from a PEM file."""
+    pem_bytes = Path(path).read_bytes()
+    key = serialization.load_pem_private_key(pem_bytes, password=None)
+    if not isinstance(key, Ed25519PrivateKey):
+        raise TypeError(f"Expected Ed25519 private key, got {type(key).__name__}")
+    return key
+
+
 class BinanceMarginAdapter(ExchangePort):
     """
     Binance cross-margin exchange adapter.
 
     Uses the /sapi/v1/margin/* endpoints for cross-margin trading.
-    Requires BINANCE_API_KEY and BINANCE_API_SECRET.
+    Requires an Ed25519 API key pair registered on Binance.
     """
 
     def __init__(
         self,
         api_key: str,
-        api_secret: str,
+        private_key_path: str,
         base_url: str = BINANCE_BASE_URL,
     ) -> None:
         self._api_key = api_key
-        self._api_secret = api_secret.encode("utf-8")
+        self._private_key = _load_ed25519_key(private_key_path)
         self._base_url = base_url
         self._session: Optional[aiohttp.ClientSession] = None
 
@@ -54,11 +65,11 @@ class BinanceMarginAdapter(ExchangePort):
         return self._session
 
     def _sign(self, params: dict) -> dict:
-        """Add timestamp and HMAC-SHA256 signature to params."""
+        """Add timestamp and Ed25519 signature to params."""
         params["timestamp"] = int(time.time() * 1000)
-        query = urlencode(params)
-        signature = hmac.new(self._api_secret, query.encode("utf-8"), hashlib.sha256).hexdigest()
-        params["signature"] = signature
+        payload = urlencode(params).encode("utf-8")
+        signature = self._private_key.sign(payload)
+        params["signature"] = base64.b64encode(signature).decode("utf-8")
         return params
 
     # ─── ExchangePort implementation ─────────────────────────────────────
@@ -162,7 +173,7 @@ class BinanceMarginAdapter(ExchangePort):
         return Money.zero()
 
     async def get_current_price(self, symbol: str) -> Price:
-        """Get current ticker price."""
+        """Get current ticker price (unsigned, public endpoint)."""
         session = await self._ensure_session()
         url = f"{self._base_url}/api/v3/ticker/price"
         async with session.get(url, params={"symbol": symbol}) as resp:

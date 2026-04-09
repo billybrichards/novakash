@@ -7,6 +7,9 @@ aiohttp>=3.9.0
 # Database
 asyncpg>=0.29.0
 
+# Cryptography (Ed25519 Binance API signing)
+cryptography>=42.0.0
+
 # Configuration
 pydantic>=2.6.0
 pydantic-settings>=2.2.0

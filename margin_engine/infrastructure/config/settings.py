@@ -14,7 +14,7 @@ class MarginSettings(BaseSettings):
 
     # ── Exchange ──
     binance_api_key: str = ""
-    binance_api_secret: str = ""
+    binance_private_key_path: str = "/opt/margin-engine/.keys/binance_ed25519.pem"
     paper_mode: bool = True  # default to paper for safety
 
     # ── Signal source ──
