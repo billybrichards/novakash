@@ -24,12 +24,88 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import aiohttp
 import structlog
 
 log = structlog.get_logger(__name__)
+
+
+# ── Rate-limit handling ───────────────────────────────────────────────────────
+#
+# The Polygon Builder Relayer API returns HTTP 429 when the wallet's daily
+# quota is exhausted, with an error body shaped like:
+#
+#     RelayerApiException[status_code=429, error_message={
+#         'error': 'quota exceeded: 0 units remaining, resets in 9906 seconds'
+#     }]
+#
+# Before this module had cooldown awareness, the redeemer loop kept calling
+# once per settled position every 5 minutes, burning through dozens of
+# no-op 429 calls per hour and potentially keeping the relayer quota
+# perpetually at 0 (each call appears to cost 1 unit even on failure, from
+# what we observed on 2026-04-10).
+#
+# The fix: parse "resets in N seconds" from the error string, set an
+# instance-level cooldown expiry, and short-circuit all redemption calls
+# until the cooldown expires. Falls back to a 5-minute cooldown if the
+# parse fails, so we never end up in a tight retry loop.
+_RATE_LIMIT_MARKERS = ("429", "quota exceeded", "units remaining")
+_RESET_REGEX = re.compile(r"resets?\s+in\s+(\d+)\s*seconds?", re.IGNORECASE)
+_DEFAULT_COOLDOWN_SECONDS = 300  # 5 minutes when we can't parse the header
+
+
+def _is_rate_limit_error(exc_str: str) -> bool:
+    """True if the error string looks like a Polygon Relayer rate-limit response.
+
+    Substring match against multiple markers so we catch the 429 regardless
+    of whether the SDK surfaces `status_code=429`, the literal quota text,
+    or the `units remaining` phrasing. All three appear in the real error
+    strings we've seen from py_builder_relayer_client.
+    """
+    if not exc_str:
+        return False
+    lower = exc_str.lower()
+    return any(marker in lower for marker in _RATE_LIMIT_MARKERS)
+
+
+def _parse_reset_seconds(exc_str: str) -> Optional[int]:
+    """
+    Extract the 'resets in N seconds' value from a Builder Relayer 429 error.
+
+    Real-world inputs look like:
+        "RelayerApiException[status_code=429, error_message={'error': \
+         'quota exceeded: 0 units remaining, resets in 9906 seconds'}]"
+
+    Returns:
+        The parsed N as an int if found and sane (0 < N < 86400 seconds = 24h).
+        None if no parse was possible — callers should then apply their own
+        default cooldown rather than retry immediately.
+
+    Design notes:
+        - Uses a loose regex (`resets? in N seconds?`) so slight phrasing
+          drift in the upstream API doesn't break the parse.
+        - Caps at 24h as a sanity guard: if the Relayer ever returns a
+          wildly large value (e.g. an epoch-seconds bug upstream), we
+          clamp to the default cooldown instead of sitting idle for days.
+        - Returns None on zero or negative values — we'd rather fall back
+          to the default than interpret "0 seconds" as "retry immediately".
+    """
+    if not exc_str:
+        return None
+    match = _RESET_REGEX.search(exc_str)
+    if not match:
+        return None
+    try:
+        n = int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+    if n <= 0 or n > 86400:
+        return None
+    return n
 
 # ── Contract Addresses (Polygon Mainnet) ──────────────────────────────────────
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
@@ -110,6 +186,74 @@ class PositionRedeemer:
         self._usdc = None
         self._relay_client = None
         self._log = log.bind(component="redeemer", paper_mode=paper_mode)
+
+        # Rate-limit cooldown state (see _parse_reset_seconds docstring).
+        # `_rate_limit_until` is an absolute UTC deadline — while now() <
+        # this value, redemption calls short-circuit and return early.
+        # Reset to None after a successful call or when the deadline passes.
+        self._rate_limit_until: Optional[datetime] = None
+        self._rate_limit_reason: str = ""
+        # Throttle for "cooldown active" log lines so the engine log
+        # doesn't fill up during a multi-hour 429 window.
+        self._last_cooldown_log_at: Optional[datetime] = None
+
+    # ── Cooldown helpers ──────────────────────────────────────────────────────
+
+    def _in_cooldown(self) -> bool:
+        """True iff we're currently in a rate-limit cooldown window."""
+        if self._rate_limit_until is None:
+            return False
+        now = datetime.now(timezone.utc)
+        if now >= self._rate_limit_until:
+            # Cooldown has expired naturally — clear state and return False.
+            self._log.info(
+                "redeemer.cooldown_cleared",
+                expired_at=self._rate_limit_until.isoformat(),
+                reason=self._rate_limit_reason[:80],
+            )
+            self._rate_limit_until = None
+            self._rate_limit_reason = ""
+            self._last_cooldown_log_at = None
+            return False
+        return True
+
+    def _log_cooldown_active(self) -> None:
+        """Log a throttled 'cooldown active' message (at most once per minute)."""
+        if self._rate_limit_until is None:
+            return
+        now = datetime.now(timezone.utc)
+        if self._last_cooldown_log_at is not None:
+            if (now - self._last_cooldown_log_at).total_seconds() < 60:
+                return
+        self._last_cooldown_log_at = now
+        remaining = int((self._rate_limit_until - now).total_seconds())
+        self._log.info(
+            "redeemer.cooldown_active",
+            remaining_seconds=max(0, remaining),
+            resets_at=self._rate_limit_until.isoformat(),
+            reason=self._rate_limit_reason[:120],
+        )
+
+    def _trip_cooldown(self, exc_str: str) -> None:
+        """Enter cooldown after detecting a rate-limit error.
+
+        Parses the 'resets in N seconds' value from the error string via
+        `_parse_reset_seconds`. If no parse is possible, falls back to
+        `_DEFAULT_COOLDOWN_SECONDS` (5 minutes). Always logs the transition
+        so an operator can see exactly how long the cooldown will last.
+        """
+        reset_seconds = _parse_reset_seconds(exc_str) or _DEFAULT_COOLDOWN_SECONDS
+        now = datetime.now(timezone.utc)
+        self._rate_limit_until = now + timedelta(seconds=reset_seconds)
+        self._rate_limit_reason = exc_str[:200]
+        self._last_cooldown_log_at = None  # allow one immediate log after trip
+        self._log.warning(
+            "redeemer.cooldown_tripped",
+            cooldown_seconds=reset_seconds,
+            resets_at=self._rate_limit_until.isoformat(),
+            parsed_from_error=bool(_parse_reset_seconds(exc_str)),
+            reason_preview=exc_str[:120],
+        )
 
     async def connect(self) -> None:
         """Initialise web3 and Builder Relayer client."""
@@ -199,8 +343,14 @@ class PositionRedeemer:
         Both wins and losses are redeemed — losses clear the accounting books.
 
         Returns list of dicts with: conditionId, tokenId, size, outcome, pnl, curPrice
+        Returns empty list if we're currently in a rate-limit cooldown — the
+        position scan itself doesn't hit the relayer, but there's no point
+        staging a sweep we can't execute.
         """
         if self._paper_mode:
+            return []
+        if self._in_cooldown():
+            self._log_cooldown_active()
             return []
 
         try:
@@ -274,9 +424,17 @@ class PositionRedeemer:
         3. Submit via RelayClient.execute (synchronous → asyncio.to_thread)
         4. Poll until CONFIRMED or FAILED
 
-        Returns True if redemption confirmed.
+        Returns True if redemption confirmed. If in a rate-limit cooldown,
+        returns False immediately without calling the relayer.
         """
         if self._paper_mode or not self._relay_client or not self._ctf:
+            return False
+
+        # ── Cooldown gate: skip if a previous 429 is still in effect. ─────
+        # Returns False so redeem_all() counts this as "failed" — but
+        # without consuming a relayer quota unit or spamming the log.
+        if self._in_cooldown():
+            self._log_cooldown_active()
             return False
 
         try:
@@ -343,11 +501,19 @@ class PositionRedeemer:
             return success
 
         except Exception as exc:
-            self._log.error(
-                "redeemer.redeem_error",
-                condition=condition_id[:20] + "...",
-                error=str(exc),
-            )
+            exc_str = str(exc)
+            if _is_rate_limit_error(exc_str):
+                # Trip global cooldown — every other pending redemption
+                # in this sweep will now short-circuit at `_in_cooldown()`.
+                self._trip_cooldown(exc_str)
+            else:
+                # Real error, not a rate limit. Log at error level so it
+                # triggers alerts; the cooldown path logs at warning.
+                self._log.error(
+                    "redeemer.redeem_error",
+                    condition=condition_id[:20] + "...",
+                    error=exc_str[:200],
+                )
             return False
 
     async def redeem_all(self) -> dict:
@@ -383,6 +549,27 @@ class PositionRedeemer:
                 "usdc_after": 0.0,
                 "tx_hashes": [],
                 "paper_mode": True,
+            }
+
+        # Pre-flight cooldown check: if we already know we're rate-limited,
+        # skip the scan entirely so we don't even burn a positions-API call.
+        if self._in_cooldown():
+            self._log_cooldown_active()
+            return {
+                "scanned": 0,
+                "redeemed": 0,
+                "failed": 0,
+                "wins": 0,
+                "losses": 0,
+                "total_pnl": 0.0,
+                "usdc_before": 0.0,
+                "usdc_after": 0.0,
+                "tx_hashes": [],
+                "paper_mode": False,
+                "cooldown_active": True,
+                "cooldown_remaining_seconds": int(
+                    (self._rate_limit_until - datetime.now(timezone.utc)).total_seconds()
+                ) if self._rate_limit_until else 0,
             }
 
         usdc_before = await self.get_usdc_balance()

@@ -1998,23 +1998,52 @@ class Orchestrator:
                                             _slines.append(f"🚫{_dir} `{_wid}` {_sr}")
                                         _recent_block += "📝 *Recent skips:*\n" + "\n".join(_slines) + "\n"
 
-                                    # Recent wins and losses from trade_bible (source of truth)
+                                    # ── Recent wins and losses from trade_bible (source of truth) ──
+                                    #
+                                    # Filter by resolution_source so we don't
+                                    # display startup-backfilled (stale) trades
+                                    # mixed with fresh fills. Values set by
+                                    # engine/reconciliation/reconciler.py:
+                                    #   'trigger'          — live-engine resolution via DB trigger
+                                    #                        (the current-session decision path)
+                                    #   'orphan_resolved'  — CLOB reconciler found a fill the engine
+                                    #                        didn't locally track, but still in-session
+                                    #   'backfill'         — reconciler startup backfill (pre-restart,
+                                    #                        stale — exclude from "recent" display)
+                                    #   'trades_table'     — historical populate_trade_bible.sql batch
+                                    #   NULL               — legacy rows without source tagging
+                                    #
+                                    # Show 'trigger' and 'orphan_resolved' (both
+                                    # are current-session); optionally mark
+                                    # orphan-resolved lines with a ⚙ glyph so
+                                    # the operator can tell them apart.
                                     _wl_block = ""
                                     try:
                                         _wins = await conn.fetch(
                                             """SELECT direction, ROUND(pnl_usd::numeric, 2) as pnl,
-                                               entry_reason as reason, resolved_at
+                                               entry_reason as reason, resolved_at,
+                                               COALESCE(resolution_source, '') as source
                                             FROM trade_bible WHERE trade_outcome = 'WIN' AND is_live = true
                                               AND resolved_at > NOW() - INTERVAL '6 hours'
+                                              AND COALESCE(resolution_source, '') IN ('trigger', 'orphan_resolved', '')
                                             ORDER BY resolved_at DESC LIMIT 3"""
                                         )
                                         _losses = await conn.fetch(
                                             """SELECT direction, ROUND(pnl_usd::numeric, 2) as pnl,
-                                               entry_reason as reason, resolved_at
+                                               entry_reason as reason, resolved_at,
+                                               COALESCE(resolution_source, '') as source
                                             FROM trade_bible WHERE trade_outcome = 'LOSS' AND is_live = true
                                               AND resolved_at > NOW() - INTERVAL '6 hours'
+                                              AND COALESCE(resolution_source, '') IN ('trigger', 'orphan_resolved', '')
                                             ORDER BY resolved_at DESC LIMIT 3"""
                                         )
+
+                                        def _label_prefix(source: str) -> str:
+                                            """Visual marker so operators can tell at a glance
+                                            whether a line came from a live-engine resolution or
+                                            from the orphan reconciler catching up on a missing fill."""
+                                            return "⚙" if source == "orphan_resolved" else ""
+
                                         if _wins:
                                             _wlines = []
                                             for w in _wins:
@@ -2025,7 +2054,8 @@ class Orchestrator:
                                                 except Exception:
                                                     pass
                                                 _r = (w['reason'] or '?')[-20:]
-                                                _wlines.append(f"✅{_d} `{_t}` `+${float(w['pnl']):.2f}` {_r}")
+                                                _mark = _label_prefix(w['source'])
+                                                _wlines.append(f"✅{_d}{_mark} `{_t}` `+${float(w['pnl']):.2f}` {_r}")
                                             _wl_block += "🏆 *Recent wins:*\n" + "\n".join(_wlines) + "\n"
                                         if _losses:
                                             _llines = []
@@ -2037,7 +2067,8 @@ class Orchestrator:
                                                 except Exception:
                                                     pass
                                                 _r = (l['reason'] or '?')[-20:]
-                                                _llines.append(f"❌{_d} `{_t}` `-${abs(float(l['pnl'])):.2f}` {_r}")
+                                                _mark = _label_prefix(l['source'])
+                                                _llines.append(f"❌{_d}{_mark} `{_t}` `-${abs(float(l['pnl'])):.2f}` {_r}")
                                             _wl_block += "💀 *Recent losses:*\n" + "\n".join(_llines) + "\n"
                                     except Exception:
                                         pass

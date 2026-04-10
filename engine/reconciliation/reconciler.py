@@ -133,49 +133,101 @@ class CLOBReconciler:
                 if not self._pool:
                     continue
 
-                # Try to match and update unresolved trades
+                # Try to match and update unresolved trades by THIS position's
+                # token_id. Previous implementation did `ORDER BY created_at
+                # DESC LIMIT 20 / fetchrow` then updated by whatever token the
+                # most-recent row happened to have — which meant the "match"
+                # was blind and the UPDATE silently hit zero rows whenever
+                # the latest unresolved trade wasn't the one that just
+                # resolved. Two concurrent unresolved trades would guarantee
+                # at least one mis-backfill.
+                #
+                # Fix: pull the position's own token_id from `data` (Polymarket
+                # calls it "asset" but also sometimes "tokenId" — prefer asset,
+                # fall back to tokenId). Use a prefix-match UPDATE because the
+                # token_id length can vary between the CLOB wire format and
+                # what the engine stored in metadata. `LIKE $1 || '%'` is a
+                # left-anchored prefix match that plays well with the btree
+                # index on metadata->>'token_id' if one exists.
+                pos_token_id = str(data.get("asset", "") or data.get("tokenId", ""))
+                if not pos_token_id:
+                    # Polymarket returned a position without an asset/tokenId
+                    # — can't match it to anything. Count as orphaned.
+                    orphaned += 1
+                    self._log.debug(
+                        "reconciler.backfill.no_token_id",
+                        condition_id=cid[:20],
+                        outcome=outcome,
+                    )
+                    continue
+
                 try:
                     async with self._pool.acquire() as conn:
-                        # Match by token_id in metadata
-                        match = await conn.fetchrow(
-                            """SELECT id, metadata->>'token_id' as token_id,
-                                      metadata->>'entry_reason' as reason
-                               FROM trades
+                        # PnL: for WIN use Polymarket's computed pnl; for LOSS
+                        # use negative cost (full stake lost). Both come from
+                        # the position aggregate — not per-trade — but that's
+                        # acceptable for backfill (we're resolving stale state,
+                        # not making decisions).
+                        pnl = data["pnl"] if outcome == "WIN" else -data["cost"]
+                        status = (
+                            "RESOLVED_WIN" if outcome == "WIN" else "RESOLVED_LOSS"
+                        )
+                        # Prefix-match in both directions to handle truncated
+                        # or extended token IDs (the CLOB API sometimes
+                        # returns padded values).
+                        updated = await conn.execute(
+                            """UPDATE trades SET outcome = $1, pnl_usd = $2,
+                                      resolved_at = NOW(), status = $3
                                WHERE outcome IS NULL
                                  AND is_live = true
                                  AND metadata->>'token_id' IS NOT NULL
-                               ORDER BY created_at DESC LIMIT 20""",
+                                 AND (
+                                     metadata->>'token_id' LIKE $4 || '%'
+                                     OR $4 LIKE metadata->>'token_id' || '%'
+                                 )""",
+                            outcome,
+                            pnl,
+                            status,
+                            pos_token_id,
                         )
-
-                        if match:
-                            token_id = match["token_id"]
-                            pnl = data["pnl"] if outcome == "WIN" else -data["cost"]
-                            status = (
-                                "RESOLVED_WIN" if outcome == "WIN" else "RESOLVED_LOSS"
+                        # Parse "UPDATE N" suffix to get row count
+                        row_count = 0
+                        try:
+                            row_count = int(str(updated).split()[-1])
+                        except (ValueError, IndexError):
+                            pass
+                        if row_count > 0:
+                            backfilled += row_count
+                            # Tag the downstream trade_bible row(s) so the
+                            # sitrep can filter startup-backfilled entries
+                            # out of the "Recent wins/losses" display.
+                            await conn.execute(
+                                """UPDATE trade_bible
+                                   SET resolution_source = 'backfill'
+                                   WHERE trade_id IN (
+                                       SELECT id FROM trades
+                                       WHERE metadata->>'token_id' IS NOT NULL
+                                         AND (
+                                             metadata->>'token_id' LIKE $1 || '%'
+                                             OR $1 LIKE metadata->>'token_id' || '%'
+                                         )
+                                         AND resolved_at > NOW() - INTERVAL '10 seconds'
+                                   )""",
+                                pos_token_id,
                             )
-                            updated = await conn.execute(
-                                """UPDATE trades SET outcome = $1, pnl_usd = $2,
-                                          resolved_at = NOW(), status = $3
-                                   WHERE metadata->>'token_id' = $4
-                                     AND outcome IS NULL""",
-                                outcome,
-                                pnl,
-                                status,
-                                token_id,
+                            self._log.info(
+                                "reconciler.backfill.updated",
+                                condition_id=cid[:20],
+                                token_id=pos_token_id[:20],
+                                outcome=outcome,
+                                rows=row_count,
                             )
-                            if "UPDATE" in str(updated):
-                                backfilled += 1
-                                self._log.info(
-                                    "reconciler.backfill.updated",
-                                    condition_id=cid[:20],
-                                    token_id=token_id[:20] if token_id else "?",
-                                    outcome=outcome,
-                                )
                         else:
                             orphaned += 1
                             self._log.debug(
                                 "reconciler.backfill.orphaned",
                                 condition_id=cid[:20],
+                                token_id=pos_token_id[:20],
                                 outcome=outcome,
                             )
                 except Exception as exc:
@@ -463,7 +515,28 @@ class CLOBReconciler:
             fill_price = float(matched_fill.get("price", 0)) if matched_fill else 0
             fill_size = float(matched_fill.get("size", 0)) if matched_fill else 0
             cost = float(orphan["stake_usd"] or 0)
-            shares = float(orphan["shares_filled"] or 0) if orphan["shares_filled"] else fill_size
+
+            # ── display_shares: what we show the operator in telegram. ──
+            # Previous implementation blindly took `orphan["shares_filled"]`
+            # which sometimes held sentinel or mis-scaled values (999.00 was
+            # observed in the wild on 2026-04-10 with a $0.45 fill and $1.01
+            # cost, which is mathematically inconsistent). Prefer the
+            # authoritative fill_size from the matched Polymarket fill if
+            # it's positive; fall back to shares derived from cost/fill_price
+            # (the true fill math: shares = stake_usd / fill_price); only
+            # fall through to the DB column as a last resort.
+            if fill_size > 0:
+                display_shares = fill_size
+            elif cost > 0 and fill_price > 0:
+                display_shares = cost / fill_price
+            elif orphan["shares_filled"]:
+                db_shares = float(orphan["shares_filled"])
+                # Reject sentinel/garbage values: if the DB says we hold
+                # more shares than the whole position paid for at ≤$1 per
+                # share, that's impossible and we should not display it.
+                display_shares = db_shares if (cost <= 0 or db_shares <= cost / 0.01) else 0.0
+            else:
+                display_shares = 0.0
 
             if pos_outcome not in ("WIN", "LOSS"):
                 # Market hasn't resolved yet — skip for now
@@ -473,17 +546,49 @@ class CLOBReconciler:
             # WIN means curPrice >= 0.99 (token pays $1), LOSS means curPrice <= 0.01
             is_win = pos_outcome == "WIN"
 
-            # Use per-trade stake from DB for PnL, not position aggregate
+            # ── Per-trade PnL: use the ACTUAL fill price, not a hardcoded cap. ──
+            # Before the fix this used a hardcoded `trade_entry = 0.68` (the
+            # V10 default cap), which produced e.g. +$0.48 for a fill that
+            # should have returned +$1.09 (a $1.01 stake filled at $0.48
+            # buys 2.10 shares, which pay $2.10 on WIN → PnL = +$1.09).
+            # Now we derive effective_entry from the real fill when we have
+            # it, fall back to the orphan's avg_price from the position,
+            # and only use the legacy cap as a last resort with a warning.
             trade_stake = float(orphan["stake_usd"] or 0)
-            trade_entry = 0.68  # default cap
-            if trade_stake > 0 and cost > 0:
-                trade_shares = trade_stake / trade_entry
+            avg_price_from_pos = (
+                float(matched_pos.get("avgPrice", 0)) if matched_pos else 0.0
+            )
+            if fill_price > 0:
+                effective_entry = fill_price
+                entry_source = "fill"
+            elif avg_price_from_pos > 0:
+                effective_entry = avg_price_from_pos
+                entry_source = "position_avg"
             else:
-                trade_shares = shares  # fallback to position shares
+                effective_entry = 0.68  # legacy fallback, same as pre-fix behaviour
+                entry_source = "legacy_cap"
+                self._log.warning(
+                    "reconciler.orphan_pnl_fallback",
+                    trade_id=orphan["id"],
+                    note="no fill_price or position avg_price available; using legacy $0.68 cap",
+                )
+
+            # Shares the trade actually holds: stake / entry. Only valid
+            # when both are positive; otherwise we fall back to display_shares
+            # and skip the PnL computation to avoid a divide-by-zero.
+            if trade_stake > 0 and effective_entry > 0:
+                trade_shares = trade_stake / effective_entry
+            else:
+                trade_shares = display_shares
 
             if is_win:
                 outcome = "WIN"
-                pnl = round(trade_shares - trade_stake, 2) if trade_stake > 0 else round(shares - cost, 2)
+                # Each held share pays $1 → payout = trade_shares × $1.
+                # PnL = payout - stake = trade_shares - trade_stake.
+                if trade_stake > 0 and trade_shares > 0:
+                    pnl = round(trade_shares - trade_stake, 2)
+                else:
+                    pnl = round(display_shares - cost, 2)
                 status = "RESOLVED_WIN"
             else:
                 outcome = "LOSS"
@@ -494,7 +599,9 @@ class CLOBReconciler:
             if is_win and pnl < 0:
                 self._log.warning("reconciler.orphan_pnl_mismatch",
                     trade_id=orphan["id"], outcome="WIN", pnl=f"${pnl:.2f}",
-                    shares=shares, cost=cost, trade_stake=trade_stake)
+                    display_shares=display_shares, cost=cost,
+                    trade_stake=trade_stake, effective_entry=effective_entry,
+                    entry_source=entry_source)
                 continue
 
             # 4. Update DB
@@ -508,6 +615,18 @@ class CLOBReconciler:
                         outcome,
                         pnl,
                         status,
+                        orphan["id"],
+                    )
+                    # Tag the downstream trade_bible row with
+                    # `resolution_source='orphan_resolved'` so the sitrep
+                    # can distinguish orphan-reconciler resolutions from
+                    # live-engine trigger resolutions. Previously these
+                    # landed with resolution_source=NULL and the sitrep
+                    # showed them indistinguishably from fresh fills.
+                    await conn.execute(
+                        """UPDATE trade_bible
+                           SET resolution_source = 'orphan_resolved'
+                           WHERE trade_id = $1""",
                         orphan["id"],
                     )
                 resolved_count += 1
@@ -537,20 +656,34 @@ class CLOBReconciler:
             # 5. Send Telegram notification
             try:
                 now_str = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-                pnl_str = f"+${pnl:.2f}" if is_win else f"-${cost:.2f}"
+                # PnL display: show the actual computed pnl for losses too
+                # (previously hardcoded to -cost, which ignored trade_stake
+                # and showed the wrong magnitude for partial fills).
+                pnl_str = f"+${pnl:.2f}" if is_win else f"${pnl:.2f}"
                 emoji = "WIN" if is_win else "LOSS"
                 reason_line = ""
                 if orphan["entry_reason"]:
                     reason_line = f"Entry: `{orphan['entry_reason']}`\n"
 
                 trade_direction = (orphan["direction"] or "YES").upper()
+                # Entry-price display: show the fill price if we have one,
+                # otherwise mark the fallback source so the operator can
+                # tell at a glance if the PnL used a synthetic entry.
+                # This is the visual fix for the "999.00 @ $0.4500 cost $1.01"
+                # sitrep glitch that shipped in the old code — the shares
+                # and entry-price values weren't from the same source.
+                entry_display = (
+                    f"${effective_entry:.4f}"
+                    if entry_source != "legacy_cap"
+                    else f"${effective_entry:.4f} (fallback)"
+                )
                 msg = (
                     f"*{emoji} -- ORPHAN RESOLVED* (GTC fill)\n"
                     f"`{now_str}`\n"
                     f"\n"
                     f"Direction: `{trade_direction}`\n"
                     f"Resolution: `{pos_outcome}`\n"
-                    f"Shares: `{shares:.2f}` @ `${fill_price:.4f}`\n"
+                    f"Shares: `{display_shares:.2f}` @ `{entry_display}`\n"
                     f"Cost: `${cost:.2f}`\n"
                     f"P&L: `{pnl_str}`\n"
                     f"{reason_line}"
