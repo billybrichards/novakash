@@ -160,6 +160,27 @@ class ProbabilityPort(abc.ABC):
         """
         ...
 
+    @abc.abstractmethod
+    async def force_refresh(
+        self,
+        asset: str = "BTC",
+        timescale: str = "15m",
+    ) -> Optional[ProbabilitySignal]:
+        """
+        Bypass the standard poll cadence: fire an immediate HTTP call,
+        refresh the cache, and return the fresh value.
+
+        Used by the v2-fallback continuation path in ManagePositionsUseCase.
+        The standard 30s polling cadence is too coarse for continuation
+        checks at window close — a cached reading from t-27s describes
+        the PREVIOUS window, not the new one we'd be extending into.
+
+        Returns None on any failure (network error, non-200, JSON parse).
+        Never raises — callers should treat None as "no fresh data, exit
+        safely" rather than propagating exceptions.
+        """
+        ...
+
 
 class V4SnapshotPort(abc.ABC):
     """

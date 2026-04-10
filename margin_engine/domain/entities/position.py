@@ -86,6 +86,36 @@ class Position:
     # NULL in legacy rows → "v1-composite" at the DB read layer.
     strategy_version: str = "v2-probability"
 
+    # ── Re-prediction continuation state (PR B) ──
+    # hold_clock_anchor is when the CURRENT hold-window started. Initially
+    # equals opened_at; reset to time.time() on every continuation so that
+    # is_expired() fires at anchor + max_hold_seconds, not opened_at + ... .
+    # Keeping opened_at pristine preserves the audit trail in the Trade
+    # Timeline ("when was I FIRST entered") separately from the dynamic
+    # "when does my next check fire" semantics.
+    # Legacy rows with hold_clock_anchor == 0.0 fall back to opened_at,
+    # so no backfill is needed for existing positions.
+    hold_clock_anchor: float = 0.0
+    continuation_count: int = 0
+    last_continuation_ts: float = 0.0
+    last_continuation_p_up: float = 0.0
+
+    # ── v4 audit snapshot at entry (PR B) ──
+    # Frozen copy of the v4 fields that drove the entry decision. Enables
+    # post-trade analysis: "did regime actually change during the hold?"
+    # "was macro bullish when we entered, bearish when we exited?". All
+    # optional — legacy positions and legacy-v2-path positions leave them
+    # NULL. The Trade Timeline UI renders a sub-line with these fields
+    # when at least one is set.
+    v4_entry_regime: Optional[str] = None
+    v4_entry_macro_bias: Optional[str] = None
+    v4_entry_macro_confidence: Optional[int] = None
+    v4_entry_expected_move_bps: Optional[float] = None
+    v4_entry_composite_v3: Optional[float] = None
+    v4_entry_consensus_safe: Optional[bool] = None
+    v4_entry_window_close_ts: Optional[int] = None
+    v4_snapshot_ts_at_entry: Optional[float] = None
+
     # ─── State transitions ───────────────────────────────────────────────
 
     def confirm_entry(
@@ -108,6 +138,9 @@ class Position:
         self.entry_commission_is_actual = commission_is_actual
         self.state = PositionState.OPEN
         self.opened_at = time.time()
+        # Anchor the hold clock on first entry. Continuations will reset
+        # this to time.time() while leaving opened_at pristine.
+        self.hold_clock_anchor = self.opened_at
 
     def request_exit(self, reason: ExitReason) -> None:
         """Transition OPEN → PENDING_EXIT."""
@@ -251,10 +284,19 @@ class Position:
             return current_price <= self.take_profit.price
 
     def is_expired(self) -> bool:
-        """Check if position has exceeded max hold time."""
+        """Check if the position has exceeded max hold time.
+
+        Uses hold_clock_anchor when set so continuations (which reset
+        the anchor to time.time()) can legitimately extend the total
+        hold without having to mutate opened_at or max_hold_seconds.
+
+        Legacy rows with hold_clock_anchor == 0.0 fall back to the
+        original opened_at behaviour, so no DB backfill is needed.
+        """
         if self.state != PositionState.OPEN:
             return False
-        return (time.time() - self.opened_at) > self.max_hold_seconds
+        anchor = self.hold_clock_anchor if self.hold_clock_anchor > 0 else self.opened_at
+        return (time.time() - anchor) > self.max_hold_seconds
 
     @property
     def hold_duration_s(self) -> float:

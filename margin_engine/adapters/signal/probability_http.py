@@ -124,6 +124,32 @@ class ProbabilityHttpAdapter(ProbabilityPort):
             return None
         return self._latest
 
+    async def force_refresh(
+        self,
+        asset: str = "BTC",
+        timescale: str = "15m",
+    ) -> Optional[ProbabilitySignal]:
+        """
+        Bypass the poll cadence and fire an immediate HTTP call.
+
+        Used by the v2-fallback continuation path in ManagePositionsUseCase
+        when the v4 snapshot is unavailable and we need a fresh prediction
+        for the NEW 15m window rather than the cached value from the
+        previous window. The standard 30s polling cadence would leave us
+        reading data that describes a window that already closed.
+
+        Fails soft — returns None on any error so the caller can treat
+        that as "exit the position safely".
+        """
+        try:
+            await self._poll_once()
+        except Exception as e:
+            logger.warning(
+                "force_refresh: immediate poll failed: %s", e,
+            )
+            return None
+        return await self.get_latest(asset=asset, timescale=timescale)
+
     async def _poll_loop(self) -> None:
         """Fetch a prediction on a fixed cadence until cancelled."""
         while not self._stop.is_set():

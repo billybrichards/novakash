@@ -152,6 +152,16 @@ async def run() -> None:
                 "last_price_age_s": None,
                 "asset": settings.hyperliquid_asset,
             }
+
+        # Derive the strategy label from the live feature-flag state so
+        # the dashboard reflects what the engine is actually doing, not
+        # what it was compiled to do.
+        strategy_label = (
+            "v4-gates"
+            if (settings.engine_use_v4_actions and v4_adapter is not None)
+            else "v2-probability"
+        )
+
         return {
             "venue": venue,
             "paper_mode": paper,
@@ -164,10 +174,17 @@ async def run() -> None:
             else None,
             "spread_bps": effective_spread_bps,
             "price_feed": pf,
-            "strategy": "v2-probability",
+            "strategy": strategy_label,
             "regime_threshold": settings.regime_threshold,
             "regime_timescale": settings.regime_timescale,
             "min_conviction": settings.probability_min_conviction,
+            # ── v4 adapter state (PR B) — frontend can show a "v4 gates
+            # active" chip when engine_use_v4_actions is true ──
+            "v4_enabled": (settings.engine_use_v4_actions and v4_adapter is not None),
+            "v4_healthy": v4_adapter.is_healthy if v4_adapter is not None else None,
+            "v4_primary_timescale": settings.v4_primary_timescale,
+            "v4_entry_edge": settings.v4_entry_edge,
+            "v4_continuation_min_conviction": settings.v4_continuation_min_conviction,
         }
 
     # ── Signal adapter ──
@@ -260,6 +277,18 @@ async def run() -> None:
         alerts=alerts,
         probability_port=probability_adapter,
         signal_port=signal_adapter,
+        # ── v4 integration (PR B) — falls back to legacy when v4_adapter is None ──
+        v4_snapshot_port=v4_adapter,
+        engine_use_v4_actions=settings.engine_use_v4_actions,
+        v4_primary_timescale=settings.v4_primary_timescale,
+        v4_timescales=settings.v4_timescales_tuple,
+        v4_entry_edge=settings.v4_entry_edge,
+        v4_min_expected_move_bps=settings.v4_min_expected_move_bps,
+        v4_allow_mean_reverting=settings.v4_allow_mean_reverting,
+        fee_rate_per_side=(
+            effective_fee_rate if effective_fee_rate is not None else 0.00045
+        ),
+        # ── legacy v2 path ──
         min_conviction=settings.probability_min_conviction,
         regime_threshold=settings.regime_threshold,
         regime_timescale=settings.regime_timescale,
@@ -275,6 +304,15 @@ async def run() -> None:
         portfolio=portfolio,
         repository=repo,
         alerts=alerts,
+        # ── v4 integration (PR B) ──
+        v4_snapshot_port=v4_adapter,
+        probability_port=probability_adapter,  # fallback continuation path
+        engine_use_v4_actions=settings.engine_use_v4_actions,
+        v4_primary_timescale=settings.v4_primary_timescale,
+        v4_timescales=settings.v4_timescales_tuple,
+        v4_continuation_min_conviction=settings.v4_continuation_min_conviction,
+        v4_continuation_max=settings.v4_continuation_max,
+        v4_event_exit_seconds=settings.v4_event_exit_seconds,
         trailing_stop_pct=settings.trailing_stop_pct,
     )
 
