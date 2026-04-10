@@ -66,6 +66,13 @@ jobs:
   hub:
     name: Hub - import smoke
     runs-on: ubuntu-latest
+    # The hub runs with CWD=hub/ in production (systemd WorkingDirectory and
+    # Dockerfile WORKDIR) — its imports are written as `from db.database` not
+    # `from hub.db.database`. The CI job mirrors that by running python from
+    # inside hub/ instead of the repo root.
+    defaults:
+      run:
+        working-directory: hub
     steps:
       - uses: actions/checkout@v4
 
@@ -76,12 +83,12 @@ jobs:
           cache-dependency-path: hub/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r hub/requirements.txt
+        run: pip install -r requirements.txt
 
       - name: Import smoke test
         run: |
-          python -c "import hub.main"
-          python -c "import hub.api.margin"
+          python -c "import main"
+          python -c "import api.margin"
 
   frontend:
     name: Frontend - build
