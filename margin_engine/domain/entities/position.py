@@ -67,9 +67,26 @@ class Position:
     entry_order_id: Optional[str] = None
     exit_order_id: Optional[str] = None
 
+    # Exchange ground truth (populated from FillResult on confirm_entry/confirm_exit)
+    # When commission_is_actual is True, _compute_pnl uses these instead of the
+    # fallback 0.1% fee estimate — this is the difference between "we know what
+    # we paid" and "we're guessing". Stays 0.0 in legacy code paths (DB restore).
+    entry_commission: float = 0.0       # USDT-equivalent, paid at entry
+    exit_commission: float = 0.0        # USDT-equivalent, paid at exit
+    entry_commission_is_actual: bool = False
+    exit_commission_is_actual: bool = False
+
     # ─── State transitions ───────────────────────────────────────────────
 
-    def confirm_entry(self, price: Price, notional: Money, collateral: Money, order_id: str) -> None:
+    def confirm_entry(
+        self,
+        price: Price,
+        notional: Money,
+        collateral: Money,
+        order_id: str,
+        commission: float = 0.0,
+        commission_is_actual: bool = False,
+    ) -> None:
         """Transition PENDING_ENTRY → OPEN."""
         if self.state != PositionState.PENDING_ENTRY:
             raise ValueError(f"Cannot confirm entry in state {self.state}")
@@ -77,6 +94,8 @@ class Position:
         self.notional = notional
         self.collateral = collateral
         self.entry_order_id = order_id
+        self.entry_commission = commission
+        self.entry_commission_is_actual = commission_is_actual
         self.state = PositionState.OPEN
         self.opened_at = time.time()
 
@@ -87,20 +106,47 @@ class Position:
         self.exit_reason = reason
         self.state = PositionState.PENDING_EXIT
 
-    def confirm_exit(self, price: Price, order_id: str) -> None:
+    def confirm_exit(
+        self,
+        price: Price,
+        order_id: str,
+        commission: float = 0.0,
+        commission_is_actual: bool = False,
+    ) -> None:
         """Transition PENDING_EXIT → CLOSED, compute P&L."""
         if self.state != PositionState.PENDING_EXIT:
             raise ValueError(f"Cannot confirm exit in state {self.state}")
         self.exit_price = price
         self.exit_order_id = order_id
+        self.exit_commission = commission
+        self.exit_commission_is_actual = commission_is_actual
         self.state = PositionState.CLOSED
         self.closed_at = time.time()
         self.realised_pnl = self._compute_pnl()
 
     # ─── P&L ─────────────────────────────────────────────────────────────
 
+    # Fallback fee rate when exchange ground truth is unavailable.
+    # 0.1% per side = 0.2% round-trip. Conservative (assumes no BNB discount).
+    _FALLBACK_FEE_RATE_PER_SIDE: float = 0.001
+    # Rough cross-margin borrow rate on USDT at 5x leverage.
+    # Real rate varies by tier / hour — update via /sapi/v1/margin/interestRateHistory
+    # when we have the appetite to query it per position. For now this is an
+    # acknowledged estimate that stays visible in code rather than buried.
+    _ESTIMATED_DAILY_BORROW_RATE: float = 0.00008
+
     def _compute_pnl(self) -> float:
-        """Compute realised P&L including estimated fees."""
+        """
+        Compute realised P&L using exchange ground truth when available.
+
+        If both entry and exit commissions came from the exchange
+        (commission_is_actual=True), those values feed the calculation directly.
+        Otherwise we fall back to a conservative 0.1%-per-side estimate.
+
+        Borrow interest is always estimated — Binance cross-margin doesn't
+        report per-position interest, so we can't do better than a rate-based
+        approximation of the hold window.
+        """
         if not self.entry_price or not self.exit_price or not self.notional:
             return 0.0
 
@@ -113,19 +159,24 @@ class Position:
         else:
             raw_pnl = (entry - exit_) / entry * notional_usd
 
-        # Fees: 0.075% per side with BNB discount = 0.15% round-trip
-        fee_rate = 0.00075  # per side
-        total_fees = notional_usd * fee_rate * 2
+        # Prefer actual commissions from the exchange; fall back to estimate
+        if self.entry_commission_is_actual and self.exit_commission_is_actual:
+            total_fees = self.entry_commission + self.exit_commission
+        else:
+            total_fees = notional_usd * self._FALLBACK_FEE_RATE_PER_SIDE * 2
 
-        # Borrow interest: ~0.008%/day, pro-rated
-        hold_seconds = self.closed_at - self.opened_at
-        daily_borrow_rate = 0.00008
-        borrow_cost = notional_usd * daily_borrow_rate * (hold_seconds / 86400)
+        # Borrow interest (estimated — see class comment)
+        hold_seconds = max(0.0, self.closed_at - self.opened_at)
+        borrow_cost = notional_usd * self._ESTIMATED_DAILY_BORROW_RATE * (hold_seconds / 86400)
 
         return raw_pnl - total_fees - borrow_cost
 
     def unrealised_pnl(self, current_price: float) -> float:
-        """Compute unrealised P&L at a given price."""
+        """Raw unrealised P&L at a given price — NO fees, NO borrow interest.
+
+        This is the gross move. For stop-loss / take-profit decisions you
+        almost always want unrealised_pnl_net() instead.
+        """
         if self.state != PositionState.OPEN or not self.entry_price or not self.notional:
             return 0.0
 
@@ -136,6 +187,38 @@ class Position:
             return (current_price - entry) / entry * notional_usd
         else:
             return (entry - current_price) / entry * notional_usd
+
+    def unrealised_pnl_net(self, mark_price: float) -> float:
+        """
+        Net unrealised P&L if we closed right now at `mark_price`, inclusive of:
+          - entry commission (already paid)
+          - estimated exit commission at the fallback fee rate
+          - accrued borrow interest so far
+
+        This is the honest "what's my position actually worth?" number.
+        Pass it the mark from ExchangePort.get_mark() (bid for LONG, ask for SHORT)
+        to get a number that matches what closing would actually realise.
+        """
+        if self.state != PositionState.OPEN or not self.entry_price or not self.notional:
+            return 0.0
+
+        raw = self.unrealised_pnl(mark_price)
+        notional_usd = self.notional.amount
+
+        # Entry fee: real if we have it, otherwise estimate
+        if self.entry_commission_is_actual:
+            entry_fee = self.entry_commission
+        else:
+            entry_fee = notional_usd * self._FALLBACK_FEE_RATE_PER_SIDE
+
+        # Exit fee: always estimated at close time, we haven't placed the order yet
+        exit_fee_est = notional_usd * self._FALLBACK_FEE_RATE_PER_SIDE
+
+        # Borrow interest accrued so far
+        hold_seconds = max(0.0, time.time() - self.opened_at)
+        borrow_so_far = notional_usd * self._ESTIMATED_DAILY_BORROW_RATE * (hold_seconds / 86400)
+
+        return raw - entry_fee - exit_fee_est - borrow_so_far
 
     # ─── Risk checks ─────────────────────────────────────────────────────
 

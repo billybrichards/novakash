@@ -66,29 +66,42 @@ class ManagePositionsUseCase:
     async def tick(self) -> list[Position]:
         """
         Check all open positions. Returns list of positions that were closed.
+
+        Fetches a side-aware mark per position: for a LONG, the mark is the
+        current bid (what we'd receive on close); for a SHORT, the ask.
+        This replaces the previous last-trade ticker which could hide
+        the real exit price during fast moves.
         """
         closed: list[Position] = []
-        current_price = await self._exchange.get_current_price("BTCUSDT")
 
         for position in self._portfolio.open_positions:
-            exit_reason = await self._evaluate_exit(position, current_price)
+            # Real close-side mark for this position — not the last-trade ticker
+            mark = await self._exchange.get_mark(
+                f"{position.asset}USDT", position.side,
+            )
+            exit_reason = await self._evaluate_exit(position, mark)
             if exit_reason is not None:
                 closed_pos = await self._close_position(position, exit_reason)
                 if closed_pos:
                     closed.append(closed_pos)
             else:
                 # Update trailing stop if price moved favourably
-                self._update_trailing_stop(position, current_price.value)
+                self._update_trailing_stop(position, mark.value)
 
         return closed
 
     async def _evaluate_exit(
         self,
         position: Position,
-        current_price: Price,
+        mark: Price,
     ) -> Optional[ExitReason]:
-        """Determine if a position should be closed and why."""
-        price = current_price.value
+        """Determine if a position should be closed and why.
+
+        `mark` is the close-side price (bid for LONG, ask for SHORT). All
+        price-based checks compare against this, so stops and take-profits
+        fire at the level we'd actually cross.
+        """
+        price = mark.value
 
         # 1. Stop-loss
         if position.should_stop_loss(price):
@@ -102,7 +115,11 @@ class ManagePositionsUseCase:
         if position.is_expired():
             return ExitReason.MAX_HOLD_TIME
 
-        # 4. Signal reversal — check if composite score has flipped
+        # 4. Signal reversal — check if composite score has flipped.
+        # Note: this is signal-driven, not price-driven. It fires even if the
+        # position is at small profit. Planned follow-up: P&L-protected
+        # reversal exit that uses exchange.get_unrealised_pnl(position) to
+        # skip the exit when we're comfortably in the money.
         signal = await self._signal_port.get_latest_signal(position.entry_timescale)
         if signal is not None:
             if position.side == TradeSide.LONG and signal.score < self._reversal_threshold:
@@ -121,21 +138,28 @@ class ManagePositionsUseCase:
         try:
             position.request_exit(reason)
 
-            order_id, fill_price = await self._exchange.close_position(
+            fill = await self._exchange.close_position(
                 symbol=f"{position.asset}USDT",
                 side=position.side,
                 notional=position.notional,
             )
 
-            position.confirm_exit(fill_price, order_id)
+            position.confirm_exit(
+                price=fill.fill_price,
+                order_id=fill.order_id,
+                commission=fill.commission,
+                commission_is_actual=fill.commission_is_actual,
+            )
             self._portfolio.on_position_closed(position)
             await self._repo.save(position)
             await self._alerts.send_trade_closed(position)
 
             logger.info(
-                "Position closed: %s %s @ %.2f, PnL=%.2f, reason=%s",
+                "Position closed: %s %s @ %.2f, PnL=%.2f, "
+                "commission=%.4f (actual=%s), reason=%s",
                 position.side.value, position.asset,
-                fill_price.value, position.realised_pnl, reason.value,
+                fill.fill_price.value, position.realised_pnl,
+                fill.commission, fill.commission_is_actual, reason.value,
             )
             return position
 
