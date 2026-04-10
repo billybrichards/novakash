@@ -71,7 +71,7 @@ POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
 QWEN_BASE_URL = os.environ.get("QWEN_BASE_URL", "http://194.228.55.129:39633/v1")
 QWEN_API_KEY = os.environ.get("QWEN_API_KEY", "")
 QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen35-122b-abliterated")
-QWEN_MAX_TOKENS = int(os.environ.get("QWEN_MAX_TOKENS", "512"))
+QWEN_MAX_TOKENS = int(os.environ.get("QWEN_MAX_TOKENS", "1536"))
 QWEN_TIMEOUT_S = float(os.environ.get("QWEN_TIMEOUT_S", "60"))
 
 # Legacy Anthropic config — still read so the evaluator can fall back
@@ -137,6 +137,25 @@ async def init_db(pool: asyncpg.Pool):
                 ALTER TABLE window_snapshots
                 ADD COLUMN IF NOT EXISTS {col} {col_type};
             """)
+
+        # Per-timescale macro bias map (added April 2026 for the 5m/15m/1h/4h
+        # multi-horizon upgrade). See migrations/add_macro_signals_timescale_map.sql
+        # for the full rationale. The column is nullable — NULL rows are
+        # from pre-upgrade observer builds or the fallback path when the LLM
+        # endpoint is unreachable. Readers must handle both shapes.
+        #
+        # Self-healing by design: this runs on every container startup, so a
+        # fresh deploy applies the migration automatically without requiring
+        # a manual `psql` step or Railway CLI ceremony. IF NOT EXISTS makes
+        # it safe to re-run indefinitely.
+        await conn.execute("""
+            ALTER TABLE macro_signals
+            ADD COLUMN IF NOT EXISTS timescale_map JSONB;
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_macro_signals_timescale_map
+                ON macro_signals USING gin (timescale_map jsonb_path_ops);
+        """)
 
         log.info("db.init_complete")
 
@@ -407,44 +426,82 @@ async def fetch_session_stats(pool: asyncpg.Pool) -> dict:
 
 # ─── LLM Call (Qwen 3.5 122B via OpenAI-compatible endpoint) ──────────────────
 
-SYSTEM_PROMPT = """You are a macro trend analyser for a BTC 5-minute prediction market strategy.
-You assess whether conditions favour UP or DOWN bets for the next 30-60 minutes.
-Return ONLY valid JSON. Be calibrated — NEUTRAL is correct when there is genuine uncertainty.
-Never invent data. If inputs are missing, lower your confidence accordingly."""
+# Timescales the LLM must analyse independently in every call. These match
+# the horizons the novakash margin engine trades on (5m scalp, 15m fee-aware,
+# 1h swing, 4h vol breakout) and the timescales the timesfm /v4/snapshot
+# surface exposes. See docs/V4_MARGIN_ENGINE_INTEGRATION.md for the decision
+# reference mapping these bias fields to engine gates.
+MACRO_TIMESCALES = ("5m", "15m", "1h", "4h")
 
-USER_PROMPT_TEMPLATE = """Analyse this market data and return a MacroSignal JSON:
+SYSTEM_PROMPT = """You are a macro trend analyser for a BTC multi-timescale trading system.
+
+You assess the directional bias for FOUR separate trading horizons in the same
+session, using the same market data:
+
+  5m   — scalp,     next 5-15 minutes,  order-flow / microstructure driven
+  15m  — fee-aware, next 15-45 minutes, needs expected move to clear fee wall
+  1h   — swing,     next 1-3 hours,     requires trend alignment
+  4h   — position,  next 4-12 hours,    macro + funding + oracle-bias driven
+
+The horizons are INDEPENDENT — you can be BULL 1h and BEAR 5m at the same time
+if the short-term has overextended against the longer trend. Conversely a
+fresh breakout can be BULL 5m before the 1h composite has confirmed. Commit
+to NEUTRAL when the horizon genuinely lacks signal — do not reuse the bias
+from a different horizon just to avoid saying "I don't know".
+
+You also produce an `overall` synthesis block: a single-horizon view for
+consumers that don't want per-timescale nuance (dashboards, alerts,
+backward-compat code paths). The overall bias should reflect the horizon
+most relevant to "right now" — usually 15m-1h — and should not simply
+echo any one per-timescale block.
+
+Return ONLY valid JSON. Never invent data. If inputs are missing, lower
+the confidence for affected horizons."""
+
+USER_PROMPT_TEMPLATE = """Analyse this market data and return a MultiMacroSignal JSON.
 
 {payload}
 
-Return ONLY this JSON (no markdown, no explanation):
+Return JSON with this shape (values chosen per the rules below):
 {{
-  "bias": "BULL|BEAR|NEUTRAL",
-  "confidence": <integer 0-100>,
-  "direction_gate": "ALLOW_ALL|SKIP_DOWN|SKIP_UP",
-  "threshold_modifier": <float 0.5-1.5>,
-  "size_modifier": <float 0.5-1.5>,
-  "override_active": <true if confidence >= 80, else false>,
-  "reasoning": "<one sentence max>"
+  "timescales": {{
+    "5m":  {{"bias":"BULL|BEAR|NEUTRAL","confidence":<int 0-100>,"direction_gate":"ALLOW_ALL|SKIP_UP|SKIP_DOWN","threshold_modifier":<0.5-1.5>,"size_modifier":<0.5-1.5>,"override_active":<bool>,"reasoning":"<one sentence>"}},
+    "15m": {{"...same fields..."}},
+    "1h":  {{"...same fields..."}},
+    "4h":  {{"...same fields..."}}
+  }},
+  "overall": {{"...same fields, synthesising across horizons..."}}
 }}
 
-Rules:
-- SKIP_DOWN = don't bet DOWN (use in bull macro)
-- SKIP_UP = don't bet UP (use in bear macro)
-- threshold_modifier < 1.0 = easier to enter bets aligned with bias
-- threshold_modifier > 1.0 = harder to enter bets against bias
-- override_active = true ONLY when confidence >= 80
-- size_modifier > 1.0 ONLY when override_active = true"""
+Rules (apply to every timescale block AND the overall block):
+- SKIP_DOWN = don't bet DOWN (use in bull macro at that horizon)
+- SKIP_UP = don't bet UP (use in bear macro at that horizon)
+- threshold_modifier < 1.0 = easier to enter bets aligned with that horizon's bias
+- threshold_modifier > 1.0 = harder to enter bets against that horizon's bias
+- override_active = true ONLY when confidence >= 80 at that horizon
+- size_modifier > 1.0 ONLY when override_active = true at that horizon
+- NEUTRAL + ALLOW_ALL + 1.0/1.0 + false is the correct output for a horizon
+  with insufficient signal — prefer this over guessing
+
+Horizon-specific guidance:
+- 5m uses micro inputs: 15m price delta, taker_buy_ratio, VPIN, recent_spike
+- 15m uses short-term: 1h price delta, funding, taker flow, upcoming event proximity
+- 1h uses medium: 4h delta, oracle_up_ratio_1h/_4h, top_trader_long_pct
+- 4h uses macro: 24h delta, funding_rate trend, oi_delta_4h_pct, session_stats"""
 
 
-# JSON schema for llama-server's grammar-constrained sampling. Forces the
-# model to emit tokens that match this shape — eliminates post-hoc parsing
-# errors entirely.
-MACRO_SIGNAL_SCHEMA = {
+# JSON schema for llama-server's grammar-constrained sampling. The shared
+# "horizon_bias" definition is reused via $ref so the five blocks
+# (5m/15m/1h/4h/overall) all satisfy identical structural constraints.
+_HORIZON_BIAS_SCHEMA = {
     "type": "object",
     "properties": {
         "bias": {"type": "string", "enum": ["BULL", "BEAR", "NEUTRAL"]},
         "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
-        "direction_gate": {"type": "string", "enum": ["ALLOW_ALL", "SKIP_DOWN", "SKIP_UP"]},
+        "direction_gate": {
+            "type": "string",
+            "enum": ["ALLOW_ALL", "SKIP_DOWN", "SKIP_UP"],
+        },
         "threshold_modifier": {"type": "number", "minimum": 0.5, "maximum": 1.5},
         "size_modifier": {"type": "number", "minimum": 0.5, "maximum": 1.5},
         "override_active": {"type": "boolean"},
@@ -454,6 +511,24 @@ MACRO_SIGNAL_SCHEMA = {
         "bias", "confidence", "direction_gate",
         "threshold_modifier", "size_modifier", "override_active", "reasoning",
     ],
+}
+
+MACRO_SIGNAL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "timescales": {
+            "type": "object",
+            "properties": {
+                "5m":  _HORIZON_BIAS_SCHEMA,
+                "15m": _HORIZON_BIAS_SCHEMA,
+                "1h":  _HORIZON_BIAS_SCHEMA,
+                "4h":  _HORIZON_BIAS_SCHEMA,
+            },
+            "required": list(MACRO_TIMESCALES),
+        },
+        "overall": _HORIZON_BIAS_SCHEMA,
+    },
+    "required": ["timescales", "overall"],
 }
 
 
@@ -543,23 +618,52 @@ async def call_llm(payload: dict) -> Optional[dict]:
             )
             return None
 
-        signal = json.loads(content)
+        parsed = json.loads(content)
 
+        # Schema: {"timescales": {"5m": {...}, "15m": {...}, "1h": {...}, "4h": {...}}, "overall": {...}}
+        # Grammar-constrained decoding guarantees the shape is present, but
+        # defensive extraction here protects against any future schema drift.
+        timescales_map = parsed.get("timescales") or {}
+        overall = parsed.get("overall") or {}
+
+        # Validate we actually got the 4 horizons we asked for. If not,
+        # treat as failure — partial responses are a schema regression.
+        missing = [ts for ts in MACRO_TIMESCALES if ts not in timescales_map]
+        if missing:
+            log.error(
+                "llm.missing_timescales",
+                missing=missing,
+                content_preview=content[:300],
+            )
+            return None
+
+        # The "overall" block feeds the existing flat top-level columns
+        # (bias, confidence, direction_gate, etc.) so every current consumer
+        # — the dashboard, the old /v4/macro reader, hub/api/v58_monitor —
+        # keeps working unchanged. The per-timescale map goes into the new
+        # JSONB `timescale_map` column (added by migration).
         usage = resp.usage
         in_tok = usage.prompt_tokens if usage else 0
         out_tok = usage.completion_tokens if usage else 0
 
         log.info(
             "llm.call_ok",
-            bias=signal.get("bias"),
-            confidence=signal.get("confidence"),
+            overall_bias=overall.get("bias"),
+            overall_confidence=overall.get("confidence"),
+            timescale_biases={ts: timescales_map[ts].get("bias") for ts in MACRO_TIMESCALES},
             latency_ms=elapsed_ms,
             prompt_tokens=in_tok,
             completion_tokens=out_tok,
         )
 
         return {
-            "signal": signal,
+            # `signal` is the flat overall block — backward compat with every
+            # existing consumer that reads a single scalar bias.
+            "signal": overall,
+            # `timescale_map` is new — the per-horizon breakdown that
+            # downstream consumers (v4 snapshot assembler) use to apply
+            # timescale-aware gates.
+            "timescale_map": timescales_map,
             "input_tokens": in_tok,
             "output_tokens": out_tok,
             "latency_ms": elapsed_ms,
@@ -585,7 +689,30 @@ call_anthropic = call_llm
 # ─── Write Signal ─────────────────────────────────────────────────────────────
 
 async def write_signal(pool: asyncpg.Pool, signal: dict, payload: dict, meta: dict) -> int:
-    """Write MacroSignal to macro_signals table. Returns new row ID."""
+    """
+    Write a MacroSignal row to the macro_signals table.
+
+    Schema contract (Phase 2 of the macro-observer upgrade):
+      - The existing flat columns (`bias`, `confidence`, `direction_gate`,
+        `threshold_modifier`, `size_modifier`, `override_active`, `reasoning`)
+        are populated from the `signal` dict — which is the "overall"
+        synthesis block from the LLM. Every existing consumer (dashboard,
+        hub/api, /v4/macro older code path) keeps working unchanged.
+      - `timescale_map` is a new JSONB column added by migration
+        `add_macro_signals_timescale_map.sql`. It holds the per-horizon
+        breakdown ({"5m": {...}, "15m": {...}, "1h": {...}, "4h": {...}}),
+        enabling timescale-aware consumers to gate each horizon independently.
+
+    `meta` is the rest of the `call_llm` return dict (input_tokens,
+    output_tokens, latency_ms, cost_usd, plus the new `timescale_map`).
+    """
+    # Extract the per-timescale map from meta if present. It lives here
+    # rather than in `signal` so the existing write_signal callers
+    # (including _fallback_signal code paths) keep producing valid rows
+    # without a dict comprehension change.
+    timescale_map = meta.get("timescale_map")
+    timescale_map_json = json.dumps(timescale_map) if timescale_map else None
+
     async with pool.acquire() as conn:
         row_id = await conn.fetchval("""
             INSERT INTO macro_signals (
@@ -597,10 +724,12 @@ async def write_signal(pool: asyncpg.Pool, signal: dict, payload: dict, meta: di
                 funding_rate, top_trader_long_pct, taker_buy_ratio, oi_delta_1h,
                 vpin_current, recent_spike, upcoming_event,
                 raw_payload, raw_response,
-                input_tokens, output_tokens, latency_ms, cost_usd
+                input_tokens, output_tokens, latency_ms, cost_usd,
+                timescale_map
             ) VALUES (
                 $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-                $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29
+                $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,
+                $30::jsonb
             ) RETURNING id
         """,
             signal.get("bias", "NEUTRAL"),
@@ -627,25 +756,44 @@ async def write_signal(pool: asyncpg.Pool, signal: dict, payload: dict, meta: di
             payload.get("recent_spike", False),
             payload.get("upcoming_event"),
             json.dumps(payload),
-            json.dumps({"signal": signal, **meta}),
+            json.dumps({"signal": signal, **{k: v for k, v in meta.items() if k != "timescale_map"}}),
             meta.get("input_tokens"),
             meta.get("output_tokens"),
             meta.get("latency_ms"),
             meta.get("cost_usd"),
+            timescale_map_json,
         )
     return row_id
 
 
+_FALLBACK_HORIZON_BIAS: dict = {
+    "bias": "NEUTRAL",
+    "confidence": 0,
+    "direction_gate": "ALLOW_ALL",
+    "threshold_modifier": 1.0,
+    "size_modifier": 1.0,
+    "override_active": False,
+    "reasoning": "Fallback — Qwen LLM endpoint unreachable, no macro filter applied",
+}
+
+
 def _fallback_signal() -> dict:
-    """Return a safe NEUTRAL signal when the LLM endpoint is unreachable."""
+    """
+    Return a safe NEUTRAL bias when the LLM endpoint is unreachable. Shape
+    matches what call_llm() returns on success — `signal` is the flat
+    overall bias and `timescale_map` is the per-horizon map (every horizon
+    set to the same safe NEUTRAL).
+
+    This guarantees downstream consumers never see a NULL `timescale_map`
+    column when they expect it populated.
+    """
     return {
-        "bias": "NEUTRAL",
-        "confidence": 0,
-        "direction_gate": "ALLOW_ALL",
-        "threshold_modifier": 1.0,
-        "size_modifier": 1.0,
-        "override_active": False,
-        "reasoning": "Fallback — Qwen LLM endpoint unreachable, no macro filter applied",
+        "signal": dict(_FALLBACK_HORIZON_BIAS),
+        "timescale_map": {ts: dict(_FALLBACK_HORIZON_BIAS) for ts in MACRO_TIMESCALES},
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "latency_ms": 0,
+        "cost_usd": 0.0,
     }
 
 
@@ -998,23 +1146,29 @@ async def run_observer():
                 }
 
                 # ── Call LLM (Qwen 3.5 122B via self-hosted endpoint) ──────
+                # Both call_llm() and _fallback_signal() return the same
+                # wrapper shape: {signal, timescale_map, input_tokens,
+                # output_tokens, latency_ms, cost_usd}. The main loop
+                # unwraps once, so fallback rows are persisted with the
+                # exact same column coverage as real rows (including the
+                # new per-timescale timescale_map JSONB).
                 result = await call_llm(payload)
+                if result is None:
+                    result = _fallback_signal()
+                    log.warning("macro_observer.fallback_rowed")
 
-                if result:
-                    signal = result["signal"]
-                    meta = {k: v for k, v in result.items() if k != "signal"}
-                    signal_id = await write_signal(pool, signal, payload, meta)
-                    log.info("macro_observer.signal_written",
-                             id=signal_id,
-                             bias=signal["bias"],
-                             confidence=signal["confidence"],
-                             gate=signal["direction_gate"],
-                             override=signal["override_active"])
-                else:
-                    # Write fallback so engine always has a fresh row
-                    fallback = _fallback_signal()
-                    signal_id = await write_signal(pool, fallback, payload, {})
-                    log.warning("macro_observer.fallback_written", signal_id=signal_id)
+                signal = result["signal"]
+                meta = {k: v for k, v in result.items() if k != "signal"}
+                signal_id = await write_signal(pool, signal, payload, meta)
+                log.info(
+                    "macro_observer.signal_written",
+                    id=signal_id,
+                    bias=signal["bias"],
+                    confidence=signal["confidence"],
+                    gate=signal["direction_gate"],
+                    override=signal["override_active"],
+                    has_timescale_map=bool(meta.get("timescale_map")),
+                )
 
             except Exception as e:
                 log.error("macro_observer.loop_error", error=str(e))
