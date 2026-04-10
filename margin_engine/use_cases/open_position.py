@@ -79,6 +79,8 @@ class OpenPositionUseCase:
         bet_fraction: float = 0.02,
         stop_loss_pct: float = 0.006,       # 0.6% — 3x fee cost
         take_profit_pct: float = 0.005,     # 0.5% — 2.7x fee cost
+        venue: str = "binance",             # tag every position with execution venue
+        strategy_version: str = "v2-probability",  # tag every position with strategy
     ) -> None:
         self._exchange = exchange
         self._portfolio = portfolio
@@ -92,6 +94,8 @@ class OpenPositionUseCase:
         self._bet_fraction = bet_fraction
         self._stop_loss_pct = stop_loss_pct
         self._take_profit_pct = take_profit_pct
+        self._venue = venue
+        self._strategy_version = strategy_version
 
         # Track which 15m window we most recently traded in, so we don't
         # re-enter the same window if the poller sees the signal again.
@@ -165,6 +169,9 @@ class OpenPositionUseCase:
         side = prob.suggested_side
 
         # ── 5. Create + fill ──
+        # venue and strategy_version are stamped here so every position
+        # written by this use case is unambiguously attributable, even
+        # months later when looking at margin_positions in the database.
         position = Position(
             asset=prob.asset,
             side=side,
@@ -174,6 +181,8 @@ class OpenPositionUseCase:
             # represents a calibrated probability, not a composite blend.
             entry_signal_score=prob.probability_up,
             entry_timescale=prob.timescale,
+            venue=self._venue,
+            strategy_version=self._strategy_version,
         )
         self._portfolio.add_position(position)
 

@@ -4,13 +4,18 @@ Lightweight HTTP status server for the margin engine.
 Runs alongside the main trading loop on a configurable port (default 8090).
 Exposes read-only state for the Hub proxy to consume.
 
-GET /status  — portfolio state, open/closed positions, P&L
-GET /health  — liveness probe
+GET /status   — portfolio state, open/closed positions, P&L, execution context
+GET /health   — liveness probe
+GET /logs     — recent log lines (paginated)
+GET /history  — paginated closed-position history for the Trade Timeline tab
 """
 from __future__ import annotations
 
 import logging
+from typing import Callable, Optional
+
 from aiohttp import web
+
 from margin_engine.domain.entities.portfolio import Portfolio
 
 logger = logging.getLogger(__name__)
@@ -48,15 +53,32 @@ class StatusServer:
         await server.stop()
     """
 
-    def __init__(self, portfolio: Portfolio, exchange, port: int = 8090, log_repo=None):
+    def __init__(
+        self,
+        portfolio: Portfolio,
+        exchange,
+        port: int = 8090,
+        log_repo=None,
+        position_repo=None,
+        execution_info_fn: Optional[Callable[[], dict]] = None,
+    ):
+        """
+        position_repo: optional PgPositionRepository — when set, /history is enabled
+        execution_info_fn: optional callable returning the freshest execution
+            context dict (venue, fees, price feed health, strategy). Built in
+            main.py so it can capture live state like price_feed.is_healthy.
+        """
         self._portfolio = portfolio
         self._exchange = exchange
         self._port = port
         self._log_repo = log_repo
+        self._position_repo = position_repo
+        self._execution_info_fn = execution_info_fn
         self._app = web.Application()
         self._app.router.add_get("/status", self._handle_status)
         self._app.router.add_get("/health", self._handle_health)
         self._app.router.add_get("/logs", self._handle_logs)
+        self._app.router.add_get("/history", self._handle_history)
         self._runner: web.AppRunner | None = None
 
     async def start(self) -> None:
@@ -111,6 +133,26 @@ class StatusServer:
         except Exception:
             pass
 
+        # Execution context — built fresh on every /status call so values
+        # like price_feed.healthy and last_price_age_s are current. Falls
+        # back to a minimal block if main.py didn't supply the closure
+        # (back-compat for callers that haven't been updated yet).
+        execution_block: dict
+        if self._execution_info_fn is not None:
+            try:
+                execution_block = self._execution_info_fn()
+            except Exception as e:
+                logger.warning("execution_info_fn raised: %s", e)
+                execution_block = {"venue": "unknown", "error": str(e)}
+        else:
+            # Legacy fallback — preserves the old behavior of inferring
+            # paper mode from the exchange adapter type. New deployments
+            # should always pass execution_info_fn.
+            execution_block = {
+                "venue": "binance",
+                "paper_mode": hasattr(self._exchange, "_balance"),
+            }
+
         return web.json_response({
             "portfolio": {
                 "balance": balance,
@@ -118,7 +160,12 @@ class StatusServer:
                 "leverage": portfolio.leverage,
                 "is_active": portfolio.is_active,
                 "kill_switch": portfolio._kill_switch,
-                "paper_mode": hasattr(self._exchange, "_balance"),  # PaperExchangeAdapter has _balance
+                # Kept for backward compat with frontends that read this
+                # field directly. New code should read execution.paper_mode.
+                "paper_mode": execution_block.get(
+                    "paper_mode",
+                    hasattr(self._exchange, "_balance"),
+                ),
                 "daily_pnl": portfolio._daily_pnl,
                 "consecutive_losses": portfolio._consecutive_losses,
             },
@@ -129,6 +176,73 @@ class StatusServer:
                 "total_realised_pnl": portfolio.total_realised_pnl,
                 "win_rate": portfolio.win_rate,
             },
+            "execution": execution_block,
+        })
+
+    async def _handle_history(self, request: web.Request) -> web.Response:
+        """
+        Paginated history of closed positions for the Trade Timeline tab.
+
+        Query params (all optional):
+            limit       — int, capped at 100, default 25
+            offset      — int >= 0, default 0
+            side        — "LONG" | "SHORT"
+            outcome     — "win" | "loss"
+            exit_reason — comma-separated list (e.g. "TAKE_PROFIT,STOP_LOSS")
+
+        Response shape:
+            {"rows": [...], "total": int, "limit": int, "offset": int}
+        """
+        if not self._position_repo:
+            return web.json_response(
+                {"error": "position repo not configured on this engine"},
+                status=503,
+            )
+
+        try:
+            limit = min(max(int(request.query.get("limit", "25")), 1), 100)
+        except ValueError:
+            return web.json_response({"error": "invalid limit"}, status=400)
+        try:
+            offset = max(int(request.query.get("offset", "0")), 0)
+        except ValueError:
+            return web.json_response({"error": "invalid offset"}, status=400)
+
+        side = request.query.get("side")
+        if side and side not in ("LONG", "SHORT"):
+            return web.json_response({"error": "side must be LONG or SHORT"}, status=400)
+
+        outcome = request.query.get("outcome")
+        if outcome and outcome not in ("win", "loss"):
+            return web.json_response({"error": "outcome must be win or loss"}, status=400)
+
+        exit_reason = request.query.get("exit_reason")  # repository validates internally
+
+        try:
+            rows = await self._position_repo.get_closed_history(
+                limit=limit,
+                offset=offset,
+                side=side,
+                outcome=outcome,
+                exit_reason=exit_reason,
+            )
+            total = await self._position_repo.get_closed_history_count(
+                side=side,
+                outcome=outcome,
+                exit_reason=exit_reason,
+            )
+        except Exception as e:
+            logger.exception("history query failed: %s", e)
+            return web.json_response(
+                {"error": "history query failed", "detail": str(e)},
+                status=500,
+            )
+
+        return web.json_response({
+            "rows": rows,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
         })
 
     async def _handle_logs(self, request: web.Request) -> web.Response:
