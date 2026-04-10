@@ -41,9 +41,40 @@ const EXIT_REASON_OPTIONS = [
   { value: 'TRAILING_STOP', label: 'Trailing Stop' },
   { value: 'MAX_HOLD_TIME', label: 'Max Hold' },
   { value: 'SIGNAL_REVERSAL', label: 'Signal Reversal (legacy)' },
+  // ── v4-aware exit reasons (PR B) ──
+  { value: 'PROBABILITY_REVERSAL', label: 'Probability Reversal (v4)' },
+  { value: 'REGIME_DETERIORATED', label: 'Regime Deteriorated (v4)' },
+  { value: 'CONSENSUS_FAIL', label: 'Consensus Fail (v4)' },
+  { value: 'MACRO_GATE_FLIP', label: 'Macro Gate Flip (v4)' },
+  { value: 'EVENT_GUARD', label: 'Event Guard (v4)' },
+  { value: 'CASCADE_EXHAUSTED', label: 'Cascade Exhausted (v4)' },
   { value: 'MANUAL', label: 'Manual' },
   { value: 'KILL_SWITCH', label: 'Kill Switch' },
 ];
+
+// Color map for exit reason chips — extended for PR B v4 exits.
+// Legacy and v4 reasons that share semantic meaning get the same color
+// (e.g., STOP_LOSS and CONSENSUS_FAIL both red), so the color alone
+// communicates "was this a risk-gate trip or a signal-based exit".
+// Orange for REGIME_DETERIORATED is the only novel color — the T theme
+// doesn't export T.orange by default, so we fall back to a literal hex
+// that sits between amber and red on the warning spectrum.
+const T_ORANGE = '#f97316';
+const EXIT_REASON_COLOR = {
+  TAKE_PROFIT: T.green,           // winner exit
+  STOP_LOSS: T.red,               // loser exit
+  TRAILING_STOP: T.green,         // locked-in winner
+  MAX_HOLD_TIME: T.amber,         // time-based exit, not signal-driven
+  SIGNAL_REVERSAL: T.purple,      // legacy composite flip
+  PROBABILITY_REVERSAL: T.purple, // v4 ML signal flip
+  REGIME_DETERIORATED: T_ORANGE,  // market state change
+  CONSENSUS_FAIL: T.red,          // risk/infra gate
+  MACRO_GATE_FLIP: T.purple,      // Claude flipped
+  EVENT_GUARD: T.amber,           // preemptive, not loss-driven
+  CASCADE_EXHAUSTED: T.red,       // preemptive but usually after a run
+  MANUAL: T.textMuted,
+  KILL_SWITCH: T.red,
+};
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -288,6 +319,28 @@ function TradeCard({ trade }) {
               )}
             </div>
           )}
+          {/* v4 entry context — only rendered when the position was opened
+              via the v4 gate stack (regime is the tombstone field). Legacy
+              v2-path trades leave this block entirely off the card. */}
+          {trade.v4_entry_regime && (
+            <div style={{ ...lineSub, marginTop: 4, color: T.cyan, opacity: 0.85 }}>
+              regime={trade.v4_entry_regime}
+              {trade.v4_entry_macro_bias && (
+                <>
+                  {' · '}macro={trade.v4_entry_macro_bias}
+                  {trade.v4_entry_macro_confidence != null && (
+                    <>({trade.v4_entry_macro_confidence}%)</>
+                  )}
+                </>
+              )}
+              {trade.v4_entry_expected_move_bps != null && (
+                <>{' · '}exp={Number(trade.v4_entry_expected_move_bps).toFixed(1)}bps</>
+              )}
+              {trade.v4_entry_consensus_safe != null && (
+                <>{' · '}consensus={trade.v4_entry_consensus_safe ? 'safe' : 'UNSAFE'}</>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Exit block */}
@@ -298,11 +351,7 @@ function TradeCard({ trade }) {
           <div style={lineSub}>
             reason={' '}
             <span style={{
-              color: trade.exit_reason === 'TAKE_PROFIT' ? T.green
-                  : trade.exit_reason === 'STOP_LOSS' ? T.red
-                  : trade.exit_reason === 'MAX_HOLD_TIME' ? T.amber
-                  : trade.exit_reason === 'SIGNAL_REVERSAL' ? T.purple
-                  : T.textMuted,
+              color: EXIT_REASON_COLOR[trade.exit_reason] ?? T.textMuted,
               fontWeight: 700,
             }}>
               {trade.exit_reason ?? '—'}
@@ -310,6 +359,16 @@ function TradeCard({ trade }) {
           </div>
           <div style={lineSub}>
             held {formatHoldDuration(trade.hold_duration_s)}
+            {trade.continuation_count > 0 && (
+              <span style={{ marginLeft: 6, color: T.cyan }}>
+                · continued {trade.continuation_count}×
+                {trade.last_continuation_p_up != null && (
+                  <span style={{ opacity: 0.7 }}>
+                    {' '}(last p_up={Number(trade.last_continuation_p_up).toFixed(3)})
+                  </span>
+                )}
+              </span>
+            )}
           </div>
         </div>
       </div>

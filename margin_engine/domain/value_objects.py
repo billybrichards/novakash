@@ -26,10 +26,22 @@ class ExitReason(enum.Enum):
     TAKE_PROFIT = "TAKE_PROFIT"
     STOP_LOSS = "STOP_LOSS"
     TRAILING_STOP = "TRAILING_STOP"
-    SIGNAL_REVERSAL = "SIGNAL_REVERSAL"
-    MAX_HOLD_TIME = "MAX_HOLD_TIME"
+    SIGNAL_REVERSAL = "SIGNAL_REVERSAL"          # legacy composite path, kept for old rows
+    MAX_HOLD_TIME = "MAX_HOLD_TIME"              # legacy exit, used as v2 fallback
     MANUAL = "MANUAL"
     KILL_SWITCH = "KILL_SWITCH"
+    # ── v4-aware exit reasons (PR B) ──
+    # Distinct codes so telemetry can separate WHICH gate killed the trade.
+    # PROBABILITY_REVERSAL and REGIME_DETERIORATED describe model/market
+    # state changes; CONSENSUS_FAIL and MACRO_GATE_FLIP describe external
+    # hard-gate flips; EVENT_GUARD and CASCADE_EXHAUSTED are preemptive
+    # exits before something predictable happens.
+    PROBABILITY_REVERSAL = "PROBABILITY_REVERSAL"   # p_up flipped or conviction too low
+    REGIME_DETERIORATED = "REGIME_DETERIORATED"     # regime became CHOPPY / NO_EDGE
+    CONSENSUS_FAIL = "CONSENSUS_FAIL"               # 6-source oracle divergence spiked
+    MACRO_GATE_FLIP = "MACRO_GATE_FLIP"             # Claude flipped direction_gate against us
+    EVENT_GUARD = "EVENT_GUARD"                     # forced exit before HIGH/EXTREME event
+    CASCADE_EXHAUSTED = "CASCADE_EXHAUSTED"         # cascade FSM says about to reverse
 
 
 class PositionState(enum.Enum):

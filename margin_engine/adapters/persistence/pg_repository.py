@@ -36,8 +36,16 @@ INSERT INTO margin_positions
      entry_signal_score, entry_timescale,
      entry_order_id, exit_order_id,
      entry_commission, exit_commission,
-     venue, strategy_version)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+     venue, strategy_version,
+     hold_clock_anchor, continuation_count, last_continuation_ts, last_continuation_p_up,
+     v4_entry_regime, v4_entry_macro_bias, v4_entry_macro_confidence,
+     v4_entry_expected_move_bps, v4_entry_composite_v3, v4_entry_consensus_safe,
+     v4_entry_window_close_ts, v4_snapshot_ts_at_entry)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
+        $24, $25, $26, $27,
+        $28, $29, $30,
+        $31, $32, $33,
+        $34, $35)
 ON CONFLICT (id) DO UPDATE SET
     state = $4,
     exit_price = $11,
@@ -45,7 +53,14 @@ ON CONFLICT (id) DO UPDATE SET
     realised_pnl = $13,
     closed_at = $15,
     exit_order_id = $19,
-    exit_commission = $21
+    exit_commission = $21,
+    -- Continuation fields are mutable across the position's lifetime,
+    -- so refresh on every save. Other new columns (v4_*) are write-once
+    -- at entry and don't belong in the ON CONFLICT update.
+    hold_clock_anchor = $24,
+    continuation_count = $25,
+    last_continuation_ts = $26,
+    last_continuation_p_up = $27
 """
 
 CREATE_TABLE_SQL = """
@@ -82,6 +97,7 @@ CREATE INDEX IF NOT EXISTS idx_margin_pos_opened ON margin_positions(opened_at);
 # Legacy rows stay NULL on the new columns — the _row_to_position layer
 # defaults them sensibly ("binance" / "v1-composite" / 0 commission).
 ADDITIVE_MIGRATIONS_SQL = (
+    # PR #10 additions
     "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS entry_commission REAL DEFAULT 0",
     "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS exit_commission REAL DEFAULT 0",
     "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS venue TEXT",
@@ -90,6 +106,23 @@ ADDITIVE_MIGRATIONS_SQL = (
     # Partial = small footprint, only indexes the rows we actually read.
     "CREATE INDEX IF NOT EXISTS idx_margin_pos_closed "
     "ON margin_positions(closed_at DESC) WHERE state = 'CLOSED'",
+    # ── PR B additions: re-prediction continuation state ──
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS hold_clock_anchor TIMESTAMPTZ",
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS continuation_count INT DEFAULT 0",
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS last_continuation_ts TIMESTAMPTZ",
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS last_continuation_p_up REAL",
+    # ── PR B additions: v4 audit snapshot at entry ──
+    # Frozen copy of the v4 fields that drove the entry decision. Enables
+    # post-trade analysis like "did regime actually change during the
+    # hold?" and "was macro bullish at entry, bearish at exit?".
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS v4_entry_regime TEXT",
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS v4_entry_macro_bias TEXT",
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS v4_entry_macro_confidence INT",
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS v4_entry_expected_move_bps REAL",
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS v4_entry_composite_v3 REAL",
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS v4_entry_consensus_safe BOOLEAN",
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS v4_entry_window_close_ts BIGINT",
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS v4_snapshot_ts_at_entry DOUBLE PRECISION",
 )
 
 
@@ -119,6 +152,7 @@ class PgPositionRepository(PositionRepository):
         async with self._pool.acquire() as conn:
             await conn.execute(
                 UPSERT_SQL,
+                # $1-$19 — original 19 params
                 position.id,
                 position.asset,
                 position.side.value,
@@ -138,10 +172,25 @@ class PgPositionRepository(PositionRepository):
                 position.entry_timescale,
                 position.entry_order_id,
                 position.exit_order_id,
+                # $20-$23 — PR #10 additions
                 position.entry_commission,
                 position.exit_commission,
                 position.venue,
                 position.strategy_version,
+                # $24-$27 — PR B continuation state (mutable)
+                _ts(position.hold_clock_anchor),
+                position.continuation_count,
+                _ts(position.last_continuation_ts),
+                position.last_continuation_p_up,
+                # $28-$35 — PR B v4 audit snapshot (write-once at entry)
+                position.v4_entry_regime,
+                position.v4_entry_macro_bias,
+                position.v4_entry_macro_confidence,
+                position.v4_entry_expected_move_bps,
+                position.v4_entry_composite_v3,
+                position.v4_entry_consensus_safe,
+                position.v4_entry_window_close_ts,
+                position.v4_snapshot_ts_at_entry,
             )
 
     async def get_open_positions(self) -> list[Position]:
@@ -167,10 +216,13 @@ class PgPositionRepository(PositionRepository):
 
     @staticmethod
     def _row_to_position(row) -> Position:
-        # Legacy row handling: venue and strategy_version default to the
-        # pre-migration values for any rows written before this code shipped.
-        # This lets the Trade Timeline UI render historical data cleanly
-        # without a backfill job.
+        # Legacy row handling: all PR #10 and PR B columns fall back
+        # to sensible defaults when the row was written before the
+        # corresponding migration shipped. This lets the Trade Timeline UI
+        # render historical data cleanly without any backfill job.
+        hca_col = _safe_get(row, "hold_clock_anchor", None)
+        lct_col = _safe_get(row, "last_continuation_ts", None)
+
         p = Position(
             id=row["id"],
             asset=row["asset"],
@@ -187,6 +239,22 @@ class PgPositionRepository(PositionRepository):
             venue=_safe_get(row, "venue", "binance") or "binance",
             strategy_version=_safe_get(row, "strategy_version", "v1-composite")
             or "v1-composite",
+            # ── PR B continuation state (all legacy-safe via _safe_get) ──
+            hold_clock_anchor=hca_col.timestamp() if hca_col is not None else 0.0,
+            continuation_count=int(_safe_get(row, "continuation_count", 0) or 0),
+            last_continuation_ts=lct_col.timestamp() if lct_col is not None else 0.0,
+            last_continuation_p_up=float(
+                _safe_get(row, "last_continuation_p_up", 0.0) or 0.0
+            ),
+            # ── PR B v4 audit snapshot (all Optional, legacy rows → None) ──
+            v4_entry_regime=_safe_get(row, "v4_entry_regime", None),
+            v4_entry_macro_bias=_safe_get(row, "v4_entry_macro_bias", None),
+            v4_entry_macro_confidence=_safe_get(row, "v4_entry_macro_confidence", None),
+            v4_entry_expected_move_bps=_safe_get(row, "v4_entry_expected_move_bps", None),
+            v4_entry_composite_v3=_safe_get(row, "v4_entry_composite_v3", None),
+            v4_entry_consensus_safe=_safe_get(row, "v4_entry_consensus_safe", None),
+            v4_entry_window_close_ts=_safe_get(row, "v4_entry_window_close_ts", None),
+            v4_snapshot_ts_at_entry=_safe_get(row, "v4_snapshot_ts_at_entry", None),
         )
         if row["entry_price"]:
             p.entry_price = Price(value=row["entry_price"])
@@ -246,6 +314,19 @@ class PgPositionRepository(PositionRepository):
                 COALESCE(exit_commission, 0) AS exit_commission,
                 COALESCE(venue, 'binance') AS venue,
                 COALESCE(strategy_version, 'v1-composite') AS strategy_version,
+                -- ── PR B: continuation state (legacy rows → 0 / NULL) ──
+                COALESCE(continuation_count, 0) AS continuation_count,
+                last_continuation_ts,
+                last_continuation_p_up,
+                -- ── PR B: v4 audit snapshot (all nullable, legacy rows → NULL) ──
+                v4_entry_regime,
+                v4_entry_macro_bias,
+                v4_entry_macro_confidence,
+                v4_entry_expected_move_bps,
+                v4_entry_composite_v3,
+                v4_entry_consensus_safe,
+                v4_entry_window_close_ts,
+                v4_snapshot_ts_at_entry,
                 EXTRACT(EPOCH FROM (closed_at - opened_at)) AS hold_duration_s
             FROM margin_positions
             WHERE state = 'CLOSED'
@@ -292,6 +373,26 @@ class PgPositionRepository(PositionRepository):
                 ),
                 "venue": r["venue"],
                 "strategy_version": r["strategy_version"],
+                # ── PR B: continuation state ──
+                "continuation_count": int(r["continuation_count"] or 0),
+                "last_continuation_ts": r["last_continuation_ts"].isoformat()
+                if r["last_continuation_ts"] else None,
+                "last_continuation_p_up": float(r["last_continuation_p_up"])
+                if r["last_continuation_p_up"] is not None else None,
+                # ── PR B: v4 audit snapshot ──
+                "v4_entry_regime": r["v4_entry_regime"],
+                "v4_entry_macro_bias": r["v4_entry_macro_bias"],
+                "v4_entry_macro_confidence": int(r["v4_entry_macro_confidence"])
+                if r["v4_entry_macro_confidence"] is not None else None,
+                "v4_entry_expected_move_bps": float(r["v4_entry_expected_move_bps"])
+                if r["v4_entry_expected_move_bps"] is not None else None,
+                "v4_entry_composite_v3": float(r["v4_entry_composite_v3"])
+                if r["v4_entry_composite_v3"] is not None else None,
+                "v4_entry_consensus_safe": r["v4_entry_consensus_safe"],
+                "v4_entry_window_close_ts": int(r["v4_entry_window_close_ts"])
+                if r["v4_entry_window_close_ts"] is not None else None,
+                "v4_snapshot_ts_at_entry": float(r["v4_snapshot_ts_at_entry"])
+                if r["v4_snapshot_ts_at_entry"] is not None else None,
             }
             for r in rows
         ]
