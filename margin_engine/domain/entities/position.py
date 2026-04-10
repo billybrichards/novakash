@@ -76,6 +76,16 @@ class Position:
     entry_commission_is_actual: bool = False
     exit_commission_is_actual: bool = False
 
+    # ── Execution context ─────────────────────────────────────────────────
+    # Venue this trade was executed on. Informational — the position itself
+    # doesn't route orders, but persisting it lets the dashboard attribute
+    # historical P&L to the right venue. NULL in legacy rows → "binance".
+    venue: str = "binance"
+    # Strategy that opened the position. "v1-composite" = pre-PR#8 composite
+    # sign entries, "v2-probability" = ML-directed entries via ProbabilitySignal.
+    # NULL in legacy rows → "v1-composite" at the DB read layer.
+    strategy_version: str = "v2-probability"
+
     # ─── State transitions ───────────────────────────────────────────────
 
     def confirm_entry(
