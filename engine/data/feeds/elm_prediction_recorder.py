@@ -84,7 +84,28 @@ class ELMPredictionRecorder:
         self._log.info("elm_recorder.stopped")
 
     async def _record_sweep(self):
-        """Query ELM for all asset/delta combos and write to DB."""
+        """Query ELM for all asset/delta combos and write to DB.
+
+        NOTE: this recorder intentionally uses the legacy GET (pull-mode)
+        path on `get_probability`, NOT `score_with_features` / POST.
+        It is a passive background sweep across all assets and deltas
+        every 30s, and it has NO engine-side feature context to push —
+        it isn't running on the strategy decision path and doesn't have
+        access to `vpin`, `delta_pct`, CLOB snapshots, regime, gate
+        state, etc.
+
+        While Sequoia v5 is the promoted model, this endpoint will
+        return the broken all-NaN constant on each request (because
+        pull-mode feature assembly is what's broken). That's the
+        expected behaviour here and it is safe: rows written to
+        `ticks_elm_predictions` from this sweep are diagnostic, never
+        consumed by the strategy or used as labels by the retrain
+        pipeline (v5 trains from `signal_evaluations`). Do NOT
+        switch this to push-mode without a feature source.
+
+        Post-rollback to v4, this recorder resumes producing
+        varying outputs normally — v4 has a working pull-mode path.
+        """
         if not self._client or not self._pool:
             return
 

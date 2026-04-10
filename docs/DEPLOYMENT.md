@@ -18,6 +18,13 @@ There are three deployment targets:
 - **Pull and restart on Montreal**
 - ⚠️ **Never push from Montreal directly** — keep the server clean
 - ⚠️ **Never run `git push` from the Montreal engine server**
+- ⚠️ **Always restart via `scripts/restart_engine.sh`** — it rotates
+  the log to a timestamped archive before starting the new process.
+  Using raw `nohup python3 main.py > engine.log` TRUNCATES the log and
+  loses history. The script uses `>>` append after its initial rotation.
+- ⚠️ **Prefer restart at a quiet moment** in the 5-min trading window
+  (e.g. T-180 to T-240 seconds remaining). Never restart mid window-close
+  (T<60) while orders are actively resolving.
 
 ### Workflow
 
@@ -30,39 +37,64 @@ git commit -m "feat: describe your change"
 git push origin develop
 ```
 
-**Step 2: SSH into Montreal and pull**
+**Step 2: SSH to Montreal via EC2 Instance Connect**
+
+EC2 Instance Connect doesn't require a static PEM on your local machine —
+you generate a temp SSH key, push it to the instance via AWS, then have
+a 60-second window to connect. See the "SSH access" section below for
+the canonical command. You need either the `ubuntu` user (for
+`sudo` permission fixes and to run the restart script) or the
+`novakash` user (for git-pull-only flows without a restart).
+
+**Step 3: Pull latest develop and restart the engine**
+
+The canonical restart procedure is `scripts/restart_engine.sh`. It
+handles ownership fixes, log rotation, safe kill, and start verification
+in one call. Do NOT restart via raw `nohup` commands — they truncate
+`/home/novakash/engine.log` and lose history.
+
 ```bash
-ssh novakash@15.223.247.178
+# Connect as ubuntu (has passwordless sudo)
+ssh -i /tmp/ec2_temp_key ubuntu@15.223.247.178
+
+# On the box: pull latest develop via the novakash user
+sudo -u novakash bash -c 'cd /home/novakash/novakash && git pull origin develop'
+
+# Then restart via the canonical script:
 cd /home/novakash/novakash
-git pull origin develop
+./scripts/restart_engine.sh
 ```
 
-**Step 3: Restart the engine**
-```bash
-# Find and kill the current engine process
-pkill -f "python main.py"
-# or
-ps aux | grep python
-kill <PID>
+What `scripts/restart_engine.sh` does, in order:
+1. `sudo chown -R novakash:novakash /home/novakash/novakash/` — fixes
+   any root-owned files left behind by a crash (see "Common permission
+   issue" below).
+2. Copies `/home/novakash/engine.log` → `/home/novakash/engine-YYYYMMDD-HHMMSS.log`
+   and truncates the original. History is preserved as a timestamped
+   archive, and the current log stays at a known path for the engine
+   to append to.
+3. Prunes old `engine-*.log` archives beyond `KEEP_N` (default 20) so
+   disk doesn't bloat forever.
+4. `sudo pkill -9 -f 'python3 main.py'` + 4 second verify. Exits non-zero
+   if anything is still running after SIGKILL.
+5. Starts the engine with `nohup python3 main.py >> /home/novakash/engine.log 2>&1 & disown`
+   (append, not truncate).
+6. Verifies exactly 1 python3 main.py process is running. Exits 1 if not.
 
-# Start engine (in a screen/tmux session so it persists)
-screen -S engine
-cd /home/novakash/novakash
-./start_engine.sh
-# Detach: Ctrl+A, D
-```
-
-**Or use tmux:**
-```bash
-tmux new-session -s engine -d
-tmux send-keys -t engine "cd /home/novakash/novakash && ./start_engine.sh" Enter
-```
+Flags:
+- `--keep-running` rotates the log without touching the process. Useful
+  for "snapshot the current log for incident analysis" without a restart.
+- `KEEP_N=N ./scripts/restart_engine.sh` overrides the archive count
+  (e.g. `KEEP_N=50` to keep 50 old logs instead of 20).
 
 **Check it's running:**
 ```bash
-# From Montreal
-screen -r engine        # Attach to screen session
-tail -f /home/novakash/novakash/engine.log
+# On Montreal — verify process + tail live log
+pgrep -af 'python3 main.py'
+tail -f /home/novakash/engine.log
+
+# Historical archives — most recent first
+ls -lht /home/novakash/engine-*.log | head
 
 # Or via DB heartbeat (from anywhere)
 PGPASSWORD=<DB_PASSWORD> psql -h hopper.proxy.rlwy.net -p 35772 -U postgres -d railway \
@@ -104,7 +136,7 @@ ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes \
   -i /tmp/ec2_temp_key novakash@15.223.247.178
 ```
 
-**Common permission issue:** Files in `engine/reconciliation/` may become root-owned if the engine crashes. Fix with:
+**Common permission issue:** Files in `engine/reconciliation/` may become root-owned if the engine crashes. `scripts/restart_engine.sh` fixes this automatically as step 1. If you only need the fix without a restart, do it manually:
 ```bash
 # SSH as ubuntu
 sudo chown -R novakash:novakash /home/novakash/novakash/
@@ -112,11 +144,23 @@ sudo chown -R novakash:novakash /home/novakash/novakash/
 
 **Full deploy script (run via ubuntu SSH):**
 ```bash
-sudo chown -R novakash:novakash /home/novakash/novakash/ 2>/dev/null
+# Pull latest develop as novakash (the app user that owns the repo)
 sudo -u novakash bash -c 'cd /home/novakash/novakash && git pull origin develop'
-sudo pkill -9 -f "python3 main.py"; sleep 3
-sudo -u novakash bash -c 'cd /home/novakash/novakash/engine && nohup python3 main.py > /home/novakash/engine.log 2>&1 &'
-sleep 8 && ps aux | grep "python3 main.py" | grep -v grep | wc -l  # Should be 1
+
+# Restart via the canonical script — handles chown, log rotation,
+# kill, start, and verification. NEVER replace this with a raw nohup
+# command — the raw command uses `>` which truncates engine.log and
+# loses all history from before the restart.
+cd /home/novakash/novakash && ./scripts/restart_engine.sh
+```
+
+**Deprecated pattern — do NOT use:**
+```bash
+# ❌ The `>` redirect truncates /home/novakash/engine.log on each run,
+#   destroying everything written since the last restart. This is how
+#   we lost logs during the v10.1 → v10.2 transition before scripts/
+#   restart_engine.sh was written.
+nohup python3 main.py > /home/novakash/engine.log 2>&1 &
 ```
 
 **v10.3 env vars (current production on Montreal's engine/.env):**
@@ -319,9 +363,12 @@ The engine also auto-creates tables on startup if they don't exist.
 |------|---------|
 | Push engine changes | `git push origin develop` then SSH pull on Montreal |
 | Deploy to Railway | `git push origin main` |
-| Restart engine | `pkill -f "python main.py"` then `./start_engine.sh` |
+| Pull on Montreal | `sudo -u novakash bash -c 'cd /home/novakash/novakash && git pull origin develop'` |
+| Restart engine (canonical) | `./scripts/restart_engine.sh` (rotates log, restarts, verifies) |
+| Snapshot log without restart | `./scripts/restart_engine.sh --keep-running` |
 | Check engine heartbeat | Query `system_state` table |
-| View engine logs | `screen -r engine` on Montreal |
+| View engine logs | `tail -f /home/novakash/engine.log` on Montreal |
+| List archived logs | `ls -lht /home/novakash/engine-*.log` |
 | Check TimesFM | `curl http://16.52.148.255:8080/forecast` |
 | View Railway logs | `railway logs --service <name>` |
 

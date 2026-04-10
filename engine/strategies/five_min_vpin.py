@@ -617,18 +617,66 @@ class FiveMinVPINStrategy(BaseStrategy):
                 DuneConfidenceGate, SpreadGate, DynamicCapGate,
                 CoinGlassVetoGate,  # legacy fallback
             )
+            from signals.v2_feature_body import build_v5_feature_body
+
             _cg = self._cg_enhanced.snapshot if self._cg_enhanced is not None else None
             # v10.3: pass Gamma prices for spread gate
             _gamma_up = getattr(self, '_gamma_up_price', None)
             _gamma_down = getattr(self, '_gamma_down_price', None)
+            _dchain = delta_chainlink if 'delta_chainlink' in locals() else None
+            _dtii = delta_tiingo if 'delta_tiingo' in locals() else None
+            _dbin = delta_binance if 'delta_binance' in locals() else None
+            _tii_close = _tiingo_close if '_tiingo_close' in locals() else None
+            _src_used = _price_source_used if '_price_source_used' in locals() else None
+            _twap_d = None
+            if 'twap_result' in locals() and twap_result is not None:
+                _twap_d = twap_result.twap_delta_pct
+
+            # v11.1: Build the v5 push-mode feature body ONCE at context
+            # construction time. The DuneConfidenceGate reads this body
+            # directly via `ctx.v5_features`, guaranteeing the v10
+            # pipeline call and the v8.1 early-entry call at line ~1478
+            # use the same extraction logic. Gate booleans are NOT set
+            # here because v10 pipeline gates have different semantics
+            # than the v8.0 signal_evaluations columns the model was
+            # trained on — leaving them None lets LightGBM use its
+            # missing-default branch, matching training behaviour.
+            _v5_body = build_v5_feature_body(
+                eval_offset=getattr(window, 'eval_offset', None),
+                vpin=current_vpin,
+                delta_pct=delta_pct,
+                twap_delta=_twap_d,
+                clob_up_price=_gamma_up,
+                clob_down_price=_gamma_down,
+                binance_price=current_price,
+                tiingo_close=_tii_close,
+                delta_binance=_dbin,
+                delta_chainlink=_dchain,
+                delta_tiingo=_dtii,
+                regime=_snap_regime,
+                delta_source=_src_used,
+                # gate_* and prev_v2_probability_up stay None — they're
+                # not yet resolved at this point in the function.
+            )
+
             ctx = GateContext(
-                delta_chainlink=delta_chainlink if 'delta_chainlink' in locals() else None,
-                delta_tiingo=delta_tiingo if 'delta_tiingo' in locals() else None,
-                delta_binance=delta_binance if 'delta_binance' in locals() else None,
+                delta_chainlink=_dchain,
+                delta_tiingo=_dtii,
+                delta_binance=_dbin,
                 delta_pct=delta_pct, vpin=current_vpin, regime=_snap_regime,
                 asset=window.asset, eval_offset=getattr(window, 'eval_offset', None),
                 window_ts=window.window_ts, cg_snapshot=_cg,
                 gamma_up_price=_gamma_up, gamma_down_price=_gamma_down,
+                # v11.1: new scalars for the DUNE gate's V5FeatureBody
+                # fallback path (if `ctx.v5_features` is unset)
+                twap_delta=_twap_d,
+                tiingo_close=_tii_close,
+                current_price=current_price,
+                delta_source=_src_used,
+                prev_v2_probability_up=None,  # v10 pipeline runs before any v2 query
+                # v11.1: attached feature body — DuneConfidenceGate prefers
+                # this over rebuilding from scalars
+                v5_features=_v5_body,
             )
             # v10.5: 7-gate decision surface pipeline
             # Order: Agreement → DeltaMagnitude → TakerFlow → CGConfirm → DUNE → Spread → Cap
@@ -1124,11 +1172,48 @@ class FiveMinVPINStrategy(BaseStrategy):
         # ── v8.1: Query v2.2 for early entry gate data (AFTER window_snapshot created) ───
         # This fetch populates window_snapshot with v2.2 data that will be written to DB.
         # Used for: (1) early entry gate at T>=120, (2) dashboard display, (3) analysis.
+        #
+        # Push-mode (Sequoia v5): we send every feature we have at this
+        # point so the scorer can use its v5 booster directly instead
+        # of pulling its own (v4-shaped, train-skewed) feature cache.
+        # Gate results (_vpin_passed etc.) are NOT computed yet at this
+        # point in the function — they're filled in further down — so
+        # those stay None here. The decision-path fetch below (line
+        # ~1478) sends the full 25-feature body once gates are resolved.
         _eval_offset = getattr(window, "eval_offset", None)
         if self._timesfm_v2 is not None and _eval_offset:
             try:
-                _v2_pre = await self._timesfm_v2.get_probability(
-                    asset=window.asset, seconds_to_close=_eval_offset
+                from signals.v2_feature_body import build_v5_feature_body
+                # Pre-eval diagnostic fetch: ~60% feature coverage by
+                # design. The gate booleans haven't been computed yet at
+                # this point in the function (that happens ~20 lines
+                # below), and there is no prior v2 probability yet, so
+                # those fields stay None. The decision-path fetch at
+                # line ~1478 runs AFTER gates and uses the SAME builder
+                # helper with the full 25 features. Both call sites go
+                # through `build_v5_feature_body` so the extraction
+                # logic is never duplicated or drifted.
+                _pre_features = build_v5_feature_body(
+                    eval_offset=float(_eval_offset),
+                    vpin=current_vpin,
+                    delta_pct=delta_pct,
+                    twap_delta=(twap_result.twap_delta_pct if twap_result else None),
+                    clob_up_price=window.up_price,
+                    clob_down_price=window.down_price,
+                    binance_price=current_price,
+                    tiingo_close=_tiingo_close,
+                    delta_binance=delta_binance,
+                    delta_chainlink=delta_chainlink,
+                    delta_tiingo=delta_tiingo,
+                    regime=_snap_regime,
+                    delta_source=_price_source_used,
+                    # gate_*: not yet resolved at pre-eval time
+                    # prev_v2_probability_up: no prior value at first-tick
+                )
+                _v2_pre = await self._timesfm_v2.score_with_features(
+                    asset=window.asset,
+                    seconds_to_close=_eval_offset,
+                    features=_pre_features,
                 )
                 if _v2_pre and "probability_up" in _v2_pre:
                     window_snapshot["v2_probability_up"] = round(float(_v2_pre["probability_up"]), 4)
@@ -1475,8 +1560,48 @@ class FiveMinVPINStrategy(BaseStrategy):
             _v81_active = True
             _v8_dir = signal.direction  # capture before any mutation
             try:
-                _v2_result = await self._timesfm_v2.get_probability(
-                    asset=window.asset, seconds_to_close=eval_offset
+                from signals.v2_feature_body import (
+                    build_v5_feature_body,
+                    confidence_from_result,
+                )
+
+                # Build the full 25-feature push-mode body via the
+                # single-source-of-truth helper. By this point gates
+                # have been evaluated (above this block) so gate_*
+                # booleans carry real state rather than None.
+                #
+                # The PRE-EVAL fetch at line ~1130 stored its P(UP) in
+                # window_snapshot["v2_probability_up"]; we use that as
+                # the v2_logit self-reference. First tick in a window
+                # → None → scorer gets NaN → LightGBM missing-default.
+                _decision_features = build_v5_feature_body(
+                    eval_offset=float(eval_offset),
+                    vpin=current_vpin,
+                    delta_pct=delta_pct,
+                    twap_delta=(twap_result.twap_delta_pct if twap_result else None),
+                    clob_up_price=window.up_price,
+                    clob_down_price=window.down_price,
+                    binance_price=current_price,
+                    tiingo_close=_tiingo_close,
+                    delta_binance=delta_binance,
+                    delta_chainlink=delta_chainlink,
+                    delta_tiingo=delta_tiingo,
+                    gate_vpin_passed=_vpin_passed,
+                    gate_delta_passed=_delta_passed,
+                    gate_cg_passed=_cg_passed,
+                    # gate_twap_passed / gate_timesfm_passed aren't directly
+                    # named here; reuse the v8.0 "blocked" flags inverted.
+                    gate_twap_passed=not _twap_gate_blocked_actual,
+                    gate_timesfm_passed=not _timesfm_gate_blocked_actual,
+                    gate_passed=_all_passed,
+                    regime=_snap_regime,
+                    delta_source=_price_source_used,
+                    prev_v2_probability_up=window_snapshot.get("v2_probability_up"),
+                )
+                _v2_result = await self._timesfm_v2.score_with_features(
+                    asset=window.asset,
+                    seconds_to_close=eval_offset,
+                    features=_decision_features,
                 )
                 if not _v2_result or "probability_up" not in _v2_result:
                     raise RuntimeError(f"v2.2 returned invalid response: {str(_v2_result)[:80]}")
@@ -1486,6 +1611,16 @@ class FiveMinVPINStrategy(BaseStrategy):
                 _v2_high = _v2_p > 0.65 or _v2_p < 0.35
                 _v2_agrees = (_v2_dir == _v8_dir)
 
+                # NOTE: dynamic confidence gating used to live here but
+                # was removed in 1744fde — it had an asymmetric threshold
+                # that silently blocked strong DOWN signals (161 in 48
+                # minutes). Dynamic confidence gating now lives solely in
+                # DuneConfidenceGate (engine/signals/gates.py), where it
+                # composes cleanly with regime/offset/down/CG modifiers
+                # and handles DOWN direction via dune_p = 1 - p_up. The
+                # v11 confidence-extraction bug (reading timesfm.confidence
+                # as P(UP) confidence) is fixed on the gates.py side of
+                # this PR using confidence_from_result().
                 # Store in snapshot for analysis
                 window_snapshot["v2_probability_up"] = round(_v2_p, 4)
                 window_snapshot["v2_direction"] = _v2_dir
