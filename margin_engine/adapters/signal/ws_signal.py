@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 import aiohttp
 
@@ -25,10 +25,19 @@ class WsSignalAdapter(SignalPort):
     """
     Connects to ws://<timesfm-host>:8080/v3/signal.
     Receives composite scores and stores latest per timescale.
+
+    Optional `on_message` callback is invoked for every composite_score
+    message with the full raw payload dict — used for passive recording
+    to the margin_signals table without coupling recording to trading.
     """
 
-    def __init__(self, url: str = "ws://3.98.114.0:8080/v3/signal") -> None:
+    def __init__(
+        self,
+        url: str = "ws://3.98.114.0:8080/v3/signal",
+        on_message: Optional[Callable[[dict], None]] = None,
+    ) -> None:
         self._url = url
+        self._on_message = on_message
         self._latest: dict[str, CompositeSignal] = {}
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self._session: Optional[aiohttp.ClientSession] = None
@@ -114,6 +123,13 @@ class WsSignalAdapter(SignalPort):
 
         msg_type = msg.get("type")
         if msg_type == "composite_score":
+            # Passive recording first — fire-and-forget, never blocks trading
+            if self._on_message is not None:
+                try:
+                    self._on_message(msg)
+                except Exception as e:
+                    logger.warning("Signal recorder callback failed: %s", e)
+
             timescale = msg.get("timescale")
             score = msg.get("composite")
             asset = msg.get("asset", "BTC")

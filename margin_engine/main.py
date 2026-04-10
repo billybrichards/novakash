@@ -58,6 +58,16 @@ async def run() -> None:
     logging.getLogger().addHandler(log_handler)
     log_handler.start()
 
+    # Passive signal recorder — writes every composite_score to margin_signals
+    # for offline edge analysis. Write-only; trading never reads this table.
+    from margin_engine.adapters.persistence.pg_signal_repository import (
+        PgSignalRepository, AsyncPgSignalRecorder,
+    )
+    signal_repo = PgSignalRepository(pool)
+    await signal_repo.ensure_table()
+    signal_recorder = AsyncPgSignalRecorder(signal_repo, asyncio.get_running_loop())
+    signal_recorder.start()
+
     # ── Exchange adapter ──
     if settings.paper_mode:
         from margin_engine.adapters.exchange.paper import PaperExchangeAdapter
@@ -73,7 +83,10 @@ async def run() -> None:
 
     # ── Signal adapter ──
     from margin_engine.adapters.signal.ws_signal import WsSignalAdapter
-    signal_adapter = WsSignalAdapter(url=settings.timesfm_ws_url)
+    signal_adapter = WsSignalAdapter(
+        url=settings.timesfm_ws_url,
+        on_message=signal_recorder.record,
+    )
     await signal_adapter.connect()
 
     # ── Alert adapter ──
@@ -184,8 +197,10 @@ async def run() -> None:
     finally:
         logger.info("Shutting down margin engine...")
         await status_server.stop()
-        await log_handler.stop()  # flush remaining logs before pool closes
+        # Disconnect WS first so no new messages arrive while flushing buffers
         await signal_adapter.disconnect()
+        await signal_recorder.stop()  # flush remaining signals before pool closes
+        await log_handler.stop()  # flush remaining logs before pool closes
         if hasattr(exchange, "close"):
             await exchange.close()
         if hasattr(alerts, "close"):
