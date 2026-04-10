@@ -22,6 +22,7 @@ import os
 import signal
 import sys
 from pathlib import Path
+from typing import Optional
 
 import asyncpg
 
@@ -224,6 +225,30 @@ async def run() -> None:
     )
     await probability_adapter.connect()
 
+    # ── v4 snapshot adapter (DARK DEPLOY in PR A) ──
+    # The adapter polls /v4/snapshot in the background and the main loop
+    # logs sampled observations every ~60s so operators can see what v4
+    # WOULD have decided alongside the legacy v2 path. It is NOT passed
+    # to OpenPositionUseCase or ManagePositionsUseCase in PR A — zero
+    # behavior change. PR B wires it into both use cases behind the
+    # settings.engine_use_v4_actions feature flag.
+    from margin_engine.adapters.signal.v4_snapshot_http import V4SnapshotHttpAdapter
+    v4_adapter: Optional[V4SnapshotHttpAdapter] = None
+    if settings.v4_snapshot_url:
+        v4_adapter = V4SnapshotHttpAdapter(
+            base_url=settings.v4_snapshot_url,
+            asset=settings.hyperliquid_asset,
+            timescales=settings.v4_timescales_tuple,
+            strategy=settings.v4_strategy,
+            poll_interval_s=settings.v4_poll_interval_s,
+            freshness_s=settings.v4_freshness_s,
+        )
+        await v4_adapter.connect()
+        logger.info(
+            "v4 snapshot adapter connected (dark deploy: engine_use_v4_actions=%s)",
+            settings.engine_use_v4_actions,
+        )
+
     # ── Use Cases ──
     from margin_engine.use_cases.open_position import OpenPositionUseCase
     from margin_engine.use_cases.manage_positions import ManagePositionsUseCase
@@ -287,6 +312,14 @@ async def run() -> None:
         settings.probability_min_conviction,
     )
 
+    # Observation cadence for the v4 dark-deploy log: roughly once per 60
+    # seconds. At tick_interval_s=2.0 that's 30 ticks. The log line captures
+    # the key v4 gates as they would apply to the current state, giving us
+    # 24h of empirical data before PR B actually starts making decisions
+    # on those gates.
+    tick_count = 0
+    v4_observation_interval = max(1, int(60 / max(settings.tick_interval_s, 0.1)))
+
     try:
         while not shutdown_event.is_set():
             try:
@@ -304,6 +337,40 @@ async def run() -> None:
                         pos.exit_reason.value if pos.exit_reason else "unknown",
                     )
 
+                # 3. v4 dark-deploy observation (PR A). Pure telemetry,
+                #    sampled at ~60s cadence, no decision impact. PR B
+                #    wires these fields into OpenPositionUseCase and
+                #    ManagePositionsUseCase behind the feature flag.
+                tick_count += 1
+                if v4_adapter is not None and tick_count % v4_observation_interval == 0:
+                    info = v4_adapter.info()
+                    if info.get("ever_succeeded"):
+                        logger.info(
+                            "v4 observation: healthy=%s age=%ss price=%s "
+                            "consensus_safe=%s macro=%s gate=%s max_impact=%s "
+                            "primary=%s/%s/%s prob=%s move=%s",
+                            info.get("healthy"),
+                            info.get("last_snapshot_age_s"),
+                            info.get("last_price"),
+                            info.get("consensus_safe_to_trade"),
+                            info.get("macro_bias"),
+                            info.get("macro_direction_gate"),
+                            info.get("max_impact_in_window"),
+                            info.get("primary_ts"),
+                            info.get("primary_status"),
+                            info.get("primary_regime"),
+                            f"{info.get('primary_probability_up'):.3f}"
+                            if info.get("primary_probability_up") is not None else "?",
+                            f"{info.get('primary_expected_move_bps'):.1f}bps"
+                            if info.get("primary_expected_move_bps") is not None else "?",
+                        )
+                    else:
+                        logger.warning(
+                            "v4 observation: adapter has not yet produced a "
+                            "successful poll — check network to %s",
+                            settings.v4_snapshot_url,
+                        )
+
             except Exception as e:
                 logger.error("Main loop error: %s", e, exc_info=True)
                 await alerts.send_error(f"Main loop error: {e}")
@@ -316,6 +383,9 @@ async def run() -> None:
         # Disconnect WS first so no new messages arrive while flushing buffers
         await signal_adapter.disconnect()
         await probability_adapter.disconnect()
+        # v4 snapshot adapter only exists when v4_snapshot_url is configured
+        if v4_adapter is not None:
+            await v4_adapter.disconnect()
         # Hyperliquid price feed only exists in paper+hyperliquid wiring path
         if price_feed is not None:
             await price_feed.disconnect()
