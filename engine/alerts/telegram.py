@@ -1772,24 +1772,36 @@ class TelegramAlerter:
             reason = meta.get("entry_reason", "?")
             wait_s = meta.get("fill_wait_seconds", "?")
             direction = "⬇️ DOWN" if order.direction == "NO" else "⬆️ UP"
-            size = meta.get("size_matched", "?")
-            
+            size = meta.get("size_matched", meta.get("shares_filled", "?"))
+
+            # Format numeric values safely — fill_price/cap may be strings or "?"
+            try:
+                fp_str = f"${float(fill_price):.4f}"
+            except (TypeError, ValueError):
+                fp_str = f"`{fill_price}`"
+            try:
+                cap_str = f"${float(cap):.2f}"
+            except (TypeError, ValueError):
+                cap_str = f"`{cap}`"
+
             msg = (
-                f"✅ **GTC FILLED**\n"
+                f"✅ *GTC FILLED*\n"
                 f"─────────────\n"
                 f"{direction} | `{reason}`\n"
-                f"💰 Fill: `${float(fill_price):.4f}` (cap `${float(cap):.2f}`)\n"
+                f"💰 Fill: `{fp_str}` (cap `{cap_str}`)\n"
                 f"📦 Size: `{size}` shares | Stake: `${order.stake_usd:.2f}`\n"
                 f"⏱ Filled in `{wait_s}s`\n"
             )
-            await self._send_telegram(msg)
+            # v11 fix: was calling non-existent self._send_telegram() — use self._send()
+            await self._send(msg)
             await self._log_notification(
                 notification_type="gtc_fill",
                 message_text=msg,
                 window_id=meta.get("market_slug"),
             )
+            self._log.info("telegram.entry_alert_sent", order_id=str(order.order_id)[:20])
         except Exception as exc:
-            structlog.get_logger().warning("telegram.entry_alert_failed", error=str(exc)[:100])
+            self._log.warning("telegram.entry_alert_failed", error=str(exc)[:200])
 
     # Backwards compat for v6.0 window reports
     async def send_timesfm_window_report(self, **kwargs) -> None:
@@ -1944,8 +1956,10 @@ class TelegramAlerter:
             text = f"{emoji} *System*\n{message}"
             await self._send(text)
             await self._log_notification(f"system_{level}", text[:2000])
-        except Exception:
-            pass
+            self._log.info("telegram.system_alert_sent", level=level, preview=message[:80])
+        except Exception as exc:
+            # v11 fix: was silently swallowing all errors — now logs for diagnosability
+            self._log.warning("telegram.system_alert_failed", level=level, error=str(exc)[:200])
 
     async def send_kill_switch_alert(self) -> None:
         try:

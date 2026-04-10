@@ -1142,18 +1142,37 @@ class PolymarketClient:
             raise RuntimeError("CLOB client not connected — call connect() first")
 
         resp = await asyncio.to_thread(self._clob_client.get_order, order_id)
-        if isinstance(resp, dict):
-            return {
-                "order_id": order_id,
-                "status": resp.get("status", "UNKNOWN"),
-                "size_matched": resp.get("size_matched"),
-                "price": resp.get("price"),
-                "raw": resp,
-            }
+        # v11 fix: Normalize status to UPPERCASE for back-compat with
+        # fill_check loops that compare `clob_status not in ("LIVE","UNKNOWN")`.
+        # Polymarket returns lowercase: 'live'/'matched'/'unmatched'/'delayed'.
+        # Also try multiple field names for size_matched since we've seen
+        # both size_matched and sizeMatched across CLOB API versions.
+        def _get(obj, key, default=None):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        raw_status = _get(resp, "status", "UNKNOWN") or "UNKNOWN"
+        status = str(raw_status).upper()
+
+        size_matched = None
+        for key in ("size_matched", "sizeMatched", "takingAmount"):
+            val = _get(resp, key)
+            if val is not None and val != "":
+                try:
+                    size_matched = float(val)
+                    break
+                except (ValueError, TypeError):
+                    continue
+
+        price = _get(resp, "price")
+
         return {
             "order_id": order_id,
-            "status": getattr(resp, "status", "UNKNOWN"),
-            "raw": resp,
+            "status": status,
+            "size_matched": size_matched if size_matched is not None else 0,
+            "price": price,
+            "raw": resp if isinstance(resp, dict) else None,
         }
 
     async def get_portfolio_value(self) -> float:
