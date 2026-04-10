@@ -1,18 +1,50 @@
 """
 Macro Observer — Standalone Railway Service
 
-Polls market conditions every 60 seconds, calls Anthropic claude-sonnet,
-writes a MacroSignal to the macro_signals DB table.
+Polls market conditions every 60 seconds, calls a self-hosted LLM via an
+OpenAI-compatible HTTP endpoint, writes a MacroSignal to the macro_signals
+DB table.
 
 The engine (Montreal) reads the latest macro_signals row every window.
 No coupling — DB is the only interface.
 
-Environment variables required:
+## LLM backend
+
+Originally targeted Anthropic Claude Sonnet 4.6. Swapped to a self-hosted
+Qwen 3.5 122B (abliterated, llama-server build) for three reasons:
+  1. Anthropic API calls were timing out on Railway, causing every row
+     to be a fallback NEUTRAL/0/ALLOW_ALL/1.0 — no actual macro filter.
+  2. Self-hosted eliminates the 60s Anthropic API spend while adding
+     no new Railway cost.
+  3. Qwen 3.5 122B with reasoning disabled handles the bias-classifier
+     task in ~0.8s and is more than capable for a fixed-schema output.
+
+### Reasoning-model gotcha (CRITICAL)
+
+Qwen 3.5 is a reasoning model. By default, `/v1/chat/completions` returns
+ALL output in a non-standard `reasoning_content` field and leaves
+`content` empty until the model finishes thinking. For a 2048-token
+budget the thinking alone burns the whole budget and the call returns
+empty (finish_reason=length). The fix is to disable thinking via the
+chat template kwarg: `extra_body={"chat_template_kwargs": {"enable_thinking": False}}`.
+With thinking off, latency drops from ~46s → ~0.8s and the response
+goes into `content` as normal. See `call_llm()` below.
+
+Environment variables:
   DATABASE_URL       — Railway postgres connection string
-  ANTHROPIC_API_KEY  — Anthropic API key
+  QWEN_BASE_URL      — Qwen endpoint base URL (default: http://194.228.55.129:39633/v1)
+  QWEN_API_KEY       — Bearer token for the Qwen endpoint
+  QWEN_MODEL         — model ID (default: qwen35-122b-abliterated)
+  QWEN_MAX_TOKENS    — response cap (default: 512, NOT 2048 — we don't
+                       need a thinking budget because thinking is off)
+  QWEN_TIMEOUT_S     — HTTP timeout (default: 60)
   POLL_INTERVAL      — seconds between calls (default: 60)
-  ANTHROPIC_TIMEOUT  — seconds before falling back to cache (default: 10)
   LOG_LEVEL          — debug|info|warning (default: info)
+
+  ANTHROPIC_API_KEY  — still read so the window evaluator (Telegram)
+                       can optionally fall back to Claude for long-form
+                       commentary if QWEN_API_KEY is unset. The main
+                       bias classifier no longer touches Anthropic.
 """
 
 import asyncio
@@ -23,9 +55,9 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import aiohttp
-import anthropic
 import asyncpg
 import structlog
+from openai import AsyncOpenAI
 
 log = structlog.get_logger()
 
@@ -33,12 +65,20 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 if DATABASE_URL.startswith("postgresql+asyncpg://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "60"))
-ANTHROPIC_TIMEOUT = int(os.environ.get("ANTHROPIC_TIMEOUT", "10"))
 
-ANTHROPIC_MODEL = "claude-sonnet-4-6"
-ANTHROPIC_MAX_TOKENS = 300
+# ─── Qwen (self-hosted OpenAI-compatible) config ──────────────────────────
+QWEN_BASE_URL = os.environ.get("QWEN_BASE_URL", "http://194.228.55.129:39633/v1")
+QWEN_API_KEY = os.environ.get("QWEN_API_KEY", "")
+QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen35-122b-abliterated")
+QWEN_MAX_TOKENS = int(os.environ.get("QWEN_MAX_TOKENS", "512"))
+QWEN_TIMEOUT_S = float(os.environ.get("QWEN_TIMEOUT_S", "60"))
+
+# Legacy Anthropic config — still read so the evaluator can fall back
+# to Claude if the Qwen endpoint is unreachable. The main bias classifier
+# always uses Qwen.
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
 COINBASE_URL = "https://api.coinbase.com/v2/prices/BTC-USD/spot"
 KRAKEN_URL = "https://api.kraken.com/0/public/Ticker?pair=XBTUSD"
@@ -365,7 +405,7 @@ async def fetch_session_stats(pool: asyncpg.Pool) -> dict:
     return {"session_wins": wins, "session_losses": losses, "session_wr": wr, "drawdown_streak": streak}
 
 
-# ─── Anthropic Call ───────────────────────────────────────────────────────────
+# ─── LLM Call (Qwen 3.5 122B via OpenAI-compatible endpoint) ──────────────────
 
 SYSTEM_PROMPT = """You are a macro trend analyser for a BTC 5-minute prediction market strategy.
 You assess whether conditions favour UP or DOWN bets for the next 30-60 minutes.
@@ -396,56 +436,150 @@ Rules:
 - size_modifier > 1.0 ONLY when override_active = true"""
 
 
-async def call_anthropic(payload: dict) -> Optional[dict]:
-    """Call Anthropic with timeout. Returns parsed signal dict or None."""
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+# JSON schema for llama-server's grammar-constrained sampling. Forces the
+# model to emit tokens that match this shape — eliminates post-hoc parsing
+# errors entirely.
+MACRO_SIGNAL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "bias": {"type": "string", "enum": ["BULL", "BEAR", "NEUTRAL"]},
+        "confidence": {"type": "integer", "minimum": 0, "maximum": 100},
+        "direction_gate": {"type": "string", "enum": ["ALLOW_ALL", "SKIP_DOWN", "SKIP_UP"]},
+        "threshold_modifier": {"type": "number", "minimum": 0.5, "maximum": 1.5},
+        "size_modifier": {"type": "number", "minimum": 0.5, "maximum": 1.5},
+        "override_active": {"type": "boolean"},
+        "reasoning": {"type": "string"},
+    },
+    "required": [
+        "bias", "confidence", "direction_gate",
+        "threshold_modifier", "size_modifier", "override_active", "reasoning",
+    ],
+}
+
+
+# Module-level async client, lazily initialised in call_llm() so
+# imports don't fail if QWEN_API_KEY is unset at import time.
+_llm_client: Optional[AsyncOpenAI] = None
+
+
+def _get_llm_client() -> Optional[AsyncOpenAI]:
+    """Return a cached AsyncOpenAI client, or None if QWEN_API_KEY is missing."""
+    global _llm_client
+    if _llm_client is not None:
+        return _llm_client
+    if not QWEN_API_KEY:
+        return None
+    _llm_client = AsyncOpenAI(
+        base_url=QWEN_BASE_URL,
+        api_key=QWEN_API_KEY,
+        timeout=QWEN_TIMEOUT_S,
+        max_retries=0,  # we handle retries at the poll-loop level
+    )
+    return _llm_client
+
+
+async def call_llm(payload: dict) -> Optional[dict]:
+    """
+    Call the Qwen 3.5 122B endpoint for a MacroSignal JSON.
+
+    Returns a dict with {signal, input_tokens, output_tokens, latency_ms, cost_usd}
+    on success, or None on failure (connection error, timeout, schema
+    violation). The caller treats None as "fall back to _fallback_signal()".
+
+    Critical runtime behaviour:
+      - `chat_template_kwargs={"enable_thinking": False}` disables Qwen 3's
+        reasoning mode. Without this, the model routes output into a
+        non-standard `reasoning_content` field (which the OpenAI SDK
+        silently drops), blocking the visible `content` until thinking
+        finishes. See the module docstring for the gotcha.
+      - `response_format={"type": "json_schema", ...}` activates
+        llama-server's grammar-constrained sampling, so the model CANNOT
+        emit a malformed JSON — the tokens are rejected at generation
+        time. No post-hoc markdown-fence stripping needed.
+      - `cost_usd=0.0` because Qwen is self-hosted. Kept in the return
+        shape so write_signal() doesn't need a schema migration.
+    """
+    client = _get_llm_client()
+    if client is None:
+        log.warning("llm.no_api_key", msg="QWEN_API_KEY unset — skipping call")
+        return None
 
     prompt_text = USER_PROMPT_TEMPLATE.format(payload=json.dumps(payload, indent=2))
 
     start = time.time()
     try:
-        msg = client.messages.create(
-            model=ANTHROPIC_MODEL,
-            max_tokens=ANTHROPIC_MAX_TOKENS,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": prompt_text}],
-            timeout=ANTHROPIC_TIMEOUT,
+        resp = await client.chat.completions.create(
+            model=QWEN_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": prompt_text},
+            ],
+            max_tokens=QWEN_MAX_TOKENS,
+            temperature=0.3,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "macro_signal",
+                    "schema": MACRO_SIGNAL_SCHEMA,
+                    "strict": True,
+                },
+            },
+            # extra_body injects into the underlying JSON body — llama-server
+            # reads chat_template_kwargs.enable_thinking at template-render
+            # time to skip the <think>...</think> block entirely.
+            extra_body={
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
         )
         elapsed_ms = int((time.time() - start) * 1000)
 
-        raw_text = msg.content[0].text.strip()
-        # Strip markdown code fences if present
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("```")[1]
-            if raw_text.startswith("json"):
-                raw_text = raw_text[4:]
-        signal = json.loads(raw_text)
+        content = resp.choices[0].message.content
+        if not content:
+            log.error(
+                "llm.empty_content",
+                finish_reason=resp.choices[0].finish_reason,
+                completion_tokens=resp.usage.completion_tokens if resp.usage else None,
+                note="model may have fallen back to reasoning mode — check enable_thinking flag",
+            )
+            return None
 
-        cost = (msg.usage.input_tokens * 0.000003) + (msg.usage.output_tokens * 0.000015)
+        signal = json.loads(content)
 
-        log.info("anthropic.call_ok",
-                 bias=signal.get("bias"),
-                 confidence=signal.get("confidence"),
-                 latency_ms=elapsed_ms,
-                 cost_usd=round(cost, 5))
+        usage = resp.usage
+        in_tok = usage.prompt_tokens if usage else 0
+        out_tok = usage.completion_tokens if usage else 0
+
+        log.info(
+            "llm.call_ok",
+            bias=signal.get("bias"),
+            confidence=signal.get("confidence"),
+            latency_ms=elapsed_ms,
+            prompt_tokens=in_tok,
+            completion_tokens=out_tok,
+        )
 
         return {
             "signal": signal,
-            "input_tokens": msg.usage.input_tokens,
-            "output_tokens": msg.usage.output_tokens,
+            "input_tokens": in_tok,
+            "output_tokens": out_tok,
             "latency_ms": elapsed_ms,
-            "cost_usd": cost,
+            "cost_usd": 0.0,  # self-hosted
         }
 
-    except anthropic.APITimeoutError:
-        log.warning("anthropic.timeout", timeout_s=ANTHROPIC_TIMEOUT)
+    except asyncio.TimeoutError:
+        log.warning("llm.timeout", timeout_s=QWEN_TIMEOUT_S)
         return None
     except json.JSONDecodeError as e:
-        log.error("anthropic.json_parse_error", error=str(e))
+        log.error("llm.json_parse_error", error=str(e), content_preview=(content or "")[:200])
         return None
     except Exception as e:
-        log.error("anthropic.error", error=str(e))
+        log.error("llm.error", error=str(e)[:200], error_type=type(e).__name__)
         return None
+
+
+# Backwards-compat alias — some older code paths may still reference
+# call_anthropic. The main loop call site below uses the new name.
+call_anthropic = call_llm
 
 
 # ─── Write Signal ─────────────────────────────────────────────────────────────
@@ -503,7 +637,7 @@ async def write_signal(pool: asyncpg.Pool, signal: dict, payload: dict, meta: di
 
 
 def _fallback_signal() -> dict:
-    """Return a safe NEUTRAL signal when Anthropic is unavailable."""
+    """Return a safe NEUTRAL signal when the LLM endpoint is unreachable."""
     return {
         "bias": "NEUTRAL",
         "confidence": 0,
@@ -511,7 +645,7 @@ def _fallback_signal() -> dict:
         "threshold_modifier": 1.0,
         "size_modifier": 1.0,
         "override_active": False,
-        "reasoning": "Fallback — Anthropic unavailable, no macro filter applied",
+        "reasoning": "Fallback — Qwen LLM endpoint unreachable, no macro filter applied",
     }
 
 
@@ -699,17 +833,30 @@ async def evaluate_resolved_windows(pool: asyncpg.Pool):
             ctx = await fetch_window_context(pool, wts, asset)
             prompt = build_eval_prompt(wts, ctx)
 
-            # Call Claude Sonnet
+            # Call the LLM for a freeform commentary on the resolved window.
+            # Unlike the bias classifier above, we WANT reasoning here —
+            # the evaluator's value is the chain-of-thought analysis that
+            # identifies what went right or wrong. Keep enable_thinking on
+            # (the default) and give it a generous token budget.
             try:
-                client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-                resp = client.messages.create(
-                    model=ANTHROPIC_MODEL,
-                    max_tokens=400,
+                llm = _get_llm_client()
+                if llm is None:
+                    raise RuntimeError("QWEN_API_KEY unset")
+                resp = await llm.chat.completions.create(
+                    model=QWEN_MODEL,
                     messages=[{"role": "user", "content": prompt}],
+                    # Generous budget because Qwen will think before
+                    # emitting prose. The commentary itself is short
+                    # (~100-200 tokens) but reasoning can eat 1000+.
+                    max_tokens=4096,
+                    temperature=0.5,
                 )
-                analysis = resp.content[0].text.strip()
+                analysis = (resp.choices[0].message.content or "").strip()
+                if not analysis:
+                    # Reasoning ate the whole budget — fall back gracefully.
+                    analysis = "AI evaluation unavailable (reasoning budget exceeded)"
             except Exception as exc:
-                log.warning("evaluator.anthropic_failed", error=str(exc)[:100])
+                log.warning("evaluator.llm_failed", error=str(exc)[:100])
                 analysis = "AI evaluation unavailable"
 
             # Build Telegram card
@@ -781,12 +928,19 @@ async def run_observer():
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=2, max_size=5)
     await init_db(pool)
 
-    # Start window evaluator as background task
-    if TELEGRAM_BOT_TOKEN and ANTHROPIC_API_KEY:
+    # Start window evaluator as background task. Gated on both Telegram
+    # credentials (needed to send the card) AND an LLM key (needed to
+    # generate the commentary). Either Qwen or Anthropic satisfies the
+    # LLM half — but the evaluator call site above uses Qwen, so in
+    # practice this means QWEN_API_KEY.
+    if TELEGRAM_BOT_TOKEN and (QWEN_API_KEY or ANTHROPIC_API_KEY):
         asyncio.create_task(evaluator_loop(pool))
         log.info("macro_observer.evaluator_enabled")
     else:
-        log.warning("macro_observer.evaluator_disabled", reason="missing TELEGRAM_BOT_TOKEN or ANTHROPIC_API_KEY")
+        log.warning(
+            "macro_observer.evaluator_disabled",
+            reason="missing TELEGRAM_BOT_TOKEN or LLM API key (QWEN_API_KEY/ANTHROPIC_API_KEY)",
+        )
 
     async with aiohttp.ClientSession() as session:
         while True:
@@ -843,8 +997,8 @@ async def run_observer():
                     "recent_ai_notes": ai_notes,
                 }
 
-                # ── Call Anthropic ─────────────────────────────────────────
-                result = await call_anthropic(payload)
+                # ── Call LLM (Qwen 3.5 122B via self-hosted endpoint) ──────
+                result = await call_llm(payload)
 
                 if result:
                     signal = result["signal"]
