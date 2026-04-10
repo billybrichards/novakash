@@ -107,10 +107,18 @@ class Gate(Protocol):
 # ── Source Agreement Gate ───────────────────────────────────────────────────
 
 class SourceAgreementGate:
-    """G1: Chainlink + Tiingo must agree on direction.
+    """G1: 2/3 majority vote from Chainlink, Tiingo, Binance.
 
-    94.7% WR when agree (historical), 9.1% when disagree.
-    This is the primary filter — blocks ~17% of windows.
+    v11.1: Changed from unanimous CL+TI agreement to 2/3 majority.
+    
+    Evidence (Apr 8-10 2026, 7 evaluations):
+      - CL+TI unanimous: 56.9% pass rate
+      - 2/3 majority: 98.2% pass rate
+      - Binance bias: 83.1% DOWN signals (systematic bias, not market signal)
+      - Most common disagreement: CL=UP, TI=DOWN, BIN=DOWN (19.6% of windows)
+    
+    The 2/3 rule captures valid 2-source agreements while neutralizing
+    Binance's systematic DOWN bias through majority vote.
     """
     name = "source_agreement"
 
@@ -123,20 +131,31 @@ class SourceAgreementGate:
 
         cl_dir = "UP" if ctx.delta_chainlink > 0 else "DOWN"
         ti_dir = "UP" if ctx.delta_tiingo > 0 else "DOWN"
+        bin_dir = "UP" if ctx.delta_binance is not None and ctx.delta_binance > 0 else "DOWN"
 
-        if cl_dir != ti_dir:
+        # Count votes for each direction
+        up_votes = sum([cl_dir == "UP", ti_dir == "UP", bin_dir == "UP"])
+        down_votes = 3 - up_votes
+
+        # 2/3 majority required
+        if up_votes >= 2:
+            agreed_dir = "UP"
+        elif down_votes >= 2:
+            agreed_dir = "DOWN"
+        else:
+            # 2-2 split impossible with 3 sources, but handle gracefully
             return GateResult(
                 passed=False, gate_name=self.name,
-                reason=f"CL={cl_dir} TI={ti_dir} DISAGREE",
-                data={"cl_dir": cl_dir, "ti_dir": ti_dir},
+                reason=f"CL={cl_dir} TI={ti_dir} BIN={bin_dir} NO MAJORITY",
+                data={"cl_dir": cl_dir, "ti_dir": ti_dir, "bin_dir": bin_dir, "up_votes": up_votes, "down_votes": down_votes},
             )
 
         # Store agreed direction in context for downstream gates
-        ctx.agreed_direction = cl_dir
+        ctx.agreed_direction = agreed_dir
         return GateResult(
             passed=True, gate_name=self.name,
-            reason=f"CL={cl_dir} TI={ti_dir} AGREE",
-            data={"cl_dir": cl_dir, "ti_dir": ti_dir, "direction": cl_dir},
+            reason=f"2/3 {agreed_dir} (CL={cl_dir} TI={ti_dir} BIN={bin_dir})",
+            data={"cl_dir": cl_dir, "ti_dir": ti_dir, "bin_dir": bin_dir, "direction": agreed_dir, "up_votes": up_votes, "down_votes": down_votes},
         )
 
 
