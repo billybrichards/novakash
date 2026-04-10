@@ -132,7 +132,22 @@ export default function CompositeSignals() {
     <div style={{ padding: '20px 24px', maxWidth: 1400, margin: '0 auto' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
         <div>
-          <h1 style={{ fontSize: 18, fontWeight: 800, color: '#fff', margin: 0 }}>V3 Composite Signals</h1>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <h1 style={{ fontSize: 18, fontWeight: 800, color: '#fff', margin: 0 }}>V3 Composite Signals</h1>
+            {displaySnapshot?.model?.model_family && (
+              <div
+                title={displaySnapshot.model.model_version || ''}
+                style={{
+                  fontSize: 9, fontWeight: 800, padding: '3px 8px', borderRadius: 4,
+                  background: 'rgba(168,85,247,0.12)', color: T.purple,
+                  border: '1px solid rgba(168,85,247,0.3)',
+                  fontFamily: T.mono, letterSpacing: '0.04em',
+                }}
+              >
+                {displaySnapshot.model.model_family}
+              </div>
+            )}
+          </div>
           <p style={{ fontSize: 10, color: T.label, margin: '4px 0 0' }}>7-signal fusion across 9 timescales</p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
