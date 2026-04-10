@@ -45,6 +45,7 @@ jobs:
           python -c "import margin_engine.adapters.exchange.paper"
           python -c "import margin_engine.adapters.exchange.binance_margin"
           python -c "import margin_engine.adapters.exchange.hyperliquid_price_feed"
+          python -c "import margin_engine.adapters.exchange.hyperliquid_live"
           python -c "import margin_engine.adapters.signal.probability_http"
           python -c "import margin_engine.adapters.signal.ws_signal"
           python -c "import margin_engine.use_cases.open_position"

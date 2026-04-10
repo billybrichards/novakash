@@ -54,6 +54,15 @@ class MarginSettings(BaseSettings):
     hyperliquid_poll_interval_s: float = 2.0
     hyperliquid_price_freshness_s: float = 15.0
 
+    # ── Hyperliquid live trading (agent wallet) ──
+    # Populated by scripts/setup_hyperliquid_agent.sh. Leave unset to
+    # disable live mode — the 2x2 matrix in main.py raises
+    # NotImplementedError when either is missing in (live, hyperliquid).
+    hyperliquid_main_address: str = ""    # your MetaMask public 0x… address
+    hyperliquid_agent_key_path: str = "/opt/margin-engine/.keys/hyperliquid_agent.pem"
+    hyperliquid_api_base_url: str = ""    # blank = SDK default (mainnet)
+    hyperliquid_cross_margin: bool = True  # cross (True) vs isolated (False)
+
     # ── Signal sources ──
     # v3 composite: still polled for REGIME FILTER (soft, logged only) and
     # for passive signal recording. Direction comes from the ML endpoint.
