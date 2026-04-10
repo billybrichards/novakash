@@ -327,6 +327,10 @@ class DuneConfidenceGate:
                 reason="no agreed direction (agreement gate must run first)",
             )
 
+        # Initialize p_up and timesfm_conf for _effective_threshold (fixes "referenced before assignment" bug)
+        p_up = ctx.dune_probability_up
+        timesfm_conf = None  # Not yet implemented in query path
+
         # Global minimum offset — don't trade too early
         _min_offset = int(os.environ.get("V10_MIN_EVAL_OFFSET", "200"))
         if ctx.eval_offset and ctx.eval_offset > _min_offset:
