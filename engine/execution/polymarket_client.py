@@ -599,23 +599,44 @@ class PolymarketClient:
 
         response = await asyncio.to_thread(_sign_and_submit)
 
-        # Parse response
-        if isinstance(response, dict):
-            order_id = response.get("orderID") or response.get("id") or f"fok-live-{uuid.uuid4().hex[:12]}"
-            status = response.get("status", "UNKNOWN")
-            size_matched_raw = response.get("size_matched", "0")
-        else:
-            order_id = getattr(response, "orderID", None) or getattr(response, "id", None) or f"fok-live-{uuid.uuid4().hex[:12]}"
-            status = getattr(response, "status", "UNKNOWN")
-            size_matched_raw = getattr(response, "size_matched", "0")
+        # CRITICAL BUG FIX (Apr 10): Polymarket CLOB response field names
+        # Polymarket returns: success, orderID, status ("live"/"matched"/"delayed"/
+        # "unmatched"), makingAmount, takingAmount, transactionsHashes, tradeIDs
+        # The old code checked "size_matched" (doesn't exist) and uppercase status
+        # ("MATCHED"/"FILLED") — both failed silently, causing the FOK ladder to
+        # fire attempt 2 AND GTC fallback even when attempt 1 had filled.
+        # Result: 77% of trades were multi-fills, overpaying ~$4.43/trade.
+
+        def _get(obj, key, default=None):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        order_id = (_get(response, "orderID") or _get(response, "id")
+                    or f"fok-live-{uuid.uuid4().hex[:12]}")
+        status_raw = _get(response, "status", "UNKNOWN") or "UNKNOWN"
+        status = str(status_raw).lower()  # normalize: "matched" / "live" / "unmatched"
+        success = bool(_get(response, "success", False))
+        error_msg = _get(response, "errorMsg", "") or ""
+        making_raw = _get(response, "makingAmount", "0")
+        taking_raw = _get(response, "takingAmount", "0")
 
         try:
-            size_matched = float(size_matched_raw) if size_matched_raw else 0.0
+            making_amount = float(making_raw) if making_raw else 0.0
         except (ValueError, TypeError):
-            size_matched = 0.0
+            making_amount = 0.0
+        try:
+            taking_amount = float(taking_raw) if taking_raw else 0.0
+        except (ValueError, TypeError):
+            taking_amount = 0.0
 
-        # FOK is filled if size_matched > 0 or status is MATCHED
-        filled = size_matched > 0 or status in ("MATCHED", "FILLED")
+        # For a BUY order: makingAmount = USDC paid, takingAmount = shares received
+        # size_matched should be the share quantity we received
+        size_matched = taking_amount
+
+        # Fill detection: lowercase "matched" status, or we actually received shares
+        # "unmatched" = killed without fill, "live" = resting (shouldn't happen for FOK)
+        filled = (status == "matched") or (size_matched > 0)
 
         self._log.info(
             "place_fok_order.result",
@@ -624,14 +645,21 @@ class PolymarketClient:
             size=f"{size:.2f}",
             order_id=str(order_id)[:20],
             status=status,
+            success=success,
+            making_amount=making_amount,
+            taking_amount=taking_amount,
             size_matched=size_matched,
             filled=filled,
+            error_msg=error_msg if error_msg else None,
         )
 
         return {
             "filled": filled,
             "size_matched": size_matched,
             "order_id": str(order_id),
+            "making_amount": making_amount,
+            "taking_amount": taking_amount,
+            "status": status,
         }
 
     async def place_market_order(
@@ -723,35 +751,57 @@ class PolymarketClient:
 
         response = await asyncio.to_thread(_sign_and_submit)
 
-        if isinstance(response, dict):
-            order_id = response.get("orderID") or response.get("id") or f"{ot.lower()}-{uuid.uuid4().hex[:12]}"
-            status = response.get("status", "UNKNOWN")
-            size_matched_raw = response.get("size_matched", "0")
-        else:
-            order_id = getattr(response, "orderID", None) or getattr(response, "id", None) or f"{ot.lower()}-{uuid.uuid4().hex[:12]}"
-            status = getattr(response, "status", "UNKNOWN")
-            size_matched_raw = getattr(response, "size_matched", "0")
+        # CRITICAL BUG FIX (Apr 10): See place_fok_order for full context.
+        # Polymarket returns makingAmount/takingAmount (not size_matched) and
+        # lowercase status ("matched"/"unmatched"/"live"). The old parsing was
+        # silently failing on every fill and causing the ladder to over-buy.
+        def _get(obj, key, default=None):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        order_id = (_get(response, "orderID") or _get(response, "id")
+                    or f"{ot.lower()}-{uuid.uuid4().hex[:12]}")
+        status_raw = _get(response, "status", "UNKNOWN") or "UNKNOWN"
+        status = str(status_raw).lower()
+        success = bool(_get(response, "success", False))
+        error_msg = _get(response, "errorMsg", "") or ""
+        making_raw = _get(response, "makingAmount", "0")
+        taking_raw = _get(response, "takingAmount", "0")
 
         try:
-            size_matched = float(size_matched_raw) if size_matched_raw else 0.0
+            making_amount = float(making_raw) if making_raw else 0.0
         except (ValueError, TypeError):
-            size_matched = 0.0
+            making_amount = 0.0
+        try:
+            taking_amount = float(taking_raw) if taking_raw else 0.0
+        except (ValueError, TypeError):
+            taking_amount = 0.0
 
-        filled = size_matched > 0 or status in ("MATCHED", "FILLED")
+        # BUY: makingAmount=USDC paid, takingAmount=shares received
+        size_matched = taking_amount
+        filled = (status == "matched") or (size_matched > 0)
 
         self._log.info(
             "place_market_order.result",
             order_type=ot,
             filled=filled,
             size_matched=size_matched,
+            making_amount=making_amount,
+            taking_amount=taking_amount,
             order_id=str(order_id)[:20],
             status=status,
+            success=success,
+            error_msg=error_msg if error_msg else None,
         )
 
         return {
             "filled": filled,
             "size_matched": size_matched,
             "order_id": str(order_id),
+            "making_amount": making_amount,
+            "taking_amount": taking_amount,
+            "status": status,
         }
 
     async def get_order_book_spread(self, token_id: str) -> float:
