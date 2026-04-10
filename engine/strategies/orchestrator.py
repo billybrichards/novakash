@@ -689,6 +689,26 @@ class Orchestrator:
             )
             log.info("orchestrator.poly_trade_history_started")
 
+        # 5e. v11: poly_fills reconciler — authoritative source-of-truth
+        # sync from Polymarket data-api. Runs every 5 minutes, append-only,
+        # enriches trade_bible with condition_id / market_slug / fill linkage.
+        # This is the GROUND TRUTH table for post-hoc P&L analysis.
+        if self._db and self._db._pool and self._settings.poly_funder_address:
+            from reconciliation.poly_fills_reconciler import PolyFillsReconciler
+            self._poly_fills_reconciler = PolyFillsReconciler(
+                pool=self._db._pool,
+                funder_address=self._settings.poly_funder_address,
+            )
+            self._tasks.append(
+                asyncio.create_task(
+                    self._poly_fills_loop(), name="poly_fills_reconciler"
+                )
+            )
+            log.info(
+                "orchestrator.poly_fills_reconciler_started",
+                funder=self._settings.poly_funder_address,
+            )
+
         # 5. Heartbeat task (every 10s)
         self._tasks.append(
             asyncio.create_task(self._heartbeat_loop(), name="heartbeat")
@@ -1629,6 +1649,42 @@ class Orchestrator:
             asyncio.create_task(_record_and_alert())
 
     # ─── Background Tasks ─────────────────────────────────────────────────────
+
+    async def _poly_fills_loop(self) -> None:
+        """v11: Periodic poly_fills reconciliation from Polymarket data-api.
+
+        Runs every 5 minutes (configurable via POLY_FILLS_SYNC_INTERVAL_S).
+        Appends new fills to poly_fills, links orphans to trade_bible,
+        enriches trade_bible.condition_id + market_slug. Idempotent and
+        safe to run repeatedly.
+
+        If the reconciler isn't initialized (e.g. no db pool), this loop
+        exits immediately.
+        """
+        interval = float(os.environ.get("POLY_FILLS_SYNC_INTERVAL_S", "300"))
+        lookback_hours = float(os.environ.get("POLY_FILLS_LOOKBACK_HOURS", "2"))
+
+        if not getattr(self, "_poly_fills_reconciler", None):
+            log.info("poly_fills_loop.disabled_no_reconciler")
+            return
+
+        # Initial delay so we don't hammer the data-api on startup
+        await asyncio.sleep(30)
+
+        while not self._shutdown_event.is_set():
+            try:
+                result = await self._poly_fills_reconciler.sync(hours=lookback_hours)
+                if result.get("inserted", 0) or result.get("linked", 0):
+                    log.info("poly_fills_loop.sync_result", **result)
+            except Exception as exc:
+                log.warning("poly_fills_loop.sync_failed", error=str(exc)[:200])
+
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(), timeout=interval
+                )
+            except asyncio.TimeoutError:
+                continue
 
     async def _heartbeat_loop(self) -> None:
         """Every 10s: update system state and feed connection flags in DB."""
