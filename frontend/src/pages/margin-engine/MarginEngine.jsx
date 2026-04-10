@@ -3,6 +3,7 @@ import { useApi } from '../../hooks/useApi.js';
 import { T } from './components/constants.js';
 import PositionsPanel from './components/PositionsPanel.jsx';
 import SignalPanel from './components/SignalPanel.jsx';
+import TradeTimelinePanel from './components/TradeTimelinePanel.jsx';
 
 function StatusDot({ active, label, activeText, inactiveText, amber }) {
   const color = active ? T.green : amber ? T.amber : T.red;
@@ -58,6 +59,7 @@ export default function MarginEngine() {
   }, [activeTab, api]);
 
   const portfolio = marginData?.portfolio || {};
+  const execution = marginData?.execution || {};
   const positions = marginData?.positions || [];
   const openPositions = positions.filter(p => p.state === 'OPEN');
   const closedPositions = positions.filter(p => p.state === 'CLOSED');
@@ -70,23 +72,53 @@ export default function MarginEngine() {
   const signalsOnline = signalSnapshot?.timescales && Object.values(signalSnapshot.timescales).some(v => v !== null);
   const killSwitch = portfolio.kill_switch;
 
+  // Execution-context derived UI helpers — all read with optional chaining
+  // so an old engine deploy without the `execution` block falls back cleanly.
+  const venue = execution.venue || 'binance';
+  const venueLabel = venue === 'hyperliquid' ? 'Hyperliquid' : 'Binance';
+  const priceFeed = execution.price_feed || {};
+  const priceFeedHealthy = priceFeed.healthy === true;
+  const priceFeedSource = (priceFeed.source || venue || 'OK').toUpperCase();
+  const rtFeeBps = execution.round_trip_fee_bps;
+  const spreadBps = execution.spread_bps;
+  const isHyperliquid = venue === 'hyperliquid';
+
   return (
     <div style={{ padding: '16px 20px', maxWidth: 1400, margin: '0 auto' }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 16, fontWeight: 800, color: T.white, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-            Binance Margin Engine
+            {venueLabel} Margin Engine
             <span style={{
               fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
               background: portfolio.paper_mode ? 'rgba(168,85,247,0.15)' : 'rgba(239,68,68,0.15)',
               color: portfolio.paper_mode ? T.purple : T.red,
               border: `1px solid ${portfolio.paper_mode ? 'rgba(168,85,247,0.3)' : 'rgba(239,68,68,0.3)'}`,
             }}>{portfolio.paper_mode ? 'PAPER' : 'LIVE'}</span>
-            <span style={{
-              fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
-              background: 'rgba(59,130,246,0.15)', color: T.blue, border: '1px solid rgba(59,130,246,0.3)',
-            }}>5x CROSS</span>
+            {/* Venue badge — cyan for Hyperliquid, amber for Binance */}
+            {execution.venue && (
+              <span
+                title={rtFeeBps != null
+                  ? `${priceFeed.source || venue} price feed · ${rtFeeBps.toFixed(1)} bps RT fee`
+                  : `${venue} venue`}
+                style={{
+                  fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
+                  background: isHyperliquid ? 'rgba(6,182,212,0.15)' : 'rgba(245,158,11,0.15)',
+                  color: isHyperliquid ? T.cyan : T.amber,
+                  border: `1px solid ${isHyperliquid ? 'rgba(6,182,212,0.3)' : 'rgba(245,158,11,0.3)'}`,
+                  fontFamily: T.mono, letterSpacing: '0.04em', textTransform: 'uppercase',
+                }}
+              >{venue}</span>
+            )}
+            {/* Leverage chip — only for margin-style venues (Binance cross).
+                Hyperliquid is perps; "5x CROSS" is meaningless there. */}
+            {!isHyperliquid && (
+              <span style={{
+                fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
+                background: 'rgba(59,130,246,0.15)', color: T.blue, border: '1px solid rgba(59,130,246,0.3)',
+              }}>{portfolio.leverage || 5}x CROSS</span>
+            )}
             {signalSnapshot?.model?.model_family && (
               <span
                 title={signalSnapshot.model.model_version || ''}
@@ -100,20 +132,24 @@ export default function MarginEngine() {
             )}
           </h1>
           <p style={{ fontSize: 9, color: T.textMuted, margin: '2px 0 0' }}>
-            Composite signal &rarr; Binance margin | eu-west-2
+            Composite signal &rarr; {venueLabel.toLowerCase()} {isHyperliquid ? 'perps' : 'margin'} | eu-west-2
           </p>
         </div>
 
         {/* Tabs */}
         <div style={{ display: 'flex', gap: 4 }}>
-          {['live', 'history'].map(tab => (
-            <button key={tab} onClick={() => setActiveTab(tab)} style={{
+          {[
+            { key: 'live',    label: 'LIVE' },
+            { key: 'history', label: 'HISTORY' },
+            { key: 'trades',  label: 'TRADE TIMELINE' },
+          ].map(({ key, label }) => (
+            <button key={key} onClick={() => setActiveTab(key)} style={{
               padding: '5px 12px', borderRadius: 5, fontSize: 10, fontWeight: 700,
-              background: activeTab === tab ? 'rgba(6,182,212,0.15)' : 'transparent',
-              color: activeTab === tab ? T.cyan : T.textMuted,
-              border: `1px solid ${activeTab === tab ? 'rgba(6,182,212,0.3)' : T.cardBorder}`,
+              background: activeTab === key ? 'rgba(6,182,212,0.15)' : 'transparent',
+              color: activeTab === key ? T.cyan : T.textMuted,
+              border: `1px solid ${activeTab === key ? 'rgba(6,182,212,0.3)' : T.cardBorder}`,
               cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.05em',
-            }}>{tab}</button>
+            }}>{label}</button>
           ))}
         </div>
       </div>
@@ -126,6 +162,15 @@ export default function MarginEngine() {
       }}>
         <StatusDot active={engineOnline} label="Engine" activeText="Connected" inactiveText="Offline" />
         <StatusDot active={signalsOnline} label="Signal Feed" activeText="Receiving" inactiveText="Waiting" amber={!signalsOnline && engineOnline} />
+        {execution.venue && (
+          <StatusDot
+            active={priceFeedHealthy}
+            label="Price Feed"
+            activeText={priceFeedSource}
+            inactiveText="Stale"
+            amber={!priceFeedHealthy && engineOnline}
+          />
+        )}
         <StatusDot active={!killSwitch} label="Kill Switch" activeText="OK" inactiveText="TRIGGERED" />
         {portfolio.paper_mode && (
           <span style={{
@@ -160,6 +205,19 @@ export default function MarginEngine() {
           { label: 'WIN RATE', value: typeof winRate === 'string' ? winRate : `${winRate}%`, color: parseFloat(winRate) > 60 ? T.green : T.amber },
           { label: 'DAILY P&L', value: `${(portfolio.daily_pnl || 0) >= 0 ? '+' : ''}$${(portfolio.daily_pnl || 0).toFixed(2)}`, color: (portfolio.daily_pnl || 0) >= 0 ? T.green : T.red },
           { label: 'TRADES', value: closedPositions.length, color: T.textMuted },
+          // Venue execution context — only shown when engine reports it
+          ...(rtFeeBps != null ? [{
+            label: 'FEE RT',
+            value: `${rtFeeBps.toFixed(1)}bp`,
+            sub: isHyperliquid ? 'hyperliquid taker' : 'binance margin',
+            color: isHyperliquid ? T.cyan : T.amber,
+          }] : []),
+          ...(spreadBps != null ? [{
+            label: 'SPREAD',
+            value: `${spreadBps.toFixed(1)}bp`,
+            sub: priceFeed.source || venue,
+            color: T.textMuted,
+          }] : []),
         ].map(({ label, value, sub, color }) => (
           <div key={label} style={{ background: T.card, border: `1px solid ${T.cardBorder}`, borderRadius: 8, padding: '10px 12px' }}>
             <div style={{ fontSize: 8, color: T.textMuted, fontWeight: 700, letterSpacing: '0.08em', marginBottom: 4 }}>{label}</div>
@@ -169,7 +227,7 @@ export default function MarginEngine() {
         ))}
       </div>
 
-      {activeTab === 'live' ? (
+      {activeTab === 'live' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {/* Composite signals */}
           <SignalPanel snapshot={signalSnapshot} />
@@ -177,11 +235,16 @@ export default function MarginEngine() {
           {/* Open positions */}
           <PositionsPanel positions={openPositions} />
         </div>
-      ) : (
+      )}
+      {activeTab === 'history' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {/* Closed positions history */}
+          {/* Closed positions from current session (memory) */}
           <PositionsPanel positions={closedPositions} />
         </div>
+      )}
+      {activeTab === 'trades' && (
+        /* Full DB history with per-trade entry/exit conditions */
+        <TradeTimelinePanel api={api} />
       )}
     </div>
   );

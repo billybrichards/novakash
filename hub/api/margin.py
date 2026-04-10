@@ -4,9 +4,11 @@ Margin Engine & V3 Composite Signal proxy endpoints.
 Forwards requests to the margin engine (eu-west-2) and TimesFM v3 service
 so the frontend can access them through the Hub's auth layer.
 
-GET  /api/margin/status     — margin engine portfolio + positions
-GET  /api/v3/snapshot       — v3 composite signal scores (all timescales)
-GET  /api/v3/health         — v3 system health
+GET  /api/margin/status              — margin engine portfolio + positions
+GET  /api/margin/logs                — recent log lines (filterable)
+GET  /api/margin/positions/history   — paginated closed-position history (Trade Timeline tab)
+GET  /api/v3/snapshot                — v3 composite signal scores (all timescales)
+GET  /api/v3/health                  — v3 system health
 """
 
 from __future__ import annotations
@@ -67,6 +69,34 @@ async def margin_logs(
         MARGIN_ENGINE_URL, "/logs",
         {"limit": limit, "level": level, "since_minutes": since_minutes},
     )
+
+
+@router.get("/margin/positions/history")
+async def margin_positions_history(
+    limit: int = Query(default=25, le=100, ge=1),
+    offset: int = Query(default=0, ge=0),
+    side: str | None = Query(default=None, pattern="^(LONG|SHORT)$"),
+    outcome: str | None = Query(default=None, pattern="^(win|loss)$"),
+    exit_reason: str | None = Query(default=None),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    Proxy to margin engine — paginated closed-position history.
+
+    FastAPI's `pattern=` constraints reject malformed input at the Hub
+    boundary so the engine never sees garbage. exit_reason is a free-form
+    CSV (e.g. "TAKE_PROFIT,STOP_LOSS"); the engine validates internally.
+
+    Returns: { rows: [...], total: int, limit: int, offset: int }
+    """
+    params = {"limit": limit, "offset": offset}
+    if side:
+        params["side"] = side
+    if outcome:
+        params["outcome"] = outcome
+    if exit_reason:
+        params["exit_reason"] = exit_reason
+    return await _proxy_get(MARGIN_ENGINE_URL, "/history", params)
 
 
 # ─── V3 Composite Signals ──────────────────────────────────────────────────

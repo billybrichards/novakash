@@ -68,25 +68,106 @@ async def run() -> None:
     signal_recorder = AsyncPgSignalRecorder(signal_repo, asyncio.get_running_loop())
     signal_recorder.start()
 
-    # ── Exchange adapter ──
-    if settings.paper_mode:
+    # ── Exchange adapter (2x2 matrix: paper × venue) ──
+    # paper_mode and exchange_venue are orthogonal:
+    #   paper + binance     → PaperExchangeAdapter, Binance fee model, no external price
+    #   paper + hyperliquid → PaperExchangeAdapter, HL fee model + HL price feed
+    #   live  + binance     → BinanceMarginAdapter (existing, unchanged)
+    #   live  + hyperliquid → NotImplementedError (signing layer is a follow-up)
+    venue = settings.exchange_venue
+    paper = settings.paper_mode
+    price_feed = None  # set in the HL paper branch only — must be reachable from shutdown
+    effective_fee_rate: float | None = None
+    effective_spread_bps: float | None = None
+
+    if paper and venue == "binance":
         from margin_engine.adapters.exchange.paper import PaperExchangeAdapter
+        effective_fee_rate = settings.effective_paper_fee_rate
+        effective_spread_bps = settings.effective_paper_spread_bps
         exchange = PaperExchangeAdapter(
             starting_balance=settings.starting_capital,
-            spread_bps=settings.paper_spread_bps,
-            fee_rate=settings.paper_fee_rate,
+            spread_bps=effective_spread_bps,
+            fee_rate=effective_fee_rate,
         )
+        price_feed_source = "internal"
         logger.info(
-            "Using PAPER exchange adapter (fee_rate=%.4f/side, spread=%.1fbp)",
-            settings.paper_fee_rate, settings.paper_spread_bps,
+            "Using PAPER exchange (Binance model): fee=%.5f/side spread=%.2fbp",
+            effective_fee_rate, effective_spread_bps,
         )
-    else:
+
+    elif paper and venue == "hyperliquid":
+        from margin_engine.adapters.exchange.paper import PaperExchangeAdapter
+        from margin_engine.adapters.exchange.hyperliquid_price_feed import (
+            HyperliquidPriceFeed,
+        )
+        effective_fee_rate = settings.effective_paper_fee_rate
+        effective_spread_bps = settings.effective_paper_spread_bps
+        price_feed = HyperliquidPriceFeed(
+            info_url=settings.hyperliquid_info_url,
+            asset=settings.hyperliquid_asset,
+            poll_interval_s=settings.hyperliquid_poll_interval_s,
+            freshness_s=settings.hyperliquid_price_freshness_s,
+        )
+        await price_feed.connect()
+        exchange = PaperExchangeAdapter(
+            starting_balance=settings.starting_capital,
+            spread_bps=effective_spread_bps,
+            fee_rate=effective_fee_rate,
+            price_getter=price_feed.get_price,
+        )
+        price_feed_source = "hyperliquid"
+        logger.info(
+            "Using PAPER exchange (Hyperliquid model): fee=%.5f/side spread=%.2fbp",
+            effective_fee_rate, effective_spread_bps,
+        )
+
+    elif (not paper) and venue == "binance":
         from margin_engine.adapters.exchange.binance_margin import BinanceMarginAdapter
         exchange = BinanceMarginAdapter(
             api_key=settings.binance_api_key,
             private_key_path=settings.binance_private_key_path,
         )
+        price_feed_source = "binance"
         logger.info("Using LIVE Binance margin adapter")
+
+    else:  # not paper and venue == "hyperliquid"
+        raise NotImplementedError(
+            "Live Hyperliquid trading is not yet supported. "
+            "Set MARGIN_PAPER_MODE=true to paper-trade Hyperliquid, or "
+            "MARGIN_EXCHANGE_VENUE=binance to trade live Binance."
+        )
+
+    # Closure that returns the freshest execution context for /status. Built
+    # AFTER all the locals above are bound so it captures live state like
+    # price_feed.is_healthy at call time, not boot time.
+    def build_execution_info() -> dict:
+        if price_feed is not None:
+            pf = price_feed.info()
+        else:
+            pf = {
+                "source": price_feed_source,
+                "healthy": True,
+                "last_price": None,
+                "last_price_age_s": None,
+                "asset": settings.hyperliquid_asset,
+            }
+        return {
+            "venue": venue,
+            "paper_mode": paper,
+            "fee_rate_per_side": effective_fee_rate,
+            "fee_rate_per_side_bps": (effective_fee_rate * 10000)
+            if effective_fee_rate is not None
+            else None,
+            "round_trip_fee_bps": (effective_fee_rate * 20000)
+            if effective_fee_rate is not None
+            else None,
+            "spread_bps": effective_spread_bps,
+            "price_feed": pf,
+            "strategy": "v2-probability",
+            "regime_threshold": settings.regime_threshold,
+            "regime_timescale": settings.regime_timescale,
+            "min_conviction": settings.probability_min_conviction,
+        }
 
     # ── Signal adapter ──
     from margin_engine.adapters.signal.ws_signal import WsSignalAdapter
@@ -160,6 +241,8 @@ async def run() -> None:
         bet_fraction=settings.bet_fraction,
         stop_loss_pct=settings.stop_loss_pct,
         take_profit_pct=settings.take_profit_pct,
+        venue=venue,
+        strategy_version="v2-probability",
     )
 
     manage_uc = ManagePositionsUseCase(
@@ -171,8 +254,17 @@ async def run() -> None:
     )
 
     # ── Status HTTP server (for dashboard proxy) ──
+    # Pass position_repo so /history works, and execution_info_fn so /status
+    # surfaces venue/fee/price-feed health for the dashboard.
     from margin_engine.infrastructure.status_server import StatusServer
-    status_server = StatusServer(portfolio, exchange, port=settings.status_port, log_repo=log_repo)
+    status_server = StatusServer(
+        portfolio,
+        exchange,
+        port=settings.status_port,
+        log_repo=log_repo,
+        position_repo=repo,
+        execution_info_fn=build_execution_info,
+    )
     await status_server.start()
 
     # ── Graceful shutdown ──
@@ -224,6 +316,9 @@ async def run() -> None:
         # Disconnect WS first so no new messages arrive while flushing buffers
         await signal_adapter.disconnect()
         await probability_adapter.disconnect()
+        # Hyperliquid price feed only exists in paper+hyperliquid wiring path
+        if price_feed is not None:
+            await price_feed.disconnect()
         await signal_recorder.stop()  # flush remaining signals before pool closes
         await log_handler.stop()  # flush remaining logs before pool closes
         if hasattr(exchange, "close"):
