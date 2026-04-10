@@ -4,17 +4,22 @@ import { T } from './components/constants.js';
 import PositionsPanel from './components/PositionsPanel.jsx';
 import SignalPanel from './components/SignalPanel.jsx';
 
-/**
- * MarginEngine — Binance 5x cross-margin dashboard.
- *
- * Two tabs:
- *   - Live: Portfolio stats, open positions, composite signals, P&L
- *   - History: Closed positions, daily P&L breakdown, win rate trends
- *
- * Data sources:
- *   - /api/margin/status     — Portfolio state, positions, P&L
- *   - /api/v3/snapshot       — Composite signal scores (proxied from TimesFM)
- */
+function StatusDot({ active, label, activeText, inactiveText, amber }) {
+  const color = active ? T.green : amber ? T.amber : T.red;
+  const text = active ? activeText : inactiveText;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+      <div style={{
+        width: 6, height: 6, borderRadius: '50%', background: color,
+        boxShadow: `0 0 6px ${color}88`,
+        animation: active ? 'none' : 'pulse 2s infinite',
+      }} />
+      <span style={{ fontSize: 9, color: T.textMuted, fontWeight: 600 }}>{label}:</span>
+      <span style={{ fontSize: 9, color, fontWeight: 700, fontFamily: T.mono }}>{text}</span>
+    </div>
+  );
+}
+
 export default function MarginEngine() {
   const api = useApi();
   const [activeTab, setActiveTab] = useState('live');
@@ -61,10 +66,14 @@ export default function MarginEngine() {
     ? (closedPositions.filter(p => p.realised_pnl > 0).length / closedPositions.length * 100).toFixed(1)
     : '—';
 
+  const engineOnline = !!marginData;
+  const signalsOnline = signalSnapshot?.timescales && Object.values(signalSnapshot.timescales).some(v => v !== null);
+  const killSwitch = portfolio.kill_switch;
+
   return (
     <div style={{ padding: '16px 20px', maxWidth: 1400, margin: '0 auto' }}>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <div>
           <h1 style={{ fontSize: 16, fontWeight: 800, color: T.white, margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
             Binance Margin Engine
@@ -80,7 +89,7 @@ export default function MarginEngine() {
             }}>5x CROSS</span>
           </h1>
           <p style={{ fontSize: 9, color: T.textMuted, margin: '2px 0 0' }}>
-            Composite signal → Binance margin | eu-west-2
+            Composite signal &rarr; Binance margin | eu-west-2
           </p>
         </div>
 
@@ -98,6 +107,31 @@ export default function MarginEngine() {
         </div>
       </div>
 
+      {/* Status bar — connection indicators */}
+      <div style={{
+        display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap',
+        padding: '8px 14px', marginBottom: 12, borderRadius: 6,
+        background: 'rgba(15,23,42,0.6)', border: `1px solid ${T.cardBorder}`,
+      }}>
+        <StatusDot active={engineOnline} label="Engine" activeText="Connected" inactiveText="Offline" />
+        <StatusDot active={signalsOnline} label="Signal Feed" activeText="Receiving" inactiveText="Waiting" amber={!signalsOnline && engineOnline} />
+        <StatusDot active={!killSwitch} label="Kill Switch" activeText="OK" inactiveText="TRIGGERED" />
+        {portfolio.paper_mode && (
+          <span style={{
+            marginLeft: 'auto', fontSize: 9, fontWeight: 800, letterSpacing: '0.1em',
+            color: T.purple, fontFamily: T.mono,
+            padding: '3px 10px', borderRadius: 4,
+            background: 'rgba(168,85,247,0.1)', border: '1px solid rgba(168,85,247,0.25)',
+            animation: 'pulse 3s infinite',
+          }}>PAPER TRADING</span>
+        )}
+        {portfolio.consecutive_losses > 0 && (
+          <span style={{ fontSize: 9, color: T.amber, fontFamily: T.mono }}>
+            {portfolio.consecutive_losses} consecutive loss{portfolio.consecutive_losses > 1 ? 'es' : ''}
+          </span>
+        )}
+      </div>
+
       {error && (
         <div style={{ padding: '8px 12px', marginBottom: 12, borderRadius: 6, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', fontSize: 10, color: T.red }}>
           {error}
@@ -105,18 +139,20 @@ export default function MarginEngine() {
       )}
 
       {/* Stats row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 16 }}>
         {[
           { label: 'BALANCE', value: `$${(portfolio.balance || 500).toFixed(2)}`, color: T.white },
           { label: 'EXPOSURE', value: `$${(portfolio.exposure || 0).toFixed(2)}`, sub: `${((portfolio.exposure || 0) / (portfolio.balance || 500) * 100).toFixed(0)}% of capital`, color: T.cyan },
+          { label: 'LEVERAGE', value: `${((portfolio.exposure || 0) / (portfolio.balance || 500)).toFixed(1)}x`, sub: `of ${portfolio.leverage || 5}x max`, color: T.blue },
           { label: 'OPEN', value: openPositions.length, color: T.cyan },
           { label: 'TOTAL P&L', value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}`, color: totalPnl >= 0 ? T.green : T.red },
           { label: 'WIN RATE', value: typeof winRate === 'string' ? winRate : `${winRate}%`, color: parseFloat(winRate) > 60 ? T.green : T.amber },
+          { label: 'DAILY P&L', value: `${(portfolio.daily_pnl || 0) >= 0 ? '+' : ''}$${(portfolio.daily_pnl || 0).toFixed(2)}`, color: (portfolio.daily_pnl || 0) >= 0 ? T.green : T.red },
           { label: 'TRADES', value: closedPositions.length, color: T.textMuted },
         ].map(({ label, value, sub, color }) => (
           <div key={label} style={{ background: T.card, border: `1px solid ${T.cardBorder}`, borderRadius: 8, padding: '10px 12px' }}>
             <div style={{ fontSize: 8, color: T.textMuted, fontWeight: 700, letterSpacing: '0.08em', marginBottom: 4 }}>{label}</div>
-            <div style={{ fontSize: 20, fontWeight: 900, fontFamily: T.mono, color }}>{value}</div>
+            <div style={{ fontSize: 18, fontWeight: 900, fontFamily: T.mono, color }}>{value}</div>
             {sub && <div style={{ fontSize: 8, color: T.textDim, marginTop: 2 }}>{sub}</div>}
           </div>
         ))}

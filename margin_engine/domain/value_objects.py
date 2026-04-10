@@ -152,3 +152,36 @@ class StopLevel:
             raise ValueError(f"StopLevel price must be positive: {self.price}")
         if self.is_trailing and self.trail_pct <= 0:
             raise ValueError(f"Trailing stop needs positive trail_pct: {self.trail_pct}")
+
+
+@dataclass(frozen=True)
+class FillResult:
+    """
+    Result of a filled market order.
+
+    Carries exchange ground truth so the caller doesn't have to estimate fees
+    or filled notional after the fact. For paper mode, the adapter populates
+    these from its own simulation — they're still "actual" in that the paper
+    calculation IS the paper outcome.
+
+    commission is always expressed in USDT-equivalent. commission_asset
+    records the original asset the fee was paid in (e.g. "USDT", "BNB")
+    for audit purposes. commission_is_actual is True when the value came
+    from the exchange's fill response; False when it's a fallback estimate
+    (e.g. the exchange returned no fills array, or the commission was in an
+    unrecognized asset that we couldn't convert to USDT).
+    """
+    order_id: str
+    fill_price: Price
+    filled_notional: float           # actual USDT filled (sum of price * qty across fills)
+    commission: float = 0.0          # USDT-equivalent, always non-negative
+    commission_asset: str = "USDT"
+    commission_is_actual: bool = False
+
+    def __post_init__(self) -> None:
+        if self.commission < 0:
+            raise ValueError(f"Commission cannot be negative: {self.commission}")
+        if self.filled_notional < 0:
+            raise ValueError(f"Filled notional cannot be negative: {self.filled_notional}")
+        if math.isnan(self.commission) or math.isinf(self.commission):
+            raise ValueError(f"Commission must be finite: {self.commission}")

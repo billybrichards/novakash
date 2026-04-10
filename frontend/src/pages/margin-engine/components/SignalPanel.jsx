@@ -63,20 +63,45 @@ function TimescaleCard({ timescale, data }) {
 
 export default function SignalPanel({ snapshot }) {
   const timescales = snapshot?.timescales || {};
+  const hasData = Object.values(timescales).some(v => v !== null);
 
   return (
     <div style={{ background: T.card, border: `1px solid ${T.cardBorder}`, borderRadius: 8, overflow: 'hidden' }}>
-      <div style={{ padding: '10px 14px', borderBottom: `1px solid ${T.cardBorder}`, background: T.headerBg }}>
-        <span style={{ fontSize: 11, fontWeight: 700, color: T.text }}>COMPOSITE SIGNALS</span>
-        <span style={{ fontSize: 9, color: T.textMuted, marginLeft: 8 }}>v3 | 7 signals × 9 timescales</span>
+      <div style={{ padding: '10px 14px', borderBottom: `1px solid ${T.cardBorder}`, background: T.headerBg, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <span style={{ fontSize: 11, fontWeight: 700, color: T.text }}>COMPOSITE SIGNALS</span>
+          <span style={{ fontSize: 9, color: T.textMuted, marginLeft: 8 }}>v3 | 7 signals × 4 timescales</span>
+        </div>
+        {!hasData && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <div style={{
+              width: 5, height: 5, borderRadius: '50%', background: T.amber,
+              animation: 'signalPulse 1.5s infinite',
+            }} />
+            <span style={{ fontSize: 8, color: T.amber, fontFamily: T.mono, fontWeight: 600 }}>CONNECTING</span>
+          </div>
+        )}
       </div>
       <div style={{ padding: 12 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
-          {SHORT_TERM.map(ts => (
-            <TimescaleCard key={ts} timescale={ts} data={timescales[ts]} />
-          ))}
-        </div>
+        {!hasData ? (
+          <div style={{ textAlign: 'center', padding: '16px 0' }}>
+            <div style={{ fontSize: 9, color: T.textMuted, marginBottom: 4 }}>Waiting for v3 signal feed...</div>
+            <div style={{ fontSize: 8, color: T.textDim }}>Signals will appear once the TimesFM connection is established</div>
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
+            {SHORT_TERM.map(ts => (
+              <TimescaleCard key={ts} timescale={ts} data={timescales[ts]} />
+            ))}
+          </div>
+        )}
       </div>
+      <style>{`
+        @keyframes signalPulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.3; }
+        }
+      `}</style>
     </div>
   );
 }

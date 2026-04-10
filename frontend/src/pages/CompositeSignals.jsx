@@ -98,15 +98,18 @@ export default function CompositeSignals() {
   const [snapshot, setSnapshot] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [lastGoodSnapshot, setLastGoodSnapshot] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
-      // Proxy through hub API which forwards to TimesFM
       const res = await api('GET', '/api/v3/snapshot?asset=BTC');
-      setSnapshot(res?.data ?? null);
+      const data = res?.data ?? null;
+      setSnapshot(data);
+      if (data?.timescales) setLastGoodSnapshot(data);
       setError(null);
     } catch (e) {
       setError(e.message);
+      // Keep showing stale data if we had it
     }
     finally { setLoading(false); }
   }, [api]);
@@ -119,7 +122,9 @@ export default function CompositeSignals() {
 
   if (loading) return <div style={{ color: T.label, padding: 40, fontFamily: T.mono }}>Loading composite signals...</div>;
 
-  const timescales = snapshot?.timescales || {};
+  const displaySnapshot = snapshot || lastGoodSnapshot;
+  const timescales = displaySnapshot?.timescales || {};
+  const isStale = !snapshot && !!lastGoodSnapshot;
   const shortTerm = ['5m', '15m', '1h', '4h'];
   const longTerm = ['24h', '48h', '72h', '1w', '2w'];
 
@@ -130,12 +135,41 @@ export default function CompositeSignals() {
           <h1 style={{ fontSize: 18, fontWeight: 800, color: '#fff', margin: 0 }}>V3 Composite Signals</h1>
           <p style={{ fontSize: 10, color: T.label, margin: '4px 0 0' }}>7-signal fusion across 9 timescales</p>
         </div>
-        {error && (
-          <div style={{ fontSize: 9, color: T.loss, padding: '4px 8px', background: 'rgba(239,68,68,0.1)', borderRadius: 4 }}>
-            {error}
-          </div>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {isStale && (
+            <div style={{ fontSize: 9, color: T.warning, padding: '4px 8px', background: 'rgba(234,179,8,0.1)', borderRadius: 4, border: '1px solid rgba(234,179,8,0.2)' }}>
+              STALE — showing last known data
+            </div>
+          )}
+          {error && !displaySnapshot && (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 6,
+              fontSize: 10, color: T.cyan, padding: '8px 12px',
+              background: 'rgba(6,182,212,0.08)', borderRadius: 6, border: '1px solid rgba(6,182,212,0.2)',
+            }}>
+              <div style={{
+                width: 6, height: 6, borderRadius: '50%', background: T.cyan,
+                animation: 'pulse 1.5s infinite',
+              }} />
+              Connecting to signal service...
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* Connection error banner — only if no data at all */}
+      {error && !displaySnapshot && (
+        <div style={{
+          padding: '20px', marginBottom: 20, borderRadius: 10, textAlign: 'center',
+          background: 'rgba(6,182,212,0.05)', border: '1px solid rgba(6,182,212,0.15)',
+        }}>
+          <div style={{ fontSize: 24, marginBottom: 8, opacity: 0.6 }}>📡</div>
+          <div style={{ fontSize: 12, color: '#fff', fontWeight: 700, marginBottom: 4 }}>Signal Service Connecting</div>
+          <div style={{ fontSize: 10, color: T.label }}>
+            The v3 composite signal feed is starting up. Data will appear automatically once the connection is established.
+          </div>
+        </div>
+      )}
 
       {/* Short-term timescales */}
       <div style={{ fontSize: 10, fontWeight: 700, color: T.label, marginBottom: 8, letterSpacing: '0.08em' }}>SHORT-TERM (IN-MEMORY)</div>
@@ -152,6 +186,13 @@ export default function CompositeSignals() {
           <TimescaleCard key={ts} timescale={ts} data={timescales[ts]} />
         ))}
       </div>
+
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+      `}</style>
     </div>
   );
 }

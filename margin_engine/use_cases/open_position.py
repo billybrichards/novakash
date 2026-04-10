@@ -61,7 +61,7 @@ class OpenPositionUseCase:
         """
         # 1. Signal strength check
         if signal.strength < self._signal_threshold:
-            logger.debug(
+            logger.info(
                 "Signal too weak: %.3f < %.3f (%s)",
                 signal.strength, self._signal_threshold, signal.timescale,
             )
@@ -70,7 +70,7 @@ class OpenPositionUseCase:
         # 2. Compute position size
         balance = await self._exchange.get_balance()
         collateral = Money.usd(balance.amount * self._bet_fraction)
-        notional = collateral * self._portfolio.leverage
+        requested_notional = collateral * self._portfolio.leverage
 
         # 3. Portfolio risk gate
         allowed, reason = self._portfolio.can_open_position(collateral)
@@ -78,39 +78,57 @@ class OpenPositionUseCase:
             logger.info("Position blocked by risk gate: %s", reason)
             return None
 
-        # 4. Get current price for stop levels
-        current_price = await self._exchange.get_current_price("BTCUSDT")
         side = signal.suggested_side
 
-        # 5. Compute stop levels
-        stop_loss = self._compute_stop_loss(current_price, side)
-        take_profit = self._compute_take_profit(current_price, side)
-
-        # 6. Create position entity
+        # 4. Create position entity (stops assigned AFTER fill — see step 6)
         position = Position(
             asset=signal.asset,
             side=side,
             leverage=self._portfolio.leverage,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
             entry_signal_score=signal.score,
             entry_timescale=signal.timescale,
         )
         self._portfolio.add_position(position)
 
-        # 7. Place order
+        # 5. Place order
         try:
-            order_id, fill_price = await self._exchange.place_market_order(
+            fill = await self._exchange.place_market_order(
                 symbol=f"{signal.asset}USDT",
                 side=side,
-                notional=notional,
+                notional=requested_notional,
             )
-            position.confirm_entry(fill_price, notional, collateral, order_id)
+
+            # Use the exchange's actual filled notional, not what we requested.
+            # For Binance quoteOrderQty orders this can differ by the lot-size
+            # rounding amount. Using the real number keeps P&L math consistent.
+            actual_notional = (
+                Money.usd(fill.filled_notional)
+                if fill.filled_notional > 0
+                else requested_notional
+            )
+
+            position.confirm_entry(
+                price=fill.fill_price,
+                notional=actual_notional,
+                collateral=collateral,
+                order_id=fill.order_id,
+                commission=fill.commission,
+                commission_is_actual=fill.commission_is_actual,
+            )
+
+            # 6. Compute stops from the ACTUAL fill price, not a pre-order estimate.
+            # In fast markets the fill can slip meaningfully from the last-trade
+            # ticker, and anchoring stops to fill_price guarantees the configured
+            # stop_loss_pct matches the real risk.
+            position.stop_loss = self._compute_stop_loss(fill.fill_price, side)
+            position.take_profit = self._compute_take_profit(fill.fill_price, side)
+
             await self._repo.save(position)
             await self._alerts.send_trade_opened(position)
             logger.info(
-                "Position opened: %s %s @ %.2f, notional=%.2f, signal=%.3f",
-                side.value, signal.asset, fill_price.value, notional.amount, signal.score,
+                "Position opened: %s %s @ %.2f, notional=%.2f, commission=%.4f (actual=%s), signal=%.3f",
+                side.value, signal.asset, fill.fill_price.value, actual_notional.amount,
+                fill.commission, fill.commission_is_actual, signal.score,
             )
             return position
 
@@ -118,7 +136,8 @@ class OpenPositionUseCase:
             logger.error("Order placement failed: %s", e)
             await self._alerts.send_error(f"Order failed: {e}")
             # Remove from portfolio since it never filled
-            self._portfolio.positions.remove(position)
+            if position in self._portfolio.positions:
+                self._portfolio.positions.remove(position)
             return None
 
     def _compute_stop_loss(self, price: Price, side: TradeSide) -> StopLevel:

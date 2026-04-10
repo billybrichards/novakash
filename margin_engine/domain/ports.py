@@ -13,6 +13,7 @@ from typing import Optional
 from margin_engine.domain.entities.position import Position
 from margin_engine.domain.value_objects import (
     CompositeSignal,
+    FillResult,
     Money,
     Price,
     TradeSide,
@@ -28,9 +29,10 @@ class ExchangePort(abc.ABC):
         symbol: str,
         side: TradeSide,
         notional: Money,
-    ) -> tuple[str, Price]:
+    ) -> FillResult:
         """
-        Place a market order. Returns (order_id, fill_price).
+        Place a market order. Returns a FillResult with exchange ground truth:
+        actual filled notional, real commission, etc.
         Raises ExchangeError on failure.
         """
         ...
@@ -41,10 +43,12 @@ class ExchangePort(abc.ABC):
         symbol: str,
         side: TradeSide,
         notional: Money,
-    ) -> tuple[str, Price]:
+    ) -> FillResult:
         """
         Close a position with a market order in the opposite direction.
-        Returns (order_id, fill_price).
+        Returns a FillResult with exchange ground truth. The `side` argument
+        is the side of the position BEING CLOSED — the adapter flips it to
+        determine the order direction.
         """
         ...
 
@@ -55,7 +59,42 @@ class ExchangePort(abc.ABC):
 
     @abc.abstractmethod
     async def get_current_price(self, symbol: str) -> Price:
-        """Get current market price."""
+        """
+        Get a reference mid/last price. Prefer get_mark() for stop-loss and
+        take-profit evaluation — this is a convenience for cases that just
+        want "a recent price" without caring about bid/ask side.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def get_mark(self, symbol: str, side: TradeSide) -> Price:
+        """
+        Return the price at which a position of the given side would CLOSE.
+        For LONG positions: returns the bid (you'd sell into it).
+        For SHORT positions: returns the ask (you'd buy from it).
+
+        This is the price stop-loss and take-profit evaluation should compare
+        against — NOT the last-trade ticker, which can be stale or reflect
+        a print on the opposite side of the book. The difference matters
+        during fast moves or thin books.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def get_unrealised_pnl(self, position: Position) -> float:
+        """
+        Net unrealised P&L if the position closed right now, inclusive of:
+          - entry commission (already paid)
+          - estimated exit commission at current fee rate
+          - accrued borrow interest over the hold duration
+
+        Returns signed float (positive = in profit), denominated in USDT.
+
+        Live mode queries Binance bookTicker for the mark and uses stored
+        actual entry commission. Paper mode uses its modeled spread.
+        Per-position interest is still an estimate in both modes because
+        Binance cross-margin doesn't report interest per position.
+        """
         ...
 
 
