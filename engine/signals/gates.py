@@ -95,6 +95,29 @@ class GateContext:
     gamma_up_price: Optional[float] = None
     gamma_down_price: Optional[float] = None
 
+    # v11.1: extra scalars needed to build the v5 push-mode feature body
+    # from inside the DUNE gate. The strategy populates these at context
+    # construction time (near five_min_vpin.py:624) so that
+    # DuneConfidenceGate can build an identical V5FeatureBody to the one
+    # the strategy's own v8.1 fetch builds. Train/serve parity across
+    # both decision-path call sites depends on these being set.
+    twap_delta: Optional[float] = None        # TWAP delta percentage from twap_result
+    tiingo_close: Optional[float] = None      # Tiingo REST candle close price
+    current_price: Optional[float] = None     # Binance last price at eval time
+    chainlink_price: Optional[float] = None   # Chainlink spot (when available)
+    delta_source: Optional[str] = None        # "binance" | "chainlink" | "tiingo" raw string
+    prev_v2_probability_up: Optional[float] = None  # For v2_logit — prior scorer output
+
+    # v11.1: Pre-built V5 feature body, attached by the strategy. When
+    # set, DuneConfidenceGate calls the scorer with this body directly
+    # instead of rebuilding one from the scalar GateContext fields.
+    # None means "build it from scalars at gate time" as a fallback,
+    # which happens if the strategy didn't populate it (old callers,
+    # test harnesses, etc.). Typed as Any to avoid a circular import
+    # with signals.v2_feature_body — the DUNE gate type-checks it
+    # locally when it uses it.
+    v5_features: Optional[object] = None
+
 
 # ── Gate Protocol ───────────────────────────────────────────────────────────
 
@@ -393,10 +416,55 @@ class DuneConfidenceGate:
 
         seconds_to_close = ctx.eval_offset or 60
         try:
+            from signals.v2_feature_body import (
+                V5FeatureBody,
+                build_v5_feature_body,
+                confidence_from_result,
+            )
+
+            # Prefer the strategy-built body attached to GateContext —
+            # this is the single source of truth for feature extraction
+            # and guarantees the DUNE gate sees the exact same feature
+            # vector the v8.1 fetch sees. If it's missing (old callers,
+            # unit tests, etc.), fall back to rebuilding from the
+            # enriched GateContext scalars. The fallback may have lower
+            # coverage but uses the same `build_v5_feature_body` helper
+            # so the extraction logic is never duplicated.
+            #
+            # Gate booleans in the v10 pipeline have different semantics
+            # than the v8.0 `signal_evaluations` columns the v5 model
+            # trained on, so they stay None here regardless of which
+            # path we take — the scorer gets NaN for those and
+            # LightGBM's missing-default branch handles it exactly as
+            # in training.
+            _gate_features: Optional[V5FeatureBody] = None
+            if isinstance(ctx.v5_features, V5FeatureBody):
+                _gate_features = ctx.v5_features
+            else:
+                _gate_features = build_v5_feature_body(
+                    eval_offset=float(seconds_to_close),
+                    vpin=ctx.vpin,
+                    delta_pct=ctx.delta_pct,
+                    twap_delta=ctx.twap_delta,
+                    clob_up_price=ctx.gamma_up_price,
+                    clob_down_price=ctx.gamma_down_price,
+                    binance_price=ctx.current_price,
+                    chainlink_price=ctx.chainlink_price,
+                    tiingo_close=ctx.tiingo_close,
+                    delta_binance=ctx.delta_binance,
+                    delta_chainlink=ctx.delta_chainlink,
+                    delta_tiingo=ctx.delta_tiingo,
+                    regime=ctx.regime,
+                    delta_source=ctx.delta_source,
+                    prev_v2_probability_up=ctx.prev_v2_probability_up,
+                    # gate_* intentionally omitted — see note above.
+                )
+
             _model = os.environ.get("V10_DUNE_MODEL", "oak")
-            result = await self._client.get_probability(
+            result = await self._client.score_with_features(
                 asset=ctx.asset,
                 seconds_to_close=seconds_to_close,
+                features=_gate_features,
                 model=_model,
             )
         except Exception as exc:
@@ -416,8 +484,12 @@ class DuneConfidenceGate:
         p_up = float(result["probability_up"])
         dune_p = p_up if ctx.agreed_direction == "UP" else (1.0 - p_up)
 
-        # v11.0: Extract TimesFM confidence for dynamic gating
-        timesfm_conf = float(result.get("timesfm", {}).get("confidence", 0.93)) if result.get("timesfm") else 0.93
+        # v11.1: Extract confidence via the shared helper — prefers a
+        # scorer-emitted top-level `confidence` field, falls back to
+        # max(p, 1-p). Reading `result["timesfm"]["confidence"]` as
+        # P(UP) confidence was the v11 bug — that field is the v1
+        # forecaster's own metric, not confidence in this call.
+        timesfm_conf = confidence_from_result(result)
 
         # Store in context for downstream gates
         ctx.dune_probability_up = p_up
