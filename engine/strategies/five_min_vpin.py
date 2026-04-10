@@ -1486,14 +1486,35 @@ class FiveMinVPINStrategy(BaseStrategy):
                 _v2_high = _v2_p > 0.65 or _v2_p < 0.35
                 _v2_agrees = (_v2_dir == _v8_dir)
 
+                # v11.0: Extract TimesFM confidence for dynamic gating
+                _timesfm = _v2_result.get("timesfm", {})
+                _v2_conf = float(_timesfm.get("confidence", 0.93)) if _timesfm else 0.93
+
+                # v11.0: Dynamic confidence-based threshold
+                _v2_conf = float(_v2_result.get("timesfm", {}).get("confidence", 0.93)) if _v2_result.get("timesfm") else 0.93
+                if _v2_conf >= 0.90:
+                    _v2_dynamic_threshold = 0.55
+                    _v2_dynamic_high = _v2_p >= _v2_dynamic_threshold
+                elif _v2_conf >= 0.80:
+                    _v2_dynamic_threshold = 0.58
+                    _v2_dynamic_high = _v2_p >= _v2_dynamic_threshold
+                elif _v2_conf >= 0.70:
+                    _v2_dynamic_threshold = 0.60
+                    _v2_dynamic_high = _v2_p >= _v2_dynamic_threshold
+                else:
+                    _v2_dynamic_threshold = 0.65
+                    _v2_dynamic_high = _v2_p > 0.65 or _v2_p < 0.35  # Old HIGH confidence
+
                 # Store in snapshot for analysis
                 window_snapshot["v2_probability_up"] = round(_v2_p, 4)
                 window_snapshot["v2_direction"] = _v2_dir
                 window_snapshot["v2_agrees"] = _v2_agrees
                 window_snapshot["v2_model_version"] = _v2_result.get("model_version", "")
+                window_snapshot["v2_confidence"] = round(_v2_conf, 4)  # v11.0: TimesFM confidence
+                window_snapshot["v2_dynamic_threshold"] = round(_v2_dynamic_threshold, 4)  # v11.0: Dynamic threshold
+                window_snapshot["v2_dynamic_high"] = _v2_dynamic_high  # v11.0: Dynamic HIGH flag
                 window_snapshot["eval_offset"] = eval_offset
                 # v2.2: Store full quantile surface
-                _timesfm = _v2_result.get("timesfm", {})
                 if _timesfm and _timesfm.get("quantiles"):
                     import json
                     window_snapshot["v2_quantiles"] = json.dumps(_timesfm["quantiles"])
@@ -1515,7 +1536,9 @@ class FiveMinVPINStrategy(BaseStrategy):
                     v2_dir=_v2_dir,
                     v8_dir=_v8_dir,
                     agrees=_v2_agrees,
-                    high_conf=_v2_high,
+                    v2_conf=f"{_v2_conf:.2f}",  # v11.0: TimesFM confidence
+                    v2_dynamic_high=_v2_dynamic_high,  # v11.0: Dynamic HIGH flag
+                    v2_threshold=f"{_v2_dynamic_threshold:.2f}",  # v11.0: Dynamic threshold
                     cap=_v81_cap,
                 )
 
@@ -1529,10 +1552,11 @@ class FiveMinVPINStrategy(BaseStrategy):
                     signal.v81_entry_cap = _v9_cap
                     _order_type = os.environ.get("ORDER_TYPE", "FAK").upper()
                     signal.entry_reason = f"v9_{_v9_tier}_T{eval_offset}_{_order_type}"
-                # Gate 1: v2.2 must be HIGH confidence (all offsets)
-                elif not _v2_high:
+                # v11.0: Gate 1 - v2.2 dynamic confidence gating
+                # High confidence (>=0.90) allows lower P(UP) threshold (0.55 vs 0.65)
+                elif not _v2_dynamic_high:
                     signal = None
-                    self._last_skip_reason = f"v2.2 LOW conf ({_v2_p:.2f}) at T-{eval_offset}"
+                    self._last_skip_reason = f"v2.2 conf={_v2_conf:.2f}, P={_v2_p:.3f} < {_v2_dynamic_threshold:.2f} at T-{eval_offset}"
                 # Gate 2: v2.2 must agree with v8 direction (all offsets)
                 elif not _v2_agrees:
                     signal = None
