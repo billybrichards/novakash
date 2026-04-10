@@ -87,6 +87,17 @@ export default function MarginEngine() {
               fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
               background: 'rgba(59,130,246,0.15)', color: T.blue, border: '1px solid rgba(59,130,246,0.3)',
             }}>5x CROSS</span>
+            {signalSnapshot?.model?.model_family && (
+              <span
+                title={signalSnapshot.model.model_version || ''}
+                style={{
+                  fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
+                  background: 'rgba(168,85,247,0.15)', color: T.purple,
+                  border: '1px solid rgba(168,85,247,0.3)',
+                  fontFamily: T.mono, letterSpacing: '0.04em',
+                }}
+              >{signalSnapshot.model.model_family}</span>
+            )}
           </h1>
           <p style={{ fontSize: 9, color: T.textMuted, margin: '2px 0 0' }}>
             Composite signal &rarr; Binance margin | eu-west-2
