@@ -16,6 +16,7 @@ from margin_engine.domain.value_objects import (
     FillResult,
     Money,
     Price,
+    ProbabilitySignal,
     TradeSide,
 )
 
@@ -119,6 +120,43 @@ class SignalPort(abc.ABC):
     @abc.abstractmethod
     async def get_all_signals(self) -> dict[str, CompositeSignal]:
         """Get latest signals for all timescales."""
+        ...
+
+
+class ProbabilityPort(abc.ABC):
+    """
+    Interface for calibrated probability forecasts.
+
+    Distinct from SignalPort (v3 composite) because it's a fundamentally
+    different class of prediction: a trained classifier's P(window closes
+    up) rather than a heuristic blend. Kept as a separate port so the
+    composite can continue to serve its role as a regime/volatility filter
+    while directional conviction comes from the ML model.
+    """
+
+    @abc.abstractmethod
+    async def connect(self) -> None:
+        """Start the background poller."""
+        ...
+
+    @abc.abstractmethod
+    async def disconnect(self) -> None:
+        """Stop the background poller."""
+        ...
+
+    @abc.abstractmethod
+    async def get_latest(
+        self,
+        asset: str = "BTC",
+        timescale: str = "15m",
+    ) -> Optional[ProbabilitySignal]:
+        """
+        Most recent probability forecast, or None if stale/unavailable.
+
+        Returns None if the cached prediction is older than the freshness
+        window (default 120s) — better to skip a tick than trade on stale
+        ML output.
+        """
         ...
 
 

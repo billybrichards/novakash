@@ -71,8 +71,15 @@ async def run() -> None:
     # ── Exchange adapter ──
     if settings.paper_mode:
         from margin_engine.adapters.exchange.paper import PaperExchangeAdapter
-        exchange = PaperExchangeAdapter(starting_balance=settings.starting_capital)
-        logger.info("Using PAPER exchange adapter")
+        exchange = PaperExchangeAdapter(
+            starting_balance=settings.starting_capital,
+            spread_bps=settings.paper_spread_bps,
+            fee_rate=settings.paper_fee_rate,
+        )
+        logger.info(
+            "Using PAPER exchange adapter (fee_rate=%.4f/side, spread=%.1fbp)",
+            settings.paper_fee_rate, settings.paper_spread_bps,
+        )
     else:
         from margin_engine.adapters.exchange.binance_margin import BinanceMarginAdapter
         exchange = BinanceMarginAdapter(
@@ -124,6 +131,18 @@ async def run() -> None:
     if open_positions:
         logger.info("Restored %d open positions from DB", len(open_positions))
 
+    # ── Probability adapter (v2 ML direction signal) ──
+    from margin_engine.adapters.signal.probability_http import ProbabilityHttpAdapter
+    probability_adapter = ProbabilityHttpAdapter(
+        base_url=settings.probability_http_url,
+        asset=settings.probability_asset,
+        timescale=settings.probability_timescale,
+        seconds_to_close=settings.probability_seconds_to_close,
+        poll_interval_s=settings.probability_poll_interval_s,
+        freshness_seconds=settings.probability_freshness_s,
+    )
+    await probability_adapter.connect()
+
     # ── Use Cases ──
     from margin_engine.use_cases.open_position import OpenPositionUseCase
     from margin_engine.use_cases.manage_positions import ManagePositionsUseCase
@@ -133,7 +152,11 @@ async def run() -> None:
         portfolio=portfolio,
         repository=repo,
         alerts=alerts,
-        signal_threshold=settings.signal_threshold,
+        probability_port=probability_adapter,
+        signal_port=signal_adapter,
+        min_conviction=settings.probability_min_conviction,
+        regime_threshold=settings.regime_threshold,
+        regime_timescale=settings.regime_timescale,
         bet_fraction=settings.bet_fraction,
         stop_loss_pct=settings.stop_loss_pct,
         take_profit_pct=settings.take_profit_pct,
@@ -144,9 +167,7 @@ async def run() -> None:
         portfolio=portfolio,
         repository=repo,
         alerts=alerts,
-        signal_port=signal_adapter,
         trailing_stop_pct=settings.trailing_stop_pct,
-        signal_reversal_threshold=settings.signal_reversal_threshold,
     )
 
     # ── Status HTTP server (for dashboard proxy) ──
@@ -164,22 +185,25 @@ async def run() -> None:
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
-    # ── Main trading loop ──
+    # ── Main trading loop (v2 ML-directed) ──
     logger.info(
-        "Margin engine ready — trading on timescales: %s, threshold: %.2f",
-        settings.trading_timescales, settings.signal_threshold,
+        "Margin engine ready (v2) — ML direction from %s %s, "
+        "regime gate |composite_%s|>=%.2f, conviction>=%.2f",
+        settings.probability_timescale,
+        f"seconds_to_close={settings.probability_seconds_to_close}",
+        settings.regime_timescale, settings.regime_threshold,
+        settings.probability_min_conviction,
     )
 
     try:
         while not shutdown_event.is_set():
             try:
-                # 1. Check for new entry signals
-                for timescale in settings.trading_timescale_list:
-                    sig = await signal_adapter.get_latest_signal(timescale)
-                    if sig is not None:
-                        await open_uc.execute(sig)
+                # 1. Try to open a new position — the use case fetches
+                #    both the probability signal AND the composite regime
+                #    signal internally, so no per-timescale fan-out here.
+                await open_uc.execute()
 
-                # 2. Manage existing positions
+                # 2. Manage existing positions — price/time exits only.
                 closed = await manage_uc.tick()
                 for pos in closed:
                     logger.info(
@@ -199,6 +223,7 @@ async def run() -> None:
         await status_server.stop()
         # Disconnect WS first so no new messages arrive while flushing buffers
         await signal_adapter.disconnect()
+        await probability_adapter.disconnect()
         await signal_recorder.stop()  # flush remaining signals before pool closes
         await log_handler.stop()  # flush remaining logs before pool closes
         if hasattr(exchange, "close"):

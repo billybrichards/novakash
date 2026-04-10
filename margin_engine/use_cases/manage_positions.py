@@ -1,14 +1,23 @@
 """
-Use case: Manage open positions — check stops, trailing, expiry, signal reversals.
+Use case: Manage open positions — price and time-based exits only.
 
-Runs on a loop (typically every 1-2 seconds). For each open position, checks:
-  1. Stop-loss hit → close
-  2. Take-profit hit → close
-  3. Trailing stop update → adjust stop level
-  4. Max hold time expired → close
-  5. Signal reversal → close
+v2 (April 2026) removed the SIGNAL_REVERSAL exit path. In v1, 100% of 195
+closed positions exited via SIGNAL_REVERSAL, all at a loss exactly equal
+to the round-trip fee cost. The mechanism was deterministic: the v3
+composite oscillates on a ~4-minute cycle, so a position opened on a
+signal peak would see the composite revert through zero within its
+holding window and trip signal_reversal_threshold, exiting at the fee
+wall. Removing this exit lets the price thesis actually play out.
 
-This is the risk management hot path.
+Exit precedence (evaluated in order, first match wins):
+  1. Stop-loss hit          → STOP_LOSS
+  2. Take-profit hit        → TAKE_PROFIT
+  3. Max hold time expired  → MAX_HOLD_TIME
+  4. (SIGNAL_REVERSAL removed — do not add it back)
+
+The trailing stop is still updated when price moves favourably, but it
+only fires via the STOP_LOSS branch above — there's no separate
+TRAILING_STOP exit reason emitted.
 """
 from __future__ import annotations
 
@@ -22,10 +31,8 @@ from margin_engine.domain.ports import (
     AlertPort,
     ExchangePort,
     PositionRepository,
-    SignalPort,
 )
 from margin_engine.domain.value_objects import (
-    CompositeSignal,
     ExitReason,
     Money,
     PositionState,
@@ -51,17 +58,13 @@ class ManagePositionsUseCase:
         portfolio: Portfolio,
         repository: PositionRepository,
         alerts: AlertPort,
-        signal_port: SignalPort,
-        trailing_stop_pct: float = 0.01,
-        signal_reversal_threshold: float = -0.2,
+        trailing_stop_pct: float = 0.003,   # 0.3%, matched to 0.6% SL
     ) -> None:
         self._exchange = exchange
         self._portfolio = portfolio
         self._repo = repository
         self._alerts = alerts
-        self._signal_port = signal_port
         self._trailing_pct = trailing_stop_pct
-        self._reversal_threshold = signal_reversal_threshold
 
     async def tick(self) -> list[Position]:
         """
@@ -100,6 +103,13 @@ class ManagePositionsUseCase:
         `mark` is the close-side price (bid for LONG, ask for SHORT). All
         price-based checks compare against this, so stops and take-profits
         fire at the level we'd actually cross.
+
+        v2 change: no SIGNAL_REVERSAL branch. In v1 this was responsible
+        for 100% of 195 closed positions, all losing trades at the fee
+        wall. The calibrated ML probability used in OpenPositionUseCase
+        already encodes the expected reversal probability for the
+        forecast horizon, so using the composite as an interim exit
+        signal was double-counting noise.
         """
         price = mark.value
 
@@ -111,21 +121,14 @@ class ManagePositionsUseCase:
         if position.should_take_profit(price):
             return ExitReason.TAKE_PROFIT
 
-        # 3. Max hold time
+        # 3. Max hold time — this is the primary time-based exit. For
+        # 15m-horizon trades the max_hold_seconds should be set close to
+        # the window close (around 900s) so the position naturally exits
+        # when the prediction horizon expires. This IS the "exit when the
+        # forecast is resolved" behaviour, in the language the Position
+        # entity already speaks.
         if position.is_expired():
             return ExitReason.MAX_HOLD_TIME
-
-        # 4. Signal reversal — check if composite score has flipped.
-        # Note: this is signal-driven, not price-driven. It fires even if the
-        # position is at small profit. Planned follow-up: P&L-protected
-        # reversal exit that uses exchange.get_unrealised_pnl(position) to
-        # skip the exit when we're comfortably in the money.
-        signal = await self._signal_port.get_latest_signal(position.entry_timescale)
-        if signal is not None:
-            if position.side == TradeSide.LONG and signal.score < self._reversal_threshold:
-                return ExitReason.SIGNAL_REVERSAL
-            elif position.side == TradeSide.SHORT and signal.score > -self._reversal_threshold:
-                return ExitReason.SIGNAL_REVERSAL
 
         return None
 
