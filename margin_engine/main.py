@@ -73,7 +73,7 @@ async def run() -> None:
     #   paper + binance     → PaperExchangeAdapter, Binance fee model, no external price
     #   paper + hyperliquid → PaperExchangeAdapter, HL fee model + HL price feed
     #   live  + binance     → BinanceMarginAdapter (existing, unchanged)
-    #   live  + hyperliquid → NotImplementedError (signing layer is a follow-up)
+    #   live  + hyperliquid → HyperliquidLiveAdapter (EIP-712 agent wallet)
     venue = settings.exchange_venue
     paper = settings.paper_mode
     price_feed = None  # set in the HL paper branch only — must be reachable from shutdown
@@ -131,10 +131,39 @@ async def run() -> None:
         logger.info("Using LIVE Binance margin adapter")
 
     else:  # not paper and venue == "hyperliquid"
-        raise NotImplementedError(
-            "Live Hyperliquid trading is not yet supported. "
-            "Set MARGIN_PAPER_MODE=true to paper-trade Hyperliquid, or "
-            "MARGIN_EXCHANGE_VENUE=binance to trade live Binance."
+        # ── LIVE HYPERLIQUID ──
+        # Requires two pieces of config set by scripts/setup_hyperliquid_agent.sh:
+        #   MARGIN_HYPERLIQUID_MAIN_ADDRESS    — your MetaMask public 0x…
+        #   MARGIN_HYPERLIQUID_AGENT_KEY_PATH  — path to agent private key file
+        # The adapter itself performs:
+        #   - chmod 600 check on the key file
+        #   - main != agent address sanity check
+        #   - hex format validation
+        # so failures here surface as clear HyperliquidLiveError messages
+        # instead of obscure SDK tracebacks.
+        if not settings.hyperliquid_main_address:
+            raise RuntimeError(
+                "MARGIN_HYPERLIQUID_MAIN_ADDRESS is not set. "
+                "Run scripts/setup_hyperliquid_agent.sh on the box first, "
+                "or set MARGIN_PAPER_MODE=true to stay in paper mode."
+            )
+        from margin_engine.adapters.exchange.hyperliquid_live import (
+            HyperliquidLiveAdapter,
+        )
+        exchange = HyperliquidLiveAdapter(
+            agent_key_path=settings.hyperliquid_agent_key_path,
+            main_account_address=settings.hyperliquid_main_address,
+            base_url=(settings.hyperliquid_api_base_url or None),
+            asset=settings.hyperliquid_asset,
+            leverage=settings.leverage,
+            cross_margin=settings.hyperliquid_cross_margin,
+        )
+        await exchange.connect()
+        price_feed_source = "hyperliquid"
+        logger.info(
+            "Using LIVE Hyperliquid adapter: account=%s leverage=%dx cross=%s",
+            settings.hyperliquid_main_address, settings.leverage,
+            settings.hyperliquid_cross_margin,
         )
 
     # Closure that returns the freshest execution context for /status. Built

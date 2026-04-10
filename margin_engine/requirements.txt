@@ -10,6 +10,12 @@ asyncpg>=0.29.0
 # Cryptography (Ed25519 Binance API signing)
 cryptography>=42.0.0
 
+# Hyperliquid live trading (EIP-712 agent-wallet signing)
+# Imported lazily inside HyperliquidLiveAdapter.connect() so paper mode
+# doesn't require this install at import time. Pulls in eth-account +
+# eth-utils transitively.
+hyperliquid-python-sdk>=0.22.0
+
 # Configuration
 pydantic>=2.6.0
 pydantic-settings>=2.2.0
