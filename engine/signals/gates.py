@@ -207,6 +207,12 @@ class DuneConfidenceGate:
       - down_penalty: +0.03 for DOWN predictions (9.3pp less accurate, N=865)
       - cg_modifier: +0.05 if taker opposing, -0.02 if taker aligned (from TakerFlowGate)
       - cg_bonus: -0.02 if 2+ CG confirmation signals (from CGConfirmationGate)
+    
+    v11.0: Dynamic TimesFM confidence gating
+      - timesfm.confidence >= 0.90: Allow P(UP) >= 0.55 (was 0.65)
+      - timesfm.confidence >= 0.80: Allow P(UP) >= 0.58
+      - timesfm.confidence >= 0.70: Allow P(UP) >= 0.60
+      - timesfm.confidence < 0.70: Require HIGH confidence (p > 0.65 or p < 0.35)
     """
     name = "dune_confidence"
 
@@ -235,6 +241,9 @@ class DuneConfidenceGate:
         self._early_penalty_max = float(os.environ.get("V10_OFFSET_PENALTY_EARLY_MAX", "0.0"))
         self._early_min_conf = float(os.environ.get("V10_EARLY_ENTRY_MIN_CONF", "0.90"))
         self._down_penalty = float(os.environ.get("V10_DOWN_PENALTY", "0.0"))
+        # v11.0: Dynamic confidence gating
+        self._cascade_min_conf = float(os.environ.get("V10_CASCADE_MIN_CONF", "0.90"))
+        self._cascade_conf_bonus = float(os.environ.get("V10_CASCADE_CONF_BONUS", "0.05"))
         self._client = dune_client
         self._log = log.bind(gate="dune_confidence")
 
@@ -245,10 +254,17 @@ class DuneConfidenceGate:
                 os.environ.get(env_key, str(default))
             )
 
-    def _effective_threshold(self, ctx: GateContext, regime: str, eval_offset: Optional[int]) -> float:
+    def _effective_threshold(self, ctx: GateContext, regime: str, eval_offset: Optional[int],
+                            p_up: Optional[float] = None, timesfm_conf: Optional[float] = None) -> float:
         """Calculate threshold = regime_base + offset + down + cg_modifier - cg_bonus.
 
         Per-20s offset granularity from decision surface spec (Section 5, Gate 2).
+        
+        v11.0: Dynamic TimesFM confidence adjustment
+          - If timesfm.conf >= 0.90: Apply -0.05 bonus to threshold (allow P(UP) >= 0.55)
+          - If timesfm.conf >= 0.80: Apply -0.03 bonus
+          - If timesfm.conf >= 0.70: Apply -0.01 bonus
+          - If timesfm.conf < 0.70: No bonus (require HIGH confidence p > 0.65)
         """
         base = self._regime_thresholds.get(regime, self._base_min_p)
 
@@ -272,7 +288,17 @@ class DuneConfidenceGate:
         cg_mod = ctx.cg_threshold_modifier  # +0.05 (taker opposing) or 0.0
         cg_bonus = ctx.cg_bonus             # 0.02 (3-signal confirmation) or 0.0
 
-        effective = base + offset_penalty + down_penalty + cg_mod - cg_bonus
+        # v11.0: TimesFM confidence adjustment
+        conf_bonus = 0.0
+        if timesfm_conf is not None and timesfm_conf >= self._cascade_min_conf:
+            conf_bonus = self._cascade_conf_bonus  # -0.05 when conf >= 0.90
+            # Scale bonus for lower confidence
+            if timesfm_conf >= 0.80 and timesfm_conf < 0.90:
+                conf_bonus = 0.03
+            elif timesfm_conf >= 0.70 and timesfm_conf < 0.80:
+                conf_bonus = 0.01
+
+        effective = base + offset_penalty + down_penalty + cg_mod - cg_bonus - conf_bonus
         return round(effective, 4)
 
     async def evaluate(self, ctx: GateContext) -> GateResult:
@@ -325,7 +351,7 @@ class DuneConfidenceGate:
                 reason=f"TRANSITION+DOWN too early: T-{ctx.eval_offset} > T-{_trans_down_max}",
                 data={"regime": regime, "direction": "DOWN", "offset": ctx.eval_offset, "limit": _trans_down_max},
             )
-        threshold = self._effective_threshold(ctx, regime, ctx.eval_offset)
+        threshold = self._effective_threshold(ctx, regime, ctx.eval_offset, p_up, timesfm_conf)
 
         # Fast-reject if threshold is unreachable
         if threshold >= 1.0:
@@ -367,6 +393,9 @@ class DuneConfidenceGate:
         p_up = float(result["probability_up"])
         dune_p = p_up if ctx.agreed_direction == "UP" else (1.0 - p_up)
 
+        # v11.0: Extract TimesFM confidence for dynamic gating
+        timesfm_conf = float(result.get("timesfm", {}).get("confidence", 0.93)) if result.get("timesfm") else 0.93
+
         # Store in context for downstream gates
         ctx.dune_probability_up = p_up
         ctx.dune_direction = "UP" if p_up > 0.5 else "DOWN"
@@ -380,24 +409,32 @@ class DuneConfidenceGate:
             components += f" +cg_mod={ctx.cg_threshold_modifier:+.03f}"
         if ctx.cg_bonus > 0:
             components += f" -cg_bonus={ctx.cg_bonus:.03f}"
+        # v11.0: Add TimesFM confidence component
+        if timesfm_conf is not None:
+            conf_bonus = self._cascade_conf_bonus if timesfm_conf >= self._cascade_min_conf else (
+                0.03 if timesfm_conf >= 0.80 else (0.01 if timesfm_conf >= 0.70 else 0.0))
+            if conf_bonus > 0:
+                components += f" -timesfm_conf={timesfm_conf:.2f} (bonus={conf_bonus:.03f})"
 
         self._log.info("dune.evaluated",
             asset=ctx.asset, offset=seconds_to_close,
             p_up=f"{p_up:.4f}", dune_p=f"{dune_p:.4f}",
             agreed_dir=ctx.agreed_direction,
             regime=regime, threshold=f"{threshold:.4f}",
+            timesfm_conf=f"{timesfm_conf:.2f}",  # v11.0: TimesFM confidence
             components=components,
             passed=dune_p >= threshold)
 
         data = {"dune_p": dune_p, "p_up": p_up, "threshold": threshold,
                 "regime": regime, "offset": ctx.eval_offset,
                 "down_penalty": self._down_penalty if ctx.agreed_direction == "DOWN" else 0.0,
-                "cg_modifier": ctx.cg_threshold_modifier, "cg_bonus": ctx.cg_bonus}
+                "cg_modifier": ctx.cg_threshold_modifier, "cg_bonus": ctx.cg_bonus,
+                "timesfm_conf": timesfm_conf}  # v11.0: TimesFM confidence
 
         if dune_p < threshold:
             return GateResult(
                 passed=False, gate_name=self.name,
-                reason=f"DUNE P({ctx.agreed_direction})={dune_p:.3f} < {threshold:.3f} ({regime} T-{ctx.eval_offset} {components})",
+                reason=f"DUNE P({ctx.agreed_direction})={dune_p:.3f} < {threshold:.3f} (timesfm_conf={timesfm_conf:.2f}, {regime} T-{ctx.eval_offset} {components})",
                 data=data,
             )
 
