@@ -1,0 +1,37 @@
+{
+  "export_since": "2026-04-08T23:53:38.888426+00:00",
+  "export_generated_at": "2026-04-10T11:53:47.797553+00:00",
+  "poly_fills": {
+    "total_rows": 203,
+    "total_buy_fills": 203,
+    "total_sell_fills": 0,
+    "distinct_windows": 88,
+    "single_fill_windows": 23,
+    "double_fill_windows": 15,
+    "triple_or_more_fill_windows": 50,
+    "multi_fill_pct": 73.9,
+    "total_buy_gross_usd": 716.73
+  },
+  "trade_bible": {
+    "total_rows": 130,
+    "wins": 85,
+    "losses": 45,
+    "wr_pct": 65.4,
+    "total_recorded_stake_usd": 489.88,
+    "total_recorded_pnl_usd": -35.85
+  },
+  "integrity_check": {
+    "actual_buy_gross": 716.73,
+    "recorded_stake": 489.88,
+    "unrecorded_spend_usd": 226.85,
+    "verdict": "BAD \u2014 multi-fill bug active, spend drifting from recorded stake"
+  },
+  "signal_evaluations": {
+    "total_rows": 28695,
+    "trade_decisions": 374,
+    "skip_decisions": 28321
+  },
+  "gate_audit": {
+    "total_rows": 28694
+  }
+}

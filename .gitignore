@@ -11,3 +11,7 @@ dist/
 pgdata/
 caddy_data/
 caddy_config/
+
+# v11: large log archives (87MB+, keep locally only for post-mortem analysis)
+docs/log_archive/
+# Note: docs/truth_dataset/ IS committed — small CSVs, useful for ML/analysis

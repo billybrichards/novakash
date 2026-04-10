@@ -1,8 +1,14 @@
 # v11 Changelog + Agent Handover Doc
 
-> **Status**: DEPLOYED to Montreal Apr 10, 11:16 UTC
-> **Wallet**: ~$30 USDC (Apr 10 11:25 UTC, recovering from $20)
-> **Engine**: running, v11 code fixes active, v10.5-ish config unchanged
+> **Status**: DEPLOYED + VERIFIED on Montreal
+>   - Apr 10 11:16 UTC: first v11 restart (parsing fix only)
+>   - Apr 10 11:35 UTC: second v11 restart (reconciler wired in)
+>   - Apr 10 11:37:46 UTC: PolyFillsReconciler first successful sync
+>     (`fetched=10 inserted=0 linked=0 enriched=6`)
+>   - Apr 10 11:43 UTC: first post-restart WIN ($2.75 stake, +$1.29 PnL)
+> **Current engine PID**: 353249 (on Montreal 15.223.247.178)
+> **Wallet**: $34.66 USDC (Apr 10 11:45 UTC)
+> **Config**: v10.5-ish hybrid, UNCHANGED (only code fixes deployed)
 > **Next agent**: start here, then read `/docs/APR9_FULL_DAY_ANALYSIS.md`
 > and `/docs/OVERNIGHT_APR9-10_ANALYSIS.md` for historical context
 
@@ -377,14 +383,56 @@ ssh ubuntu@15.223.247.178 'sudo tail -50 /home/novakash/engine.log | grep -iE "e
 2. **Engine reads `engine/.env` not `.env.local`** — `.env.local` is a reference
 3. **SSH requires fresh EC2 Instance Connect key every session**
 4. **After crashes**: `sudo chown -R novakash:novakash /home/novakash/novakash/`
-5. **Restart pattern**:
+5. **Restart pattern — PREFERRED (v11 onwards, rotates logs first)**:
    ```bash
    sudo -u novakash bash -c 'cd /home/novakash/novakash && git pull origin develop'
-   sudo pkill -9 -f 'python3 main.py' ; sleep 5
-   sudo -u novakash bash -c 'cd /home/novakash/novakash/engine && nohup python3 main.py > /home/novakash/engine.log 2>&1 & disown ; echo started'
-   sleep 8
-   ps aux | grep 'python3 main.py' | grep -v grep  # Must show 1 process
+   sudo /home/novakash/novakash/scripts/restart_engine.sh
    ```
+   The helper script:
+   - Rotates the current `engine.log` to `engine-YYYYMMDD-HHMMSS.log`
+   - Prunes archives beyond 20 (configurable via `KEEP_N` env var)
+   - Kills any existing python3 main.py processes
+   - Starts the engine with **append-mode redirect** (`>>`) so concurrent
+     writes survive. THIS IS CRUCIAL — the old ad-hoc nohup command used
+     `>` which truncated the log on every restart.
+   - Verifies exactly 1 process is running after restart
+
+6. **Legacy restart pattern (DO NOT USE, loses log history on every restart)**:
+   ```bash
+   # ❌ This truncates /home/novakash/engine.log with > instead of >>
+   sudo pkill -9 -f 'python3 main.py' ; sleep 5
+   sudo -u novakash bash -c 'cd /home/novakash/novakash/engine && nohup python3 main.py > /home/novakash/engine.log 2>&1 & disown'
+   ```
+
+### Log management (v11)
+
+Three layers of log preservation:
+
+1. **`scripts/restart_engine.sh`** (manual rotation) — rotates pre-restart,
+   saves to `/home/novakash/engine-YYYYMMDD-HHMMSS.log`. Use this every
+   time you restart the engine manually.
+
+2. **`/etc/logrotate.d/novakash-engine`** (daily automatic) — `copytruncate`
+   mode (no engine restart needed), gzip compression, 30-day retention,
+   500MB maxsize cap, writes to `/home/novakash/log_archive/`. Runs daily
+   via `/etc/cron.daily/logrotate` automatically.
+
+3. **Local archive** (`docs/log_archive/`) — pre-v11 logs downloaded for
+   post-mortem analysis:
+   - `engine-apr10-v11-discovery.log` (87MB) — contains the multi-fill
+     bug evidence (316 FAK attempts with broken parsing)
+   - `engine-postreconciler-apr10-1135.log` (108KB) — first v11 restart
+
+**To manually rotate without restarting** (if logs are getting huge):
+```bash
+sudo logrotate -f /etc/logrotate.d/novakash-engine
+```
+
+**To inspect archived logs on Montreal**:
+```bash
+sudo ls -lh /home/novakash/log_archive/
+sudo zcat /home/novakash/log_archive/engine.log-20260411.gz | less
+```
 
 ### How to run the poly_fills backfill manually
 
@@ -440,33 +488,92 @@ sudo grep -E 'place_market_order.result.*making_amount|telegram.entry_alert_sent
 
 ## 8. Honest uncertainty / things NOT done
 
-1. **We haven't verified a single-fill trade end-to-end yet**. The engine
-   restart happened at 11:16 UTC on Apr 10. The first post-fix trade at
-   11:17:32 went to GTC fallback (FAK `no_match` on both attempts). The
-   second trade at 11:22:33 did the same. We need to see a trade where
-   FAK attempt 1 ACTUALLY returns `status: matched` and the ladder
-   correctly stops — then we'll know the fix is proven on the happy path.
+### ✅ VERIFIED post-deploy (Apr 10, post-11:35 UTC)
 
-2. **The `PolyFillsReconciler` has been wired but the engine is running
-   an older checkout from before the wiring commit**. It needs a git pull
-   + restart to activate. (Next step after this doc is committed.)
+- **Engine running**: PID 353249, started 11:35:55 UTC
+- **Reconciler started**: `orchestrator.poly_fills_reconciler_started` at 11:36:03
+- **Reconciler first sync**: 11:37:46 UTC —
+  `sync_complete fetched=10 inserted=0 linked=0 enriched=6`. Successfully
+  enriched 6 `trade_bible` rows with `condition_id` / `market_slug`.
+- **Telegram sending**: `telegram.system_alert_sent` confirmed at 11:36:09
+  ("Engine started") and 11:38:38 ("⏳ GTC RESTING — BTC 5m"). The user
+  received both messages.
+- **First post-v11 WIN**: trade 3865 at 11:43 UTC, $2.75 stake, +$1.29 P&L.
+- **Wallet recovery**: $19.95 (pre-restart) → $34.66 (post-first-win +
+  small top-up).
+- **Logrotate installed**: `/etc/logrotate.d/novakash-engine` active,
+  `/home/novakash/log_archive/` directory created.
+- **restart_engine.sh**: committed at commit `21ea9ec`, executable,
+  ready for next manual restart.
 
-3. **No config changes deployed.** If the current hybrid v10.5/v10.6 config
-   produces bad WR on clean fills, we'll need to tune. But that's a
-   tomorrow problem.
+### ⏳ NOT YET VERIFIED (needs more trade volume)
 
-4. **Kill switch auto-resume code is deployed but disabled**
-   (`KILL_AUTO_RESUME_MINUTES` not set, defaults to 0). To activate, set
-   the env var on Montreal and restart.
+1. **Happy-path FAK parsing on real fill**. All post-restart FAK attempts
+   have either exited via the `no_match` exception (Polymarket killed
+   the order cleanly, no response body to parse) or succeeded via GTC
+   fallback. We have NOT YET seen a `place_market_order.result` log line
+   with the new `making_amount` / `taking_amount` fields populated. The
+   fix is deployed and syntactically correct, but untested on the live
+   happy path.
 
-5. **`trade_bible.condition_id` is populated for 0 rows.** The reconciler
-   will backfill this over time but the old data will remain NULL unless
-   we run a one-shot historical linking pass.
+2. **`poly_fills` catching post-restart trades**. As of 11:45 UTC, the
+   latest `poly_fills.match_time_utc` is `2026-04-10 11:22:37` — **before
+   the restart**. The 11:43 WIN trade hasn't appeared yet. Expected
+   propagation lag:
+   - Trade placed on Polymarket CLOB (instant)
+   - Polymarket indexes the fill in their data-api (~1-5 min)
+   - Our reconciler sync runs (every 5 min) and picks it up
+   
+   So the 11:43 trade should appear in `poly_fills` around 11:48-11:52 UTC.
 
-6. **The FAK "no_match" exception path** may itself be hiding real fills
+3. **Multi-fill rate dropping to 0**. Only 1 post-restart trade exists
+   so far — sample too small. The query in §7 will start returning
+   meaningful data after ~10+ trades, probably by 13:00 UTC.
+
+4. **`trade_bible.stake_usd` accuracy**. With single-fill execution,
+   `trade_bible.stake_usd` should equal the actual wallet debit. Pre-v11
+   the gap was $562 over 72h. Post-v11 we expect <$5 drift.
+
+### 🚧 NOT DEPLOYED (by design)
+
+1. **v10.6 / v10.7 config tuning** — all the confidence-scaled caps,
+   T-200 extension, tighter thresholds, and session-aware sizing remain
+   on the shelf. Rationale: the data we were basing tuning decisions on
+   was polluted by the multi-fill bug. We need at least 24h of clean
+   single-fill data before deciding whether to tune at all.
+
+2. **Kill switch auto-resume** — code deployed but env var
+   `KILL_AUTO_RESUME_MINUTES` is not set on Montreal, so it defaults to
+   0 (disabled). To activate:
+   ```bash
+   ssh ubuntu@15.223.247.178
+   sudo -u novakash bash -c "echo 'KILL_AUTO_RESUME_MINUTES=30' >> /home/novakash/novakash/engine/.env"
+   # Then restart via scripts/restart_engine.sh
+   ```
+
+3. **STARTING_BANKROLL sync**. Current Montreal value is stale at $63.
+   The live wallet is $34.66 post-recovery. The risk manager's sizing
+   math uses `STARTING_BANKROLL` as a reference — if you care about the
+   exact bet size, update it manually:
+   ```bash
+   sudo -u novakash sed -i 's/STARTING_BANKROLL=63/STARTING_BANKROLL=35/' /home/novakash/novakash/engine/.env
+   ```
+   (Not urgent — the risk manager also has a periodic wallet sync.)
+
+4. **Historical `poly_fills` backfill of orphan linkage**. The 72h
+   backfill on Apr 10 11:30 UTC linked only 15 of 336 orphan fills to
+   `trade_bible` because `trade_bible.market_slug` and
+   `trade_bible.condition_id` were mostly NULL pre-v11. The reconciler's
+   enrichment step will gradually fill these in over time (it already
+   enriched 6 rows on its first run at 11:37:46), but old orphans will
+   remain unlinkable unless we write a historical enrichment pass.
+
+5. **The FAK `no_match` exception path** may itself be hiding real fills
    if py-clob-client raises when the chain response has `status: matched`
-   but some other field it expects is missing. Needs log inspection the
-   next time we see FAK fire.
+   but some other field it expects is missing. Next time we see a FAK
+   attempt that hits the happy path (not the exception path), we should
+   inspect the `place_market_order.result` log entry to verify
+   `making_amount` / `taking_amount` populate correctly.
 
 ---
 
@@ -477,7 +584,13 @@ NEW:
   engine/reconciliation/poly_fills_reconciler.py       # periodic reconciler class + CLI
   hub/db/migrations/versions/20260410_01_poly_fills.sql # poly_fills schema
   scripts/backfill_trades_from_polymarket.py           # manual backfill helper
+  scripts/restart_engine.sh                            # restart helper with log rotation
+  scripts/logrotate-novakash-engine.conf               # daily logrotate config for Montreal
+  scripts/export_truth_dataset.py                      # CSV export of poly_fills + joined signals
   docs/V11_CHANGELOG_AND_HANDOVER.md                   # THIS FILE
+  docs/log_archive/engine-apr10-v11-discovery.log      # 87MB pre-v11 log (the bug evidence)
+  docs/log_archive/engine-postreconciler-apr10-1135.log # 108KB first v11 run
+  docs/truth_dataset/                                  # CSV exports (updated periodically)
 
 MODIFIED:
   engine/execution/polymarket_client.py
@@ -489,8 +602,22 @@ MODIFIED:
     - send_system_alert() except-pass→logged warning, success log
   engine/strategies/orchestrator.py
     - _start_services() section 5e: wire PolyFillsReconciler
-    - _poly_fills_loop() method: periodic sync loop
+    - _poly_fills_loop() method: periodic sync loop (runs every 5 min)
   engine/execution/risk_manager.py            (committed earlier in session)
     - _kill_switch_triggered_at timestamp field
     - is_killed auto-resume after KILL_AUTO_RESUME_MINUTES
+
+MONTREAL-ONLY (installed by operator):
+  /etc/logrotate.d/novakash-engine             # from scripts/logrotate-novakash-engine.conf
+  /home/novakash/log_archive/                  # populated automatically by logrotate
 ```
+
+## 10. Commit trail (v11 session)
+
+| Commit  | Description |
+|---------|-------------|
+| `7b50455` | feat: v11 data-driven signal stack + kill switch auto-recovery |
+| `1eb3777` | fix(CRITICAL): Polymarket FAK/FOK response parsing — stop silent multi-fills |
+| `3eb4750` | fix: Telegram alerts + GTC fill detection (v11) |
+| `7a30de5` | feat(v11): poly_fills source-of-truth + periodic reconciler + docs |
+| `21ea9ec` | feat(ops): restart_engine.sh with log rotation + logrotate config |
