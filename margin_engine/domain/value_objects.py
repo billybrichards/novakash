@@ -155,6 +155,71 @@ class StopLevel:
 
 
 @dataclass(frozen=True)
+class ProbabilitySignal:
+    """
+    Calibrated probability forecast from a trained LightGBM head.
+
+    Sourced from the TimesFM service's /v2/probability/15m endpoint. Unlike
+    CompositeSignal (a heuristic blend of indicators in [-1, 1]),
+    ProbabilitySignal is the output of a classifier trained on Polymarket
+    UpDown window outcomes: it predicts the probability that the current
+    window will close ABOVE its open price.
+
+    The crucial difference from CompositeSignal: this is directional and
+    calibrated. At probability_up > 0.70 the model was correct 77.5% of the
+    time in the 5-day backtest (vs 50% random baseline). At probability_up
+    > 0.75 the hit rate is 96.87% and the trade is profitable even after
+    round-trip Binance taker fees.
+
+    seconds_to_close is the horizon of this prediction: the model head is
+    trained to forecast the window close that many seconds in the future.
+    The position should be exited at (or before) window close, NOT on
+    signal reversal — the whole point of the calibration is that the
+    probability already accounts for interim noise.
+
+    window_open_ts and window_close_ts are the unix timestamps of the
+    prediction window boundaries, so the caller can avoid double-trading
+    the same window.
+    """
+    probability_up: float       # [0, 1], calibrated
+    asset: str
+    timescale: str              # "15m" for now — the only trained horizon
+    seconds_to_close: int       # seconds until the prediction target
+    window_open_ts: int         # unix seconds, window boundary
+    window_close_ts: int        # unix seconds, window boundary
+    model_version: str          # for audit trail in margin_positions
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.probability_up <= 1.0:
+            raise ValueError(
+                f"ProbabilitySignal probability_up must be in [0, 1]: "
+                f"{self.probability_up}"
+            )
+        if self.seconds_to_close < 0:
+            raise ValueError(
+                f"seconds_to_close cannot be negative: {self.seconds_to_close}"
+            )
+
+    @property
+    def probability_down(self) -> float:
+        return 1.0 - self.probability_up
+
+    @property
+    def conviction(self) -> float:
+        """Distance from 0.5 — how far from random the model thinks this is."""
+        return abs(self.probability_up - 0.5)
+
+    @property
+    def suggested_side(self) -> TradeSide:
+        return TradeSide.LONG if self.probability_up > 0.5 else TradeSide.SHORT
+
+    def meets_threshold(self, min_conviction: float) -> bool:
+        """True if |p_up - 0.5| >= min_conviction (e.g., 0.20 → p>0.70 or p<0.30)."""
+        return self.conviction >= min_conviction
+
+
+@dataclass(frozen=True)
 class FillResult:
     """
     Result of a filled market order.
