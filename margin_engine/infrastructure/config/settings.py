@@ -54,6 +54,39 @@ class MarginSettings(BaseSettings):
     hyperliquid_poll_interval_s: float = 2.0
     hyperliquid_price_freshness_s: float = 15.0
 
+    # ── v4 snapshot integration (dark deploy in PR A, behavior in PR B) ──
+    # The /v4/snapshot endpoint on the timesfm service fuses per-timescale
+    # probability, TimesFM quantiles, regime classification, 6-source price
+    # consensus, Claude macro bias, macro-event calendar, and cascade FSM
+    # state into one atomic read. PR A scaffolds the adapter and observes
+    # what v4 would filter; PR B consumes the gates in entry + continuation.
+    #
+    # `engine_use_v4_actions` starts OFF so merge of PR A is pure
+    # telemetry — use cases keep running on the legacy /v2/probability path
+    # regardless of this setting until PR B wires them to consume v4.
+
+    v4_snapshot_url: str = "http://3.98.114.0:8080"
+    engine_use_v4_actions: bool = False
+    v4_primary_timescale: str = "15m"
+    v4_timescales: str = "5m,15m,1h,4h"   # CSV; used for snapshot request
+    v4_strategy: str = "fee_aware_15m"
+    v4_poll_interval_s: float = 2.0
+    v4_freshness_s: float = 10.0
+
+    # Thresholds consumed by PR B code paths. Declared here so env files
+    # are ready before PR B lands — no settings churn in the second PR.
+    v4_entry_edge: float = 0.10                      # min |p - 0.5| for entry
+    v4_continuation_min_conviction: float = 0.10     # looser than entry (user's choice)
+    v4_continuation_max: Optional[int] = None        # None = uncapped (user's choice)
+    v4_min_expected_move_bps: float = 15.0           # Hyperliquid-calibrated fee wall
+    v4_allow_mean_reverting: bool = False            # opt-in per strategy
+    v4_event_exit_seconds: int = 120                 # force exit within 2 min of HIGH/EXTREME
+
+    @property
+    def v4_timescales_tuple(self) -> tuple[str, ...]:
+        """CSV 'v4_timescales' split into a tuple for adapter consumption."""
+        return tuple(s.strip() for s in self.v4_timescales.split(",") if s.strip())
+
     # ── Signal sources ──
     # v3 composite: still polled for REGIME FILTER (soft, logged only) and
     # for passive signal recording. Direction comes from the ML endpoint.

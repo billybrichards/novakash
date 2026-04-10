@@ -18,6 +18,7 @@ from margin_engine.domain.value_objects import (
     Price,
     ProbabilitySignal,
     TradeSide,
+    V4Snapshot,
 )
 
 
@@ -156,6 +157,58 @@ class ProbabilityPort(abc.ABC):
         Returns None if the cached prediction is older than the freshness
         window (default 120s) — better to skip a tick than trade on stale
         ML output.
+        """
+        ...
+
+
+class V4SnapshotPort(abc.ABC):
+    """
+    Interface for reading /v4/snapshot from the timesfm service.
+
+    The v4 surface fuses per-timescale probability, quantile distribution,
+    regime classification, 6-source price consensus, Claude-generated macro
+    bias, upcoming macro events, cascade FSM state, and cross-timescale
+    alignment into ONE atomic read. The margin engine consumes this instead
+    of (or alongside) the legacy /v2/probability scalar.
+
+    Implementations MUST fail soft: on any HTTP error, timeout, or parsing
+    failure, get_latest() returns None. Callers should treat None as "no
+    fresh v4 data available for this tick" and either fall back to the
+    legacy ProbabilityPort path or skip the tick — never raise or stall.
+
+    Lifecycle mirrors ProbabilityPort: connect() starts the background
+    poller, disconnect() stops it cleanly. get_latest() reads from the
+    in-memory cache populated by the poller.
+    """
+
+    @abc.abstractmethod
+    async def connect(self) -> None:
+        """Start the background poll loop."""
+        ...
+
+    @abc.abstractmethod
+    async def disconnect(self) -> None:
+        """Stop the background poll loop and release network resources."""
+        ...
+
+    @abc.abstractmethod
+    async def get_latest(
+        self,
+        asset: str = "BTC",
+        timescales: Optional[list[str]] = None,
+    ) -> Optional[V4Snapshot]:
+        """
+        Return the most recent cached V4Snapshot if fresh, else None.
+
+        Returns None when:
+          - No snapshot has been received yet
+          - The cached snapshot is older than the freshness window (default 10s)
+          - The cached snapshot's asset doesn't match the request
+
+        The `timescales` parameter is informational — current implementations
+        always return the full set of timescales the poller was configured
+        for, regardless of this argument. It exists for future variations
+        where an adapter might request a narrower subset.
         """
         ...
 
