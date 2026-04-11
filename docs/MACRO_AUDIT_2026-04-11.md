@@ -6,6 +6,64 @@
 
 This doc records the findings, maps each to the Phase A / B / C remediation work, and captures the one suspicious edge that needs a 7-day replay before it gets promoted.
 
+## Status update — 2026-04-11 14:20 UTC
+
+**Phase A (PR #37) shipped at 13:57 UTC** with three pieces: `MARGIN_V4_PRIMARY_TIMESCALE=5m`, macro advisory mode, and the `MacroBias.timescale_map` passthrough.
+
+**Phase A.1 hotfix (PR #39) shipped at 14:14 UTC** reverting `MARGIN_V4_PRIMARY_TIMESCALE` back to `15m`. The 5m flip unmasked a **pre-existing production bug** documented in PR #47 (`novakash-timesfm` `fd3affc`): the Sequoia v5 scorer has been writing `probability_raw=0.620146` (→ `p_up=0.6061` after calibration) as a constant for every 5m prediction since 2026-04-10 13:21 UTC. The macro-advisory and `timescale_map` pieces from Phase A stay in place.
+
+**Current state:** margin engine is reading the 15m/nogit model, macro advisory is live, and the engine is opening zero positions because v3's regime classifier is reporting `NO_EDGE` for 100% of recent samples — the market is genuinely quiet, not a gate bug. The engine will open a trade the moment regime clears OR the `NO_EDGE+exp_move>3` override ships (after the 7-day replay confirms the 74-sample audit bucket).
+
+### Root cause 4 (NEW) — the Sequoia v5 feature bug is still live
+
+The scorer's pull-mode `_assemble_features()` produces v4-shape features. Sequoia v5 was trained on **25 engine-side features** sourced from `signal_evaluations`, which the timesfm service doesn't have access to in pull-mode. Every v5 inference receives an all-NaN row and LightGBM returns the "missing defaults" leaf — the constant `0.60614485`.
+
+PR #47 (novakash-timesfm-repo) shipped a **partial fix**: new `POST /v2/probability` endpoint + `score_from_features()` method + push-mode contract. PR #13 (novakash) ported the client side into the **old `engine/` service**. These two PRs together make the full fix work for anyone calling the POST endpoint with a fully-populated feature body.
+
+**But the following paths still use the broken pull-mode:**
+
+1. **`app/main.py:_v2_scoring_loop_for_asset`** — the 1Hz background loop on the timesfm service that writes every row in `ticks_v2_probability`. Still calls `_v2_scorer.score()` (pull-mode), which is why the DB is full of constant-0.6061 rows for the `15a4e3e@v2/btc/btc_5m/...` model version.
+
+2. **`GET /v2/probability`** — the legacy pull-mode endpoint. Margin engine's `probability_http.py` still uses it. Same constant output for any v5 request.
+
+3. **V4 snapshot assembler** — `/v4/snapshot` composes per-timescale probability from the scorer's in-memory cache, which is populated by path #1 above. So the `5m` block of every v4 snapshot also carries the constant `0.6061`.
+
+### Why margin_engine can't just push v5 features
+
+The Phase A follow-up plan originally proposed porting `engine/signals/v2_feature_body.py` into `margin_engine/adapters/signal/`. After exploring the code: **that plan doesn't work.** The 25 v5 features are:
+
+- Strategy state (`eval_offset`, `vpin`, `delta_pct`, `twap_delta`) — computed by the old engine's strategy layer
+- Polymarket CLOB data (`clob_spread`, `clob_mid`, `clob_*_bid/ask`) — polled by the old engine's CLOB feed
+- Multi-source prices + deltas (`binance_price`, `chainlink_price`, `tiingo_close`, `delta_*`) — polled by the old engine's 3 feeds
+- Gate booleans (`gate_vpin_passed`, `gate_delta_passed`, `gate_cg_passed`, `gate_twap_passed`, `gate_timesfm_passed`, `gate_passed`) — produced by the old engine's gate pipeline
+- Categorical regime + source encodings — old engine's regime classifier
+- `v2_logit` — previous scorer output, only meaningful inside the old engine's window lifecycle
+
+**`margin_engine` is a margin-execution engine, not a strategy engine.** It has no VPIN, no TWAP, no CLOB poller, no gate pipeline, no regime classifier — those are all in the old `engine/` service on Railway. Giving margin_engine a `V5FeatureBody` builder would require porting ~2,000 lines of strategy code across from the old engine, AND running them in parallel on eu-west-2, AND reconciling their outputs with Montreal's feeds.
+
+### The realistic Phase B path
+
+The correct fix has to land on the timesfm side, and the shortest route is:
+
+**Phase B.0** — fix the `_v2_scoring_loop_for_asset` background loop in `app/main.py` so v5-family models get push-mode features read from `signal_evaluations` directly. The old engine already writes the 25 features to this table every time it evaluates a window; the timesfm service can query the latest row in `signal_evaluations WHERE asset='BTC' AND created_at > now() - interval '60 seconds'`, extract the feature columns, and call `score_from_features()` instead of `score()`. Falls back to a `cold_start` status if no recent row exists (v3 correctly marks this as non-tradeable).
+
+**Phase B.1** — fix the `/v2/probability` GET endpoint to do the same read-from-signal_evaluations trick, so margin_engine's `probability_http.py` gets a working response without any client change.
+
+**Phase B.2** — fix the v4 snapshot assembler to read the push-mode-scored value from the same path so `/v4/snapshot` per-timescale blocks work correctly.
+
+**Phase B.3** (defensive) — the v5 promotion gate in `retrain.yml` should refuse to promote any v5-family booster if `signal_evaluations` isn't populated for the target asset, as a pre-flight check that the upstream data pipeline is alive. This prevents a repeat of the 2026-04-10 incident where v5 got promoted without its upstream writer being live.
+
+**Phase B.4** — flip `MARGIN_V4_PRIMARY_TIMESCALE` back to `5m` now that the v5 5m model produces real predictions.
+
+All four phases live in `novakash-timesfm-repo` on `main`. None require changes to `margin_engine`. The hotfix buys us time to do this right.
+
+### Interim mitigation (already live via Phase A.1)
+
+- `MARGIN_V4_PRIMARY_TIMESCALE=15m` — engine reads the v4-shape `15m/nogit` model, which the pull-mode scorer can produce features for
+- Macro advisory mode — Qwen stops hard-vetoing entries
+- Macro `timescale_map` passthrough — Phase C can consume per-horizon bias without another engine deploy
+- Experimental `v4_allow_no_edge_if_exp_move_bps_gte` — shipped off, awaiting 7-day replay of the NO_EDGE+BEAR+exp_move>3 bucket
+
 ## The numbers that matter
 
 | Source | 15m directional hit rate | Average actual 15m move | Edge |
