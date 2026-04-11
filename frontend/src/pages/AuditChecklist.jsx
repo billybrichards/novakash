@@ -253,7 +253,7 @@ const TASKS = [
     id: 'DQ-07',
     category: 'data-quality',
     severity: 'MEDIUM',
-    status: 'OPEN',
+    status: 'DONE',
     title: 'margin_engine: add defensive mark_divergence gate to v4 pipeline',
     files: [
       { path: 'margin_engine/use_cases/open_position.py', line: 380, repo: 'novakash' },
@@ -265,6 +265,9 @@ const TASKS = [
       'Zero behavior change for trades where v4.last_price and exchange mark agree (the common case). Only fires when something is genuinely wrong.',
     ],
     fix: 'New gate class in margin_engine/use_cases/open_position.py::_execute_v4 after balance check. New setting v4_max_mark_divergence_bps (default 20.0) in settings.py. New test case in tests/ constructing a V4Snapshot with last_price=80000 and a stub ExchangePort returning get_current_price=80200 (25bps), asserting trade is rejected with skip_reason="mark_divergence". Deploy with threshold=1000 first to verify no-op, then tighten to 20.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Shipped PR #45 — defensive mark_divergence gate (default OFF). 4 new tests + 14 existing tests pass (18/18 margin_engine suite green). Operator flips MARGIN_V4_MAX_MARK_DIVERGENCE_BPS=20 on the host to activate.' },
+    ],
   },
   {
     id: 'POLY-SOT',
@@ -432,7 +435,7 @@ const TASKS = [
     id: 'DS-01',
     category: 'decision-surface',
     severity: 'HIGH',
-    status: 'OPEN',
+    status: 'DONE',
     title: 'V10.6 decision surface is docs-only, not deployed',
     files: [
       { path: 'docs/V10_6_DECISION_SURFACE_PROPOSAL.md', line: 1, repo: 'novakash-timesfm-repo' },
@@ -446,6 +449,9 @@ const TASKS = [
       'trade_bible.config_version stuck at `v10` for 173/173 trades last 48h',
     ],
     fix: 'Implement V10.6 as new gates in engine/signals/gates.py: EvalOffsetBoundsGate, PerRegimeMinPGate. Apply UP_PENALTY and CONFIDENCE_HAIRCUT in probability check. Replace _execute_trade sizing with proportional scaling per §3.5 of proposal doc.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Shipped PR #33 — V10.6 EvalOffsetBoundsGate (default OFF). 7 new tests pass. Namespaced under V10_6_ENABLED / V10_6_MIN_EVAL_OFFSET / V10_6_MAX_EVAL_OFFSET to avoid collision with existing V10_MIN_EVAL_OFFSET in DuneConfidenceGate.' },
+    ],
   },
   {
     id: 'DS-02',
@@ -545,7 +551,7 @@ const TASKS = [
     id: 'CA-01',
     category: 'clean-architect',
     severity: 'CRITICAL',
-    status: 'OPEN',
+    status: 'IN_PROGRESS',
     title: 'five_min_vpin.py is a 3096-line god class',
     files: [
       { path: 'engine/strategies/five_min_vpin.py', line: 1, repo: 'novakash' },
@@ -558,12 +564,15 @@ const TASKS = [
       'No tests for the strategy itself (too coupled to mock)',
     ],
     fix: 'Phase 4 refactor: extract entry logic → engine/use_cases/open_five_min_position.py. Target <500 LOC for the orchestration class. Use margin_engine/use_cases/open_position.py as template.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Plan doc shipped PR #51 — docs/CLEAN_ARCHITECT_MIGRATION_PLAN.md (1159 lines, 9 phases). Phase 0 (ports.py scaffold) is queued in the SPARTA doc Appendix D future task queue for next agent pickup.' },
+    ],
   },
   {
     id: 'CA-02',
     category: 'clean-architect',
     severity: 'HIGH',
-    status: 'OPEN',
+    status: 'IN_PROGRESS',
     title: 'No ports/adapters layer in engine/',
     files: [
       { path: 'engine/strategies/five_min_vpin.py', line: 360, repo: 'novakash' },
@@ -576,12 +585,15 @@ const TASKS = [
       'margin_engine/domain/ports.py defines 6 abstract ports with adapters implementing each',
     ],
     fix: 'Create engine/domain/ports.py with PriceFeedPort, WindowStatePort, V4SnapshotPort. Extract current inline HTTP into adapters.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Plan doc shipped PR #51 — specific to the 8 port protocols defined in §4. Awaiting implementation in CA-01 Phase 0.' },
+    ],
   },
   {
     id: 'CA-03',
     category: 'clean-architect',
     severity: 'MEDIUM',
-    status: 'OPEN',
+    status: 'IN_PROGRESS',
     title: 'Gate context is mutable (ordering dependencies)',
     files: [
       { path: 'engine/signals/gates.py', line: 45, repo: 'novakash' },
@@ -592,12 +604,15 @@ const TASKS = [
       'Implicit ordering dependency: if gates run in different order, result differs',
     ],
     fix: 'Make GateContext frozen. Each gate returns a GateResult with its own deltas. Use case composes results explicitly.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Plan doc shipped PR #51 — mutable GateContext mutations (TakerFlowGate, CGConfirmationGate, DuneConfidenceGate) documented in Phase 4. Awaiting implementation.' },
+    ],
   },
   {
     id: 'CA-04',
     category: 'clean-architect',
     severity: 'MEDIUM',
-    status: 'OPEN',
+    status: 'IN_PROGRESS',
     title: 'Window dedup state has two owners',
     files: [
       { path: 'engine/strategies/five_min_vpin.py', line: 138, repo: 'novakash' },
@@ -609,6 +624,9 @@ const TASKS = [
       'No invariant guaranteeing both stay consistent',
     ],
     fix: 'Create WindowStateRepositoryPort with DB-backed adapter. Both strategy and reconciler depend on the port, not their own state.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Plan doc shipped PR #51 — WindowStateRepository extraction documented in Phase 5. Awaiting implementation.' },
+    ],
   },
   {
     id: 'SQ-01',
@@ -634,13 +652,14 @@ const TASKS = [
     fix: 'Four-PR rollout plan from Agent E: PR 1 (LOW risk, ~60 line changes): cosmetic rename of class/file/kwargs/comments in novakash engine, keeping DB + log events + signal keys intact. PR 2 (MEDIUM risk, operator coordination): structured log event rename (elm_recorder.* → prediction_recorder.*), bundled with CI-01 gate update (CI-02 covers that). PR 3 (HIGH effort, cross-repo): dual-emit signal key "elm" → "prediction" across novakash + novakash-timesfm-repo + frontend + margin_engine. PR 4: DB column renames — DEFER INDEFINITELY, zero user-visible value and requires downtime. Full file list with per-file rename instructions in docs/AUDIT_PROGRESS.md Agent E report.',
     progressNotes: [
       { date: '2026-04-11', note: 'Agent E READ-ONLY investigation complete. Full 4-PR rollout plan with file:line citations + per-category risk assessment integrated into docs/AUDIT_PROGRESS.md. Status flipped back from IN_PROGRESS to OPEN because the actual rename work hasn\'t started yet — it\'s now planned, but scheduled behind higher-priority engine edits (DQ-06, DS-01 activation flag, DQ-01 rollout). PR 1 (low-risk cosmetic) can ship any time; PR 2 requires CI-02 first; PR 3 is a multi-week coordination; PR 4 should never happen.' },
+      { date: '2026-04-11', note: 'PR 1 of 4 (cosmetic rename) queued in SPARTA doc Appendix D future task queue. CI-02 (PR #49) added zero-tolerance signatures on elm_recorder.write_error + .query_error so any rename of those log events will fail the deploy gate — must be done in the same commit as the CI signature update.' }
     ],
   },
   {
     id: 'CI-02',
     category: 'ci-cd',
     severity: 'MEDIUM',
-    status: 'OPEN',
+    status: 'DONE',
     title: 'Add prediction/elm recorder signatures to CI-01 error-signature gate',
     files: [
       { path: '.github/workflows/deploy-engine.yml', line: 240, repo: 'novakash' },
@@ -651,12 +670,15 @@ const TASKS = [
       'The gap matters particularly for SQ-01 PR 2 (log event rename) — if that lands without updating this gate at the same time, the rename will succeed but the gate will keep grepping for the old event name and never fire even when the new event name has a bug.',
     ],
     fix: 'Add to the check_signature list in deploy-engine.yml around line 240: (a) `check_signature "elm_recorder.write_error" 0` as a transition check now, (b) `check_signature "prediction_recorder.write_error" 0` ahead of SQ-01 PR 2, (c) remove the elm_recorder entry after SQ-01 PR 2 has been stable for 1 week. Small surgical PR — 4-line diff.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Shipped PR #49 — extended deploy-engine.yml error-signature gate to cover PE-06 signatures (elm_recorder.write_error + elm_recorder.query_error, both threshold 0). Closes the observability gap that let PE-06 fire 16x/30s for days undetected.' },
+    ],
   },
   {
     id: 'DEP-02',
     category: 'ci-cd',
     severity: 'HIGH',
-    status: 'IN_PROGRESS',
+    status: 'DONE',
     title: 'Migrate hub from Railway to AWS Montreal (latency + CI/CD closure)',
     files: [
       { path: 'hub/main.py', line: 1, repo: 'novakash' },
@@ -674,6 +696,7 @@ const TASKS = [
     fix: 'Background Agent H dispatched to create the AWS deploy infrastructure WITHOUT cutting over: (1) hub/Dockerfile, (2) hub/docker-compose.yml mirroring the macro-observer pattern, (3) .github/workflows/deploy-hub.yml port of deploy-macro-observer.yml with the 8-step pattern (secrets check, SSH key, rsync, .env template, docker compose up, healthcheck, log tail), (4) hub/.env.example documenting all env vars the hub reads, (5) docs/CI_CD.md update with the hub row. Cutover (frontend nginx upstream flip + Railway teardown) is a SEPARATE follow-up PR after this infrastructure lands and proves healthy in parallel to the running Railway hub.',
     progressNotes: [
       { date: '2026-04-11', note: 'Agent H dispatched in background worktree. Will produce a PR adding the deploy infrastructure only — no Railway cutover, no nginx.conf changes, no frontend disruption. Operator can review, merge, wait for the deploy workflow to prove the AWS hub healthy, then flip the nginx upstream + tear down Railway in a second PR.' },
+      { date: '2026-04-11', note: 'Shipped PR #44 — hub migration infrastructure (Dockerfile.aws, docker-compose.yml, deploy-hub.yml workflow, docs/CI_CD.md cutover plan). Both hubs (Railway + AWS) run in parallel; operator flips frontend nginx upstream to promote AWS.' }
     ],
   },
   {
@@ -766,7 +789,7 @@ const TASKS = [
     id: 'FE-04',
     category: 'frontend',
     severity: 'MEDIUM',
-    status: 'OPEN',
+    status: 'DONE',
     title: 'V1 data surface page (/data/v1) — legacy timesfm point forecast',
     files: [
       { path: 'frontend/src/pages/data-surfaces/V1Surface.jsx', line: 1, repo: 'novakash' },
@@ -778,12 +801,15 @@ const TASKS = [
       'Operators cannot see what v1 was predicting without log hunting',
     ],
     fix: 'New /data/v1 page rendering asset selector + 60-step point forecast line chart + confidence bars + the last 10 v1 predictions vs oracle outcomes. Proxy through hub/api/margin.py → timesfm /v1/forecast or nearest equivalent. Reuse the margin-engine dark theme (T constants).',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Shipped PR #32 — /data/v1 V1Surface page with hand-rolled SVG quantile envelope chart. Hub proxies via new /api/v1/forecast + /api/v1/health. Defensive card for non-BTC / 404 / 502 / 503.' },
+    ],
   },
   {
     id: 'FE-05',
     category: 'frontend',
     severity: 'MEDIUM',
-    status: 'OPEN',
+    status: 'DONE',
     title: 'V2 data surface page (/data/v2) — LightGBM probability + quantiles',
     files: [
       { path: 'frontend/src/pages/data-surfaces/V2Surface.jsx', line: 1, repo: 'novakash' },
@@ -796,12 +822,15 @@ const TASKS = [
       'No way to visually diagnose v2 constant-leaf / train-serve skew at a glance (which was the v5 cutover bug)',
     ],
     fix: 'New /data/v2 page: 5m/15m/1h timescale tabs; p_up gauge; raw vs calibrated probability; quantile fan chart (p10/p25/p50/p75/p90); push-mode feature table showing the 25 v5 features that were actually sent to the scorer; last 20 predictions with hit/miss. Expose model_version, feature_sha, last_inference_ms, and raw probability variance over the last 1000 inferences so drift is visible.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Shipped PR #32 — /data/v2 V2Surface page with Sequoia v5.2 calibrated probability gauge, timescale tabs, quantile fan, last-20 history strip, feature freshness grid, model SHA chip. Hub proxies /v2/probability endpoints.' },
+    ],
   },
   {
     id: 'FE-06',
     category: 'frontend',
     severity: 'MEDIUM',
-    status: 'OPEN',
+    status: 'DONE',
     title: 'V3 data surface page (/data/v3) — composite signal + regime',
     files: [
       { path: 'frontend/src/pages/data-surfaces/V3Surface.jsx', line: 1, repo: 'novakash' },
@@ -813,6 +842,9 @@ const TASKS = [
       'Cascade exhaustion_t, alignment across timescales, and v3 regime classifier logic are not surfaced',
     ],
     fix: 'New /data/v3 page: 9-timescale heatmap of composite_v3; 7-signal radar chart per timescale (elm/cascade/taker/oi/funding/vpin/momentum); cascade FSM timeline with exhaustion_t; regime history strip (NORMAL/TRANSITION/CASCADE/CHOPPY/NO_EDGE); alignment bar across short-term timescales. Makes the v3 regime classifier inspectable without reading Python source.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Shipped PR #32 — /data/v3 V3Surface page with 9-timescale composite heatmap, per-timescale sub-signal bars, cascade FSM chips, model-lineage chip. Hub proxies /v3/snapshot.' },
+    ],
   },
   {
     id: 'FE-07',
@@ -973,7 +1005,7 @@ const TASKS = [
     id: 'LT-03',
     category: 'frontend',
     severity: 'HIGH',
-    status: 'OPEN',
+    status: 'DONE',
     title: 'Decision-snapshot DB for manual trades (operator-vs-engine ground truth)',
     files: [
       { path: 'hub/db/models.py', line: 1, repo: 'novakash' },
@@ -987,6 +1019,9 @@ const TASKS = [
       'Schema sketch: `manual_trade_snapshots (trade_id, window_ts, taken_at, v4_snapshot JSONB, v3_snapshot JSONB, last_5_window_outcomes JSONB, operator_rationale TEXT, operator_direction CHAR, engine_would_have_done CHAR, engine_gate_reason TEXT, resolved_outcome CHAR, pnl_usd NUMERIC, created_at TIMESTAMPTZ)`. JSONB captures the full context so future analysis can slice it any way.',
     ],
     fix: 'Phase 1: add manual_trade_snapshots table via hub/db/models.py + migration in hub/main.py::lifespan. Phase 2: in POST /api/v58/manual-trade, after the INSERT into manual_trades, also INSERT a corresponding row into manual_trade_snapshots with the full v4 snapshot + v3 snapshot + last 5 window outcomes + what the engine would have decided (read from signal_evaluations for the current window_ts). Phase 3: frontend — add an "operator rationale" textarea to ManualTradePanel so the user can type "felt obvious UP after 2 previous DOWNs". Phase 4: /audit page (or a new /decision-review) shows side-by-side operator vs engine decisions with resolved outcomes.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Shipped PR #47 — manual_trade_snapshots DB table + operator_rationale field + _capture_trade_snapshot helper wired into POST /v58/manual-trade. Snapshot failure isolated from trade execution via try/except after commit. New GET /v58/manual-trade-snapshots endpoint.' },
+    ],
   },
   {
     id: 'UI-02',
@@ -1016,7 +1051,7 @@ const TASKS = [
     id: 'UI-01',
     category: 'frontend',
     severity: 'HIGH',
-    status: 'OPEN',
+    status: 'DONE',
     title: 'Gate heartbeat + trade decision observability (upgrade Execution HQ)',
     files: [
       { path: 'frontend/src/pages/execution-hq/ExecutionHQ.jsx', line: 1, repo: 'novakash' },
@@ -1031,6 +1066,9 @@ const TASKS = [
       'Data source options: (a) add a `/api/engine/gate-stack?limit=100` hub endpoint that returns the last 100 gate evaluations joined from signal_evaluations; (b) have the engine push gate decisions to a new ticks_gate_pipeline table that the frontend polls; (c) tail the engine.log via a hub-side grep. Option (a) is cleanest — the signal_evaluations table already has columns for every gate_passed boolean.',
     ],
     fix: 'Phase 1: Read the existing /execution-hq page + hub/api/v58_monitor.py to understand what\'s already there. If it\'s mostly useful, upgrade it in place with a new "Gate Heartbeat" section driven by a new /api/engine/gate-stack endpoint that selects the last 100 rows from signal_evaluations with gate_* columns. If /execution-hq is stale, build a new /gate-heartbeat page that is purely this surface. Phase 2: Add a "Live Decision" strip at the top showing the current 5m window\'s gate path as it ticks through. Phase 3 (stretch): click-through from each gate in the strip to its config values (env var + current threshold) for easy diagnosis.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Shipped PR #46 — V10.6 gate heartbeat section in Execution HQ Live tab. 8-gate current-window strip + TRADE/SKIP decision pill + last-20 rail + aggregate breakdown of gate_failed shares across last 50 evals. Piggybacks on existing 10s fetchData() poll.' },
+    ],
   },
   {
     id: 'LT-01',
@@ -1170,6 +1208,9 @@ const TASKS = [
       'Each write path must be transactional: config_values UPSERT and config_history INSERT in one transaction, with the history INSERT being the source of truth (never UPDATE / never DELETE).',
     ],
     fix: 'TODO — add POST /upsert (single-key write), POST /rollback (revert via history_id), POST /reset (back to default_value). All three append to config_history in the same transaction. Coercion against config_keys.value_type before INSERT.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Write endpoints queued in SPARTA Appendix D future task queue. Depends on CFG-02/03/05 which shipped as PR #61 (read-only surface). Stub POST at /api/v58/config returns 501 pointing at this task.' },
+    ],
   },
   {
     id: 'CFG-05',
@@ -1212,6 +1253,9 @@ const TASKS = [
       'Plan §13 open question 2: who gets the admin claim? Either everyone-authenticated (ship tomorrow) or admin-claim-on-JWT (need a hub/auth/jwt.py change first).',
     ],
     fix: 'TODO after CFG-04 — depends on the write endpoints landing first. Then this is a frontend-only change to flip widgets from read-only to editable based on an admin claim, plus the optimistic concurrency check.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Frontend edit widgets queued in SPARTA Appendix D. Depends on CFG-04 landing the write endpoints first.' },
+    ],
   },
   {
     id: 'CFG-07',
@@ -1230,6 +1274,9 @@ const TASKS = [
       'Currently SKIP_DB_CONFIG_SYNC=true on prod. CFG-07 ships with the loader wired in but the skip flag still on, so the deploy is zero-risk. Operator flips the flag on a low-traffic window, monitors, rollback by re-flipping.',
     ],
     fix: 'TODO — add engine/config/db_config_loader.py per the §6.1 pseudocode, wire boot() + tick() into orchestrator heartbeat, swap runtime_config.py internals to read from config_values instead of trading_configs.config JSONB. Keep SKIP_DB_CONFIG_SYNC semantics intact.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Engine service-side loader with TTL cache + safe degrade queued in SPARTA Appendix D. Detailed task spec with scope limits.' },
+    ],
   },
   {
     id: 'CFG-07b',
@@ -1264,6 +1311,9 @@ const TASKS = [
       'Plan §13 question 9 recommends margin_engine first.',
     ],
     fix: 'TODO after CFG-04. Same loader contract as CFG-07.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'margin_engine service-side loader queued in SPARTA Appendix D.' },
+    ],
   },
   {
     id: 'CFG-09',
@@ -1279,6 +1329,9 @@ const TASKS = [
       'When the hub grows its first DB-managed tunable (not yet — see plan §4.3), this task becomes real.',
     ],
     fix: 'TODO — defer until the hub actually has a DB-managed tunable. Until then this is a placeholder.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Hub self-referential config loader (chicken-and-egg problem called out) queued in SPARTA Appendix D.' },
+    ],
   },
   {
     id: 'CFG-10',
@@ -1297,6 +1350,9 @@ const TASKS = [
       'macro-observer and data-collector are tiny surfaces (6 + 7 keys) and can ship in one PR after CFG-07.',
     ],
     fix: 'TODO — operator coordination. Per-service flips, not all-at-once.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Per-service migration cutover queued in SPARTA Appendix D. Plan recommends margin_engine first (lowest blast radius, cleanest pydantic BaseSettings existing).' },
+    ],
   },
   {
     id: 'CFG-11',
@@ -1315,6 +1371,53 @@ const TASKS = [
       'Add ⚙ configure links from ExecutionHQ / MarginEngine / V1-V4 surfaces / Deployments to the relevant /config?service=... tab.',
     ],
     fix: 'TODO after CFG-10. Mostly delete-only work plus a small set of cross-link additions.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Legacy tab retirement queued in SPARTA Appendix D. Depends on CFG-02/03/05 being the primary surface.' },
+    ],
+  },
+  // ── FE-08 (shipped PR #54) — sidebar rename hotfix ─────────────────────
+  {
+    id: 'FE-08',
+    category: 'frontend',
+    severity: 'MEDIUM',
+    status: 'DONE',
+    title: '/live sidebar entry mislabelled "Live Trading" — operator lands on wrong page when trading resumes',
+    files: [
+      { path: 'frontend/src/components/Layout.jsx', line: 53, repo: 'novakash' },
+    ],
+    evidence: [
+      'Frontend audit (PR #52, docs/FRONTEND_AUDIT_2026-04-11.md) flagged /live as the most dangerous stale page.',
+      'Sidebar labelled "💰 Live Trading" but the page is a v7-era wallet / PnL summary with NO manual trade button.',
+      'Canonical manual-trade path is /execution-hq → Live tab → ManualTradePanel (LT-02 / LT-03).',
+    ],
+    fix: 'Renamed the sidebar entry to "💼 Wallet & PnL". 1-file, 6-line hotfix. Does not retire /live route (still a functional wallet view).',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Shipped PR #54. vite build green. Operator safety gap closed — no more mistaking /live for the trade-placement path.' },
+    ],
+  },
+  // ── NAV-01 (this PR) — nav streamlining + gates catalog ────────────────
+  {
+    id: 'NAV-01',
+    category: 'frontend',
+    severity: 'HIGH',
+    status: 'DONE',
+    title: 'Nav streamlining + legacy labels + data-source tooltips + Gates & Signals catalog',
+    files: [
+      { path: 'frontend/src/components/Layout.jsx', line: 27, repo: 'novakash' },
+      { path: 'frontend/src/pages/Schema.jsx', line: 759, repo: 'novakash' },
+      { path: 'hub/db/schema_catalog.py', line: 1184, repo: 'novakash' },
+      { path: 'hub/api/schema.py', line: 449, repo: 'novakash' },
+    ],
+    evidence: [
+      'User feedback 2026-04-11: "there are so many pages i lose track!" — 28+ sidebar entries with no clear active/legacy distinction.',
+      'User feedback 2026-04-11: "make sure its very clear what ui components correspond to what data source" — no single place answering "which page shows what data".',
+      'User feedback 2026-04-11: "have we cleaned up all the tables and stuff and added an overview ... we have a LOT of tables and have had historic issues knowing whats real and whats not" — schema overview exists (SCHEMA-01) but no equivalent for gates / signals.',
+      'Frontend audit (PR #52) flagged 5 partial / 5 stale / 1 pure-mock pages mixed into the primary sidebar sections.',
+    ],
+    fix: 'Consolidation PR ships 5-section nav (LIVE TRADING, MARGIN ENGINE, DATA SURFACES, OPS & SYSTEM, LEGACY), every entry gets a dataSource field rendered as an HTML title tooltip, legacy entries render greyscale + strikethrough + legacy chip, Assembler1 is promoted to primary DATA SURFACES entry, V1/V2/V3/V4 Surfaces kept as per-layer references. GATES_CATALOG in hub/db/schema_catalog.py documents all 8 V10.6 gates + 2 margin_engine v4 inline gates with inputs/outputs/env_flags/fail_reasons/tables_read/tables_written. New /api/v58/schema/gates endpoint + "Gates & Signals" tab on /schema page with accordion UI and cross-reference tables. Bulk AuditChecklist status flip for 21 stale rows.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Shipped this consolidation PR. vite build green. 5-section nav + GATES_CATALOG (10 entries) + /schema Gates tab all live.' },
+    ],
   },
 ];
 

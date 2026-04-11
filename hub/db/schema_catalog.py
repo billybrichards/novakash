@@ -1196,3 +1196,324 @@ def status_breakdown() -> dict[str, int]:
 #     "notes": str              — optional extra context
 #     "large": bool             — if True, use pg_class.reltuples instead of COUNT(*)
 # }
+
+
+# ─── GATES_CATALOG ──────────────────────────────────────────────────────────
+#
+# NAV-01 / 2026-04-11 consolidation. Structured inventory of the Polymarket
+# 5-minute engine's V10.6 8-gate decision pipeline + selected margin_engine
+# v4 gates. Mirrors SCHEMA_CATALOG above but for decision logic.
+#
+# Why this exists: the user asked for a single place to answer "which gates
+# consume which tables" because the system has grown organically. Each entry
+# documents pipeline position, file:line, inputs, outputs, env flags,
+# fail reasons, tables read, tables written. Hand-curated (same reason as
+# SCHEMA_CATALOG — auto-discovery would be noisy and unreliable).
+#
+# Changes to a gate in code MUST be paired with a matching catalog update
+# in the same PR.
+
+
+GatesCatalogEntry = dict
+
+GATES_CATALOG: dict[str, GatesCatalogEntry] = {
+    "eval_offset_bounds": {
+        "engine": "polymarket",
+        "pipeline_position": "G0",
+        "file": "engine/signals/gates.py",
+        "class_name": "EvalOffsetBoundsGate",
+        "status": "active",
+        "purpose": (
+            "V10.6 master safety gate (DS-01). Hard-blocks evaluations that "
+            "happen too close to window close OR too far from it. Default-OFF "
+            "behind V10_6_ENABLED — operator flips to activate."
+        ),
+        "inputs": ["GateContext.eval_offset"],
+        "outputs": ["GateResult.data['offset', 'min', 'max']"],
+        "env_flags": [
+            "V10_6_ENABLED (master flag, default false)",
+            "V10_6_MIN_EVAL_OFFSET (default 90)",
+            "V10_6_MAX_EVAL_OFFSET (default 180)",
+        ],
+        "fail_reasons": ["too late", "too early", "missing eval_offset"],
+        "tables_read": [],
+        "tables_written": [],
+        "docs": ["docs/V10_6_DECISION_SURFACE_PROPOSAL.md (timesfm repo)"],
+        "notes": (
+            "Namespaced V10_6_ to avoid collision with the existing "
+            "V10_MIN_EVAL_OFFSET read by DuneConfidenceGate (opposite semantics)."
+        ),
+    },
+    "source_agreement": {
+        "engine": "polymarket",
+        "pipeline_position": "G1",
+        "file": "engine/signals/gates.py",
+        "class_name": "SourceAgreementGate",
+        "status": "active",
+        "purpose": (
+            "Direction consensus vote across Chainlink, Tiingo, Binance. Two "
+            "modes selected at __init__: (A) legacy v11.1 2/3 majority or "
+            "(B) DQ-01 spot-only mode dropping Binance. Mode B addresses the "
+            "Binance 83.1% DOWN bias contaminating ~19.6% of windows."
+        ),
+        "inputs": [
+            "GateContext.delta_chainlink",
+            "GateContext.delta_tiingo",
+            "GateContext.delta_binance",
+        ],
+        "outputs": [
+            "GateContext.agreed_direction",
+            "GateResult.data['cl_dir', 'ti_dir', 'bin_dir'?, 'direction', 'mode']",
+        ],
+        "env_flags": ["V11_POLY_SPOT_ONLY_CONSENSUS (default false, DQ-01 flag)"],
+        "fail_reasons": [
+            "missing CL or TI data",
+            "spot disagree (spot-only mode)",
+            "no majority (2-2 split edge case)",
+        ],
+        "tables_read": ["market_data (upstream — read by orchestrator into ctx)"],
+        "tables_written": [],
+        "docs": [
+            "docs/CHANGELOG-DQ01-POLY-SPOT-ONLY-CONSENSUS.md",
+            "docs/CHANGELOG-v11.1-SOURCE-AGREEMENT-2-3-MAJORITY.md",
+        ],
+        "notes": (
+            "DQ-01 (PR #48) shipped 2026-04-11. Default OFF. When flag is on, "
+            "result.data['mode']='spot_only' and bin_dir is ABSENT (proof that "
+            "Binance was never read). Binance data still used by every other "
+            "gate for VPIN / taker-flow / liquidations."
+        ),
+    },
+    "delta_magnitude": {
+        "engine": "polymarket",
+        "pipeline_position": "G2",
+        "file": "engine/signals/gates.py",
+        "class_name": "DeltaMagnitudeGate",
+        "status": "active",
+        "purpose": (
+            "v10.5 gate: blocks trades where |delta_pct| is too small. "
+            "Direction agreement is meaningless if price hasn't moved. "
+            "CASCADE regime is exempt."
+        ),
+        "inputs": ["GateContext.delta_pct", "GateContext.regime"],
+        "outputs": ["GateResult.data['abs_delta', 'floor', 'regime']"],
+        "env_flags": [
+            "V10_MIN_DELTA_PCT",
+            "V10_TRANSITION_MIN_DELTA (TRANSITION regime override)",
+        ],
+        "fail_reasons": ["|delta| < floor (regime)"],
+        "tables_read": [],
+        "tables_written": [],
+        "docs": ["docs/V10_3_IMPLEMENTATION_PLAN.md"],
+        "notes": "Evidence: 50 trades Apr 9 2026, |delta|<0.01% in TRANSITION = 0W/2L.",
+    },
+    "taker_flow": {
+        "engine": "polymarket",
+        "pipeline_position": "G3",
+        "file": "engine/signals/gates.py",
+        "class_name": "TakerFlowGate",
+        "status": "active",
+        "purpose": (
+            "CoinGlass taker-flow alignment. Adjusts the DUNE confidence "
+            "threshold based on whether CG taker-flow aligns with G1's "
+            "agreed direction. Sets ctx.cg_threshold_modifier."
+        ),
+        "inputs": [
+            "GateContext.agreed_direction (from G1)",
+            "GateContext.cg_snapshot",
+        ],
+        "outputs": [
+            "GateContext.cg_threshold_modifier",
+            "GateContext.cg_confirms",
+        ],
+        "env_flags": ["V10_CG_TAKER_GATE (default false — hard-block when true)"],
+        "fail_reasons": ["opposing taker flow (V10_CG_TAKER_GATE=true)"],
+        "tables_read": ["ticks_coinglass (upstream into ctx.cg_snapshot)"],
+        "tables_written": [],
+        "docs": ["docs/V10_3_IMPLEMENTATION_PLAN.md"],
+        "notes": (
+            "Evidence: 719 trades, aligned = 81.7% WR, opposing = 58.3%. "
+            "CA-03 smell: mutates GateContext. Phase 4 of the clean-architect "
+            "migration plan fixes this."
+        ),
+    },
+    "cg_confirmation": {
+        "engine": "polymarket",
+        "pipeline_position": "G4",
+        "file": "engine/signals/gates.py",
+        "class_name": "CGConfirmationGate",
+        "status": "active",
+        "purpose": (
+            "Counts CoinGlass confirming signals (funding, OI, LS) that "
+            "align with the agreed direction. Sets cg_confirms / cg_bonus "
+            "for DuneConfidenceGate downstream."
+        ),
+        "inputs": ["GateContext.agreed_direction", "GateContext.cg_snapshot"],
+        "outputs": ["GateContext.cg_confirms", "GateContext.cg_bonus"],
+        "env_flags": [],
+        "fail_reasons": [],
+        "tables_read": ["ticks_coinglass"],
+        "tables_written": [],
+        "docs": ["docs/V10_3_IMPLEMENTATION_PLAN.md"],
+        "notes": "CA-03 smell: mutates GateContext (cg_confirms, cg_bonus).",
+    },
+    "dune_confidence": {
+        "engine": "polymarket",
+        "pipeline_position": "G5",
+        "file": "engine/signals/gates.py",
+        "class_name": "DuneConfidenceGate",
+        "status": "active",
+        "purpose": (
+            "Calibrated probability threshold gate. Calls timesfm v2 service "
+            "with a prebuilt V5FeatureBody, receives a calibrated probability, "
+            "and compares against a threshold adjusted by cg_threshold_modifier "
+            "(G3) and cg_bonus (G4)."
+        ),
+        "inputs": [
+            "GateContext.v5_features",
+            "GateContext.cg_threshold_modifier",
+            "GateContext.cg_bonus",
+            "POST /v2/probability/5m (timesfm service)",
+        ],
+        "outputs": [
+            "GateContext.dune_probability_up",
+            "GateContext.dune_direction",
+            "GateContext.dune_model_version",
+        ],
+        "env_flags": [
+            "V10_DUNE_MODEL (oak=ELM v3, sequoia=v5.2)",
+            "V10_MIN_EVAL_OFFSET (NOTE: MAX here — different from V10_6_MIN_EVAL_OFFSET in G0)",
+        ],
+        "fail_reasons": ["probability below threshold", "model service error"],
+        "tables_read": [
+            "ticks_v2_probability (via POST /v2/probability, timesfm service)",
+        ],
+        "tables_written": [
+            "ticks_elm_predictions (via ELMPredictionRecorder background task, PE-06 fix)",
+        ],
+        "docs": ["docs/SEQUOIA_V5_GO_LIVE_LOG.md (timesfm repo)"],
+        "notes": (
+            "The V10_MIN_EVAL_OFFSET collision with G0 is the reason DS-01 "
+            "introduced the V10_6_ namespace. PE-06 fixed the JSON quoting "
+            "bug in the recorder background task."
+        ),
+    },
+    "spread_gate": {
+        "engine": "polymarket",
+        "pipeline_position": "G6",
+        "file": "engine/signals/gates.py",
+        "class_name": "SpreadGate",
+        "status": "active",
+        "purpose": (
+            "Rejects windows with wide Polymarket CLOB spreads (low "
+            "liquidity / high slippage). Reads gamma_up_price and "
+            "gamma_down_price from the context."
+        ),
+        "inputs": ["GateContext.gamma_up_price", "GateContext.gamma_down_price"],
+        "outputs": ["GateResult.data['up_spread', 'down_spread']"],
+        "env_flags": ["V10_MAX_SPREAD_CENTS (default 2c)"],
+        "fail_reasons": ["spread too wide"],
+        "tables_read": ["clob_book_snapshots (via ctx)"],
+        "tables_written": [],
+        "docs": [],
+        "notes": "PE-01 (PR #26) ensured clob_feed writes complete rows for this gate.",
+    },
+    "dynamic_cap": {
+        "engine": "polymarket",
+        "pipeline_position": "G7",
+        "file": "engine/signals/gates.py",
+        "class_name": "DynamicCapGate",
+        "status": "active",
+        "purpose": (
+            "Computes the dynamic entry cap based on VPIN, regime, and "
+            "confidence. Last gate — if everything upstream passes, this "
+            "produces the cap the executor uses to size the order."
+        ),
+        "inputs": [
+            "GateContext.vpin",
+            "GateContext.regime",
+            "GateContext.dune_probability_up",
+        ],
+        "outputs": ["PipelineResult.cap"],
+        "env_flags": ["V10_BASE_CAP", "V10_CAP_MULTIPLIERS_*"],
+        "fail_reasons": ["cap below minimum"],
+        "tables_read": [],
+        "tables_written": [],
+        "docs": [],
+        "notes": "Last gate. If this passes, the strategy places the trade.",
+    },
+    # ── margin_engine v4 gates (inline in _execute_v4, catalogued for symmetry) ──
+    "v4_gate_1_macro_advisory": {
+        "engine": "margin_engine",
+        "pipeline_position": "v4.1",
+        "file": "margin_engine/use_cases/open_position.py",
+        "class_name": "_execute_v4 (inline)",
+        "status": "active",
+        "purpose": (
+            "Macro advisory direction gate — rejects trades that fight the "
+            "macro lean (e.g. trying to go long during a known bearish "
+            "funding regime)."
+        ),
+        "inputs": ["MacroPort.get_bias()"],
+        "outputs": [],
+        "env_flags": [],
+        "fail_reasons": ["macro_disagree"],
+        "tables_read": ["macro_signals"],
+        "tables_written": [],
+        "docs": [],
+        "notes": "14 tests in test_open_position_macro_advisory.py.",
+    },
+    "v4_gate_9_5_mark_divergence": {
+        "engine": "margin_engine",
+        "pipeline_position": "v4.9.5",
+        "file": "margin_engine/use_cases/open_position.py",
+        "class_name": "_execute_v4 (inline, DQ-07 PR #45)",
+        "status": "active",
+        "purpose": (
+            "Defensive mark-divergence gate (DQ-07). Inserted between v4 "
+            "gate 9 (balance query) and v4 gate 10 (SL/TP math). Fetches "
+            "exchange.get_mark() and rejects the trade if it diverges from "
+            "V4Snapshot.last_price by more than v4_max_mark_divergence_bps. "
+            "Default 0.0 = no-op; operator flips to activate."
+        ),
+        "inputs": ["V4Snapshot.last_price", "ExchangePort.get_mark()"],
+        "outputs": [],
+        "env_flags": ["MARGIN_V4_MAX_MARK_DIVERGENCE_BPS (default 0.0 = off)"],
+        "fail_reasons": ["mark_divergence"],
+        "tables_read": ["margin_positions", "(live exchange API)"],
+        "tables_written": [],
+        "docs": ["docs/AUDIT_PROGRESS.md (DQ-05 investigation + DQ-07 ship)"],
+        "notes": (
+            "Catches stale spot tick / HL basis spike / cross-region latency "
+            "anchoring a perp entry at a bad absolute price. 4 new tests, "
+            "18/18 margin_engine suite passing."
+        ),
+    },
+}
+
+
+def list_engines() -> list[str]:
+    """Distinct engines in the gates catalog."""
+    seen: list[str] = []
+    for entry in GATES_CATALOG.values():
+        eng = entry.get("engine", "unknown")
+        if eng not in seen:
+            seen.append(eng)
+    return seen
+
+
+def gates_by_table(table_name: str) -> list[str]:
+    """All gate keys that read from a given table. Used by the /schema
+    page to cross-reference tables ↔ consuming gates."""
+    out: list[str] = []
+    for key, entry in GATES_CATALOG.items():
+        reads = entry.get("tables_read", [])
+        if any(table_name in r for r in reads):
+            out.append(key)
+    return out
+
+
+def tables_for_gate(gate_key: str) -> list[str]:
+    """All tables a given gate reads from."""
+    entry = GATES_CATALOG.get(gate_key, {})
+    return list(entry.get("tables_read", []))

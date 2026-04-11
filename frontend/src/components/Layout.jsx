@@ -24,13 +24,46 @@ const HQ_CHILDREN = HQ_ASSET_ORDER.flatMap(asset =>
   }))
 );
 
+// 2026-04-11 NAV-01 consolidation (see docs/AUDIT_PROGRESS.md):
+//
+// The nav went from 4 sections / 28 entries to 5 sections / 35+ entries
+// after UI-02 / NT-01 / FE-04..07 / SCHEMA-01 / CFG-02..05 all landed in
+// one afternoon. The old grouping (POLYMARKET / BINANCE MARGIN / ANALYSIS
+// / SYSTEM) put live-trading-critical pages in the same bucket as dead-
+// weight v7 screens, and there was no way for an operator to tell the
+// difference at a glance.
+//
+// The new grouping is 5 disjoint sections:
+//
+//   1. LIVE TRADING        — pages the operator uses WHEN trading is ON.
+//                             Execution HQ (with multi-market children),
+//                             Wallet & PnL, Paper, Notes.
+//   2. MARGIN ENGINE       — Binance / Hyperliquid perp trader panel.
+//   3. DATA SURFACES       — prediction telemetry. Assembler1 is the
+//                             primary (consolidated view of all 4 layers).
+//                             V1/V2/V3/V4 per-layer views, TimesFM,
+//                             Composite V3 are secondary references.
+//   4. OPS & SYSTEM        — Dashboard, Audit, Deployments, DB Schema,
+//                             Config, Notes, Positions, Risk, System.
+//   5. LEGACY              — pages the frontend audit (docs/FRONTEND_AUDIT
+//                             _2026-04-11.md) flagged as v7/v8 / stale /
+//                             pure mock data. Explicitly labelled so
+//                             operators know not to rely on them.
+//
+// Every non-legacy entry has a `dataSource` field — a short human-
+// readable pointer to the DB table(s) or API endpoint that drives the
+// page. Renders as a tooltip on hover in the sidebar. This is the
+// master "UI component → data source" mapping the user asked for so
+// they stop losing track of which page shows what.
+//
+// Entries marked `legacy: true` render with a greyscale chip in the
+// sidebar, are de-emphasised (muted text colour), and group at the
+// bottom under the LEGACY section header.
 const NAV_SECTIONS = [
   {
-    title: 'POLYMARKET',
+    title: 'LIVE TRADING',
     color: '#a855f7',
     items: [
-      { path: '/notes',           label: 'Notes',      icon: '📝', highlight: true, isNew: true },
-      { path: '/dashboard',       label: 'Dashboard',  icon: '📊' },
       // UI-02: collapsible parent — click the row to expand the 8 children,
       // click a child to navigate. Default landing (the parent path) is
       // BTC 5m to preserve existing behavior.
@@ -41,62 +74,118 @@ const NAV_SECTIONS = [
         icon: '⚡',
         highlight: true,
         isNew: true,
+        dataSource: 'signal_evaluations + market_data + manual_trades (+ UI-01 gate heartbeat)',
         children: HQ_CHILDREN,
       },
-      { path: '/factory',         label: 'Factory Floor', icon: '🏭', highlight: true },
-      { path: '/v58',             label: 'Trade Monitor', icon: '🎯', highlight: true },
       // FE-08 (2026-04-11): /live is a v7-era wallet / PnL summary view with
       // NO manual trade button. Renamed from "Live Trading" to "Wallet & PnL"
       // so operators don't mistake it for the trade-placement path. The
       // canonical place to place a manual live trade is
       // /execution-hq → Live tab → ManualTradePanel (see LT-02 / LT-03).
-      { path: '/live',            label: 'Wallet & PnL', icon: '💼', highlight: true },
-      { path: '/paper',           label: 'Paper',      icon: '📄' },
+      { path: '/live',    label: 'Wallet & PnL', icon: '💼',
+        dataSource: 'trades + wallet_snapshots' },
+      { path: '/paper',   label: 'Paper Mode',   icon: '📄',
+        dataSource: 'trades (paper venue rows)' },
+      { path: '/notes',   label: 'Notes',        icon: '📝', highlight: true,
+        dataSource: 'notes (hub/api/notes.py)' },
     ],
   },
   {
-    title: 'BINANCE MARGIN',
+    title: 'MARGIN ENGINE',
     color: '#f59e0b',
     items: [
-      { path: '/margin',          label: 'Margin Engine', icon: '🏦', highlight: true, isNew: true },
-      { path: '/composite',       label: 'Composite V3', icon: '🧬', highlight: true, isNew: true },
+      { path: '/margin',     label: 'Margin Engine', icon: '🏦', highlight: true,
+        dataSource: 'margin_positions + margin_signals + margin_logs' },
     ],
   },
   {
-    title: 'ANALYSIS',
+    title: 'DATA SURFACES',
     color: '#06b6d4',
     items: [
-      { path: '/timesfm',         label: 'TimesFM v2', icon: '🔮', highlight: true },
-      { path: '/data/v1',         label: 'V1 Forecast', icon: '🔮', highlight: true, isNew: true },
-      { path: '/data/v2',         label: 'V2 Probability', icon: '📊', highlight: true, isNew: true },
-      { path: '/data/v3',         label: 'V3 Composite', icon: '🧬', highlight: true, isNew: true },
-      { path: '/data/v4',         label: 'V4 Fusion',  icon: '🧭', highlight: true, isNew: true },
-      { path: '/data/assembler1', label: 'Assembler1', icon: '🎛️', highlight: true, isNew: true },
-      { path: '/indicators',      label: 'Indicators', icon: '📈', highlight: true },
-      { path: '/windows',         label: 'Window Results', icon: '📊', highlight: true },
-      { path: '/strategy',        label: 'Strategy Analysis', icon: '🧪', highlight: true },
-      { path: '/recommendations', label: 'Recalibration', icon: '🎚️', highlight: true },
-      { path: '/trades',          label: 'Trades',     icon: '📋' },
-      { path: '/signals',         label: 'Signals',    icon: '📡' },
-      { path: '/pnl',             label: 'P&L',        icon: '💰' },
+      // Assembler1 is the primary / canonical unified view of all prediction
+      // layers. V1/V2/V3/V4 per-layer pages stay as fallbacks for drilling
+      // into a single layer in isolation.
+      { path: '/data/assembler1', label: 'Assembler1',      icon: '🎛️', highlight: true, isNew: true,
+        dataSource: 'POST /api/predict envelope + GET /api/predict/ticks_vs_outcomes (timesfm service)' },
+      { path: '/data/v4',         label: 'V4 Fusion',       icon: '🧭', highlight: true,
+        dataSource: 'GET /v4/snapshot (timesfm service)' },
+      { path: '/data/v3',         label: 'V3 Composite',    icon: '🧬',
+        dataSource: 'GET /v3/snapshot + ticks_v3_composite' },
+      { path: '/data/v2',         label: 'V2 Probability',  icon: '📊',
+        dataSource: 'POST /v2/probability/5m + /15m' },
+      { path: '/data/v1',         label: 'V1 Forecast',     icon: '🔮',
+        dataSource: 'POST /forecast (legacy point-forecast)' },
+      { path: '/timesfm',         label: 'TimesFM v2',      icon: '🔮',
+        dataSource: 'POST /v2/probability (raw probe)' },
+      { path: '/composite',       label: 'Composite V3',    icon: '🧬',
+        dataSource: 'ticks_v3_composite (margin_engine view)' },
     ],
   },
   {
-    title: 'SYSTEM',
+    title: 'OPS & SYSTEM',
     color: '#64748b',
     items: [
-      { path: '/positions',       label: 'Positions',  icon: '📍' },
-      { path: '/risk',            label: 'Risk',       icon: '🛡️', highlight: true },
-      { path: '/system',          label: 'System',     icon: '🖥️' },
+      { path: '/dashboard',       label: 'Dashboard',  icon: '📊',
+        dataSource: 'hub /api/v58/dashboard (signal_evaluations + trades)' },
+      { path: '/audit',           label: 'Audit',      icon: '🔍', highlight: true, isNew: true,
+        dataSource: 'hardcoded TASKS array (no backend)' },
+      { path: '/schema',          label: 'DB Schema',  icon: '🗄️', highlight: true, isNew: true,
+        dataSource: 'GET /api/v58/schema/tables (41 tables catalogued)' },
+      { path: '/deployments',     label: 'Deployments', icon: '🚀', highlight: true, isNew: true,
+        dataSource: 'hardcoded SERVICES array + live health probes' },
       // CFG-05: new DB-config browser is the primary "Config" entry point.
       // The legacy 25-key bundle editor stays accessible as "Trading Cfg"
       // until CFG-06 lands the editable surface here.
-      { path: '/config',          label: 'Config',     icon: '⚙️', highlight: true, isNew: true },
-      { path: '/trading-config',  label: 'Trading Cfg', icon: '🧰' },
-      { path: '/deployments',     label: 'Deployments', icon: '🚀', highlight: true, isNew: true },
-      { path: '/audit',           label: 'Audit',      icon: '🔍', highlight: true, isNew: true },
-      { path: '/schema',          label: 'DB Schema',  icon: '🗄️', highlight: true, isNew: true },
-      { path: '/changelog',       label: 'Changelog',  icon: '📝' },
+      { path: '/config',          label: 'Config',     icon: '⚙️', highlight: true, isNew: true,
+        dataSource: 'GET /api/v58/config (config_keys + config_values, 175 keys)' },
+      { path: '/positions',       label: 'Positions',  icon: '📍',
+        dataSource: 'hub /api/v58/positions (trades aggregation)' },
+      { path: '/risk',            label: 'Risk',       icon: '🛡️', highlight: true,
+        dataSource: 'hub /api/v58/risk (system_state + trades)' },
+      { path: '/system',          label: 'System',     icon: '🖥️',
+        dataSource: 'hub /api/v58/system (service health)' },
+    ],
+  },
+  {
+    title: 'LEGACY (audit-flagged)',
+    color: '#475569',
+    items: [
+      // These pages all failed the 2026-04-11 frontend audit (see
+      // docs/FRONTEND_AUDIT_2026-04-11.md). They're kept for now so
+      // bookmarks don't 404, but they're clearly labelled so operators
+      // don't rely on them for live-trading decisions. Status chips:
+      //   • STALE  = v7/v8 era, works but surfaces old data
+      //   • MOCK   = 100% mock data from src/lib/mock-data.js
+      //   • LEGACY = superseded by a newer page in a different section
+      { path: '/factory',         label: 'Factory Floor',    icon: '🏭',
+        legacy: true, legacyStatus: 'STALE' },
+      { path: '/v58',             label: 'Trade Monitor',    icon: '🎯',
+        legacy: true, legacyStatus: 'LEGACY',
+        legacyNote: 'Superseded by Execution HQ' },
+      { path: '/indicators',      label: 'Indicators',       icon: '📈',
+        legacy: true, legacyStatus: 'MOCK',
+        legacyNote: '100% mock data (FE-09)' },
+      { path: '/windows',         label: 'Window Results',   icon: '📊',
+        legacy: true, legacyStatus: 'STALE' },
+      { path: '/strategy',        label: 'Strategy Analysis', icon: '🧪',
+        legacy: true, legacyStatus: 'STALE' },
+      { path: '/recommendations', label: 'Recalibration',    icon: '🎚️',
+        legacy: true, legacyStatus: 'STALE' },
+      { path: '/trades',          label: 'Trades (legacy)',  icon: '📋',
+        legacy: true, legacyStatus: 'STALE' },
+      { path: '/signals',         label: 'Signals (legacy)', icon: '📡',
+        legacy: true, legacyStatus: 'STALE' },
+      { path: '/pnl',             label: 'P&L (legacy)',     icon: '💰',
+        legacy: true, legacyStatus: 'STALE' },
+      { path: '/trading-config',  label: 'Trading Cfg (legacy)', icon: '🧰',
+        legacy: true, legacyStatus: 'LEGACY',
+        legacyNote: 'Superseded by /config (CFG-02..05)' },
+      { path: '/legacy-config',   label: 'Config (v7)',      icon: '⚙️',
+        legacy: true, legacyStatus: 'LEGACY',
+        legacyNote: 'v7 13-key editor, pre-CFG-01' },
+      { path: '/changelog',       label: 'Changelog',        icon: '📝',
+        legacy: true, legacyStatus: 'STALE',
+        legacyNote: '9 versions behind (FE-12)' },
     ],
   },
 ];
@@ -551,12 +640,23 @@ export default function Layout() {
     }
 
     const active = isActive(item.path);
-    // TimesFM / Indicators get a cyan accent when not active
-    const accentColor = item.highlight ? '#06b6d4' : '#a855f7';
+    // NAV-01 (2026-04-11): legacy entries render de-emphasised so the
+    // operator can tell at a glance they're not part of the primary
+    // live-trading path. `dataSource` renders as a native HTML title
+    // tooltip so it doesn't require new DOM or event wiring.
+    const isLegacy = !!item.legacy;
+    const accentColor = isLegacy
+      ? '#64748b'
+      : item.highlight ? '#06b6d4' : '#a855f7';
+    const tooltipParts = [];
+    if (item.dataSource) tooltipParts.push(`Data: ${item.dataSource}`);
+    if (item.legacyNote) tooltipParts.push(`Note: ${item.legacyNote}`);
+    const tooltip = tooltipParts.length ? tooltipParts.join('\n') : undefined;
     return (
       <Link
         key={item.path}
         to={item.path}
+        title={tooltip}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -566,19 +666,41 @@ export default function Layout() {
           textDecoration: 'none',
           background: active
             ? `${accentColor}18`
+            : isLegacy
+            ? 'rgba(71,85,105,0.04)'
             : item.highlight
             ? 'rgba(6,182,212,0.04)'
             : 'transparent',
-          color: active ? accentColor : item.highlight ? 'rgba(6,182,212,0.7)' : 'rgba(255,255,255,0.45)',
-          borderLeft: `2px solid ${active ? accentColor : item.highlight ? 'rgba(6,182,212,0.2)' : 'transparent'}`,
+          color: active
+            ? accentColor
+            : isLegacy
+            ? 'rgba(100,116,139,0.75)'
+            : item.highlight
+            ? 'rgba(6,182,212,0.7)'
+            : 'rgba(255,255,255,0.45)',
+          borderLeft: `2px solid ${active ? accentColor : isLegacy ? 'rgba(100,116,139,0.2)' : item.highlight ? 'rgba(6,182,212,0.2)' : 'transparent'}`,
           transition: 'all 150ms ease-out',
           fontSize: 13,
           minHeight: 44,
+          opacity: isLegacy ? 0.75 : 1,
         }}
       >
-        <span style={{ fontSize: 15, lineHeight: 1 }}>{item.icon}</span>
-        <span>{item.label}</span>
-        {item.highlight && !active && (
+        <span style={{ fontSize: 15, lineHeight: 1, filter: isLegacy ? 'grayscale(1)' : 'none' }}>{item.icon}</span>
+        <span style={{ textDecoration: isLegacy ? 'line-through' : 'none', textDecorationColor: 'rgba(100,116,139,0.3)' }}>{item.label}</span>
+        {isLegacy && item.legacyStatus && (
+          <span style={{
+            marginLeft: 'auto',
+            fontSize: 7,
+            fontFamily: 'IBM Plex Mono, monospace',
+            color: 'rgba(100,116,139,0.85)',
+            letterSpacing: '0.08em',
+            border: '1px solid rgba(100,116,139,0.3)',
+            borderRadius: 3,
+            padding: '1px 4px',
+            background: 'rgba(100,116,139,0.1)',
+          }}>{item.legacyStatus}</span>
+        )}
+        {!isLegacy && item.highlight && !active && (
           <span style={{
             marginLeft: 'auto',
             fontSize: 8,

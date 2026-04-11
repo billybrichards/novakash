@@ -754,6 +754,355 @@ function DependencyMap({ tables }) {
   );
 }
 
+// ─── GatesView (NAV-01, 2026-04-11) ───────────────────────────────────────
+//
+// Renders the hand-curated GATES_CATALOG from /api/v58/schema/gates.
+// The user asked for a single place answering "which gates consume
+// which tables" — this tab is the answer. One accordion row per gate,
+// click to expand and see inputs, outputs, env flags, fail reasons,
+// tables_read / tables_written, and the cross-reference of
+// "other gates that share a table with this one".
+
+function GatesView({ payload, loading, error, expandedGate, setExpandedGate }) {
+  if (loading) {
+    return (
+      <div
+        style={{
+          padding: 30,
+          textAlign: 'center',
+          color: T.textMuted,
+          fontSize: 12,
+          background: T.card,
+          border: `1px solid ${T.cardBorder}`,
+          borderRadius: 6,
+        }}
+      >
+        Loading gates catalog…
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div
+        style={{
+          padding: 14,
+          background: 'rgba(239,68,68,0.08)',
+          border: `1px solid ${T.red}`,
+          borderRadius: 6,
+          color: T.red,
+          fontSize: 12,
+        }}
+      >
+        {error}
+      </div>
+    );
+  }
+  if (!payload || !payload.items || payload.items.length === 0) {
+    return (
+      <div
+        style={{
+          padding: 14,
+          background: T.card,
+          border: `1px solid ${T.cardBorder}`,
+          borderRadius: 6,
+          color: T.textMuted,
+          fontSize: 12,
+        }}
+      >
+        No gates in the catalog. Check <span style={{ color: T.text }}>hub/db/schema_catalog.py</span>.
+      </div>
+    );
+  }
+
+  const engineColor = (eng) => {
+    if (eng === 'polymarket') return T.purple;
+    if (eng === 'margin_engine') return T.amber;
+    return T.textMuted;
+  };
+  const statusMeta = STATUS_META;
+
+  const byEngine = payload.by_engine || {};
+  const engines = payload.engines || Object.keys(byEngine);
+
+  return (
+    <div>
+      {/* Summary strip */}
+      <div
+        style={{
+          display: 'flex',
+          gap: 12,
+          marginBottom: 14,
+          flexWrap: 'wrap',
+        }}
+      >
+        {engines.map((eng) => (
+          <div
+            key={eng}
+            style={{
+              background: T.card,
+              border: `1px solid ${T.cardBorder}`,
+              borderRadius: 6,
+              padding: '10px 14px',
+              display: 'flex',
+              gap: 10,
+              alignItems: 'center',
+              minWidth: 160,
+            }}
+          >
+            <div
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: engineColor(eng),
+              }}
+            />
+            <div>
+              <div style={{ fontSize: 10, color: T.textDim, fontFamily: T.mono, letterSpacing: '0.1em' }}>
+                {eng.toUpperCase()}
+              </div>
+              <div style={{ fontSize: 16, color: T.white, fontWeight: 700, fontFamily: T.mono }}>
+                {(byEngine[eng] || []).length} gates
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Gates grid — one accordion row per gate */}
+      <div
+        style={{
+          background: T.card,
+          border: `1px solid ${T.cardBorder}`,
+          borderRadius: 6,
+          overflow: 'hidden',
+        }}
+      >
+        {payload.items.map((item, idx) => {
+          const expanded = expandedGate === item.key;
+          const meta = statusMeta[item.status] || statusMeta.active;
+          const engColor = engineColor(item.engine);
+          return (
+            <div
+              key={item.key}
+              style={{
+                borderBottom: idx < payload.items.length - 1 ? `1px solid ${T.cardBorder}` : 'none',
+              }}
+            >
+              <button
+                onClick={() => setExpandedGate(expanded ? null : item.key)}
+                aria-expanded={expanded}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  width: '100%',
+                  padding: '12px 16px',
+                  background: expanded ? 'rgba(6,182,212,0.04)' : 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: T.text,
+                  textAlign: 'left',
+                  fontFamily: 'inherit',
+                }}
+              >
+                {/* Engine + pipeline position chip */}
+                <div
+                  style={{
+                    background: `${engColor}18`,
+                    border: `1px solid ${engColor}55`,
+                    color: engColor,
+                    padding: '3px 8px',
+                    borderRadius: 4,
+                    fontSize: 10,
+                    fontFamily: T.mono,
+                    fontWeight: 600,
+                    minWidth: 42,
+                    textAlign: 'center',
+                  }}
+                >
+                  {item.pipeline_position}
+                </div>
+                {/* Gate name + class name */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: 13,
+                      fontWeight: 600,
+                      fontFamily: T.mono,
+                      color: T.white,
+                    }}
+                  >
+                    {item.key}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 10,
+                      color: T.textDim,
+                      fontFamily: T.mono,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {item.class_name} · {item.file}
+                  </div>
+                </div>
+                {/* Tables read count */}
+                <div style={{ fontSize: 10, color: T.textMuted, fontFamily: T.mono }}>
+                  {(item.tables_read || []).length} read
+                </div>
+                {/* Status chip */}
+                <div
+                  style={{
+                    background: meta.bg,
+                    border: `1px solid ${meta.border}`,
+                    color: meta.color,
+                    padding: '2px 8px',
+                    borderRadius: 3,
+                    fontSize: 9,
+                    fontFamily: T.mono,
+                    letterSpacing: '0.1em',
+                  }}
+                >
+                  {meta.label}
+                </div>
+                {/* Caret */}
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: T.textDim,
+                    transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                    transition: 'transform 150ms',
+                  }}
+                >
+                  ▶
+                </div>
+              </button>
+              {expanded && (
+                <div
+                  style={{
+                    padding: '14px 16px 20px 62px',
+                    background: 'rgba(6,182,212,0.02)',
+                    borderTop: `1px solid ${T.cardBorder}`,
+                  }}
+                >
+                  <div style={{ fontSize: 12, color: T.text, lineHeight: 1.6, marginBottom: 12 }}>
+                    {item.purpose}
+                  </div>
+                  <GatesGrid item={item} />
+                  {item.notes && (
+                    <div
+                      style={{
+                        marginTop: 12,
+                        padding: '8px 12px',
+                        background: 'rgba(245,158,11,0.06)',
+                        border: '1px solid rgba(245,158,11,0.2)',
+                        borderRadius: 4,
+                        fontSize: 11,
+                        color: T.amber,
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      <span style={{ fontWeight: 600, marginRight: 6 }}>NOTE:</span>
+                      {item.notes}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Footer */}
+      <div
+        style={{
+          marginTop: 14,
+          padding: 14,
+          background: T.card,
+          border: `1px solid ${T.cardBorder}`,
+          borderRadius: 6,
+          fontSize: 11,
+          color: T.textMuted,
+          lineHeight: 1.6,
+        }}
+      >
+        Source: <span style={{ color: T.text, fontFamily: T.mono }}>GATES_CATALOG</span> in{' '}
+        <span style={{ color: T.text, fontFamily: T.mono }}>hub/db/schema_catalog.py</span>.
+        Hand-curated by PR review. Adding a new gate? Append an entry to the dict and pair it with the
+        code change in the same PR. The cross-reference
+        "which gates share a table" is computed at endpoint time.
+      </div>
+    </div>
+  );
+}
+
+function GatesGrid({ item }) {
+  const sections = [
+    { key: 'inputs', label: 'Inputs', color: T.cyan },
+    { key: 'outputs', label: 'Outputs', color: T.green },
+    { key: 'env_flags', label: 'Env flags', color: T.purple },
+    { key: 'fail_reasons', label: 'Fail reasons', color: T.red },
+    { key: 'tables_read', label: 'Tables read', color: T.amber },
+    { key: 'tables_written', label: 'Tables written', color: T.orange },
+  ];
+  return (
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+        gap: 12,
+      }}
+    >
+      {sections.map((sec) => {
+        const list = item[sec.key] || [];
+        return (
+          <div
+            key={sec.key}
+            style={{
+              background: T.bg,
+              border: `1px solid ${T.cardBorder}`,
+              borderRadius: 4,
+              padding: '10px 12px',
+            }}
+          >
+            <div
+              style={{
+                fontSize: 9,
+                fontFamily: T.mono,
+                letterSpacing: '0.1em',
+                color: sec.color,
+                marginBottom: 6,
+              }}
+            >
+              {sec.label.toUpperCase()} · {list.length}
+            </div>
+            {list.length === 0 ? (
+              <div style={{ fontSize: 11, color: T.textDim, fontStyle: 'italic' }}>(none)</div>
+            ) : (
+              list.map((entry, i) => (
+                <div
+                  key={i}
+                  style={{
+                    fontSize: 11,
+                    fontFamily: T.mono,
+                    color: T.text,
+                    lineHeight: 1.5,
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  · {entry}
+                </div>
+              ))
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────
 
 export default function Schema() {
@@ -764,6 +1113,11 @@ export default function Schema() {
   const [refreshing, setRefreshing] = useState(false);
   const [err, setErr] = useState(null);
 
+  // NAV-01: top-level tab between Tables (SCHEMA-01) and Gates & Signals
+  // (this session's addition). Default to 'tables' to preserve the
+  // pre-existing page as the landing view.
+  const [activeTab, setActiveTab] = useState('tables');
+
   const [serviceFilter, setServiceFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [search, setSearch] = useState('');
@@ -772,6 +1126,12 @@ export default function Schema() {
   const [detailByName, setDetailByName] = useState({});
   const [detailLoadingByName, setDetailLoadingByName] = useState({});
   const [detailErrorByName, setDetailErrorByName] = useState({});
+
+  // Gates tab state — loaded lazily on first tab click
+  const [gatesPayload, setGatesPayload] = useState(null);
+  const [gatesLoading, setGatesLoading] = useState(false);
+  const [gatesError, setGatesError] = useState(null);
+  const [expandedGate, setExpandedGate] = useState(null);
 
   const load = useCallback(async () => {
     setErr(null);
@@ -786,6 +1146,20 @@ export default function Schema() {
       setErr(e?.response?.data?.detail || e?.message || 'Failed to load schema inventory');
     }
   }, [api]);
+
+  const loadGates = useCallback(async () => {
+    if (gatesPayload) return; // cached
+    setGatesLoading(true);
+    setGatesError(null);
+    try {
+      const res = await api('GET', '/v58/schema/gates');
+      setGatesPayload(res.data);
+    } catch (e) {
+      setGatesError(e?.response?.data?.detail || e?.message || 'Failed to load gates catalog');
+    } finally {
+      setGatesLoading(false);
+    }
+  }, [api, gatesPayload]);
 
   useEffect(() => {
     (async () => {
@@ -873,6 +1247,61 @@ export default function Schema() {
           refreshing={refreshing}
         />
 
+        {/* ─── Tab bar (NAV-01 Gates & Signals addition) ─── */}
+        <div
+          style={{
+            display: 'flex',
+            gap: 8,
+            marginBottom: 14,
+            borderBottom: `1px solid ${T.cardBorder}`,
+            paddingBottom: 0,
+          }}
+        >
+          {[
+            { id: 'tables', label: 'DB Tables', sub: `${summary?.total || 0} tracked` },
+            { id: 'gates', label: 'Gates & Signals', sub: 'V10.6 + v4 pipelines' },
+          ].map((tab) => {
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => {
+                  setActiveTab(tab.id);
+                  if (tab.id === 'gates') loadGates();
+                }}
+                style={{
+                  background: active ? T.card : 'transparent',
+                  border: `1px solid ${active ? T.cyan : 'transparent'}`,
+                  borderBottom: active ? `1px solid ${T.bg}` : 'none',
+                  borderRadius: '6px 6px 0 0',
+                  color: active ? T.cyan : T.textMuted,
+                  padding: '9px 18px',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  fontFamily: 'inherit',
+                  marginBottom: -1,
+                  transition: 'all 150ms ease-out',
+                }}
+              >
+                <div style={{ fontWeight: 600 }}>{tab.label}</div>
+                <div style={{ fontSize: 9, color: T.textDim, fontFamily: T.mono, marginTop: 2 }}>
+                  {tab.sub}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {activeTab === 'gates' ? (
+          <GatesView
+            payload={gatesPayload}
+            loading={gatesLoading}
+            error={gatesError}
+            expandedGate={expandedGate}
+            setExpandedGate={setExpandedGate}
+          />
+        ) : (
+        <>
         {/* ─── Filter bar ─── */}
         <div
           style={{
@@ -1019,6 +1448,8 @@ export default function Schema() {
               <span style={{ color: T.text }}>{'{"large": True}'}</span> to the entry if needed.
             </div>
           </>
+        )}
+        </>
         )}
       </div>
     </div>
