@@ -1405,26 +1405,96 @@ export default function FactoryFloor() {
       </Card>
 
       {/* ─── SECTION 4: Recent Flow Timeline ───────────────────────────────── */}
+      {/* FACTORY-01 (2026-04-11): labels + native title tooltips so every column
+          explains what it is, which DB field populates it, and the engine
+          file:line that writes it. Source of truth for all answers below:
+          docs/FACTORY_FLOOR_SIGNAL_SOURCE.md. */}
       <Card style={{ marginBottom: 20, padding: '12px 16px' }}>
         <SectionLabel>RECENT FLOW TIMELINE</SectionLabel>
-        {/* Header */}
+        {/* Legend strip — plain-English one-liner so the user doesn't have to
+            hover to get the gist. Full details are in the per-header tooltips. */}
+        <div style={{
+          fontSize: 9,
+          color: T.label,
+          padding: '0 0 6px',
+          lineHeight: 1.45,
+          letterSpacing: '0.02em',
+        }}>
+          <span style={{ color: T.label2, fontWeight: 600 }}>SIGNAL</span> = engine's predicted direction (source-agreement vote) ·{' '}
+          <span style={{ color: T.label2, fontWeight: 600 }}>ACTUAL</span> = window-close truth (Poly resolution or Binance open→close) ·{' '}
+          <span style={{ color: T.label2, fontWeight: 600 }}>GATES</span> = VPIN·TWAP·Delta·CG·Floor·Cap (hover each header for details)
+        </div>
+        {/* Header — each cell has a native HTML title tooltip so hovering
+            reveals the definitive answer for what the column represents and
+            which DB column / engine file:line produced it. */}
         <div style={{
           display: 'grid',
-          gridTemplateColumns: '60px 46px 46px 36px 1fr 100px 60px',
+          gridTemplateColumns: '60px 54px 54px 36px 1fr 100px 60px',
           gap: 8,
           padding: '4px 0 6px',
           borderBottom: `1px solid ${T.border}`,
           fontSize: 9,
           color: T.label,
           letterSpacing: '0.08em',
+          cursor: 'help',
         }}>
-          <span>TIME</span>
-          <span>SIGNAL</span>
-          <span>ACTUAL</span>
-          <span>SRC</span>
-          <span>GATES</span>
-          <span>REASON</span>
-          <span style={{ textAlign: 'right' }}>RESULT</span>
+          <span title="Window close time in UTC (HH:MM). Source: window_snapshots.window_ts (BIGINT unix epoch) via hub/api/v58_monitor.py:316-325.">
+            TIME
+          </span>
+          <span title={
+            "SIGNAL = engine's predicted UP/DOWN direction for this Polymarket 5-min window.\n" +
+            "Value: window_snapshots.direction (selected in hub/api/v58_monitor.py:1037, mapped in _row_to_window at :335).\n" +
+            "Writer (v10.5+ prod path): SourceAgreementGate's 2/3 CL+TI+BIN vote -> pipe_result.direction -> engine/strategies/five_min_vpin.py:707 -> window_snapshot['direction'] at :1114.\n" +
+            "Gate logic: engine/signals/gates.py:281-420.\n" +
+            "NOTE: not the DUNE model's direction (DUNE enters later as a confidence filter, not the source of direction). Every row has a SIGNAL even if the window was SKIPPED — because direction is written before the gate pipeline's rejection step."
+          }>
+            SIGNAL▸DIR
+          </span>
+          <span title={
+            "ACTUAL = ground-truth direction for the window close.\n" +
+            "Computation: hub/api/v58_monitor.py:876-889 (_calc_outcome_row).\n" +
+            "Preferred source: trades.outcome (WIN/LOSS) combined with trades.direction (YES/NO) — the actual Polymarket resolution.\n" +
+            "Fallback (shadow rows, no trade): window_snapshots.close_price > open_price — Binance T-60s prices written by the engine at window close.\n" +
+            "UI highlights the cell red when SIGNAL != ACTUAL."
+          }>
+            ACTUAL
+          </span>
+          <span title={
+            "SRC = which price feed's delta was selected as primary for this window's delta_pct.\n" +
+            "Value: window_snapshots.delta_source (_row_to_window at hub/api/v58_monitor.py:360).\n" +
+            "Writer: engine/strategies/five_min_vpin.py:449-487 (DELTA_PRICE_SOURCE selector) then :1160.\n" +
+            "TNG=Tiingo, CL=Chainlink, BN=Binance. NOT the feed that voted for the signal direction — SourceAgreementGate reads all three regardless. This is just the one that ended up in delta_pct."
+          }>
+            SRC
+          </span>
+          <span title={
+            "GATES = compact ✅/❌ string for the 6 legacy gates, built by FactoryFloor.jsx:270-283 as substring matches against window_snapshots.skip_reason.\n" +
+            "Order (left → right): VPIN · TWAP · DELTA · CG · FLOOR · CAP.\n" +
+            "  VPIN  — informed-flow gate (>= 0.45), engine/strategies/five_min_vpin.py:2063-2071\n" +
+            "  TWAP  — legacy TWAP gate (removed in v10 cleanup, slot retained)\n" +
+            "  DELTA — |delta_pct| floor, engine/strategies/five_min_vpin.py:2100/2114/2121\n" +
+            "  CG    — CoinGlass taker-flow / OI, engine/signals/gates.py TakerFlowGate + CGConfirmationGate\n" +
+            "  FLOOR — Polymarket gamma price >= $0.30\n" +
+            "  CAP   — Polymarket gamma price <= dynamic cap (v10.3+ DynamicCapGate)\n" +
+            "Caveat: an all-✅ row can still be a SKIP if the real blocker (e.g. DUNE) isn't one of these 6 substrings. Hover REASON for the authoritative skip string."
+          }>
+            GATES
+          </span>
+          <span title={
+            "REASON = human-readable text of the first failing gate, or 'traded' if the window actually executed.\n" +
+            "Value: window_snapshots.skip_reason. Populated by the engine at engine/strategies/five_min_vpin.py when _last_skip_reason is set (v10 path: gate_pipeline.skip_reason).\n" +
+            "Examples: 'DUNE P(UP)=0.539 < 0.600 (NORMAL T-120)', 'VPIN 0.412 < gate 0.45', 'CASCADE: delta 0.0013% < 0.0150%'."
+          }>
+            REASON
+          </span>
+          <span style={{ textAlign: 'right' }} title={
+            "RESULT = WIN / LOSS / SKIP for the window.\n" +
+            "Computation: FactoryFloor.jsx:260-268 (outcomeLabel).\n" +
+            "WIN/LOSS from window_snapshots.v71_correct (set by hub/api/v58_monitor._calc_outcome_row from Polymarket trades.outcome when available, else directional-match fallback).\n" +
+            "SKIP = window was evaluated but neither v7.1 nor v5.8 would have traded."
+          }>
+            RESULT
+          </span>
         </div>
         {/* Rows */}
         {outcomes.length > 0 ? outcomes.slice(0, 15).map((o, i) => {
@@ -1438,7 +1508,7 @@ export default function FactoryFloor() {
           return (
             <div key={i} style={{
               display: 'grid',
-              gridTemplateColumns: '60px 46px 46px 36px 1fr 100px 60px',
+              gridTemplateColumns: '60px 54px 54px 36px 1fr 100px 60px',
               gap: 8,
               padding: '5px 0',
               borderBottom: `1px solid ${T.border}`,
@@ -1451,7 +1521,11 @@ export default function FactoryFloor() {
                 color: o.direction === 'UP' ? T.profit
                   : o.direction === 'DOWN' ? T.loss
                   : T.label,
-              }}>
+              }} title={
+                o.direction
+                  ? `Engine predicted ${o.direction} for this window. Source: window_snapshots.direction (v10.5+ pipeline: SourceAgreementGate vote). See docs/FACTORY_FLOOR_SIGNAL_SOURCE.md for full trace.`
+                  : 'No direction recorded for this window.'
+              }>
                 {o.direction || '\u2014'}
               </span>
               <span style={{
@@ -1463,7 +1537,11 @@ export default function FactoryFloor() {
                   ? 'rgba(248,113,113,0.12)' : 'transparent',
                 borderRadius: 3,
                 padding: '0 3px',
-              }}>
+              }} title={
+                o.actual_direction
+                  ? `Actual window-close direction: ${o.actual_direction}. Resolved via ${o.resolution_source === 'polymarket' ? 'Polymarket trades.outcome + trades.direction' : 'Binance open→close fallback (window_snapshots.open_price vs close_price)'}. See hub/api/v58_monitor.py:876-889.`
+                  : 'Not yet resolved — window still open or missing close price.'
+              }>
                 {o.actual_direction || '\u2014'}
               </span>
               <span style={{ fontSize: 8, color: T.label, fontFamily: 'monospace' }} title={
