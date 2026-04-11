@@ -43,10 +43,23 @@ name: Deploy Engine to Montreal
 on:
   push:
     branches: [develop]
+    # Path filter: fires when files inside engine/ or scripts/restart_engine.sh
+    # change, or when this workflow itself changes. Docs-only edits under
+    # engine/** (README.md, IMPLEMENTATION_COMPLETE.md, any *.md additions)
+    # are excluded via negative patterns so audit-log updates do not bounce
+    # the engine process. The negative patterns must come AFTER the positive
+    # ones — GitHub evaluates them sequentially and a negative pattern after
+    # a positive match removes the path from the trigger set.
+    #
+    # Repo-level docs/** and frontend/** already do not match the positive
+    # patterns, so they never fire this workflow. The negative patterns
+    # below only need to filter noise inside engine/** itself.
     paths:
       - 'engine/**'
       - 'scripts/restart_engine.sh'
       - '.github/workflows/deploy-engine.yml'
+      - '!engine/**/*.md'
+      - '!engine/**/*.txt'
   workflow_dispatch:
 
 concurrency:
