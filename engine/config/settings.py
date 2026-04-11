@@ -75,5 +75,26 @@ class Settings(BaseSettings):
         description="Price source for window delta: chainlink (default/oracle), binance (legacy), tiingo, or consensus (all must agree)",
     )
 
+    # Tiingo
+    tiingo_api_key: str = Field(default="", description="Tiingo API key for top-of-book feed")
+
+    # v8.1 TimesFM v2 early entry
+    v2_early_entry_enabled: bool = Field(default=True, description="Enable v2 early entry via calibrated probability")
+    timesfm_v2_url: str = Field(default="http://3.98.114.0:8080", description="TimesFM v2 forecast service URL")
+
+    # 15-minute Polymarket trading
+    fifteen_min_enabled: bool = Field(default=False, description="Enable 15-minute Polymarket trading")
+    fifteen_min_assets: str = Field(default="BTC,ETH,SOL", description="Comma-separated assets for 15-min trading")
+
+    # Reconciler
+    reconciler_enabled: bool = Field(default=True, description="Enable CLOB reconciler (vs legacy reconcile loop)")
+
+    # Poly fills reconciler
+    poly_fills_sync_interval_s: float = Field(default=300.0, description="Poly fills reconciler sync interval in seconds")
+    poly_fills_lookback_hours: float = Field(default=2.0, description="Poly fills reconciler lookback window in hours")
+
+    # SOT reconciler
+    sot_reconciler_interval: float = Field(default=120.0, description="SOT reconciler interval in seconds (min 10)")
+
 
 settings = Settings()

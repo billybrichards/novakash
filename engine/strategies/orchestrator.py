@@ -19,10 +19,8 @@ All components are created internally; the caller simply does:
 from __future__ import annotations
 
 import asyncio
-import os
 import signal as _signal
 import time
-from pathlib import Path
 from typing import Optional
 
 import structlog
@@ -48,7 +46,6 @@ from data.models import (
     AggTrade,
     ArbOpportunity,
     CascadeSignal,
-    LiquidationVolume,
     OpenInterestSnapshot,
     PolymarketOrderBook,
     VPINSignal,
@@ -112,6 +109,9 @@ class Orchestrator:
         # ── TWAP Tracker (v5.7: time-weighted delta for direction) ─────────
         self._twap_tracker = TWAPTracker(max_windows=50)
 
+        # ── Window countdown tracking (v7.2) ──────────────────────────────
+        self._countdown_sent: dict[str, set[str]] = {}
+
         # ── TimesFM Client (v6.0, initialized early for FiveMinVPIN alerts) ──
         self._timesfm_client: Optional[TimesFMClient] = None
         self._timesfm_strategy: Optional[TimesFMOnlyStrategy] = None
@@ -134,7 +134,7 @@ class Orchestrator:
             alerts_paper=settings.telegram_alerts_paper,
             alerts_live=settings.telegram_alerts_live,
             paper_mode=settings.paper_mode,
-            anthropic_api_key=settings.anthropic_api_key,  # fix: pass key explicitly (pydantic doesn't inject into os.environ)
+            anthropic_api_key=settings.anthropic_api_key,
         )
 
         # ── Signal Processors ──────────────────────────────────────────────────
@@ -202,7 +202,7 @@ class Orchestrator:
             private_key=settings.poly_private_key,
             proxy_address=settings.poly_funder_address,
             paper_mode=settings.paper_mode,
-            builder_key=settings.builder_key or os.environ.get("BUILDER_KEY", ""),
+            builder_key=settings.builder_key,
         )
 
         # ── Playwright browser automation (replaces on-chain redeemer) ────────
@@ -291,39 +291,11 @@ class Orchestrator:
             log.info("orchestrator.five_min_disabled")
 
         # ── v6.0 TimesFM-Only Strategy ──────────────────────────────────────
-        # Read from os.environ first, then .env file as fallback
-        timesfm_enabled = os.environ.get("TIMESFM_ENABLED", "").lower() == "true"
-        if not timesfm_enabled:
-            # Fallback: read .env file directly if env var not set
-            env_file = Path(__file__).parent.parent / ".env"
-            if env_file.exists():
-                with open(env_file) as f:
-                    for line in f:
-                        if line.startswith("TIMESFM_ENABLED="):
-                            timesfm_enabled = line.split("=", 1)[1].strip().lower() == "true"
-                            break
+        timesfm_enabled = settings.timesfm_enabled
         
-        timesfm_url = os.environ.get("TIMESFM_URL")
-        if not timesfm_url:
-            env_file = Path(__file__).parent.parent / ".env"
-            if env_file.exists():
-                with open(env_file) as f:
-                    for line in f:
-                        if line.startswith("TIMESFM_URL="):
-                            timesfm_url = line.split("=", 1)[1].strip()
-                            break
-        timesfm_url = timesfm_url or "http://3.98.114.0:8080"
+        timesfm_url = settings.timesfm_url
         
-        timesfm_min_conf_str = os.environ.get("TIMESFM_MIN_CONFIDENCE")
-        if not timesfm_min_conf_str:
-            env_file = Path(__file__).parent.parent / ".env"
-            if env_file.exists():
-                with open(env_file) as f:
-                    for line in f:
-                        if line.startswith("TIMESFM_MIN_CONFIDENCE="):
-                            timesfm_min_conf_str = line.split("=", 1)[1].strip()
-                            break
-        timesfm_min_conf = float(timesfm_min_conf_str or "0.30")
+        timesfm_min_conf = settings.timesfm_min_confidence
 
         if timesfm_enabled:
             self._timesfm_client = TimesFMClient(
@@ -348,12 +320,10 @@ class Orchestrator:
             log.info("orchestrator.timesfm_injected_into_five_min")
 
         # v8.1: Inject TimesFM v2.2 client for early entry (calibrated probability)
-        _v2_enabled = os.environ.get("V2_EARLY_ENTRY_ENABLED", "true").lower() == "true"
-        if _v2_enabled and self._five_min_strategy:
+        if settings.v2_early_entry_enabled and self._five_min_strategy:
             from signals.timesfm_v2_client import TimesFMV2Client
-            _v2_url = os.environ.get("TIMESFM_V2_URL", "http://3.98.114.0:8080")
-            self._five_min_strategy._timesfm_v2 = TimesFMV2Client(base_url=_v2_url)
-            log.info("orchestrator.v2_early_entry_enabled", url=_v2_url)
+            self._five_min_strategy._timesfm_v2 = TimesFMV2Client(base_url=settings.timesfm_v2_url)
+            log.info("orchestrator.v2_early_entry_enabled", url=settings.timesfm_v2_url)
         else:
             log.info("orchestrator.v2_early_entry_disabled")
 
@@ -362,17 +332,15 @@ class Orchestrator:
 
         # 15-minute Polymarket strategy (uses same strategy, different feed)
         self._fifteen_min_feed = None
-        fifteen_min_enabled = os.environ.get("FIFTEEN_MIN_ENABLED", "false").lower() == "true"
-        fifteen_min_assets = os.environ.get("FIFTEEN_MIN_ASSETS", "BTC,ETH,SOL").split(",")
-        if fifteen_min_enabled:
+        if settings.fifteen_min_enabled:
             self._fifteen_min_feed = Polymarket5MinFeed(
-                assets=fifteen_min_assets,
+                assets=settings.fifteen_min_assets.split(","),
                 duration_secs=900,  # 15 minutes
                 signal_offset=FIVE_MIN_ENTRY_OFFSET,  # Same entry offset (T-60s)
                 on_window_signal=self._on_fifteen_min_window,
                 paper_mode=settings.paper_mode,
             )
-            log.info("orchestrator.fifteen_min_enabled", assets=fifteen_min_assets)
+            log.info("orchestrator.fifteen_min_enabled", assets=settings.fifteen_min_assets)
 
         # ── Feeds (wired after all components exist) ────────────────────────────
         self._binance_feed = BinanceWebSocketFeed(
@@ -521,16 +489,7 @@ class Orchestrator:
 
         # ── Tiingo Feed — initialise with live DB pool ────────────────────────
         try:
-            _tiingo_key = os.environ.get("TIINGO_API_KEY", "")
-            if not _tiingo_key:
-                # Fallback: read from .env file
-                _env_file = Path(__file__).parent.parent / ".env"
-                if _env_file.exists():
-                    with open(_env_file) as _f:
-                        for _line in _f:
-                            if _line.startswith("TIINGO_API_KEY="):
-                                _tiingo_key = _line.split("=", 1)[1].strip()
-                                break
+            _tiingo_key = self._settings.tiingo_api_key
             if _tiingo_key and self._db._pool:
                 self._tiingo_feed = TiingoFeed(
                     api_key=_tiingo_key,
@@ -789,7 +748,7 @@ class Orchestrator:
             log.warning("orchestrator.trade_recovery_failed", error=str(exc))
 
         # 6e. CLOB Reconciler (v10.2) or legacy reconciliation loop
-        _use_reconciler = os.environ.get("RECONCILER_ENABLED", "true").lower() == "true"
+        _use_reconciler = self._settings.reconciler_enabled
         if not self._settings.paper_mode and _use_reconciler:
             try:
                 from reconciliation.reconciler import CLOBReconciler
@@ -1041,7 +1000,6 @@ class Orchestrator:
 
     async def _timesfm_forecast_recorder_loop(self) -> None:
         """Every 1s: fetch TimesFM forecast with window-relative horizon and record."""
-        import math
         while not self._shutdown_event.is_set():
             try:
                 now = time.time()
@@ -1249,8 +1207,6 @@ class Orchestrator:
                 _tf = "15m" if window.duration_secs == 900 else "5m"
 
                 # Track which stages we've sent for this window
-                if not hasattr(self, '_countdown_sent'):
-                    self._countdown_sent = {}
                 if _wkey not in self._countdown_sent:
                     self._countdown_sent[_wkey] = set()
                     # WINDOW OPEN card — fires once at T-300 (window just opened)
@@ -1697,8 +1653,8 @@ class Orchestrator:
         If the reconciler isn't initialized (e.g. no db pool), this loop
         exits immediately.
         """
-        interval = float(os.environ.get("POLY_FILLS_SYNC_INTERVAL_S", "300"))
-        lookback_hours = float(os.environ.get("POLY_FILLS_LOOKBACK_HOURS", "2"))
+        interval = self._settings.poly_fills_sync_interval_s
+        lookback_hours = self._settings.poly_fills_lookback_hours
 
         if not getattr(self, "_poly_fills_reconciler", None):
             log.info("poly_fills_loop.disabled_no_reconciler")
@@ -2864,12 +2820,7 @@ class Orchestrator:
                 log.error("sot_reconciler_loop.init_failed", error=str(exc))
                 return
 
-        try:
-            interval_s = float(os.environ.get("SOT_RECONCILER_INTERVAL", "120"))
-        except (TypeError, ValueError):
-            interval_s = 120.0
-        if interval_s < 10:
-            interval_s = 10  # safety floor
+        interval_s = max(10.0, self._settings.sot_reconciler_interval)
 
         log.info("sot_reconciler_loop.started", interval_seconds=interval_s)
 
