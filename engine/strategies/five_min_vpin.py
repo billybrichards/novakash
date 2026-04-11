@@ -112,6 +112,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         geoblock_check_fn: Optional[Callable[[], bool]] = None,
         twap_tracker: Optional[TWAPTracker] = None,
         timesfm_client: Optional[TimesFMClient] = None,
+        tiingo_adapter=None,  # CA-02: Optional TiingoRestAdapter (MarketFeedPort)
     ) -> None:
         super().__init__(
             name="five_min_vpin",
@@ -128,6 +129,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._geoblock_check_fn = geoblock_check_fn  # G6: Callable to check if geoblock is active
         self._twap = twap_tracker  # v5.7: TWAP-delta direction tracker
         self._timesfm = timesfm_client  # v6.0 — DEPRECATED: use .timesfm_client / .set_timesfm_client()
+        self._tiingo_adapter = tiingo_adapter  # CA-02: TiingoRestAdapter (MarketFeedPort) for candle delta
         self._timesfm_v2 = None  # v8.1 — DEPRECATED: use .timesfm_v2_client / .set_timesfm_v2_client()
         self._tick_recorder = None  # DEPRECATED: use .set_tick_recorder()
         self._evaluator = WindowEvaluator()
@@ -422,54 +424,65 @@ class FiveMinVPINStrategy(BaseStrategy):
         binance_price = current_price
         delta_binance = (binance_price - open_price) / open_price * 100
 
-        # ── Tiingo 5m candle REST fetch (v8.0) ────────────────────────────
-        # Query the exact 5m window: window_ts → window_ts+300
-        # Endpoint: https://api.tiingo.com/tiingo/crypto/prices?tickers=btcusd&resampleFreq=5min
-        # Falls back to DB ticks_tiingo latest price if REST unavailable.
+        # -- Tiingo 5m candle delta (v8.0, CA-02 adapter extraction) --------
+        # Prefer injected TiingoRestAdapter if available; otherwise fall
+        # back to inline HTTP with env-sourced API key (TIINGO_API_KEY).
+        # NOTE: hardcoded API key removed -- security fix CA-02.
         _tiingo_open: Optional[float] = None
         _tiingo_close: Optional[float] = None
         delta_tiingo: Optional[float] = None
         _tiingo_candle_source = "none"
 
-        _tiingo_asset_ticker = f"{window.asset.lower()}usd"
-        _tiingo_api_key = "3f4456e457a4184d76c58a1320d8e1b214c3ab16"
-        _tiingo_window_start = datetime.fromtimestamp(window.window_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        _tiingo_window_end = datetime.fromtimestamp(window.window_ts + 300, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        try:
-            import aiohttp as _aiohttp_tiingo
-            _tiingo_url = (
-                f"https://api.tiingo.com/tiingo/crypto/prices"
-                f"?tickers={_tiingo_asset_ticker}"
-                f"&startDate={_tiingo_window_start}"
-                f"&endDate={_tiingo_window_end}"
-                f"&resampleFreq=5min"
-                f"&token={_tiingo_api_key}"
+        if self._tiingo_adapter is not None:
+            # -- Adapter path (preferred) ---------------------------------
+            delta_tiingo = await self._tiingo_adapter.get_window_delta(
+                asset=window.asset,
+                window_ts=window.window_ts,
+                open_price=open_price,
             )
-            async with _aiohttp_tiingo.ClientSession() as _ts:
-                async with _ts.get(_tiingo_url, timeout=_aiohttp_tiingo.ClientTimeout(total=3.0)) as _tr:
-                    if _tr.status == 200:
-                        _tiingo_data = await _tr.json()
-                        # Response: list of {ticker, baseCurrency, quoteCurrency, priceData: [{date, open, high, low, close, volume}]}
-                        if _tiingo_data and isinstance(_tiingo_data, list) and len(_tiingo_data) > 0:
-                            _price_data = _tiingo_data[0].get("priceData", [])
-                            if _price_data and len(_price_data) > 0:
-                                # Use the first candle's open and the last candle's close
-                                _tiingo_open = float(_price_data[0].get("open", 0) or 0) or None
-                                _tiingo_close = float(_price_data[-1].get("close", 0) or 0) or None
-                                if _tiingo_open and _tiingo_close and _tiingo_open > 0:
-                                    delta_tiingo = (_tiingo_close - _tiingo_open) / _tiingo_open * 100
-                                    _tiingo_candle_source = "rest_candle"
-                                    self._log.info(
-                                        "tiingo.candle_fetched",
-                                        asset=window.asset,
-                                        open=f"${_tiingo_open:,.2f}",
-                                        close=f"${_tiingo_close:,.2f}",
-                                        delta=f"{delta_tiingo:+.4f}%",
-                                        candles=len(_price_data),
-                                    )
-        except Exception as _te:
-            self._log.debug("tiingo.candle_fetch_failed", error=str(_te)[:80])
+            if delta_tiingo is not None:
+                _tiingo_candle_source = "rest_candle"
+        else:
+            # -- Inline fallback (backward compat, reads key from env) -----
+            _tiingo_api_key = os.environ.get("TIINGO_API_KEY", "")
+            if _tiingo_api_key:
+                _tiingo_asset_ticker = f"{window.asset.lower()}usd"
+                _tiingo_window_start = datetime.fromtimestamp(window.window_ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                _tiingo_window_end = datetime.fromtimestamp(window.window_ts + 300, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                try:
+                    import aiohttp as _aiohttp_tiingo
+                    _tiingo_url = (
+                        f"https://api.tiingo.com/tiingo/crypto/prices"
+                        f"?tickers={_tiingo_asset_ticker}"
+                        f"&startDate={_tiingo_window_start}"
+                        f"&endDate={_tiingo_window_end}"
+                        f"&resampleFreq=5min"
+                        f"&token={_tiingo_api_key}"
+                    )
+                    async with _aiohttp_tiingo.ClientSession() as _ts:
+                        async with _ts.get(_tiingo_url, timeout=_aiohttp_tiingo.ClientTimeout(total=3.0)) as _tr:
+                            if _tr.status == 200:
+                                _tiingo_data = await _tr.json()
+                                if _tiingo_data and isinstance(_tiingo_data, list) and len(_tiingo_data) > 0:
+                                    _price_data = _tiingo_data[0].get("priceData", [])
+                                    if _price_data and len(_price_data) > 0:
+                                        _tiingo_open = float(_price_data[0].get("open", 0) or 0) or None
+                                        _tiingo_close = float(_price_data[-1].get("close", 0) or 0) or None
+                                        if _tiingo_open and _tiingo_close and _tiingo_open > 0:
+                                            delta_tiingo = (_tiingo_close - _tiingo_open) / _tiingo_open * 100
+                                            _tiingo_candle_source = "rest_candle"
+                                            self._log.info(
+                                                "tiingo.candle_fetched",
+                                                asset=window.asset,
+                                                open=f"${_tiingo_open:,.2f}",
+                                                close=f"${_tiingo_close:,.2f}",
+                                                delta=f"{delta_tiingo:+.4f}%",
+                                                candles=len(_price_data),
+                                            )
+                except Exception as _te:
+                    self._log.debug("tiingo.candle_fetch_failed", error=str(_te)[:80])
+            else:
+                self._log.debug("tiingo.no_api_key", msg="TIINGO_API_KEY not set, skipping REST candle fetch")
 
         # Tiingo DB fallback: use latest tick from ticks_tiingo if REST unavailable
         _tiingo_db_price: Optional[float] = None

@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     coinglass_api_key: str = Field(default="", description="CoinGlass API key")
     anthropic_api_key: str = Field(default="", description="Anthropic API key for Claude evaluator")
 
+    # Tiingo (CA-02: extracted from hardcoded literal in five_min_vpin.py)
+    tiingo_api_key: str = Field(default="", description="Tiingo API key for crypto candle data")
+
     # Polygon RPC
     polygon_rpc_url: str = Field(default="", description="Polygon RPC endpoint")
 
