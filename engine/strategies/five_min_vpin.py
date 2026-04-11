@@ -611,7 +611,9 @@ class FiveMinVPINStrategy(BaseStrategy):
             if _window_key_v10 in self._traded_windows:
                 return  # Already traded this window
             from signals.gates import (
-                GateContext, GatePipeline, SourceAgreementGate,
+                GateContext, GatePipeline,
+                EvalOffsetBoundsGate,           # v10.6 DS-01 (default OFF via V10_6_ENABLED)
+                SourceAgreementGate,
                 DeltaMagnitudeGate,
                 TakerFlowGate, CGConfirmationGate,
                 DuneConfidenceGate, SpreadGate, DynamicCapGate,
@@ -678,9 +680,20 @@ class FiveMinVPINStrategy(BaseStrategy):
                 # this over rebuilding from scalars
                 v5_features=_v5_body,
             )
-            # v10.5: 7-gate decision surface pipeline
-            # Order: Agreement → DeltaMagnitude → TakerFlow → CGConfirm → DUNE → Spread → Cap
+            # v10.5 + v10.6 DS-01: 8-gate decision surface pipeline
+            # Order: EvalOffsetBounds → Agreement → DeltaMagnitude → TakerFlow → CGConfirm → DUNE → Spread → Cap
+            #
+            # G0 (EvalOffsetBoundsGate) is the v10.6 DS-01 gate — inserted
+            # FIRST because it's the cheapest check in the pipeline (no
+            # external calls, just two integer comparisons) AND it's a
+            # hard-block that short-circuits the rest of the pipeline.
+            # CRITICAL: defaults to OFF via V10_6_ENABLED=false. When
+            # disabled, the gate is a pure no-op returning passed=True
+            # unconditionally — the downstream 7-gate behaviour is
+            # bit-for-bit identical to before this PR. Operator flips
+            # V10_6_ENABLED=true on the host to turn hard-block on.
             pipeline = GatePipeline([
+                EvalOffsetBoundsGate(),         # G0: v10.6 DS-01 (default OFF via V10_6_ENABLED)
                 SourceAgreementGate(),          # G1: CL+TI agree (94.7% WR)
                 DeltaMagnitudeGate(),           # G2: |delta| floor (v10.5 — blocks noise trades)
                 TakerFlowGate(),                # G3: CG taker hard gate + threshold modifier
