@@ -11,6 +11,7 @@ Runs as a background task in the orchestrator.
 """
 
 import asyncio
+import json
 import os
 import time
 from typing import Optional
@@ -119,6 +120,13 @@ class ELMPredictionRecorder:
                         model="oak",
                     )
                     if result and "probability_up" in result:
+                        # PE-06: serialize feature_freshness_ms via json.dumps()
+                        # rather than str(dict) so the JSONB column receives
+                        # valid JSON (double-quoted keys/strings). str(dict)
+                        # emits Python literal repr with single quotes, which
+                        # Postgres's JSONB parser rejects with
+                        # 'Token "'" is invalid.', silently dropping the row.
+                        freshness = result.get("feature_freshness_ms") or {}
                         rows.append((
                             asset,
                             delta,
@@ -126,7 +134,7 @@ class ELMPredictionRecorder:
                             float(result["probability_up"]),
                             float(result.get("probability_raw", 0)),
                             result.get("delta_bucket"),
-                            str(result.get("feature_freshness_ms", {})),
+                            json.dumps(freshness),
                         ))
                 except Exception as exc:
                     self._log.debug("elm_recorder.query_error",
