@@ -17,8 +17,17 @@ export const T = {
   white: '#fff',
 };
 
-// Gate names for the audit matrix
+// Gate names for the audit matrix — v10 DUNE pipeline
 export const GATES = [
+  'gate_agreement',
+  'gate_dune',
+  'gate_cg_veto',
+  'gate_cap',
+];
+
+// Legacy gates kept for backwards compat with pre-v10 windows
+export const LEGACY_GATES = [
+  'gate_agreement',
   'gate_vpin',
   'gate_delta',
   'gate_cg_veto',
@@ -30,15 +39,32 @@ export const GATES = [
 ];
 
 // Evaluation checkpoint offsets (seconds before window close)
+// v10: min eval offset is T-180 (V10_MIN_EVAL_OFFSET=180)
 export const CHECKPOINTS = [240, 230, 220, 210, 200, 190, 180, 170, 160, 150, 140, 130, 120, 110, 100, 90, 80, 70, 60];
 
-// Entry price caps by offset
-export const getEntryCap = (t) => {
-  if (t > 180) return 0.55;
-  if (t > 120) return 0.60;
+// v10 DUNE dynamic entry cap
+// cap = DUNE_P - 5pp, bounded by [DUNE_CAP_FLOOR, DUNE_CAP_CEILING]
+export const DUNE_CAP_MARGIN = 0.05;   // 5 percentage points
+export const DUNE_CAP_FLOOR = 0.30;
+export const DUNE_CAP_CEILING = 0.75;
+export const DUNE_MIN_P = 0.65;        // Minimum DUNE P(direction) to trade
+export const V10_MIN_EVAL_OFFSET = 180; // Don't trade before T-180
+
+export const getDuneEntryCap = (duneP) => {
+  if (duneP == null) return null;
+  return Math.round(Math.min(Math.max(duneP - DUNE_CAP_MARGIN, DUNE_CAP_FLOOR), DUNE_CAP_CEILING) * 100) / 100;
+};
+
+// Fallback v9 cap when no DUNE data available
+export const getEntryCap = (t, vpin) => {
+  if (t > 130) return 0.55;
   if (t > 60) return 0.65;
   return 0.73;
 };
+
+// Pi bonus: cap + 3.14 cents when CLOB is within pi% of cap
+export const PI_BONUS_CENTS = 0.0314;
+export const getCapWithPi = (cap) => Math.round((cap + PI_BONUS_CENTS) * 100) / 100;
 
 // Window status helpers
 export const windowStatusColor = (w) => {

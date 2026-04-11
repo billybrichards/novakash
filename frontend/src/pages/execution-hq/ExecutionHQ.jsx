@@ -3,6 +3,9 @@ import { Radio, History } from 'lucide-react';
 import { useApi } from '../../hooks/useApi.js';
 import LiveTab from './components/LiveTab.jsx';
 import RetroTab from './components/RetroTab.jsx';
+import ManualTradePanel from './components/ManualTradePanel.jsx';
+import TradeTicker from './components/TradeTicker.jsx';
+import TradeToast from './components/TradeToast.jsx';
 import { T } from './components/constants.js';
 
 /**
@@ -77,6 +80,9 @@ export default function ExecutionHQ() {
   const bankroll = dashStats?.balance ?? hqData?.system?.bankroll ?? 0;
   const windows = hqData?.windows || [];
   const shadowStats = hqData?.shadow_stats || {};
+  const v9Stats = hqData?.v9_stats || {};
+  const v10Stats = hqData?.v10_stats || {};
+  const v9GateData = hqData?.v9_gate_data || {};
 
   return (
     <div style={{
@@ -140,6 +146,24 @@ export default function ExecutionHQ() {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, fontFamily: 'monospace' }}>
+          {/* v10 WR counter (shows v10 DUNE stats if available, otherwise combined) */}
+          {(() => {
+            const stats = (v10Stats.total_trades > 0) ? v10Stats : v9Stats;
+            const label = (v10Stats.total_trades > 0) ? 'v10 DUNE' : 'WR';
+            if (!stats.wins && !stats.losses) return null;
+            return (
+              <div style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'flex-end',
+                background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.3)',
+                padding: '4px 10px', borderRadius: 4,
+              }}>
+                <span style={{ fontSize: 9, color: T.purple, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</span>
+                <span style={{ fontSize: 14, fontWeight: 700, color: T.purple, fontFamily: "'JetBrains Mono', monospace" }}>
+                  {stats.wins}W/{stats.losses}L = {stats.wr_pct}%
+                </span>
+              </div>
+            );
+          })()}
           {/* Shadow stats badge */}
           {shadowStats.shadow_wins > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
@@ -157,6 +181,9 @@ export default function ExecutionHQ() {
           </div>
         </div>
       </header>
+
+      {/* Trade ticker strip */}
+      <TradeTicker recentTrades={hqData?.recent_trades || []} />
 
       {/* Error banner */}
       {error && (
@@ -181,11 +208,17 @@ export default function ExecutionHQ() {
 
       {/* Tab content */}
       {(!loading || hqData) && activeTab === 'live' && (
-        <LiveTab hqData={hqData} tick={tick} />
+        <LiveTab hqData={hqData} tick={tick} v9Stats={v9Stats} v9GateData={v9GateData} v10Stats={v10Stats} />
       )}
       {(!loading || hqData) && activeTab === 'retro' && (
-        <RetroTab windows={windows} shadowStats={shadowStats} />
+        <RetroTab windows={windows} shadowStats={shadowStats} v9Stats={v9Stats} v10Stats={v10Stats} recentTrades={hqData?.recent_trades || []} />
       )}
+
+      {/* Trade toast notification (portal) */}
+      <TradeToast recentTrades={hqData?.recent_trades || []} />
+
+      {/* Floating manual trade panel (portal) */}
+      <ManualTradePanel hqData={hqData} />
     </div>
   );
 }

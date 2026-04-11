@@ -1,0 +1,148 @@
+name: Deploy Margin Engine to AWS
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'margin_engine/**'
+      - '.github/workflows/deploy-margin-engine.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy Margin Engine
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to AWS eu-west-2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.MARGIN_ENGINE_HOST }}
+          username: ubuntu
+          key: ${{ secrets.MARGIN_ENGINE_SSH_KEY }}
+          script: |
+            set -e
+
+            # Create app directory if first deploy
+            sudo mkdir -p /opt/margin-engine
+            sudo chown ubuntu:ubuntu /opt/margin-engine
+
+            # Stop existing service (if running)
+            sudo systemctl stop margin-engine 2>/dev/null || true
+
+            # Clean and copy new code
+            rm -rf /opt/margin-engine/app
+            mkdir -p /opt/margin-engine/app
+
+      - name: Copy margin engine code
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.MARGIN_ENGINE_HOST }}
+          username: ubuntu
+          key: ${{ secrets.MARGIN_ENGINE_SSH_KEY }}
+          source: "margin_engine/"
+          target: "/opt/margin-engine/app/"
+
+      - name: Template v4 env vars (idempotent)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.MARGIN_ENGINE_HOST }}
+          username: ubuntu
+          key: ${{ secrets.MARGIN_ENGINE_SSH_KEY }}
+          script: |
+            set -e
+            ENV_FILE=/opt/margin-engine/.env
+
+            # Ensure file exists with safe perms
+            sudo touch "$ENV_FILE"
+            sudo chown ubuntu:ubuntu "$ENV_FILE"
+            sudo chmod 600 "$ENV_FILE"
+
+            # Backup before mutation
+            cp "$ENV_FILE" "${ENV_FILE}.bak.$(date +%s)"
+
+            # Idempotent set: replace existing line if present, else append
+            set_env() {
+              local key="$1" val="$2"
+              if grep -qE "^${key}=" "$ENV_FILE"; then
+                # Use a delimiter unlikely in URLs (|) and escape val
+                sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
+              else
+                echo "${key}=${val}" >> "$ENV_FILE"
+              fi
+            }
+
+            # v4 wiring against Montreal timesfm service
+            set_env MARGIN_PAPER_MODE true
+            set_env MARGIN_ENGINE_USE_V4_ACTIONS true
+            set_env MARGIN_V4_SNAPSHOT_URL http://3.98.114.0:8080
+            set_env MARGIN_V4_PRIMARY_TIMESCALE 15m
+            set_env MARGIN_V4_TIMESCALES 5m,15m,1h,4h
+            set_env MARGIN_V4_STRATEGY fee_aware_15m
+            set_env MARGIN_V4_POLL_INTERVAL_S 2.0
+            set_env MARGIN_V4_FRESHNESS_S 10.0
+
+            echo "v4 env keys after templating:"
+            grep -E "^MARGIN_(PAPER_MODE|ENGINE_USE_V4|V4_)" "$ENV_FILE" || true
+
+            # Cleanup old backups (keep last 5)
+            ls -1t "${ENV_FILE}".bak.* 2>/dev/null | tail -n +6 | xargs -r rm -f
+
+      - name: Install and restart
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.MARGIN_ENGINE_HOST }}
+          username: ubuntu
+          key: ${{ secrets.MARGIN_ENGINE_SSH_KEY }}
+          script: |
+            set -e
+            cd /opt/margin-engine/app/margin_engine
+
+            # Create/update venv
+            python3 -m venv /opt/margin-engine/venv 2>/dev/null || true
+            /opt/margin-engine/venv/bin/pip install --quiet -r requirements.txt
+
+            # Create systemd service if not exists
+            if [ ! -f /etc/systemd/system/margin-engine.service ]; then
+              sudo tee /etc/systemd/system/margin-engine.service > /dev/null <<'SERVICE'
+            [Unit]
+            Description=Novakash Margin Engine
+            After=network.target
+
+            [Service]
+            Type=simple
+            User=ubuntu
+            WorkingDirectory=/opt/margin-engine/app
+            ExecStart=/opt/margin-engine/venv/bin/python -m margin_engine.main
+            EnvironmentFile=/opt/margin-engine/.env
+            Restart=on-failure
+            RestartSec=10
+
+            [Install]
+            WantedBy=multi-user.target
+            SERVICE
+              sudo systemctl daemon-reload
+              sudo systemctl enable margin-engine
+            fi
+
+            # Ensure keys directory exists
+            sudo mkdir -p /opt/margin-engine/.keys
+            sudo chown ubuntu:ubuntu /opt/margin-engine/.keys
+            sudo chmod 700 /opt/margin-engine/.keys
+
+            # Restart service to pick up new env vars (start is no-op if running)
+            sudo systemctl restart margin-engine
+
+            # Health check (wait 5s then check if still running)
+            sleep 5
+            if systemctl is-active --quiet margin-engine; then
+              echo "Margin engine is running"
+              sudo journalctl -u margin-engine --no-pager -n 30
+            else
+              echo "Margin engine failed to start"
+              sudo journalctl -u margin-engine --no-pager -n 30
+              exit 1
+            fi

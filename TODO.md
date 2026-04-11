@@ -152,6 +152,24 @@ Integrated into orchestrator startup sequence. VPIN warms within seconds.
 - ✅ Live trades resolve ONLY from Polymarket oracle (commit 5af81b5)
 - ⚠️ Paper mode still has Binance fallback (see HIGH PRIORITY above)
 
+### Chainlink Multi-Asset Feed
+- ✅ BTC/ETH/SOL/XRP on Polygon mainnet, polls every 5s (commits 9f529ec → 5b3a790)
+- ✅ Oracle source of truth for Polymarket resolution
+- ✅ Saves open/close prices for alignment analysis
+- ✅ Integrated into orchestrator + five_min_vpin window snapshots
+- ✅ round_id stored as TEXT for uint80 compatibility
+
+### Tiingo Top-of-Book Feed
+- ✅ BTC/ETH/SOL/XRP, polls every 2s (commit 9f529ec)
+- ✅ Multi-exchange best bid/ask with exchange attribution
+- ✅ Saves open/close prices for alignment analysis
+- ✅ Integrated into orchestrator + five_min_vpin window snapshots
+
+### Data Feeds Documentation
+- ✅ `docs/DATA_FEEDS.md` — comprehensive reference with schemas, queries, data flow diagram
+- ✅ 6 feeds: Binance WS, Chainlink, Tiingo, CoinGlass Enhanced, Gamma API, TimesFM
+- ✅ All feeds write to dedicated tick tables with proper indexing
+
 ---
 
 ## 📝 Notes
@@ -160,6 +178,10 @@ Integrated into orchestrator startup sequence. VPIN warms within seconds.
 - Populated by `data-collector/backfill.py` (historical) and `data-collector/collector.py` (continuous)
 - Qwen122b fallback requires `QWEN_HOST=ollama-ssh1` env var
 - v7.1 WR: 73.3% on backfilled 120 windows
+- All `/v58/*` frontend endpoints are valid — backed by `hub/api/v58_monitor.py`
+- All `/playwright/*` endpoints are valid — backed by `hub/api/playwright.py`
+- All `/trading-config/*` endpoints are valid — backed by `hub/api/trading_config.py`
+- `useApi()` hook supports both `api.get()` and `api('GET', url)` calling conventions
 
 
 ### v8.0 DB Migration
@@ -194,14 +216,27 @@ confidence_tier, entry_time_offset, gates_passed, gate_failed
 **Blocked by:** Railway deploy of macro-observer service (Billy to trigger)
 
 ### Tiingo Integration
-**Status:** TODO — API key available from earlier TODO
+**Status:** PARTIALLY DONE — feed built, saving open/close prices for alignment analysis
 **Key:** 3f4456e457a4184d76c58a1320d8e1b214c3ab16
 **Why critical:** Chainlink oracle uses multi-exchange LWBA median. Binance alone diverges 57%
 of the time vs oracle direction. Tiingo is an oracle node input — should track much better.
-**What to build:**
-- Add to data-collector: record Tiingo BTC/USD at window open/close timestamps
+**What's done:**
+- Tiingo data feed implemented (commit 9f529ec)
+- Saves Tiingo + Chainlink prices at window open/close (commit 5b3a790)
+**What remains:**
 - Compare Tiingo vs oracle resolution direction for 48h to validate
 - If tracks well: replace Binance delta in signal calculation
+
+### Chainlink Multi-Asset Feed
+**Status:** DONE — implemented and saving data
+**What:** Direct Chainlink on-chain price reads for BTC/USD (and multi-asset support)
+**Commits:** 9f529ec, caa9fc3, 220a19c, 86542d4, 7197632, 5b3a790
+**Why:** Polymarket oracle likely uses Chainlink as price source — tracking this gives us
+the same price the oracle sees, eliminating Binance divergence issues.
+**Details:**
+- Uses sync Web3 (async provider not available)
+- round_id stored as TEXT for uint80 compatibility
+- Saves prices at both window open and close for alignment analysis
 
 ### Gamma Balance Block (Feature Flag — Monitor First)
 **Status:** TO MONITOR before implementing
@@ -224,15 +259,23 @@ Only implement if data confirms the hypothesis.
 **Why:** Test combinations, disable TWAP override that flips direction wrong
 
 ### Polymarket Oracle Investigation
-**Status:** TODO — BLOCKING for FOK ladder
+**Status:** DATA COLLECTION LIVE — Chainlink + Tiingo saving open/close prices
 **What:** Understand exactly how UpDown oracle resolves:
 - What price source? (Binance, Chainlink, Pyth?)
 - What timestamp? (window close? +4min?)
 - Open→close or TWAP/VWAP?
-**Why:** Multiple trades where BTC moved in our direction but oracle disagreed
+**Why:** Multiple trades where BTC moved in our direction but oracle disagreed.
+Binance alone diverges 57% of the time vs oracle direction.
+**Progress:**
+- Chainlink multi-asset feed LIVE — polls every 5s, saves to ticks_chainlink
+- Tiingo top-of-book feed LIVE — polls every 2s, saves to ticks_tiingo
+- Both save prices at window open AND close in window_snapshots
+- Cross-reference query ready in `docs/DATA_FEEDS.md` (Chainlink vs Binance diff)
+**Next:** Run alignment analysis after 48h of data collection — compare
+Chainlink open→close direction vs Polymarket oracle resolution for each window
 
 ### Tiingo Data Source
-**Status:** TODO — API key available
+**Status:** DONE — feed built, integrated into engine (see Tiingo Integration above)
 **Key:** 3f4456e457a4184d76c58a1320d8e1b214c3ab16
 **Endpoints:**
 - Top-of-book (real-time): `https://api.tiingo.com/tiingo/crypto/top?tickers=btcusd`
@@ -246,10 +289,6 @@ Only implement if data confirms the hypothesis.
 - Add as data column in countdown_evaluations (tiingo_price at each stage)
 
 **Integration:** Add to data collector or engine heartbeat as supplementary price feed
-- All `/v58/*` frontend endpoints are valid — backed by `hub/api/v58_monitor.py`
-- All `/playwright/*` endpoints are valid — backed by `hub/api/playwright.py`
-- All `/trading-config/*` endpoints are valid — backed by `hub/api/trading_config.py`
-- `useApi()` hook supports both `api.get()` and `api('GET', url)` calling conventions
 
 ---
 

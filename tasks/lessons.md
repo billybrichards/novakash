@@ -67,3 +67,62 @@ Lessons learned from corrections. Review at session start.
 **What happened:** V58Monitor.jsx is 122KB — too large for a general audit pass to assess properly. Needs dedicated deep-read in chunks.
 **Root cause:** File grew organically without decomposition. Single components shouldn't exceed ~500 lines.
 **Rule:** Flag any component >500 lines for decomposition. Audit large files in dedicated passes with chunked reads.
+
+### v3 composite is noise at 5m/15m horizons — 2026-04-10
+**What happened:** Margin engine overnight: 116 trades, 0% WR, −$26.99. Every trade lost exactly the fee cost (−$0.23 on $125 notional = 0.184% round-trip). All exits were SIGNAL_REVERSAL. Retrospective on margin_logs: avg signal swing during hold = 0.97, median 0.99, max 1.38. Avg first-seen score = −0.01, avg last-seen = −0.01. The composite signal oscillates ±1.0 around zero on a ~4-minute cycle.
+**Root cause:** The v3 multiscale composite is not forward-looking at sub-15m horizons. The entry threshold (0.30) gets crossed often due to amplitude, but sign doesn't persist, so trades always exit via reversal at the fee cost.
+**Rule:** Before trading on ANY signal, passively record it for N hours and check: (a) autocorrelation at intended hold horizon, (b) forward return conditional on signal > threshold, (c) sign persistence rate. Don't trust backtest WR — instrument and measure the live signal distribution first.
+
+### Option A — Margin engine tuning (parked, do not apply until Option B proves signal has edge) — 2026-04-10
+Ranked by expected impact if signal turns out to have edge at longer horizons:
+1. **Disable 5m timescale** — 50% of trades, 50% of losses, too noisy.
+2. **Raise entry threshold 0.30 → 0.50** — only trade strongest signals (tail of the distribution).
+3. **Widen reversal threshold −0.20 → −0.50** — let positions breathe through oscillation.
+4. **Add minimum hold time (10 min)** — prevents same-cycle entry/exit churning.
+5. **Add take-profit +0.8% / stop-loss −0.8%** — currently reversal always fires first, so other exits never trigger.
+**Rule:** Do not apply these until passive signal recording (margin_signals table) has collected ≥24h of data and forward-return analysis shows positive EV at some threshold × timescale combination.
+
+### Polymarket v9.0 is below breakeven live — 2026-04-10
+**What happened:** Overnight 212 trades, 48W/36L resolved (57.1% WR), total −$64.65. Backtest claimed 82% WR. Breakeven for YES/NO at 0.68 entry with 1.60 payout is ~68% WR. 57% loses money.
+**Root cause:** Single-day backtest regime (the "86% WR day" noted in memory) doesn't generalize. Fee/payoff ratio is unforgiving — 10 percentage points below backtest WR turns profit into significant loss.
+**Rule:** For any strategy with asymmetric payoffs (like binary markets), compute breakeven WR explicitly and require live WR to clear breakeven + buffer over ≥500 trades before claiming edge.
+
+### Railway env vars must be set per-environment, not just in .env.example — 2026-04-10
+**What happened:** Frontend showed 502 on /api/v3/snapshot and /api/margin/status for hours. I first misdiagnosed it as an AWS security group issue, then as a v3-routes-not-deployed issue. Actual cause: `TIMESFM_URL` and `MARGIN_ENGINE_URL` were in `.env.example` with localhost defaults, but never set as actual env variables on the Railway `hub` service in the `develop` environment. The Hub proxy fell through to `http://localhost:8001`, httpx raised ConnectError, the proxy returned 502. TimesFM itself was healthy the whole time.
+**Root cause:** `.env.example` is a template — writing a value there does nothing until it's set on the actual deployment platform. The defaults (`http://localhost:8001`) silently work in dev but fail in prod.
+**Rule:** (1) Any cross-service URL in `.env.example` must have a comment warning it MUST be set in prod, naming the specific platform (Railway/AWS) and the consequence of falling through. (2) Before blaming "the other service", probe the failing service's OWN env vars first — especially anything with a localhost default. (3) When adding a new Hub proxy route, add the target URL to Railway at PR time, not as a follow-up.
+
+### Redundant CI workflows silently rot — 2026-04-10
+**What happened:** `.github/workflows/railway-deploy.yml` had been failing on every push/PR to develop for weeks because it used old Railway CLI v3 syntax (`railway login --token`) that v4+ rejects. Nobody noticed because Railway's native GitHub integration was deploying the Hub anyway — the workflow was doubly-redundant AND broken, but the product kept working.
+**Root cause:** When Railway's GitHub integration was enabled, the old CI workflow wasn't deleted. It continued running, continued failing, and its FAILURE status made every PR check "UNSTABLE" — masking real CI failures and training us to ignore the red mark.
+**Rule:** When replacing a deploy mechanism with a platform-native one, DELETE the old workflow immediately. A red check everyone ignores is worse than no check. Audit `.github/workflows/` for "always-failing" workflows periodically.
+
+### Probe the path the production caller uses, not a path you assume exists — 2026-04-10
+**What happened:** Diagnosing the 502, I probed `GET http://3.98.114.0:8080/v3/probability` and got 404, concluded "/v3 routes don't exist on that instance". Actually the Hub proxy calls `/v3/snapshot`, not `/v3/probability`. `/v3/snapshot` returns 200 with full composite data. I wasted a cycle on the wrong theory because I probed a path I'd guessed at instead of reading `hub/api/margin.py` first.
+**Root cause:** Shortcut — assumed "TimesFM has /v2/probability, so /v3 must have /v3/probability". The actual v3 API surface is `/v3/snapshot` + `/v3/health` + WS `/v3/signal`. No `/v3/probability` exists (never did).
+**Rule:** When diagnosing an upstream from a proxy, ALWAYS grep the proxy code first to see what path it actually calls. Never probe the upstream from memory about "what endpoints it should have".
+
+### Don't confuse "model weights git SHA" with "deployed codebase git SHA" — 2026-04-10 (CORRECTED)
+**What happened:** Earlier this session I wrote a lesson titled "Production runs off-branch — Montreal TimesFM is on feat/v2.1-calibration, not main" based on the `model_version` string in `/v2/probability` responses: `"11191d7@v2/btc/btc_5m/11191d7/..."`. I assumed the git SHA `11191d7` meant the server *codebase* was running that commit, concluded Montreal was running `feat/v2.1-calibration`, and warned that redeploying main would downgrade the model. **All of this was wrong.**
+
+Verification revealed:
+1. Montreal's `/v3/snapshot` returns real composite data from all 9 timescales (`elm, cascade, taker, oi, funding, vpin, momentum`). But `origin/feat/v2.1-calibration` has **zero** `app/v3_*.py` files — the entire v3 composite system only exists on main. Therefore Montreal cannot be running `feat/v2.1-calibration`; it must be running main-lineage code.
+2. Reading `app/v2_model_registry.py` clarified the weights architecture: model artifacts (LightGBM booster + isotonic calibrator) live in S3 at `s3://<bucket>/v2/btc/btc_5m/<training_commit_sha>/<timestamp>/manifest.json`, loaded at runtime via `current.json`. The `11191d7` in the version string is the **training** commit's SHA (Sequoia v4 was trained from that commit), not the serving commit.
+3. Merging `feat/v2.1-calibration → main` would have **deleted 1,434 lines of v3 infrastructure** (`v3_composite_scorer.py`, `v3_routes.py`, `v3_multiscale.py`, `v3_macro_store.py`, `v3_db_writer.py`, `v3_cascade_estimator.py`, the v3 migration SQL, and v3 wiring in `main.py`). Catastrophic regression, not a promotion.
+
+**Root cause of the original wrong lesson:** I interpreted a version string as if it were a codebase identifier without reading the registry code. Model-version strings constructed from `git_sha@run_prefix` are provenance markers for the *weights*, which are *data files* loaded at runtime — they are orthogonal to what git ref the server code is on.
+
+**Rule:**
+1. Never infer "what branch is deployed" from a `model_version` / `artifact_version` string. Those strings describe data artifacts, not code. To know what code is deployed, SSH in and run `git rev-parse HEAD` in the service directory, or expose a `/health` endpoint that returns the server's own git SHA.
+2. When model weights live in S3 (or any external artifact store) and are loaded at runtime via a registry pattern, redeploying server code does NOT change the model. Weight upgrades and code upgrades are independent operations — treat them as such.
+3. If you expose a version string to downstream consumers, split it: `server_git_sha` (code), `model_git_sha` (training commit), `model_artifact_key` (S3 path). Ambiguous combined strings cause exactly the confusion that produced this lesson in the first place.
+
+### Stale terminology in a pipeline stays dangerous even when it isn't a bug — 2026-04-10
+**What happened:** The v3 composite scorer has a signal named `"elm"` in its weight profiles and output payload. The v2 scorer this signal reads from has been through five model families in sequence: **OAK → CEDAR → DUNE → ELM → SEQUOIA v4**. The `"elm"` key was coined when ELM was the active model; nobody renamed it when DUNE was replaced, or when ELM was replaced. Simultaneously, `app/main.py:99` still carries a comment "Updated to DUNE (v3.1) — genuinely different model" from even earlier. Result: looking at any single file of the codebase gives you a *different* wrong answer about what model is live, and the question "wait, do we use ELM or DUNE or Sequoia?" surfaced three times in one session and wasted ~an hour of diagnostic effort.
+**Root cause:** Naming a pipeline key after a specific model family couples the abstraction to implementation identity. Every model swap becomes either (a) a cross-repo rename chore that gets deferred, or (b) silent naming rot. We chose (b) repeatedly, and documentation comments rotted in parallel.
+**Rule:** Don't rename the signal key — renames are expensive and the next model will rot the new name too. Instead: (1) expose the *current* model identity where it's actually consulted (the `/v2/probability` response already has `model_version`; `/v3/snapshot` should expose it too at the top level); (2) surface the model family name in the UI so operators can see "SEQUOIA v4" at a glance without grepping code; (3) sweep stale model-family comments during unrelated edits to the same files; (4) if you ever DO rename a pipeline key, use a semantically neutral name (`v2_prob`, `directional_prob`) not another model family name.
+
+### FillResult: exchange adapter owns "how much money moved" — 2026-04-10
+**What happened:** The margin engine's Position entity was computing P&L from a hardcoded `0.075%` fee rate and `0.008%` daily borrow rate, neither of which matched Binance's actual fees. The engine was reporting trades as +$0.156 raw when they were actually −$0.059 net — the fee cost trap that caused the 116-trade overnight loss.
+**Root cause:** Position was trying to be a calculator when it should have been a record. The Binance adapter had `fills[]` with real commission in the order response but threw it away, returning just `(order_id, price)`.
+**Rule:** The exchange adapter is the authority on anything involving money. Adapters should return a rich `FillResult` with actual filled notional, real commission (parsed from `fills[]`), and a `commission_is_actual` flag. Entities store these values and use them as-is; they never re-estimate. Paper-mode adapters must return the same shape so paper and live never drift.

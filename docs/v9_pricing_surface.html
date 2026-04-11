@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v9.0 Dynamic Pricing Surface — Data-Driven Proposal</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #07070c; color: #e0e0e0; font-family: 'Inter', -apple-system, sans-serif; padding: 24px; max-width: 1400px; margin: 0 auto; }
+  h1 { color: #a855f7; font-size: 28px; margin-bottom: 4px; }
+  h2 { color: #06b6d4; font-size: 18px; margin: 32px 0 12px; border-bottom: 1px solid rgba(6,182,212,0.2); padding-bottom: 6px; }
+  h3 { color: #f59e0b; font-size: 14px; margin: 20px 0 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .subtitle { color: rgba(255,255,255,0.4); font-size: 13px; margin-bottom: 24px; }
+  .warn { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; padding: 12px 16px; margin: 16px 0; font-size: 13px; color: #fca5a5; }
+  .warn strong { color: #f87171; }
+  .good { background: rgba(34,197,94,0.08); border: 1px solid rgba(34,197,94,0.25); border-radius: 8px; padding: 12px 16px; margin: 16px 0; font-size: 13px; color: #86efac; }
+  .good strong { color: #4ade80; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 16px 0; }
+  .card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; padding: 16px; }
+  .card.highlight { border-color: rgba(168,85,247,0.3); background: rgba(168,85,247,0.04); }
+  .card.winner { border-color: rgba(34,197,94,0.4); background: rgba(34,197,94,0.05); box-shadow: 0 0 20px rgba(34,197,94,0.08); }
+  .stat { font-size: 32px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+  .stat.green { color: #4ade80; }
+  .stat.red { color: #f87171; }
+  .stat.purple { color: #a855f7; }
+  .stat.cyan { color: #06b6d4; }
+  .stat-label { font-size: 11px; color: rgba(255,255,255,0.35); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; font-family: 'JetBrains Mono', monospace; }
+  th { text-align: left; padding: 8px 10px; color: rgba(255,255,255,0.4); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  td { padding: 7px 10px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  .wr-cell { font-weight: 600; }
+  .wr-high { color: #4ade80; }
+  .wr-mid { color: #f59e0b; }
+  .wr-low { color: #f87171; }
+  .surface-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; margin: 12px 0; }
+  .surface-cell { padding: 8px 4px; text-align: center; border-radius: 4px; font-size: 12px; font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+  .surface-header { color: rgba(255,255,255,0.4); font-size: 10px; background: transparent !important; }
+  .bar { height: 6px; border-radius: 3px; margin-top: 4px; }
+  .pipeline { display: flex; gap: 2px; margin: 20px 0; align-items: stretch; }
+  .pipe-stage { flex: 1; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 12px; text-align: center; position: relative; }
+  .pipe-stage.active { border-color: rgba(168,85,247,0.4); background: rgba(168,85,247,0.06); }
+  .pipe-stage .label { font-size: 10px; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 0.06em; }
+  .pipe-stage .value { font-size: 18px; font-weight: 700; font-family: 'JetBrains Mono', monospace; margin: 6px 0 2px; }
+  .pipe-stage .detail { font-size: 11px; color: rgba(255,255,255,0.5); }
+  .pipe-arrow { display: flex; align-items: center; color: rgba(255,255,255,0.15); font-size: 18px; padding: 0 2px; }
+  .strat-row { display: grid; grid-template-columns: 200px 1fr 80px 80px 100px; gap: 8px; align-items: center; padding: 10px 12px; border-radius: 6px; margin: 4px 0; background: rgba(255,255,255,0.02); }
+  .strat-row.best { background: rgba(34,197,94,0.08); border: 1px solid rgba(34,197,94,0.2); }
+  .strat-name { font-size: 13px; font-weight: 600; }
+  .strat-bar-container { height: 24px; background: rgba(255,255,255,0.04); border-radius: 4px; overflow: hidden; position: relative; }
+  .strat-bar { height: 100%; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
+  .strat-val { font-size: 13px; font-family: 'JetBrains Mono', monospace; font-weight: 600; text-align: right; }
+  .tier-visual { display: flex; height: 60px; margin: 12px 0; border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.08); }
+  .tier-segment { display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 4px 8px; }
+  .tier-segment .t-label { font-size: 9px; color: rgba(255,255,255,0.5); text-transform: uppercase; }
+  .tier-segment .t-cap { font-size: 16px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+  .tier-segment .t-wr { font-size: 10px; }
+  .mono { font-family: 'JetBrains Mono', monospace; }
+  .dim { color: rgba(255,255,255,0.35); }
+  .section { margin-bottom: 40px; }
+  .footnote { font-size: 11px; color: rgba(255,255,255,0.25); margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<h1>v9.0 Dynamic Pricing Surface</h1>
+<p class="subtitle">Based on 1,762 oracle-verified evaluations across 100 windows &bull; April 7, 2026 &bull; 249 windows/day</p>
+
+<div class="warn">
+  <strong>Paper data contamination found.</strong> The $0.40-$0.55 bucket showing +$17,320 profit was 668 paper trades.
+  LIVE trades at $0.40-$0.55: <strong>5W/12L = 29% WR, -$54</strong>. All analysis below uses oracle-verified direction data only.
+</div>
+
+<!-- ============================================================ -->
+<h2>Source Accuracy (N=206 Oracle-Resolved Windows)</h2>
+
+<div class="grid">
+  <div class="card">
+    <div class="stat cyan">92.2%</div>
+    <div class="stat-label">Chainlink Accuracy (190/206)</div>
+    <div class="bar" style="width:92.2%;background:linear-gradient(90deg,#06b6d4,#0891b2)"></div>
+  </div>
+  <div class="card">
+    <div class="stat" style="color:#f59e0b">81.6%</div>
+    <div class="stat-label">Tiingo Accuracy (168/206)</div>
+    <div class="bar" style="width:81.6%;background:linear-gradient(90deg,#f59e0b,#d97706)"></div>
+  </div>
+  <div class="card">
+    <div class="stat red">65.5%</div>
+    <div class="stat-label">Engine Signal Accuracy (135/206)</div>
+    <div class="bar" style="width:65.5%;background:linear-gradient(90deg,#f87171,#dc2626)"></div>
+  </div>
+  <div class="card highlight">
+    <div class="stat green">94.7%</div>
+    <div class="stat-label">CL + TI Agreement WR (161/170 windows)</div>
+    <div class="bar" style="width:94.7%;background:linear-gradient(90deg,#4ade80,#22c55e)"></div>
+    <p style="margin-top:8px;font-size:11px;color:rgba(255,255,255,0.4)">When they disagree (36 windows): Chainlink still 80.6% correct</p>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>The Sub-Window Accuracy Surface</h2>
+<p style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:12px">1,762 evaluations across 19 offsets &bull; CL+TI Agreement WR shown &bull; Heatmap: green = high WR</p>
+
+<table>
+  <thead>
+    <tr><th>Offset</th><th>N</th><th>CL Acc</th><th>TI Acc</th><th>Agree N</th><th>Agree %</th><th>Agreement WR</th><th style="width:200px">Visual</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>T-240</td><td>100</td><td>62.0%</td><td>67.0%</td><td>57</td><td>57%</td><td class="wr-cell wr-mid">75.4%</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:75.4%;border-radius:4px;background:#f59e0b"></div></div></td></tr>
+    <tr><td>T-230</td><td>100</td><td>64.0%</td><td>69.0%</td><td>61</td><td>61%</td><td class="wr-cell wr-mid">77.0%</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:77%;border-radius:4px;background:#f59e0b"></div></div></td></tr>
+    <tr><td>T-210</td><td>100</td><td>68.0%</td><td>71.0%</td><td>67</td><td>67%</td><td class="wr-cell wr-mid">79.1%</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:79.1%;border-radius:4px;background:#f59e0b"></div></div></td></tr>
+    <tr><td>T-190</td><td>100</td><td>77.0%</td><td>77.0%</td><td>80</td><td>80%</td><td class="wr-cell wr-mid">83.8%</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:83.8%;border-radius:4px;background:#eab308"></div></div></td></tr>
+    <tr><td>T-170</td><td>99</td><td>80.8%</td><td>78.8%</td><td>81</td><td>82%</td><td class="wr-cell wr-mid">86.4%</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:86.4%;border-radius:4px;background:#a3e635"></div></div></td></tr>
+    <tr><td>T-150</td><td>97</td><td>83.5%</td><td>77.3%</td><td>79</td><td>81%</td><td class="wr-cell wr-mid">87.3%</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:87.3%;border-radius:4px;background:#a3e635"></div></div></td></tr>
+    <tr style="background:rgba(34,197,94,0.06)"><td><strong>T-140</strong></td><td>97</td><td>80.4%</td><td>81.4%</td><td>74</td><td>76%</td><td class="wr-cell wr-high"><strong>90.5%</strong></td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:90.5%;border-radius:4px;background:#4ade80"></div></div></td></tr>
+    <tr style="background:rgba(34,197,94,0.1)"><td><strong>T-130</strong></td><td>97</td><td>81.4%</td><td>81.4%</td><td>67</td><td>69%</td><td class="wr-cell wr-high"><strong>95.5%</strong></td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:95.5%;border-radius:4px;background:#22c55e"></div></div></td></tr>
+    <tr style="background:rgba(34,197,94,0.08)"><td>T-120</td><td>96</td><td>81.2%</td><td>85.4%</td><td>72</td><td>75%</td><td class="wr-cell wr-high">94.4%</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:94.4%;border-radius:4px;background:#22c55e"></div></div></td></tr>
+    <tr style="background:rgba(34,197,94,0.08)"><td>T-100</td><td>84</td><td>82.1%</td><td>85.7%</td><td>63</td><td>75%</td><td class="wr-cell wr-high">95.2%</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:95.2%;border-radius:4px;background:#22c55e"></div></div></td></tr>
+    <tr style="background:rgba(34,197,94,0.08)"><td>T-90</td><td>80</td><td>85.0%</td><td>85.0%</td><td>64</td><td>80%</td><td class="wr-cell wr-high">93.8%</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:93.8%;border-radius:4px;background:#22c55e"></div></div></td></tr>
+    <tr style="background:rgba(34,197,94,0.08)"><td>T-80</td><td>77</td><td>85.7%</td><td>88.3%</td><td>63</td><td>82%</td><td class="wr-cell wr-high">95.2%</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:95.2%;border-radius:4px;background:#22c55e"></div></div></td></tr>
+    <tr style="background:rgba(34,197,94,0.08)"><td>T-70</td><td>75</td><td>89.3%</td><td>85.3%</td><td>62</td><td>83%</td><td class="wr-cell wr-high">95.2%</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:95.2%;border-radius:4px;background:#22c55e"></div></div></td></tr>
+    <tr style="background:rgba(34,197,94,0.15)"><td><strong>T-60</strong></td><td>69</td><td><strong>100%</strong></td><td>82.6%</td><td>57</td><td>83%</td><td class="wr-cell wr-high" style="color:#22c55e"><strong>100.0%</strong></td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:100%;border-radius:4px;background:#16a34a"></div></div></td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2>LIVE Entry Price Economics (84 Real Trades)</h2>
+
+<div class="warn">
+  <strong>Cheap fills DON'T work in live.</strong> $0.40-$0.55 entries: 29% WR live (-$54).
+  The paper data was misleading. <strong>$0.55-$0.65 is the sweet spot: 86% WR, +$48.</strong>
+</div>
+
+<table>
+  <thead><tr><th>Fill Price</th><th>Trades</th><th>WR</th><th>Net P&L</th><th>Verdict</th></tr></thead>
+  <tbody>
+    <tr><td>&lt; $0.40</td><td>4W / 12L</td><td class="wr-cell wr-low">25%</td><td class="wr-low">-$63.94</td><td style="color:#f87171">AVOID — noise fills</td></tr>
+    <tr><td>$0.40-$0.55</td><td>5W / 12L</td><td class="wr-cell wr-low">29%</td><td class="wr-low">-$54.39</td><td style="color:#f87171">AVOID — paper illusion</td></tr>
+    <tr style="background:rgba(34,197,94,0.08)"><td><strong>$0.55-$0.65</strong></td><td><strong>18W / 3L</strong></td><td class="wr-cell wr-high"><strong>86%</strong></td><td class="wr-high"><strong>+$47.67</strong></td><td style="color:#4ade80"><strong>SWEET SPOT</strong></td></tr>
+    <tr><td>$0.65-$0.75</td><td>19W / 11L</td><td class="wr-cell wr-mid">63%</td><td class="wr-low">-$49.91</td><td style="color:#f59e0b">Negative EV at 63% WR</td></tr>
+    <tr><td>&ge; $0.75</td><td>0W / 1L</td><td class="wr-cell wr-low">0%</td><td class="wr-low">-$11.35</td><td style="color:#f87171">NEVER</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2>Strategy Comparison</h2>
+<p style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:16px">Simulated on 100 gate_audit windows &bull; Scaled to 249 windows/day &bull; $10 stake per trade</p>
+
+<div style="margin:16px 0">
+  <div class="strat-row" style="background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.15)">
+    <div class="strat-name" style="color:#f87171">v8.1.2 Baseline</div>
+    <div class="strat-bar-container"><div class="strat-bar" style="width:65%;background:linear-gradient(90deg,#991b1b,#dc2626);color:white">65% WR</div></div>
+    <div class="strat-val" style="color:#f87171">$0.73</div>
+    <div class="strat-val" style="color:#f87171">-$0.84</div>
+    <div class="strat-val" style="color:#f87171">-$17/day</div>
+  </div>
+
+  <div class="strat-row">
+    <div class="strat-name">A: First Agree $0.55</div>
+    <div class="strat-bar-container"><div class="strat-bar" style="width:78.1%;background:linear-gradient(90deg,#854d0e,#f59e0b);color:white">78.1% WR</div></div>
+    <div class="strat-val">$0.55</div>
+    <div class="strat-val" style="color:#4ade80">+$2.24</div>
+    <div class="strat-val" style="color:#4ade80">+$536/d</div>
+  </div>
+
+  <div class="strat-row best">
+    <div class="strat-name" style="color:#4ade80">B: Golden T-130, $0.65 &star;</div>
+    <div class="strat-bar-container"><div class="strat-bar" style="width:93.3%;background:linear-gradient(90deg,#166534,#4ade80);color:white">93.3% WR</div></div>
+    <div class="strat-val" style="color:#4ade80">$0.65</div>
+    <div class="strat-val" style="color:#4ade80">+$2.76</div>
+    <div class="strat-val" style="color:#4ade80"><strong>+$612/d</strong></div>
+  </div>
+
+  <div class="strat-row">
+    <div class="strat-name">C: Golden T-130, $0.83</div>
+    <div class="strat-bar-container"><div class="strat-bar" style="width:93.3%;background:linear-gradient(90deg,#166534,#22c55e);color:white">93.3% WR</div></div>
+    <div class="strat-val">$0.83</div>
+    <div class="strat-val" style="color:#4ade80">+$0.99</div>
+    <div class="strat-val" style="color:#4ade80">+$220/d</div>
+  </div>
+
+  <div class="strat-row" style="background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.15)">
+    <div class="strat-name" style="color:#a855f7">D: Hybrid CASCADE+Golden</div>
+    <div class="strat-bar-container"><div class="strat-bar" style="width:90.1%;background:linear-gradient(90deg,#581c87,#a855f7);color:white">90.1% WR</div></div>
+    <div class="strat-val" style="color:#a855f7">$0.65</div>
+    <div class="strat-val" style="color:#4ade80">+$2.45</div>
+    <div class="strat-val" style="color:#4ade80">+$555/d</div>
+  </div>
+
+  <div class="strat-row best">
+    <div class="strat-name" style="color:#4ade80">E: Tiered Caps (optimal) &star;</div>
+    <div class="strat-bar-container"><div class="strat-bar" style="width:90.1%;background:linear-gradient(90deg,#166534,#4ade80);color:white">90.1% WR</div></div>
+    <div class="strat-val" style="color:#4ade80">tiered</div>
+    <div class="strat-val" style="color:#4ade80">+$2.74</div>
+    <div class="strat-val" style="color:#4ade80"><strong>+$621/d</strong></div>
+  </div>
+</div>
+
+<div style="font-size:11px;color:rgba(255,255,255,0.3);margin:8px 0">
+  Columns: Strategy &bull; Win Rate bar &bull; Entry Cap &bull; EV per $10 trade &bull; Est. Daily P&L
+</div>
+
+<!-- ============================================================ -->
+<h2>Recommended v9.0: Strategy B/E Hybrid</h2>
+
+<div class="good">
+  <strong>Best strategies are B ($0.65 golden zone) and E (tiered caps).</strong> Both project +$600/day.
+  Strategy A ($0.55 first-agree) has misleading EV — live fills at $0.55 are only 29% WR.
+  <strong>The $0.55-$0.65 fill zone at 86% WR is where the real edge lives.</strong>
+</div>
+
+<h3>Dynamic Pricing Pipeline</h3>
+
+<div class="pipeline">
+  <div class="pipe-stage">
+    <div class="label">T-300 to T-240</div>
+    <div class="value dim">IDLE</div>
+    <div class="detail">Collect prices, build VPIN</div>
+  </div>
+  <div class="pipe-arrow">&rarr;</div>
+  <div class="pipe-stage" style="border-color:rgba(245,158,11,0.3);background:rgba(245,158,11,0.04)">
+    <div class="label">T-240 to T-131</div>
+    <div class="value" style="color:#f59e0b">$0.55</div>
+    <div class="detail">CASCADE only (VPIN &ge; 0.65)</div>
+    <div class="detail" style="color:#f59e0b">75-87% WR</div>
+  </div>
+  <div class="pipe-arrow">&rarr;</div>
+  <div class="pipe-stage active" style="border-color:rgba(34,197,94,0.4);background:rgba(34,197,94,0.06)">
+    <div class="label">T-130 to T-60</div>
+    <div class="value" style="color:#4ade80">$0.65</div>
+    <div class="detail">CL+TI agree + VPIN &ge; 0.45</div>
+    <div class="detail" style="color:#4ade80"><strong>93-100% WR</strong></div>
+  </div>
+  <div class="pipe-arrow">&rarr;</div>
+  <div class="pipe-stage">
+    <div class="label">T-60 to T-0</div>
+    <div class="value dim">CLOSED</div>
+    <div class="detail">No new bids</div>
+  </div>
+</div>
+
+<!-- Gate Stack -->
+<h3>Gate Stack (every 2s from T-240 to T-60)</h3>
+
+<table>
+  <thead><tr><th>#</th><th>Gate</th><th>Rule</th><th>Evidence</th></tr></thead>
+  <tbody>
+    <tr>
+      <td style="color:#f87171;font-weight:700">G1</td>
+      <td><strong>Source Agreement</strong></td>
+      <td>Chainlink delta dir == Tiingo delta dir</td>
+      <td>94.7% WR agree vs 65% raw signal. 1,317 agree evals = 87.7% WR overall.</td>
+    </tr>
+    <tr>
+      <td style="color:#f59e0b;font-weight:700">G2</td>
+      <td><strong>VPIN Regime</strong></td>
+      <td>Early (&gt;T-130): VPIN &ge; 0.65 (CASCADE)<br>Golden (&le;T-130): VPIN &ge; 0.45</td>
+      <td>NORMAL at early offsets = noisy. CASCADE VPIN &ge;0.65 = 100% WR at T-170/T-190.</td>
+    </tr>
+    <tr>
+      <td style="color:#06b6d4;font-weight:700">G3</td>
+      <td><strong>Delta Floor</strong></td>
+      <td>|delta_tiingo| &ge; 0.02%</td>
+      <td>Prevents noise trades on flat markets.</td>
+    </tr>
+    <tr>
+      <td style="color:#a855f7;font-weight:700">G4</td>
+      <td><strong>CoinGlass Veto</strong></td>
+      <td>3+ opposing micro-signals = soft skip</td>
+      <td>Catches crowd-against scenarios. Retries in 2s.</td>
+    </tr>
+    <tr>
+      <td style="color:#4ade80;font-weight:700">G5</td>
+      <td><strong>Dynamic Cap</strong></td>
+      <td>Early: $0.55 &bull; Golden: $0.65 &bull; Floor: $0.30</td>
+      <td>$0.55-$0.65 live fill zone: 86% WR, +$48 net.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>What's Removed</h3>
+<table>
+  <thead><tr><th>Gate</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>OAK/CEDAR probability</td><td>Binary 0.009 or 0.991 — confirmed broken. Same value at all offsets.</td></tr>
+    <tr><td>TWAP override</td><td>Net harmful: blocked 12 windows, 8 were winners.</td></tr>
+    <tr><td>TimesFM agreement</td><td>47.8% accuracy — worse than coin flip.</td></tr>
+    <tr><td>Macro observer</td><td>Always returns ALLOW_ALL. Dead code.</td></tr>
+  </tbody>
+</table>
+
+<!-- ============================================================ -->
+<h2>VPIN &times; Offset Heatmap (Agreement Windows Only)</h2>
+<p style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px">Win rate when CL+TI agree, by VPIN bucket and offset</p>
+
+<table>
+  <thead><tr><th>Offset</th><th>VPIN &lt; 0.45</th><th>0.45 - 0.55</th><th>0.55 - 0.65</th><th>&ge; 0.65</th><th>ALL Agree</th></tr></thead>
+  <tbody>
+    <tr><td>T-240</td><td style="color:#f87171">67%</td><td style="color:#eab308">82%</td><td style="color:#f87171">72%</td><td style="color:#f59e0b">75%</td><td style="color:#f59e0b">75%</td></tr>
+    <tr><td>T-210</td><td style="color:#f59e0b">75%</td><td style="color:#f87171">68%</td><td style="color:#eab308">88%</td><td style="color:#f59e0b">75%</td><td style="color:#f59e0b">79%</td></tr>
+    <tr><td>T-190</td><td style="color:#f87171">67%</td><td style="color:#eab308">81%</td><td style="color:#eab308">82%</td><td style="color:#4ade80">100%</td><td style="color:#eab308">84%</td></tr>
+    <tr><td>T-170</td><td style="color:#4ade80">100%</td><td style="color:#eab308">83%</td><td style="color:#eab308">83%</td><td style="color:#4ade80">100%</td><td style="color:#eab308">86%</td></tr>
+    <tr><td>T-150</td><td style="color:#4ade80">100%</td><td style="color:#eab308">87%</td><td style="color:#eab308">82%</td><td style="color:#4ade80">100%</td><td style="color:#eab308">87%</td></tr>
+    <tr style="background:rgba(34,197,94,0.06)"><td><strong>T-130</strong></td><td style="color:#4ade80">100%</td><td style="color:#4ade80"><strong>92%</strong></td><td style="color:#4ade80"><strong>96%</strong></td><td style="color:#4ade80"><strong>100%</strong></td><td style="color:#4ade80"><strong>96%</strong></td></tr>
+    <tr style="background:rgba(34,197,94,0.06)"><td><strong>T-120</strong></td><td style="color:#4ade80">100%</td><td style="color:#eab308">89%</td><td style="color:#4ade80"><strong>97%</strong></td><td style="color:#4ade80">100%</td><td style="color:#4ade80"><strong>94%</strong></td></tr>
+    <tr style="background:rgba(34,197,94,0.06)"><td><strong>T-100</strong></td><td style="color:#4ade80">100%</td><td style="color:#4ade80"><strong>93%</strong></td><td style="color:#4ade80"><strong>96%</strong></td><td style="color:#4ade80">100%</td><td style="color:#4ade80"><strong>95%</strong></td></tr>
+    <tr style="background:rgba(34,197,94,0.06)"><td>T-90</td><td style="color:#eab308">80%</td><td style="color:#4ade80"><strong>94%</strong></td><td style="color:#4ade80"><strong>95%</strong></td><td style="color:#4ade80">100%</td><td style="color:#4ade80"><strong>94%</strong></td></tr>
+    <tr style="background:rgba(34,197,94,0.08)"><td>T-80</td><td style="color:#4ade80">100%</td><td style="color:#4ade80"><strong>93%</strong></td><td style="color:#4ade80"><strong>96%</strong></td><td style="color:#4ade80">100%</td><td style="color:#4ade80"><strong>95%</strong></td></tr>
+    <tr style="background:rgba(34,197,94,0.08)"><td>T-70</td><td style="color:#4ade80">100%</td><td style="color:#eab308">88%</td><td style="color:#4ade80"><strong>100%</strong></td><td style="color:#4ade80">100%</td><td style="color:#4ade80"><strong>95%</strong></td></tr>
+    <tr style="background:rgba(34,197,94,0.12)"><td><strong>T-60</strong></td><td style="color:#4ade80">100%</td><td style="color:#4ade80"><strong>100%</strong></td><td style="color:#4ade80"><strong>100%</strong></td><td style="color:#4ade80">100%</td><td style="color:#22c55e"><strong>100%</strong></td></tr>
+  </tbody>
+</table>
+
+<div class="footnote">Cell colors: <span style="color:#4ade80">&ge;90% green</span> &bull; <span style="color:#eab308">80-89% amber</span> &bull; <span style="color:#f87171">&lt;80% red</span>. Small N cells (&lt;3) excluded.</div>
+
+<!-- ============================================================ -->
+<h2>Projected Performance</h2>
+
+<div class="grid">
+  <div class="card winner">
+    <div class="stat green">93.3%</div>
+    <div class="stat-label">Predicted Win Rate (Golden Zone)</div>
+    <div style="margin-top:8px;font-size:12px;color:rgba(255,255,255,0.5)">89/100 windows in backtest, 83 wins</div>
+  </div>
+  <div class="card winner">
+    <div class="stat green">~220</div>
+    <div class="stat-label">Trades per Day (89% of 249 windows)</div>
+    <div style="margin-top:8px;font-size:12px;color:rgba(255,255,255,0.5)">First match at T-130..T-60 per window</div>
+  </div>
+  <div class="card highlight">
+    <div class="stat purple">$0.65</div>
+    <div class="stat-label">Optimal Entry Cap</div>
+    <div style="margin-top:8px;font-size:12px;color:rgba(255,255,255,0.5)">86% live WR in $0.55-$0.65 band</div>
+  </div>
+  <div class="card highlight">
+    <div class="stat purple">+$2.76</div>
+    <div class="stat-label">EV per $10 Trade</div>
+    <div style="margin-top:8px;font-size:12px;color:rgba(255,255,255,0.5)">93.3% × $0.34 win - 6.7% × $0.65 loss</div>
+  </div>
+</div>
+
+<div class="warn" style="border-color:rgba(245,158,11,0.4);background:rgba(245,158,11,0.06)">
+  <strong style="color:#f59e0b">Caveats:</strong>
+  All data from April 7 (single day, downtrend). Gate_audit covers 100/206 resolved windows (48%).
+  N=84 LIVE trades total. $0.65 cap fill rate unknown — CLOB depth at $0.55-$0.65 can be thin.
+  Need 7+ days of live data to confirm. Shadow-log first.
+</div>
+
+<div style="margin-top:32px;padding:16px;background:rgba(168,85,247,0.06);border:1px solid rgba(168,85,247,0.2);border-radius:10px">
+  <h3 style="color:#a855f7;margin:0 0 8px">Implementation Summary</h3>
+  <p style="font-size:13px;line-height:1.6;color:rgba(255,255,255,0.7)">
+    <strong>Poll every 2s from T-240 to T-60.</strong> Two phases:<br>
+    &bull; <strong>Early (T-240..T-131):</strong> CL+TI agree + VPIN &ge; 0.65 (CASCADE only) → cap $0.55<br>
+    &bull; <strong>Golden (T-130..T-60):</strong> CL+TI agree + VPIN &ge; 0.45 → cap $0.65<br>
+    &bull; <strong>CoinGlass veto active both phases</strong> (3+ signals = soft skip, retry 2s)<br>
+    &bull; <strong>Delta floor:</strong> |delta| &ge; 0.02% (0.005% in CASCADE)<br>
+    &bull; <strong>One trade per window max.</strong> First match → FOK ladder (5 attempts, $0.01 bump, 2s interval)
+  </p>
+</div>
+
+<p style="margin-top:24px;color:rgba(255,255,255,0.2);font-size:11px;text-align:center">
+  Generated April 7, 2026 &bull; 1,762 oracle-verified evals &bull; 206 resolved windows &bull; 84 live trades
+</p>
+
+</body>
+</html>

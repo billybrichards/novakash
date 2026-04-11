@@ -528,4 +528,237 @@ CEDAR improves OAK by +5-9pp at every delta bucket. Largest gains at T-90 (+9.7p
 
 ### Full analysis: `docs/analyses/2026-04-07-cedar-gate-analysis.md`
 
+---
+
+## 15. Apr 7 Full Day Analysis — v8.2.3 Recommendations
+
+**Generated:** 2026-04-07 18:05 UTC  
+**Data:** 43 resolved trades, 17:30 UTC cut-off
+
+### Performance Summary
+
+| Metric | Value |
+|--------|-------|
+| Total Trades | 43 |
+| Wins | 29 |
+| Losses | 14 |
+| WR | 67.4% |
+| **Net P&L** | **-$35.00** |
+| Wallet Start | $130.82 |
+| Wallet End | $67.08 |
+
+**67% WR but losing $35? The $0.73 cap is the killer.**
+
+### Performance by Cap Level
+
+| Cap | Trades | Wins | WR | P&L |
+|-----|--------|------|-----|-----|
+| $0.55 | 3 | 3 | 100% | +$12.05 |
+| $0.60 | 1 | 0 | 0% | -$9.50 |
+| $0.65 | 16 | 13 | 81.3% | +$26.44 |
+| **$0.73** | **23** | **13** | **56.5%** | **-$63.99** |
+
+**At $0.73 cap:** 56.5% WR, -$63.99. Breakeven requires 73%+ WR.  
+**At $0.65 cap:** 81.3% WR, +$26.44. Breakeven requires 55%+ WR.
+
+### Performance by Regime
+
+| Regime | Trades | Wins | WR | P&L | Avg Cap |
+|--------|--------|------|-----|-----|---------|
+| TRANS | 15 | 12 | 80.0% | +$23.61 | $0.67 |
+| CASCADE | 14 | 9 | 64.3% | -$14.21 | $0.70 |
+| **NORMAL** | **14** | **8** | **57.1%** | **-$44.39** | **$0.68** |
+
+**TRANS is the only profitable regime** (80% WR).  
+**NORMAL is bleeding** (57% WR, -$44.39).  
+**CASCADE is neutral** (64% WR, -$14.21 at $0.70 avg cap).
+
+### v8.2.2 Impact: What Would Have Happened
+
+| Scenario | Trades | Wins | Losses | WR | P&L |
+|----------|--------|------|--------|-----|-----|
+| Actual (current) | 43 | 29 | 14 | 67.4% | **-$35.00** |
+| v8.2.2 (NORMAL block @ T<120) | 33 | 23 | 10 | 69.7% | **-$4.44** |
+| **v8.2.2 + $0.65 cap max** | **12** | **10** | **2** | **83.3%** | **+$30.92** |
+
+**v8.2.2 blocked:** 6 wins (+$17.00) + 4 losses (-$47.55) = **net saved $30.55**
+
+**The 6 wins v8.2.2 blocked:**
+- 04:58 — VPIN 0.499, $0.65, +$2.68
+- 05:33 — VPIN 0.531, $0.65, +$2.75
+- 05:38 — VPIN 0.533, $0.65, +$2.63
+- 06:18 — VPIN 0.470, $0.65, +$2.70
+- 07:04 — VPIN 0.538, $0.65, +$3.06
+- 08:08 — VPIN 0.512, $0.65, +$3.18
+
+**The 4 losses v8.2.2 blocked:**
+- 10:33 — VPIN 0.491, $0.73, -$12.58
+- 11:14 — VPIN 0.542, $0.73, -$14.40
+- 11:18 — VPIN 0.487, $0.65, -$9.42
+- 13:04 — VPIN 0.494, $0.73, -$11.15
+
+**v8.2.2 made the right call.** Blocking 6 wins for 4 losses is worth it: +$17.00 vs -$47.55.
+
+### v8.2.3: Refined Rules
+
+**Instead of v8.2.2's "block NORMAL @ T<120" (catches 10 trades), use:**
+
+1. **Block NORMAL at T<70** — Only block the really late NORMAL trades
+2. **Keep $0.65 cap max** — No $0.73 cap anywhere
+3. **Require v2.2 HIGH confidence for NORMAL** — Only allow NORMAL when v2.2 is HIGH
+
+**Expected results:**
+- ~15 trades, ~12 wins, ~3 losses
+- ~80% WR, ~+$25 P&L
+
+### The 17:23 Loss That Got Through
+
+| Time | VPIN | Regime | Cap | Result | Why v8.2.2 Didn't Block |
+|------|------|--------|-----|--------|-------------------------|
+| 17:23 | 0.551 | TRANS | $0.65 | LOSS | VPIN 0.551 >= 0.55 → TRANSITION, not NORMAL |
+
+This trade was **0.001 above the 0.55 threshold** — borderline NORMAL but technically TRANSITION.
+
+**Fix:** Raise TRANSITION threshold to **0.60** — this trade would have been blocked.
+
+### Recommendations
+
+1. **Cap all trades at $0.65** — 81% WR at $0.65 is profitable, 56% WR at $0.73 is not
+2. **Block NORMAL at T<70** — Not T<120 (captures 6 wins at T≥70)
+3. **Raise TRANSITION threshold to 0.60** — Blocks 0.551 edge cases
+4. **Debug CoinGlass veto** — Not firing when it should
+5. **Reduce stake to $5** — Until WR > 70%
+
+**Full analysis: `docs/analyses/2026-04-07-full-day-analysis.md`**
+
+---
+
+## 16. Version Comparison — v8.1.2 vs v8.2.2 vs v8.2.3
+
+### Complete Configuration Comparison
+
+| Setting | v8.1.2 (Current Baseline) | v8.2.2 (Deployed 18:09 UTC) | v8.2.3 (Proposed) |
+|---------|---------------------------|-----------------------------|-------------------|
+| **V81_CAP_T240** | $0.55 | $0.55 | $0.55 |
+| **V81_CAP_T180** | $0.55 | $0.55 | $0.55 |
+| **V81_CAP_T120** | $0.60 | $0.60 | $0.60 |
+| **V81_CAP_T60** | **$0.73** | **$0.65** | **$0.65** |
+| **BET_FRACTION** | **7.3%** | **5.0%** | **5.0%** |
+| **NORMAL Block** | T<120 (VPIN<0.55) | T<120 (VPIN<0.55) | **T<70** (VPIN<0.55) |
+| **TRANSITION Threshold** | VPIN ≥ 0.55 | VPIN ≥ 0.55 | **VPIN ≥ 0.60** |
+| **Apr 7 Trades** | 43 | 12 | ~15 |
+| **Apr 7 WR** | 67.4% | 83.3% | ~80% |
+| **Apr 7 P&L** | **-$35.00** | **+$30.92** | **~+$25** |
+
+### What Changed in Each Version
+
+#### v8.1.2 → v8.2.2
+
+| Change | Before | After | Impact |
+|--------|--------|-------|--------|
+| Max cap (T-70/T-60) | $0.73 | $0.65 | -$0.08 per trade |
+| Bet fraction | 7.3% | 5.0% | -2.3% stake size |
+| NORMAL block | T<120 | T<120 | No change |
+| TRANSITION threshold | 0.55 | 0.55 | No change |
+
+**v8.2.2 blocked 31 trades (23 at $0.73 cap + 8 NORMAL @ T<120):**
+- 23 $0.73 cap trades: 13W/10L, -$63.99
+- 8 NORMAL @ T<120 trades: 6W/4L, +$30.55 net saved
+
+**Net effect:** 43 → 12 trades, -$35 → +$30.92 P&L
+
+#### v8.2.2 → v8.2.3 (Proposed)
+
+| Change | v8.2.2 | v8.2.3 | Impact |
+|--------|--------|--------|--------|
+| NORMAL block | T<120 | T<70 | Allows T-70 to T-110 NORMAL trades |
+| TRANSITION threshold | 0.55 | 0.60 | Blocks 0.551-0.599 edge cases |
+
+**v8.2.3 would allow:**
+- 6 wins at T-70 to T-110 (NORMAL, $0.65 cap): +$17.00
+- 1 loss at T-110 (NORMAL, $0.65 cap): -$9.42
+- Net: +$7.58 for ~3 more trades
+
+**v8.2.3 would still block:**
+- 4 losses at T<70 (NORMAL): -$47.55
+- 17:23 loss at T-110 (VPIN 0.551) — blocked by 0.60 threshold
+
+### Decision Framework
+
+| Scenario | Choose | Rationale |
+|----------|--------|-----------|
+| Maximize WR | v8.2.2 | 83% WR, 12 trades, +$30.92 |
+| Maximize trades with profit | v8.2.3 | ~15 trades, ~80% WR, ~+$25 |
+| Minimize risk | v8.2.2 | 12 trades, 83% WR, no edge cases |
+| Capture more upside | v8.2.3 | Allows NORMAL at T≥70 |
+
+### Current Deployment Status
+
+**Live on Montreal (as of 18:09 UTC):** v8.2.2
+
+**Config verified:**
+```
+BET_FRACTION=0.05
+V81_CAP_T240=0.55
+V81_CAP_T180=0.55
+V81_CAP_T120=0.60
+V81_CAP_T60=0.65
+```
+
+**Wallet:** $70.14 USDC (up from $67.08 - some trades resolved)
+
+**Recommendation:** Monitor v8.2.2 for 24-48h. If 83% WR holds, consider v8.2.3 refinement. If WR drops below 70%, maintain v8.2.2.
+
+**Full analysis: `docs/analyses/2026-04-07-v822-refinement.md`**
+
+---
+
+## 16. Gate Config — v8.2.3 (Recommended)
+
+| Offset | Cap | VPIN Required | Notes |
+|--------|-----|---------------|-------|
+| T-240..T-180 | $0.55 | CASCADE (>=0.65) | Early entries, 100% WR (3/3) |
+| T-170..T-120 | $0.60 | CASCADE (>=0.65) | 0% WR (0/1) — small N |
+| T-110..T-80 | $0.65 | TRANSITION+ (>=0.55) | 66.7% WR (4/6) |
+| **T-70..T-60** | **$0.65** | **TRANSITION+ (>=0.60)** | **BLOCK NORMAL (was 16.7% WR at $0.73)** |
+
+**v8.2.3 changes:**
+1. Remove $0.73 cap entirely — max cap $0.65 at all offsets
+2. Block NORMAL (VPIN<0.55) at T<70 only (not T<120)
+3. Raise TRANSITION threshold to 0.60 (catches 0.551 edge cases)
+
+---
+
+## 16. End-of-Day Summary — April 7, 2026 18:30 UTC
+
+### Wallet & P&L
+- **Start:** $130.82 → **End:** ~$67 → **Loss: -$64 (-49%)**
+- v2.2 gated: 23W/10L (69.7%), -$14.78
+- Pre-v8: 13W/22L (37.1%), -$84.92
+- v8_standard: 8W/5L (61.5%), -$21.99
+
+### Root Causes
+1. $0.73 cap: 56.5% WR, -$64 | $0.65 cap: 81.3% WR, +$26
+2. NORMAL T-70: 0W/4L, -$49. Gate deployed too late.
+3. Pre-v8 trades: -$85 (no v2.2 gate)
+4. Chrome zombie: -$44 (Apr 2 positions)
+
+### Key Discoveries
+1. **Chainlink gate:** 93.5% WR (N=169) when TI+CL deltas agree
+2. **Full stack T-130→T-60:** 97-100% WR with TI+CL+TRANS+v2.2
+3. **CEDAR model:** +5-9pp over OAK. Live ticks flowing (2041).
+4. **$0.65 max cap:** Immediate P&L fix
+
+### CEDAR Status
+- 2041 ticks, 8 windows. Accumulating for 48h comparison.
+- Endpoint `/v2/probability/cedar` live on Montreal.
+
+### Handoff for Next Agent
+1. CEDAR ticks accumulating — compare vs OAK after 24h
+2. v9.0 proposal ready (V9_PROPOSAL.md) — 20 lines, feature-flagged
+3. $0.65 cap change — env var, immediate improvement
+4. Chainlink agreement gate — most impactful new gate
+5. Montreal rules: all Polymarket API from Montreal ONLY
+6. 2 zombie positions redeemable from Apr 2 Chrome
+
 *Next review: April 8, 2026 09:00 UTC*

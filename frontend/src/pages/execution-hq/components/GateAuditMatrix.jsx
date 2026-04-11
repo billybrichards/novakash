@@ -1,52 +1,92 @@
 import React from 'react';
-import { GATES, CHECKPOINTS } from './constants.js';
+import { GATES, CHECKPOINTS, T } from './constants.js';
 
 /**
- * GateAuditMatrix — 19-checkpoint × 8-gate heatmap table showing which gates
- * passed/failed at each evaluation offset for the current window.
+ * GateAuditMatrix — v10 DUNE gate pipeline heatmap.
+ *
+ * Shows 19 checkpoints (T-240 to T-60) x 4 gates (Agreement, DUNE, CG Veto, Cap).
+ * Uses real signal_evaluations data when available via v9GateData prop.
  *
  * Props:
  *   currentT     — Current countdown (highlights the active column)
  *   gateData     — Optional: {[checkpoint]: {[gate]: 'pass'|'fail'}} from API
- *                  Falls back to deterministic mock when not provided.
  *   windowData   — Window snapshot with gates_passed / gate_failed strings
+ *   v9GateData   — signal_evaluations keyed by window_ts -> offset -> gate results
  */
-export default function GateAuditMatrix({ currentT, gateData, windowData }) {
+
+// Human-readable gate labels for v10 pipeline
+const GATE_LABELS = {
+  'gate_agreement': 'SRC AGREE',
+  'gate_dune': 'DUNE',
+  'gate_cg_veto': 'CG VETO',
+  'gate_cap': 'CAP',
+};
+
+export default function GateAuditMatrix({ currentT, gateData, windowData, v9GateData }) {
 
   const getGateStatus = (gate, t) => {
-    // If real gate data provided, use it
+    // Priority 1: Real v9 gate data from signal_evaluations
+    if (v9GateData) {
+      // v9GateData is keyed by window_ts -> offset -> gate results
+      // Find the most recent window's data
+      const windowKeys = Object.keys(v9GateData).sort((a, b) => b - a);
+      if (windowKeys.length > 0) {
+        const latestWindow = v9GateData[windowKeys[0]];
+        if (latestWindow && latestWindow[t] && latestWindow[t][gate] !== undefined) {
+          return latestWindow[t][gate];
+        }
+      }
+    }
+    // Priority 2: Direct gate data prop
     if (gateData && gateData[t] && gateData[t][gate] !== undefined) {
       return gateData[t][gate];
     }
-    // If we have window-level gate info, apply it
+    // Priority 3: Window-level gate info
     if (windowData) {
       const passed = windowData.gates_passed || '';
       const failed = windowData.gate_failed || '';
       if (failed && gate.includes(failed.replace('gate_', ''))) return 'fail';
       if (passed && passed.includes(gate.replace('gate_', ''))) return 'pass';
     }
-    // Deterministic mock fallback
+    // Priority 4: Deterministic mock fallback (for display before real data loads)
     return (t * (GATES.indexOf(gate) + 1)) % 7 !== 0 ? 'pass' : 'fail';
   };
 
   return (
     <div style={{ flex: 1, overflowX: 'auto', overflowY: 'auto' }}>
-      <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: 9, fontFamily: 'monospace' }}>
+      {/* v10 pipeline label */}
+      <div style={{
+        fontSize: 9, fontFamily: 'monospace', color: T.purple, padding: '4px 8px',
+        borderBottom: `1px solid ${T.cardBorder}`, display: 'flex', alignItems: 'center', gap: 8,
+        marginBottom: 4,
+      }}>
+        <span style={{ fontWeight: 700 }}>v10 PIPELINE:</span>
+        <span style={{ color: T.textMuted }}>Agreement</span>
+        <span style={{ color: T.textDim }}>{'\u2192'}</span>
+        <span style={{ color: T.cyan }}>DUNE P{'\u2265'}0.65</span>
+        <span style={{ color: T.textDim }}>{'\u2192'}</span>
+        <span style={{ color: T.textMuted }}>CG Veto</span>
+        <span style={{ color: T.textDim }}>{'\u2192'}</span>
+        <span style={{ color: T.textMuted }}>Dynamic Cap</span>
+        <span style={{ color: T.textDim }}>{'\u2192'}</span>
+        <span style={{ color: T.textMuted }}>FAK</span>
+      </div>
+      <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: 9, fontFamily: "'JetBrains Mono', monospace" }}>
         <thead>
           <tr style={{ borderBottom: '1px solid rgba(51,65,85,1)' }}>
             <th style={{
               padding: 4, position: 'sticky', left: 0, top: 0,
-              background: '#0f172a', zIndex: 20, width: 96,
+              background: '#0f172a', zIndex: 20, width: 80,
               borderBottom: '1px solid rgba(51,65,85,1)',
-            }}>GATE / TIME</th>
+            }}>GATE / T</th>
             {CHECKPOINTS.map(t => (
               <th key={t} style={{
                 padding: 4, textAlign: 'center', position: 'sticky', top: 0,
                 borderBottom: '1px solid rgba(51,65,85,1)',
                 borderLeft: '1px solid rgba(30,41,59,1)',
                 zIndex: 10,
-                background: t === currentT ? 'rgba(6,182,212,0.15)' : '#0f172a',
-                color: t === currentT ? '#06b6d4' : 'rgba(100,116,139,1)',
+                background: t === currentT ? 'rgba(168,85,247,0.15)' : '#0f172a',
+                color: t === currentT ? T.purple : 'rgba(100,116,139,1)',
               }}>{t}</th>
             ))}
           </tr>
@@ -58,9 +98,10 @@ export default function GateAuditMatrix({ currentT, gateData, windowData }) {
                 padding: 4, position: 'sticky', left: 0,
                 background: '#0f172a', zIndex: 10,
                 borderRight: '1px solid rgba(30,41,59,1)',
-                color: 'rgba(203,213,225,1)',
+                color: gate === 'gate_dune' ? T.cyan : gate === 'gate_agreement' ? T.purple : 'rgba(203,213,225,1)',
+                fontWeight: (gate === 'gate_agreement' || gate === 'gate_dune') ? 700 : 400,
               }}>
-                {gate.replace('gate_', '')}
+                {GATE_LABELS[gate] || gate.replace('gate_', '')}
               </td>
               {CHECKPOINTS.map(t => {
                 const isPast = t > currentT;
@@ -68,6 +109,8 @@ export default function GateAuditMatrix({ currentT, gateData, windowData }) {
                 const status = getGateStatus(gate, t);
                 const passes = status === 'pass';
 
+                // Zone-aware background: pre-eval vs DUNE eval zone
+                const isPreEval = t > 180;
                 let bgColor = 'rgba(30,41,59,0.2)';
                 let dotColor = 'rgba(51,65,85,1)';
 
@@ -75,8 +118,8 @@ export default function GateAuditMatrix({ currentT, gateData, windowData }) {
                   bgColor = passes ? 'rgba(16,185,129,0.1)' : 'rgba(239,68,68,0.1)';
                   dotColor = passes ? '#10b981' : '#ef4444';
                 } else if (isCurrent) {
-                  bgColor = 'rgba(6,182,212,0.2)';
-                  dotColor = '#06b6d4';
+                  bgColor = 'rgba(168,85,247,0.2)';
+                  dotColor = T.purple;
                 }
 
                 return (
@@ -85,6 +128,8 @@ export default function GateAuditMatrix({ currentT, gateData, windowData }) {
                     borderLeft: '1px solid rgba(30,41,59,0.5)',
                     background: bgColor,
                     animation: isCurrent ? 'pulse 2s infinite' : 'none',
+                    // Subtle border at the eval zone boundary (T-180)
+                    borderRight: t === 180 ? `2px solid rgba(6,182,212,0.3)` : undefined,
                   }}>
                     <div style={{
                       margin: '0 auto', width: 6, height: 6, borderRadius: '50%',
@@ -97,6 +142,15 @@ export default function GateAuditMatrix({ currentT, gateData, windowData }) {
           ))}
         </tbody>
       </table>
+      {/* v10 zone labels beneath the table */}
+      <div style={{ display: 'flex', fontSize: 8, fontFamily: 'monospace', color: T.textDim, marginTop: 4, paddingLeft: 84 }}>
+        <div style={{ flex: 1, textAlign: 'center', borderRight: `1px solid rgba(6,182,212,0.2)`, paddingRight: 4 }}>
+          PRE-EVAL (T-240 to T-180, no trades)
+        </div>
+        <div style={{ flex: 1, textAlign: 'center', paddingLeft: 4 }}>
+          DUNE EVAL (T-180 to T-60, cap = P-5pp)
+        </div>
+      </div>
     </div>
   );
 }

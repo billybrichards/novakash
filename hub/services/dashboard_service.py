@@ -94,8 +94,11 @@ class DashboardService:
         )
         open_trades = open_result.scalar_one() or 0
 
+        # Bankroll: use wallet_balance_usdc from engine state (or current_balance as fallback)
+        bankroll = engine_state.get("wallet_balance_usdc") or engine_state.get("current_balance")
+        
         return {
-            "bankroll": engine_state.get("current_bankroll"),
+            "bankroll": bankroll,
             "daily_pnl": daily_pnl,
             "total_pnl": float(row.total_pnl or 0),
             "win_rate": wins / total if total > 0 else 0.0,

@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v10.3 Configuration — Corrected Data Analysis</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'SF Mono','Fira Code',monospace;background:#0a0e17;color:#e0e6ed;padding:20px;font-size:13px}
+h1{color:#00ff88;font-size:1.3em;margin-bottom:2px}
+h2{color:#60a5fa;font-size:1em;margin-bottom:8px;border-bottom:1px solid #1e293b;padding-bottom:4px}
+.sub{color:#667;font-size:0.8em;margin-bottom:16px}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.c{background:#111827;border:1px solid #1e293b;border-radius:6px;padding:14px}
+.c.f{grid-column:1/-1}
+table{width:100%;border-collapse:collapse;font-size:0.85em}
+th{background:#1e293b;color:#60a5fa;padding:6px 8px;text-align:left}
+td{padding:6px 8px;border-bottom:1px solid #1e293b}
+.w{color:#4ade80;font-weight:600}
+.l{color:#f87171;font-weight:600}
+.y{color:#facc15}
+.b{color:#60a5fa}
+.note{background:#1e1b4b;border:1px solid #3730a3;border-radius:4px;padding:10px;margin-top:8px;font-size:0.8em;color:#a5b4fc}
+.warn{background:#451a03;border-color:#92400e;color:#fbbf24}
+.good{background:#052e16;border-color:#166534;color:#4ade80}
+.stats{display:flex;gap:16px;margin:12px 0;flex-wrap:wrap}
+.stat{text-align:center;min-width:80px}
+.sv{font-size:1.6em;font-weight:700}
+.sl{font-size:0.7em;color:#9ca3af}
+.bar{height:20px;border-radius:3px;margin:2px 0;display:flex;align-items:center;padding-left:6px;font-size:0.7em;font-weight:600}
+</style>
+</head>
+<body>
+
+<h1>v10.3 Configuration — Based on Corrected Data + ELM v3</h1>
+<p class="sub">Generated 2026-04-08 20:30 UTC | 63 resolved trades | 12 orphaned WINs recovered | ELM v3 accuracy: 76.5% @ T-60</p>
+
+<div class="stats">
+<div class="stat"><div class="sv w">85%</div><div class="sl">TRANSITION WR</div></div>
+<div class="stat"><div class="sv w">75%</div><div class="sl">v9 GOLDEN WR</div></div>
+<div class="stat"><div class="sv l">25%</div><div class="sl">EARLY_CASCADE WR</div></div>
+<div class="stat"><div class="sv y">82%</div><div class="sl">ELM P>=0.80 acc</div></div>
+<div class="stat"><div class="sv b">81.7%</div><div class="sl">CG aligned WR</div></div>
+<div class="stat"><div class="sv l">$4</div><div class="sl">was MAX_BET(!)</div></div>
+</div>
+
+<div class="g">
+
+<div class="c f">
+<h2>Critical Discoveries (Apr 8)</h2>
+<table>
+<tr><th>Discovery</th><th>Impact</th><th>Fix Applied</th></tr>
+<tr><td>Reconciler bug hid 12 WINs (+$18.62)</td><td>Calibrated v10.1 on wrong data</td><td class="w">Reconciler orphan fix deployed</td></tr>
+<tr><td>TRANSITION regime actual WR = 85% (not 0%)</td><td>v10.1 hard-blocked best regime</td><td class="w">Softened to 0.85 threshold</td></tr>
+<tr><td>Two conflating regime systems (VPIN vs vol)</td><td>Regime labels misleading</td><td class="y">Documented, needs refactor</td></tr>
+<tr><td>ABSOLUTE_MAX_BET=$4 capping all stakes</td><td>Tiny bets, min share violations</td><td class="w">Raised to $10</td></tr>
+<tr><td>Polymarket min 5 shares, engine sent 4.2</td><td>ALL trades failing, circuit breaker</td><td class="w">Min 5 shares enforced in code</td></tr>
+<tr><td>ELM v3 outputs honest [0.15-0.85] not bimodal</td><td>v10.0 thresholds filter 55% of trades</td><td class="y">Thresholds lowered in v10.2</td></tr>
+<tr><td>DOWN predictions 9.3pp less accurate than UP</td><td>DOWN trades overweight</td><td class="l">Direction penalty NOT yet in code</td></tr>
+</table>
+</div>
+
+<div class="c">
+<h2>Corrected Performance by Tier (Apr 8)</h2>
+<table>
+<tr><th>Tier</th><th>W</th><th>L</th><th>WR</th><th>PnL</th></tr>
+<tr><td>v10 TRANSITION</td><td class="w">11</td><td>2</td><td class="w">85%</td><td class="w">+$14.26</td></tr>
+<tr><td>v9 GOLDEN</td><td class="w">15</td><td>5</td><td class="w">75%</td><td class="w">+$18.12</td></tr>
+<tr><td>v10 CASCADE</td><td>2</td><td>1</td><td>67%</td><td>-$2.96</td></tr>
+<tr><td>v2.2 (legacy)</td><td>6</td><td>4</td><td>60%</td><td class="l">-$10.37</td></tr>
+<tr><td>v10 NORMAL</td><td>2</td><td>3</td><td class="l">40%</td><td class="l">-$7.97</td></tr>
+<tr><td>v9 EARLY CASCADE</td><td>3</td><td>9</td><td class="l">25%</td><td class="l">-$40.72</td></tr>
+</table>
+<div class="note good">TRANSITION + GOLDEN = 26W/7L (79% WR, +$32.38). Everything else = 13W/17L (43% WR, -$61.72)</div>
+</div>
+
+<div class="c">
+<h2>CoinGlass Signal Alignment (All Trades)</h2>
+<table>
+<tr><th>Taker</th><th>Smart $</th><th>N</th><th>WR</th><th>PnL</th></tr>
+<tr><td class="w">Aligned</td><td class="w">Aligned</td><td>327</td><td class="w">81.7%</td><td class="w">+$295.66</td></tr>
+<tr><td class="w">Aligned</td><td class="l">Opposing</td><td>162</td><td class="w">79.6%</td><td class="w">+$71.76</td></tr>
+<tr><td class="l">Opposing</td><td class="w">Aligned</td><td>86</td><td>73.3%</td><td class="l">-$23.38</td></tr>
+<tr><td class="l">Opposing</td><td class="l">Opposing</td><td>144</td><td class="l">58.3%</td><td>+$42.51</td></tr>
+</table>
+<div class="note">Taker flow alignment is the strongest single predictor. When takers are aligned, WR is 80%+ regardless of smart money.</div>
+</div>
+
+<div class="c">
+<h2>ELM v3 Accuracy (865 Resolved Windows)</h2>
+<table>
+<tr><th>Offset</th><th>Accuracy</th><th>Skill</th><th>Brier</th></tr>
+<tr><td>T-30</td><td class="w">79.7%</td><td>+28.7pp</td><td>0.164</td></tr>
+<tr><td>T-60</td><td class="w">76.5%</td><td>+25.5pp</td><td>0.190</td></tr>
+<tr><td>T-90</td><td>68.0%</td><td>+17.0pp</td><td>0.228</td></tr>
+<tr><td>T-120</td><td>64.6%</td><td>+13.6pp</td><td>0.250</td></tr>
+<tr><td>T-180</td><td>63.2%</td><td>+12.2pp</td><td>0.330</td></tr>
+<tr><td>T-240</td><td class="l">56.5%</td><td>+5.5pp</td><td>0.326</td></tr>
+</table>
+<div class="note warn">UP predictions: 81.8% accuracy. DOWN predictions: 72.5%. Gap: -9.3pp. v10.3 should add DOWN penalty.</div>
+</div>
+
+<div class="c">
+<h2>ELM Coverage-Accuracy Tradeoff @ T-60</h2>
+<table>
+<tr><th>Threshold</th><th>Coverage</th><th>Accuracy</th><th>N</th><th>v10.3?</th></tr>
+<tr><td>P >= 0.50</td><td>100%</td><td>76.5%</td><td>865</td><td></td></tr>
+<tr><td>P >= 0.60</td><td>96%</td><td>77.9%</td><td>828</td><td></td></tr>
+<tr><td class="y">P >= 0.65</td><td class="y">93%</td><td class="y">78.4%</td><td class="y">807</td><td class="y">NORMAL base</td></tr>
+<tr><td>P >= 0.70</td><td>83%</td><td>77.7%</td><td>719</td><td></td></tr>
+<tr><td>P >= 0.75</td><td>81%</td><td>77.6%</td><td>702</td><td></td></tr>
+<tr><td class="w">P >= 0.80</td><td class="w">62%</td><td class="w">82.0%</td><td class="w">532</td><td class="w">SWEET SPOT</td></tr>
+<tr><td>P >= 0.85</td><td>59%</td><td>83.0%</td><td>512</td><td></td></tr>
+</table>
+</div>
+
+<div class="c">
+<h2>Offset Zone Performance (Today, Corrected)</h2>
+<table>
+<tr><th>Zone</th><th>W</th><th>L</th><th>WR</th><th>PnL</th><th>Avg VPIN</th></tr>
+<tr><td>T-80..120 (mid)</td><td class="w">2</td><td>0</td><td class="w">100%</td><td class="w">+$2.60</td><td>0.592</td></tr>
+<tr><td>T-120..180 (early)</td><td class="w">14</td><td>4</td><td class="w">77.8%</td><td class="w">+$18.95</td><td>0.586</td></tr>
+<tr><td>T-180+ (very early)</td><td>4</td><td>5</td><td class="l">44.4%</td><td class="l">-$19.86</td><td>0.655</td></tr>
+</table>
+<div class="note">T-120..180 is the most profitable zone by volume. T-180+ is toxic — keep V10_MIN_EVAL_OFFSET=180.</div>
+</div>
+
+<div class="c f">
+<h2>v10.3 Configuration (PROPOSED)</h2>
+<table>
+<tr><th>Parameter</th><th>v10.2</th><th>v10.3</th><th>Rationale</th></tr>
+<tr><td>V10_DUNE_ENABLED</td><td>true</td><td>true</td><td></td></tr>
+<tr><td>V10_DUNE_MODEL</td><td>oak</td><td>oak</td><td>ELM v3 production endpoint</td></tr>
+<tr><td>V10_DUNE_MIN_P</td><td>0.75</td><td class="y">0.65</td><td>ELM P>=0.65 = 78.4% acc on 93% windows (was over-filtering)</td></tr>
+<tr><td>V10_MIN_EVAL_OFFSET</td><td>180</td><td>180</td><td>T-180+ = 44% WR, confirmed toxic</td></tr>
+<tr><td colspan="4" style="color:#475569">--- Regime thresholds ---</td></tr>
+<tr><td>V10_TRANSITION_MIN_P</td><td>0.85</td><td class="w">0.70</td><td>85% WR best regime. Was over-penalised. Still above NORMAL.</td></tr>
+<tr><td>V10_CASCADE_MIN_P</td><td>0.80</td><td class="y">0.72</td><td>67% WR small sample. Keep tighter than NORMAL.</td></tr>
+<tr><td>V10_NORMAL_MIN_P</td><td>0.78</td><td class="y">0.65</td><td>ELM sweet spot. 40% WR today but very small sample (5 trades).</td></tr>
+<tr><td>V10_LOW_VOL_MIN_P</td><td>0.78</td><td class="y">0.65</td><td>Same as NORMAL</td></tr>
+<tr><td>V10_TRENDING_MIN_P</td><td>0.80</td><td class="y">0.72</td><td>Same as CASCADE</td></tr>
+<tr><td>V10_CALM_MIN_P</td><td>0.80</td><td class="y">0.72</td><td>Conservative — low signal environment</td></tr>
+<tr><td colspan="4" style="color:#475569">--- Offset + Cap + Sizing ---</td></tr>
+<tr><td>V10_OFFSET_PENALTY_MAX</td><td>0.05</td><td class="y">0.04</td><td>T-120..180 is profitable, don't over-penalise</td></tr>
+<tr><td>V10_DUNE_CAP_CEILING</td><td>0.70</td><td>0.70</td><td>At 76.5% WR breakeven = $0.57. Ceiling $0.70 = 13pp margin.</td></tr>
+<tr><td>V10_DUNE_CAP_FLOOR</td><td>0.35</td><td>0.35</td><td></td></tr>
+<tr><td>V10_DUNE_CAP_MARGIN</td><td>0.05</td><td>0.05</td><td></td></tr>
+<tr><td>BET_FRACTION</td><td>0.075</td><td>0.075</td><td>$63 * 7.5% = $4.73 stake</td></tr>
+<tr><td>ABSOLUTE_MAX_BET</td><td class="l">4.0</td><td class="w">10.0</td><td>Was silently capping all bets to $4!</td></tr>
+<tr><td>FIVE_MIN_EVAL_INTERVAL</td><td>2</td><td>2</td><td></td></tr>
+</table>
+</div>
+
+<div class="c">
+<h2>v10.3 Effective Thresholds (UP predictions)</h2>
+<table>
+<tr><th>Regime</th><th>T-60</th><th>T-90</th><th>T-120</th><th>T-150</th><th>T-180</th></tr>
+<tr><td>TRANSITION</td><td>0.700</td><td>0.710</td><td>0.720</td><td>0.730</td><td>0.740</td></tr>
+<tr><td>CASCADE</td><td>0.720</td><td>0.730</td><td>0.740</td><td>0.750</td><td>0.760</td></tr>
+<tr><td>NORMAL</td><td>0.650</td><td>0.660</td><td>0.670</td><td>0.680</td><td>0.690</td></tr>
+</table>
+<div class="note">DOWN predictions: add +0.03 to all thresholds above (not yet in code — v10.3 TODO).</div>
+</div>
+
+<div class="c">
+<h2>Decision Pipeline (v10.3)</h2>
+<div style="line-height:2">
+<div><span class="l">1 DEDUP</span> — one trade per window</div>
+<div><span class="b">2 SOURCE AGREEMENT</span> — CL+TI must agree (94.7% WR)</div>
+<div><span class="y">3 DUNE CONFIDENCE</span> — regime + offset threshold (ELM v3 calibrated)</div>
+<div style="padding-left:20px;color:#9ca3af">TRANSITION T-120: 0.70 + 0.02 = 0.72</div>
+<div style="padding-left:20px;color:#9ca3af">NORMAL T-60: 0.65 + 0.00 = 0.65</div>
+<div style="padding-left:20px;color:#9ca3af">CASCADE T-180: 0.72 + 0.04 = 0.76</div>
+<div><span style="color:#a78bfa">4 CG VETO</span> — 3+ opposing microstructure signals</div>
+<div><span class="w">5 DYNAMIC CAP</span> — cap = dune_p - 0.05, max $0.70</div>
+<div><span style="color:#00ff88">6 EXECUTE</span> — FAK ladder (min 5 shares) then GTC fallback</div>
+</div>
+</div>
+
+<div class="c f">
+<h2>Bugs Fixed This Session</h2>
+<table>
+<tr><th>Bug</th><th>Impact</th><th>Fix</th><th>Status</th></tr>
+<tr><td>Reconciler orphaned fills</td><td>12 WINs hidden (+$18.62)</td><td>CLOB trade history API, 60s orphan check</td><td class="w">DEPLOYED</td></tr>
+<tr><td>ABSOLUTE_MAX_BET=$4</td><td>All stakes capped tiny</td><td>Raised to $10</td><td class="w">DEPLOYED</td></tr>
+<tr><td>Polymarket min 5 shares</td><td>400 errors, circuit breaker</td><td>Min 5 shares in fok_ladder + client</td><td class="w">DEPLOYED</td></tr>
+<tr><td>Root-owned files on Montreal</td><td>Git pull failures</td><td>chown -R novakash:novakash</td><td class="w">FIXED</td></tr>
+<tr><td>TRANSITION hard-blocked</td><td>Best regime (85% WR) killed</td><td>Threshold 9.99 to 0.85 (v10.2)</td><td class="w">DEPLOYED</td></tr>
+<tr><td>.env vs .env.local confusion</td><td>Config not deploying</td><td>Documented in DEPLOYMENT.md</td><td class="w">DOCUMENTED</td></tr>
+<tr><td>DB trade writes missing</td><td>5/6 post-restart trades not in DB</td><td>Root cause: min shares + circuit breaker</td><td class="w">ROOT CAUSE FIXED</td></tr>
+<tr><td>DOWN direction penalty</td><td>9.3pp accuracy gap uncompensated</td><td>+0.03 to DOWN thresholds</td><td class="l">TODO (v10.3)</td></tr>
+</table>
+</div>
+
+<div class="c f">
+<h2>Montreal Engine Status</h2>
+<div class="note good">
+Engine PID 275392 | v10.2 gates + reconciler fix + min shares fix + BET_FRACTION=0.075 + ABSOLUTE_MAX_BET=10.0<br>
+Engine log backup: /home/novakash/engine-v10.1-pre-v10.2.log (3.9MB)<br>
+All file permissions fixed (novakash:novakash)
+</div>
+<div class="note" style="margin-top:8px">
+<strong>To apply v10.3 thresholds:</strong> SSH to Montreal, update .env, restart engine.<br>
+<strong>Rollback to v10.2:</strong> Revert threshold env vars, restart.
+</div>
+</div>
+
+</div>
+
+</body>
+</html>

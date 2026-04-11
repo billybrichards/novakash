@@ -12,7 +12,7 @@ TRENDING  : 80 %+ of recent log-returns are the same sign (overrides vol label)
 Volatility is computed as:
     σ = std(log_returns) * sqrt(12)   # 12 five-second periods per minute → annualised per minute
 
-The deque holds the last 60 prices (~5 minutes at 5-second sampling).
+The deque holds the last 120 prices (~10 minutes at 5-second sampling).
 """
 
 from __future__ import annotations
@@ -31,12 +31,14 @@ _HIGH_VOL_THRESHOLD: float = 0.020   # 2.0 %
 
 # Trend detection: fraction of returns that must share a direction
 _TREND_THRESHOLD: float = 0.80
+# Hysteresis: require N consecutive regime changes before switching
+_HYSTERESIS_COUNT: int = 2  # Require 2 consecutive flips to change regime
 
 # Annualisation factor: sqrt(number of 5-second periods per minute)
 # 60 s / 5 s = 12 periods per minute
 _ANNUALISE_FACTOR: float = math.sqrt(12)
 
-_HISTORY_MAXLEN: int = 60  # 60 prices ≈ 5 minutes at 5 s intervals
+_HISTORY_MAXLEN: int = 120  # 120 prices ≈ 10 minutes at 5 s intervals
 
 
 class RegimeClassifier:
@@ -58,6 +60,8 @@ class RegimeClassifier:
         self._prices: deque[float] = deque(maxlen=history_maxlen)
         self._current_regime: str = self.NORMAL
         self._current_vol: float = 0.0
+        self._consecutive_flips: int = 0  # Track consecutive regime flips
+        self._pending_regime: Optional[str] = None  # Pending regime change
 
         self._log = log.bind(component="RegimeClassifier")
         self._log.info("initialised", history_maxlen=history_maxlen)
@@ -86,25 +90,28 @@ class RegimeClassifier:
             return
 
         regime, vol = self._classify()
-        changed = regime != self._current_regime
-
-        self._current_regime = regime
-        self._current_vol = vol
-
+        changed = self._check_regime_change(regime)
         if changed:
-            self._log.info(
-                "regime_change",
-                regime=regime,
-                vol_pct=round(vol * 100, 4),
-                price=price,
-                n_prices=len(self._prices),
-            )
+            self._current_regime = regime
+            self._current_vol = vol
+            self._consecutive_flips = 0
+            self._pending_regime = None
         else:
+            self._current_vol = vol
+            if self._pending_regime == regime:
+                self._consecutive_flips += 1
+            else:
+                self._consecutive_flips = 1
+                self._pending_regime = regime
+            # Log the regime but not a change
             self._log.debug(
                 "regime_update",
                 regime=regime,
                 vol_pct=round(vol * 100, 4),
+                consecutive_flips=self._consecutive_flips,
             )
+            return  # No regime change logged
+
 
     @property
     def current_regime(self) -> str:
@@ -168,3 +175,22 @@ class RegimeClassifier:
             regime = self.LOW_VOL
 
         return regime, vol
+
+    def _check_regime_change(self, new_regime: str) -> bool:
+        """Check if regime change should be committed (with hysteresis)."""
+        if new_regime == self._current_regime:
+            self._consecutive_flips = 0
+            self._pending_regime = None
+            return False
+        
+        # Different regime - check hysteresis
+        if self._pending_regime == new_regime:
+            # Same pending regime, increment counter
+            self._consecutive_flips += 1
+        else:
+            # New pending regime
+            self._consecutive_flips = 1
+            self._pending_regime = new_regime
+        
+        # Commit if we have enough consecutive flips
+        return self._consecutive_flips >= _HYSTERESIS_COUNT

@@ -188,6 +188,22 @@ class RuntimeConfig:
         # Forecast is still fetched and logged for monitoring when timesfm_enabled=True.
         self.timesfm_agreement_enabled: bool = os.environ.get("TIMESFM_AGREEMENT_ENABLED", "false").lower() == "true"
 
+        # ── v9.0: Source agreement + dynamic caps ───────────────────────────
+        # V9_SOURCE_AGREEMENT: CL+TI direction must agree (94.7% WR when agree, 9.1% when disagree)
+        self.v9_source_agreement: bool = os.environ.get("V9_SOURCE_AGREEMENT", "false").lower() == "true"
+        # V9_CAPS_ENABLED: Two-tier dynamic caps based on empirical agreement WR
+        self.v9_caps_enabled: bool = os.environ.get("V9_CAPS_ENABLED", "false").lower() == "true"
+        # ORDER_TYPE: FAK (Fill-And-Kill), FOK (Fill-Or-Kill), or GTC
+        self.order_type: str = os.environ.get("ORDER_TYPE", "FAK").upper()
+
+        # ── v10: DUNE-gated dynamic pricing ──────────────────────────────
+        # V10_DUNE_ENABLED: Use DUNE ML model as confidence gate (replaces VPIN)
+        self.v10_dune_enabled: bool = os.environ.get("V10_DUNE_ENABLED", "false").lower() == "true"
+        # V10_DUNE_MIN_P: Minimum DUNE P(direction) to trade
+        self.v10_dune_min_p: float = float(os.environ.get("V10_DUNE_MIN_P", "0.65"))
+        # FIVE_MIN_EVAL_INTERVAL: Seconds between eval ticks (2 = 2s polling, 10 = v9 default)
+        self.five_min_eval_interval: int = int(os.environ.get("FIVE_MIN_EVAL_INTERVAL", "10"))
+
         # ── Sync metadata ─────────────────────────────────────────────────
         self._active_config_id: Optional[int] = None
         self._active_config_name: Optional[str] = None

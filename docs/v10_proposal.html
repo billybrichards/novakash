@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v10 Proposal — DUNE-Gated Dynamic Pricing</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#07070c; color:#e0e0e0; font-family:'Inter',-apple-system,sans-serif; padding:24px; max-width:1400px; margin:0 auto; line-height:1.5; }
+  h1 { color:#a855f7; font-size:28px; margin-bottom:4px; }
+  h2 { color:#06b6d4; font-size:17px; margin:32px 0 12px; border-bottom:1px solid rgba(6,182,212,0.2); padding-bottom:6px; }
+  h3 { color:#f59e0b; font-size:13px; margin:20px 0 8px; text-transform:uppercase; letter-spacing:0.05em; }
+  .sub { color:rgba(255,255,255,0.4); font-size:12px; margin-bottom:24px; }
+  .grid { display:grid; gap:12px; margin:14px 0; }
+  .g2 { grid-template-columns:1fr 1fr; }
+  .g3 { grid-template-columns:1fr 1fr 1fr; }
+  .g4 { grid-template-columns:1fr 1fr 1fr 1fr; }
+  .card { background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); border-radius:10px; padding:16px; }
+  .card.purple { border-color:rgba(168,85,247,0.3); background:rgba(168,85,247,0.04); }
+  .card.green { border-color:rgba(34,197,94,0.3); background:rgba(34,197,94,0.04); }
+  .card.red { border-color:rgba(239,68,68,0.3); background:rgba(239,68,68,0.04); }
+  .card.cyan { border-color:rgba(6,182,212,0.3); background:rgba(6,182,212,0.04); }
+  .stat { font-size:32px; font-weight:700; font-family:'JetBrains Mono',monospace; }
+  .stat.g { color:#4ade80; } .stat.r { color:#f87171; } .stat.p { color:#a855f7; } .stat.c { color:#06b6d4; } .stat.y { color:#f59e0b; }
+  .lbl { font-size:10px; color:rgba(255,255,255,0.35); text-transform:uppercase; letter-spacing:0.06em; margin-top:2px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; font-family:'JetBrains Mono',monospace; margin:8px 0; }
+  th { text-align:left; padding:7px 10px; color:rgba(255,255,255,0.4); font-size:10px; text-transform:uppercase; letter-spacing:0.06em; border-bottom:1px solid rgba(255,255,255,0.08); }
+  td { padding:6px 10px; border-bottom:1px solid rgba(255,255,255,0.03); }
+  tr:hover td { background:rgba(255,255,255,0.02); }
+  .w { color:#4ade80; } .l { color:#f87171; } .y { color:#f59e0b; } .c { color:#06b6d4; } .p { color:#a855f7; }
+  .dim { color:rgba(255,255,255,0.3); }
+  .bar { height:6px; border-radius:3px; margin-top:4px; }
+  .info { background:rgba(168,85,247,0.06); border:1px solid rgba(168,85,247,0.2); border-radius:8px; padding:12px 16px; margin:14px 0; font-size:13px; color:#c4b5fd; }
+  .warn { background:rgba(239,68,68,0.06); border:1px solid rgba(239,68,68,0.2); border-radius:8px; padding:12px 16px; margin:14px 0; font-size:13px; color:#fca5a5; }
+  .good { background:rgba(34,197,94,0.06); border:1px solid rgba(34,197,94,0.2); border-radius:8px; padding:12px 16px; margin:14px 0; font-size:13px; color:#86efac; }
+  .pipeline { display:flex; gap:4px; margin:16px 0; align-items:stretch; }
+  .pipe { flex:1; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:12px 8px; text-align:center; }
+  .pipe.active { border-color:rgba(168,85,247,0.4); background:rgba(168,85,247,0.06); }
+  .pipe.new { border-color:rgba(34,197,94,0.4); background:rgba(34,197,94,0.06); box-shadow:0 0 15px rgba(34,197,94,0.1); }
+  .pipe .plbl { font-size:9px; color:rgba(255,255,255,0.4); text-transform:uppercase; letter-spacing:0.04em; }
+  .pipe .pval { font-size:16px; font-weight:700; font-family:'JetBrains Mono',monospace; margin:4px 0; }
+  .pipe .pdet { font-size:10px; color:rgba(255,255,255,0.5); }
+  .arrow { display:flex; align-items:center; color:rgba(255,255,255,0.15); font-size:16px; padding:0 2px; }
+  .surface { display:grid; grid-template-columns:80px repeat(8,1fr); gap:2px; margin:12px 0; }
+  .scell { padding:8px 4px; text-align:center; border-radius:4px; font-size:11px; font-family:'JetBrains Mono',monospace; font-weight:600; }
+  .sheader { color:rgba(255,255,255,0.4); font-size:9px; background:transparent !important; text-transform:uppercase; }
+  .slabel { color:rgba(255,255,255,0.5); font-size:10px; text-align:right; padding-right:8px; display:flex; align-items:center; justify-content:flex-end; }
+  .tag { display:inline-block; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:600; }
+  .tag-new { background:rgba(34,197,94,0.2); color:#4ade80; border:1px solid rgba(34,197,94,0.3); }
+  .tag-keep { background:rgba(6,182,212,0.15); color:#06b6d4; }
+  .tag-remove { background:rgba(239,68,68,0.15); color:#f87171; text-decoration:line-through; }
+  .compare { display:grid; grid-template-columns:1fr auto 1fr; gap:16px; align-items:start; margin:16px 0; }
+  .vs { font-size:24px; color:rgba(255,255,255,0.2); display:flex; align-items:center; padding-top:30px; }
+</style>
+</head>
+<body>
+
+<h1>v10 — DUNE-Gated Dynamic Pricing</h1>
+<p class="sub">Replaces fixed VPIN gates with ML-driven confidence &bull; Continuous 2s polling &bull; Per-window dynamic caps</p>
+
+<!-- WHY v10 -->
+<h2>Why v10? The v9.0 Reality Check</h2>
+
+<div class="grid g4">
+  <div class="card green">
+    <div class="stat g">76%</div>
+    <div class="lbl">v9 Golden Zone WR</div>
+    <div style="margin-top:6px;font-size:11px;color:rgba(255,255,255,0.4)">16W/5L &bull; +$21.30</div>
+  </div>
+  <div class="card red">
+    <div class="stat r">29%</div>
+    <div class="lbl">v9 Early CASCADE WR</div>
+    <div style="margin-top:6px;font-size:11px;color:rgba(255,255,255,0.4)">4W/10L &bull; -$41.71</div>
+  </div>
+  <div class="card">
+    <div class="stat y">0.009</div>
+    <div class="lbl">OAK P(UP) — Binary Garbage</div>
+    <div style="margin-top:6px;font-size:11px;color:rgba(255,255,255,0.4)">Same value at ALL offsets</div>
+  </div>
+  <div class="card purple">
+    <div class="stat p">0.04-0.92</div>
+    <div class="lbl">DUNE P(UP) — Real Signal</div>
+    <div style="margin-top:6px;font-size:11px;color:rgba(255,255,255,0.4)">Varies by offset + market</div>
+  </div>
+</div>
+
+<div class="warn">
+  <strong>v9 problem:</strong> VPIN gates can't distinguish "confident direction" from "noisy cascade". CASCADE regime was 29% WR overnight — VPIN said "informed flow" but it was just choppy volatility. DUNE's ML model CAN distinguish: it's trained on actual oracle outcomes.
+</div>
+
+<!-- OAK vs DUNE -->
+<h2>OAK vs DUNE — Live Right Now</h2>
+
+<div class="compare">
+  <div class="card red">
+    <h3 style="color:#f87171">OAK (Current Production)</h3>
+    <table>
+      <tr><td>T-240</td><td class="l">0.0091</td></tr>
+      <tr><td>T-180</td><td class="l">0.0091</td></tr>
+      <tr><td>T-120</td><td class="l">0.0091</td></tr>
+      <tr><td>T-90</td><td class="l">0.0091</td></tr>
+      <tr><td>T-60</td><td class="l">0.0091</td></tr>
+      <tr><td>T-30</td><td class="l">0.0091</td></tr>
+    </table>
+    <div style="margin-top:8px;font-size:11px;color:#f87171">Same value everywhere. 10 calibration levels but snaps to extremes. USELESS for pricing.</div>
+  </div>
+  <div class="vs">&rarr;</div>
+  <div class="card green">
+    <h3 style="color:#4ade80">DUNE (Staging — Ready)</h3>
+    <table>
+      <tr><td>T-240</td><td class="w">0.1667</td><td class="dim">16.7% UP</td></tr>
+      <tr><td>T-180</td><td class="w">0.1558</td><td class="dim">15.6% UP</td></tr>
+      <tr><td>T-120</td><td class="w">0.1443</td><td class="dim">14.4% UP</td></tr>
+      <tr><td>T-90</td><td class="w">0.0848</td><td class="dim">8.5% UP</td></tr>
+      <tr><td>T-60</td><td class="w">0.0959</td><td class="dim">9.6% UP</td></tr>
+      <tr><td>T-30</td><td class="w">0.0417</td><td class="dim">4.2% UP</td></tr>
+    </table>
+    <div style="margin-top:8px;font-size:11px;color:#4ade80">Real variation. 11 calibration levels. Trained on Tiingo + Chainlink oracle data. P(DOWN) = 0.96 at T-30 &rarr; very confident DOWN.</div>
+  </div>
+</div>
+
+<!-- DUNE ACCURACY -->
+<h2>DUNE Test Accuracy vs OAK</h2>
+
+<table>
+  <thead><tr><th>Offset</th><th>DUNE Acc</th><th>OAK Acc</th><th>Improvement</th><th>DUNE Brier</th><th style="width:200px">Visual</th></tr></thead>
+  <tbody>
+    <tr><td>T-30</td><td class="w"><strong>83.5%</strong></td><td>77.7%</td><td class="w">+5.8pp</td><td>0.134</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:83.5%;border-radius:4px;background:linear-gradient(90deg,#16a34a,#4ade80)"></div></div></td></tr>
+    <tr><td>T-60</td><td class="w"><strong>75.9%</strong></td><td>69.6%</td><td class="w">+6.3pp</td><td>0.188</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:75.9%;border-radius:4px;background:linear-gradient(90deg,#166534,#4ade80)"></div></div></td></tr>
+    <tr><td>T-90</td><td class="w"><strong>73.2%</strong></td><td>61.7%</td><td class="w">+11.5pp</td><td>0.209</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:73.2%;border-radius:4px;background:linear-gradient(90deg,#166534,#22c55e)"></div></div></td></tr>
+    <tr><td>T-120</td><td class="w"><strong>70.6%</strong></td><td>59.4%</td><td class="w">+11.2pp</td><td>0.227</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:70.6%;border-radius:4px;background:linear-gradient(90deg,#166534,#22c55e)"></div></div></td></tr>
+    <tr><td>T-180</td><td class="y">67.9%</td><td>58.3%</td><td class="w">+9.6pp</td><td>0.241</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:67.9%;border-radius:4px;background:#f59e0b"></div></div></td></tr>
+    <tr><td>T-240</td><td class="y">56.4%</td><td>53.0%</td><td>+3.4pp</td><td>0.312</td><td><div style="height:8px;border-radius:4px;background:rgba(255,255,255,0.06)"><div style="height:100%;width:56.4%;border-radius:4px;background:#f59e0b"></div></div></td></tr>
+  </tbody>
+</table>
+
+<!-- THE PRICING SURFACE -->
+<h2>v10 Dynamic Pricing Surface</h2>
+<p style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:8px">Cap = DUNE P(agreed direction) - 5pp safety margin &bull; Evaluated every 2 seconds</p>
+
+<div class="surface">
+  <div class="scell sheader"></div>
+  <div class="scell sheader">T-240</div>
+  <div class="scell sheader">T-210</div>
+  <div class="scell sheader">T-180</div>
+  <div class="scell sheader">T-150</div>
+  <div class="scell sheader">T-120</div>
+  <div class="scell sheader">T-90</div>
+  <div class="scell sheader">T-60</div>
+  <div class="scell sheader">T-30</div>
+
+  <div class="scell slabel">DUNE Acc</div>
+  <div class="scell" style="background:rgba(245,158,11,0.15);color:#f59e0b">56%</div>
+  <div class="scell" style="background:rgba(245,158,11,0.15);color:#f59e0b">62%</div>
+  <div class="scell" style="background:rgba(245,158,11,0.2);color:#f59e0b">68%</div>
+  <div class="scell" style="background:rgba(34,197,94,0.15);color:#4ade80">69%</div>
+  <div class="scell" style="background:rgba(34,197,94,0.15);color:#4ade80">71%</div>
+  <div class="scell" style="background:rgba(34,197,94,0.2);color:#4ade80">73%</div>
+  <div class="scell" style="background:rgba(34,197,94,0.25);color:#4ade80">76%</div>
+  <div class="scell" style="background:rgba(34,197,94,0.35);color:#22c55e">84%</div>
+
+  <div class="scell slabel">+ Agreement</div>
+  <div class="scell" style="background:rgba(245,158,11,0.1);color:#f59e0b">~70%</div>
+  <div class="scell" style="background:rgba(245,158,11,0.15);color:#f59e0b">~74%</div>
+  <div class="scell" style="background:rgba(34,197,94,0.1);color:#4ade80">~80%</div>
+  <div class="scell" style="background:rgba(34,197,94,0.15);color:#4ade80">~82%</div>
+  <div class="scell" style="background:rgba(34,197,94,0.2);color:#4ade80">~83%</div>
+  <div class="scell" style="background:rgba(34,197,94,0.25);color:#4ade80">~85%</div>
+  <div class="scell" style="background:rgba(34,197,94,0.3);color:#4ade80">~88%</div>
+  <div class="scell" style="background:rgba(34,197,94,0.4);color:#22c55e">~93%</div>
+
+  <div class="scell slabel">v10 Cap</div>
+  <div class="scell" style="background:rgba(168,85,247,0.1);color:#a855f7">$0.55</div>
+  <div class="scell" style="background:rgba(168,85,247,0.12);color:#a855f7">$0.58</div>
+  <div class="scell" style="background:rgba(168,85,247,0.15);color:#a855f7">$0.63</div>
+  <div class="scell" style="background:rgba(168,85,247,0.18);color:#a855f7">$0.65</div>
+  <div class="scell" style="background:rgba(168,85,247,0.2);color:#a855f7">$0.66</div>
+  <div class="scell" style="background:rgba(168,85,247,0.25);color:#c084fc">$0.68</div>
+  <div class="scell" style="background:rgba(168,85,247,0.3);color:#c084fc">$0.71</div>
+  <div class="scell" style="background:rgba(168,85,247,0.4);color:#e9d5ff">$0.75</div>
+
+  <div class="scell slabel">v9 Cap</div>
+  <div class="scell dim">SKIP</div>
+  <div class="scell dim">SKIP</div>
+  <div class="scell dim">SKIP</div>
+  <div class="scell dim">SKIP</div>
+  <div class="scell" style="background:rgba(255,255,255,0.04)">$0.65</div>
+  <div class="scell" style="background:rgba(255,255,255,0.04)">$0.65</div>
+  <div class="scell" style="background:rgba(255,255,255,0.04)">$0.65</div>
+  <div class="scell dim">N/A</div>
+
+  <div class="scell slabel">Margin</div>
+  <div class="scell" style="color:rgba(255,255,255,0.3)">+15pp</div>
+  <div class="scell" style="color:rgba(255,255,255,0.3)">+16pp</div>
+  <div class="scell w">+17pp</div>
+  <div class="scell w">+17pp</div>
+  <div class="scell w">+17pp</div>
+  <div class="scell w">+17pp</div>
+  <div class="scell w">+17pp</div>
+  <div class="scell w">+18pp</div>
+</div>
+
+<div class="info">
+  <strong>How the surface works:</strong> At each 2s eval tick, DUNE returns P(agreed direction). If P &ge; 0.65, the cap = P - 0.05 (5pp safety margin). At T-60 with DUNE at 88%, cap = $0.83. At T-240 with DUNE at 70%, cap = $0.65. The model's confidence drives the max entry price — higher confidence = willing to pay more.
+</div>
+
+<!-- v10 GATE PIPELINE -->
+<h2>v10 Gate Pipeline (every 2 seconds)</h2>
+
+<div class="pipeline">
+  <div class="pipe active">
+    <div class="plbl">G1: Source Agreement</div>
+    <div class="pval c">CL+TI</div>
+    <div class="pdet"><span class="tag tag-keep">KEEP</span> from v9</div>
+    <div class="pdet" style="margin-top:4px">Must agree on direction</div>
+  </div>
+  <div class="arrow">&rarr;</div>
+  <div class="pipe new">
+    <div class="plbl">G2: DUNE Confidence</div>
+    <div class="pval g">P &ge; 0.65</div>
+    <div class="pdet"><span class="tag tag-new">NEW</span> replaces VPIN</div>
+    <div class="pdet" style="margin-top:4px">ML model must confirm</div>
+  </div>
+  <div class="arrow">&rarr;</div>
+  <div class="pipe active">
+    <div class="plbl">G3: CoinGlass Veto</div>
+    <div class="pval c">3+ signals</div>
+    <div class="pdet"><span class="tag tag-keep">KEEP</span> soft gate</div>
+    <div class="pdet" style="margin-top:4px">Retry in 2s if vetoed</div>
+  </div>
+  <div class="arrow">&rarr;</div>
+  <div class="pipe new">
+    <div class="plbl">G4: Dynamic Cap</div>
+    <div class="pval g">P - 5pp</div>
+    <div class="pdet"><span class="tag tag-new">NEW</span> DUNE-driven</div>
+    <div class="pdet" style="margin-top:4px">$0.55 &ndash; $0.75 range</div>
+  </div>
+  <div class="arrow">&rarr;</div>
+  <div class="pipe active">
+    <div class="plbl">G5: FAK Execution</div>
+    <div class="pval c">2-shot</div>
+    <div class="pdet"><span class="tag tag-keep">KEEP</span> cap &rarr; cap+&pi;</div>
+    <div class="pdet" style="margin-top:4px">Then GTC fallback</div>
+  </div>
+</div>
+
+<!-- WHAT CHANGES -->
+<h2>What Changes from v9</h2>
+
+<table>
+  <thead><tr><th>Component</th><th>v9.0</th><th>v10</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Polling interval</td>
+      <td>10s (19 evals/window)</td>
+      <td class="w"><strong>2s (90 evals/window)</strong></td>
+      <td>DUNE updates in real-time. Catch agreement+confidence alignment faster.</td>
+    </tr>
+    <tr>
+      <td>Confidence gate</td>
+      <td>VPIN &ge; 0.45 (golden)<br><span class="dim">VPIN &ge; 0.65 (early, DISABLED)</span></td>
+      <td class="w"><strong>DUNE P(dir) &ge; 0.65</strong></td>
+      <td>ML-trained on oracle outcomes. VPIN can't distinguish confident from noisy.</td>
+    </tr>
+    <tr>
+      <td>Entry tiers</td>
+      <td>2 fixed: $0.55/$0.65</td>
+      <td class="w"><strong>Continuous: $0.55-$0.75</strong></td>
+      <td>Cap = DUNE_P - 5pp. Higher confidence = higher cap = better fills.</td>
+    </tr>
+    <tr>
+      <td>CASCADE handling</td>
+      <td><span class="l">DISABLED (29% WR)</span></td>
+      <td class="w"><strong>DUNE handles it</strong></td>
+      <td>If DUNE P &lt; 0.65 in CASCADE, skip. If P &ge; 0.65, DUNE thinks it's real.</td>
+    </tr>
+    <tr>
+      <td>Early entries</td>
+      <td><span class="l">DISABLED</span></td>
+      <td class="w"><strong>Re-enabled if DUNE confident</strong></td>
+      <td>DUNE at T-240 = 56% acc. Won't pass 0.65 threshold unless very sure.</td>
+    </tr>
+    <tr>
+      <td>OAK/v2.2</td>
+      <td><span class="l">REMOVED (binary)</span></td>
+      <td class="w"><strong>Replaced by DUNE</strong></td>
+      <td>DUNE outputs 11-level calibrated probabilities. OAK outputs 0 or 1.</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- EXPECTED PERFORMANCE -->
+<h2>Expected Performance</h2>
+
+<div class="grid g3">
+  <div class="card red">
+    <h3 style="color:#f87171;margin:0 0 8px">v9.0 Actual (bible)</h3>
+    <div class="stat r">59%</div>
+    <div class="lbl">Win Rate (27W/19L)</div>
+    <div style="margin-top:8px;font-size:12px">
+      <div>PnL: <span class="l">-$25.19</span></div>
+      <div>Golden: 76% WR (+$21)</div>
+      <div>Early: 29% WR (-$42)</div>
+    </div>
+  </div>
+  <div class="card">
+    <h3 style="color:#06b6d4;margin:0 0 8px">v9.0.1 Golden Only</h3>
+    <div class="stat c">76%</div>
+    <div class="lbl">Win Rate (16W/5L)</div>
+    <div style="margin-top:8px;font-size:12px">
+      <div>PnL: <span class="w">+$21.30</span></div>
+      <div>Cap: $0.65 fixed</div>
+      <div>Breakeven: 65%</div>
+    </div>
+  </div>
+  <div class="card green">
+    <h3 style="color:#4ade80;margin:0 0 8px">v10 DUNE-Gated (Est.)</h3>
+    <div class="stat g">~85%</div>
+    <div class="lbl">Estimated Win Rate</div>
+    <div style="margin-top:8px;font-size:12px">
+      <div>DUNE 76% + Agreement boost</div>
+      <div>Dynamic cap: $0.55-$0.75</div>
+      <div>Margin: +17pp above breakeven</div>
+    </div>
+  </div>
+</div>
+
+<!-- 2s POLLING -->
+<h2>Why 2s Polling?</h2>
+
+<div class="grid g2">
+  <div class="card">
+    <h3 style="margin:0 0 8px">v9: 10s polling (19 evals)</h3>
+    <div style="font-size:12px;color:rgba(255,255,255,0.5)">
+      <div>&bull; Chainlink updates every ~30s</div>
+      <div>&bull; Tiingo updates every 2s</div>
+      <div>&bull; Miss fast agreement windows</div>
+      <div>&bull; CL+TI may agree for only 4-6s then diverge</div>
+      <div>&bull; 10s gap = can miss the entire agreement</div>
+    </div>
+  </div>
+  <div class="card green">
+    <h3 style="margin:0 0 8px;color:#4ade80">v10: 2s polling (90 evals)</h3>
+    <div style="font-size:12px;color:rgba(255,255,255,0.5)">
+      <div>&bull; Catch <strong>every</strong> Tiingo update (2s aligned)</div>
+      <div>&bull; DUNE queried every 2s with fresh data</div>
+      <div>&bull; Capture brief agreement windows</div>
+      <div>&bull; DUNE P changes with each price tick</div>
+      <div>&bull; More opportunities to catch high-confidence moments</div>
+    </div>
+    <div style="margin-top:8px;font-size:11px;color:rgba(255,255,255,0.3)">DB impact: ~90 signal_eval writes per window. At 12 windows/hour = ~1,080 writes/hour. Manageable.</div>
+  </div>
+</div>
+
+<!-- IMPLEMENTATION -->
+<h2>Implementation</h2>
+
+<div class="info">
+  <strong>Phase 1: Shadow Mode (48h)</strong><br>
+  Log DUNE prediction alongside every v9 signal evaluation. Don't change trading behavior.<br>
+  Validate: does DUNE P &ge; 0.65 predict oracle correctly at &ge;80% rate?<br><br>
+
+  <strong>Phase 2: DUNE Gate (when validated)</strong><br>
+  Add DUNE query to eval pipeline. Only trade when CL+TI agree AND DUNE P &ge; 0.65.<br>
+  Dynamic cap = DUNE_P - 0.05. All behind <code>V10_DUNE_ENABLED</code> feature flag.<br><br>
+
+  <strong>Phase 3: 2s Polling</strong><br>
+  Reduce eval interval from 10s to 2s. More opportunities to catch agreement+confidence.<br>
+  <code>FIVE_MIN_EVAL_INTERVAL=2</code> (new env var, currently implicit from offset list).
+</div>
+
+<h3>Env Vars</h3>
+<table>
+  <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>V10_DUNE_ENABLED</code></td><td>false</td><td>Enable DUNE as confidence gate (replaces VPIN)</td></tr>
+    <tr><td><code>V10_DUNE_URL</code></td><td>http://3.98.114.0:8080/v2/probability/cedar</td><td>DUNE API endpoint</td></tr>
+    <tr><td><code>V10_DUNE_MIN_P</code></td><td>0.65</td><td>Minimum DUNE P(direction) to trade</td></tr>
+    <tr><td><code>V10_DUNE_CAP_MARGIN</code></td><td>0.05</td><td>Cap = DUNE_P - this margin</td></tr>
+    <tr><td><code>V10_DUNE_CAP_FLOOR</code></td><td>0.30</td><td>Absolute minimum cap</td></tr>
+    <tr><td><code>V10_DUNE_CAP_CEILING</code></td><td>0.75</td><td>Absolute maximum cap</td></tr>
+    <tr><td><code>FIVE_MIN_EVAL_INTERVAL</code></td><td>2</td><td>Seconds between evals (was ~10)</td></tr>
+  </tbody>
+</table>
+
+<h3>Rollback</h3>
+<div style="font-size:12px;font-family:'JetBrains Mono',monospace;background:rgba(255,255,255,0.03);padding:12px;border-radius:6px;margin:8px 0">
+  V10_DUNE_ENABLED=false &rarr; falls back to v9.0 VPIN-based gates<br>
+  FIVE_MIN_EVAL_INTERVAL=10 &rarr; back to 10s polling
+</div>
+
+<p style="margin-top:32px;color:rgba(255,255,255,0.2);font-size:10px;text-align:center">
+  v10 Proposal &bull; Generated 2026-04-08 &bull; Based on trade_bible (46 trades), DUNE test (2,566 rows), live API verification
+</p>
+
+</body>
+</html>

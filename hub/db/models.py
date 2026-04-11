@@ -20,19 +20,41 @@ from typing import Any, Optional
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Column,
     DateTime,
     Float,
     ForeignKey,
     Integer,
     JSON,
+    MetaData,
     Numeric,
     String,
+    Table,
     Text,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.database import Base
+
+# Raw table reflection for window_snapshots (engine-managed, not ORM)
+_metadata = MetaData()
+window_snapshots = Table(
+    "window_snapshots", _metadata,
+    Column("id", Integer, primary_key=True),
+    Column("window_ts", BigInteger),
+    Column("asset", String),
+    Column("v2_probability_up", Float),
+    Column("v2_direction", String),
+    Column("v2_agrees", Boolean),
+    Column("v2_model_version", String),
+    Column("outcome", String),
+    Column("direction", String),
+    Column("vpin", Float),
+    Column("regime", String),
+    Column("created_at", DateTime),
+    extend_existing=True,
+)
 
 
 class User(Base):

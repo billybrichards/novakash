@@ -90,6 +90,14 @@ class Orchestrator:
         self._execution_queue: asyncio.Queue = asyncio.Queue()  # Pending window evaluations
         self._geoblock_active: bool = False  # G6: Geoblock flag
 
+        # ── Dedup: track conditions resolved by OrderManager callback ─────
+        # When _on_order_resolution fires, we add the condition_id here.
+        # _position_monitor_loop skips any condition_id already in this set.
+        self._resolved_by_order_manager: set = set()
+
+        # ── CLOB Reconciler (v10.2: definitive source of truth) ─────
+        self._reconciler = None
+
         # ── TWAP Tracker (v5.7: time-weighted delta for direction) ─────────
         self._twap_tracker = TWAPTracker(max_windows=50)
 
@@ -654,6 +662,53 @@ class Orchestrator:
                 )
             )
 
+        # 5c. ELM v3 prediction recorder (all 4 assets, every 30s)
+        if self._five_min_strategy and hasattr(self._five_min_strategy, '_timesfm_v2') and self._five_min_strategy._timesfm_v2:
+            from data.feeds.elm_prediction_recorder import ELMPredictionRecorder
+            _elm_recorder = ELMPredictionRecorder(
+                elm_client=self._five_min_strategy._timesfm_v2,
+                db_pool=self._db._pool if self._db else None,
+                shutdown_event=self._shutdown_event,
+            )
+            self._tasks.append(
+                asyncio.create_task(_elm_recorder.run(), name="elm_prediction_recorder")
+            )
+            log.info("orchestrator.elm_recorder_started", assets=["BTC", "ETH", "SOL", "XRP"])
+
+        # 5d. Polymarket trade history reconciler (every 5 min)
+        if self._poly_client and self._db and self._db._pool:
+            from reconciliation.poly_trade_history import PolyTradeHistoryReconciler
+            _poly_hist = PolyTradeHistoryReconciler(
+                poly_client=self._poly_client,
+                db_pool=self._db._pool,
+                alerter=self._alerter,
+                shutdown_event=self._shutdown_event,
+            )
+            self._tasks.append(
+                asyncio.create_task(_poly_hist.run(), name="poly_trade_history")
+            )
+            log.info("orchestrator.poly_trade_history_started")
+
+        # 5e. v11: poly_fills reconciler — authoritative source-of-truth
+        # sync from Polymarket data-api. Runs every 5 minutes, append-only,
+        # enriches trade_bible with condition_id / market_slug / fill linkage.
+        # This is the GROUND TRUTH table for post-hoc P&L analysis.
+        if self._db and self._db._pool and self._settings.poly_funder_address:
+            from reconciliation.poly_fills_reconciler import PolyFillsReconciler
+            self._poly_fills_reconciler = PolyFillsReconciler(
+                pool=self._db._pool,
+                funder_address=self._settings.poly_funder_address,
+            )
+            self._tasks.append(
+                asyncio.create_task(
+                    self._poly_fills_loop(), name="poly_fills_reconciler"
+                )
+            )
+            log.info(
+                "orchestrator.poly_fills_reconciler_started",
+                funder=self._settings.poly_funder_address,
+            )
+
         # 5. Heartbeat task (every 10s)
         self._tasks.append(
             asyncio.create_task(self._heartbeat_loop(), name="heartbeat")
@@ -706,8 +761,24 @@ class Orchestrator:
         except Exception as exc:
             log.warning("orchestrator.trade_recovery_failed", error=str(exc))
 
-        # 6e. Polymarket reconciliation loop (every 5 min) — live mode only
-        if not self._settings.paper_mode:
+        # 6e. CLOB Reconciler (v10.2) or legacy reconciliation loop
+        _use_reconciler = os.environ.get("RECONCILER_ENABLED", "true").lower() == "true"
+        if not self._settings.paper_mode and _use_reconciler:
+            try:
+                from reconciliation.reconciler import CLOBReconciler
+                self._reconciler = CLOBReconciler(
+                    poly_client=self._poly_client,
+                    db_pool=self._db._pool,
+                    alerter=self._alerter,
+                    shutdown_event=self._shutdown_event,
+                )
+                await self._reconciler.start()
+                log.info("orchestrator.clob_reconciler_started")
+            except Exception as exc:
+                log.error("orchestrator.clob_reconciler_failed", error=str(exc))
+                self._reconciler = None
+        elif not self._settings.paper_mode:
+            # Legacy: old 5-min reconcile loop (fallback when RECONCILER_ENABLED=false)
             self._tasks.append(
                 asyncio.create_task(
                     self._polymarket_reconcile_loop(), name="polymarket_reconciler"
@@ -756,7 +827,8 @@ class Orchestrator:
             except Exception as e:
                 log.error("orchestrator.playwright_start_failed", error=str(e))
 
-        if not self._settings.paper_mode:
+        if not self._settings.paper_mode and not _use_reconciler:
+            # Legacy position monitor (disabled when CLOB reconciler is active)
             self._tasks.append(
                 asyncio.create_task(self._position_monitor_loop(), name="position_monitor")
             )
@@ -787,6 +859,13 @@ class Orchestrator:
     async def stop(self) -> None:
         """Graceful shutdown of all components."""
         log.info("orchestrator.stopping")
+
+        # Stop CLOB Reconciler
+        if self._reconciler:
+            try:
+                await self._reconciler.stop()
+            except Exception as exc:
+                log.warning("orchestrator.reconciler_stop_error", error=str(exc))
 
         # Stop Playwright browser
         if self._playwright:
@@ -1463,6 +1542,13 @@ class Orchestrator:
                 will_alert=filled or is_paper_mode,
             )
             
+            # Track this resolution so _position_monitor_loop skips duplicate notification
+            meta_pre = order.metadata or {}
+            _resolved_token = meta_pre.get("token_id")
+            if _resolved_token:
+                self._resolved_by_order_manager.add(_resolved_token)
+                log.info("resolution.dedup_tracked", token_id=_resolved_token[:20] + "..." if len(_resolved_token) > 20 else _resolved_token)
+
             # Update risk manager with PnL (bankroll, daily PnL, drawdown, consecutive losses)
             async def _record_and_alert():
                 try:
@@ -1470,7 +1556,7 @@ class Orchestrator:
                     log.info("resolution.pnl_recorded", order_id=order.order_id[:20], pnl=f"${order.pnl_usd:.2f}")
                 except Exception as exc:
                     log.error("resolution.pnl_record_failed", error=str(exc))
-                
+
                 if filled or is_paper_mode:
                     try:
                         meta = order.metadata or {}
@@ -1512,6 +1598,7 @@ class Orchestrator:
                             stake_usd=order.stake_usd,
                             win_streak=_streak_w,
                             loss_streak=_streak_l,
+                            entry_reason=meta.get("entry_reason"),
                         )
                         
                         # Dual-AI outcome analysis with full window context (non-blocking)
@@ -1562,6 +1649,42 @@ class Orchestrator:
             asyncio.create_task(_record_and_alert())
 
     # ─── Background Tasks ─────────────────────────────────────────────────────
+
+    async def _poly_fills_loop(self) -> None:
+        """v11: Periodic poly_fills reconciliation from Polymarket data-api.
+
+        Runs every 5 minutes (configurable via POLY_FILLS_SYNC_INTERVAL_S).
+        Appends new fills to poly_fills, links orphans to trade_bible,
+        enriches trade_bible.condition_id + market_slug. Idempotent and
+        safe to run repeatedly.
+
+        If the reconciler isn't initialized (e.g. no db pool), this loop
+        exits immediately.
+        """
+        interval = float(os.environ.get("POLY_FILLS_SYNC_INTERVAL_S", "300"))
+        lookback_hours = float(os.environ.get("POLY_FILLS_LOOKBACK_HOURS", "2"))
+
+        if not getattr(self, "_poly_fills_reconciler", None):
+            log.info("poly_fills_loop.disabled_no_reconciler")
+            return
+
+        # Initial delay so we don't hammer the data-api on startup
+        await asyncio.sleep(30)
+
+        while not self._shutdown_event.is_set():
+            try:
+                result = await self._poly_fills_reconciler.sync(hours=lookback_hours)
+                if result.get("inserted", 0) or result.get("linked", 0):
+                    log.info("poly_fills_loop.sync_result", **result)
+            except Exception as exc:
+                log.warning("poly_fills_loop.sync_failed", error=str(exc)[:200])
+
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(), timeout=interval
+                )
+            except asyncio.TimeoutError:
+                continue
 
     async def _heartbeat_loop(self) -> None:
         """Every 10s: update system state and feed connection flags in DB."""
@@ -1753,12 +1876,13 @@ class Orchestrator:
                         try:
                             if self._db._pool:
                                 async with self._db._pool.acquire() as conn:
+                                    # Use trade_bible as source of truth (includes reconciler-resolved orphans)
                                     row = await conn.fetchrow(
                                         "SELECT "
-                                        "  SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as w, "
-                                        "  SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) as l "
-                                        "FROM trades WHERE outcome IS NOT NULL "
-                                        "AND created_at > DATE_TRUNC('day', NOW())"
+                                        "  COUNT(*) FILTER (WHERE trade_outcome='WIN') as w, "
+                                        "  COUNT(*) FILTER (WHERE trade_outcome='LOSS') as l "
+                                        "FROM trade_bible WHERE is_live = true "
+                                        "AND resolved_at > DATE_TRUNC('day', NOW())"
                                     )
                                     if row:
                                         real_wins = int(row['w'] or 0)
@@ -1822,7 +1946,7 @@ class Orchestrator:
                                             _dir = "⬆️" if r['direction'] == 'YES' else "⬇️"
                                             _out = {"WIN": "✅", "LOSS": "❌"}.get(r['outcome'] or '', "⏳")
                                             _cap = f"${float(r['cap']):.2f}" if r['cap'] else "?"
-                                            _rsn = (r['reason'] or '?')[-15:]
+                                            _rsn = (r['reason'] or '?')[-25:]
                                             # Window end time as ID (e.g. "14:10 BTC")
                                             _wid = ""
                                             try:
@@ -1848,14 +1972,16 @@ class Orchestrator:
                                             _lines.append(f"{_out}{_dir} `{_wid}` {_cap} {_rsn} {_pstr}")
                                         _recent_block = "\n📝 *Recent trades:*\n" + "\n".join(_lines) + "\n"
                                     
-                                    # Recent skips (from window_snapshots)
+                                    # Recent skips — deduplicated by window_ts (v9.0 has 19 evals per window)
+                                    # Show the LAST skip reason per window (lowest offset = closest to close)
                                     _skips = await conn.fetch(
-                                        """SELECT direction, skip_reason, 
+                                        """SELECT DISTINCT ON (window_ts) direction, skip_reason,
                                            window_ts, ROUND(vpin::numeric, 3) as vpin
-                                        FROM window_snapshots 
+                                        FROM window_snapshots
                                         WHERE trade_placed = false AND skip_reason IS NOT NULL
                                           AND window_ts > EXTRACT(EPOCH FROM NOW() - INTERVAL '15 minutes')
-                                        ORDER BY window_ts DESC LIMIT 3"""
+                                        ORDER BY window_ts DESC, id DESC
+                                        LIMIT 3"""
                                     )
                                     if _skips:
                                         _slines = []
@@ -1871,6 +1997,82 @@ class Orchestrator:
                                             _sr = (s['skip_reason'] or '?')[:45]
                                             _slines.append(f"🚫{_dir} `{_wid}` {_sr}")
                                         _recent_block += "📝 *Recent skips:*\n" + "\n".join(_slines) + "\n"
+
+                                    # ── Recent wins and losses from trade_bible (source of truth) ──
+                                    #
+                                    # Filter by resolution_source so we don't
+                                    # display startup-backfilled (stale) trades
+                                    # mixed with fresh fills. Values set by
+                                    # engine/reconciliation/reconciler.py:
+                                    #   'trigger'          — live-engine resolution via DB trigger
+                                    #                        (the current-session decision path)
+                                    #   'orphan_resolved'  — CLOB reconciler found a fill the engine
+                                    #                        didn't locally track, but still in-session
+                                    #   'backfill'         — reconciler startup backfill (pre-restart,
+                                    #                        stale — exclude from "recent" display)
+                                    #   'trades_table'     — historical populate_trade_bible.sql batch
+                                    #   NULL               — legacy rows without source tagging
+                                    #
+                                    # Show 'trigger' and 'orphan_resolved' (both
+                                    # are current-session); optionally mark
+                                    # orphan-resolved lines with a ⚙ glyph so
+                                    # the operator can tell them apart.
+                                    _wl_block = ""
+                                    try:
+                                        _wins = await conn.fetch(
+                                            """SELECT direction, ROUND(pnl_usd::numeric, 2) as pnl,
+                                               entry_reason as reason, resolved_at,
+                                               COALESCE(resolution_source, '') as source
+                                            FROM trade_bible WHERE trade_outcome = 'WIN' AND is_live = true
+                                              AND resolved_at > NOW() - INTERVAL '6 hours'
+                                              AND COALESCE(resolution_source, '') IN ('trigger', 'orphan_resolved', '')
+                                            ORDER BY resolved_at DESC LIMIT 3"""
+                                        )
+                                        _losses = await conn.fetch(
+                                            """SELECT direction, ROUND(pnl_usd::numeric, 2) as pnl,
+                                               entry_reason as reason, resolved_at,
+                                               COALESCE(resolution_source, '') as source
+                                            FROM trade_bible WHERE trade_outcome = 'LOSS' AND is_live = true
+                                              AND resolved_at > NOW() - INTERVAL '6 hours'
+                                              AND COALESCE(resolution_source, '') IN ('trigger', 'orphan_resolved', '')
+                                            ORDER BY resolved_at DESC LIMIT 3"""
+                                        )
+
+                                        def _label_prefix(source: str) -> str:
+                                            """Visual marker so operators can tell at a glance
+                                            whether a line came from a live-engine resolution or
+                                            from the orphan reconciler catching up on a missing fill."""
+                                            return "⚙" if source == "orphan_resolved" else ""
+
+                                        if _wins:
+                                            _wlines = []
+                                            for w in _wins:
+                                                _d = "⬆️" if w['direction'] == 'YES' else "⬇️"
+                                                _t = ""
+                                                try:
+                                                    _t = w['resolved_at'].strftime("%H:%M")
+                                                except Exception:
+                                                    pass
+                                                _r = (w['reason'] or '?')[-20:]
+                                                _mark = _label_prefix(w['source'])
+                                                _wlines.append(f"✅{_d}{_mark} `{_t}` `+${float(w['pnl']):.2f}` {_r}")
+                                            _wl_block += "🏆 *Recent wins:*\n" + "\n".join(_wlines) + "\n"
+                                        if _losses:
+                                            _llines = []
+                                            for l in _losses:
+                                                _d = "⬆️" if l['direction'] == 'YES' else "⬇️"
+                                                _t = ""
+                                                try:
+                                                    _t = l['resolved_at'].strftime("%H:%M")
+                                                except Exception:
+                                                    pass
+                                                _r = (l['reason'] or '?')[-20:]
+                                                _mark = _label_prefix(l['source'])
+                                                _llines.append(f"❌{_d}{_mark} `{_t}` `-${abs(float(l['pnl'])):.2f}` {_r}")
+                                            _wl_block += "💀 *Recent losses:*\n" + "\n".join(_llines) + "\n"
+                                    except Exception:
+                                        pass
+                                    _recent_block += _wl_block
 
                                     # Pending positions (OPEN/FILLED not yet resolved)
                                     _pending = await conn.fetch(
@@ -2439,34 +2641,102 @@ class Orchestrator:
                         
                         # NEW resolution detected
                         _resolved_conditions.add(cid)
-                        
+
                         size = data["size"]
                         avg_price = data["avgPrice"]
                         cost = data["cost"]
                         value = data["value"]
                         pnl = data["pnl"]
-                        
+
                         from datetime import datetime, timezone
                         now_str = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-                        
+
                         if outcome == "WIN":
                             emoji = "✅"
                             pnl_str = f"+${pnl:.2f}"
                         else:
                             emoji = "❌"
                             pnl_str = f"-${cost:.2f}"
+
+                        # v9.0: Link resolution back to trades table
+                        # v10.1: Match by token_id in metadata (precise) instead of fuzzy stake matching
+                        _matched_trade_id = None
+                        _matched_reason = None
+                        _matched_token_id = None
+                        try:
+                            if self._db._pool:
+                                async with self._db._pool.acquire() as _conn:
+                                    # Primary: match by token_id in metadata (exact match)
+                                    _match = await _conn.fetchrow(
+                                        """SELECT id, metadata->>'entry_reason' as reason,
+                                           metadata->>'v81_entry_cap' as cap,
+                                           metadata->>'token_id' as token_id
+                                        FROM trades
+                                        WHERE status IN ('OPEN', 'FILLED', 'EXPIRED')
+                                          AND is_live = true
+                                          AND metadata->>'token_id' IS NOT NULL
+                                        ORDER BY created_at DESC LIMIT 5""",
+                                    )
+                                    # If no token_id match found, fall back to cost-based matching
+                                    if not _match:
+                                        _match = await _conn.fetchrow(
+                                            """SELECT id, metadata->>'entry_reason' as reason,
+                                               metadata->>'v81_entry_cap' as cap,
+                                               metadata->>'token_id' as token_id
+                                            FROM trades
+                                            WHERE status IN ('OPEN', 'FILLED', 'EXPIRED')
+                                              AND is_live = true
+                                              AND ABS(CAST(stake_usd AS numeric) - $1) < 0.5
+                                            ORDER BY created_at DESC LIMIT 1""",
+                                            cost,
+                                        )
+                                    if _match:
+                                        _matched_trade_id = _match['id']
+                                        _matched_reason = _match['reason']
+                                        _matched_token_id = _match['token_id']
+                                        # Update trade with resolution
+                                        _status = 'RESOLVED_WIN' if outcome == 'WIN' else 'RESOLVED_LOSS'
+                                        await _conn.execute(
+                                            """UPDATE trades SET outcome = $1, pnl_usd = $2,
+                                               resolved_at = NOW(), status = $3
+                                            WHERE id = $4 AND outcome IS NULL""",
+                                            outcome, pnl if outcome == 'WIN' else -cost,
+                                            _status, _matched_trade_id,
+                                        )
+                                        log.info("position_monitor.trade_linked",
+                                            trade_id=_matched_trade_id,
+                                            reason=_matched_reason,
+                                            token_id=(_matched_token_id or "?")[:20],
+                                            outcome=outcome)
+                        except Exception as _link_exc:
+                            log.debug("position_monitor.trade_link_failed", error=str(_link_exc)[:100])
+
+                        # Dedup: skip notification if _on_order_resolution already sent it
+                        if _matched_token_id and _matched_token_id in self._resolved_by_order_manager:
+                            log.info("position_monitor.skip_duplicate",
+                                condition_id=cid[:20] + "...",
+                                token_id=_matched_token_id[:20] + "...",
+                                reason="already_notified_by_order_manager")
+                            continue
                         
                         # Try to find matching trade in DB for signal details
+                        # v10.1: Use matched trade ID from token_id match (precise) instead of fuzzy cost match
                         trade_info = ""
                         try:
                             if self._db._pool:
                                 async with self._db._pool.acquire() as conn:
-                                    row = await conn.fetchrow(
-                                        """SELECT metadata, created_at FROM trades 
-                                           WHERE mode = 'live' AND stake_usd BETWEEN $1 AND $2
-                                           ORDER BY created_at DESC LIMIT 1""",
-                                        cost * 0.8, cost * 1.2,
-                                    )
+                                    if _matched_trade_id:
+                                        row = await conn.fetchrow(
+                                            """SELECT metadata, created_at FROM trades WHERE id = $1""",
+                                            _matched_trade_id,
+                                        )
+                                    else:
+                                        row = await conn.fetchrow(
+                                            """SELECT metadata, created_at FROM trades
+                                               WHERE mode = 'live' AND stake_usd BETWEEN $1 AND $2
+                                               ORDER BY created_at DESC LIMIT 1""",
+                                            cost * 0.8, cost * 1.2,
+                                        )
                                     if row and row["metadata"]:
                                         import json as _json
                                         meta = _json.loads(row["metadata"]) if isinstance(row["metadata"], str) else row["metadata"]
@@ -2521,6 +2791,13 @@ class Orchestrator:
                         except Exception:
                             pass
                         
+                        # v9.0: Show entry reason in resolution notification
+                        _reason_line = ""
+                        if _matched_reason:
+                            _reason_line = f"Entry: `{_matched_reason}`\n"
+                        elif trade_info:
+                            pass  # trade_info already has entry reason from fuzzy match
+
                         msg = (
                             f"{emoji} *{outcome} — BTC* (💰 LIVE)\n"
                             f"🕐 `{now_str}`\n"
@@ -2531,6 +2808,7 @@ class Orchestrator:
                             f"Cost: `{_our_cost}`\n"
                             f"Payout: `${value:.2f}`\n"
                             f"PnL: `{_our_pnl}`\n"
+                            f"{_reason_line}"
                             f"{trade_info}"
                             f"{wallet_str}"
                         )

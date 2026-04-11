@@ -1,0 +1,188 @@
+name: Deploy Macro Observer to AWS
+
+# Deploys the macro-observer service to the EC2 Montreal box (the same
+# 3.98.114.0 host that runs timesfm-service). This was migrated from
+# Railway to AWS to:
+#   1. Unify ops with the timesfm service (one box, one log location,
+#      one set of credentials, one place to ssh into when something breaks)
+#   2. Eliminate Railway's silent build-context misrouting bug that was
+#      keeping the new Qwen 3.5 122B + per-timescale code from actually
+#      reaching production for ~24h after PRs #15 and #17 merged
+#   3. Drop the ~$10/mo Railway hosting cost (the macro-observer is
+#      ~30 MB resident-set Python loop — invisible alongside TimesFM)
+#
+# The deploy is gated to push events on `develop` (matching the rest of
+# the novakash repo's deploy convention — main is the audit/release
+# branch, develop is what actually runs in prod).
+#
+# Path filter: only fires when files inside macro-observer/ change so
+# unrelated PRs do not bounce the container.
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'macro-observer/**'
+      - '.github/workflows/deploy-macro-observer.yml'
+  workflow_dispatch:  # Manual redeploy from the Actions tab
+
+# Cancel any in-flight deploy of the same branch when a new push lands.
+# Prevents two rsync runs racing each other on the host.
+concurrency:
+  group: deploy-macro-observer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy Macro Observer
+    runs-on: ubuntu-latest
+
+    # Pull all secrets into env: blocks first so the run: scripts below
+    # never interpolate ${{ }} expressions directly. This is the
+    # GitHub Actions injection-defence pattern from
+    # https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+    env:
+      SSH_KEY: ${{ secrets.MACRO_OBSERVER_SSH_KEY }}
+      HOST: ${{ secrets.MACRO_OBSERVER_HOST }}
+      DEPLOY_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DEPLOY_QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+      DEPLOY_QWEN_BASE_URL: ${{ secrets.QWEN_BASE_URL }}
+      DEPLOY_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      DEPLOY_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Require runtime secrets
+        # Refuse to deploy if any required secret is missing. Templating
+        # an empty .env onto the host would silently break the observer
+        # on the next container restart -- fail loudly here instead.
+        run: |
+          missing=""
+          if [ -z "${HOST}" ]; then missing="$missing MACRO_OBSERVER_HOST"; fi
+          if [ -z "${SSH_KEY}" ]; then missing="$missing MACRO_OBSERVER_SSH_KEY"; fi
+          if [ -z "${DEPLOY_DATABASE_URL}" ]; then missing="$missing DATABASE_URL"; fi
+          if [ -z "${DEPLOY_QWEN_API_KEY}" ]; then missing="$missing QWEN_API_KEY"; fi
+          if [ -z "${DEPLOY_QWEN_BASE_URL}" ]; then missing="$missing QWEN_BASE_URL"; fi
+          if [ -n "$missing" ]; then
+            echo "::error::missing required GitHub Actions secrets:$missing"
+            echo "Add them under Settings -> Secrets and variables -> Actions"
+            echo "before re-running this workflow."
+            exit 1
+          fi
+          echo "all required secrets present"
+
+      - name: Write SSH key
+        run: |
+          mkdir -p ~/.ssh
+          # The secret can be stored either base64-encoded (recommended,
+          # avoids newline mangling) or as raw PEM text. Try base64 first,
+          # fall back to raw on failure.
+          if echo "$SSH_KEY" | base64 -d > ~/.ssh/deploy_key 2>/dev/null && [ -s ~/.ssh/deploy_key ]; then
+            echo "ssh key decoded from base64"
+          else
+            echo "$SSH_KEY" > ~/.ssh/deploy_key
+            echo "ssh key written as raw PEM"
+          fi
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Ensure host directory exists
+        # First-deploy bootstrap. mkdir -p is idempotent so this is safe
+        # to re-run on every deploy. /home/ubuntu/macro-observer/ is the
+        # canonical sibling to /home/ubuntu/timesfm-service/ on the same
+        # box.
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'mkdir -p /home/ubuntu/macro-observer'
+
+      - name: Rsync code to EC2
+        # --exclude '.env' protects the host secrets file from being wiped
+        # by --delete. The host .env is managed out-of-band by the
+        # "Template .env on host" step below, which re-templates it from
+        # GitHub Actions secrets on every deploy.
+        #
+        # We rsync the macro-observer/ subdirectory (not the whole repo)
+        # so the deploy is self-contained. The trailing slash on the
+        # source path is critical: macro-observer/ (with slash) copies
+        # the contents of the directory; without slash it would create
+        # a nested macro-observer/ subdir on the host.
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            --exclude '.git' \
+            --exclude '__pycache__' \
+            --exclude '.cache' \
+            --exclude '.env' \
+            --exclude '*.pyc' \
+            --exclude '.DS_Store' \
+            macro-observer/ ubuntu@"$HOST":/home/ubuntu/macro-observer/
+
+      - name: Template .env on host
+        # The .env file on the EC2 is the single source of truth for
+        # the macro-observer runtime secrets. We re-template it on every
+        # deploy from GitHub Actions secrets so credential rotation
+        # lands automatically without having to ssh in by hand.
+        #
+        # ANTHROPIC_API_KEY is intentionally NOT set -- the observer no
+        # longer calls Anthropic for the bias classifier; the env var
+        # is only read for the legacy fallback path which we want
+        # disabled in favour of Qwen.
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" "cat > /home/ubuntu/macro-observer/.env" <<ENV
+          DATABASE_URL=${DEPLOY_DATABASE_URL}
+          QWEN_BASE_URL=${DEPLOY_QWEN_BASE_URL}
+          QWEN_API_KEY=${DEPLOY_QWEN_API_KEY}
+          QWEN_MODEL=qwen35-122b-abliterated
+          QWEN_MAX_TOKENS=1536
+          QWEN_TIMEOUT_S=60
+          POLL_INTERVAL=60
+          EVAL_INTERVAL=60
+          TELEGRAM_BOT_TOKEN=${DEPLOY_TELEGRAM_BOT_TOKEN}
+          TELEGRAM_CHAT_ID=${DEPLOY_TELEGRAM_CHAT_ID}
+          LOG_LEVEL=info
+          ENV
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'chmod 600 /home/ubuntu/macro-observer/.env && wc -l /home/ubuntu/macro-observer/.env'
+
+      - name: Rebuild image and recreate container
+        # docker compose build pulls the latest source from the rsynced
+        # directory and rebuilds the image. --force-recreate guarantees
+        # the new image is actually used (without it, compose can decide
+        # nothing changed and skip the recreate).
+        #
+        # set -e makes the step fail if either build or up fails, so we
+        # do not silently ship a broken image (which is what Railway was
+        # doing -- the root cause of this whole migration).
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'set -e; cd /home/ubuntu/macro-observer && docker compose build && docker compose up -d --force-recreate'
+
+      - name: Wait for healthcheck
+        # Compose healthcheck has start_period=30s + 60s interval + 5s
+        # timeout. Give it 90s to definitively report healthy.
+        run: |
+          set -e
+          echo "waiting 60s for first poll cycle..."
+          sleep 60
+
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'docker ps --filter name=macro-observer --format "{{.Names}} {{.Status}}"'
+
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" '
+            health=$(docker inspect --format "{{.State.Health.Status}}" macro-observer)
+            echo "container health: $health"
+            if [ "$health" != "healthy" ] && [ "$health" != "starting" ]; then
+              echo "::error::macro-observer container health is $health"
+              docker logs --tail 50 macro-observer
+              exit 1
+            fi
+          '
+
+          echo "macro-observer deploy succeeded"
+
+      - name: Tail recent logs (success diagnostics)
+        # Belt-and-braces visibility -- even on success, dump the last
+        # 30 log lines so the GitHub Actions run page shows what
+        # actually happened. This is the thing that was missing from
+        # Railway: an authoritative view of what the running container
+        # is doing.
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'docker logs --tail 30 macro-observer 2>&1' || true

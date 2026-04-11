@@ -14,10 +14,13 @@ const PAGE_SIZE = 20;
 export default function WindowHistoryTable({ windows, onSelectWindow, selectedTs }) {
   const [page, setPage] = useState(0);
   const [missedOnly, setMissedOnly] = useState(false);
+  const [tradesOnly, setTradesOnly] = useState(false);
 
   const filtered = missedOnly
     ? windows.filter(w => !w.trade_placed && w.shadow_would_win)
-    : windows;
+    : tradesOnly
+      ? windows.filter(w => w.trade_placed)
+      : windows;
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const pageWindows = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -47,10 +50,19 @@ export default function WindowHistoryTable({ windows, onSelectWindow, selectedTs
             <input
               type="checkbox"
               checked={missedOnly}
-              onChange={e => { setMissedOnly(e.target.checked); setPage(0); }}
+              onChange={e => { setMissedOnly(e.target.checked); if (e.target.checked) setTradesOnly(false); setPage(0); }}
               style={{ accentColor: T.amber }}
             />
             Missed opportunities only
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', color: T.cyan }}>
+            <input
+              type="checkbox"
+              checked={tradesOnly}
+              onChange={e => { setTradesOnly(e.target.checked); if (e.target.checked) setMissedOnly(false); setPage(0); }}
+              style={{ accentColor: T.cyan }}
+            />
+            Trades only
           </label>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: T.textMuted }}>
@@ -75,11 +87,11 @@ export default function WindowHistoryTable({ windows, onSelectWindow, selectedTs
             <tr style={{ borderBottom: `1px solid ${T.cardBorder}`, color: T.textMuted }}>
               <th style={{ padding: '6px 8px', textAlign: 'left' }}>Time</th>
               <th style={{ padding: '6px 8px', textAlign: 'center' }}>Status</th>
+              <th style={{ padding: '6px 8px', textAlign: 'center' }}>Agree</th>
               <th style={{ padding: '6px 8px', textAlign: 'center' }}>Dir</th>
-              <th style={{ padding: '6px 8px', textAlign: 'right' }}>Delta</th>
-              <th style={{ padding: '6px 8px', textAlign: 'right' }}>VPIN</th>
-              <th style={{ padding: '6px 8px', textAlign: 'center' }}>Regime</th>
-              <th style={{ padding: '6px 8px', textAlign: 'center' }}>Shadow</th>
+              <th style={{ padding: '6px 8px', textAlign: 'right' }}>DUNE P</th>
+              <th style={{ padding: '6px 8px', textAlign: 'center' }}>Type</th>
+              <th style={{ padding: '6px 8px', textAlign: 'right' }}>Cap</th>
               <th style={{ padding: '6px 8px', textAlign: 'right' }}>PnL</th>
               <th style={{ padding: '6px 8px', textAlign: 'left' }}>Reason</th>
             </tr>
@@ -105,7 +117,7 @@ export default function WindowHistoryTable({ windows, onSelectWindow, selectedTs
                   onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = 'rgba(30,41,59,0.5)'; }}
                   onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
                 >
-                  <td style={{ padding: '6px 8px', color: T.text }}>{fmtTime(w.window_ts)}</td>
+                  <td style={{ padding: '6px 8px', color: T.text, fontFamily: "'JetBrains Mono', monospace" }}>{fmtTime(w.window_ts)}</td>
                   <td style={{ padding: '6px 8px', textAlign: 'center' }}>
                     <span style={{
                       display: 'inline-block', padding: '2px 8px', borderRadius: 2,
@@ -115,30 +127,46 @@ export default function WindowHistoryTable({ windows, onSelectWindow, selectedTs
                       border: `1px solid ${statusColor}40`,
                     }}>{statusLabel}</span>
                   </td>
-                  <td style={{ padding: '6px 8px', textAlign: 'center', color: w.direction === 'UP' ? T.green : T.red }}>
-                    {w.direction || '—'}
-                  </td>
-                  <td style={{ padding: '6px 8px', textAlign: 'right', color: T.text }}>{fmtPct(w.delta_pct)}</td>
-                  <td style={{ padding: '6px 8px', textAlign: 'right', color: T.text }}>{w.vpin?.toFixed(3) ?? '—'}</td>
-                  <td style={{ padding: '6px 8px', textAlign: 'center', color: T.textMuted }}>{w.regime || '—'}</td>
+                  {/* Source Agreement badge */}
                   <td style={{ padding: '6px 8px', textAlign: 'center' }}>
-                    {w.shadow_would_win === true && (
-                      <span style={{ color: T.amber, fontWeight: 700 }}>WOULD WIN</span>
+                    {w.source_agreement === true && (
+                      <span style={{ color: T.green, fontWeight: 700, fontSize: 12 }}>{'\u2713'}</span>
                     )}
-                    {w.shadow_would_win === false && w.oracle_outcome && (
-                      <span style={{ color: T.textDim }}>correct skip</span>
+                    {w.source_agreement === false && (
+                      <span style={{ color: T.red, fontWeight: 700, fontSize: 12 }}>{'\u2717'}</span>
                     )}
-                    {w.shadow_would_win === null && w.trade_placed && (
-                      <span style={{ color: T.textDim }}>—</span>
+                    {w.source_agreement == null && (
+                      <span style={{ color: T.textDim }}>{'\u2014'}</span>
                     )}
                   </td>
-                  <td style={{ padding: '6px 8px', textAlign: 'right', color: pnlColor, fontWeight: 600 }}>
+                  <td style={{ padding: '6px 8px', textAlign: 'center', color: w.direction === 'UP' ? T.green : T.red }}>
+                    {w.direction || '\u2014'}
+                  </td>
+                  {/* DUNE P(direction) */}
+                  <td style={{ padding: '6px 8px', textAlign: 'right', fontFamily: "'JetBrains Mono', monospace" }}>
+                    {(() => {
+                      const dp = w.dune_probability_up;
+                      if (dp == null) return <span style={{ color: T.textDim }}>{'\u2014'}</span>;
+                      const pDir = Math.max(dp, 1 - dp);
+                      const color = pDir >= 0.75 ? T.green : pDir >= 0.60 ? T.amber : T.red;
+                      return <span style={{ color }}>{pDir.toFixed(3)}</span>;
+                    })()}
+                  </td>
+                  {/* Order Type */}
+                  <td style={{ padding: '6px 8px', textAlign: 'center', color: w.order_type === 'FAK' ? T.purple : T.textMuted, fontFamily: "'JetBrains Mono', monospace" }}>
+                    {w.order_type || '\u2014'}
+                  </td>
+                  {/* DUNE Dynamic Cap */}
+                  <td style={{ padding: '6px 8px', textAlign: 'right', color: T.cyan, fontFamily: "'JetBrains Mono', monospace" }}>
+                    {w.dune_cap != null ? `$${w.dune_cap.toFixed(2)}` : (w.v9_cap != null ? `$${w.v9_cap.toFixed(2)}` : '\u2014')}
+                  </td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right', color: pnlColor, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>
                     {fmtUsd(pnl)}
                   </td>
                   <td style={{
                     padding: '6px 8px', color: T.textMuted,
                     maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }}>{w.skip_reason || (w.trade_placed ? 'Executed' : '—')}</td>
+                  }}>{w.skip_reason || w.entry_reason || (w.trade_placed ? 'Executed' : '\u2014')}</td>
                 </tr>
               );
             })}

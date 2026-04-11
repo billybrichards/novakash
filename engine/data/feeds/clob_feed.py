@@ -108,6 +108,7 @@ class CLOBFeed:
             if self._pool:
                 try:
                     async with self._pool.acquire() as conn:
+                        # Update existing ticks_clob for backwards compatibility
                         await conn.execute(
                             """
                             INSERT INTO ticks_clob (
@@ -115,14 +116,33 @@ class CLOBFeed:
                                 up_token_id, down_token_id,
                                 up_best_bid, up_best_ask,
                                 down_best_bid, down_best_ask,
-                                up_spread, down_spread, mid_price
-                            ) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                                up_spread, down_spread
+                            ) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                             """,
                             "BTC", "5m", window.window_ts,
                             window.up_token_id, window.down_token_id,
                             up_best_bid, up_best_ask,
                             down_best_bid, down_best_ask,
-                            up_spread, down_spread, mid,
+                            up_spread, down_spread,
+                        )
+                        
+                        # Write comprehensive snapshot to new table
+                        await conn.execute(
+                            """
+                            INSERT INTO clob_book_snapshots (
+                                asset, timeframe, window_ts,
+                                up_token_id, down_token_id,
+                                up_best_bid, up_best_ask,
+                                down_best_bid, down_best_ask,
+                                up_spread, down_spread
+                            ) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                            ON CONFLICT (window_ts, up_token_id, down_token_id, ts) DO NOTHING
+                            """,
+                            "BTC", "5m", window.window_ts,
+                            window.up_token_id, window.down_token_id,
+                            up_best_bid, up_best_ask,
+                            down_best_bid, down_best_ask,
+                            up_spread, down_spread,
                         )
                 except Exception as exc:
                     log.error("clob_feed.write_error", error=str(exc)[:80])

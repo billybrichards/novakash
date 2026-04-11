@@ -1,0 +1,110 @@
+name: CI
+
+# PR-time safety net. Minimal but catches:
+#   - Missing imports / bad refactors in margin_engine
+#   - Broken Hub proxy imports
+#   - Frontend build failures
+#
+# Three jobs run in parallel on every PR touching develop or main.
+# No path filters by design — a frontend-only PR that breaks hub imports
+# will still fail fast at PR time rather than on the production box.
+#
+# SECURITY NOTE: This workflow uses ZERO untrusted inputs.
+#   - No ${{ github.event.* }} interpolations anywhere
+#   - All env values are hardcoded literals (see margin-engine job)
+#   - No run: commands construct shell strings from PR/issue/comment bodies
+#   - Standard first-party actions only (actions/checkout, actions/setup-python, actions/setup-node)
+#
+# Intentionally NOT adding lint / mypy / unit tests here. That is scope creep
+# against the current repo minimalism; follow up in its own PR if needed.
+
+on:
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+jobs:
+  margin-engine:
+    name: Margin engine - import and settings smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: margin_engine/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r margin_engine/requirements.txt
+
+      - name: Import smoke test
+        run: |
+          python -c "import margin_engine.main"
+          python -c "import margin_engine.adapters.exchange.paper"
+          python -c "import margin_engine.adapters.exchange.binance_margin"
+          python -c "import margin_engine.adapters.exchange.hyperliquid_price_feed"
+          python -c "import margin_engine.adapters.signal.probability_http"
+          python -c "import margin_engine.adapters.signal.v4_snapshot_http"
+          python -c "import margin_engine.adapters.signal.ws_signal"
+          python -c "import margin_engine.use_cases.open_position"
+          python -c "import margin_engine.use_cases.manage_positions"
+
+      - name: Settings validator smoke test
+        env:
+          MARGIN_DATABASE_URL: "postgresql://x:y@localhost/z"
+          MARGIN_PAPER_MODE: "true"
+          MARGIN_EXCHANGE_VENUE: "hyperliquid"
+        run: python scripts/ci/check_settings_ok.py
+
+      - name: Settings validator rejects garbage venues
+        env:
+          MARGIN_DATABASE_URL: "postgresql://x:y@localhost/z"
+          MARGIN_EXCHANGE_VENUE: "not_a_real_venue"
+        run: python scripts/ci/check_settings_rejects_garbage.py
+
+  hub:
+    name: Hub - import smoke
+    runs-on: ubuntu-latest
+    # The hub runs with CWD=hub/ in production (systemd WorkingDirectory and
+    # Dockerfile WORKDIR) — its imports are written as `from db.database` not
+    # `from hub.db.database`. The CI job mirrors that by running python from
+    # inside hub/ instead of the repo root.
+    defaults:
+      run:
+        working-directory: hub
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: hub/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Import smoke test
+        run: |
+          python -c "import main"
+          python -c "import api.margin"
+
+  frontend:
+    name: Frontend - build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm --prefix frontend ci
+
+      - name: Build
+        run: npm --prefix frontend run build

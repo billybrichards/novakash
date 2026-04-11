@@ -11,28 +11,52 @@ import { useApi } from '../hooks/useApi.js';
  * Mobile:  top bar with hamburger → side drawer, bottom tab bar
  */
 
-const NAV_ITEMS = [
-  // ── Trading ──
-  { path: '/dashboard',       label: 'Dashboard',  icon: '📊' },
-  { path: '/execution-hq',   label: 'Execution HQ', icon: '⚡', highlight: true, isNew: true },
-  { path: '/factory',         label: 'Factory Floor', icon: '🏭', highlight: true },
-  { path: '/v58',             label: 'Trade Monitor', icon: '🎯', highlight: true },
-  { path: '/live',            label: 'Live Trading', icon: '💰', highlight: true },
-  { path: '/paper',           label: 'Paper',      icon: '📄' },
-  // ── Analysis ──
-  { path: '/timesfm',         label: 'TimesFM v2', icon: '🔮', highlight: true },
-  { path: '/windows',         label: 'Window Results', icon: '📊', highlight: true },
-  { path: '/strategy',        label: 'Strategy Analysis', icon: '🧪', highlight: true },
-  { path: '/recommendations', label: 'Recalibration', icon: '🎚️', highlight: true },
-  { path: '/trades',          label: 'Trades',     icon: '📋' },
-  { path: '/signals',         label: 'Signals',    icon: '📡' },
-  { path: '/pnl',             label: 'P&L',        icon: '💰' },
-  // ── System ──
-  { path: '/positions',       label: 'Positions',  icon: '📍' },
-  { path: '/risk',            label: 'Risk',       icon: '🛡️', highlight: true },
-  { path: '/system',          label: 'System',     icon: '🖥️' },
-  { path: '/trading-config',  label: 'Config',     icon: '⚙️', highlight: true },
-  { path: '/changelog',       label: 'Changelog',  icon: '📝' },
+const NAV_SECTIONS = [
+  {
+    title: 'POLYMARKET',
+    color: '#a855f7',
+    items: [
+      { path: '/dashboard',       label: 'Dashboard',  icon: '📊' },
+      { path: '/execution-hq',    label: 'Execution HQ', icon: '⚡', highlight: true, isNew: true },
+      { path: '/factory',         label: 'Factory Floor', icon: '🏭', highlight: true },
+      { path: '/v58',             label: 'Trade Monitor', icon: '🎯', highlight: true },
+      { path: '/live',            label: 'Live Trading', icon: '💰', highlight: true },
+      { path: '/paper',           label: 'Paper',      icon: '📄' },
+    ],
+  },
+  {
+    title: 'BINANCE MARGIN',
+    color: '#f59e0b',
+    items: [
+      { path: '/margin',          label: 'Margin Engine', icon: '🏦', highlight: true, isNew: true },
+      { path: '/composite',       label: 'Composite V3', icon: '🧬', highlight: true, isNew: true },
+    ],
+  },
+  {
+    title: 'ANALYSIS',
+    color: '#06b6d4',
+    items: [
+      { path: '/timesfm',         label: 'TimesFM v2', icon: '🔮', highlight: true },
+      { path: '/indicators',      label: 'Indicators', icon: '📈', highlight: true },
+      { path: '/windows',         label: 'Window Results', icon: '📊', highlight: true },
+      { path: '/strategy',        label: 'Strategy Analysis', icon: '🧪', highlight: true },
+      { path: '/recommendations', label: 'Recalibration', icon: '🎚️', highlight: true },
+      { path: '/trades',          label: 'Trades',     icon: '📋' },
+      { path: '/signals',         label: 'Signals',    icon: '📡' },
+      { path: '/pnl',             label: 'P&L',        icon: '💰' },
+    ],
+  },
+  {
+    title: 'SYSTEM',
+    color: '#64748b',
+    items: [
+      { path: '/positions',       label: 'Positions',  icon: '📍' },
+      { path: '/risk',            label: 'Risk',       icon: '🛡️', highlight: true },
+      { path: '/system',          label: 'System',     icon: '🖥️' },
+      { path: '/trading-config',  label: 'Config',     icon: '⚙️', highlight: true },
+      { path: '/changelog',       label: 'Changelog',  icon: '📝' },
+    ],
+  },
 ];
 
 // Bottom tab bar items (mobile) — 5 most important
@@ -476,9 +500,28 @@ export default function Layout() {
             overflowY: 'auto',
           }}
         >
-          {/* Main nav */}
+          {/* Main nav — grouped sections */}
           <nav style={{ flex: 1 }}>
-            {NAV_ITEMS.map(navLink)}
+            {NAV_SECTIONS.map((section, idx) => (
+              <div key={section.title} style={{ marginTop: idx > 0 ? 8 : 0 }}>
+                <div style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: '6px 14px 4px', marginBottom: 2,
+                }}>
+                  <div style={{
+                    width: 3, height: 10, borderRadius: 2,
+                    background: section.color,
+                    boxShadow: `0 0 6px ${section.color}44`,
+                  }} />
+                  <span style={{
+                    fontSize: 8, fontWeight: 800, letterSpacing: '0.12em',
+                    color: section.color, fontFamily: 'IBM Plex Mono, monospace',
+                    opacity: 0.8,
+                  }}>{section.title}</span>
+                </div>
+                {section.items.map(navLink)}
+              </div>
+            ))}
           </nav>
 
           {/* Bottom: setup + user + logout */}

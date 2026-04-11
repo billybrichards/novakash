@@ -1093,6 +1093,15 @@ async def run_observer():
     async with aiohttp.ClientSession() as session:
         while True:
             loop_start = time.time()
+            # Heartbeat for the docker-compose healthcheck. Touched at the
+            # top of every poll iteration so a stuck loop (DB pool wedged,
+            # asyncio.gather hanging on a fetcher, etc.) lets the file go
+            # stale and the container is bounced by the restart-policy.
+            try:
+                with open("/tmp/observer.alive", "w") as _hb:
+                    _hb.write(str(loop_start))
+            except OSError:
+                pass  # Healthcheck is best-effort; never block the loop
             try:
                 # ── Gather all data concurrently ──────────────────────────
                 oracle, price_deltas, cg, vpin_data, spike, ai_notes, upcoming, session_stats, btc_prices = await asyncio.gather(

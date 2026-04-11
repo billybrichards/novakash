@@ -375,7 +375,8 @@ class PolymarketClient:
             if abs(_maker - round(_maker, 2)) < 1e-9:
                 break
             order_size -= 0.01
-        order_size = max(order_size, 0.01)
+        # Enforce Polymarket minimum order size (5 shares)
+        order_size = max(order_size, 5.0)
         
         _order_type = OrderType.GTD if expiration > 0 else OrderType.GTC
 
@@ -598,23 +599,44 @@ class PolymarketClient:
 
         response = await asyncio.to_thread(_sign_and_submit)
 
-        # Parse response
-        if isinstance(response, dict):
-            order_id = response.get("orderID") or response.get("id") or f"fok-live-{uuid.uuid4().hex[:12]}"
-            status = response.get("status", "UNKNOWN")
-            size_matched_raw = response.get("size_matched", "0")
-        else:
-            order_id = getattr(response, "orderID", None) or getattr(response, "id", None) or f"fok-live-{uuid.uuid4().hex[:12]}"
-            status = getattr(response, "status", "UNKNOWN")
-            size_matched_raw = getattr(response, "size_matched", "0")
+        # CRITICAL BUG FIX (Apr 10): Polymarket CLOB response field names
+        # Polymarket returns: success, orderID, status ("live"/"matched"/"delayed"/
+        # "unmatched"), makingAmount, takingAmount, transactionsHashes, tradeIDs
+        # The old code checked "size_matched" (doesn't exist) and uppercase status
+        # ("MATCHED"/"FILLED") — both failed silently, causing the FOK ladder to
+        # fire attempt 2 AND GTC fallback even when attempt 1 had filled.
+        # Result: 77% of trades were multi-fills, overpaying ~$4.43/trade.
+
+        def _get(obj, key, default=None):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        order_id = (_get(response, "orderID") or _get(response, "id")
+                    or f"fok-live-{uuid.uuid4().hex[:12]}")
+        status_raw = _get(response, "status", "UNKNOWN") or "UNKNOWN"
+        status = str(status_raw).lower()  # normalize: "matched" / "live" / "unmatched"
+        success = bool(_get(response, "success", False))
+        error_msg = _get(response, "errorMsg", "") or ""
+        making_raw = _get(response, "makingAmount", "0")
+        taking_raw = _get(response, "takingAmount", "0")
 
         try:
-            size_matched = float(size_matched_raw) if size_matched_raw else 0.0
+            making_amount = float(making_raw) if making_raw else 0.0
         except (ValueError, TypeError):
-            size_matched = 0.0
+            making_amount = 0.0
+        try:
+            taking_amount = float(taking_raw) if taking_raw else 0.0
+        except (ValueError, TypeError):
+            taking_amount = 0.0
 
-        # FOK is filled if size_matched > 0 or status is MATCHED
-        filled = size_matched > 0 or status in ("MATCHED", "FILLED")
+        # For a BUY order: makingAmount = USDC paid, takingAmount = shares received
+        # size_matched should be the share quantity we received
+        size_matched = taking_amount
+
+        # Fill detection: lowercase "matched" status, or we actually received shares
+        # "unmatched" = killed without fill, "live" = resting (shouldn't happen for FOK)
+        filled = (status == "matched") or (size_matched > 0)
 
         self._log.info(
             "place_fok_order.result",
@@ -623,19 +645,168 @@ class PolymarketClient:
             size=f"{size:.2f}",
             order_id=str(order_id)[:20],
             status=status,
+            success=success,
+            making_amount=making_amount,
+            taking_amount=taking_amount,
             size_matched=size_matched,
             filled=filled,
+            error_msg=error_msg if error_msg else None,
         )
 
         return {
             "filled": filled,
             "size_matched": size_matched,
             "order_id": str(order_id),
+            "making_amount": making_amount,
+            "taking_amount": taking_amount,
+            "status": status,
+        }
+
+    async def place_market_order(
+        self,
+        token_id: str,
+        price: float,
+        size: float,
+        order_type: str = "FAK",
+    ) -> dict:
+        """Submit a market order with configurable type (FAK/FOK).
+
+        This is the v9.0 unified entry point used by the price ladder.
+        Delegates to place_fok_order() with the appropriate OrderType.
+
+        Args:
+            token_id: CLOB outcome token ID.
+            price: Worst-price limit (slippage cap).
+            size: Number of shares to buy.
+            order_type: "FAK" (Fill-And-Kill) or "FOK" (Fill-Or-Kill).
+
+        Returns:
+            dict with keys: filled (bool), size_matched (float), order_id (str).
+        """
+        # FAK and FOK share the same submission logic — only OrderType differs.
+        # The py-clob-client SDK supports both via OrderType enum.
+        if self.paper_mode:
+            # Paper mode: simulate fill at requested price
+            import math
+            _sim_size = math.floor(size * 100) / 100
+            return {
+                "filled": True,
+                "size_matched": _sim_size,
+                "order_id": f"paper-{order_type.lower()}-{uuid.uuid4().hex[:8]}",
+            }
+
+        if not self._clob_client:
+            raise RuntimeError("CLOB client not connected — call connect() first")
+
+        stake_usd = price * size
+        if stake_usd > LIVE_MAX_TRADE_USD:
+            raise ValueError(f"Trade stake ${stake_usd:.2f} exceeds cap ${LIVE_MAX_TRADE_USD:.2f}")
+
+        from py_clob_client.clob_types import OrderArgs, OrderType
+        from py_clob_client.order_builder.constants import BUY
+
+        client = self._clob_client
+
+        import math
+        _price = round(price, 4)
+        _size = math.floor(size * 100) / 100
+        for _adj in range(100):
+            _maker = round(_price * _size, 6)
+            if abs(_maker - round(_maker, 2)) < 1e-9:
+                break
+            _size -= 0.01
+        _size = max(_size, 0.01)
+        if _size <= 0:
+            return {"filled": False, "size_matched": 0, "order_id": None}
+
+        order_args = OrderArgs(
+            token_id=token_id,
+            price=float(f"{_price:.4f}"),
+            size=float(f"{_size:.2f}"),
+            side=BUY,
+        )
+
+        # Select order type from SDK enum
+        ot = order_type.upper()
+        if ot == "FAK":
+            sdk_type = OrderType.FAK
+        elif ot == "FOK":
+            sdk_type = OrderType.FOK
+        else:
+            self._log.warning("place_market_order.unknown_order_type",
+                requested=ot, fallback="FOK")
+            sdk_type = OrderType.FOK
+
+        def _sign_and_submit():
+            signed = client.create_order(order_args)
+            return client.post_order(signed, sdk_type)
+
+        self._log.info(
+            "place_market_order.submitting",
+            order_type=ot,
+            token_id=token_id[:20] + "...",
+            price=f"${price:.4f}",
+            size=f"{size:.2f}",
+        )
+
+        response = await asyncio.to_thread(_sign_and_submit)
+
+        # CRITICAL BUG FIX (Apr 10): See place_fok_order for full context.
+        # Polymarket returns makingAmount/takingAmount (not size_matched) and
+        # lowercase status ("matched"/"unmatched"/"live"). The old parsing was
+        # silently failing on every fill and causing the ladder to over-buy.
+        def _get(obj, key, default=None):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        order_id = (_get(response, "orderID") or _get(response, "id")
+                    or f"{ot.lower()}-{uuid.uuid4().hex[:12]}")
+        status_raw = _get(response, "status", "UNKNOWN") or "UNKNOWN"
+        status = str(status_raw).lower()
+        success = bool(_get(response, "success", False))
+        error_msg = _get(response, "errorMsg", "") or ""
+        making_raw = _get(response, "makingAmount", "0")
+        taking_raw = _get(response, "takingAmount", "0")
+
+        try:
+            making_amount = float(making_raw) if making_raw else 0.0
+        except (ValueError, TypeError):
+            making_amount = 0.0
+        try:
+            taking_amount = float(taking_raw) if taking_raw else 0.0
+        except (ValueError, TypeError):
+            taking_amount = 0.0
+
+        # BUY: makingAmount=USDC paid, takingAmount=shares received
+        size_matched = taking_amount
+        filled = (status == "matched") or (size_matched > 0)
+
+        self._log.info(
+            "place_market_order.result",
+            order_type=ot,
+            filled=filled,
+            size_matched=size_matched,
+            making_amount=making_amount,
+            taking_amount=taking_amount,
+            order_id=str(order_id)[:20],
+            status=status,
+            success=success,
+            error_msg=error_msg if error_msg else None,
+        )
+
+        return {
+            "filled": filled,
+            "size_matched": size_matched,
+            "order_id": str(order_id),
+            "making_amount": making_amount,
+            "taking_amount": taking_amount,
+            "status": status,
         }
 
     async def get_order_book_spread(self, token_id: str) -> float:
         """Get the best ask - best bid spread for a token.
-        
+
         Returns spread in price units (e.g. 0.02 = 2¢ spread).
         Returns 0.02 as default if book can't be read.
         """
@@ -831,52 +1002,8 @@ class PolymarketClient:
             self._log.warning("rfq.failed", error=str(exc)[:200])
             return (None, None)
 
-    async def place_market_order(
-        self,
-        token_id: str,
-        side: str,
-        amount_usd: float,
-        price: Decimal,
-    ) -> str:
-        """Low-level CLOB market order.
 
-        Args:
-            token_id: CLOB token ID for the outcome (YES or NO token).
-            side: "BUY" or "SELL".
-            amount_usd: USD collateral to spend.
-            price: Limit price (used as worst-case for market orders).
-
-        Returns:
-            CLOB order ID.
-        """
-        if self.paper_mode:
-            order_id = f"paper-clob-{uuid.uuid4().hex[:12]}"
-            self._log.info(
-                "place_market_order.paper",
-                token_id=token_id,
-                side=side,
-                amount_usd=amount_usd,
-                price=str(price),
-                order_id=order_id,
-            )
-            return order_id
-
-        if not self._clob_client:
-            raise RuntimeError("CLOB client not connected — call connect() first")
-
-        from py_clob_client.clob_types import MarketOrderArgs
-
-        client = self._clob_client
-        order = MarketOrderArgs(token_id=token_id, amount=amount_usd)
-        resp = await asyncio.to_thread(client.create_and_post_order, order)
-
-        if isinstance(resp, dict):
-            return resp.get("orderID") or resp.get("id") or f"live-{uuid.uuid4().hex[:12]}"
-        return getattr(resp, "orderID", None) or f"live-{uuid.uuid4().hex[:12]}"
-
-    # ------------------------------------------------------------------
-    # Market helpers
-    # ------------------------------------------------------------------
+    # place_market_order_legacy DELETED in v10 cleanup (was duplicate of place_market_order)
 
     def get_current_market_slug(self) -> str:
         """Return the slug for the current 5-minute BTC up/down window.
@@ -1015,18 +1142,37 @@ class PolymarketClient:
             raise RuntimeError("CLOB client not connected — call connect() first")
 
         resp = await asyncio.to_thread(self._clob_client.get_order, order_id)
-        if isinstance(resp, dict):
-            return {
-                "order_id": order_id,
-                "status": resp.get("status", "UNKNOWN"),
-                "size_matched": resp.get("size_matched"),
-                "price": resp.get("price"),
-                "raw": resp,
-            }
+        # v11 fix: Normalize status to UPPERCASE for back-compat with
+        # fill_check loops that compare `clob_status not in ("LIVE","UNKNOWN")`.
+        # Polymarket returns lowercase: 'live'/'matched'/'unmatched'/'delayed'.
+        # Also try multiple field names for size_matched since we've seen
+        # both size_matched and sizeMatched across CLOB API versions.
+        def _get(obj, key, default=None):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        raw_status = _get(resp, "status", "UNKNOWN") or "UNKNOWN"
+        status = str(raw_status).upper()
+
+        size_matched = None
+        for key in ("size_matched", "sizeMatched", "takingAmount"):
+            val = _get(resp, key)
+            if val is not None and val != "":
+                try:
+                    size_matched = float(val)
+                    break
+                except (ValueError, TypeError):
+                    continue
+
+        price = _get(resp, "price")
+
         return {
             "order_id": order_id,
-            "status": getattr(resp, "status", "UNKNOWN"),
-            "raw": resp,
+            "status": status,
+            "size_matched": size_matched if size_matched is not None else 0,
+            "price": price,
+            "raw": resp if isinstance(resp, dict) else None,
         }
 
     async def get_portfolio_value(self) -> float:
@@ -1117,9 +1263,67 @@ class PolymarketClient:
                     "value": size * cur_price,
                     "cost": size * avg_price,
                     "pnl": (size * cur_price) - (size * avg_price),
+                    "tokenId": p.get("asset", "") or p.get("tokenId", ""),
+                    "asset": p.get("asset", ""),
                 }
             
             return results
         except Exception as exc:
             self._log.debug("positions.fetch_failed", error=str(exc))
             return {}
+
+    async def get_open_orders(self) -> list[dict]:
+        """Fetch all open/resting orders from the CLOB.
+
+        Paper mode returns all tracked paper orders.
+        Live mode queries the CLOB client for active orders.
+
+        Returns:
+            List of order dicts with keys: id, asset_id, price, size, size_matched, status.
+        """
+        if self.paper_mode:
+            return list(self._paper_orders.values())
+
+        if not self._clob_client:
+            raise RuntimeError("CLOB client not connected — call connect() first")
+
+        def _fetch():
+            return self._clob_client.get_orders()
+
+        raw = await asyncio.to_thread(_fetch)
+        # Normalise: py-clob-client may return a dict with 'data' key or a list
+        if isinstance(raw, dict):
+            return raw.get("data", [])
+        if isinstance(raw, list):
+            return raw
+        return []
+
+    async def get_trade_history(self) -> list[dict]:
+        """Fetch filled trade history from the CLOB.
+
+        Each fill dict includes asset_id (token_id), outcome, side, price,
+        size, match_time, and status.  Used by the reconciler to detect
+        orphaned GTC fills that the engine missed during its polling window.
+
+        Paper mode returns an empty list (no real fills to fetch).
+
+        Returns:
+            List of fill dicts from the CLOB trade history API.
+        """
+        if self.paper_mode:
+            return []
+
+        if not self._clob_client:
+            raise RuntimeError("CLOB client not connected — call connect() first")
+
+        def _fetch():
+            return self._clob_client.get_trades()
+
+        raw = await asyncio.to_thread(_fetch)
+
+        # Normalise: API may return dict with 'data' key or a list directly
+        if isinstance(raw, dict):
+            return raw.get("data", [])
+        if isinstance(raw, list):
+            return raw
+        return []

@@ -152,6 +152,41 @@ class DBClient:
         """Alias for write_trade (used by OrderManager)."""
         await self.write_trade(order)
 
+    # ─── Window Dedup Queries ────────────────────────────────────────────────
+
+    async def load_recent_traded_windows(self, hours: int = 2) -> set[str]:
+        """
+        Load recently traded window keys from the trades table.
+
+        Returns a set of "{asset}-{window_ts}" strings for trades placed
+        within the last `hours` hours.  Used by FiveMinVPINStrategy to
+        restore dedup state after an engine restart.
+        """
+        if not self._pool:
+            return set()
+
+        query = """
+            SELECT DISTINCT
+                COALESCE(metadata->>'asset', 'BTC') AS asset,
+                metadata->>'window_ts' AS wts
+            FROM trades
+            WHERE created_at > NOW() - make_interval(hours => $1)
+              AND strategy = 'five_min_vpin'
+        """
+        traded: set[str] = set()
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(query, hours)
+                for r in rows:
+                    wts = r["wts"]
+                    asset = r["asset"] or "BTC"
+                    if wts:
+                        traded.add(f"{asset}-{wts}")
+            log.info("db.loaded_traded_windows", count=len(traded), hours=hours)
+        except Exception as exc:
+            log.error("db.load_traded_windows_failed", error=str(exc))
+        return traded
+
     # ─── Signal Writes ────────────────────────────────────────────────────────
 
     async def write_signal(
@@ -638,7 +673,10 @@ class DBClient:
                         delta_chainlink, delta_tiingo, delta_binance, price_consensus,
                         engine_version, delta_source, confidence_tier,
                         gates_passed, gate_failed,
-                        shadow_trade_direction, shadow_trade_entry_price
+                        shadow_trade_direction, shadow_trade_entry_price,
+                        v2_probability_up, v2_direction, v2_agrees,
+                        v2_model_version, eval_offset,
+                        v2_quantiles, v2_quantiles_at_close
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,
                         $9,$10,$11,$12,$13,$14,$15,$16,$17,
@@ -654,9 +692,10 @@ class DBClient:
                         $65,$66,$67,$68,
                         $69,$70,$71,
                         $72,$73,
-                        $74,$75
+                        $74,$75,$76,$77,$78,
+                        $79,$80,$81,$82
                     )
-                    ON CONFLICT (window_ts, asset, timeframe) DO UPDATE SET
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
                         gamma_up_price         = COALESCE(EXCLUDED.gamma_up_price, window_snapshots.gamma_up_price),
                         gamma_down_price       = COALESCE(EXCLUDED.gamma_down_price, window_snapshots.gamma_down_price),
                         delta_chainlink        = COALESCE(EXCLUDED.delta_chainlink, window_snapshots.delta_chainlink),
@@ -669,7 +708,14 @@ class DBClient:
                         gates_passed           = COALESCE(EXCLUDED.gates_passed, window_snapshots.gates_passed),
                         gate_failed            = COALESCE(EXCLUDED.gate_failed, window_snapshots.gate_failed),
                         shadow_trade_direction = COALESCE(EXCLUDED.shadow_trade_direction, window_snapshots.shadow_trade_direction),
-                        shadow_trade_entry_price = COALESCE(EXCLUDED.shadow_trade_entry_price, window_snapshots.shadow_trade_entry_price)
+                        shadow_trade_entry_price = COALESCE(EXCLUDED.shadow_trade_entry_price, window_snapshots.shadow_trade_entry_price),
+                        v2_probability_up      = COALESCE(EXCLUDED.v2_probability_up, window_snapshots.v2_probability_up),
+                        v2_direction           = COALESCE(EXCLUDED.v2_direction, window_snapshots.v2_direction),
+                        v2_agrees              = COALESCE(EXCLUDED.v2_agrees, window_snapshots.v2_agrees),
+                        v2_model_version       = COALESCE(EXCLUDED.v2_model_version, window_snapshots.v2_model_version),
+                        eval_offset            = COALESCE(EXCLUDED.eval_offset, window_snapshots.eval_offset),
+                        v2_quantiles           = COALESCE(EXCLUDED.v2_quantiles, window_snapshots.v2_quantiles),
+                        v2_quantiles_at_close  = COALESCE(EXCLUDED.v2_quantiles_at_close, window_snapshots.v2_quantiles_at_close)
                     """,
                     snapshot.get("window_ts"),
                     snapshot.get("asset", "BTC"),
@@ -752,6 +798,14 @@ class DBClient:
                     snapshot.get("gate_failed"),
                     snapshot.get("shadow_trade_direction"),
                     snapshot.get("shadow_trade_entry_price"),
+                    # v8.1: OAK (v2.2) early entry gate
+                    snapshot.get("v2_probability_up"),
+                    snapshot.get("v2_direction"),
+                    snapshot.get("v2_agrees"),
+                    snapshot.get("v2_model_version"),
+                    snapshot.get("eval_offset"),
+                    snapshot.get("v2_quantiles"),
+                    snapshot.get("v2_quantiles_at_close"),
                 )
             log.debug(
                 "db.window_snapshot_written",
@@ -1003,12 +1057,36 @@ class DBClient:
             return []
 
     async def mark_trade_expired(self, order_id: str) -> None:
-        """Mark a trade as EXPIRED in the DB (used by startup reconciliation)."""
+        """Mark a trade as EXPIRED in the DB (used by startup reconciliation).
+
+        Safety: refuses to expire trades that have confirmed CLOB fills
+        (clob_status=MATCHED or shares_filled > 0). Those are real positions
+        that the orphan reconciler will resolve.
+        """
         if not self._pool:
             return
         try:
             from datetime import timezone
             async with self._pool.acquire() as conn:
+                # Guard: do not expire trades with confirmed fills
+                row = await conn.fetchrow(
+                    """SELECT metadata->>'clob_status' as clob_status,
+                              metadata->>'shares_filled' as shares_filled
+                       FROM trades WHERE order_id = $1""",
+                    order_id,
+                )
+                if row:
+                    clob_status = (row["clob_status"] or "").upper()
+                    shares_filled = float(row["shares_filled"] or 0)
+                    if clob_status == "MATCHED" or shares_filled > 0:
+                        log.info(
+                            "db.trade_expire_blocked_has_fill",
+                            order_id=order_id[:24] if len(order_id) > 24 else order_id,
+                            clob_status=clob_status,
+                            shares_filled=shares_filled,
+                        )
+                        return
+
                 await conn.execute(
                     "UPDATE trades SET status = 'EXPIRED', resolved_at = $1 WHERE order_id = $2",
                     datetime.now(timezone.utc),
@@ -1389,6 +1467,127 @@ class DBClient:
         except Exception as exc:
             log.warning("db.write_gate_audit_failed", error=str(exc)[:200])
 
+    async def write_signal_evaluation(self, data: dict) -> None:
+        """
+        Write comprehensive signal evaluation data for every window evaluation point.
+        
+        Captures ALL signal data at each eval_offset: all price sources, all deltas,
+        OAK full probability surface (quantiles), all gates, and market microstructure.
+        
+        Args:
+            data: dict with keys matching signal_evaluations table columns.
+        """
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO signal_evaluations (
+                        window_ts, asset, timeframe, eval_offset,
+                        clob_up_bid, clob_up_ask, clob_down_bid, clob_down_ask,
+                        binance_price, tiingo_open, tiingo_close, chainlink_price,
+                        delta_pct, delta_tiingo, delta_binance, delta_chainlink, delta_source,
+                        vpin, regime, clob_spread, clob_mid,
+                        v2_probability_up, v2_direction, v2_agrees, v2_high_conf,
+                        v2_model_version, v2_quantiles, v2_quantiles_at_close,
+                        gate_vpin_passed, gate_delta_passed, gate_cg_passed,
+                        gate_twap_passed, gate_timesfm_passed, gate_passed,
+                        gate_failed, decision,
+                        twap_delta, twap_direction, twap_gamma_agree
+                    ) VALUES (
+                        $1, $2, $3, $4,
+                        $5, $6, $7, $8,
+                        $9, $10, $11, $12,
+                        $13, $14, $15, $16, $17,
+                        $18, $19, $20, $21,
+                        $22, $23, $24, $25,
+                        $26, $27, $28,
+                        $29, $30, $31,
+                        $32, $33, $34, $35,
+                        $36, $37, $38, $39
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        clob_up_bid           = EXCLUDED.clob_up_bid,
+                        clob_up_ask           = EXCLUDED.clob_up_ask,
+                        clob_down_bid         = EXCLUDED.clob_down_bid,
+                        clob_down_ask         = EXCLUDED.clob_down_ask,
+                        binance_price         = EXCLUDED.binance_price,
+                        tiingo_open           = EXCLUDED.tiingo_open,
+                        tiingo_close          = EXCLUDED.tiingo_close,
+                        chainlink_price       = EXCLUDED.chainlink_price,
+                        delta_pct             = EXCLUDED.delta_pct,
+                        delta_tiingo          = EXCLUDED.delta_tiingo,
+                        delta_binance         = EXCLUDED.delta_binance,
+                        delta_chainlink       = EXCLUDED.delta_chainlink,
+                        delta_source          = EXCLUDED.delta_source,
+                        vpin                  = EXCLUDED.vpin,
+                        regime                = EXCLUDED.regime,
+                        clob_spread           = EXCLUDED.clob_spread,
+                        clob_mid              = EXCLUDED.clob_mid,
+                        v2_probability_up     = EXCLUDED.v2_probability_up,
+                        v2_direction          = EXCLUDED.v2_direction,
+                        v2_agrees             = EXCLUDED.v2_agrees,
+                        v2_high_conf          = EXCLUDED.v2_high_conf,
+                        v2_model_version      = EXCLUDED.v2_model_version,
+                        v2_quantiles          = EXCLUDED.v2_quantiles,
+                        v2_quantiles_at_close = EXCLUDED.v2_quantiles_at_close,
+                        gate_vpin_passed      = EXCLUDED.gate_vpin_passed,
+                        gate_delta_passed     = EXCLUDED.gate_delta_passed,
+                        gate_cg_passed        = EXCLUDED.gate_cg_passed,
+                        gate_twap_passed      = EXCLUDED.gate_twap_passed,
+                        gate_timesfm_passed   = EXCLUDED.gate_timesfm_passed,
+                        gate_passed           = EXCLUDED.gate_passed,
+                        gate_failed           = EXCLUDED.gate_failed,
+                        decision              = EXCLUDED.decision,
+                        twap_delta            = EXCLUDED.twap_delta,
+                        twap_direction        = EXCLUDED.twap_direction,
+                        twap_gamma_agree      = EXCLUDED.twap_gamma_agree,
+                        evaluated_at          = NOW()
+                    """,
+                    int(data.get("window_ts", 0)),
+                    data.get("asset", "BTC"),
+                    data.get("timeframe", "5m"),
+                    data.get("eval_offset"),
+                    float(data["clob_up_bid"]) if data.get("clob_up_bid") is not None else None,
+                    float(data["clob_up_ask"]) if data.get("clob_up_ask") is not None else None,
+                    float(data["clob_down_bid"]) if data.get("clob_down_bid") is not None else None,
+                    float(data["clob_down_ask"]) if data.get("clob_down_ask") is not None else None,
+                    float(data["binance_price"]) if data.get("binance_price") is not None else None,
+                    float(data["tiingo_open"]) if data.get("tiingo_open") is not None else None,
+                    float(data["tiingo_close"]) if data.get("tiingo_close") is not None else None,
+                    float(data["chainlink_price"]) if data.get("chainlink_price") is not None else None,
+                    float(data["delta_pct"]) if data.get("delta_pct") is not None else None,
+                    float(data["delta_tiingo"]) if data.get("delta_tiingo") is not None else None,
+                    float(data["delta_binance"]) if data.get("delta_binance") is not None else None,
+                    float(data["delta_chainlink"]) if data.get("delta_chainlink") is not None else None,
+                    data.get("delta_source"),
+                    float(data["vpin"]) if data.get("vpin") is not None else None,
+                    data.get("regime"),
+                    float(data["clob_spread"]) if data.get("clob_spread") is not None else None,
+                    float(data["clob_mid"]) if data.get("clob_mid") is not None else None,
+                    float(data["v2_probability_up"]) if data.get("v2_probability_up") is not None else None,
+                    data.get("v2_direction"),
+                    bool(data["v2_agrees"]) if data.get("v2_agrees") is not None else None,
+                    bool(data["v2_high_conf"]) if data.get("v2_high_conf") is not None else None,
+                    data.get("v2_model_version"),
+                    data.get("v2_quantiles"),  # JSONB (already serialized as JSON string)
+                    data.get("v2_quantiles_at_close"),  # JSONB
+                    bool(data["gate_vpin_passed"]) if data.get("gate_vpin_passed") is not None else None,
+                    bool(data["gate_delta_passed"]) if data.get("gate_delta_passed") is not None else None,
+                    bool(data["gate_cg_passed"]) if data.get("gate_cg_passed") is not None else None,
+                    bool(data["gate_twap_passed"]) if data.get("gate_twap_passed") is not None else None,
+                    bool(data["gate_timesfm_passed"]) if data.get("gate_timesfm_passed") is not None else None,
+                    bool(data.get("gate_passed", False)),
+                    data.get("gate_failed"),
+                    data.get("decision", "SKIP"),
+                    float(data["twap_delta"]) if data.get("twap_delta") is not None else None,
+                    data.get("twap_direction"),
+                    bool(data["twap_gamma_agree"]) if data.get("twap_gamma_agree") is not None else None
+                )
+        except Exception as exc:
+            log.warning("db.write_signal_evaluation_failed", error=str(exc)[:200])
+
     # ── Post-Resolution AI Analysis ──────────────────────────────────────────
 
     async def ensure_post_resolution_table(self) -> None:
@@ -1667,3 +1866,139 @@ class DBClient:
         except Exception as exc:
             log.debug("db.get_eval_ticks_failed", error=str(exc)[:80])
             return []
+
+    async def write_clob_execution_log(self, data: dict) -> None:
+        """
+        Log comprehensive CLOB execution data for every FOK attempt, GTC placement, fill, or kill.
+        
+        Captures: target price/size, CLOB state at execution, execution mode, ladder attempts,
+        fill details, error messages, and latency.
+        """
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO clob_execution_log (
+                        asset, timeframe, window_ts, outcome, token_id,
+                        direction, strategy, eval_offset,
+                        target_price, target_size, max_price, min_price,
+                        clob_best_ask, clob_best_bid,
+                        execution_mode, fok_attempt_num, fok_max_attempts,
+                        status, fill_price, fill_size, order_id,
+                        error_code, error_message, latency_ms, metadata
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                        $13, $14, $15, $16, $17, $18, $19, $20, $21,
+                        $22, $23, $24, $25
+                    )
+                    ON CONFLICT (window_ts, outcome, ts, execution_mode, fok_attempt_num)
+                    DO NOTHING
+                    """,
+                    data.get("asset", "BTC"),
+                    data.get("timeframe", "5m"),
+                    int(data.get("window_ts", 0)),
+                    data.get("outcome", "UP"),
+                    data.get("token_id"),
+                    data.get("direction", "BUY"),
+                    data.get("strategy"),
+                    data.get("eval_offset"),
+                    float(data["target_price"]) if data.get("target_price") is not None else None,
+                    float(data["target_size"]) if data.get("target_size") is not None else None,
+                    float(data["max_price"]) if data.get("max_price") is not None else None,
+                    float(data["min_price"]) if data.get("min_price") is not None else None,
+                    float(data["clob_best_ask"]) if data.get("clob_best_ask") is not None else None,
+                    float(data["clob_best_bid"]) if data.get("clob_best_bid") is not None else None,
+                    data.get("execution_mode", "FOK"),
+                    data.get("fok_attempt_num"),
+                    data.get("fok_max_attempts"),
+                    data.get("status", "submitted"),
+                    float(data["fill_price"]) if data.get("fill_price") is not None else None,
+                    float(data["fill_size"]) if data.get("fill_size") is not None else None,
+                    data.get("order_id"),
+                    data.get("error_code"),
+                    data.get("error_message"),
+                    data.get("latency_ms"),
+                    data.get("metadata", {})
+                )
+        except Exception as exc:
+            log.warning("db.write_clob_execution_log_failed", error=str(exc)[:200])
+
+    async def write_fok_ladder_attempt(self, data: dict) -> None:
+        """Log individual FOK ladder attempt within an execution."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO fok_ladder_attempts (
+                        execution_log_id, attempt_num, attempt_price, attempt_size,
+                        clob_best_ask, clob_best_bid,
+                        status, fill_size, fill_price,
+                        error_message, attempt_duration_ms
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+                    )
+                    ON CONFLICT (execution_log_id, attempt_num) DO NOTHING
+                    """,
+                    data.get("execution_log_id"),
+                    data.get("attempt_num"),
+                    float(data["attempt_price"]) if data.get("attempt_price") is not None else None,
+                    float(data["attempt_size"]) if data.get("attempt_size") is not None else None,
+                    float(data["clob_best_ask"]) if data.get("clob_best_ask") is not None else None,
+                    float(data["clob_best_bid"]) if data.get("clob_best_bid") is not None else None,
+                    data.get("status", "attempted"),
+                    float(data["fill_size"]) if data.get("fill_size") is not None else None,
+                    float(data["fill_price"]) if data.get("fill_price") is not None else None,
+                    data.get("error_message"),
+                    data.get("attempt_duration_ms")
+                )
+        except Exception as exc:
+            log.warning("db.write_fok_ladder_attempt_failed", error=str(exc)[:200])
+
+    async def write_clob_book_snapshot(self, data: dict) -> None:
+        """Log complete CLOB book snapshot on every poll (not just during execution)."""
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO clob_book_snapshots (
+                        asset, timeframe, window_ts,
+                        up_token_id, down_token_id,
+                        up_best_bid, up_best_ask, up_bid_depth, up_ask_depth,
+                        down_best_bid, down_best_ask, down_bid_depth, down_ask_depth,
+                        up_spread, down_spread, mid_price,
+                        up_bids_top5, up_asks_top5, down_bids_top5, down_asks_top5
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                        $14, $15, $16, $17, $18, $19, $20
+                    )
+                    ON CONFLICT (window_ts, up_token_id, down_token_id, ts) DO NOTHING
+                    """,
+                    data.get("asset", "BTC"),
+                    data.get("timeframe", "5m"),
+                    int(data.get("window_ts", 0)),
+                    data.get("up_token_id"),
+                    data.get("down_token_id"),
+                    float(data["up_best_bid"]) if data.get("up_best_bid") is not None else None,
+                    float(data["up_best_ask"]) if data.get("up_best_ask") is not None else None,
+                    float(data["up_bid_depth"]) if data.get("up_bid_depth") is not None else None,
+                    float(data["up_ask_depth"]) if data.get("up_ask_depth") is not None else None,
+                    float(data["down_best_bid"]) if data.get("down_best_bid") is not None else None,
+                    float(data["down_best_ask"]) if data.get("down_best_ask") is not None else None,
+                    float(data["down_bid_depth"]) if data.get("down_bid_depth") is not None else None,
+                    float(data["down_ask_depth"]) if data.get("down_ask_depth") is not None else None,
+                    float(data["up_spread"]) if data.get("up_spread") is not None else None,
+                    float(data["down_spread"]) if data.get("down_spread") is not None else None,
+                    float(data["mid_price"]) if data.get("mid_price") is not None else None,
+                    data.get("up_bids_top5", []),
+                    data.get("up_asks_top5", []),
+                    data.get("down_bids_top5", []),
+                    data.get("down_asks_top5", [])
+                )
+        except Exception as exc:
+            log.warning("db.write_clob_book_snapshot_failed", error=str(exc)[:200])

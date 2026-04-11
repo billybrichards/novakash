@@ -30,6 +30,8 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@db:5432/btc_trader
+      MARGIN_ENGINE_URL: ${MARGIN_ENGINE_URL:-http://localhost:8090}
+      TIMESFM_URL: ${TIMESFM_URL:-http://localhost:8001}
     ports:
       - "8000:8000"
 

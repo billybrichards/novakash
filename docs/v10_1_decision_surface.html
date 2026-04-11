@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v10.1 Decision Surface — DUNE Gate Calibration</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'SF Mono', 'Fira Code', monospace; background: #0a0e17; color: #e0e6ed; padding: 24px; }
+  h1 { color: #00ff88; font-size: 1.4em; margin-bottom: 4px; }
+  .subtitle { color: #667; font-size: 0.85em; margin-bottom: 24px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
+  .card { background: #111827; border: 1px solid #1e293b; border-radius: 8px; padding: 20px; }
+  .card h2 { color: #60a5fa; font-size: 1.05em; margin-bottom: 12px; border-bottom: 1px solid #1e293b; padding-bottom: 8px; }
+  .card.full { grid-column: 1 / -1; }
+  .heatmap { display: grid; gap: 2px; margin: 12px 0; }
+  .heatmap-row { display: flex; gap: 2px; align-items: center; }
+  .heatmap-label { width: 75px; text-align: right; font-size: 0.75em; color: #9ca3af; padding-right: 8px; }
+  .heatmap-cell { flex: 1; height: 36px; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 0.7em; font-weight: 600; cursor: default; transition: transform 0.1s; }
+  .heatmap-cell:hover { transform: scale(1.08); z-index: 1; }
+  .heatmap-header { display: flex; gap: 2px; margin-left: 83px; margin-bottom: 4px; }
+  .heatmap-header span { flex: 1; text-align: center; font-size: 0.7em; color: #9ca3af; }
+  .cell-block { background: #991b1b; color: #fca5a5; }
+  .cell-hard { background: #b91c1c; color: #fecaca; }
+  .cell-tight { background: #c2410c; color: #fed7aa; }
+  .cell-moderate { background: #a16207; color: #fef08a; }
+  .cell-trade { background: #15803d; color: #86efac; }
+  .cell-easy { background: #059669; color: #6ee7b7; }
+  .cap-bar { height: 28px; border-radius: 3px; display: flex; align-items: center; padding-left: 8px; font-size: 0.75em; font-weight: 600; margin: 3px 0; }
+  .cap-row { display: flex; align-items: center; gap: 8px; }
+  .cap-label { width: 90px; text-align: right; font-size: 0.75em; color: #9ca3af; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.8em; }
+  th { background: #1e293b; color: #60a5fa; padding: 8px; text-align: left; }
+  td { padding: 8px; border-bottom: 1px solid #1e293b; }
+  .loss { color: #f87171; font-weight: 600; }
+  .win { color: #4ade80; font-weight: 600; }
+  .blocked { color: #facc15; }
+  .offset-chart { display: flex; align-items: flex-end; gap: 4px; height: 160px; margin-top: 12px; }
+  .offset-bar-group { flex: 1; display: flex; flex-direction: column; align-items: center; }
+  .offset-bar { width: 100%; border-radius: 3px 3px 0 0; position: relative; }
+  .offset-bar-val { position: absolute; top: -16px; width: 100%; text-align: center; font-size: 0.65em; color: #9ca3af; }
+  .offset-label { font-size: 0.65em; color: #9ca3af; margin-top: 4px; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 0.75em; }
+  .legend-swatch { width: 14px; height: 14px; border-radius: 3px; }
+  .stats { display: flex; gap: 24px; margin: 16px 0; }
+  .stat { text-align: center; }
+  .stat-value { font-size: 1.8em; font-weight: 700; }
+  .stat-label { font-size: 0.75em; color: #9ca3af; }
+  .stat-green .stat-value { color: #4ade80; }
+  .stat-red .stat-value { color: #f87171; }
+  .stat-yellow .stat-value { color: #facc15; }
+  .stat-blue .stat-value { color: #60a5fa; }
+  .config-table { width: 100%; }
+  .config-table td:first-child { color: #60a5fa; font-weight: 600; width: 45%; }
+  .config-table td:nth-child(2) { color: #4ade80; }
+  .config-table td:nth-child(3) { color: #9ca3af; font-size: 0.85em; }
+  .note { background: #1e1b4b; border: 1px solid #3730a3; border-radius: 6px; padding: 12px; margin-top: 12px; font-size: 0.8em; color: #a5b4fc; }
+  .warn { background: #451a03; border: 1px solid #92400e; color: #fbbf24; }
+</style>
+</head>
+<body>
+
+<h1>v10.1 Decision Surface — Regime x Offset x dune_p</h1>
+<p class="subtitle">Generated 2026-04-08 | Engine: ELM v3 (oak) | Eval interval: 2s | Cap ceiling: $0.70</p>
+
+<div class="stats">
+  <div class="stat stat-green"><div class="stat-value">0.78</div><div class="stat-label">NORMAL base</div></div>
+  <div class="stat stat-yellow"><div class="stat-value">0.80</div><div class="stat-label">CASCADE base</div></div>
+  <div class="stat stat-red"><div class="stat-value">9.99</div><div class="stat-label">TRANSITION (blocked)</div></div>
+  <div class="stat stat-blue"><div class="stat-value">+0.10</div><div class="stat-label">Max offset penalty</div></div>
+</div>
+
+<div class="grid">
+
+<div class="card full">
+  <h2>Effective Threshold Heatmap — regime x offset</h2>
+  <p style="font-size:0.8em;color:#9ca3af;margin-bottom:12px;">
+    Threshold = regime_base + min(0.10, (offset-60)/120 x 0.10). Cell shows minimum dune_p required to trade.
+  </p>
+  <div class="heatmap-header" id="hm-header"></div>
+  <div class="heatmap" id="heatmap"></div>
+  <div class="legend" id="legend"></div>
+</div>
+
+<div class="card">
+  <h2>Dynamic Cap Surface — cap = dune_p - 0.05</h2>
+  <p style="font-size:0.8em;color:#9ca3af;margin-bottom:12px;">
+    Floor $0.35, ceiling $0.70. Lower cap = cheaper entry = higher EV.
+  </p>
+  <div id="cap-surface"></div>
+  <div class="note">
+    At 70% WR, breakeven cap is ~$0.70. At 75% WR, breakeven is ~$0.75.
+    Ceiling at $0.70 means we never enter a negative-EV trade even at 70% WR.
+  </div>
+</div>
+
+<div class="card">
+  <h2>Offset Penalty — how much harder early entries are</h2>
+  <p style="font-size:0.8em;color:#9ca3af;margin-bottom:12px;">
+    DUNE accuracy: 83.5% at T-30, 75.9% at T-60, 67.9% at T-180. Penalty compensates.
+  </p>
+  <div class="offset-chart" id="offset-chart"></div>
+</div>
+
+<div class="card full">
+  <h2>Would v10.1 Have Blocked Recent Losses?</h2>
+  <div id="loss-table"></div>
+  <div class="note warn" style="margin-top:12px;">
+    Result: v10.1 blocks 7/7 losses + 1 outlier win = net +$20 saved.
+    The single blocked win (16:22) is an acceptable cost to prevent 7 losses.
+  </div>
+</div>
+
+<div class="card">
+  <h2>v10.1 Configuration</h2>
+  <div id="config-table"></div>
+</div>
+
+<div class="card">
+  <h2>2s Poll Decision Vector</h2>
+  <div id="decision-vector" style="font-size:0.85em;line-height:2;"></div>
+</div>
+
+</div>
+
+<div class="note" style="margin-top:24px;" id="deploy-note"></div>
+
+<script>
+// === DATA ===
+var regimes = [
+  { name: 'TRANSITION', base: 9.99 },
+  { name: 'CASCADE',    base: 0.80 },
+  { name: 'TRENDING',   base: 0.80 },
+  { name: 'NORMAL',     base: 0.78 },
+  { name: 'LOW_VOL',    base: 0.78 },
+  { name: 'CALM',       base: 0.80 }
+];
+var offsets = [60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180];
+var penaltyMax = 0.10;
+var capFloor = 0.35, capCeiling = 0.70, capMargin = 0.05;
+
+function calcThreshold(base, offset) {
+  if (base >= 1.0) return base;
+  var penalty = Math.min(penaltyMax, Math.max(0, (offset - 60) / 120 * penaltyMax));
+  return Math.round((base + penalty) * 10000) / 10000;
+}
+
+function cellClass(t) {
+  if (t >= 1.0) return 'cell-block';
+  if (t >= 0.88) return 'cell-hard';
+  if (t >= 0.84) return 'cell-tight';
+  if (t >= 0.80) return 'cell-moderate';
+  if (t >= 0.78) return 'cell-trade';
+  return 'cell-easy';
+}
+
+function el(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+// === HEATMAP ===
+var header = document.getElementById('hm-header');
+offsets.forEach(function(o) { header.appendChild(el('span', null, 'T-' + o)); });
+
+var hm = document.getElementById('heatmap');
+regimes.forEach(function(r) {
+  var row = el('div', 'heatmap-row');
+  row.appendChild(el('div', 'heatmap-label', r.name));
+  offsets.forEach(function(o) {
+    var t = calcThreshold(r.base, o);
+    var cell = el('div', 'heatmap-cell ' + cellClass(t), t >= 1.0 ? 'X' : t.toFixed(2));
+    cell.title = r.name + ' @ T-' + o + ': threshold=' + t.toFixed(4);
+    row.appendChild(cell);
+  });
+  hm.appendChild(row);
+});
+
+var legendData = [
+  ['cell-block', 'BLOCKED (>=1.0)'], ['cell-hard', '>=0.88'],
+  ['cell-tight', '0.84-0.87'], ['cell-moderate', '0.80-0.83'],
+  ['cell-trade', '0.78-0.79'], ['cell-easy', '<0.78']
+];
+var legendEl = document.getElementById('legend');
+legendData.forEach(function(d) {
+  var item = el('div', 'legend-item');
+  item.appendChild(el('div', 'legend-swatch ' + d[0]));
+  item.appendChild(el('span', null, d[1]));
+  legendEl.appendChild(item);
+});
+
+// === CAP SURFACE ===
+var capDiv = document.getElementById('cap-surface');
+[0.75, 0.78, 0.80, 0.83, 0.85, 0.88, 0.90, 0.95].forEach(function(dp) {
+  var cap = Math.round(Math.min(Math.max(dp - capMargin, capFloor), capCeiling) * 100) / 100;
+  var pct = Math.max(10, ((cap - 0.30) / 0.45) * 100);
+  var color = cap >= 0.70 ? '#f87171' : cap >= 0.65 ? '#facc15' : cap >= 0.55 ? '#4ade80' : '#60a5fa';
+  var row = el('div', 'cap-row');
+  row.appendChild(el('div', 'cap-label', 'dune_p=' + dp.toFixed(2)));
+  var bar = el('div', 'cap-bar', '$' + cap.toFixed(2));
+  bar.style.width = pct + '%';
+  bar.style.background = color;
+  row.appendChild(bar);
+  capDiv.appendChild(row);
+});
+
+// === OFFSET CHART ===
+var oc = document.getElementById('offset-chart');
+offsets.forEach(function(o) {
+  var penalty = Math.min(penaltyMax, Math.max(0, (o - 60) / 120 * penaltyMax));
+  var h = Math.max(4, (penalty / penaltyMax) * 140);
+  var color = penalty >= 0.08 ? '#f87171' : penalty >= 0.04 ? '#facc15' : '#4ade80';
+  var group = el('div', 'offset-bar-group');
+  var bar = el('div', 'offset-bar');
+  bar.style.height = h + 'px';
+  bar.style.background = color;
+  var valLabel = el('div', 'offset-bar-val', '+' + (penalty * 100).toFixed(1) + 'pp');
+  bar.appendChild(valLabel);
+  group.appendChild(bar);
+  group.appendChild(el('div', 'offset-label', 'T-' + o));
+  oc.appendChild(group);
+});
+
+// === LOSS TABLE ===
+var losses = [
+  ['15:47','v10_DUNE_TRANSITION_T180','TRANSITION','T-180','0.759','0.75','9.99 (BLOCKED)','BLOCKED','LOSS'],
+  ['15:52','v10_DUNE_TRANSITION_T180','TRANSITION','T-180','0.771','0.75','9.99 (BLOCKED)','BLOCKED','LOSS'],
+  ['15:58','v10_DUNE_TRANSITION_T96','TRANSITION','T-96','0.828','0.75','9.99 (BLOCKED)','BLOCKED','LOSS'],
+  ['16:07','v10_DUNE_TRANSITION_T180','TRANSITION','T-180','0.784','0.75','9.99 (BLOCKED)','BLOCKED','LOSS'],
+  ['16:13','v10_DUNE_TRANSITION_T86','TRANSITION','T-86','0.838','0.75','9.99 (BLOCKED)','BLOCKED','LOSS'],
+  ['16:28','v10_DUNE_CASCADE_T108','CASCADE','T-108','0.807','0.75','0.840','BLOCKED','LOSS'],
+  ['17:32','v10_DUNE_NORMAL_T166','NORMAL','T-166','~0.76','0.75','0.868','BLOCKED','-$3.00'],
+  ['16:22','v10_DUNE_TRANSITION_T180','TRANSITION','T-180','0.784','0.75','9.99 (BLOCKED)','BLOCKED','WIN (outlier)']
+];
+var headers = ['Time','Entry Reason','Regime','Offset','dune_p','v10.0 Thr','v10.1 Thr','v10.1 Result','P&L'];
+var tbl = document.createElement('table');
+var thead = document.createElement('tr');
+headers.forEach(function(h) { thead.appendChild(el('th', null, h)); });
+tbl.appendChild(thead);
+losses.forEach(function(row, i) {
+  var tr = document.createElement('tr');
+  if (i === losses.length - 1) tr.style.background = '#0f2a1a';
+  row.forEach(function(val, j) {
+    var td = el('td', null, val);
+    if (j === 6 || j === 7) td.className = 'blocked';
+    if (j === 8 && val.indexOf('LOSS') >= 0) td.className = 'loss';
+    if (j === 8 && val.indexOf('WIN') >= 0) td.className = 'win';
+    tr.appendChild(td);
+  });
+  tbl.appendChild(tr);
+});
+document.getElementById('loss-table').appendChild(tbl);
+
+// === CONFIG TABLE ===
+var configData = [
+  ['V10_DUNE_ENABLED','true',''],
+  ['V10_DUNE_MODEL','oak','ELM v3 production'],
+  ['V10_DUNE_MIN_P','0.75','global fallback'],
+  ['V10_MIN_EVAL_OFFSET','180','no trades before T-180'],
+  ['--- Regime thresholds ---','',''],
+  ['V10_TRANSITION_MIN_P','9.99','hard block'],
+  ['V10_CASCADE_MIN_P','0.80',''],
+  ['V10_NORMAL_MIN_P','0.78',''],
+  ['V10_LOW_VOL_MIN_P','0.78',''],
+  ['V10_TRENDING_MIN_P','0.80',''],
+  ['V10_CALM_MIN_P','0.80',''],
+  ['--- Offset + Cap ---','',''],
+  ['V10_OFFSET_PENALTY_MAX','0.10','T-180 = base+0.10'],
+  ['V10_DUNE_CAP_CEILING','0.70','breakeven at 70% WR'],
+  ['V10_DUNE_CAP_FLOOR','0.35',''],
+  ['V10_DUNE_CAP_MARGIN','0.05','cap = dune_p - 5pp']
+];
+var ctbl = document.createElement('table');
+ctbl.className = 'config-table';
+configData.forEach(function(row) {
+  var tr = document.createElement('tr');
+  row.forEach(function(val) { tr.appendChild(el('td', null, val)); });
+  if (row[1] === '9.99') tr.children[1].style.color = '#f87171';
+  ctbl.appendChild(tr);
+});
+document.getElementById('config-table').appendChild(ctbl);
+
+// === DECISION VECTOR ===
+var steps = [
+  ['#f87171', '1 DEDUP', 'already traded this window? -> skip'],
+  ['#60a5fa', '2 G1: Source Agreement', 'CL+TI agree? -> hard gate'],
+  ['#facc15', '3 G2: DUNE Confidence', 'regime check -> offset penalty -> threshold'],
+  ['#9ca3af', '  TRANSITION', '-> instant block (threshold=9.99)'],
+  ['#9ca3af', '  NORMAL T-166', '-> 0.78 + 0.088 = 0.868 required'],
+  ['#9ca3af', '  CASCADE T-60', '-> 0.80 + 0.00 = 0.800 required'],
+  ['#a78bfa', '4 G3: CoinGlass Veto', '3+ opposing microstructure signals -> block'],
+  ['#4ade80', '5 G4: Dynamic Cap', 'cap = dune_p - 0.05, max $0.70'],
+  ['#00ff88', '6 EXECUTE', 'FAK at cap -> FAK at cap+pi -> GTC at cap']
+];
+var dv = document.getElementById('decision-vector');
+steps.forEach(function(s) {
+  var line = el('div');
+  var label = el('span', null, s[1] + ' ');
+  label.style.color = s[0];
+  line.appendChild(label);
+  line.appendChild(el('span', null, s[2]));
+  if (s[1].charAt(0) === ' ') line.style.paddingLeft = '24px';
+  dv.appendChild(line);
+});
+
+// === DEPLOY NOTE ===
+var dn = document.getElementById('deploy-note');
+var lines = [
+  'Montreal Deployment Rules:',
+  '- Engine loads engine/.env (NOT .env.local) -- .env is gitignored, only exists on Montreal',
+  '- Push code to develop from local -> SSH to Montreal -> git pull origin develop',
+  '- Update env vars via SSH: nano /home/novakash/novakash/engine/.env',
+  '- Restart: pkill -f "python3 main.py" && cd /home/novakash/novakash/engine && nohup python3 main.py > /home/novakash/logs/engine.log 2>&1 &',
+  '- Never push FROM Montreal -- always local -> GitHub -> Montreal pulls'
+];
+lines.forEach(function(l, i) {
+  var p = el('div', null, l);
+  if (i === 0) p.style.fontWeight = '600';
+  dn.appendChild(p);
+});
+</script>
+
+</body>
+</html>

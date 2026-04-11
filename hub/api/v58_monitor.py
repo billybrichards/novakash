@@ -57,6 +57,10 @@ async def ensure_manual_trades_table(session: AsyncSession) -> None:
             resolved_at TIMESTAMPTZ
         )
     """))
+    # Add order_type column if missing (migration-safe)
+    await session.execute(text("""
+        ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS order_type VARCHAR(5) DEFAULT 'FAK'
+    """))
     await session.commit()
 
 
@@ -70,6 +74,102 @@ def _safe_float(v: Any) -> Optional[float]:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+# ─── v9.0 field derivation helpers ───────────────────────────────────────────
+
+def _derive_source_agreement(row: Any) -> Optional[bool]:
+    """Derive whether Chainlink + Tiingo agree on direction from their deltas."""
+    dc = _safe_float(row.get("delta_chainlink"))
+    dt = _safe_float(row.get("delta_tiingo"))
+    if dc is None or dt is None:
+        return None
+    cl_dir = "UP" if dc > 0 else "DOWN"
+    ti_dir = "UP" if dt > 0 else "DOWN"
+    return cl_dir == ti_dir
+
+
+def _derive_eval_tier(row: Any) -> Optional[str]:
+    """Derive the v9.0 eval tier from VPIN + regime/confidence_tier.
+
+    EARLY_CASCADE: VPIN >= 0.65 (high informed flow, early offsets)
+    GOLDEN: VPIN >= 0.45 (T-130..T-60 golden zone)
+    Returns None if data insufficient.
+    """
+    vpin = _safe_float(row.get("vpin"))
+    regime = row.get("regime")
+    tier = row.get("confidence_tier")
+    if vpin is None:
+        return None
+    if vpin >= 0.65 and regime in ("CASCADE", "TRANSITION"):
+        return "EARLY_CASCADE"
+    if vpin >= 0.45:
+        return "GOLDEN"
+    return None
+
+
+def _derive_v9_cap(row: Any) -> Optional[float]:
+    """Derive the v9.0 dynamic entry cap used for this window."""
+    tier = _derive_eval_tier(row)
+    if tier == "EARLY_CASCADE":
+        return 0.55
+    if tier == "GOLDEN":
+        return 0.65
+    return None
+
+
+def _derive_order_type(row: Any) -> Optional[str]:
+    """Derive order type from execution_mode or engine_version."""
+    exe = row.get("execution_mode")
+    ev = row.get("engine_version") or ""
+    if exe:
+        exe_upper = str(exe).upper()
+        if "FAK" in exe_upper:
+            return "FAK"
+        if "FOK" in exe_upper:
+            return "FOK"
+        if "GTC" in exe_upper:
+            return "GTC"
+    # v9.0+ uses FAK by default
+    if "v9" in ev.lower():
+        return "FAK"
+    if row.get("fok_attempts") is not None:
+        return "FOK"
+    return None
+
+
+def _derive_partial_fill(row: Any) -> Optional[bool]:
+    """Detect FAK partial fill: fill_step < total attempts."""
+    fok_attempts = row.get("fok_attempts")
+    fok_fill_step = row.get("fok_fill_step")
+    fill_price = _safe_float(row.get("clob_fill_price"))
+    if fill_price is not None and fok_attempts is not None and fok_fill_step is not None:
+        # If filled on first step of multiple, it might be partial
+        return fok_fill_step < fok_attempts
+    return None
+
+
+def _derive_dune_cap(row: Any) -> Optional[float]:
+    """Derive v10 DUNE dynamic cap: cap = DUNE_P - 5pp, bounded [0.30, 0.75].
+
+    Uses v2_probability_up and source direction to calculate P(agreed direction),
+    then cap = P - 0.05, clamped to floor/ceiling.
+    Falls back to None if no DUNE data.
+    """
+    p_up = _safe_float(row.get("v2_probability_up"))
+    if p_up is None:
+        return None
+    dc = _safe_float(row.get("delta_chainlink"))
+    dt = _safe_float(row.get("delta_tiingo"))
+    if dc is None or dt is None:
+        return None
+    cl_dir = "UP" if dc > 0 else "DOWN"
+    ti_dir = "UP" if dt > 0 else "DOWN"
+    if cl_dir != ti_dir:
+        return None  # No agreed direction
+    dune_p = p_up if cl_dir == "UP" else (1.0 - p_up)
+    cap = round(min(max(dune_p - 0.05, 0.30), 0.75), 2)
+    return cap
 
 
 def _row_to_window(row: Any) -> dict:
@@ -130,6 +230,22 @@ def _row_to_window(row: Any) -> dict:
         "oracle_outcome": row.get("oracle_outcome"),
         "shadow_pnl": _safe_float(row.get("shadow_pnl")),
         "shadow_would_win": bool(row.get("shadow_would_win")) if row.get("shadow_would_win") is not None else None,
+        # Poly outcome from trades table (WIN/LOSS)
+        "poly_outcome": row.get("poly_outcome"),
+        # v9.0 fields — derived from existing columns
+        "delta_chainlink": _safe_float(row.get("delta_chainlink")),
+        "delta_tiingo": _safe_float(row.get("delta_tiingo")),
+        "source_agreement": _derive_source_agreement(row),
+        "eval_tier": _derive_eval_tier(row),
+        "v9_cap": _derive_v9_cap(row),
+        "order_type": _derive_order_type(row),
+        "partial_fill": _derive_partial_fill(row),
+        # v10 DUNE fields (from window_snapshots v2_probability_up column)
+        "dune_probability_up": _safe_float(row.get("v2_probability_up")),
+        "dune_direction": row.get("v2_direction"),
+        "dune_agrees": bool(row.get("v2_agrees")) if row.get("v2_agrees") is not None else None,
+        "dune_cap": _derive_dune_cap(row),
+        "entry_reason": row.get("entry_reason"),
     }
 
 
@@ -1042,6 +1158,9 @@ class ManualTradeRequest(BaseModel):
     direction: str          # "UP" or "DOWN"
     mode: str               # "paper" or "live"
     window_ts: Optional[int] = None   # unix timestamp (ms or s)
+    order_type: str = "FAK"           # FAK, FOK, or GTC
+    price_override: Optional[float] = None  # manual entry price override
+    stake_usd: float = 4.0           # stake in USD
 
 
 # ─── Gamma price helper ───────────────────────────────────────────────────────
@@ -1201,8 +1320,11 @@ async def post_manual_trade(
     up_price = gamma.get("up_price")
     down_price = gamma.get("down_price")
 
-    # Determine entry price for chosen direction
-    entry_price = up_price if direction == "UP" else down_price
+    # Determine entry price: use override if provided, else Gamma price
+    if body.price_override is not None and body.price_override > 0:
+        entry_price = body.price_override
+    else:
+        entry_price = up_price if direction == "UP" else down_price
 
     # Fallback: try to get from window_snapshots if Gamma API failed
     if entry_price is None and body.window_ts:
@@ -1234,7 +1356,10 @@ async def post_manual_trade(
 
     # Generate trade ID
     trade_id = f"manual_{uuid.uuid4().hex[:16]}"
-    stake = 4.0
+    stake = body.stake_usd
+    order_type = body.order_type.upper() if body.order_type else "FAK"
+    if order_type not in ("FAK", "FOK", "GTC"):
+        order_type = "FAK"
     status = "open" if mode == "paper" else "pending_live"
 
     # Store in DB
@@ -1242,11 +1367,11 @@ async def post_manual_trade(
         INSERT INTO manual_trades
             (trade_id, window_ts, asset, direction, mode,
              entry_price, gamma_up_price, gamma_down_price,
-             stake_usd, status, created_at)
+             stake_usd, status, order_type, created_at)
         VALUES
             (:trade_id, :window_ts, :asset, :direction, :mode,
              :entry_price, :gamma_up_price, :gamma_down_price,
-             :stake_usd, :status, NOW())
+             :stake_usd, :status, :order_type, NOW())
     """), {
         "trade_id": trade_id,
         "window_ts": body.window_ts,
@@ -1258,6 +1383,7 @@ async def post_manual_trade(
         "gamma_down_price": down_price,
         "stake_usd": stake,
         "status": status,
+        "order_type": order_type,
     })
     await session.commit()
 
@@ -1268,6 +1394,7 @@ async def post_manual_trade(
         "gamma_up_price": up_price,
         "gamma_down_price": down_price,
         "stake": stake,
+        "order_type": order_type,
         "mode": mode,
         "status": status,
         "asset": body.asset,
@@ -2133,35 +2260,48 @@ async def get_execution_hq(
     try:
         # ── Windows with shadow data ──────────────────────────────────────
         # Build WHERE clauses safely using parameterised conditions
-        conditions = ["timeframe = '5m'"]
+        conditions = ["ws.timeframe = '5m'"]
         params: dict = {"limit": limit}
 
         if asset:
-            conditions.append("asset = :asset")
+            conditions.append("ws.asset = :asset")
             params["asset"] = asset
         if shadow_only:
-            conditions.append("shadow_would_win = TRUE")
-            conditions.append("trade_placed = FALSE")
+            conditions.append("ws.shadow_would_win = TRUE")
+            conditions.append("ws.trade_placed = FALSE")
 
         where_clause = " AND ".join(conditions)
 
         q = text(f"""
             SELECT
-                window_ts, asset, timeframe,
-                open_price, close_price, delta_pct, vpin,
-                regime, direction, confidence,
-                trade_placed, skip_reason,
-                twap_direction, twap_agreement_score, twap_gamma_gate,
-                timesfm_direction, timesfm_confidence, timesfm_predicted_close, timesfm_agreement,
-                gamma_up_price, gamma_down_price, engine_version,
-                v71_would_trade, v71_skip_reason, v71_regime, v71_correct, v71_pnl,
-                delta_source, execution_mode, fok_attempts, fok_fill_step, clob_fill_price,
-                gates_passed, gate_failed, confidence_tier,
-                shadow_trade_direction, shadow_trade_entry_price,
-                oracle_outcome, shadow_pnl, shadow_would_win
-            FROM window_snapshots
+                ws.window_ts, ws.asset, ws.timeframe,
+                ws.open_price, ws.close_price, ws.delta_pct, ws.vpin,
+                ws.regime, ws.direction, ws.confidence,
+                ws.trade_placed, ws.skip_reason,
+                ws.twap_direction, ws.twap_agreement_score, ws.twap_gamma_gate,
+                ws.timesfm_direction, ws.timesfm_confidence, ws.timesfm_predicted_close, ws.timesfm_agreement,
+                ws.gamma_up_price, ws.gamma_down_price, ws.engine_version,
+                ws.v71_would_trade, ws.v71_skip_reason, ws.v71_regime, ws.v71_correct, ws.v71_pnl,
+                ws.delta_source, ws.execution_mode, ws.fok_attempts, ws.fok_fill_step, ws.clob_fill_price,
+                ws.gates_passed, ws.gate_failed, ws.confidence_tier,
+                ws.shadow_trade_direction, ws.shadow_trade_entry_price,
+                ws.oracle_outcome, ws.shadow_pnl, ws.shadow_would_win,
+                ws.delta_chainlink, ws.delta_tiingo, ws.price_consensus,
+                ws.v2_probability_up, ws.v2_direction, ws.v2_agrees,
+                t.outcome AS poly_outcome,
+                t.entry_reason AS entry_reason
+            FROM window_snapshots ws
+            LEFT JOIN LATERAL (
+                SELECT outcome, metadata::json->>'entry_reason' AS entry_reason
+                FROM trades
+                WHERE strategy = 'five_min_vpin'
+                  AND (metadata::json->>'window_ts')::bigint = ws.window_ts
+                  AND outcome IS NOT NULL
+                ORDER BY created_at DESC
+                LIMIT 1
+            ) t ON true
             WHERE {where_clause}
-            ORDER BY window_ts DESC
+            ORDER BY ws.window_ts DESC
             LIMIT :limit
         """)
         result = await session.execute(q, params)
@@ -2249,11 +2389,208 @@ async def get_execution_hq(
                 "engine_status": state_json.get("status", "unknown"),
             }
 
+        # ── v10 WR stats (DUNE-gated trades) ──────────────────────────
+        v10_stats = {"wins": 0, "losses": 0, "wr_pct": 0.0, "total_trades": 0}
+        try:
+            v10q = text("""
+                SELECT
+                    COUNT(*) FILTER (WHERE t.outcome LIKE '%WIN%') AS wins,
+                    COUNT(*) FILTER (WHERE t.outcome LIKE '%LOSS%') AS losses,
+                    COUNT(*) AS total
+                FROM trades t
+                WHERE t.strategy = 'five_min_vpin'
+                  AND t.outcome IS NOT NULL
+                  AND (t.engine_version LIKE 'v10%'
+                       OR t.metadata::text LIKE '%v10_DUNE%')
+            """)
+            v10r = await session.execute(v10q)
+            v10row = v10r.mappings().first()
+            if v10row:
+                w = int(v10row["wins"] or 0)
+                l = int(v10row["losses"] or 0)
+                v10_stats = {
+                    "wins": w,
+                    "losses": l,
+                    "total_trades": int(v10row["total"] or 0),
+                    "wr_pct": round(w / max(w + l, 1) * 100, 1),
+                }
+        except Exception:
+            pass
+
+        # ── Fallback: combined v9+v10 stats if no v10 trades yet ──────
+        v9_stats = {"wins": 0, "losses": 0, "wr_pct": 0.0, "total_trades": 0}
+        try:
+            v9q = text("""
+                SELECT
+                    COUNT(*) FILTER (WHERE t.outcome LIKE '%WIN%') AS wins,
+                    COUNT(*) FILTER (WHERE t.outcome LIKE '%LOSS%') AS losses,
+                    COUNT(*) AS total
+                FROM trades t
+                WHERE t.strategy = 'five_min_vpin'
+                  AND t.outcome IS NOT NULL
+                  AND (t.engine_version LIKE 'v9%' OR t.engine_version LIKE 'v10%')
+            """)
+            v9r = await session.execute(v9q)
+            v9row = v9r.mappings().first()
+            if v9row:
+                w = int(v9row["wins"] or 0)
+                l = int(v9row["losses"] or 0)
+                v9_stats = {
+                    "wins": w,
+                    "losses": l,
+                    "total_trades": int(v9row["total"] or 0),
+                    "wr_pct": round(w / max(w + l, 1) * 100, 1),
+                }
+        except Exception:
+            pass
+
+        # ── v10 signal_evaluations gate data for recent windows ──────
+        v9_gate_data = {}
+        try:
+            gq = text("""
+                SELECT
+                    window_ts, eval_offset,
+                    gate_vpin_passed, gate_delta_passed, gate_cg_passed,
+                    gate_passed, gate_failed, decision,
+                    delta_chainlink, delta_tiingo, delta_source,
+                    vpin, regime, v2_probability_up
+                FROM signal_evaluations
+                WHERE window_ts >= (
+                    SELECT COALESCE(MAX(window_ts) - 1800, 0)
+                    FROM signal_evaluations
+                )
+                ORDER BY window_ts DESC, eval_offset DESC
+                LIMIT 500
+            """)
+            gresult = await session.execute(gq)
+            grows = gresult.mappings().all()
+            for gr in grows:
+                wts = int(gr["window_ts"]) if gr["window_ts"] else 0
+                offset = int(gr["eval_offset"]) if gr["eval_offset"] else 0
+                if wts not in v9_gate_data:
+                    v9_gate_data[wts] = {}
+                p_up = _safe_float(gr.get("v2_probability_up"))
+                # Derive P(agreed direction) for DUNE gate evaluation
+                dune_p_dir = None
+                if p_up is not None:
+                    agree = _derive_source_agreement(gr)
+                    dc = _safe_float(gr.get("delta_chainlink"))
+                    if agree and dc is not None:
+                        agreed_dir = "UP" if dc > 0 else "DOWN"
+                        dune_p_dir = p_up if agreed_dir == "UP" else (1.0 - p_up)
+                    else:
+                        dune_p_dir = max(p_up, 1.0 - p_up)
+                v9_gate_data[wts][offset] = {
+                    "gate_agreement": "pass" if _derive_source_agreement(gr) else ("fail" if _derive_source_agreement(gr) is False else "unknown"),
+                    "gate_dune": "pass" if (dune_p_dir is not None and dune_p_dir >= 0.65) else ("fail" if dune_p_dir is not None else "unknown"),
+                    "gate_cg_veto": "pass" if gr.get("gate_cg_passed") else "fail",
+                    "gate_cap": "pass" if gr.get("gate_passed") else "fail",
+                    "gate_passed": bool(gr.get("gate_passed")),
+                    "gate_failed": gr.get("gate_failed"),
+                    "decision": gr.get("decision"),
+                    "dune_p": dune_p_dir,
+                    "vpin": _safe_float(gr.get("vpin")),
+                    "regime": gr.get("regime"),
+                }
+        except Exception:
+            pass
+
         return {
             "windows": windows,
             "shadow_stats": shadow_stats,
             "recent_trades": recent_trades,
             "system": system_state,
+            "v9_stats": v9_stats,
+            "v10_stats": v10_stats,
+            "v9_gate_data": v9_gate_data,
         }
     except Exception as exc:
         return {"windows": [], "shadow_stats": {}, "recent_trades": [], "system": {}, "error": str(exc)}
+
+
+@router.get("/wallet/live")
+async def get_wallet_live(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """Live Polymarket wallet view — reads from DB tables populated by Montreal engine."""
+    try:
+        # Wallet balance from wallet_snapshots (written by CLOB reconciler every 2s)
+        wq = text("SELECT balance_usdc, recorded_at FROM wallet_snapshots ORDER BY recorded_at DESC LIMIT 1")
+        wr = await session.execute(wq)
+        wrow = wr.mappings().first()
+        wallet = {
+            "balance": _safe_float(wrow["balance_usdc"]) if wrow else None,
+            "updated_at": wrow["recorded_at"].isoformat() if wrow and wrow.get("recorded_at") else None,
+        }
+
+        # Open positions (trades with status OPEN, not expired/resolved)
+        oq = text("""
+            SELECT direction, entry_price, stake_usd, status, created_at,
+                   metadata->>'entry_reason' as entry_reason,
+                   metadata->>'v81_entry_cap' as cap,
+                   metadata->>'token_id' as token_id
+            FROM trades
+            WHERE status IN ('OPEN', 'FILLED') AND is_live = true
+            ORDER BY created_at DESC LIMIT 20
+        """)
+        oresult = await session.execute(oq)
+        open_positions = [{
+            "direction": r["direction"],
+            "entry_price": _safe_float(r["entry_price"]),
+            "stake": _safe_float(r["stake_usd"]),
+            "entry_reason": r["entry_reason"],
+            "cap": _safe_float(r["cap"]),
+            "placed_at": r["created_at"].isoformat() if r.get("created_at") else None,
+            "status": r["status"],
+        } for r in oresult.mappings().all()]
+
+        # Recent resolved trades (from trade_bible for accurate attribution)
+        rq = text("""
+            SELECT trade_outcome, pnl_usd, entry_reason, config_version, eval_tier,
+                   resolved_at, direction, entry_price
+            FROM trade_bible
+            WHERE trade_outcome IS NOT NULL AND is_live = true
+            ORDER BY resolved_at DESC NULLS LAST
+            LIMIT 10
+        """)
+        rresult = await session.execute(rq)
+        resolved = [{
+            "outcome": r["trade_outcome"],
+            "pnl": _safe_float(r["pnl_usd"]),
+            "entry_reason": r["entry_reason"],
+            "config": r["config_version"],
+            "tier": r["eval_tier"],
+            "direction": r["direction"],
+            "entry_price": _safe_float(r["entry_price"]),
+            "resolved_at": r["resolved_at"].isoformat() if r.get("resolved_at") else None,
+        } for r in rresult.mappings().all()]
+
+        # Session stats
+        sq = text("""
+            SELECT
+                count(*) FILTER (WHERE trade_outcome LIKE '%WIN%') as wins,
+                count(*) FILTER (WHERE trade_outcome LIKE '%LOSS%') as losses,
+                COALESCE(SUM(pnl_usd), 0) as total_pnl
+            FROM trade_bible WHERE is_live = true
+        """)
+        sresult = await session.execute(sq)
+        srow = sresult.mappings().first()
+        session_stats = {
+            "wins": int(srow["wins"] or 0) if srow else 0,
+            "losses": int(srow["losses"] or 0) if srow else 0,
+            "total_pnl": round(float(srow["total_pnl"] or 0), 2) if srow else 0,
+        }
+
+        total_exposure = sum(p["stake"] or 0 for p in open_positions)
+
+        return {
+            "wallet": wallet,
+            "open_positions": open_positions,
+            "resting_orders": len([p for p in open_positions if p["status"] == "OPEN"]),
+            "total_exposure": round(total_exposure, 2),
+            "recent_resolved": resolved,
+            "session": session_stats,
+        }
+    except Exception as exc:
+        return {"wallet": {}, "open_positions": [], "recent_resolved": [], "error": str(exc)}

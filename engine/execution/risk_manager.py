@@ -16,6 +16,7 @@ Returns (bool, str) — (approved, reason).
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from datetime import datetime, timedelta
 from typing import Optional
@@ -54,8 +55,10 @@ class RiskManager:
         self._consecutive_losses: int = 0
         self._cooldown_until: Optional[datetime] = None
 
-        # Kill switch (manual + automatic)
+        # Kill switch (manual + automatic) with v11 auto-resume
         self._kill_switch_active: bool = False
+        self._kill_switch_triggered_at: Optional[datetime] = None
+        self._kill_auto_resume_minutes: int = int(os.environ.get("KILL_AUTO_RESUME_MINUTES", "0"))
 
         # Venue connectivity
         self._polymarket_connected: bool = False
@@ -131,8 +134,10 @@ class RiskManager:
                 # Clear cooldown on win
                 self._cooldown_until = None
 
-            # Auto kill switch on drawdown
+            # Auto kill switch on drawdown (v11: record timestamp for auto-resume)
             if self._drawdown_pct >= runtime.max_drawdown_kill:
+                if not self._kill_switch_active:
+                    self._kill_switch_triggered_at = datetime.utcnow()
                 self._kill_switch_active = True
                 log.critical("risk.drawdown_kill", drawdown=f"{self._drawdown_pct:.1%}")
 
@@ -170,17 +175,38 @@ class RiskManager:
 
     async def force_kill(self, reason: str = "Manual kill") -> None:
         """Manually activate kill switch."""
+        if not self._kill_switch_active:
+            self._kill_switch_triggered_at = datetime.utcnow()
         self._kill_switch_active = True
         log.warning("risk.force_kill", reason=reason)
 
     async def resume(self) -> None:
         """Clear manual kill switch. Drawdown kill auto-clears when bankroll recovers."""
         self._kill_switch_active = False
+        self._kill_switch_triggered_at = None
         log.info("risk.resumed")
 
     @property
     def is_killed(self) -> bool:
-        """True when trading is halted (manual or drawdown)."""
+        """True when trading is halted (manual or drawdown).
+
+        v11: Auto-resume after KILL_AUTO_RESUME_MINUTES cooldown.
+        The drawdown check still gates if bankroll hasn't recovered,
+        but the manual flag clears so force_kill doesn't persist forever.
+        """
+        if (self._kill_switch_active
+                and self._kill_auto_resume_minutes > 0
+                and self._kill_switch_triggered_at
+                and (datetime.utcnow() - self._kill_switch_triggered_at).total_seconds()
+                    > self._kill_auto_resume_minutes * 60):
+            log.warning(
+                "risk.kill_auto_resumed",
+                minutes=self._kill_auto_resume_minutes,
+                drawdown=f"{self._drawdown_pct:.1%}",
+            )
+            self._kill_switch_active = False
+            self._kill_switch_triggered_at = None
+
         return self._kill_switch_active or self._drawdown_pct >= runtime.max_drawdown_kill
 
     # ─── Venue Status ─────────────────────────────────────────────────────────

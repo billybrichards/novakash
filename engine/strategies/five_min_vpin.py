@@ -132,8 +132,11 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._tick_recorder = None  # TickRecorder injected by orchestrator after start
         self._evaluator = WindowEvaluator()
         
-        # Track last executed window to avoid duplicates
-        self._last_executed_window: Optional[str] = None
+        # CRITICAL: DB-backed dedup — survives engine restarts.
+        # Without this, restarts cause duplicate trades per window.
+        # Bug discovered Apr 8: windows 1775683200 and 1775683800 got 2 trades each.
+        self._traded_windows: set[str] = set()
+        self._last_executed_window: Optional[str] = None  # kept for backward compat
 
         # Consolidated skip notification history: window_key → list of eval ticks
         # Instead of sending 19 individual skip alerts, we batch and send one summary.
@@ -152,6 +155,9 @@ class FiveMinVPINStrategy(BaseStrategy):
         # ── G5: Circuit breaker state ─────────────────────────────────────────
         self._circuit_break_until: float = 0.0
         self._consecutive_errors: int = 0
+
+        # Dedup cleanup counter (runs every ~300 market state ticks = ~5-10 min)
+        self._dedup_cleanup_counter: int = 0
         
         self._log = log.bind(strategy="five_min_vpin")
         
@@ -187,7 +193,20 @@ class FiveMinVPINStrategy(BaseStrategy):
         if not runtime.five_min_enabled:
             self._log.info("strategy.disabled", reason="runtime.five_min_enabled=false")
             return
-        
+
+        # ── Load recently traded windows from DB to survive restarts ─────
+        if self._db:
+            try:
+                self._traded_windows = await self._db.load_recent_traded_windows(hours=2)
+                if self._traded_windows:
+                    self._log.info(
+                        "strategy.dedup_restored",
+                        count=len(self._traded_windows),
+                        windows=sorted(self._traded_windows),
+                    )
+            except Exception as exc:
+                self._log.error("strategy.dedup_restore_failed", error=str(exc))
+
         self._running = True
         self._log.info("strategy.started")
 
@@ -195,6 +214,31 @@ class FiveMinVPINStrategy(BaseStrategy):
         """Stop the strategy."""
         self._running = False
         self._log.info("strategy.stopped")
+
+    def _cleanup_old_traded_windows(self, max_age_seconds: int = 7200) -> None:
+        """Remove traded window keys older than max_age_seconds (default 2h).
+
+        Called periodically to prevent unbounded memory growth.
+        Window keys are "{ASSET}-{unix_ts}", so we parse the timestamp suffix.
+        """
+        import time
+
+        cutoff = int(time.time()) - max_age_seconds
+        stale = {
+            k for k in self._traded_windows
+            if self._parse_window_ts(k) < cutoff
+        }
+        if stale:
+            self._traded_windows -= stale
+            self._log.debug("dedup.cleanup", removed=len(stale), remaining=len(self._traded_windows))
+
+    @staticmethod
+    def _parse_window_ts(key: str) -> int:
+        """Extract the unix timestamp from a window key like 'BTC-1775683200'."""
+        try:
+            return int(key.rsplit("-", 1)[-1])
+        except (ValueError, IndexError):
+            return 0
 
     # ─── Market State Handler ─────────────────────────────────────────────────
 
@@ -210,12 +254,18 @@ class FiveMinVPINStrategy(BaseStrategy):
         """
         if not self._running or not runtime.five_min_enabled:
             return
-        
+
+        # Periodic cleanup of old traded-window keys (every ~300 ticks ≈ 5-10 min)
+        self._dedup_cleanup_counter += 1
+        if self._dedup_cleanup_counter >= 300:
+            self._dedup_cleanup_counter = 0
+            self._cleanup_old_traded_windows()
+
         # Still register windows (needed for token ID lookup)
         if self._pending_windows:
             for window in self._pending_windows:
                 window_key = f"{window.asset}-{window.window_ts}"
-                if window_key not in self._active_eval_states and window_key != self._last_executed_window:
+                if window_key not in self._active_eval_states and window_key not in self._traded_windows:
                     self._active_eval_states[window_key] = EvalWindowState(
                         window_ts=window.window_ts,
                         open_price=window.open_price or 0,
@@ -252,7 +302,8 @@ class FiveMinVPINStrategy(BaseStrategy):
         eval_offset = getattr(window, "eval_offset", None)
 
         # Already TRADED this window — skip evaluation entirely
-        if self._last_executed_window == window_key:
+        # CRITICAL: DB-backed dedup — survives engine restarts.
+        if window_key in self._traded_windows:
             self._log.debug(
                 "window.already_traded",
                 window=window_key,
@@ -533,27 +584,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             except Exception as exc:
                 self._log.debug("evaluate.timesfm_fetch_failed", error=str(exc))
 
-        # v8.1: Query v2.2 for display in ALL notifications (before signal eval)
-        eval_offset = getattr(window, "eval_offset", None)
-        if self._timesfm_v2 is not None and eval_offset:
-            try:
-                _v2_pre = await self._timesfm_v2.get_probability(
-                    asset=window.asset, seconds_to_close=eval_offset
-                )
-                if _v2_pre and "probability_up" in _v2_pre:
-                    window_snapshot["v2_probability_up"] = round(float(_v2_pre["probability_up"]), 4)
-                    window_snapshot["v2_direction"] = "UP" if float(_v2_pre["probability_up"]) > 0.5 else "DOWN"
-                    window_snapshot["v2_model_version"] = _v2_pre.get("model_version", "")
-                    window_snapshot["eval_offset"] = eval_offset
-            except Exception:
-                pass
-
-        # Evaluate signal (with TWAP override for direction + TimesFM agreement)
-        signal = self._evaluate_signal(window, current_price, current_vpin, delta_pct, twap_result=twap_result, timesfm_forecast=timesfm_forecast)
-
-        tf = "15m" if window.duration_secs == 900 else "5m"
-
-        # ── Determine regime for snapshot (mirrors _evaluate_signal logic) ───
+        # ── Determine regime early (needed by v9 gate logging) ──────────
         from config.runtime_config import runtime as _runtime
         if current_vpin >= _runtime.vpin_cascade_direction_threshold:
             _snap_regime = "CASCADE"
@@ -563,6 +594,445 @@ class FiveMinVPINStrategy(BaseStrategy):
             _snap_regime = "NORMAL"
         else:
             _snap_regime = "CALM"
+
+        # ── Default v9 variables (must exist even when v10 is active) ──────
+        _v9_agreement = False
+        _v9_source_agree = None
+        _v9_direction_override = None
+
+        # ── v10 DUNE-Gated Pipeline (when V10_DUNE_ENABLED=true) ─────────
+        # Replaces v9's inline gates with clean composable pipeline.
+        # Falls through to v9 inline gates when disabled.
+        _v10_enabled = os.environ.get("V10_DUNE_ENABLED", "false").lower() == "true"
+        if _v10_enabled:
+            # CRITICAL: DB-backed dedup — survives engine restarts.
+            # Without this, restarts cause duplicate trades per window.
+            _window_key_v10 = f"{window.asset}-{window.window_ts}"
+            if _window_key_v10 in self._traded_windows:
+                return  # Already traded this window
+            from signals.gates import (
+                GateContext, GatePipeline, SourceAgreementGate,
+                DeltaMagnitudeGate,
+                TakerFlowGate, CGConfirmationGate,
+                DuneConfidenceGate, SpreadGate, DynamicCapGate,
+                CoinGlassVetoGate,  # legacy fallback
+            )
+            from signals.v2_feature_body import build_v5_feature_body
+
+            _cg = self._cg_enhanced.snapshot if self._cg_enhanced is not None else None
+            # v10.3: pass Gamma prices for spread gate
+            _gamma_up = getattr(self, '_gamma_up_price', None)
+            _gamma_down = getattr(self, '_gamma_down_price', None)
+            _dchain = delta_chainlink if 'delta_chainlink' in locals() else None
+            _dtii = delta_tiingo if 'delta_tiingo' in locals() else None
+            _dbin = delta_binance if 'delta_binance' in locals() else None
+            _tii_close = _tiingo_close if '_tiingo_close' in locals() else None
+            _src_used = _price_source_used if '_price_source_used' in locals() else None
+            _twap_d = None
+            if 'twap_result' in locals() and twap_result is not None:
+                _twap_d = twap_result.twap_delta_pct
+
+            # v11.1: Build the v5 push-mode feature body ONCE at context
+            # construction time. The DuneConfidenceGate reads this body
+            # directly via `ctx.v5_features`, guaranteeing the v10
+            # pipeline call and the v8.1 early-entry call at line ~1478
+            # use the same extraction logic. Gate booleans are NOT set
+            # here because v10 pipeline gates have different semantics
+            # than the v8.0 signal_evaluations columns the model was
+            # trained on — leaving them None lets LightGBM use its
+            # missing-default branch, matching training behaviour.
+            _v5_body = build_v5_feature_body(
+                eval_offset=getattr(window, 'eval_offset', None),
+                vpin=current_vpin,
+                delta_pct=delta_pct,
+                twap_delta=_twap_d,
+                clob_up_price=_gamma_up,
+                clob_down_price=_gamma_down,
+                binance_price=current_price,
+                tiingo_close=_tii_close,
+                delta_binance=_dbin,
+                delta_chainlink=_dchain,
+                delta_tiingo=_dtii,
+                regime=_snap_regime,
+                delta_source=_src_used,
+                # gate_* and prev_v2_probability_up stay None — they're
+                # not yet resolved at this point in the function.
+            )
+
+            ctx = GateContext(
+                delta_chainlink=_dchain,
+                delta_tiingo=_dtii,
+                delta_binance=_dbin,
+                delta_pct=delta_pct, vpin=current_vpin, regime=_snap_regime,
+                asset=window.asset, eval_offset=getattr(window, 'eval_offset', None),
+                window_ts=window.window_ts, cg_snapshot=_cg,
+                gamma_up_price=_gamma_up, gamma_down_price=_gamma_down,
+                # v11.1: new scalars for the DUNE gate's V5FeatureBody
+                # fallback path (if `ctx.v5_features` is unset)
+                twap_delta=_twap_d,
+                tiingo_close=_tii_close,
+                current_price=current_price,
+                delta_source=_src_used,
+                prev_v2_probability_up=None,  # v10 pipeline runs before any v2 query
+                # v11.1: attached feature body — DuneConfidenceGate prefers
+                # this over rebuilding from scalars
+                v5_features=_v5_body,
+            )
+            # v10.5: 7-gate decision surface pipeline
+            # Order: Agreement → DeltaMagnitude → TakerFlow → CGConfirm → DUNE → Spread → Cap
+            pipeline = GatePipeline([
+                SourceAgreementGate(),          # G1: CL+TI agree (94.7% WR)
+                DeltaMagnitudeGate(),           # G2: |delta| floor (v10.5 — blocks noise trades)
+                TakerFlowGate(),                # G3: CG taker hard gate + threshold modifier
+                CGConfirmationGate(),           # G4: CG 3-signal bonus (-0.02)
+                DuneConfidenceGate(dune_client=self._timesfm_v2),  # G5: ELM + all modifiers
+                SpreadGate(),                   # G6: Polymarket spread check
+                DynamicCapGate(),               # G7: cap = dune_p - 0.05, max $0.68
+            ])
+            pipe_result = await pipeline.evaluate(ctx)
+            if pipe_result.passed:
+                direction = pipe_result.direction
+                confidence = "HIGH" if (ctx.dune_probability_up and
+                    max(ctx.dune_probability_up, 1-ctx.dune_probability_up) > 0.75) else "MODERATE"
+                _order_type = os.environ.get("ORDER_TYPE", "FAK").upper()
+                # v10.3: include CG modifier info in entry reason for debugging
+                _cg_tag = ""
+                if ctx.cg_threshold_modifier != 0:
+                    _cg_tag = f"_CG{ctx.cg_threshold_modifier:+.02f}"
+                elif ctx.cg_bonus > 0:
+                    _cg_tag = f"_CGB{ctx.cg_bonus:.02f}"
+                signal = FiveMinSignal(
+                    window=window, current_price=current_price, current_vpin=current_vpin,
+                    delta_pct=delta_pct, confidence=confidence, direction=direction,
+                    cg_modifier=ctx.cg_threshold_modifier,
+                    entry_reason=f"v10_DUNE_{_snap_regime}_T{ctx.eval_offset}_{_order_type}{_cg_tag}",
+                    v81_entry_cap=pipe_result.cap or 0.65,
+                )
+                # Mark window as traded (dedup for subsequent 2s evals + restart survival)
+                self._traded_windows.add(_window_key_v10)
+                self._last_executed_window = _window_key_v10  # backward compat
+
+                # v10.3: extract gate data for Telegram alerts + DB logging
+                _v103_gate_data = {}
+                for _gr in pipe_result.gate_results:
+                    if _gr.gate_name == "dune_confidence":
+                        _v103_gate_data["v103_dune_p"] = _gr.data.get("dune_p")
+                        _v103_gate_data["v103_threshold"] = _gr.data.get("threshold")
+                        _v103_gate_data["v103_threshold_base"] = self._regime_thresholds_cache.get(_snap_regime) if hasattr(self, '_regime_thresholds_cache') else None
+                        _v103_gate_data["v103_down_penalty"] = _gr.data.get("down_penalty", 0)
+                        _v103_gate_data["v103_cg_modifier"] = _gr.data.get("cg_modifier", 0)
+                        _v103_gate_data["v103_cg_bonus"] = _gr.data.get("cg_bonus", 0)
+                    elif _gr.gate_name == "taker_flow":
+                        _v103_gate_data["v103_taker_status"] = (
+                            "both_opposing" if _gr.data.get("taker_opposing") and _gr.data.get("smart_opposing")
+                            else "opposing" if _gr.data.get("taker_opposing")
+                            else "aligned" if _gr.data.get("taker_aligned")
+                            else "neutral"
+                        )
+                        _v103_gate_data["v103_taker_buy_pct"] = _gr.data.get("buy_pct", 50)
+                        _v103_gate_data["v103_taker_sell_pct"] = 100 - _gr.data.get("buy_pct", 50)
+                    elif _gr.gate_name == "cg_confirmation":
+                        _v103_gate_data["v103_cg_confirms"] = _gr.data.get("confirms", 0)
+                        _v103_gate_data["v103_cg_details"] = _gr.data.get("details", [])
+                    elif _gr.gate_name == "spread_gate":
+                        _v103_gate_data["v103_spread_pct"] = _gr.data.get("spread_pct")
+                _v103_gate_data["v103_gate_results"] = [
+                    {"name": g.gate_name, "passed": g.passed, "reason": g.reason[:60]}
+                    for g in pipe_result.gate_results
+                ]
+                # Store on signal object so alert builder can access it
+                signal._v10_gate_data = _v103_gate_data
+
+                self._log.info("v10.trade", direction=direction,
+                    cap=f"${pipe_result.cap:.2f}" if pipe_result.cap else "?",
+                    dune_p=f"{pipe_result.dune_p:.3f}" if pipe_result.dune_p else "N/A",
+                    regime=_snap_regime, offset=ctx.eval_offset,
+                    cg_taker=_v103_gate_data.get("v103_taker_status", "?"),
+                    cg_confirms=_v103_gate_data.get("v103_cg_confirms", 0))
+
+                # Write signal_evaluation with decision='TRADE' before executing
+                if self._db:
+                    try:
+                        await self._db.write_signal_evaluation({
+                            "window_ts": window.window_ts,
+                            "asset": window.asset,
+                            "timeframe": "5m",
+                            "eval_offset": ctx.eval_offset,
+                            "delta_chainlink": ctx.delta_chainlink,
+                            "delta_tiingo": ctx.delta_tiingo,
+                            "delta_binance": ctx.delta_binance,
+                            "delta_pct": delta_pct,
+                            "vpin": current_vpin,
+                            "regime": _snap_regime,
+                            "decision": "TRADE",
+                            "gate_passed": True,
+                            "gate_failed": None,
+                            "v2_probability_up": ctx.dune_probability_up,
+                            "v2_direction": direction,
+                        })
+                    except Exception as _sig_exc:
+                        self._log.warning("db.v10_trade_signal_eval_failed", error=str(_sig_exc)[:100])
+
+                # Write window_snapshot with TWAP + CG data before executing
+                # (v10 returns early and would skip the v9 snapshot builder)
+                if self._db:
+                    try:
+                        _cg = self._cg_enhanced.snapshot if self._cg_enhanced is not None else None
+                        await self._db.write_window_snapshot({
+                            "window_ts": window.window_ts,
+                            "asset": window.asset,
+                            "timeframe": "5m",
+                            "open_price": open_price,
+                            "close_price": current_price,
+                            "delta_pct": delta_pct,
+                            "delta_chainlink": ctx.delta_chainlink,
+                            "delta_tiingo": ctx.delta_tiingo,
+                            "delta_binance": ctx.delta_binance,
+                            "vpin": current_vpin,
+                            "regime": _snap_regime,
+                            "btc_price": current_price,
+                            "direction": direction,
+                            "confidence": confidence,
+                            "trade_placed": True,
+                            "skip_reason": None,
+                            "engine_version": "v10.3",
+                            "eval_offset": ctx.eval_offset,
+                            # TWAP data (captured before v10 pipeline)
+                            "twap_delta_pct": twap_result.twap_delta_pct if twap_result else None,
+                            "twap_direction": twap_result.twap_direction if twap_result else None,
+                            "twap_agreement_score": twap_result.agreement_score if twap_result else None,
+                            "twap_n_ticks": twap_result.n_ticks if twap_result else None,
+                            # CoinGlass
+                            "cg_connected": _cg.connected if _cg else False,
+                            "cg_oi_usd": _cg.oi_usd if _cg else None,
+                            "cg_oi_delta_pct": _cg.oi_delta_pct_1m if _cg else None,
+                            "cg_long_pct": _cg.long_pct if _cg else None,
+                            "cg_top_long_pct": _cg.top_position_long_pct if _cg else None,
+                            "cg_top_short_pct": _cg.top_position_short_pct if _cg else None,
+                            "cg_taker_buy_usd": _cg.taker_buy_volume_1m if _cg else None,
+                            "cg_taker_sell_usd": _cg.taker_sell_volume_1m if _cg else None,
+                            "cg_funding_rate": _cg.funding_rate if _cg else None,
+                            # Gamma
+                            "gamma_up_price": float(window.up_price) if window.up_price else None,
+                            "gamma_down_price": float(window.down_price) if window.down_price else None,
+                            # DUNE
+                            "v2_probability_up": ctx.dune_probability_up,
+                            "v2_direction": direction,
+                        })
+                    except Exception as _snap_exc:
+                        self._log.warning("db.v10_trade_snapshot_failed", error=str(_snap_exc)[:80])
+
+                # Write gate_audit for v10 TRADE (v9 path writes its own, v10 was skipping)
+                if self._db:
+                    try:
+                        asyncio.create_task(self._db.write_gate_audit({
+                            "window_ts": window.window_ts,
+                            "asset": window.asset,
+                            "timeframe": "5m",
+                            "engine_version": "v10.3",
+                            "direction": direction,
+                            "delta_pct": delta_pct,
+                            "delta_tiingo": ctx.delta_tiingo,
+                            "delta_binance": ctx.delta_binance,
+                            "delta_chainlink": ctx.delta_chainlink,
+                            "vpin": current_vpin,
+                            "regime": _snap_regime,
+                            "gate_passed": True,
+                            "decision": "TRADE",
+                            "eval_offset": ctx.eval_offset,
+                            "v2_probability_up": ctx.dune_probability_up,
+                            "v2_direction": ctx.dune_direction,
+                        }))
+                    except Exception:
+                        pass
+
+                # EXECUTE the trade immediately — don't fall through to v9 code
+                await self._execute_trade(state, signal)
+                return  # Done — one trade per window
+            else:
+                signal = None
+                self._last_skip_reason = pipe_result.skip_reason or "v10 gate failed"
+                if self._db:
+                    try:
+                        await self._db.write_signal_evaluation({
+                            "window_ts": window.window_ts,
+                            "asset": window.asset,
+                            "timeframe": "5m",
+                            "eval_offset": getattr(window, 'eval_offset', None),
+                            "delta_chainlink": ctx.delta_chainlink,
+                            "delta_tiingo": ctx.delta_tiingo,
+                            "delta_binance": ctx.delta_binance,
+                            "delta_pct": delta_pct,
+                            "vpin": current_vpin,
+                            "regime": _snap_regime,
+                            "decision": "SKIP",
+                            "gate_passed": False,
+                            "gate_failed": pipe_result.failed_gate or "unknown",
+                            "v2_probability_up": ctx.dune_probability_up,
+                        })
+                    except Exception:
+                        pass
+                # Write gate_audit for v10 SKIP (includes direction the model would have picked)
+                if self._db:
+                    try:
+                        _skip_dir = ctx.agreed_direction or ctx.dune_direction
+                        asyncio.create_task(self._db.write_gate_audit({
+                            "window_ts": window.window_ts,
+                            "asset": window.asset,
+                            "timeframe": "5m",
+                            "engine_version": "v10.3",
+                            "direction": _skip_dir,
+                            "delta_pct": delta_pct,
+                            "delta_tiingo": ctx.delta_tiingo,
+                            "delta_binance": ctx.delta_binance,
+                            "delta_chainlink": ctx.delta_chainlink,
+                            "vpin": current_vpin,
+                            "regime": _snap_regime,
+                            "gate_passed": False,
+                            "gate_failed": pipe_result.failed_gate or "unknown",
+                            "decision": "SKIP",
+                            "skip_reason": (pipe_result.skip_reason or "")[:500],
+                            "eval_offset": getattr(window, 'eval_offset', None),
+                            "v2_probability_up": ctx.dune_probability_up,
+                            "v2_direction": ctx.dune_direction,
+                        }))
+                    except Exception:
+                        pass
+                # v10 skip: don't fall through to v9 code — return after writing snapshot
+                # (the window_snapshot write happens below, so we must NOT return here)
+        else:
+
+            # ── v9.0 Source Agreement Gate ────────────────────────────────────
+            # When CL+TI agree on direction, WR = 94.7%. When they disagree, 9.1%.
+            # This is the single most impactful filter. Feature-flagged for rollback.
+            _v9_agreement = os.environ.get("V9_SOURCE_AGREEMENT", "false").lower() == "true"
+            _v9_source_agree = None  # None=unknown, True=agree, False=disagree
+            _v9_direction_override = None
+
+            if delta_chainlink is not None and delta_tiingo is not None:
+                _cl_dir = "UP" if delta_chainlink > 0 else "DOWN"
+                _ti_dir = "UP" if delta_tiingo > 0 else "DOWN"
+                _v9_source_agree = (_cl_dir == _ti_dir)
+
+                if _v9_source_agree:
+                    _v9_direction_override = _cl_dir  # Both agree → use shared direction
+                    self._log.info("v9.source_agree", cl=_cl_dir, ti=_ti_dir,
+                        delta_cl=f"{delta_chainlink:+.4f}%", delta_ti=f"{delta_tiingo:+.4f}%")
+                else:
+                    self._log.info("v9.source_disagree", cl=_cl_dir, ti=_ti_dir,
+                        delta_cl=f"{delta_chainlink:+.4f}%", delta_ti=f"{delta_tiingo:+.4f}%",
+                        gate_active=_v9_agreement)
+                    if _v9_agreement:
+                        self._last_skip_reason = f"v9: CL={_cl_dir} TI={_ti_dir} DISAGREE"
+                        # Log to signal_evaluations before skipping
+                        if self._db:
+                            try:
+                                await self._db.write_signal_evaluation({
+                                    "window_ts": window.window_ts,
+                                    "asset": window.asset,
+                                    "timeframe": "5m",
+                                    "eval_offset": getattr(window, 'eval_offset', None),
+                                    "delta_chainlink": delta_chainlink,
+                                    "delta_tiingo": delta_tiingo,
+                                    "delta_binance": delta_binance,
+                                    "vpin": current_vpin,
+                                    "regime": _snap_regime,
+                                    "decision": "SKIP",
+                                    "gate_passed": False,
+                                    "gate_failed": "source_disagree",
+                                })
+                            except Exception:
+                                pass
+                        # Telegram notification for source disagreement (once per window)
+                        _disagree_key = f"{window.asset}-{window.window_ts}-disagree"
+                        if not hasattr(self, '_v9_disagree_notified'):
+                            self._v9_disagree_notified = set()
+                        if self._alerter and _disagree_key not in self._v9_disagree_notified:
+                            self._v9_disagree_notified.add(_disagree_key)
+                            # Clean old keys (>10min)
+                            _now = time.time()
+                            self._v9_disagree_notified = {
+                                k for k in self._v9_disagree_notified
+                                if _now - int(k.rsplit("-", 1)[0].rsplit("-", 1)[-1]) < 600
+                            }
+                            _offset = getattr(window, 'eval_offset', '?')
+                            async def _send_disagree_alert():
+                                try:
+                                    await self._alerter.send_message(
+                                        f"🔀 SOURCE DISAGREE — {window.asset} 5m\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"Chainlink: {_cl_dir} (Δ {delta_chainlink:+.4f}%)\n"
+                                        f"Tiingo: {_ti_dir} (Δ {delta_tiingo:+.4f}%)\n"
+                                        f"VPIN: {current_vpin:.3f} | {_snap_regime}\n"
+                                        f"Offset: T-{_offset}\n"
+                                        f"Action: ⏭ SKIP (9.1% WR when disagree)\n"
+                                        f"\n📍 MTL  {window.asset}-{window.window_ts}  v9.0"
+                                    )
+                                except Exception:
+                                    pass
+                            asyncio.create_task(_send_disagree_alert())
+                        signal = None
+                    tf = "15m" if window.duration_secs == 900 else "5m"
+
+        # ── v9.0 Dynamic Caps + Signal Evaluation ─────────────────────────
+        # Skip entirely when v10 is active — v10 already decided TRADE or SKIP above.
+        # Only run v9 caps + _evaluate_signal when v10 is disabled (legacy v9 path).
+        _v9_caps = os.environ.get("V9_CAPS_ENABLED", "false").lower() == "true"
+        _v9_cap = None
+        _v9_tier = None
+        _eval_offset = getattr(window, 'eval_offset', None)
+
+        if not _v10_enabled:
+            if _v9_caps and _eval_offset is not None:
+                _v9_cap_early = float(os.environ.get("V9_CAP_EARLY", "0.55"))
+                _v9_cap_golden = float(os.environ.get("V9_CAP_GOLDEN", "0.65"))
+                _v9_vpin_early = float(os.environ.get("V9_VPIN_EARLY", "0.65"))
+                _v9_vpin_late = float(os.environ.get("V9_VPIN_LATE", "0.45"))
+
+                if _eval_offset > 130:
+                    # Early zone: CASCADE only (VPIN >= 0.65)
+                    if current_vpin >= _v9_vpin_early:
+                        _v9_cap = _v9_cap_early
+                        _v9_tier = "EARLY_CASCADE"
+                    else:
+                        _v9_tier = "EARLY_SKIP"
+                        if _v9_agreement:
+                            # VPIN too low for early zone — skip regardless of agreement
+                            self._last_skip_reason = f"v9: early offset T-{_eval_offset} VPIN {current_vpin:.2f} < {_v9_vpin_early}"
+                            signal = None
+                else:
+                    # Golden zone (T-130..T-60): VPIN >= 0.45
+                    if current_vpin >= _v9_vpin_late:
+                        _v9_cap = _v9_cap_golden
+                        _v9_tier = "GOLDEN"
+                    else:
+                        _v9_tier = "GOLDEN_SKIP"
+                        if _v9_agreement:
+                            self._last_skip_reason = f"v9: golden zone VPIN {current_vpin:.2f} < {_v9_vpin_late}"
+                            signal = None
+
+                self._log.info("v9.cap_tier", tier=_v9_tier, cap=f"${_v9_cap:.2f}" if _v9_cap else "SKIP",
+                    offset=_eval_offset, vpin=f"{current_vpin:.3f}")
+
+            # Evaluate signal (with TWAP and TimesFM — dead gates will be cleaned up)
+            # Skip evaluation if v9.0 already decided to skip
+            if not ((_v9_agreement and _v9_source_agree is False) or
+                    (_v9_caps and _v9_tier and "SKIP" in _v9_tier)):
+                signal = self._evaluate_signal(window, current_price, current_vpin, delta_pct, twap_result=twap_result, timesfm_forecast=timesfm_forecast)
+                # Override direction with v9.0 source agreement direction
+                if signal and _v9_direction_override and _v9_agreement:
+                    signal.direction = _v9_direction_override
+                # Override cap with v9.0 tier cap and entry reason
+                if signal and _v9_cap is not None:
+                    signal.v81_entry_cap = _v9_cap
+                    _order_type = os.environ.get("ORDER_TYPE", "FAK").upper()
+                    signal.entry_reason = f"v9_{_v9_tier}_T{_eval_offset}_{_order_type}"
+            else:
+                signal = None
+
+        tf = "15m" if window.duration_secs == 900 else "5m"
+
+        # _snap_regime already computed above (before v9 gate block)
 
         # ── Capture CoinGlass snapshot at evaluation time ────────────────────
         # Per-asset CG feed (v5.4d) — fall back to BTC if asset feed unavailable
@@ -699,6 +1169,68 @@ class FiveMinVPINStrategy(BaseStrategy):
             ),
         }
 
+        # ── v8.1: Query v2.2 for early entry gate data (AFTER window_snapshot created) ───
+        # This fetch populates window_snapshot with v2.2 data that will be written to DB.
+        # Used for: (1) early entry gate at T>=120, (2) dashboard display, (3) analysis.
+        #
+        # Push-mode (Sequoia v5): we send every feature we have at this
+        # point so the scorer can use its v5 booster directly instead
+        # of pulling its own (v4-shaped, train-skewed) feature cache.
+        # Gate results (_vpin_passed etc.) are NOT computed yet at this
+        # point in the function — they're filled in further down — so
+        # those stay None here. The decision-path fetch below (line
+        # ~1478) sends the full 25-feature body once gates are resolved.
+        _eval_offset = getattr(window, "eval_offset", None)
+        if self._timesfm_v2 is not None and _eval_offset:
+            try:
+                from signals.v2_feature_body import build_v5_feature_body
+                # Pre-eval diagnostic fetch: ~60% feature coverage by
+                # design. The gate booleans haven't been computed yet at
+                # this point in the function (that happens ~20 lines
+                # below), and there is no prior v2 probability yet, so
+                # those fields stay None. The decision-path fetch at
+                # line ~1478 runs AFTER gates and uses the SAME builder
+                # helper with the full 25 features. Both call sites go
+                # through `build_v5_feature_body` so the extraction
+                # logic is never duplicated or drifted.
+                _pre_features = build_v5_feature_body(
+                    eval_offset=float(_eval_offset),
+                    vpin=current_vpin,
+                    delta_pct=delta_pct,
+                    twap_delta=(twap_result.twap_delta_pct if twap_result else None),
+                    clob_up_price=window.up_price,
+                    clob_down_price=window.down_price,
+                    binance_price=current_price,
+                    tiingo_close=_tiingo_close,
+                    delta_binance=delta_binance,
+                    delta_chainlink=delta_chainlink,
+                    delta_tiingo=delta_tiingo,
+                    regime=_snap_regime,
+                    delta_source=_price_source_used,
+                    # gate_*: not yet resolved at pre-eval time
+                    # prev_v2_probability_up: no prior value at first-tick
+                )
+                _v2_pre = await self._timesfm_v2.score_with_features(
+                    asset=window.asset,
+                    seconds_to_close=_eval_offset,
+                    features=_pre_features,
+                )
+                if _v2_pre and "probability_up" in _v2_pre:
+                    window_snapshot["v2_probability_up"] = round(float(_v2_pre["probability_up"]), 4)
+                    window_snapshot["v2_direction"] = "UP" if float(_v2_pre["probability_up"]) > 0.5 else "DOWN"
+                    window_snapshot["v2_model_version"] = _v2_pre.get("model_version", "")
+                    window_snapshot["eval_offset"] = _eval_offset
+                    # v2.2: Store full timesfm quantile surface if available
+                    _timesfm = _v2_pre.get("timesfm", {})
+                    if _timesfm and _timesfm.get("quantiles"):
+                        import json
+                        window_snapshot["v2_quantiles"] = json.dumps(_timesfm["quantiles"])
+                    if _timesfm and _timesfm.get("quantiles_at_close"):
+                        import json
+                        window_snapshot["v2_quantiles_at_close"] = json.dumps(_timesfm["quantiles_at_close"])
+            except Exception as e:
+                self._log.warning("v2.probability.fetch_failed", error_str=str(e)[:100])
+
         # ── v8.0: Compute gate results + confidence tier for notifications ────
         _vpin_passed = current_vpin >= _runtime.five_min_vpin_gate
         _delta_thresh = (
@@ -802,22 +1334,8 @@ class FiveMinVPINStrategy(BaseStrategy):
         if self._db is not None:
             try:
                 await self._db.write_window_snapshot(window_snapshot)
-                # v8.1: Update v2.2 fields separately (not in main INSERT to avoid breaking it)
-                _v2_fields = {k: window_snapshot.get(k) for k in 
-                    ["v2_probability_up", "v2_direction", "v2_agrees", "v2_model_version", "eval_offset"]
-                    if window_snapshot.get(k) is not None}
-                if _v2_fields and self._db._pool:
-                    try:
-                        _sets = ", ".join(f"{k} = ${i+4}" for i, k in enumerate(_v2_fields.keys()))
-                        _vals = [window_snapshot["window_ts"], window_snapshot.get("asset", "BTC"), 
-                                 window_snapshot.get("timeframe", "5m")] + list(_v2_fields.values())
-                        async with self._db._pool.acquire() as conn:
-                            await conn.execute(
-                                f"UPDATE window_snapshots SET {_sets} WHERE window_ts=$1 AND asset=$2 AND timeframe=$3",
-                                *_vals
-                            )
-                    except Exception:
-                        pass
+                # v8.1: OAK (v2.2) fields are now included in the INSERT above
+                # No separate UPDATE needed
             except Exception as exc:
                 self._log.warning("db.snapshot_write_failed", error=str(exc)[:80])
 
@@ -962,9 +1480,74 @@ class FiveMinVPINStrategy(BaseStrategy):
                     "decision": "TRADE" if _all_passed else "SKIP",
                     "skip_reason": None if _all_passed else _actual_skip_reason[:500],
                     "eval_offset": eval_offset,
+                    # v8.1: OAK v2.2 data (may be None if not evaluated yet)
+                    "v2_probability_up": window_snapshot.get("v2_probability_up"),
+                    "v2_direction": window_snapshot.get("v2_direction"),
+                    "v2_agrees": window_snapshot.get("v2_agrees"),
+                    "v2_high_conf": window_snapshot.get("v2_direction") is not None and (window_snapshot.get("v2_probability_up", 0) > 0.65 or window_snapshot.get("v2_probability_up", 1) < 0.35),
                 }))
-            except Exception as _ga_exc:
-                self._log.debug("db.gate_audit_write_failed", error=str(_ga_exc)[:80])
+            except Exception as _gate_exc:
+                self._log.warning("db.gate_audit_write_failed", error=str(_gate_exc)[:100])
+
+        # ── Comprehensive signal evaluation capture ──
+        if self._db is not None:
+            try:
+                _clob_up_bid = window_snapshot.get("clob_up_bid")
+                _clob_up_ask = window_snapshot.get("clob_up_ask")
+                _clob_dn_bid = window_snapshot.get("clob_down_bid")
+                _clob_dn_ask = window_snapshot.get("clob_down_ask")
+                _clob_spread = (_clob_up_ask - _clob_up_bid) if _clob_up_ask and _clob_up_bid else None
+                _clob_mid = ((_clob_up_bid + _clob_up_ask) / 2) if _clob_up_bid and _clob_up_ask else None
+                
+                asyncio.create_task(self._db.write_signal_evaluation({
+                    "window_ts": window.window_ts,
+                    "asset": window.asset,
+                    "timeframe": tf,
+                    "eval_offset": eval_offset,
+                    # Prices
+                    "clob_up_bid": _clob_up_bid,
+                    "clob_up_ask": _clob_up_ask,
+                    "clob_down_bid": _clob_dn_bid,
+                    "clob_down_ask": _clob_dn_ask,
+                    "binance_price": window_snapshot.get("binance_price"),
+                    "tiingo_open": _tiingo_open,
+                    "tiingo_close": _tiingo_close,
+                    "chainlink_price": window_snapshot.get("chainlink_open"),
+                    # Deltas
+                    "delta_pct": delta_pct,
+                    "delta_tiingo": delta_tiingo,
+                    "delta_binance": delta_binance,
+                    "delta_chainlink": delta_chainlink,
+                    "delta_source": _price_source_used,
+                    # Market microstructure
+                    "vpin": current_vpin,
+                    "regime": _snap_regime,
+                    "clob_spread": _clob_spread,
+                    "clob_mid": _clob_mid,
+                    # OAK/v2.2 full predictions
+                    "v2_probability_up": window_snapshot.get("v2_probability_up"),
+                    "v2_direction": window_snapshot.get("v2_direction"),
+                    "v2_agrees": window_snapshot.get("v2_agrees"),
+                    "v2_high_conf": window_snapshot.get("v2_direction") is not None and (window_snapshot.get("v2_probability_up", 0) > 0.65 or window_snapshot.get("v2_probability_up", 1) < 0.35),
+                    "v2_model_version": window_snapshot.get("v2_model_version"),
+                    "v2_quantiles": window_snapshot.get("v2_quantiles"),
+                    "v2_quantiles_at_close": window_snapshot.get("v2_quantiles_at_close"),
+                    # Gates
+                    "gate_vpin_passed": bool(_vpin_gate_result),
+                    "gate_delta_passed": bool(_delta_gate_result),
+                    "gate_cg_passed": _cg_gate_passed,
+                    "gate_twap_passed": not _twap_gate_blocked_actual,
+                    "gate_timesfm_passed": not _timesfm_gate_blocked_actual,
+                    "gate_passed": _all_passed,
+                    "gate_failed": _gate_failed_name,
+                    "decision": "TRADE" if _all_passed else "SKIP",
+                    # TWAP
+                    "twap_delta": window_snapshot.get("twap_delta_pct"),
+                    "twap_direction": window_snapshot.get("twap_direction"),
+                    "twap_gamma_agree": window_snapshot.get("twap_gamma_agree"),
+                }))
+            except Exception as _sig_exc:
+                self._log.warning("db.signal_evaluation_write_failed", error=str(_sig_exc)[:100])
 
         # ── v8.1 Early Entry Gate ────────────────────────────────────────────
         # At offsets >= 120s, require v2.2 HIGH CONF + v8 direction agreement.
@@ -977,8 +1560,48 @@ class FiveMinVPINStrategy(BaseStrategy):
             _v81_active = True
             _v8_dir = signal.direction  # capture before any mutation
             try:
-                _v2_result = await self._timesfm_v2.get_probability(
-                    asset=window.asset, seconds_to_close=eval_offset
+                from signals.v2_feature_body import (
+                    build_v5_feature_body,
+                    confidence_from_result,
+                )
+
+                # Build the full 25-feature push-mode body via the
+                # single-source-of-truth helper. By this point gates
+                # have been evaluated (above this block) so gate_*
+                # booleans carry real state rather than None.
+                #
+                # The PRE-EVAL fetch at line ~1130 stored its P(UP) in
+                # window_snapshot["v2_probability_up"]; we use that as
+                # the v2_logit self-reference. First tick in a window
+                # → None → scorer gets NaN → LightGBM missing-default.
+                _decision_features = build_v5_feature_body(
+                    eval_offset=float(eval_offset),
+                    vpin=current_vpin,
+                    delta_pct=delta_pct,
+                    twap_delta=(twap_result.twap_delta_pct if twap_result else None),
+                    clob_up_price=window.up_price,
+                    clob_down_price=window.down_price,
+                    binance_price=current_price,
+                    tiingo_close=_tiingo_close,
+                    delta_binance=delta_binance,
+                    delta_chainlink=delta_chainlink,
+                    delta_tiingo=delta_tiingo,
+                    gate_vpin_passed=_vpin_passed,
+                    gate_delta_passed=_delta_passed,
+                    gate_cg_passed=_cg_passed,
+                    # gate_twap_passed / gate_timesfm_passed aren't directly
+                    # named here; reuse the v8.0 "blocked" flags inverted.
+                    gate_twap_passed=not _twap_gate_blocked_actual,
+                    gate_timesfm_passed=not _timesfm_gate_blocked_actual,
+                    gate_passed=_all_passed,
+                    regime=_snap_regime,
+                    delta_source=_price_source_used,
+                    prev_v2_probability_up=window_snapshot.get("v2_probability_up"),
+                )
+                _v2_result = await self._timesfm_v2.score_with_features(
+                    asset=window.asset,
+                    seconds_to_close=eval_offset,
+                    features=_decision_features,
                 )
                 if not _v2_result or "probability_up" not in _v2_result:
                     raise RuntimeError(f"v2.2 returned invalid response: {str(_v2_result)[:80]}")
@@ -988,11 +1611,37 @@ class FiveMinVPINStrategy(BaseStrategy):
                 _v2_high = _v2_p > 0.65 or _v2_p < 0.35
                 _v2_agrees = (_v2_dir == _v8_dir)
 
+                # NOTE: dynamic confidence gating used to live here but
+                # was removed in 1744fde — it had an asymmetric threshold
+                # that silently blocked strong DOWN signals (161 in 48
+                # minutes). Dynamic confidence gating now lives solely in
+                # DuneConfidenceGate (engine/signals/gates.py), where it
+                # composes cleanly with regime/offset/down/CG modifiers
+                # and handles DOWN direction via dune_p = 1 - p_up. The
+                # v11 confidence-extraction bug (reading timesfm.confidence
+                # as P(UP) confidence) is fixed on the gates.py side of
+                # this PR using confidence_from_result().
                 # Store in snapshot for analysis
                 window_snapshot["v2_probability_up"] = round(_v2_p, 4)
                 window_snapshot["v2_direction"] = _v2_dir
                 window_snapshot["v2_agrees"] = _v2_agrees
                 window_snapshot["v2_model_version"] = _v2_result.get("model_version", "")
+                window_snapshot["eval_offset"] = eval_offset
+                # v2.2: Store full quantile surface
+                _timesfm = _v2_result.get("timesfm", {})
+                if _timesfm and _timesfm.get("quantiles"):
+                    import json
+                    window_snapshot["v2_quantiles"] = json.dumps(_timesfm["quantiles"])
+                if _timesfm and _timesfm.get("quantiles_at_close"):
+                    import json
+                    window_snapshot["v2_quantiles_at_close"] = json.dumps(_timesfm["quantiles_at_close"])
+                
+                # Write snapshot immediately for this eval_offset
+                if self._db is not None:
+                    try:
+                        await self._db.write_window_snapshot(window_snapshot)
+                    except Exception as _snap_exc:
+                        self._log.warning("db.v2_snapshot_write_failed", error=str(_snap_exc)[:80], offset=eval_offset)
 
                 self._log.info(
                     "v81.early_gate",
@@ -1005,8 +1654,20 @@ class FiveMinVPINStrategy(BaseStrategy):
                     cap=_v81_cap,
                 )
 
+                # v9.0: When v9 caps are enabled and passed, bypass old v8.1 gates
+                # v9.0 agreement + VPIN tier already handled direction + cap
+                _v9_bypass = (os.environ.get("V9_CAPS_ENABLED", "false").lower() == "true"
+                              and '_v9_cap' in locals() and _v9_cap is not None)
+                if _v9_bypass:
+                    self._log.info("v9.bypass_v8_gates", offset=eval_offset,
+                        v9_tier=_v9_tier, v9_cap=f"${_v9_cap:.2f}")
+                    signal.v81_entry_cap = _v9_cap
+                    _order_type = os.environ.get("ORDER_TYPE", "FAK").upper()
+                    signal.entry_reason = f"v9_{_v9_tier}_T{eval_offset}_{_order_type}"
                 # Gate 1: v2.2 must be HIGH confidence (all offsets)
-                if not _v2_high:
+                # NOTE: dynamic confidence gating now lives in DuneConfidenceGate
+                # (engine/signals/gates.py) from ee1b10f — see v11.0 changelog.
+                elif not _v2_high:
                     signal = None
                     self._last_skip_reason = f"v2.2 LOW conf ({_v2_p:.2f}) at T-{eval_offset}"
                 # Gate 2: v2.2 must agree with v8 direction (all offsets)
@@ -1050,7 +1711,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 # v2.2 service down — skip early entry, fall through to next offset
                 signal = None
                 self._last_skip_reason = f"v8.1: v2.2 unavailable at T-{eval_offset}: {str(_v2_exc)[:50]}"
-                self._log.warning("v81.v2_service_error", offset=eval_offset, error=str(_v2_exc)[:80])
+                self._log.warning("v81.v2_service_error", offset=eval_offset, error_str=str(_v2_exc)[:80])
 
         if signal is None:
             # v7.1: Use the actual skip reason set at the point of rejection
@@ -1091,6 +1752,13 @@ class FiveMinVPINStrategy(BaseStrategy):
                 "clob_ask": _clob_ask_val,
                 "confidence": window_snapshot.get("confidence_tier"),
                 "regime": _snap_regime,
+                # v9.0 fields
+                "cl_dir": _cl_dir if '_cl_dir' in locals() else None,
+                "ti_dir": _ti_dir if '_ti_dir' in locals() else None,
+                "delta_chainlink": delta_chainlink if 'delta_chainlink' in locals() else None,
+                "delta_tiingo": delta_tiingo if 'delta_tiingo' in locals() else None,
+                "v9_tier": _v9_tier if '_v9_tier' in locals() else None,
+                "v9_cap": _v9_cap if '_v9_cap' in locals() else None,
             })
             # At the final offset (min of configured offsets), send consolidated summary
             _min_offset = min(FIVE_MIN_EVAL_OFFSETS) if FIVE_MIN_EVAL_OFFSETS else 60
@@ -1138,6 +1806,7 @@ class FiveMinVPINStrategy(BaseStrategy):
 
         if signal is not None:
             # Also check fresh CLOB price before committing to trade
+            # v8.1: When FOK is enabled, only check floor (not cap) - FOK will ladder down
             if self._db:
                 try:
                     _clob = await self._db.get_latest_clob_prices(window.asset)
@@ -1146,14 +1815,24 @@ class FiveMinVPINStrategy(BaseStrategy):
                         _clob_ask = _clob.get("clob_up_ask") if _dir == "UP" else _clob.get("clob_down_ask")
                         # v8.1: Use dynamic cap from eval offset
                         _dynamic_cap = _get_v81_cap(eval_offset) if eval_offset else 0.73
-                        if _clob_ask and _clob_ask > _dynamic_cap:
-                            self._log.info("evaluate.clob_cap_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}", cap=f"${_dynamic_cap:.2f}")
-                            self._last_skip_reason = f"CLOB CAP: {_dir} ask ${_clob_ask:.3f} > ${_dynamic_cap:.2f}"
-                            signal = None
-                        elif _clob_ask and _clob_ask < 0.30:
-                            self._log.info("evaluate.clob_floor_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}")
-                            self._last_skip_reason = f"CLOB FLOOR: {_dir} ask ${_clob_ask:.3f} < $0.30"
-                            signal = None
+                        # FOK-enabled: only block on floor (CLOB too cheap = bad value)
+                        # GTC mode: block on both cap and floor
+                        if runtime.fok_enabled:
+                            # FOK mode: only check floor
+                            if _clob_ask and _clob_ask < 0.30:
+                                self._log.info("evaluate.clob_floor_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}")
+                                self._last_skip_reason = f"CLOB FLOOR: {_dir} ask ${_clob_ask:.3f} < $0.30"
+                                signal = None
+                        else:
+                            # GTC mode: check both cap and floor
+                            if _clob_ask and _clob_ask > _dynamic_cap:
+                                self._log.info("evaluate.clob_cap_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}", cap=f"${_dynamic_cap:.2f}")
+                                self._last_skip_reason = f"CLOB CAP: {_dir} ask ${_clob_ask:.3f} > ${_dynamic_cap:.2f}"
+                                signal = None
+                            elif _clob_ask and _clob_ask < 0.30:
+                                self._log.info("evaluate.clob_floor_block", direction=_dir, clob_ask=f"${_clob_ask:.4f}")
+                                self._last_skip_reason = f"CLOB FLOOR: {_dir} ask ${_clob_ask:.3f} < $0.30"
+                                signal = None
                 except Exception:
                     pass  # Don't block trade if DB read fails
 
@@ -1177,6 +1856,13 @@ class FiveMinVPINStrategy(BaseStrategy):
                 "clob_ask": _clob_ask_val2,
                 "confidence": window_snapshot.get("confidence_tier"),
                 "regime": _snap_regime,
+                # v9.0 fields
+                "cl_dir": _cl_dir if '_cl_dir' in locals() else None,
+                "ti_dir": _ti_dir if '_ti_dir' in locals() else None,
+                "delta_chainlink": delta_chainlink if 'delta_chainlink' in locals() else None,
+                "delta_tiingo": delta_tiingo if 'delta_tiingo' in locals() else None,
+                "v9_tier": _v9_tier if '_v9_tier' in locals() else None,
+                "v9_cap": _v9_cap if '_v9_cap' in locals() else None,
             })
             # At the final offset, send the consolidated summary
             _min_offset2 = min(FIVE_MIN_EVAL_OFFSETS) if FIVE_MIN_EVAL_OFFSETS else 60
@@ -1237,6 +1923,12 @@ class FiveMinVPINStrategy(BaseStrategy):
             async def _send_trade_alert():
                 try:
                     window_id = f"{window.asset}-{window.window_ts}"
+                    # v10.3: extract gate result data for Telegram alerts
+                    _v103_data = getattr(signal, '_v10_gate_data', {}) or {}
+                    if not _v103_data:
+                        # Fallback: try window_snapshot
+                        _v103_data = {k: v for k, v in window_snapshot.items() if k.startswith("v103_")}
+
                     signal_dict = {
                         "direction": signal.direction,
                         "delta_pct": delta_pct,
@@ -1265,6 +1957,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                         "entry_reason": getattr(signal, 'entry_reason', 'v8_standard'),
                         "eval_offset": eval_offset,
                         "v81_entry_cap": getattr(signal, 'v81_entry_cap', None),
+                        # v10.3 gate pipeline data
+                        **_v103_data,
                     }
                     reason = f"VPIN {current_vpin:.3f} ({_snap_regime}), delta {delta_pct:+.4f}%"
                     
@@ -1323,8 +2017,9 @@ class FiveMinVPINStrategy(BaseStrategy):
             except Exception:
                 pass
         
-        # Track executed window
-        self._last_executed_window = window_key
+        # Track executed window (DB-backed dedup — survives restarts)
+        self._traded_windows.add(window_key)
+        self._last_executed_window = window_key  # backward compat
 
     def _evaluate_signal(
         self,
@@ -1362,41 +2057,8 @@ class FiveMinVPINStrategy(BaseStrategy):
             self._last_skip_reason = f"VPIN {current_vpin:.3f} < gate {runtime.five_min_vpin_gate}"
             return None
 
-        # ── TWAP Gamma Gate (v5.7c) ───────────────────────────────
-        # Block trades where the market strongly disagrees with our direction
-        # or where the token is already >60¢ (priced in, bad R/R)
-        # v8.0 Phase 3: Feature-flagged OFF by default (TWAP_GAMMA_GATE_ENABLED=false).
-        # Gate was blocking more winners than losers — harmful with Tiingo delta source.
-        # Still log the gate result for monitoring even when disabled.
-        _twap_gate_would_block = (
-            twap_result is not None
-            and twap_result.should_skip
-            and twap_result.n_ticks >= 5
-        )
-        if _twap_gate_would_block:
-            if runtime.twap_gamma_gate_enabled:
-                self._log.info(
-                    "evaluate.twap_gate_blocked",
-                    reason=twap_result.skip_reason,
-                    gamma_gate=twap_result.gamma_gate,
-                    trend_pct=f"{twap_result.trend_pct:.2f}",
-                    twap_delta=f"{twap_result.twap_delta_pct:+.4f}%",
-                    asset=window.asset,
-                )
-                self._last_skip_reason = f"TWAP GATE: {twap_result.skip_reason or 'market disagrees'} (gate={twap_result.gamma_gate})"
-                return None
-            else:
-                # Gate is disabled — log as monitoring-only, do not skip
-                self._log.info(
-                    "evaluate.twap_gate_would_block",
-                    reason=twap_result.skip_reason,
-                    gamma_gate=twap_result.gamma_gate,
-                    trend_pct=f"{twap_result.trend_pct:.2f}",
-                    twap_delta=f"{twap_result.twap_delta_pct:+.4f}%",
-                    asset=window.asset,
-                    note="TWAP_GAMMA_GATE_ENABLED=false — monitoring only, not blocking",
-                )
-        
+        # TWAP Gamma Gate REMOVED in v10 cleanup (was feature-flagged OFF)
+
         # ── REGIME-AWARE DIRECTION (v4.1) ──────────────────────────
         # Cascade/trend regime: VPIN >= 0.65 → MOMENTUM + lower delta bar
         # Transition zone:      VPIN 0.55-0.65 → CONTRARIAN + higher delta bar
@@ -1449,62 +2111,8 @@ class FiveMinVPINStrategy(BaseStrategy):
             direction = "UP" if delta_pct > 0 else "DOWN"
             regime = "NORMAL"
         
-        # ── TWAP Direction Override (v5.7) ────────────────────────────────
-        # If TWAP-delta computed a direction, use it when agreement is strong.
-        # TWAP is more robust than point delta (smoothed over the window).
-        # 
-        # Rules:
-        #   1. If TWAP + Gamma + point all agree → use that direction (strongest)
-        #   2. If TWAP + Gamma agree but point disagrees → use TWAP (point is noisy)
-        #   3. If TWAP disagrees with both → stick with point delta (TWAP may be lagging)
-        #
-        # v8.0 Phase 3: Feature-flagged OFF by default (TWAP_OVERRIDE_ENABLED=false).
-        # TWAP blocked 12 windows, 8 winners — net harmful with Tiingo as delta source.
-        # Values still logged for monitoring.
-        _twap_overrode = False
-        if twap_result and twap_result.n_ticks >= 5:
-            # Always log TWAP values for monitoring (regardless of flag)
-            if twap_result.recommended_direction and twap_result.recommended_direction != direction:
-                self._log.info(
-                    "evaluate.twap_direction_info",
-                    twap_dir=twap_result.recommended_direction,
-                    point_dir=direction,
-                    all_agree=twap_result.all_agree,
-                    twap_gamma_agree=twap_result.twap_gamma_agree,
-                    agreement_score=f"{twap_result.agreement_score}/3",
-                    enabled=runtime.twap_override_enabled,
-                    note="TWAP direction monitoring" if not runtime.twap_override_enabled else "TWAP override active",
-                )
+        # TWAP Direction Override REMOVED in v10 cleanup (was feature-flagged OFF)
 
-            if runtime.twap_override_enabled:
-                if twap_result.all_agree:
-                    # All three agree — highest confidence, use recommended direction
-                    if twap_result.recommended_direction != direction:
-                        self._log.info(
-                            "evaluate.twap_override",
-                            old_dir=direction,
-                            new_dir=twap_result.recommended_direction,
-                            reason="all_agree",
-                            agreement=f"{twap_result.agreement_score}/3",
-                        )
-                        direction = twap_result.recommended_direction
-                        _twap_overrode = True
-                elif twap_result.twap_gamma_agree and twap_result.gamma_direction:
-                    # TWAP + Gamma agree — strong signal, override point delta
-                    if twap_result.recommended_direction != direction:
-                        self._log.info(
-                            "evaluate.twap_override",
-                            old_dir=direction,
-                            new_dir=twap_result.recommended_direction,
-                            reason="twap_gamma_agree",
-                            twap_delta=f"{twap_result.twap_delta_pct:+.4f}%",
-                            gamma_skew=f"{twap_result.gamma_skew:.3f}",
-                        )
-                        direction = twap_result.recommended_direction
-                        _twap_overrode = True
-                # If only TWAP disagrees with point+gamma, don't override — point is fresher
-
-        # Calculate base confidence from VPIN + delta (primary signals)
         confidence = self._calculate_confidence(delta_pct, current_vpin, direction)
 
         # ── CoinGlass Confirmation Layer ───────────────────────────────────
@@ -1685,120 +2293,14 @@ class FiveMinVPINStrategy(BaseStrategy):
             )
             confidence = "MODERATE"
 
-        # ── TWAP Confidence Adjustment (v5.7) ──────────────────────────────
-        # Apply TWAP boost/penalty to confidence level
-        # v8.0 Phase 3: Feature-flagged OFF by default (TWAP_OVERRIDE_ENABLED=false).
-        # TWAP confidence adjustment is part of the same override system.
-        # Boost/penalty values still logged for monitoring when disabled.
-        if twap_result and twap_result.n_ticks >= 5:
-            _boost = twap_result.confidence_boost
-            # Log TWAP boost value regardless of flag (monitoring)
-            if abs(_boost) >= 0.05:
-                self._log.info(
-                    "evaluate.twap_boost_info",
-                    boost=f"{_boost:+.2f}",
-                    agreement=f"{twap_result.agreement_score}/3",
-                    enabled=runtime.twap_override_enabled,
-                    note="TWAP confidence boost monitoring" if not runtime.twap_override_enabled else "TWAP confidence boost active",
-                )
-            if runtime.twap_override_enabled:
-                if _boost >= 0.08 and confidence == "LOW":
-                    self._log.info(
-                        "evaluate.twap_lift",
-                        from_confidence="LOW",
-                        to_confidence="MODERATE",
-                        boost=f"{_boost:+.2f}",
-                        agreement=f"{twap_result.agreement_score}/3",
-                    )
-                    confidence = "MODERATE"
-                elif _boost <= -0.10 and confidence == "MODERATE":
-                    self._log.info(
-                        "evaluate.twap_suppress",
-                        from_confidence="MODERATE",
-                        to_confidence="LOW",
-                        boost=f"{_boost:+.2f}",
-                        reason="TWAP disagrees or unstable",
-                    )
-                    confidence = "LOW"
+        # TWAP Confidence Adjustment REMOVED in v10 cleanup (was feature-flagged OFF)
 
         # Block NONE and LOW confidence — only trade MODERATE or HIGH
         if confidence in ("NONE", "LOW"):
             return None
 
-        # ── v5.8 / v8.0 Phase 3: TimesFM Agreement Check ────────────────────
-        # TimesFM is monitored for analysis.
-        # v8.0 Phase 3: TIMESFM_AGREEMENT_ENABLED=false (default) — skips all
-        # gating/confidence logic. Code still runs when timesfm_enabled=True
-        # but only records agreement for post-hoc analysis.
-        # 47.8% accuracy — worse than coin flip as a gate.
-        #
-        # When enabled (pre-v5.8.1 behaviour restored):
-        #   - Agree + ≥70% conf → lift MODERATE→HIGH
-        #   - Disagree + ≥70% conf → SKIP (return None)
-        #   - Disagree + <70% conf → suppress HIGH→MODERATE
-        timesfm_agreement = None  # None = no forecast available
-        if timesfm_forecast and not timesfm_forecast.error and timesfm_forecast.direction and window.asset == "BTC":
-            _tfm_conf = timesfm_forecast.confidence or 0.0
-            if timesfm_forecast.direction == direction:
-                timesfm_agreement = True
-                if runtime.timesfm_agreement_enabled:
-                    # Gate-active: log agreement for gate effect
-                    self._log.info(
-                        "evaluate.timesfm_agrees",
-                        v57c_dir=direction,
-                        tfm_dir=timesfm_forecast.direction,
-                        tfm_conf=f"{_tfm_conf:.2f}",
-                        confidence=confidence,
-                        note="TimesFM agrees — gate active",
-                    )
-                else:
-                    # Gate-disabled: log for monitoring only
-                    self._log.info(
-                        "evaluate.timesfm_agrees",
-                        v57c_dir=direction,
-                        tfm_dir=timesfm_forecast.direction,
-                        tfm_conf=f"{_tfm_conf:.2f}",
-                        confidence=confidence,
-                        note="TimesFM agrees — TIMESFM_AGREEMENT_ENABLED=false, monitoring only",
-                    )
-            else:
-                timesfm_agreement = False
-                if runtime.timesfm_agreement_enabled:
-                    # Gate-active: disagreement suppresses or skips
-                    self._log.info(
-                        "evaluate.timesfm_disagrees",
-                        v57c_dir=direction,
-                        tfm_dir=timesfm_forecast.direction,
-                        tfm_conf=f"{_tfm_conf:.2f}",
-                        confidence=confidence,
-                        note="TimesFM disagrees — gate active",
-                    )
-                    if _tfm_conf >= 0.70:
-                        self._log.info(
-                            "evaluate.timesfm_skip",
-                            tfm_conf=f"{_tfm_conf:.2f}",
-                            note="TimesFM high-confidence disagree — skipping",
-                        )
-                        self._last_skip_reason = f"TimesFM disagrees at {_tfm_conf:.0%} confidence"
-                        return None
-                    elif confidence == "HIGH":
-                        self._log.info(
-                            "evaluate.timesfm_suppress",
-                            from_confidence="HIGH",
-                            to_confidence="MODERATE",
-                            tfm_conf=f"{_tfm_conf:.2f}",
-                        )
-                        confidence = "MODERATE"
-                else:
-                    # Gate-disabled: log for monitoring only, do not skip or suppress
-                    self._log.info(
-                        "evaluate.timesfm_disagrees",
-                        v57c_dir=direction,
-                        tfm_dir=timesfm_forecast.direction,
-                        tfm_conf=f"{_tfm_conf:.2f}",
-                        confidence=confidence,
-                        note="TimesFM disagrees — TIMESFM_AGREEMENT_ENABLED=false, monitoring only, proceeding",
-                    )
+        # TimesFM Agreement REMOVED in v10 cleanup (47.8% accuracy, worse than coin flip)
+        timesfm_agreement = None
 
         self._log.info(
             "evaluate.regime_signal",
@@ -1808,9 +2310,6 @@ class FiveMinVPINStrategy(BaseStrategy):
             direction=direction,
             confidence=confidence,
             cg_modifier=f"{cg_confidence_modifier:+.2f}",
-            twap_agree=f"{twap_result.agreement_score}/3" if twap_result else "n/a",
-            twap_boost=f"{twap_result.confidence_boost:+.2f}" if twap_result else "n/a",
-            twap_overrode=_twap_overrode if '_twap_overrode' in dir() else False,
             timesfm_agreement=timesfm_agreement,
         )
 
@@ -1854,439 +2353,16 @@ class FiveMinVPINStrategy(BaseStrategy):
         
         return "NONE"
 
-    # ─── Execution (Full-Window Signal) ─────────────────────────────────────
+    # ─── _execute_from_signal DELETED (v10 cleanup) ────────────────────────
+    # 430 lines of dead continuous evaluator code removed.
+    # Was never called — the active execution path is _execute_trade() below.
 
-    async def _execute_from_signal(
-        self,
-        state: MarketState,
-        signal: WindowSignal,
-        eval_state: EvalWindowState,
-        window_key: str,
-    ) -> None:
-        """Execute a trade from the full-window evaluator signal."""
-        # Parse window key: "BTC-1711900800"
-        parts = window_key.split("-", 1)
-        asset = parts[0] if len(parts) > 1 else "BTC"
-        window_ts = eval_state.window_ts
+    # ─── Guardrail Helpers ─────────────────────────────────────────────────
+    # NOTE: _execute_from_signal() deleted in v10 cleanup (was 430 lines, never called)
+    #       The active execution path is _execute_trade() below.
+    #       See git history for the removed code if needed.
 
-        # Stake calculated after price is determined (see below)
-        # Preliminary risk check with base stake
-        base_stake = self._calculate_stake(signal.tier, signal.estimated_token_price)
-        approved, reason = await self._check_risk(base_stake)
-        if not approved:
-            self._log.info("trade.risk_blocked", window=window_key, reason=reason)
-            return
-
-        # Direction
-        direction = "YES" if signal.direction == "UP" else "NO"
-        
-        # Start with evaluator's estimate, will override with fresh Gamma price
-        price = Decimal(str(round(signal.estimated_token_price, 4)))
-
-        # Get token IDs from recent windows
-        token_id = None
-        recent = getattr(self, '_recent_windows', [])
-        
-        # Try exact match first, then closest match
-        for window in recent:
-            wts = getattr(window, 'window_ts', 0)
-            w_asset = getattr(window, 'asset', '')
-            if wts == window_ts and w_asset == asset:
-                tid = window.up_token_id if direction == "YES" else window.down_token_id
-                if tid:
-                    token_id = tid
-                    if direction == "YES" and window.up_price is not None:
-                        price = Decimal(str(round(window.up_price, 4)))
-                    elif direction == "NO" and window.down_price is not None:
-                        price = Decimal(str(round(window.down_price, 4)))
-                    break
-        
-        # If no exact match, use the most recent window for this asset with token IDs
-        if token_id is None:
-            for window in reversed(recent):
-                w_asset = getattr(window, 'asset', '')
-                if w_asset == asset:
-                    tid = window.up_token_id if direction == "YES" else window.down_token_id
-                    if tid and not tid.startswith("paper"):
-                        token_id = tid
-                        if direction == "YES" and window.up_price is not None:
-                            price = Decimal(str(round(window.up_price, 4)))
-                        elif direction == "NO" and window.down_price is not None:
-                            price = Decimal(str(round(window.down_price, 4)))
-                        self._log.info("execute.token_id_from_recent", window=window_key, source_ts=getattr(window, 'window_ts', 0))
-                        break
-
-        if token_id is None:
-            self._log.warning("execute.no_token_id_waiting", window=window_key, direction=direction, recent_count=len(recent))
-            eval_state.fired = False
-            # Cooldown: don't retry for 5 seconds to avoid spamming
-            eval_state._retry_after = time.time() + 5.0
-            return
-
-        tf = "15m" if (window_ts % 900 == 0 and eval_state.window_ts + 900 > time.time()) else "5m"
-        market_slug = f"{asset.lower()}-updown-{tf}-{window_ts}"
-
-        # Fetch FRESH Gamma price right before placing order
-        try:
-            import aiohttp
-            slug = market_slug
-            async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as session:
-                url = f"https://gamma-api.polymarket.com/events?slug={slug}"
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if data and isinstance(data, list) and data[0].get("markets"):
-                            mkt = data[0]["markets"][0]
-                            best_ask = mkt.get("bestAsk")
-                            if best_ask is not None:
-                                fresh_up = float(best_ask)
-                                fresh_down = round(1.0 - fresh_up, 4)
-                                if direction == "YES":
-                                    base_price = fresh_up
-                                else:
-                                    base_price = fresh_down
-                                # Use exact Gamma price first — bump only if no fill
-                                price = Decimal(str(round(base_price, 4)))
-                                # Store base price for potential retry at +2¢
-                                eval_state._base_price = base_price
-                                self._log.info(
-                                    "execute.fresh_gamma_price",
-                                    window=window_key,
-                                    direction=direction,
-                                    price=str(price),
-                                )
-        except Exception as exc:
-            self._log.debug("execute.fresh_price_failed", error=str(exc))
-            # Keep the existing price from window/estimate
-
-        # Recalculate stake with the FRESH price for proper risk/reward scaling
-        stake = self._calculate_stake(signal.tier, float(price))
-
-        # ── v8.0 Phase 2: FOK Execution Ladder ───────────────────────────────
-        # When FOK_ENABLED=true (default): use FOKLadder.execute() — queries
-        # the live CLOB book directly for fresh pricing, then attempts FOK
-        # fills at progressively higher prices (up to FOK_ATTEMPTS times).
-        #
-        # When FOK_ENABLED=false: fall back to the legacy GTC/GTD single order
-        # at the Gamma bestAsk price (preserved below for reference).
-        #
-        # FOK ladder replaces ONLY order placement — the 60s fill-detection
-        # poll below is shared by both paths (GTC still needs it; FOK uses it
-        # for monitoring even though FOK fills synchronously).
-
-        _default_cap = float(os.environ.get("FOK_PRICE_CAP", "0.73"))
-        PRICE_CAP = getattr(signal, 'v81_entry_cap', _default_cap)  # v8.1: dynamic cap per offset
-        PRICE_FLOOR = float(os.environ.get("PRICE_FLOOR", "0.30"))
-
-        clob_order_id: Optional[str] = None
-        fok_result: Optional["FOKResult"] = None
-
-        if runtime.fok_enabled:
-            # ── FOK path ──────────────────────────────────────────────────
-            self._log.info(
-                "execute.fok_path",
-                window=window_key,
-                token_id=token_id[:20] + "..." if len(token_id) > 20 else token_id,
-                stake=f"${stake:.2f}",
-                cap=f"${PRICE_CAP:.2f}",
-                floor=f"${PRICE_FLOOR:.2f}",
-                v81_dynamic_cap=PRICE_CAP != _default_cap,
-                entry_reason=getattr(signal, 'entry_reason', 'v8_standard'),
-            )
-
-            ladder = FOKLadder(self._poly)
-            try:
-                fok_result = await ladder.execute(
-                    token_id=token_id,
-                    direction="BUY",
-                    stake_usd=stake,
-                    max_price=PRICE_CAP,
-                    min_price=PRICE_FLOOR,
-                )
-            except Exception as exc:
-                self._log.error("execute.fok_ladder_error", window=window_key, error=str(exc))
-                return
-
-            if not fok_result.filled:
-                # FOK ladder exhausted or aborted — log and bail
-                self._log.warning(
-                    "FOK_LADDER_EXHAUSTED",
-                    window=window_key,
-                    direction=direction,
-                    attempts=fok_result.attempts,
-                    attempted_prices=fok_result.attempted_prices,
-                    abort_reason=fok_result.abort_reason,
-                )
-                if self._alerter:
-                    try:
-                        _prices_str = ", ".join(f"${p:.3f}" for p in fok_result.attempted_prices) or "none"
-                        asyncio.create_task(self._alerter._send_with_id(
-                            f"⚠️ *FOK LADDER EXHAUSTED* — {window_key}\n"
-                            f"Direction: `{direction}`\n"
-                            f"Attempts: `{fok_result.attempts}`\n"
-                            f"Prices tried: `{_prices_str}`\n"
-                            f"{'Abort: ' + fok_result.abort_reason if fok_result.abort_reason else 'No fill after all attempts'}"
-                        ))
-                    except Exception:
-                        pass
-                return
-
-            # FOK filled — extract fill details
-            clob_order_id = fok_result.order_id or f"fok-{uuid.uuid4().hex[:12]}"
-            filled_price = fok_result.fill_price or float(price)
-            price = Decimal(str(round(filled_price, 4)))
-
-        else:
-            # ── GTC/GTD fallback path (legacy) ────────────────────────────
-            # Preserved exactly from v7.2 — enabled when FOK_ENABLED=false.
-            self._log.info(
-                "execute.gtc_path",
-                window=window_key,
-                price=str(price),
-                stake=f"${stake:.2f}",
-            )
-            try:
-                clob_order_id = await self._poly.place_order(
-                    market_slug=market_slug,
-                    direction=direction,
-                    price=price,
-                    stake_usd=stake,
-                    token_id=token_id or None,
-                )
-            except Exception as exc:
-                self._log.error("execute.order_failed", window=window_key, error=str(exc))
-                return
-
-        order_id = clob_order_id if not self._poly.paper_mode else f"5min-{uuid.uuid4().hex[:12]}"
-
-        fee_mult = 0.072
-        fee_usd = fee_mult * float(price) * (1.0 - float(price)) * stake
-
-        # Build FOK metadata (None fields for GTC path)
-        fok_meta: dict = {}
-        if fok_result is not None and fok_result.filled:
-            fok_meta = {
-                "fok_enabled": True,
-                "clob_fill_price": fok_result.fill_price,
-                "fok_attempts": fok_result.attempts,
-                "fok_fill_step": fok_result.fill_step,
-                "fok_attempted_prices": fok_result.attempted_prices,
-            }
-        else:
-            fok_meta = {"fok_enabled": False}
-
-        order = Order(
-            order_id=order_id,
-            strategy=self.name,
-            venue="polymarket",
-            direction=direction,
-            price=str(price),
-            stake_usd=stake,
-            fee_usd=fee_usd,
-            status=OrderStatus.OPEN,
-            btc_entry_price=float(state.btc_price) if state.btc_price else None,
-            window_seconds=300,
-            market_id=market_slug,
-            metadata={
-                "window_ts": window_ts,
-                "window_open_price": eval_state.open_price,
-                "delta_pct": signal.delta_pct,
-                "vpin": signal.vpin,
-                "confidence": signal.confidence,
-                "tier": signal.tier,
-                "entry_reason": signal.entry_reason,
-                "token_id": token_id,
-                "clob_order_id": clob_order_id,
-                "market_slug": market_slug,
-                "seconds_to_close": signal.seconds_to_close,
-                "eval_count": eval_state.eval_count,
-                "score": signal.score,
-                "liq_surge_weight": signal.liq_surge_weight,
-                "ls_imbalance_weight": signal.ls_imbalance_weight,
-                "funding_weight": signal.funding_weight,
-                **fok_meta,
-            },
-        )
-
-        await self._om.register_order(order)
-
-        self._log.info(
-            "trade.executed",
-            order_id=order.order_id[:20] + "..." if len(order.order_id) > 20 else order.order_id,
-            window=window_key,
-            direction=direction,
-            tier=signal.tier,
-            confidence=f"{signal.confidence:.2f}",
-            delta_pct=f"{signal.delta_pct:+.4f}%",
-            score=f"{signal.score:.2f}",
-            stake=f"${stake:.2f}",
-            token_price=str(price),
-            seconds_to_close=f"{signal.seconds_to_close:.0f}",
-            entry_reason=signal.entry_reason,
-            fok_enabled=runtime.fok_enabled,
-            **({"fok_fill_step": fok_result.fill_step, "fok_attempts": fok_result.attempts} if fok_result else {}),
-        )
-
-        # v7.1: Update window_snapshot with trade_placed = True
-        if self._db is not None:
-            try:
-                asyncio.create_task(self._db.update_window_trade_placed(
-                    window_ts=signal.window_ts, asset=signal.asset, timeframe="5m"
-                ))
-            except Exception:
-                pass
-
-            # v8.0: Write FOK execution data to window_snapshot
-            if fok_result is not None and fok_result.filled:
-                try:
-                    asyncio.create_task(self._db.update_window_fok_data(
-                        window_ts=signal.window_ts, asset=signal.asset, timeframe="5m",
-                        execution_mode="fok_ladder",
-                        fok_attempts=fok_result.attempts,
-                        fok_fill_step=fok_result.fill_step,
-                        clob_fill_price=fok_result.fill_price,
-                    ))
-                except Exception:
-                    pass
-
-        # ── Post-trade fill verification (both FOK and GTC paths) ─────────────
-        # For FOK: the order already filled synchronously, but we still verify
-        # via the CLOB status poll for auditing and to capture actual size_matched.
-        # For GTC: this is the primary fill detection loop (unchanged from v7.2).
-        #
-        # v7.2 FIX: extended from 30s → 60s with first check at 3s.
-        # YES orders were filling on CLOB but our 30s poll missed them.
-        if not self._poly.paper_mode and order.order_id.startswith("0x"):
-            FIRST_CHECK = 3   # first poll at 3s (catches fast fills)
-            POLL_INTERVAL = 5
-            MAX_WAIT = 60     # was 30 — YES orders need more time
-            filled = False
-            try:
-                elapsed = 0
-                _first = True
-                while elapsed < MAX_WAIT:
-                    _sleep = FIRST_CHECK if _first else POLL_INTERVAL
-                    _first = False
-                    await asyncio.sleep(_sleep)
-                    elapsed += _sleep
-                    status = await self._poly.get_order_status(order.order_id)
-                    clob_status = status.get("status", "UNKNOWN")
-                    size_matched = status.get("size_matched", "0")
-                    filled = float(size_matched) > 0 if size_matched else False
-                    
-                    # Immediate Telegram notification on MATCHED
-                    self._log.info("trade.fill_status", filled=filled, has_alerter=bool(self._alerter), elapsed=elapsed)
-                    if filled and self._alerter:
-                        try:
-                            _shares = float(size_matched)
-                            _fill_px = round(order.stake_usd / _shares, 4) if _shares > 0 else 0
-                            _rr = round((1 - _fill_px) / _fill_px, 1) if _fill_px > 0 else 0
-                            _profit_if_win = round((1 - _fill_px) * _shares * 0.98, 2)
-                            _dir = "DOWN" if order.direction == "NO" else "UP"
-                            _mode = "📄 PAPER" if self._poly.paper_mode else "🔴 LIVE"
-                            _oid = order.order_id
-                            _stake = order.stake_usd
-                            _fok_step = fok_result.fill_step if fok_result else None
-
-                            # Use explicit parameters to avoid closure capture bugs
-                            async def _send_fill_notif(
-                                _mode=_mode, _dir=_dir, _fill_px=_fill_px,
-                                _shares=_shares, _stake=_stake, _rr=_rr,
-                                _profit_if_win=_profit_if_win, _elapsed=elapsed,
-                                _oid=_oid, _fok_step=_fok_step,
-                            ):
-                                try:
-                                    _fok_line = f"FOK step: `{_fok_step}`\n" if _fok_step is not None else ""
-                                    # Main notification
-                                    await self._alerter._send_with_id(
-                                        f"💰 *BET PLACED — FILLED*  {_mode}\n"
-                                        f"`{_oid[:20]}...`\n\n"
-                                        f"Direction: `{_dir}`\n"
-                                        f"Fill: `${_fill_px:.3f}` × `{_shares:.1f}` shares\n"
-                                        f"Cost: `${_stake:.2f}`\n"
-                                        f"R/R: `1:{_rr}` | If WIN: `+${_profit_if_win:.2f}`\n"
-                                        f"{_fok_line}"
-                                        f"Fill time: `{_elapsed}s`"
-                                    )
-                                    # Brief AI analysis on the fill
-                                    try:
-                                        _prompt = (
-                                            f"BTC 5-min bet just FILLED on Polymarket. {_dir} @ ${_fill_px:.3f}, "
-                                            f"{_shares:.0f} shares, ${_stake:.0f} stake. "
-                                            f"R/R is 1:{_rr}. If win: +${_profit_if_win:.2f}. "
-                                            f"In 1 sentence: is this a good fill price and what's the likely outcome?"
-                                        )
-                                        _ai_text, _ai_src = await self._alerter._ai.assess(_prompt, timeout_s=8)
-                                        await self._alerter._send_with_id(
-                                            f"🤖 *Fill Analysis* — `{_ai_src.upper()}`\n_{_ai_text}_"
-                                        )
-                                    except Exception:
-                                        pass
-                                except Exception as _inner_exc:
-                                    self._log.error("trade.fill_notif_inner_error", error=str(_inner_exc)[:100])
-
-                            asyncio.create_task(_send_fill_notif())
-                            self._log.info("trade.fill_notif_spawned")
-                        except Exception as _notif_err:
-                            self._log.error("trade.fill_notif_error", error=str(_notif_err)[:100])
-                    
-                    self._log.info(
-                        "trade.fill_check",
-                        order_id=order.order_id[:20] + "...",
-                        clob_status=clob_status,
-                        size_matched=size_matched,
-                        filled=filled,
-                        elapsed=f"{elapsed}s",
-                    )
-                    
-                    if filled or clob_status not in ("LIVE", "UNKNOWN"):
-                        break
-
-                order.metadata["filled"] = filled
-                order.metadata["fill_wait_seconds"] = elapsed
-
-                if filled:
-                    # Update entry_price with actual fill price
-                    try:
-                        _shares = float(size_matched)
-                        if _shares > 0:
-                            _fill_price = round(order.stake_usd / _shares, 4)
-                            order.price = str(_fill_price)
-                            order.entry_price = _fill_price
-                            order.metadata["actual_fill_price"] = _fill_price
-                            # Record FOK fill details to snapshot
-                            if fok_result and fok_result.filled:
-                                order.metadata["clob_fill_price"] = _fill_price
-                                order.metadata["fok_attempts"] = fok_result.attempts
-                                order.metadata["fok_fill_step"] = fok_result.fill_step
-                            self._log.info("trade.verified", order_id=order.order_id[:20] + "...", actual_price=f"${_fill_price:.4f}", size_matched=size_matched, wait=f"{elapsed}s")
-                            # Persist actual fill price to DB
-                            if self._db:
-                                try:
-                                    await self._db.write_trade(order)
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
-                    if self._alerter:
-                        asyncio.create_task(self._alerter.send_entry_alert(order))
-                else:
-                    self._log.warning("trade.not_filled_no_retry", order_id=order.order_id[:20], waited=f"{elapsed}s")
-                    # Notify on Telegram that order is sitting unfilled
-                    if self._alerter:
-                        try:
-                            asyncio.create_task(self._alerter._send_with_id(
-                                f"⏳ *ORDER UNFILLED* — {order.order_id[:16]}...\n"
-                                f"Sitting on book after {elapsed}s. GTD will expire at window close.\n"
-                                f"No retry — accepting miss at this price."
-                            ))
-                        except Exception:
-                            pass
-            except Exception as exc:
-                self._log.warning("trade.verify_failed", error=str(exc))
-        
-        if self._alerter:
-            asyncio.create_task(self._alerter.send_entry_alert(order))
+    DEAD_CODE_REMOVED = True  # marker — see git history for _execute_from_signal
 
     # ─── Guardrail Helpers ────────────────────────────────────────────────────
 
@@ -2440,14 +2516,27 @@ class FiveMinVPINStrategy(BaseStrategy):
         _default_cap = float(os.environ.get("FOK_PRICE_CAP", "0.73"))
         PRICE_CAP = getattr(signal, 'v81_entry_cap', _default_cap)  # v8.1: dynamic cap per offset
         PRICE_FLOOR = float(os.environ.get("PRICE_FLOOR", "0.30"))
+        
+        clob_order_id = None
+        _rfq_fill_price = None
+        _used_rfq = False
+        _fok_result = None
+        price = Decimal("0.50")  # Default — overwritten by FOK fill or GTC
+        
+        # Pi bonus: if FOK exhausted, use cap+π cents for GTC (when CLOB was within π% of cap)
+        _pi_bonus_cents = float(os.environ.get("FOK_PI_BONUS_CENTS", "0.0314"))  # π cents
+        _gtc_price = PRICE_CAP + _pi_bonus_cents if hasattr(signal, '_fok_exhausted') else PRICE_CAP
+        _gtc_price = round(_gtc_price, 2)  # Enforce 2dp
+        
         self._log.info(
             "execute.cap_debug",
             signal_cap=getattr(signal, 'v81_entry_cap', 'NOT_SET'),
             default=_default_cap,
-            resolved=PRICE_CAP,
-            reason=getattr(signal, 'entry_reason', '?'),
+            gtc_price=f"${_gtc_price:.4f}",
+            gtc_with_pi_bonus=f"${_gtc_price:.4f}" if hasattr(signal, '_fok_exhausted') else "N/A",
+            pi_bonus=f"${_pi_bonus_cents:.4f}",
         )
-
+        
         # ── Guardrails ────────────────────────────────────────────────────────
         if self._geoblock_check_fn and self._geoblock_check_fn():
             self._log.error("guardrail.geoblock.blocked")
@@ -2460,12 +2549,6 @@ class FiveMinVPINStrategy(BaseStrategy):
         if not rl_allowed:
             self._log.warning("guardrail.rate_limit.blocked", reason=rl_reason)
             return
-
-        clob_order_id = None
-        _rfq_fill_price = None
-        _used_rfq = False
-        _fok_result = None
-        price = Decimal("0.50")  # Default — overwritten by FOK fill or GTC
 
         if runtime.fok_enabled and not self._poly.paper_mode:
             # ── FOK path ──────────────────────────────────────────────────
@@ -2505,6 +2588,8 @@ class FiveMinVPINStrategy(BaseStrategy):
                         prices=_fok_result.attempted_prices,
                         abort_reason=_fok_result.abort_reason,
                     )
+                    # Mark signal as FOK-exhausted so GTC uses cap+π
+                    signal._fok_exhausted = True
                     # Notify — falling back to GTC
                     if self._alerter:
                         _wkey = f"{window.asset}-{window.window_ts}"
@@ -2600,7 +2685,13 @@ class FiveMinVPINStrategy(BaseStrategy):
                 # This way we fill at whatever the market price is (≤ cap).
                 # Previously we sent the CLOB best ask ($0.34-0.60) but
                 # place_order overrode it to $0.73 anyway.
-                _gtc_limit = Decimal(str(round(PRICE_CAP, 4)))
+                _gtc_limit = Decimal(str(round(_gtc_price, 4)))
+                self._log.info(
+                    "execute.gtc_submit",
+                    gtc_limit=f"${_gtc_price:.4f}",
+                    base_cap=f"${PRICE_CAP:.4f}",
+                    pi_bonus_applicable=hasattr(signal, '_fok_exhausted'),
+                )
                 try:
                     clob_order_id = await self._poly.place_order(
                         market_slug=market_slug, direction=direction,
@@ -2786,30 +2877,27 @@ class FiveMinVPINStrategy(BaseStrategy):
                         if self._alerter:
                             asyncio.create_task(self._alerter.send_entry_alert(order))
                     else:
-                        self._log.warning("trade.gtc_not_filled", order_id=order.order_id[:20], waited=f"{elapsed}s")
-                        # Mark as expired in DB
-                        order.status = OrderStatus.EXPIRED
-                        order.metadata["clob_status"] = "EXPIRED_UNFILLED"
+                        # v10.1: Do NOT mark as EXPIRED yet — the GTC/GTD is still alive
+                        # on Polymarket until GTD expiry (window_ts + duration + 120s).
+                        # A market maker may fill it between now and GTD expiry.
+                        # Keep status as OPEN so position_monitor can link it when it resolves.
+                        self._log.info("trade.gtc_still_resting",
+                            order_id=order.order_id[:20],
+                            waited=f"{elapsed}s",
+                            note="GTC still on CLOB — position_monitor will track resolution")
+                        order.metadata["clob_status"] = "RESTING"
+                        order.metadata["poll_exhausted"] = True
+                        order.metadata["fill_wait_seconds"] = elapsed
+                        # Keep status OPEN — do NOT set to EXPIRED
                         if self._om:
                             asyncio.create_task(self._om._persist_trade(order))
-                        # v8.1.2: Mark prediction as bid_unfilled
-                        if self._db:
-                            try:
-                                async with self._db._pool.acquire() as _conn:
-                                    await _conn.execute(
-                                        "UPDATE window_predictions SET bid_unfilled=true, trade_placed=false "
-                                        "WHERE window_ts=$1 AND asset=$2",
-                                        window.window_ts, window.asset
-                                    )
-                            except Exception:
-                                pass
                         if self._alerter:
                             asyncio.create_task(self._alerter.send_system_alert(
-                                f"❌ GTC NOT FILLED — {window.asset} {tf}\n"
+                                f"⏳ GTC RESTING — {window.asset} {tf}\n"
                                 f"Direction: {direction} | Limit: `${PRICE_CAP:.2f}`\n"
                                 f"CLOB ask was: `${float(price):.4f}`\n"
-                                f"Waited {elapsed}s — expired unfilled",
-                                level="warning",
+                                f"Waited {elapsed}s — order still on book, tracking continues",
+                                level="info",
                             ))
                 except Exception as exc:
                     self._log.warning("trade.verify_failed", error=str(exc)[:100])
