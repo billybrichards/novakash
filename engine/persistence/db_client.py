@@ -11,9 +11,10 @@ Schema reference: hub/db/schema.sql
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 import asyncpg
 import structlog
 
@@ -21,6 +22,12 @@ from config.settings import Settings
 from execution.order_manager import Order
 
 log = structlog.get_logger(__name__)
+
+
+# LT-04: channel name used for PostgreSQL LISTEN/NOTIFY between the
+# hub (which INSERTs manual_trades rows) and the engine (which executes
+# them). Keep in sync with hub/api/v58_monitor.py::post_manual_trade.
+MANUAL_TRADE_NOTIFY_CHANNEL = "manual_trade_pending"
 
 
 class DBClient:
@@ -38,6 +45,12 @@ class DBClient:
             dsn = dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
         self._dsn = dsn
         self._pool: Optional[asyncpg.Pool] = None
+        # LT-04: dedicated pinned connection for LISTEN. asyncpg requires a
+        # connection that is NOT shared with the pool because LISTEN holds
+        # the connection open and callbacks fire on its read loop.
+        self._listen_conn: Optional[asyncpg.Connection] = None
+        self._listen_callback: Optional[Callable] = None
+        self._listen_channel: Optional[str] = None
 
     async def connect(self) -> None:
         """Open the asyncpg connection pool."""
@@ -51,12 +64,135 @@ class DBClient:
 
     async def close(self) -> None:
         """Close all pooled connections."""
+        # LT-04: release the pinned LISTEN connection first.
+        try:
+            await self.stop_listening()
+        except Exception as exc:
+            log.warning("db.stop_listening_on_close_failed", error=str(exc))
         if self._pool:
             await self._pool.close()
             log.info("db.closed")
 
     def _assert_pool(self) -> None:
         assert self._pool, "DBClient not connected — call connect() first"
+
+    # ─── LT-04: PostgreSQL LISTEN/NOTIFY fast path ───────────────────────────
+    #
+    # The engine subscribes to the 'manual_trade_pending' channel over a
+    # dedicated asyncpg connection (NOT from the pool — LISTEN holds the
+    # connection open for the lifetime of the subscription). The hub
+    # (hub/api/v58_monitor.py::post_manual_trade) emits a NOTIFY after it
+    # INSERTs a row with status='pending_live', which wakes the engine's
+    # manual_trade_poller immediately instead of making it wait for the
+    # next 1s poll tick.
+    #
+    # Failure modes and safety:
+    #   - If the LISTEN connection dies, the poll loop still fires every
+    #     1s (safety-net fall-through). We also attempt reconnection on
+    #     every fall-through tick via _ensure_listening().
+    #   - If the hub fails to NOTIFY (e.g. the session.execute errors),
+    #     the row is still in the DB and the 1s poll picks it up.
+    #   - NOTIFY is transactional: the hub emits pg_notify AFTER the
+    #     INSERT commit returns, so the row is guaranteed to be visible
+    #     to the engine's SELECT by the time the notification is
+    #     delivered.
+    #
+    # Reference:
+    #   PostgreSQL LISTEN/NOTIFY: https://www.postgresql.org/docs/current/sql-listen.html
+    #   asyncpg add_listener: https://magicstack.github.io/asyncpg/current/api/index.html#asyncpg.connection.Connection.add_listener
+
+    async def listen(
+        self,
+        channel: str,
+        callback: Callable[[asyncpg.Connection, int, str, str], Any],
+    ) -> None:
+        """Open a dedicated asyncpg connection and LISTEN on the given channel.
+
+        The callback fires on the connection's read loop whenever a
+        NOTIFY lands. Callback signature matches asyncpg's add_listener
+        contract: (conn, pid, channel, payload).
+
+        Safe to call multiple times — if already listening on a different
+        channel, the previous listener is stopped first.
+        """
+        if self._listen_conn is not None:
+            await self.stop_listening()
+
+        try:
+            # LT-04: dedicated connection, NOT from the pool. asyncpg
+            # pools multiplex commands across connections and the LISTEN
+            # state would be lost if the pool reused the connection for
+            # other queries.
+            self._listen_conn = await asyncpg.connect(dsn=self._dsn)
+            self._listen_callback = callback
+            self._listen_channel = channel
+            await self._listen_conn.add_listener(channel, callback)
+            log.info("db.listen_started", channel=channel)
+        except Exception as exc:
+            log.error("db.listen_failed", channel=channel, error=str(exc))
+            # Cleanup partial state so _ensure_listening can retry.
+            if self._listen_conn is not None:
+                try:
+                    await self._listen_conn.close()
+                except Exception:
+                    pass
+            self._listen_conn = None
+            self._listen_callback = None
+            self._listen_channel = None
+            raise
+
+    async def stop_listening(self) -> None:
+        """Release the pinned LISTEN connection. Safe to call if not listening."""
+        if self._listen_conn is None:
+            return
+        try:
+            if self._listen_callback and self._listen_channel:
+                try:
+                    await self._listen_conn.remove_listener(
+                        self._listen_channel, self._listen_callback,
+                    )
+                except Exception as exc:
+                    log.debug("db.remove_listener_failed", error=str(exc))
+            await self._listen_conn.close()
+            log.info("db.listen_stopped", channel=self._listen_channel)
+        finally:
+            self._listen_conn = None
+            self._listen_callback = None
+            self._listen_channel = None
+
+    def is_listening(self) -> bool:
+        """Return True iff the pinned LISTEN connection is open and live."""
+        if self._listen_conn is None:
+            return False
+        try:
+            return not self._listen_conn.is_closed()
+        except Exception:
+            return False
+
+    async def ensure_listening(
+        self,
+        channel: str,
+        callback: Callable[[asyncpg.Connection, int, str, str], Any],
+    ) -> bool:
+        """Reconnect the LISTEN connection if it has died.
+
+        Returns True if the listener is live after this call, False
+        otherwise. Called from the poller's fall-through path so that
+        a dropped connection is automatically re-established on the
+        next poll tick.
+        """
+        if self.is_listening() and self._listen_channel == channel:
+            return True
+        try:
+            await self.listen(channel, callback)
+            return True
+        except Exception as exc:
+            log.warning(
+                "db.ensure_listening_failed",
+                channel=channel,
+                error=str(exc)[:200],
+            )
+            return False
 
     # ─── Trade Writes ─────────────────────────────────────────────────────────
 

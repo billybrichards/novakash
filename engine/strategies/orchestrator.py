@@ -90,6 +90,17 @@ class Orchestrator:
         self._execution_queue: asyncio.Queue = asyncio.Queue()  # Pending window evaluations
         self._geoblock_active: bool = False  # G6: Geoblock flag
 
+        # ── LT-04: manual trade fast path (hybrid LISTEN/NOTIFY + poll) ──────
+        # When the hub INSERTs a row into manual_trades with
+        # status='pending_live', it also emits
+        #   SELECT pg_notify('manual_trade_pending', trade_id)
+        # which wakes this event. The poll loop uses asyncio.wait_for on
+        # this event with a 1s timeout as a safety-net fall-through, so
+        # latency drops from ~1s (worst-case tick wait) to ~tens of
+        # milliseconds (LISTEN propagation + engine execute) on the
+        # happy path.
+        self._manual_trade_notify_event: asyncio.Event = asyncio.Event()
+
         # ── Dedup: track conditions resolved by OrderManager callback ─────
         # When _on_order_resolution fires, we add the condition_id here.
         # _position_monitor_loop skips any condition_id already in this set.
@@ -2511,20 +2522,100 @@ class Orchestrator:
         except Exception as exc:
             log.error("orchestrator.market_state_loop_error", error=str(exc))
 
+    def _on_manual_trade_notify(
+        self, conn, pid: int, channel: str, payload: str,
+    ) -> None:
+        """LT-04: asyncpg callback fired when the hub emits pg_notify
+        on 'manual_trade_pending'. The callback runs on the LISTEN
+        connection's read loop and must be non-blocking — we just set
+        an asyncio.Event that the poll loop awaits.
+
+        The payload is the trade_id that the hub just INSERTed, but we
+        don't actually need to parse it: the poll loop re-fetches all
+        rows with status='pending_live' every time the event fires, so
+        a lost or misrouted NOTIFY still falls through to the poll-based
+        safety net.
+        """
+        try:
+            self._manual_trade_notify_event.set()
+            log.debug(
+                "manual_trade.notify_received",
+                channel=channel,
+                payload=(payload[:32] if payload else ""),
+            )
+        except Exception as exc:
+            # Never let a logging / event error kill the LISTEN connection.
+            log.warning("manual_trade.notify_callback_error", error=str(exc))
+
     async def _manual_trade_poller(self) -> None:
         """Poll DB for manual 'pending_live' trades from the dashboard and execute them.
-        
+
         The hub API writes trades with status='pending_live' when Billy clicks
         the Live Trade button. This poller picks them up and submits FOK orders
         to Polymarket via the poly_client.
+
+        LT-04: hybrid LISTEN/NOTIFY + poll fast path.
+          1. On startup, subscribe to the 'manual_trade_pending' channel
+             via a dedicated asyncpg connection. The hub emits
+             pg_notify('manual_trade_pending', trade_id) after the INSERT
+             commit in v58_monitor.py::post_manual_trade.
+          2. The main loop awaits self._manual_trade_notify_event with
+             a 1s timeout. On NOTIFY the event fires immediately
+             (latency ~tens of ms); on timeout we fall through to the
+             periodic poll as the safety net.
+          3. If the LISTEN connection dies, ensure_listening re-opens
+             it on the next tick. Meanwhile the 1s poll still picks up
+             trades — zero regression vs the pre-LT-04 behavior.
         """
         log.info("manual_trade_poller.started")
+
+        # LT-04: subscribe to the notify channel. Failure here is
+        # non-fatal — the 1s fall-through poll still works.
+        try:
+            from persistence.db_client import MANUAL_TRADE_NOTIFY_CHANNEL
+            await self._db.ensure_listening(
+                MANUAL_TRADE_NOTIFY_CHANNEL,
+                self._on_manual_trade_notify,
+            )
+        except Exception as exc:
+            log.warning(
+                "manual_trade_poller.initial_listen_failed",
+                error=str(exc)[:200],
+            )
+
         while not self._shutdown_event.is_set():
             try:
-                await asyncio.sleep(1)  # Poll every 1 second — trades are time-sensitive
+                # LT-04: event-driven wait with 1s fall-through.
+                # - NOTIFY fires → event is set → wait_for returns
+                #   immediately (latency ~10-50ms from hub commit to
+                #   engine wakeup on same-region DB).
+                # - No NOTIFY within 1s → asyncio.TimeoutError → we
+                #   fall through to the periodic poll as the safety net.
+                try:
+                    await asyncio.wait_for(
+                        self._manual_trade_notify_event.wait(),
+                        timeout=1.0,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                finally:
+                    self._manual_trade_notify_event.clear()
+
                 if not self._db or not self._poly_client:
                     continue
-                
+
+                # LT-04: re-establish the LISTEN connection if it died.
+                # ensure_listening is a no-op if already connected.
+                try:
+                    from persistence.db_client import MANUAL_TRADE_NOTIFY_CHANNEL
+                    await self._db.ensure_listening(
+                        MANUAL_TRADE_NOTIFY_CHANNEL,
+                        self._on_manual_trade_notify,
+                    )
+                except Exception:
+                    # Safety-net poll still fires below.
+                    pass
+
                 pending = await self._db.poll_pending_live_trades()
                 for trade in pending:
                     trade_id = trade["trade_id"]

@@ -1640,6 +1640,40 @@ async def post_manual_trade(
     })
     await session.commit()
 
+    # ── LT-04: fast-path NOTIFY for manual trades ──────────────────────────
+    # After the INSERT commit, emit a PostgreSQL NOTIFY on the
+    # 'manual_trade_pending' channel so the engine's manual_trade_poller
+    # (on Montreal) wakes up immediately instead of waiting for its 1s
+    # fall-through poll. This drops click-to-execute latency from ~1s
+    # worst-case poll wait + DB round trip to ~tens of milliseconds
+    # (NOTIFY propagation + engine execute).
+    #
+    # Only emit the NOTIFY for live trades — paper trades are filled
+    # synchronously by the frontend UI and don't need to round-trip
+    # through the engine. Safety: if NOTIFY fails for any reason
+    # (transient connection error, etc.), the row is still in the DB
+    # and the engine's 1s poll picks it up, so we wrap in try/except
+    # and never let the failure leak to the user.
+    #
+    # Channel name MUST match engine/persistence/db_client.py
+    # ::MANUAL_TRADE_NOTIFY_CHANNEL. If you change it, grep for
+    # 'manual_trade_pending' and update both sides.
+    if mode == "live":
+        try:
+            await session.execute(
+                text("SELECT pg_notify('manual_trade_pending', :trade_id)"),
+                {"trade_id": trade_id},
+            )
+            await session.commit()
+            log.info("lt04.manual_trade_notified", trade_id=trade_id)
+        except Exception as notify_exc:
+            # Non-fatal: safety-net poll still picks up the row.
+            log.warning(
+                "lt04.notify_failed",
+                error=str(notify_exc)[:200],
+                trade_id=trade_id,
+            )
+
     # ── LT-03: capture decision snapshot for operator-vs-engine analysis ──
     # This block is wrapped in a top-level try so a snapshot capture failure
     # can NEVER break the trade execution path — the manual_trades row has
