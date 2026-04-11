@@ -50,10 +50,14 @@ from auth.jwt import TokenData
 from auth.middleware import get_current_user
 from db.database import get_session
 from db.schema_catalog import (
+    GATES_CATALOG,
     SCHEMA_CATALOG,
+    gates_by_table,
     list_categories,
+    list_engines,
     list_services,
     status_breakdown,
+    tables_for_gate,
 )
 
 log = structlog.get_logger(__name__)
@@ -441,4 +445,90 @@ async def get_table(
         "row_count_is_estimate": row_count_is_estimate,
         "last_write": last_write,
         "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+    }
+
+
+# ─── GATES endpoints (NAV-01 consolidation) ─────────────────────────────────
+
+
+@router.get("/gates")
+async def get_gates(
+    user: TokenData = Depends(get_current_user),
+) -> dict[str, Any]:
+    """
+    Return the GATES_CATALOG as a structured list grouped by engine.
+
+    NAV-01: the user asked for a single place to answer "which gates
+    consume which tables". This endpoint returns the hand-curated gates
+    inventory (pipeline position, file:line, inputs, outputs, env flags,
+    fail reasons, tables read/written, notes) for both trading engines:
+    Polymarket 5-minute (V10.6 8-gate pipeline) and margin_engine
+    (v4 inline gates, only the ones with standalone status).
+
+    This is static data — no DB query, no side effects. It's served
+    from the hub so the frontend can consume it through the same
+    authed /api/v58/schema/* namespace.
+    """
+    items: list[dict[str, Any]] = []
+    for key, entry in GATES_CATALOG.items():
+        out: dict[str, Any] = {"key": key}
+        out.update(entry)
+        # Cross-reference: for each table this gate reads from, which
+        # other gates also read from it? Useful for "if I change this
+        # table, which gates are affected?" queries.
+        other_gates_per_table: dict[str, list[str]] = {}
+        for table in entry.get("tables_read", []):
+            # Strip parenthetical annotations for cleaner matching
+            bare = table.split(" (")[0].strip() if " (" in table else table.strip()
+            others = [
+                g for g in gates_by_table(bare)
+                if g != key
+            ]
+            if others:
+                other_gates_per_table[bare] = others
+        out["other_gates_by_shared_table"] = other_gates_per_table
+        items.append(out)
+
+    engines = list_engines()
+    by_engine: dict[str, list[dict[str, Any]]] = {eng: [] for eng in engines}
+    for item in items:
+        eng = item.get("engine", "unknown")
+        by_engine.setdefault(eng, []).append(item)
+
+    return {
+        "items": items,
+        "by_engine": by_engine,
+        "engines": engines,
+        "count": len(items),
+        "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+    }
+
+
+@router.get("/gates/by-table/{table_name}")
+async def get_gates_by_table(
+    table_name: str,
+    user: TokenData = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Return the list of gate keys that read from a given table.
+
+    Used by the /schema page's table detail view to show "which gates
+    depend on this table" under each table's expanded card. This is
+    the inverse of the /gates endpoint's `tables_read` field.
+    """
+    if not table_name or not table_name.replace("_", "").isalnum():
+        raise HTTPException(status_code=400, detail="invalid table name")
+
+    matches = gates_by_table(table_name)
+    return {
+        "table": table_name,
+        "gates": [
+            {
+                "key": g,
+                "engine": GATES_CATALOG.get(g, {}).get("engine"),
+                "pipeline_position": GATES_CATALOG.get(g, {}).get("pipeline_position"),
+                "class_name": GATES_CATALOG.get(g, {}).get("class_name"),
+            }
+            for g in matches
+        ],
+        "count": len(matches),
     }
