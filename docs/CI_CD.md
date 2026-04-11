@@ -1,8 +1,8 @@
 # CI/CD — Novakash System
 
-**Status:** living document. Last rewritten 2026-04-11 after the macro-observer + data-collector Railway → AWS migration.
+**Status:** living document. Last rewritten 2026-04-11 after the macro-observer + data-collector Railway → AWS migration. **DEP-02 (hub Railway → AWS Montreal) infra landed 2026-04-11; cutover pending** — see the hub row in the service map and the "DEP-02 cutover plan" section below.
 
-This is the single authoritative reference for where each service deploys from, what secrets it needs, and how to verify or roll it back. It is duplicated verbatim in `novakash-timesfm-repo/docs/CI_CD.md` (on `main`) and `novakash/docs/CI_CD.md` (on `develop`) so an operator in either repo finds it without a cross-repo hunt.
+This is the single authoritative reference for where each service deploys from, what secrets it needs, and how to verify or roll it back. It is duplicated verbatim in `novakash-timesfm-repo/docs/CI_CD.md` (on `main`) and `novakash/docs/CI_CD.md` (on `develop`) so an operator in either repo finds it without a cross-repo hunt. **DEP-02 only touches the `novakash` copy; the `novakash-timesfm-repo` copy will need a follow-up PR to stay in sync.**
 
 ## Branch conventions
 
@@ -21,9 +21,11 @@ Deploys are **gated to push events**, not PRs. Merging a PR to the deploy branch
 | **macro-observer** | novakash | EC2 Montreal `3.98.114.0` (sibling dir) | `.github/workflows/deploy-macro-observer.yml` | push to `develop`, path `macro-observer/**` | Docker healthcheck on `/tmp/observer.alive` (180s window) |
 | **data-collector** | novakash | EC2 Montreal `3.98.114.0` (sibling dir) | `.github/workflows/deploy-data-collector.yml` | push to `develop`, path `data-collector/**` | Docker healthcheck on `/tmp/collector.alive` (30s window) |
 | **margin-engine** | novakash | EC2 eu-west-2 (`MARGIN_ENGINE_HOST`) | `.github/workflows/deploy-margin-engine.yml` | push to `develop`, path `margin_engine/**` | systemd `margin-engine.service` active state |
-| **hub (API)** | novakash | Railway (service `hub`) | Railway auto-deploy from `develop` | push to `develop` | 401 on `/api/*` = healthy (auth wall present) |
+| **hub (API)** | novakash | EC2 Montreal `3.98.114.0:8091` (sibling dir) — *parallel-deployed alongside Railway until the frontend nginx cutover lands* | `.github/workflows/deploy-hub.yml` (DEP-02, 2026-04-11) | push to `develop`, path `hub/**` | Docker healthcheck on `/health` + localhost curl check |
 | **frontend (web)** | novakash | EC2 (`AWS_FRONTEND_HOST`) via nginx | `.github/workflows/deploy-frontend.yml` | push to `develop`, path `frontend/**` | 200 on `/` + static asset etag |
 | **engine (normal trading)** | novakash | Railway (service `engine`) | **NONE — no CI/CD** | manual pushes, Railway watcher only | **unmonitored, often CRASHED** |
+
+> **Hub status note (2026-04-11).** The infra for the AWS hub is landing via DEP-02. Until the frontend nginx upstream flip is done in a follow-up PR, the **Railway hub remains the live one** (frontend still points at `hub-develop-0433.up.railway.app`). The AWS hub runs in parallel for health verification. Do NOT sleep the Railway service until the cutover lands — see the "DEP-02 cutover plan" section below.
 
 ### ⚠ Known gap — `engine/` has no proper CI/CD
 
@@ -53,7 +55,7 @@ All values are set on `billybrichards/novakash` and `billybrichards/novakash-tim
 | `POLYGON_RPC_URL` | timesfm-service (when v2 Chainlink poller lands) | Polygon mainnet RPC for Chainlink aggregators |
 | `ANTHROPIC_API_KEY` | legacy macro-observer path (unused since Qwen migration) | Kept for fallback |
 
-### Montreal EC2 (`3.98.114.0`) — shared across timesfm, macro-observer, data-collector
+### Montreal EC2 (`3.98.114.0`) — shared across timesfm, macro-observer, data-collector, hub
 
 | Secret | Repo | Notes |
 |---|---|---|
@@ -61,6 +63,10 @@ All values are set on `billybrichards/novakash` and `billybrichards/novakash-tim
 | `DEPLOY_SSH_KEY` | novakash-timesfm-repo | Original SSH key used by ci.yml for timesfm-service |
 | `MACRO_OBSERVER_HOST` | novakash | `3.98.114.0` (same box) |
 | `MACRO_OBSERVER_SSH_KEY` | novakash | Fresh ED25519 key bootstrapped 2026-04-11. Reused by `deploy-data-collector.yml` — same user, same box, meaningful isolation would be ceremony |
+| `HUB_HOST` | novakash | `3.98.114.0` (same box) — added 2026-04-11 for DEP-02. May point at the same host as `MACRO_OBSERVER_HOST`; kept as a separate secret so the hub workflow can be pointed at a different box during the migration window without touching the other services. |
+| `HUB_SSH_KEY` | novakash | DEP-02. Can reuse `MACRO_OBSERVER_SSH_KEY`'s keypair content (same ubuntu user on the same box); operator decides at secret-entry time whether to alias or issue a fresh key. |
+| `JWT_SECRET` | novakash | DEP-02. The JWT signing secret the Railway hub reads as `SECRET_KEY`. The deploy workflow templates it onto the host .env under the `SECRET_KEY` name (matching pydantic-settings). Must be identical to the Railway value so tokens stay valid across both hubs during the parallel-deploy window. |
+| `TRADING_APPROVAL_PASSWORD` | novakash | DEP-02. Optional. Used by the trading-config approval gate; if unset the gate is permissive. Copy from Railway's env if the Railway hub has it set. |
 
 ### eu-west-2 margin-engine
 
@@ -87,7 +93,7 @@ All values are set on `billybrichards/novakash` and `billybrichards/novakash-tim
 
 ## Deploy mechanics
 
-All five AWS deploy workflows (timesfm ci.yml, deploy-margin-engine, deploy-macro-observer, deploy-data-collector, deploy-frontend) follow the same shape. Read the macro-observer one as the canonical example — it is the cleanest and the most commented.
+All six AWS deploy workflows (timesfm ci.yml, deploy-margin-engine, deploy-macro-observer, deploy-data-collector, deploy-frontend, deploy-hub) follow the same shape. Read the macro-observer one as the canonical example — it is the cleanest and the most commented. `deploy-hub.yml` (DEP-02) is the newest and is a direct port with one extra check: a localhost `/health` curl after the Docker healthcheck passes, to catch the case where the container is "healthy" per Docker but FastAPI is serving 500s.
 
 ### The pattern
 
@@ -102,7 +108,7 @@ All five AWS deploy workflows (timesfm ci.yml, deploy-margin-engine, deploy-macr
 
 ### The injection-defence pattern
 
-All five workflows use an `env:` block at the job level to pull `${{ secrets.* }}` out of `${{ }}` interpolation context. Shell `run:` steps reference `$SSH_KEY`, `$HOST`, `$DEPLOY_DATABASE_URL` as plain bash variables. This protects against the [GitHub Actions workflow injection class](https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/).
+All six workflows use an `env:` block at the job level to pull `${{ secrets.* }}` out of `${{ }}` interpolation context. Shell `run:` steps reference `$SSH_KEY`, `$HOST`, `$DEPLOY_DATABASE_URL` as plain bash variables. This protects against the [GitHub Actions workflow injection class](https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/).
 
 **Never write `${{ github.event.* }}` inside a `run:` script.** Pipe anything untrusted through `env:` first.
 
@@ -176,12 +182,35 @@ ssh ubuntu@$MARGIN_ENGINE_HOST 'sudo journalctl -u margin-engine --no-pager -n 3
 
 Expected (paper mode): repeating `v4 entry skip: reason=not_tradeable ... macro=BEAR/SKIP_UP` lines at 2s cadence. The gate stack is firing; skips are healthy when there's no edge. The specific gate that fired is in the v4 snapshot's `recommended_action.reason` field (visible on the frontend's V4Panel), not in the log line.
 
-### hub (Railway)
+### hub (DEP-02 parallel-deploy window)
+
+During the DEP-02 window both the Railway hub and the AWS hub are alive. Health-check both.
+
+**AWS hub (new, Montreal `3.98.114.0:8091`)**
+
+```bash
+ssh ubuntu@3.98.114.0 'docker ps --filter name=hub --format "{{.Names}} {{.Status}}"'
+# Expected: hub  Up X minutes (healthy)
+
+ssh ubuntu@3.98.114.0 'curl -sI http://localhost:8091/health'
+# Expected: HTTP/1.1 200 OK
+
+ssh ubuntu@3.98.114.0 'curl -sI http://localhost:8091/api/v4/snapshot'
+# Expected: 401 (auth wall present = routes live)
+
+ssh ubuntu@3.98.114.0 'docker logs --tail 30 hub 2>&1'
+# Expected: hub.starting, db.engine_created, hub.migrations_applied,
+#           INFO:     Uvicorn running on http://0.0.0.0:8091
+```
+
+**Railway hub (still live, sunset pending)**
 
 ```bash
 curl -sI https://hub-develop-0433.up.railway.app/api/v4/snapshot  # Expect 401 (auth present = routes live)
 curl -sI https://hub-develop-0433.up.railway.app/api/this/404     # Expect 404 (differential test)
 ```
+
+Do NOT sleep the Railway hub until the frontend nginx upstream cutover lands. See "DEP-02 cutover plan" below.
 
 ### frontend (AWS)
 
@@ -189,6 +218,42 @@ curl -sI https://hub-develop-0433.up.railway.app/api/this/404     # Expect 404 (
 curl -sI http://$AWS_FRONTEND_HOST/ | grep last-modified
 # Compare to current deploy timestamp — stale last-modified = nginx cache or bundle not updated
 ```
+
+## DEP-02 cutover plan (hub Railway → AWS Montreal)
+
+**Status as of 2026-04-11:** Phase 1 landed (Dockerfile.aws + compose + deploy-hub.yml). Phases 2-6 are pending.
+
+The migration is motivated by click-to-trade latency: the existing chain is Frontend(AWS) → nginx → Railway(hub) → Postgres(Railway) → Montreal engine poller, which adds ~1-2 s of cross-region hop on the `/api/v58/manual-trade` path. Moving the hub to the Montreal box collapses those hops and should bring click-to-row latency under 100 ms.
+
+The cutover is deliberately split so every step is reversible and the running Railway hub is never broken while the AWS one is being stood up.
+
+| Phase | Action | Done by | Status |
+|---|---|---|---|
+| 1 | Land `hub/Dockerfile.aws`, `hub/docker-compose.yml`, `.github/workflows/deploy-hub.yml`, `hub/.env.example`, this doc update | This PR (DEP-02) | **IN THIS PR** |
+| 2 | Operator adds `HUB_HOST`, `HUB_SSH_KEY`, `JWT_SECRET` (and optionally `TRADING_APPROVAL_PASSWORD`) to `billybrichards/novakash` Actions secrets | Operator, manual | Pending |
+| 3 | First deploy fires (push to `develop` or `workflow_dispatch`). AWS hub comes up on `3.98.114.0:8091` in parallel with the Railway hub. Health probes must be green. | `deploy-hub.yml` | Pending |
+| 4 | Validate AWS hub in parallel: run the health-check commands above, exercise the login flow against `http://3.98.114.0:8091`, verify JWTs minted by the AWS hub are accepted by the Railway hub (same `SECRET_KEY`), confirm `/api/v58/manual-trade` writes reach the shared Postgres from the Montreal box in < 100 ms | Operator, manual | Pending |
+| 5 | **Frontend nginx cutover.** Flip `frontend/nginx.conf` upstream from `hub-develop-0433.up.railway.app` to `http://3.98.114.0:8091`. Separate PR, targets `develop`, fires `deploy-frontend.yml`. This is the moment the user-visible path switches | Separate PR | Pending |
+| 6 | **Railway sleep.** `serviceInstanceUpdate` with `sleepApplication: true` on the `hub` service in the `develop` environment of the Novakash Railway project (`6207a7da-54be-4e05-afd3-0b0d024b6a4e` in env `05c003e2-4ccf-4a6d-8ab7-148519bb1209`). Dual-writer risk for the hub is zero (the hub doesn't do any background writing — it only responds to HTTP), but sleep is still the right primitive: it preserves Railway env vars as a rollback artefact | Operator, manual | Pending |
+
+**Reversibility at each phase**
+
+* Phase 1 → 2: revert is `git revert <sha>` of this PR. Railway hub is untouched.
+* Phase 3: if the AWS hub refuses to come healthy, the workflow fails loudly at the health step and Railway is still in charge. Nothing user-visible breaks.
+* Phase 4: parallel runs are free — both hubs read the same DB and the JWT is shared via `SECRET_KEY`.
+* Phase 5: revert the nginx cutover PR. Frontend goes back to Railway.
+* Phase 6: wake Railway with `sleepApplication: false`. But **never run both hubs behind the same frontend upstream** — the frontend is single-upstream, so there's no dual-writer risk as long as nginx points at exactly one hub at a time.
+
+**Why this is split across two PRs**
+
+The DEP-02 PR is strictly additive — it adds a Dockerfile, a compose file, a workflow, an env-example, and doc updates. Nothing in the running Railway hub can break as a result of merging it. The frontend nginx cutover is a different class of change: it *switches* user traffic from one host to another, and the rollback needs to be a pure `git revert` of the nginx.conf line. Keeping them separate means the AWS hub can be validated in parallel for as long as the operator wants before the cutover lands, and if the cutover needs to be reverted it's a single-file revert with a clear diff.
+
+**Required secrets the operator must add before the workflow fires** (see the secrets reference table above for the full description):
+
+- `HUB_HOST` — probably `3.98.114.0`
+- `HUB_SSH_KEY` — can reuse `MACRO_OBSERVER_SSH_KEY` content
+- `JWT_SECRET` — must match the Railway hub's current secret so tokens stay valid across both hubs
+- `TRADING_APPROVAL_PASSWORD` — optional; if unset, approval is permissive
 
 ## Rollback
 
@@ -283,6 +348,7 @@ gh workflow run deploy-macro-observer.yml -R billybrichards/novakash --ref devel
 gh workflow run deploy-data-collector.yml -R billybrichards/novakash --ref develop
 gh workflow run deploy-margin-engine.yml  -R billybrichards/novakash --ref develop
 gh workflow run deploy-frontend.yml       -R billybrichards/novakash --ref develop
+gh workflow run deploy-hub.yml            -R billybrichards/novakash --ref develop
 gh workflow run ci.yml                    -R billybrichards/novakash-timesfm --ref main
 ```
 

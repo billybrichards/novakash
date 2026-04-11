@@ -1,0 +1,227 @@
+name: Deploy Hub to AWS
+
+# DEP-02: Migrate the BTC-Trader Hub FastAPI backend from Railway to
+# the Montreal EC2 box (3.98.114.0, same host as timesfm-service,
+# macro-observer, data-collector). The migration is motivated by:
+#
+#   1. LATENCY. Manual trades currently go Frontend(AWS) ->
+#      /api/v58/manual-trade -> Railway(hub) -> Postgres(Railway) ->
+#      Montreal engine poller. The two cross-region hops add ~1-2 s
+#      to what the user perceives as "click to execute" latency.
+#      Putting the hub on the same box that runs the Postgres-consuming
+#      engine poll loop collapses those hops to localhost and should
+#      bring click-to-row latency under 100 ms.
+#
+#   2. CI/CD PARITY. Railway's git-watcher deploy for the hub has the
+#      same gap that macro-observer and data-collector had before last
+#      week's migration: no import smoke test, no deploy-gated secrets
+#      check, no post-deploy health probe. This workflow ports the
+#      macro-observer pattern to the hub and closes the remaining
+#      CI/CD hole in the fleet.
+#
+#   3. POLYMARKET BOUNDARY PRESERVED. The hub only writes `manual_trades`
+#      rows; the Montreal engine polls and executes via polymarket_client.
+#      This PR moves where the hub runs, NOT what it does. The "hub
+#      never calls Polymarket directly" invariant is unchanged.
+#
+# The Railway hub remains alive during this rollout. Cutover (frontend
+# nginx upstream flip + Railway sleep) is a separate follow-up operator
+# action after the AWS hub is observed healthy. Until then both hubs
+# run in parallel.
+#
+# Deploy is gated to push events on `develop` with a path filter so
+# unrelated PRs do not bounce the container. The workflow file itself
+# is included in the path filter so a workflow-only change does trigger
+# a redeploy (matching the deploy-macro-observer.yml convention).
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'hub/**'
+      - '.github/workflows/deploy-hub.yml'
+  workflow_dispatch:  # Manual redeploy from the Actions tab
+
+# Cancel any in-flight deploy of the same branch when a new push lands.
+# Prevents two rsync runs racing each other on the host.
+concurrency:
+  group: deploy-hub-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy Hub
+    runs-on: ubuntu-latest
+
+    # Pull all secrets into env: blocks first so the run: scripts below
+    # never interpolate ${{ }} expressions directly. This is the
+    # GitHub Actions injection-defence pattern from
+    # https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+    #
+    # No workflow step references ${{ github.event.* }} fields -- only
+    # secrets, which are sanitised by GitHub. This follows the same
+    # pattern as deploy-macro-observer.yml and deploy-data-collector.yml.
+    env:
+      SSH_KEY: ${{ secrets.HUB_SSH_KEY }}
+      HOST: ${{ secrets.HUB_HOST }}
+      DEPLOY_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DEPLOY_JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      DEPLOY_TRADING_APPROVAL_PASSWORD: ${{ secrets.TRADING_APPROVAL_PASSWORD }}
+      # Upstream proxy targets. Once the hub lives on the Montreal box
+      # the timesfm URL collapses to localhost:8080; the margin engine
+      # stays in eu-west-2 so its URL still needs the MARGIN_ENGINE_HOST
+      # secret (same one deploy-margin-engine.yml reads).
+      DEPLOY_TIMESFM_URL: http://localhost:8080
+      DEPLOY_MARGIN_ENGINE_HOST: ${{ secrets.MARGIN_ENGINE_HOST }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Require runtime secrets
+        # Refuse to deploy if any required secret is missing. Templating
+        # an empty .env onto the host would silently break the hub on
+        # the next container restart -- fail loudly here instead.
+        run: |
+          missing=""
+          if [ -z "${HOST}" ]; then missing="$missing HUB_HOST"; fi
+          if [ -z "${SSH_KEY}" ]; then missing="$missing HUB_SSH_KEY"; fi
+          if [ -z "${DEPLOY_DATABASE_URL}" ]; then missing="$missing DATABASE_URL"; fi
+          if [ -z "${DEPLOY_JWT_SECRET}" ]; then missing="$missing JWT_SECRET"; fi
+          if [ -n "$missing" ]; then
+            echo "::error::missing required GitHub Actions secrets:$missing"
+            echo "Add them under Settings -> Secrets and variables -> Actions"
+            echo "before re-running this workflow. See docs/CI_CD.md for"
+            echo "the DEP-02 secrets checklist."
+            exit 1
+          fi
+          # TRADING_APPROVAL_PASSWORD is warned, not required -- the hub
+          # boots fine without it (approval flow falls back to permissive).
+          if [ -z "${DEPLOY_TRADING_APPROVAL_PASSWORD}" ]; then
+            echo "::warning::TRADING_APPROVAL_PASSWORD not set -- approval flow will be permissive"
+          fi
+          echo "all required secrets present"
+
+      - name: Write SSH key
+        # The secret can be stored either base64-encoded (recommended,
+        # avoids newline mangling) or as raw PEM text. Try base64 first,
+        # fall back to raw on failure.
+        run: |
+          mkdir -p ~/.ssh
+          if echo "$SSH_KEY" | base64 -d > ~/.ssh/deploy_key 2>/dev/null && [ -s ~/.ssh/deploy_key ]; then
+            echo "ssh key decoded from base64"
+          else
+            echo "$SSH_KEY" > ~/.ssh/deploy_key
+            echo "ssh key written as raw PEM"
+          fi
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Ensure host directory exists
+        # First-deploy bootstrap. mkdir -p is idempotent so this is safe
+        # to re-run on every deploy. /home/ubuntu/hub/ is the canonical
+        # sibling to /home/ubuntu/timesfm-service/,
+        # /home/ubuntu/macro-observer/, and /home/ubuntu/data-collector/
+        # on the same box.
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'mkdir -p /home/ubuntu/hub'
+
+      - name: Rsync code to EC2
+        # --exclude '.env' protects the host secrets file from being
+        # wiped by --delete. The host .env is managed out-of-band by
+        # the "Template .env on host" step below, which re-templates it
+        # from GitHub Actions secrets on every deploy.
+        #
+        # We rsync the hub/ subdirectory (not the whole repo) so the
+        # deploy is self-contained. The trailing slash on the source
+        # path is critical: hub/ (with slash) copies the contents of
+        # the directory; without slash it would create a nested hub/
+        # subdir on the host.
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            --exclude '.git' \
+            --exclude '__pycache__' \
+            --exclude '.cache' \
+            --exclude '.env' \
+            --exclude '*.pyc' \
+            --exclude '.DS_Store' \
+            --exclude '.venv' \
+            --exclude 'venv' \
+            hub/ ubuntu@"$HOST":/home/ubuntu/hub/
+
+      - name: Template .env on host
+        # The .env file on the EC2 is the single source of truth for
+        # the hub runtime secrets. We re-template it on every deploy
+        # from GitHub Actions secrets so credential rotation lands
+        # automatically without having to ssh in by hand.
+        #
+        # Note: SECRET_KEY is the pydantic-settings field name that
+        # hub/db/database.py reads for JWT signing. We populate it
+        # from the JWT_SECRET Actions secret to match the naming
+        # the operator uses on Railway.
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" "cat > /home/ubuntu/hub/.env" <<ENV
+          DATABASE_URL=${DEPLOY_DATABASE_URL}
+          SECRET_KEY=${DEPLOY_JWT_SECRET}
+          TIMESFM_URL=${DEPLOY_TIMESFM_URL}
+          MARGIN_ENGINE_URL=http://${DEPLOY_MARGIN_ENGINE_HOST}:8090
+          TRADING_APPROVAL_PASSWORD=${DEPLOY_TRADING_APPROVAL_PASSWORD}
+          DEBUG=false
+          ENV
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'chmod 600 /home/ubuntu/hub/.env && wc -l /home/ubuntu/hub/.env'
+
+      - name: Rebuild image and recreate container
+        # docker compose build pulls the latest source from the rsynced
+        # directory and rebuilds the image. --force-recreate guarantees
+        # the new image is actually used (without it, compose can decide
+        # nothing changed and skip the recreate).
+        #
+        # set -e makes the step fail if either build or up fails, so we
+        # do not silently ship a broken image.
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'set -e; cd /home/ubuntu/hub && docker compose build && docker compose up -d --force-recreate'
+
+      - name: Wait for healthcheck
+        # Compose healthcheck has start_period=30s + 30s interval + 5s
+        # timeout. Give it 60s to definitively report healthy -- first
+        # boot runs the migrations block in main.py so the real first
+        # successful /health can land slightly later than start_period.
+        run: |
+          set -e
+          echo "waiting 60s for hub migrations + first healthcheck cycle..."
+          sleep 60
+
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'docker ps --filter name=hub --format "{{.Names}} {{.Status}}"'
+
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" '
+            health=$(docker inspect --format "{{.State.Health.Status}}" hub)
+            echo "container health: $health"
+            if [ "$health" != "healthy" ] && [ "$health" != "starting" ]; then
+              echo "::error::hub container health is $health"
+              docker logs --tail 50 hub
+              exit 1
+            fi
+          '
+
+          # Double-check with a localhost curl on the box itself. This
+          # catches the case where the container is "healthy" per Docker
+          # but the FastAPI app is serving 500s.
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" '
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8091/health || echo 000)
+            echo "curl localhost:8091/health -> $code"
+            if [ "$code" != "200" ]; then
+              echo "::error::hub /health returned $code (expected 200)"
+              docker logs --tail 50 hub
+              exit 1
+            fi
+          '
+
+          echo "hub deploy succeeded"
+
+      - name: Tail recent logs (success diagnostics)
+        # Belt-and-braces visibility -- even on success, dump the last
+        # 30 log lines so the Actions run page shows what actually
+        # happened. This is what was missing from Railway.
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'docker logs --tail 30 hub 2>&1' || true
