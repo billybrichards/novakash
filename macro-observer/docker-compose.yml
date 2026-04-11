@@ -1,0 +1,48 @@
+# Sibling docker-compose.yml for macro-observer on the Montreal EC2 box.
+#
+# This file lives inside the macro-observer/ directory because:
+#   1. It's rsynced to /home/ubuntu/macro-observer/ alongside the source
+#   2. The deploy step's `docker compose up -d --force-recreate` runs
+#      from that directory, so compose finds it locally
+#   3. It's a sibling to the timesfm-service compose stack, NOT inside it —
+#      one stack failure can't cascade into the other
+#
+# The .env file is templated onto the host by the GitHub Actions deploy
+# workflow on every push to develop. It is NOT rsynced (the rsync step
+# explicitly excludes .env to avoid wiping the host's secrets).
+#
+# Health check: a 60s interval HTTP probe against localhost would be
+# wrong because the observer doesn't expose any HTTP — it's a pure
+# background poller. Instead we rely on Docker's "process is alive"
+# check via a python heartbeat file that observer.py touches every
+# poll loop. If the container crashes the restart policy bounces it.
+
+services:
+  macro-observer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: macro-observer
+    restart: unless-stopped
+    env_file:
+      - .env
+    # No port exposure — pure background service. Logs go to docker logs.
+    # We deliberately do NOT use network_mode: host. The default bridge
+    # network gives the container full outbound egress to the public
+    # internet (Binance, Coinbase, Kraken, CoinGlass, Vast.ai Qwen) and
+    # to the shared Railway Postgres via DATABASE_URL.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # Healthcheck: the observer writes a heartbeat to /tmp/observer.alive
+    # at the top of every poll loop (every POLL_INTERVAL seconds, default 60).
+    # If the file is older than 180 seconds the container is unhealthy
+    # and restart-policy will bounce it.
+    healthcheck:
+      test: ["CMD-SHELL", "test $(($(date +%s) - $(stat -c %Y /tmp/observer.alive 2>/dev/null || echo 0))) -lt 180 || exit 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
