@@ -5,6 +5,7 @@ import ContinuousFeed from './ContinuousFeed.jsx';
 import CanvasPriceChart from './CanvasPriceChart.jsx';
 import CanvasRiskSurface from './CanvasRiskSurface.jsx';
 import GateAuditMatrix from './GateAuditMatrix.jsx';
+import GateHeartbeat from './GateHeartbeat.jsx';
 import { getEntryCap, getDuneEntryCap, getCapWithPi, PI_BONUS_CENTS, DUNE_MIN_P, DUNE_CAP_MARGIN, V10_MIN_EVAL_OFFSET, T } from './constants.js';
 
 const INITIAL_CANDLES = [
@@ -87,9 +88,15 @@ export default function LiveTab({ hqData, tick, v9Stats, v9GateData, v10Stats })
 
   return (
     <div style={{
-      display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gridTemplateRows: 'repeat(6, 1fr)',
-      gap: 8, flex: 1, minHeight: 0, transition: 'all 300ms',
+      display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, gap: 0,
     }}>
+      {/* UI-01: V10.6 gate heartbeat — 8-gate pipeline status from signal_evaluations */}
+      <GateHeartbeat gateHeartbeat={hqData?.gate_heartbeat || []} />
+
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(12, 1fr)', gridTemplateRows: 'repeat(6, 1fr)',
+        gap: 8, flex: 1, minHeight: 0, transition: 'all 300ms',
+      }}>
       {/* LEFT COLUMN */}
       {leftExpanded ? (
         <div style={{ gridColumn: 'span 3', gridRow: 'span 6', display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0 }}>
@@ -447,6 +454,7 @@ export default function LiveTab({ hqData, tick, v9Stats, v9GateData, v10Stats })
           </Panel>
         </div>
       )}
+      </div>
     </div>
   );
 }
