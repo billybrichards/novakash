@@ -320,6 +320,8 @@ async def run() -> None:
         v4_macro_hard_veto_confidence_floor=settings.v4_macro_hard_veto_confidence_floor,
         v4_macro_advisory_size_mult_on_conflict=settings.v4_macro_advisory_size_mult_on_conflict,
         v4_allow_no_edge_if_exp_move_bps_gte=settings.v4_allow_no_edge_if_exp_move_bps_gte,
+        # DQ-07 — defensive mark-divergence gate (default OFF: 0.0 = no-op)
+        v4_max_mark_divergence_bps=settings.v4_max_mark_divergence_bps,
         fee_rate_per_side=(
             effective_fee_rate if effective_fee_rate is not None else 0.00045
         ),

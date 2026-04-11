@@ -124,6 +124,22 @@ class MarginSettings(BaseSettings):
     # Flip via MARGIN_V4_ALLOW_NO_EDGE_IF_EXP_MOVE_BPS_GTE=3.0 after replay.
     v4_allow_no_edge_if_exp_move_bps_gte: Optional[float] = None
 
+    # DQ-07: defensive mark_divergence gate. When v4.last_price (which is
+    # Binance spot from the assembler) diverges from the exchange's actual
+    # mark price by more than this many basis points, the gate rejects the
+    # trade with reason "mark_divergence". Catches stale spot ticks,
+    # Hyperliquid basis spikes, and cross-region latency. Default 0.0 = no-op
+    # (gate returns passed unconditionally), so the merge is zero-behavior-
+    # change in production. Operator enables by setting
+    # MARGIN_V4_MAX_MARK_DIVERGENCE_BPS=20 in /opt/margin-engine/.env.
+    #
+    # Recommended by Agent D during the DQ-05 investigation: the SL/TP
+    # ratio math is mathematically consistent regardless of venue because
+    # only the ratio matters, but a stale v4.last_price vs a live exchange
+    # mark can still produce entries off a bad anchor if the divergence is
+    # large enough. This gate is a regression safety rail, not a hot fix.
+    v4_max_mark_divergence_bps: float = 0.0
+
     @property
     def v4_timescales_tuple(self) -> tuple[str, ...]:
         """CSV 'v4_timescales' split into a tuple for adapter consumption."""
