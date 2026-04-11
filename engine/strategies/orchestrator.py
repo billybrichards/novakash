@@ -344,7 +344,7 @@ class Orchestrator:
 
         # v5.8: Inject TimesFM client into five_min_strategy (created before client was initialized)
         if self._timesfm_client and self._five_min_strategy:
-            self._five_min_strategy._timesfm = self._timesfm_client
+            self._five_min_strategy.set_timesfm_client(self._timesfm_client)
             log.info("orchestrator.timesfm_injected_into_five_min")
 
         # v8.1: Inject TimesFM v2.2 client for early entry (calibrated probability)
@@ -352,7 +352,7 @@ class Orchestrator:
         if _v2_enabled and self._five_min_strategy:
             from signals.timesfm_v2_client import TimesFMV2Client
             _v2_url = os.environ.get("TIMESFM_V2_URL", "http://3.98.114.0:8080")
-            self._five_min_strategy._timesfm_v2 = TimesFMV2Client(base_url=_v2_url)
+            self._five_min_strategy.set_timesfm_v2_client(TimesFMV2Client(base_url=_v2_url))
             log.info("orchestrator.v2_early_entry_enabled", url=_v2_url)
         else:
             log.info("orchestrator.v2_early_entry_disabled")
@@ -495,7 +495,7 @@ class Orchestrator:
             await self._tick_recorder.start()
             # Inject into five_min_strategy so it can record TimesFM forecasts
             if self._five_min_strategy:
-                self._five_min_strategy._tick_recorder = self._tick_recorder
+                self._five_min_strategy.set_tick_recorder(self._tick_recorder)
             log.info("orchestrator.tick_recorder_started")
         except Exception as exc:
             log.warning("orchestrator.tick_recorder_start_failed", error=str(exc))
@@ -674,10 +674,10 @@ class Orchestrator:
             )
 
         # 5c. ELM v3 prediction recorder (all 4 assets, every 30s)
-        if self._five_min_strategy and hasattr(self._five_min_strategy, '_timesfm_v2') and self._five_min_strategy._timesfm_v2:
+        if self._five_min_strategy and self._five_min_strategy.timesfm_v2_client:
             from data.feeds.elm_prediction_recorder import ELMPredictionRecorder
             _elm_recorder = ELMPredictionRecorder(
-                elm_client=self._five_min_strategy._timesfm_v2,
+                elm_client=self._five_min_strategy.timesfm_v2_client,
                 db_pool=self._db._pool if self._db else None,
                 shutdown_event=self._shutdown_event,
             )
@@ -1208,10 +1208,8 @@ class Orchestrator:
 
         # Forward to strategy — store for token ID lookup
         if self._five_min_strategy:
-            self._five_min_strategy._pending_windows.append(window)
-            if not hasattr(self._five_min_strategy, '_recent_windows'):
-                self._five_min_strategy._recent_windows = []
-            self._five_min_strategy._recent_windows.append(window)
+            self._five_min_strategy.append_pending_window(window)
+            self._five_min_strategy.append_recent_window(window)
 
             # TWAP: Start tracking on ACTIVE, add price ticks on every signal
             if state_value == "ACTIVE" and window.open_price:
@@ -1269,17 +1267,17 @@ class Orchestrator:
 
                 # ── Helper: get full signal snapshot ────────────────────
                 async def _get_full_snapshot(t_label: str, elapsed: int):
-                    _vpin = self._five_min_strategy._vpin.current_vpin if self._five_min_strategy._vpin else 0.0
+                    _vpin = self._five_min_strategy.current_vpin
                     _btc = float(self._aggregator._state.btc_price) if self._aggregator._state.btc_price else 0.0
                     _d = (_btc - window.open_price) / window.open_price * 100 if window.open_price and _btc else 0.0
                     _regime = ("CASCADE" if _vpin >= 0.65 else "TRANSITION" if _vpin >= 0.55
                                else "NORMAL" if _vpin >= 0.45 else "CALM")
                     # TimesFM
                     _tsf_dir, _tsf_conf, _tsf_pred = None, 0.0, 0.0
-                    if self._five_min_strategy._timesfm:
+                    if self._five_min_strategy.timesfm_client:
                         try:
                             _secs = max(1, int((window.window_ts + window.duration_secs) - _time.time()))
-                            _tsf = await self._five_min_strategy._timesfm.get_forecast(
+                            _tsf = await self._five_min_strategy.timesfm_client.get_forecast(
                                 open_price=window.open_price, seconds_to_close=_secs)
                             if _tsf and not _tsf.error:
                                 _tsf_dir = _tsf.direction
@@ -1478,13 +1476,12 @@ class Orchestrator:
                 # BTC-only: evaluate immediately for fastest FOK execution.
                 try:
                     state = await self._aggregator.get_state()
-                    await self._five_min_strategy._evaluate_window(window, state)
+                    await self._five_min_strategy.evaluate_window(window, state)
                 except Exception as exc:
                     log.warning("five_min.direct_eval_error", asset=window.asset, error=str(exc)[:200])
             elif state_value != "ACTIVE":
                 log.info("five_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
-            if len(self._five_min_strategy._recent_windows) > 20:
-                self._five_min_strategy._recent_windows = self._five_min_strategy._recent_windows[-20:]
+            self._five_min_strategy.trim_recent_windows(20)
 
     async def _on_fifteen_min_window(self, window) -> None:
         """Handle 15-minute window signal — same strategy, different timeframe.
@@ -1509,10 +1506,8 @@ class Orchestrator:
 
         # Reuse the same 5-min strategy for evaluation + token ID lookup
         if self._five_min_strategy:
-            self._five_min_strategy._pending_windows.append(window)
-            if not hasattr(self._five_min_strategy, '_recent_windows'):
-                self._five_min_strategy._recent_windows = []
-            self._five_min_strategy._recent_windows.append(window)
+            self._five_min_strategy.append_pending_window(window)
+            self._five_min_strategy.append_recent_window(window)
 
             # TWAP: Start tracking on ACTIVE for 15-min windows
             if state_value == "ACTIVE" and window.open_price:
@@ -1539,8 +1534,7 @@ class Orchestrator:
                 # v5.8: TimesFM checked inside v5.7c agreement (no standalone)
             else:
                 log.info("fifteen_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
-            if len(self._five_min_strategy._recent_windows) > 20:
-                self._five_min_strategy._recent_windows = self._five_min_strategy._recent_windows[-20:]
+            self._five_min_strategy.trim_recent_windows(20)
 
     # ─── v6.0 TimesFM Window Evaluation ──────────────────────────────────────
 
@@ -1606,7 +1600,7 @@ class Orchestrator:
                         else:
                             _actual = "DOWN" if _direction == "UP" else "UP"  # We lost = oracle went opposite
                         _delta = (_close_p - _open_p) / _open_p * 100 if _open_p else 0
-                        _vpin = self._five_min_strategy._vpin.current_vpin if self._five_min_strategy and self._five_min_strategy._vpin else 0
+                        _vpin = self._five_min_strategy.current_vpin if self._five_min_strategy else 0
                         # Win streak from risk manager
                         _rs = self._risk_manager.get_status()
                         _streak_w = _rs.get("win_streak", 0) if order.outcome == "WIN" else 0
@@ -2684,8 +2678,8 @@ class Orchestrator:
                         # with no Telegram alert.
                         token_id = None
                         token_source = None
-                        if self._five_min_strategy and hasattr(self._five_min_strategy, '_recent_windows'):
-                            for w in reversed(self._five_min_strategy._recent_windows):
+                        if self._five_min_strategy:
+                            for w in reversed(self._five_min_strategy.recent_windows):
                                 if w.window_ts == window_ts:
                                     token_id = w.up_token_id if direction == "YES" else w.down_token_id
                                     if token_id:
@@ -3343,12 +3337,10 @@ class Orchestrator:
                                 # Fetch eval ticks from gate_audit / in-memory history
                                 _eval_ticks = []
                                 # Try in-memory window_eval_history first (most complete)
-                                if self._five_min_strategy and hasattr(
-                                    self._five_min_strategy, "_window_eval_history"
-                                ):
+                                if self._five_min_strategy:
                                     _wkey = f"{asset}-{window_ts}"
                                     _eval_ticks = list(
-                                        self._five_min_strategy._window_eval_history.get(
+                                        self._five_min_strategy.window_eval_history.get(
                                             _wkey, []
                                         )
                                     )
@@ -3558,7 +3550,7 @@ class Orchestrator:
                     # Evaluate and execute
                     try:
                         state = await agg_ref.get_state()
-                        await self._five_min_strategy._evaluate_window(w, state)
+                        await self._five_min_strategy.evaluate_window(w, state)
                         log.info(
                             "guardrail.staggered_execution.evaluated",
                             asset=w.asset,

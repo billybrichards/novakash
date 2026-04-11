@@ -127,9 +127,9 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._db = db_client            # DBClient for window snapshot persistence (optional)
         self._geoblock_check_fn = geoblock_check_fn  # G6: Callable to check if geoblock is active
         self._twap = twap_tracker  # v5.7: TWAP-delta direction tracker
-        self._timesfm = timesfm_client  # v6.0: TimesFM forecast client (for comparison alerts)
-        self._timesfm_v2 = None  # v8.1: TimesFM v2.2 calibrated probability client (injected by orchestrator)
-        self._tick_recorder = None  # TickRecorder injected by orchestrator after start
+        self._timesfm = timesfm_client  # v6.0 — DEPRECATED: use .timesfm_client / .set_timesfm_client()
+        self._timesfm_v2 = None  # v8.1 — DEPRECATED: use .timesfm_v2_client / .set_timesfm_v2_client()
+        self._tick_recorder = None  # DEPRECATED: use .set_tick_recorder()
         self._evaluator = WindowEvaluator()
         
         # CRITICAL: DB-backed dedup — survives engine restarts.
@@ -140,13 +140,13 @@ class FiveMinVPINStrategy(BaseStrategy):
 
         # Consolidated skip notification history: window_key → list of eval ticks
         # Instead of sending 19 individual skip alerts, we batch and send one summary.
-        self._window_eval_history: dict[str, list] = {}
+        self._window_eval_history: dict[str, list] = {}  # DEPRECATED: use .window_eval_history
 
         # Active window monitoring state (one per window)
         self._active_eval_states: dict[str, EvalWindowState] = {}
         
         # Window info buffer (populated by feed callbacks)
-        self._pending_windows: list = []  # Queue of windows to evaluate (multi-asset)
+        self._pending_windows: list = []  # DEPRECATED: use .pending_windows / .append_pending_window()
 
         # ── G4: Order rate limiter state ──────────────────────────────────────
         self._order_timestamps: list[float] = []  # timestamps of recent orders
@@ -185,6 +185,85 @@ class FiveMinVPINStrategy(BaseStrategy):
             open_price=window.open_price,
             up_price=window.up_price,
         )
+
+    # ─── Public API (used by orchestrator — replaces private field access) ───
+
+    @property
+    def traded_windows(self) -> set[str]:
+        """Read-only view of traded window keys (DB-backed dedup set)."""
+        return self._traded_windows
+
+    @property
+    def pending_windows(self) -> list:
+        """Mutable reference to the pending window queue."""
+        return self._pending_windows
+
+    @property
+    def recent_windows(self) -> list:
+        """Mutable reference to the recent-windows ring buffer."""
+        if not hasattr(self, '_recent_windows'):
+            self._recent_windows = []
+        return self._recent_windows
+
+    @recent_windows.setter
+    def recent_windows(self, value: list) -> None:
+        self._recent_windows = value
+
+    @property
+    def vpin_calculator(self):
+        """Public access to the VPIN calculator instance."""
+        return self._vpin
+
+    @property
+    def current_vpin(self) -> float:
+        """Convenience: current VPIN value (0.0 if calculator not set)."""
+        return self._vpin.current_vpin if self._vpin else 0.0
+
+    @property
+    def timesfm_client(self):
+        """Public access to the TimesFM v1 forecast client."""
+        return self._timesfm
+
+    @property
+    def timesfm_v2_client(self):
+        """Public access to the TimesFM v2.2 calibrated probability client."""
+        return self._timesfm_v2
+
+    @property
+    def window_eval_history(self) -> dict[str, list]:
+        """Public access to the per-window evaluation tick history."""
+        return self._window_eval_history
+
+    def set_timesfm_client(self, client) -> None:
+        """Inject the TimesFM v1 forecast client (post-construction)."""
+        self._timesfm = client
+
+    def set_timesfm_v2_client(self, client) -> None:
+        """Inject the TimesFM v2.2 calibrated probability client (post-construction)."""
+        self._timesfm_v2 = client
+
+    def set_tick_recorder(self, recorder) -> None:
+        """Inject the TickRecorder (post-construction)."""
+        self._tick_recorder = recorder
+
+    async def evaluate_window(self, window, state) -> None:
+        """Public entry point for window evaluation. Delegates to _evaluate_window."""
+        await self._evaluate_window(window, state)
+
+    def append_pending_window(self, window) -> None:
+        """Add a window to the pending evaluation queue."""
+        self._pending_windows.append(window)
+
+    def append_recent_window(self, window) -> None:
+        """Add a window to the recent-windows ring buffer."""
+        if not hasattr(self, '_recent_windows'):
+            self._recent_windows = []
+        self._recent_windows.append(window)
+
+    def trim_recent_windows(self, max_size: int = 20) -> None:
+        """Trim the recent-windows ring buffer to at most max_size entries."""
+        if hasattr(self, '_recent_windows') and len(self._recent_windows) > max_size:
+            self._recent_windows = self._recent_windows[-max_size:]
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
