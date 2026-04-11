@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom';
 import { Zap, X, ChevronUp, ChevronDown, Loader2 } from 'lucide-react';
 import { useApi } from '../../../hooks/useApi.js';
 import { T } from './constants.js';
+import { sotChipFor } from './sot.jsx';
 
 /**
  * ManualTradePanel -- Floating trade execution panel (portal-based).
@@ -24,6 +25,11 @@ export default function ManualTradePanel({ hqData }) {
   const [executing, setExecuting] = useState(false);
   const [result, setResult] = useState(null);
   const pollRef = useRef(null);
+  // POLY-SOT: recent manual trades with their reconciliation state, polled
+  // every 30s while the panel is open. Lets the operator see at a glance
+  // whether their last few trades actually landed on Polymarket.
+  const [sotRows, setSotRows] = useState([]);
+  const sotPollRef = useRef(null);
 
   // Derive market info from hqData
   const latestWindow = hqData?.windows?.[0] || {};
@@ -52,6 +58,30 @@ export default function ManualTradePanel({ hqData }) {
     pollRef.current = setInterval(fetchPrices, 4000);
     return () => clearInterval(pollRef.current);
   }, [open, fetchPrices]);
+
+  // POLY-SOT: poll the SOT endpoint while the panel is open. Cadence is
+  // 30s — the reconciler runs every 2 minutes server-side, but we want
+  // any new state changes to appear in the UI within the next polling
+  // window so the operator gets fast feedback after clicking Execute.
+  const fetchSot = useCallback(async () => {
+    try {
+      const res = await api('GET', '/v58/manual-trades-sot?limit=10');
+      const data = res?.data || res;
+      const rows = data?.rows || [];
+      setSotRows(rows);
+    } catch {
+      // Non-fatal — chip area silently shows nothing if fetch fails
+    }
+  }, [api]);
+
+  useEffect(() => {
+    if (!open) return;
+    fetchSot();
+    sotPollRef.current = setInterval(fetchSot, 30000);
+    return () => {
+      if (sotPollRef.current) clearInterval(sotPollRef.current);
+    };
+  }, [open, fetchSot]);
 
   // Reset price when direction changes
   useEffect(() => {
@@ -320,6 +350,47 @@ export default function ManualTradePanel({ hqData }) {
           ) : (
             <>Error: {result.error}</>
           )}
+        </div>
+      )}
+
+      {/* POLY-SOT — recent manual trades + Polymarket reconciliation state */}
+      {sotRows.length > 0 && (
+        <div style={{
+          padding: '8px 10px', borderRadius: 4, fontSize: 10,
+          background: 'rgba(15,23,42,0.6)', border: `1px solid ${T.cardBorder}`,
+          display: 'flex', flexDirection: 'column', gap: 6,
+        }}>
+          <div style={{
+            fontSize: 9, color: T.textMuted, fontWeight: 700,
+            letterSpacing: '0.06em', textTransform: 'uppercase',
+          }}>
+            POLY-SOT (last {sotRows.length})
+          </div>
+          {sotRows.slice(0, 5).map(r => (
+            <div
+              key={r.trade_id}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                gap: 6,
+              }}
+            >
+              <span style={{
+                color: T.textMuted, fontFamily: "'JetBrains Mono', monospace",
+                fontSize: 9, overflow: 'hidden', textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap', flexShrink: 1, minWidth: 0,
+              }}>
+                {r.direction || '?'} ${r.stake_usd?.toFixed?.(2) ?? '?'} · {r.trade_id?.slice(7, 15)}
+              </span>
+              {sotChipFor(r.sot_reconciliation_state, {
+                notes: r.sot_reconciliation_notes,
+                compact: true,
+                engineFillPrice: r.entry_price,
+                polyFillPrice: r.polymarket_confirmed_fill_price,
+                polyConfirmedStatus: r.polymarket_confirmed_status,
+                lastVerifiedAt: r.polymarket_last_verified_at,
+              })}
+            </div>
+          ))}
         </div>
       )}
     </div>

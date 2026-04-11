@@ -760,6 +760,15 @@ class Orchestrator:
         except Exception as exc:
             log.warning("orchestrator.ensure_v8_trade_columns_failed", error=str(exc))
 
+        # 6d2. POLY-SOT: ensure manual_trades has the source-of-truth columns.
+        # Hub also ensures these on its own startup, but the engine restart
+        # cycle is independent and the SOT reconciler loop will fail loudly
+        # if it tries to write a column that doesn't exist yet.
+        try:
+            await self._db.ensure_manual_trades_sot_columns()
+        except Exception as exc:
+            log.warning("orchestrator.ensure_manual_trades_sot_columns_failed", error=str(exc))
+
         # 6f. Recover open trades from previous sessions (startup trade recovery)
         try:
             recovered = await self._order_manager.recover_open_trades(self._db)
@@ -804,6 +813,15 @@ class Orchestrator:
         # 7b. Manual trade queue poller (v5.8 dashboard live trades)
         self._tasks.append(
             asyncio.create_task(self._manual_trade_poller(), name="manual_trade_poller")
+        )
+
+        # 7c. POLY-SOT reconciler loop (always-on, runs in both paper and
+        # live mode so paper trades exercise the same code path that live
+        # trades will). Cadence is conservative — 2 minutes is enough to
+        # catch the failure mode the user flagged (engine claims executed
+        # but Polymarket has no record) without hammering the CLOB.
+        self._tasks.append(
+            asyncio.create_task(self._sot_reconciler_loop(), name="sot_reconciler")
         )
 
         # 8. Builder Relayer redeemer (live mode only)
@@ -2728,7 +2746,15 @@ class Orchestrator:
                         if self._poly_client.paper_mode:
                             # Paper mode — simulate fill
                             clob_id = f"manual-paper-{trade_id[:12]}"
-                            await self._db.update_manual_trade_status(trade_id, "open")
+                            # POLY-SOT: persist the synthetic clob_id even in
+                            # paper mode so the reconciler exercises the same
+                            # code path and stamps the row `agrees`. The
+                            # PolymarketClient's get_order_status_sot()
+                            # recognises `manual-paper-*` IDs as synthetic
+                            # paper fills and returns a filled OrderStatus.
+                            await self._db.update_manual_trade_status(
+                                trade_id, "open", clob_order_id=clob_id,
+                            )
                             log.info("manual_trade.paper_filled", trade_id=trade_id, clob_id=clob_id)
                         else:
                             # Live — submit FOK to CLOB
@@ -2740,7 +2766,16 @@ class Orchestrator:
                                 stake_usd=stake,
                                 token_id=token_id,
                             )
-                            await self._db.update_manual_trade_status(trade_id, "open")
+                            # POLY-SOT: persist the CLOB order ID so the SOT
+                            # reconciler loop can verify the trade actually
+                            # landed on Polymarket. If clob_id is None or
+                            # empty (place_order returned silently), the
+                            # reconciler will catch the gap on its next
+                            # pass and tag the row engine_optimistic.
+                            await self._db.update_manual_trade_status(
+                                trade_id, "open",
+                                clob_order_id=str(clob_id) if clob_id else None,
+                            )
                             log.info("manual_trade.live_submitted", trade_id=trade_id, clob_id=str(clob_id)[:20])
                         
                         # Alert on Telegram
@@ -2764,8 +2799,89 @@ class Orchestrator:
             except Exception as exc:
                 log.error("manual_trade_poller.error", error=str(exc))
                 await asyncio.sleep(30)
-        
+
         log.info("manual_trade_poller.stopped")
+
+    async def _sot_reconciler_loop(self) -> None:
+        """POLY-SOT — every 2 minutes, verify manual_trades rows against Polymarket.
+
+        This loop is the safety net for the manual_trade_poller. The poller
+        writes status='open' / 'executed' immediately after place_order()
+        returns, but doesn't re-query Polymarket to confirm that the order
+        actually landed. If place_order() times out, retries, or partially
+        executes, the engine DB would happily claim success.
+
+        The SOT loop closes that gap: it iterates manual_trades rows older
+        than 30 seconds, calls polymarket_client.get_order_status_sot(), and
+        stamps the row with the authoritative polymarket_confirmed_* fields
+        plus a sot_reconciliation_state. On `engine_optimistic` or `diverged`
+        rows it fires a Telegram alert.
+
+        Always-on: runs in both paper and live mode. In paper mode the
+        reconciler stamps every paper trade `agrees` because PolymarketClient
+        recognises the synthetic `manual-paper-*` order IDs and returns a
+        filled OrderStatus. This means the dashboard "agrees" chip is
+        meaningful even on the paper engine.
+
+        Cadence: 2 minutes is a tradeoff between latency-to-detect and CLOB
+        rate-limit pressure. Configurable via env var SOT_RECONCILER_INTERVAL.
+        """
+        # CLOBReconciler may be None when paper_mode is on (the existing
+        # reconciler is live-only) — but we still want the SOT loop running
+        # in paper mode. Construct a thin SOT-only reconciler in that case
+        # so the loop body can stay the same.
+        from reconciliation.reconciler import CLOBReconciler
+
+        sot_reconciler = self._reconciler
+        if sot_reconciler is None:
+            try:
+                sot_reconciler = CLOBReconciler(
+                    poly_client=self._poly_client,
+                    db_pool=self._db._pool if self._db else None,
+                    alerter=self._alerter,
+                    shutdown_event=self._shutdown_event,
+                )
+            except Exception as exc:
+                log.error("sot_reconciler_loop.init_failed", error=str(exc))
+                return
+
+        try:
+            interval_s = float(os.environ.get("SOT_RECONCILER_INTERVAL", "120"))
+        except (TypeError, ValueError):
+            interval_s = 120.0
+        if interval_s < 10:
+            interval_s = 10  # safety floor
+
+        log.info("sot_reconciler_loop.started", interval_seconds=interval_s)
+
+        while not self._shutdown_event.is_set():
+            try:
+                summary = await sot_reconciler.reconcile_manual_trades_sot(limit=100)
+                if summary.checked > 0:
+                    log.info(
+                        "sot_reconciler_loop.pass_complete",
+                        checked=summary.checked,
+                        agrees=summary.agrees,
+                        unreconciled=summary.unreconciled,
+                        engine_optimistic=summary.engine_optimistic,
+                        polymarket_only=summary.polymarket_only,
+                        diverged=summary.diverged,
+                        alerts=summary.alerts_fired,
+                    )
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                log.error("sot_reconciler_loop.pass_error", error=str(exc)[:200])
+
+            try:
+                await asyncio.wait_for(
+                    self._shutdown_event.wait(), timeout=interval_s
+                )
+                break  # shutdown signalled
+            except asyncio.TimeoutError:
+                pass  # normal — continue to next pass
+
+        log.info("sot_reconciler_loop.stopped")
 
     async def _position_monitor_loop(self) -> None:
         """Every 30s: check Polymarket positions API for resolved trades.

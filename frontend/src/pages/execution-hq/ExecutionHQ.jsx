@@ -64,6 +64,10 @@ export default function ExecutionHQ() {
   const [dashStats, setDashStats] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  // POLY-SOT — recent manual trades + their reconciliation state. Polled
+  // alongside hqData and passed into TradeTicker so the always-visible
+  // strip surfaces engine_optimistic / diverged manual trades immediately.
+  const [manualSotRows, setManualSotRows] = useState([]);
 
   // Tick counter for animations
   useEffect(() => {
@@ -82,19 +86,33 @@ export default function ExecutionHQ() {
 
   // Fetch execution HQ data. The endpoint is parameterised on asset +
   // timeframe so each HQ page only sees its own market's data.
+  // POLY-SOT (this PR): also fetches /v58/manual-trades-sot in parallel
+  // so the trade ticker can render the SOT chip alongside engine trades.
+  // Only requested for the live-trading pair (BTC 5m) since the other 7
+  // routes are monitor-only and never produce manual_trades rows.
   const fetchData = async () => {
     try {
       const hqUrl = `/v58/execution-hq?limit=200&asset=${encodeURIComponent(asset)}&timeframe=${encodeURIComponent(timeframe)}`;
-      const [hqRes, statsRes] = await Promise.allSettled([
+      const calls = [
         api('GET', hqUrl),
         api('GET', '/dashboard/stats'),
-      ]);
+      ];
+      if (isLiveTradingPair) {
+        calls.push(api('GET', '/v58/manual-trades-sot?limit=10'));
+      }
+      const results = await Promise.allSettled(calls);
+      const [hqRes, statsRes, sotRes] = results;
 
-      if (hqRes.status === 'fulfilled') {
+      if (hqRes && hqRes.status === 'fulfilled') {
         setHqData(hqRes.value?.data || hqRes.value);
       }
-      if (statsRes.status === 'fulfilled') {
+      if (statsRes && statsRes.status === 'fulfilled') {
         setDashStats(statsRes.value?.data || statsRes.value);
+      }
+      if (sotRes && sotRes.status === 'fulfilled') {
+        const sotData = sotRes.value?.data || sotRes.value;
+        const rows = Array.isArray(sotData?.rows) ? sotData.rows : [];
+        setManualSotRows(rows);
       }
       setError(null);
     } catch (err) {
@@ -273,8 +291,11 @@ export default function ExecutionHQ() {
         </div>
       </header>
 
-      {/* Trade ticker strip */}
-      <TradeTicker recentTrades={hqData?.recent_trades || []} />
+      {/* Trade ticker strip — POLY-SOT chips for manual trades + engine trades */}
+      <TradeTicker
+        recentTrades={hqData?.recent_trades || []}
+        manualSotRows={manualSotRows}
+      />
 
       {/* Error banner */}
       {error && (

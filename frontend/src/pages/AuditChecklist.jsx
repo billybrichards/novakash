@@ -259,6 +259,36 @@ const TASKS = [
     ],
     fix: 'New gate class in margin_engine/use_cases/open_position.py::_execute_v4 after balance check. New setting v4_max_mark_divergence_bps (default 20.0) in settings.py. New test case in tests/ constructing a V4Snapshot with last_price=80000 and a stub ExchangePort returning get_current_price=80200 (25bps), asserting trade is rejected with skip_reason="mark_divergence". Deploy with threshold=1000 first to verify no-op, then tighten to 20.',
   },
+  {
+    id: 'POLY-SOT',
+    category: 'data-quality',
+    severity: 'HIGH',
+    status: 'DONE',
+    title: 'Polymarket CLOB as source-of-truth for manual_trades',
+    files: [
+      { path: 'migrations/add_manual_trades_sot_columns.sql', line: 1, repo: 'novakash' },
+      { path: 'engine/persistence/db_client.py', line: 1162, repo: 'novakash' },
+      { path: 'engine/execution/polymarket_client.py', line: 38, repo: 'novakash' },
+      { path: 'engine/reconciliation/reconciler.py', line: 1102, repo: 'novakash' },
+      { path: 'engine/strategies/orchestrator.py', line: 805, repo: 'novakash' },
+      { path: 'engine/tests/test_reconcile_manual_trades_sot.py', line: 1, repo: 'novakash' },
+      { path: 'hub/api/v58_monitor.py', line: 1965, repo: 'novakash' },
+      { path: 'frontend/src/pages/execution-hq/components/sot.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/execution-hq/components/TradeTicker.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/execution-hq/components/ManualTradePanel.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/execution-hq/ExecutionHQ.jsx', line: 277, repo: 'novakash' },
+    ],
+    evidence: [
+      'User request 2026-04-11: "implement similar database defensibility source of truth stuff we have for the options trading live mode margin engine binance hyperliquid to make sure what happens on exchange is source of truth tags etc make sure our data system has that clearly for polymarket going forward".',
+      'Reference pattern: margin_engine/use_cases/manage_positions.py calls self._exchange.get_mark() every tick and uses fill.fill_price from self._exchange.place_market_order(...) — the exchange is the authoritative record. ExchangePort protocol formalises this.',
+      'Pre-PR gap: orchestrator.py::_manual_trade_poller (~line 2514) called poly_client.place_order() and immediately wrote status="open" to manual_trades. If place_order timed out, retried, or partially executed, the engine DB happily claimed success while Polymarket may never have booked the trade. There was no SOT field distinguishing engine_recorded_status from polymarket_confirmed_status.',
+      'Failure mode the user explicitly flagged: clicking Execute, Polymarket API hiccup, no Telegram alert, no row update — operator has no idea the trade did or didnt land.',
+    ],
+    fix: 'SHIPPED. (1) Schema: 8 new columns on manual_trades — polymarket_order_id, polymarket_confirmed_status, polymarket_confirmed_fill_price, polymarket_confirmed_size, polymarket_confirmed_at, polymarket_last_verified_at, sot_reconciliation_state, sot_reconciliation_notes. Idempotent ALTER TABLE migration + ensure_manual_trades_sot_columns helper on both engine (DBClient) and hub (ensure_manual_trades_table). (2) PolymarketClient: new typed PolyOrderStatus dataclass + get_order_status_sot(order_id)->Optional[PolyOrderStatus] + list_recent_orders(since,limit) helpers that hide Polymarket lowercase/uppercase status, multiple field names for size_matched, and 404=None semantics. (3) Reconciler: new CLOBReconciler.reconcile_manual_trades_sot() method walks the 5-state decision matrix (agrees | unreconciled | engine_optimistic | polymarket_only | diverged) with 0.5% price tolerance. Fires Telegram alerts on engine_optimistic / polymarket_only / diverged. Per-trade alert dedupe so the same row only screams once per engine restart. (4) Orchestrator: new _sot_reconciler_loop runs every 2 minutes (configurable via SOT_RECONCILER_INTERVAL env var), always-on in both paper and live mode. _manual_trade_poller now persists clob_order_id into the new polymarket_order_id column on every trade. (5) Hub: new GET /api/v58/manual-trades-sot?limit=50 endpoint joins manual_trades with the SOT columns + returns counts dict for the dashboard. (6) Frontend: shared sot.jsx helper renders colour-coded chips (green agrees / yellow unreconciled / red engine_optimistic|diverged|polymarket_only). TradeTicker prepends manual SOT chips to the always-visible scroll strip. ManualTradePanel polls /manual-trades-sot every 30s and shows the last 5 chips in the trade panel. ExecutionHQ fetches the SOT rows in parallel with hqData and passes them to the ticker. (7) Tests: 12 new pytest cases in test_reconcile_manual_trades_sot.py covering every state path (agrees, engine_optimistic, diverged, unreconciled, polymarket_only, no-order-id old/recent, dedupe, paper synthetic ID, fetch error preserves prior state). 23 existing tests still pass.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'SHIPPED in PR feat/poly-sot-reconciler. Mirrors the margin_engine ExchangePort pattern for Polymarket manual trades. Always-on in paper + live. Within 2 minutes of any engine_optimistic / diverged / polymarket_only event the reconciler fires a Telegram alert and the frontend ticker shows a red chip. Test plan: 12 unit tests covering every decision branch + dedupe + transient-error preservation. Operator activation: nothing — runs automatically on next engine restart, schema migration is idempotent and the hub auto-applies it on its own lifespan startup.' },
+    ],
+  },
 
   // ── production-errors ───────────────────────────────────────────────────
   {

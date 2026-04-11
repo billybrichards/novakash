@@ -46,7 +46,13 @@ router = APIRouter()
 # ─── DB Migration helper (called from main.py lifespan) ─────────────────────
 
 async def ensure_manual_trades_table(session: AsyncSession) -> None:
-    """Create manual_trades table if it doesn't exist."""
+    """Create manual_trades table if it doesn't exist.
+
+    POLY-SOT additions (2026-04-11): adds polymarket_confirmed_* columns and
+    sot_reconciliation_state so the SOT reconciler in engine/reconciliation
+    can stamp every row with the authoritative Polymarket CLOB record.
+    Mirrors the margin_engine pattern where exchange API is the SOT.
+    """
     await session.execute(text("""
         CREATE TABLE IF NOT EXISTS manual_trades (
             id SERIAL PRIMARY KEY,
@@ -70,6 +76,31 @@ async def ensure_manual_trades_table(session: AsyncSession) -> None:
     await session.execute(text("""
         ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS order_type VARCHAR(5) DEFAULT 'FAK'
     """))
+
+    # ── POLY-SOT columns: Polymarket CLOB as source-of-truth for manual trades ──
+    # See migrations/add_manual_trades_sot_columns.sql for the canonical migration.
+    # Each ALTER is independently idempotent so a partial historical apply still
+    # converges to the full schema after one more lifespan startup.
+    for ddl in (
+        "ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS polymarket_order_id TEXT",
+        "ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS polymarket_confirmed_status TEXT",
+        "ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS polymarket_confirmed_fill_price NUMERIC(18,6)",
+        "ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS polymarket_confirmed_size NUMERIC(18,6)",
+        "ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS polymarket_confirmed_at TIMESTAMPTZ",
+        "ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS polymarket_last_verified_at TIMESTAMPTZ",
+        "ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS sot_reconciliation_state TEXT",
+        "ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS sot_reconciliation_notes TEXT",
+    ):
+        await session.execute(text(ddl))
+    # Indexes — both partial so they only cost us bytes for rows that have data.
+    await session.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_manual_trades_polymarket_order_id "
+        "ON manual_trades(polymarket_order_id) WHERE polymarket_order_id IS NOT NULL"
+    ))
+    await session.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_manual_trades_sot_state "
+        "ON manual_trades(sot_reconciliation_state) WHERE sot_reconciliation_state IS NOT NULL"
+    ))
     await session.commit()
 
 
@@ -1962,6 +1993,119 @@ async def get_manual_trade_snapshots(
         return {"rows": rows_out, "count": len(rows_out)}
     except Exception as exc:
         return {"rows": [], "count": 0, "error": str(exc)}
+
+
+@router.get("/v58/manual-trades-sot")
+async def get_manual_trades_sot(
+    limit: int = Query(50, ge=1, le=500),
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """POLY-SOT — return recent manual_trades rows joined with their
+    Polymarket source-of-truth fields.
+
+    Mirrors the existing `/v58/manual-trades` endpoint but exposes the
+    `polymarket_confirmed_*` and `sot_reconciliation_state` columns the
+    SOT reconciler in engine/reconciliation/reconciler.py stamps every
+    2 minutes. Used by the frontend TradeTicker chip + the future
+    /sot-dashboard view.
+
+    The state alphabet (kept in sync with the reconciler):
+      - agrees             — engine and Polymarket agree (green chip)
+      - unreconciled       — Polymarket order not yet terminal (yellow)
+      - engine_optimistic  — engine claims executed, Polymarket has no record (red)
+      - polymarket_only    — engine says failed but Polymarket has fill (red)
+      - diverged           — fill_price/size mismatch beyond tolerance (red)
+      - NULL               — never checked (also rendered yellow)
+
+    Returns the most recent rows by created_at desc, capped at `limit`.
+    """
+    # Make sure the table + SOT columns exist before we query, so a fresh
+    # DB doesn't 500 the frontend chip on first paint.
+    try:
+        await ensure_manual_trades_table(session)
+    except Exception as exc:
+        return {"rows": [], "count": 0, "error": f"schema: {exc}"}
+
+    try:
+        q = text("""
+            SELECT
+                trade_id,
+                window_ts,
+                asset,
+                direction,
+                mode,
+                entry_price,
+                stake_usd,
+                status,
+                outcome_direction,
+                pnl_usd,
+                created_at,
+                resolved_at,
+                polymarket_order_id,
+                polymarket_confirmed_status,
+                polymarket_confirmed_fill_price,
+                polymarket_confirmed_size,
+                polymarket_confirmed_at,
+                polymarket_last_verified_at,
+                sot_reconciliation_state,
+                sot_reconciliation_notes
+            FROM manual_trades
+            ORDER BY created_at DESC
+            LIMIT :lim
+        """)
+        result = await session.execute(q, {"lim": limit})
+        rows = result.mappings().all()
+
+        out: list[dict] = []
+        counts = {
+            "agrees": 0,
+            "unreconciled": 0,
+            "engine_optimistic": 0,
+            "polymarket_only": 0,
+            "diverged": 0,
+            "null": 0,
+        }
+        for r in rows:
+            sot_state = r.get("sot_reconciliation_state")
+            counts_key = sot_state if sot_state in counts else "null"
+            counts[counts_key] = counts.get(counts_key, 0) + 1
+            out.append({
+                "trade_id": r.get("trade_id"),
+                "window_ts": r.get("window_ts"),
+                "asset": r.get("asset"),
+                "direction": r.get("direction"),
+                "mode": r.get("mode"),
+                "entry_price": _safe_float(r.get("entry_price")),
+                "stake_usd": _safe_float(r.get("stake_usd")),
+                "status": r.get("status"),
+                "outcome_direction": r.get("outcome_direction"),
+                "pnl_usd": _safe_float(r.get("pnl_usd")),
+                "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+                "resolved_at": r["resolved_at"].isoformat() if r.get("resolved_at") else None,
+                "polymarket_order_id": r.get("polymarket_order_id"),
+                "polymarket_confirmed_status": r.get("polymarket_confirmed_status"),
+                "polymarket_confirmed_fill_price": _safe_float(r.get("polymarket_confirmed_fill_price")),
+                "polymarket_confirmed_size": _safe_float(r.get("polymarket_confirmed_size")),
+                "polymarket_confirmed_at": (
+                    r["polymarket_confirmed_at"].isoformat()
+                    if r.get("polymarket_confirmed_at") else None
+                ),
+                "polymarket_last_verified_at": (
+                    r["polymarket_last_verified_at"].isoformat()
+                    if r.get("polymarket_last_verified_at") else None
+                ),
+                "sot_reconciliation_state": sot_state,
+                "sot_reconciliation_notes": r.get("sot_reconciliation_notes"),
+            })
+
+        return {
+            "rows": out,
+            "count": len(out),
+            "counts": counts,
+        }
+    except Exception as exc:
+        return {"rows": [], "count": 0, "counts": {}, "error": str(exc)}
 
 
 @router.get("/v58/window-detail/{window_ts}")
