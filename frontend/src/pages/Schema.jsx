@@ -73,6 +73,16 @@ const STATUS_META = {
   deprecated: { color: T.red, bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.3)', label: 'DEPRECATED' },
 };
 
+// ─── SOT class styling ────────────────────────────────────────────────────
+// Source-of-Truth classification from the data architecture audit.
+const SOT_CLASS_META = {
+  SOT:         { color: '#22d3ee', bg: 'rgba(34,211,238,0.12)', border: 'rgba(34,211,238,0.35)', label: 'SOT' },
+  DERIVED:     { color: '#a78bfa', bg: 'rgba(167,139,250,0.12)', border: 'rgba(167,139,250,0.35)', label: 'DERIVED' },
+  CACHE:       { color: '#60a5fa', bg: 'rgba(96,165,250,0.12)', border: 'rgba(96,165,250,0.35)', label: 'CACHE' },
+  LEGACY:      { color: '#fbbf24', bg: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.35)', label: 'LEGACY' },
+  OPERATIONAL: { color: '#94a3b8', bg: 'rgba(148,163,184,0.10)', border: 'rgba(148,163,184,0.30)', label: 'OPS' },
+};
+
 // ─── Formatters ───────────────────────────────────────────────────────────
 
 function fmtWhen(iso) {
@@ -181,6 +191,16 @@ function CategoryChip({ category }) {
       title={`category: ${category}`}
     >
       {label}
+    </Chip>
+  );
+}
+
+function SotClassChip({ sotClass }) {
+  if (!sotClass) return null;
+  const meta = SOT_CLASS_META[sotClass] || SOT_CLASS_META.OPERATIONAL;
+  return (
+    <Chip color={meta.color} bg={meta.bg} border={meta.border} title={`data class: ${sotClass}`}>
+      {meta.label}
     </Chip>
   );
 }
@@ -387,6 +407,7 @@ function TableCard({ entry, expanded, onToggle, detail, detailLoading, detailErr
             </div>
             <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
               <StatusChip status={entry.status} />
+              <SotClassChip sotClass={entry.sot_class} />
               <ServiceChip service={entry.service} />
               <CategoryChip category={entry.category} />
               {entry.exists === false && (
@@ -615,6 +636,8 @@ function TableDetail({ entry, detail }) {
           <KV label="service" value={entry.service} />
           <KV label="category" value={entry.category} />
           <KV label="status" value={entry.status} />
+          <KV label="data class" value={entry.sot_class || '(unclassified)'} />
+          <KV label="data flow" value={entry.data_flow || '(not mapped)'} mono={false} />
           <KV
             label="recency column"
             value={entry.recency_column || '(none)'}
@@ -1193,6 +1216,8 @@ export default function Schema() {
           t.purpose,
           t.service,
           t.category,
+          t.sot_class || '',
+          t.data_flow || '',
           ...(t.writers || []),
           ...(t.readers || []),
         ]

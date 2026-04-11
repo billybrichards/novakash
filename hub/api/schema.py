@@ -234,6 +234,8 @@ def _catalog_entry_to_summary(table_name: str, entry: dict) -> dict:
         "service": entry.get("service", "unknown"),
         "category": entry.get("category", "uncategorised"),
         "status": entry.get("status", "active"),
+        "sot_class": entry.get("sot_class", ""),
+        "data_flow": entry.get("data_flow", ""),
         "purpose": entry.get("purpose", ""),
         "writers": entry.get("writers", []),
         "readers": entry.get("readers", []),
