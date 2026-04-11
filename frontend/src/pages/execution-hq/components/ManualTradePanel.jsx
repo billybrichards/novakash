@@ -17,6 +17,9 @@ export default function ManualTradePanel({ hqData }) {
   const [orderType, setOrderType] = useState('FAK');
   const [priceOverride, setPriceOverride] = useState('');
   const [stake, setStake] = useState('4.00');
+  // LT-03 — optional free-text reason the operator clicked this trade,
+  // persisted server-side in manual_trade_snapshots.operator_rationale.
+  const [rationale, setRationale] = useState('');
   const [livePrices, setLivePrices] = useState(null);
   const [executing, setExecuting] = useState(false);
   const [result, setResult] = useState(null);
@@ -62,11 +65,14 @@ export default function ManualTradePanel({ hqData }) {
     setExecuting(true);
     setResult(null);
     try {
+      const trimmedRationale = rationale.trim();
       const payload = {
         direction,
         mode,
         order_type: orderType,
         stake_usd: parseFloat(stake) || 4.0,
+        // LT-03 — send null instead of empty string so the DB stores NULL
+        operator_rationale: trimmedRationale.length > 0 ? trimmedRationale : null,
       };
       const priceVal = parseFloat(priceOverride);
       if (priceVal > 0) {
@@ -75,6 +81,8 @@ export default function ManualTradePanel({ hqData }) {
       const res = await api.post('/v58/manual-trade', payload);
       const data = res?.data || res;
       setResult({ ok: true, data });
+      // Clear rationale after a successful trade so it isn't reused by accident
+      setRationale('');
     } catch (err) {
       const msg = err?.response?.data?.detail || err.message || 'Trade failed';
       setResult({ ok: false, error: msg });
@@ -218,6 +226,25 @@ export default function ManualTradePanel({ hqData }) {
             background: 'rgba(15,23,42,0.8)', border: `1px solid ${T.cardBorder}`,
             color: T.text, fontFamily: "'JetBrains Mono', monospace", fontSize: 13,
             outline: 'none', boxSizing: 'border-box',
+          }}
+        />
+      </div>
+
+      {/* LT-03 Rationale (optional) — captured in manual_trade_snapshots */}
+      <div>
+        <div style={{ fontSize: 9, color: T.textMuted, marginBottom: 4, textTransform: 'uppercase' }}>
+          Rationale (optional)
+        </div>
+        <textarea
+          value={rationale}
+          onChange={e => setRationale(e.target.value)}
+          rows={2}
+          placeholder="Why this trade? e.g. '2 DOWNs in a row, feels due for UP'"
+          style={{
+            width: '100%', padding: '6px 10px', borderRadius: 4,
+            background: 'rgba(15,23,42,0.8)', border: `1px solid ${T.cardBorder}`,
+            color: T.text, fontFamily: "'JetBrains Mono', monospace", fontSize: 10,
+            outline: 'none', boxSizing: 'border-box', resize: 'vertical',
           }}
         />
       </div>
