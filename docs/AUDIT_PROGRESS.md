@@ -46,6 +46,84 @@ Deep clean-architect audit covering:
 - Both fixes ship in the same PR #26 rev-2 as the checklist update to avoid deploy races. Neither is verified in production until CI-01 lands (see below) — until then, verification is a manual `scripts/restart_engine.sh` via Montreal rules + `journalctl -u` tail.
 - **FE-02 DONE** — audit checklist page is live locally (`npm run build` green, rendered end-to-end via playwright against the dev server, filter + expand interactions confirmed). Merge of PR #26 lands it at `/audit` on the AWS frontend host.
 
+### 2026-04-11 — Agent D (DQ-05 investigation) report
+
+**VERDICT: DQ-05 is a false alarm as literally stated, but Agent D discovered a bigger bug (DQ-06) and recommended a defensive fix (DQ-07).**
+
+Agent D (READ-ONLY, no code changes) traced every use of the v4 snapshot in `margin_engine/use_cases/open_position.py::_execute_v4()`:
+
+- `consensus.reference_price` is parsed into the `Consensus` dataclass at `value_objects.py:459` but **never read by any margin_engine use case**. My original DQ-05 hypothesis that the engine was evaluating perp trades against a spot reference was wrong.
+- The **only** field of the v4 snapshot that `_execute_v4` consumes for pricing is `v4.last_price`, used once at `open_position.py:412` as the denominator of `_sl_tp_from_quantiles`.
+- `v4.last_price` IS Binance SPOT (traced through `app/main.py:71 → app/assets.py:20 → app/price_feed.py:23` in novakash-timesfm-repo — `wss://stream.binance.com:9443/ws/btcusdt@trade`).
+- **But**: the ratio math `(last_price - p10) / last_price` is dimensionless and therefore internally consistent regardless of venue basis.
+- Realised PnL comes from `self._exchange.get_mark()` and `self._exchange.close_position()` — **not v4** — so v4's spot-native `last_price` never propagates to the PnL numbers.
+
+**Higher-priority finding — DQ-06 (NEW HIGH OPEN):**
+
+- `margin_engine/main.py:84-97` is the `paper + binance` wiring branch. It constructs `PaperExchangeAdapter(starting_balance, spread_bps, fee_rate)` with **NO `price_getter` argument**. When `price_getter` is unset, `PaperExchangeAdapter._last_price` stays at the `80000.0` default forever — every `get_mark()` and `get_current_price()` returns bid/ask around a frozen $80k constant.
+- The `paper + hyperliquid` branch (`main.py:99-123`) does it correctly: spins up `HyperliquidPriceFeed` and wires it via `price_getter=price_feed.get_price`.
+- `settings.py:31`: `exchange_venue: str = "binance"` is the default — so the broken branch is the default.
+- CI workflow `deploy-margin-engine.yml:79-89` sets `MARGIN_PAPER_MODE=true` but does NOT explicitly set `MARGIN_EXCHANGE_VENUE`. Its `set_env` helper is append-or-update-in-place, so whatever was previously on the host sticks.
+
+**User clarification 2026-04-11**: the paper venue **should be Hyperliquid**. So the fix for DQ-06 is a CI template update: add `set_env MARGIN_EXCHANGE_VENUE hyperliquid` to `deploy-margin-engine.yml`, flip the `settings.py` default, and optionally add a startup assertion that errors if paper+binance is selected (since it's definitely broken). Scheduled as the first task in the engine-edits worktree.
+
+**Recommended defensive gate — DQ-07 (NEW MEDIUM OPEN):**
+
+Insert an eleventh gate into `_execute_v4` between gate 9 (balance query) and gate 10 (SL/TP math) that:
+- Calls `self._exchange.get_mark()` or `.get_current_price()`
+- Compares against `v4.last_price`
+- Rejects if divergence > `v4_max_mark_divergence_bps` (default 20)
+- Catches stale spot ticks, HL basis spikes, and cross-region latency
+
+### 2026-04-11 — Agent E (SQ-01 rename audit) report
+
+**4-PR rollout plan, unbranded naming, critical gap in CI-01 found.**
+
+Agent E (READ-ONLY) grepped the entire novakash + novakash-timesfm-repo tree for ELM references and categorised them by risk:
+
+| Category | Examples | Risk | PR |
+|---|---|---|---|
+| A. File names | `elm_prediction_recorder.py`, `test_elm_prediction_recorder.py` | LOW | PR 1 |
+| B. Class names | `ELMPredictionRecorder` + 4 call sites | LOW | PR 1 |
+| C. Function names | (none found) | — | — |
+| D. Variable/kwarg names | `elm_client`, `_elm_recorder` | LOW | PR 1 |
+| E. Structured log events | `elm_recorder.*` (8 events) | MEDIUM | PR 2 (operator coord) |
+| F. DB column/table names | `ticks_elm_predictions`, `margin_signals.elm`, `ticks_v3_composite.elm_signal` | HIGH | PR 4 (DEFER FOREVER) |
+| G. Env var names | (none found) | — | — |
+| H. Doc comments | ~12 mentions | LOW | PR 1 |
+
+**Key recommendations:**
+
+1. **Go unbranded, not Sequoia\***. The engine convention is already versioned+unbranded (`timesfm_v2_client.py`, `v2_feature_body.py`), and the model family has already turned over 5 times (OAK → CEDAR → DUNE → ELM → SEQUOIA v4 → v5). Any brand name will go stale the same way ELM did. Target names: `class PredictionRecorder`, file `prediction_recorder.py`, kwarg `model_client`, log component `"prediction_recorder"`.
+
+2. **PR 1 (low-risk cosmetic rename, ~60 lines)** can ship now. Keeps the DB table, log events, and signal keys intact.
+
+3. **PR 2 (log event rename) requires simultaneously updating CI-01's error-signature gate** — otherwise the gate keeps grepping for the old event name forever.
+
+4. **PR 3 (cross-repo signal key rename)** is a dual-emit migration spanning novakash + novakash-timesfm-repo + two DBs + frontend. Already sketched in `tasks/todo.md:78-82`. Multi-week coordination. Not urgent.
+
+5. **PR 4 (DB column renames) should never ship.** Zero user-visible value, requires downtime.
+
+**CRITICAL red flag from Agent E:**
+
+The CI-01 error-signature gate I shipped in PR #28 (`.github/workflows/deploy-engine.yml:240-264`) **does NOT grep for `elm_recorder.write_error`**. So there is currently **no CI protection against PE-06 regressions**. If a future engine commit reintroduces the JSON quoting bug or similar, the deploy workflow will pass silently.
+
+**Tracked as CI-02 (NEW MEDIUM OPEN)**: add `check_signature "elm_recorder.write_error" 0` and `check_signature "prediction_recorder.write_error" 0` to the gate. 4-line PR.
+
+### 2026-04-11 — User scope additions: NT-01, UI-01, LT-01
+
+User request 2026-04-11 14:16 UTC (post Agent D/E reports):
+
+1. **NT-01 (Notes page)**: frontend page backed by a DB table, added as the FIRST entry in the sidebar. Purpose: running journal of observations as the session works. Dispatching Agent F to build the full stack (SQLAlchemy model + FastAPI CRUD routes + frontend page).
+
+2. **Engine edits worktree**: "spin up all the engine edits in a worktree so they can proceed and you can carefully i guess begin to make those edits and bring them into the engine". Interpreted as: create ONE isolated worktree for the remaining trading-engine-touching fixes, serialise the work inside it (DQ-06 first, then DQ-07, then DQ-01, then V4-01 etc.), ship them one at a time via PRs. Not parallel because these all touch `margin_engine/` or `engine/` and changes could collide.
+
+3. **UI-01 (Gate heartbeat / Execution HQ upgrade)**: "make sure there is a front end page that very clearly like the old execution hq or maybe upgrade that so i can very clearly see the gate heartbeat etc and trade decision". Phase 0: read existing `/execution-hq` to decide upgrade-in-place vs new page. Phase 1: add a "Live Decision" strip pulling from `signal_evaluations` via a new `/api/engine/gate-stack` hub endpoint.
+
+4. **LT-01 (Live trading panel)**: "make sure things like the live trading panel and ability to execute trades montreal rules from the front end also works". Phase 0: read existing `/live` page. **Phase 2 (actual live trade execution from the web UI) is DEFERRED until the user explicitly approves a security model** — I will not ship real-money trade execution from a browser without confirmed auth/rate-limit/confirmation/stake-cap design.
+
+**User clarification 2026-04-11**: the paper venue should be Hyperliquid. Noted in DQ-06 fix description.
+
 ### 2026-04-11 — Parallel agent dispatch: PE-06 done, DS-01/FE-04-06/DQ-05/SQ-01 in flight
 
 User clarified during the session that the current model family is **Sequoia v5.2** and "ELM" is legacy naming — a historical artifact from when the model was called "Ensemble Learning Model". This reframes PE-04 (the elm_recorder.write_error bug) as PE-06 since it's really a Sequoia v5.2 prediction-recorder bug, and it matters specifically because the V10.6 decision surface uses 865 recorded predictions as its backtest evidence base — silent prediction drops bias that evidence.
