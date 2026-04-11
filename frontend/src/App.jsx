@@ -37,6 +37,7 @@ import V4Surface from './pages/data-surfaces/V4Surface.jsx';
 import Assembler1 from './pages/data-surfaces/Assembler1.jsx';
 import Deployments from './pages/Deployments.jsx';
 import Notes from './pages/Notes.jsx';
+import Schema from './pages/Schema.jsx';
 
 export default function App() {
   return (
@@ -95,6 +96,7 @@ export default function App() {
             <Route path="data/assembler1" element={<Assembler1 />} />
             <Route path="deployments" element={<Deployments />} />
             <Route path="notes" element={<Notes />} />
+            <Route path="schema" element={<Schema />} />
           </Route>
 
           {/* 404 fallback */}

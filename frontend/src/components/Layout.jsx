@@ -91,6 +91,7 @@ const NAV_SECTIONS = [
       { path: '/trading-config',  label: 'Config',     icon: '⚙️', highlight: true },
       { path: '/deployments',     label: 'Deployments', icon: '🚀', highlight: true, isNew: true },
       { path: '/audit',           label: 'Audit',      icon: '🔍', highlight: true, isNew: true },
+      { path: '/schema',          label: 'DB Schema',  icon: '🗄️', highlight: true, isNew: true },
       { path: '/changelog',       label: 'Changelog',  icon: '📝' },
     ],
   },
