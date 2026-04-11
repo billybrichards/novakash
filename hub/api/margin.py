@@ -1,14 +1,21 @@
 """
-Margin Engine & V3 Composite Signal proxy endpoints.
+Margin Engine, V1/V2/V3/V4 data-surface proxy endpoints.
 
-Forwards requests to the margin engine (eu-west-2) and TimesFM v3 service
-so the frontend can access them through the Hub's auth layer.
+Forwards requests to the margin engine (eu-west-2) and TimesFM service
+(Montreal) so the frontend can access them through the Hub's auth layer.
 
 GET  /api/margin/status              — margin engine portfolio + positions
 GET  /api/margin/logs                — recent log lines (filterable)
 GET  /api/margin/positions/history   — paginated closed-position history (Trade Timeline tab)
+GET  /api/v1/forecast                — legacy TimesFM point forecast (BTC only)
+GET  /api/v1/health                  — legacy TimesFM health
+GET  /api/v2/probability             — Sequoia v5.2 5m probability + quantiles
+GET  /api/v2/probability/15m         — Sequoia v5.2 15m probability + quantiles
+GET  /api/v2/health                  — v2 scorer health
+GET  /api/v2/models                  — v2 model registry (production + staging)
 GET  /api/v3/snapshot                — v3 composite signal scores (all timescales)
 GET  /api/v3/health                  — v3 system health
+GET  /api/v4/snapshot                — v4 fusion surface (consensus + macro + per-TS)
 """
 
 from __future__ import annotations
@@ -97,6 +104,85 @@ async def margin_positions_history(
     if exit_reason:
         params["exit_reason"] = exit_reason
     return await _proxy_get(MARGIN_ENGINE_URL, "/history", params)
+
+
+# ─── V1 Legacy Forecast ────────────────────────────────────────────────────
+# TimesFM point forecast is the original /forecast endpoint on the model
+# service — BTC only, no asset param. The v1 surface has been superseded by
+# v2/v3/v4 but the endpoint is still live for backward compatibility and
+# for the /data/v1 dashboard page.
+
+
+@router.get("/v1/forecast")
+async def v1_forecast(
+    horizon: int = Query(default=0, ge=0, le=600),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    Proxy to TimesFM — legacy /forecast endpoint (BTC only, frozen surface).
+
+    horizon=0 (default) returns the cached 300-step forecast.
+    horizon>0 runs a fresh inference with that exact horizon (1-600).
+    """
+    params = {"horizon": horizon} if horizon else None
+    return await _proxy_get(TIMESFM_URL, "/forecast", params)
+
+
+@router.get("/v1/health")
+async def v1_health(
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """Proxy to TimesFM — legacy /health endpoint (model + feed status)."""
+    return await _proxy_get(TIMESFM_URL, "/health")
+
+
+# ─── V2 Sequoia Probability ───────────────────────────────────────────────
+# Sequoia v5.2 LightGBM scorer — calibrated P(UP) at a specific
+# seconds_to_close window close. Returns the nested timesfm block (quantiles,
+# predicted_close, direction, confidence, spread) so the /data/v2 dashboard
+# can render the raw-vs-calibrated split and the quantile fan.
+
+
+@router.get("/v2/probability")
+async def v2_probability(
+    asset: str = Query(default="BTC"),
+    seconds_to_close: int = Query(default=60, ge=1, le=300),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """Proxy to TimesFM — production 5m probability + quantiles."""
+    return await _proxy_get(
+        TIMESFM_URL, "/v2/probability",
+        {"asset": asset, "seconds_to_close": seconds_to_close},
+    )
+
+
+@router.get("/v2/probability/15m")
+async def v2_probability_15m(
+    asset: str = Query(default="BTC"),
+    seconds_to_close: int = Query(default=300, ge=1, le=900),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """Proxy to TimesFM — 15-minute probability + quantiles."""
+    return await _proxy_get(
+        TIMESFM_URL, "/v2/probability/15m",
+        {"asset": asset, "seconds_to_close": seconds_to_close},
+    )
+
+
+@router.get("/v2/health")
+async def v2_health(
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """Proxy to TimesFM — v2 scorer health + per-asset feature cache warmth."""
+    return await _proxy_get(TIMESFM_URL, "/v2/health")
+
+
+@router.get("/v2/models")
+async def v2_models(
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """Proxy to TimesFM — list of loaded v2 models with metadata."""
+    return await _proxy_get(TIMESFM_URL, "/v2/models")
 
 
 # ─── V3 Composite Signals ──────────────────────────────────────────────────
