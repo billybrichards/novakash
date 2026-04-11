@@ -82,6 +82,38 @@ class MarginSettings(BaseSettings):
     v4_allow_mean_reverting: bool = False            # opt-in per strategy
     v4_event_exit_seconds: int = 120                 # force exit within 2 min of HIGH/EXTREME
 
+    # ── Phase A (2026-04-11): macro gate demotion ──
+    # 24h audit of margin engine paper-mode behaviour showed Qwen's BEAR
+    # calls at 20-30% directional hit rate across 15m/1h/4h horizons —
+    # actively anti-predictive. Full audit in docs/MACRO_AUDIT_2026-04-11.md.
+    #
+    # `v4_macro_mode` controls how the macro direction_gate is applied at
+    # entry AND continuation:
+    #   "veto"     — hard-skip entries and force-close existing positions
+    #                when the gate opposes the side. Only ever fires when
+    #                macro.confidence >= v4_macro_hard_veto_confidence_floor.
+    #                Previous behaviour.
+    #   "advisory" — default. Log the conflict but do NOT skip/force-close.
+    #                At entry, apply v4_macro_advisory_size_mult_on_conflict
+    #                as a haircut on preliminary_collateral so conflicting
+    #                macro reduces position size instead of blocking it.
+    #
+    # Below the confidence floor the macro gate is a no-op in both modes.
+    # The floor exists so a flat NEUTRAL/0 fallback row (macro observer
+    # down, ticker hiccup) cannot accidentally scale down every entry.
+    v4_macro_mode: str = "advisory"
+    v4_macro_hard_veto_confidence_floor: int = 80
+    v4_macro_advisory_size_mult_on_conflict: float = 0.75
+
+    # Optional experimental override: allow entries when regime=NO_EDGE if
+    # TimesFM's quantile-derived expected move clears a stronger bar. The
+    # 2026-04-11 audit found a 74-sample bucket (NO_EDGE + BEAR + exp_move>3)
+    # with 100% directional hit rate and +22.8 bps average actual move —
+    # suspiciously clean and needs a 7-day replay before activation. This
+    # flag ships the code in Phase A but leaves it OFF (None) by default.
+    # Flip via MARGIN_V4_ALLOW_NO_EDGE_IF_EXP_MOVE_BPS_GTE=3.0 after replay.
+    v4_allow_no_edge_if_exp_move_bps_gte: Optional[float] = None
+
     @property
     def v4_timescales_tuple(self) -> tuple[str, ...]:
         """CSV 'v4_timescales' split into a tuple for adapter consumption."""

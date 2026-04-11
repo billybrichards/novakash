@@ -79,11 +79,35 @@ jobs:
             set_env MARGIN_PAPER_MODE true
             set_env MARGIN_ENGINE_USE_V4_ACTIONS true
             set_env MARGIN_V4_SNAPSHOT_URL http://3.98.114.0:8080
-            set_env MARGIN_V4_PRIMARY_TIMESCALE 15m
+            # Phase A (2026-04-11): switched from 15m to 5m. The btc_15m
+            # model is 3 days stale ("nogit@v2/btc/btc_15m/nogit/2026-04-08...")
+            # while Sequoia v5 (15a4e3e) is the freshly-promoted 5m model
+            # with ECE 0.0643 and skill +7.23pp. Flip back to 15m only
+            # after Phase B ships fresh auto-promoted 15m candidates.
+            # See docs/MACRO_AUDIT_2026-04-11.md for the full audit.
+            set_env MARGIN_V4_PRIMARY_TIMESCALE 5m
             set_env MARGIN_V4_TIMESCALES 5m,15m,1h,4h
             set_env MARGIN_V4_STRATEGY fee_aware_15m
             set_env MARGIN_V4_POLL_INTERVAL_S 2.0
             set_env MARGIN_V4_FRESHNESS_S 10.0
+
+            # Phase A (2026-04-11): macro gate demoted from hard veto to
+            # advisory by default. 24h audit showed Qwen BEAR calls at
+            # 20-30% directional hit rate — actively anti-predictive.
+            # Advisory mode: conflict reduces size (0.75x haircut at
+            # confidence >= 80) but does NOT skip the entry. Flip back
+            # to "veto" to restore hard-gate behaviour.
+            set_env MARGIN_V4_MACRO_MODE advisory
+            set_env MARGIN_V4_MACRO_HARD_VETO_CONFIDENCE_FLOOR 80
+            set_env MARGIN_V4_MACRO_ADVISORY_SIZE_MULT_ON_CONFLICT 0.75
+
+            # Phase A (2026-04-11): experimental NO_EDGE entry override
+            # intentionally LEFT UNSET so it stays at its None default.
+            # Ships the code ready for activation; the 74-sample 100%
+            # hit rate bucket needs a 7-day replay before promotion.
+            # See docs/MACRO_AUDIT_2026-04-11.md monitoring section.
+            # To enable: uncomment and redeploy
+            # set_env MARGIN_V4_ALLOW_NO_EDGE_IF_EXP_MOVE_BPS_GTE 3.0
 
             echo "v4 env keys after templating:"
             grep -E "^MARGIN_(PAPER_MODE|ENGINE_USE_V4|V4_)" "$ENV_FILE" || true

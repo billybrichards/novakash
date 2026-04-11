@@ -285,6 +285,11 @@ async def run() -> None:
         v4_entry_edge=settings.v4_entry_edge,
         v4_min_expected_move_bps=settings.v4_min_expected_move_bps,
         v4_allow_mean_reverting=settings.v4_allow_mean_reverting,
+        # Phase A — macro advisory mode + NO_EDGE override
+        v4_macro_mode=settings.v4_macro_mode,
+        v4_macro_hard_veto_confidence_floor=settings.v4_macro_hard_veto_confidence_floor,
+        v4_macro_advisory_size_mult_on_conflict=settings.v4_macro_advisory_size_mult_on_conflict,
+        v4_allow_no_edge_if_exp_move_bps_gte=settings.v4_allow_no_edge_if_exp_move_bps_gte,
         fee_rate_per_side=(
             effective_fee_rate if effective_fee_rate is not None else 0.00045
         ),
@@ -313,6 +318,9 @@ async def run() -> None:
         v4_continuation_min_conviction=settings.v4_continuation_min_conviction,
         v4_continuation_max=settings.v4_continuation_max,
         v4_event_exit_seconds=settings.v4_event_exit_seconds,
+        # Phase A — parallel macro advisory mode for continuation path
+        v4_macro_mode=settings.v4_macro_mode,
+        v4_macro_hard_veto_confidence_floor=settings.v4_macro_hard_veto_confidence_floor,
         trailing_stop_pct=settings.trailing_stop_pct,
     )
 

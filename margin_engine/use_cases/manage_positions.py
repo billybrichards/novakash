@@ -92,6 +92,9 @@ class ManagePositionsUseCase:
         v4_continuation_min_conviction: float = 0.10,
         v4_continuation_max: Optional[int] = None,
         v4_event_exit_seconds: int = 120,
+        # ── Phase A (2026-04-11): macro advisory mode ──
+        v4_macro_mode: str = "advisory",
+        v4_macro_hard_veto_confidence_floor: int = 80,
         # ── PR #10 ──
         trailing_stop_pct: float = 0.003,   # 0.3%, matched to 0.6% SL
     ) -> None:
@@ -107,6 +110,13 @@ class ManagePositionsUseCase:
         self._v4_continuation_min_conviction = v4_continuation_min_conviction
         self._v4_continuation_max = v4_continuation_max
         self._v4_event_exit_seconds = v4_event_exit_seconds
+        # Phase A macro-mode fields
+        if v4_macro_mode not in ("veto", "advisory"):
+            raise ValueError(
+                f"v4_macro_mode must be 'veto' or 'advisory', got {v4_macro_mode!r}"
+            )
+        self._macro_mode = v4_macro_mode
+        self._macro_hard_veto_confidence_floor = v4_macro_hard_veto_confidence_floor
         self._trailing_pct = trailing_stop_pct
 
     async def tick(self) -> list[Position]:
@@ -284,14 +294,30 @@ class ManagePositionsUseCase:
             return ExitReason.CONSENSUS_FAIL
 
         # ── Macro gate ──
-        if v4.macro.status == "ok":
+        # Phase A (2026-04-11): demoted from hard force-close to advisory
+        # by default. 24h audit showed Qwen BEAR calls at 20-30% directional
+        # hit rate — force-closing a winning position because Qwen flipped is
+        # strictly worse than letting the trade continue. See
+        # docs/MACRO_AUDIT_2026-04-11.md.
+        #
+        # The force-close only fires when BOTH:
+        #   - macro.confidence >= v4_macro_hard_veto_confidence_floor
+        #   - v4_macro_mode == "veto"
+        # Otherwise the continuation walk continues — the position's own
+        # SL/TP/regime/probability gates decide whether to hold.
+        if (
+            v4.macro.status == "ok"
+            and v4.macro.confidence >= self._macro_hard_veto_confidence_floor
+            and self._macro_mode == "veto"
+        ):
             if (
                 v4.macro.direction_gate == "SKIP_UP"
                 and position.side == TradeSide.LONG
             ):
                 logger.info(
-                    "Position %s continuation: macro flipped SKIP_UP, exiting",
-                    position.id,
+                    "Position %s continuation: macro flipped SKIP_UP "
+                    "(confidence=%d, mode=veto), exiting MACRO_GATE_FLIP",
+                    position.id, v4.macro.confidence,
                 )
                 return ExitReason.MACRO_GATE_FLIP
             if (
@@ -299,10 +325,28 @@ class ManagePositionsUseCase:
                 and position.side == TradeSide.SHORT
             ):
                 logger.info(
-                    "Position %s continuation: macro flipped SKIP_DOWN, exiting",
-                    position.id,
+                    "Position %s continuation: macro flipped SKIP_DOWN "
+                    "(confidence=%d, mode=veto), exiting MACRO_GATE_FLIP",
+                    position.id, v4.macro.confidence,
                 )
                 return ExitReason.MACRO_GATE_FLIP
+        elif (
+            v4.macro.status == "ok"
+            and v4.macro.confidence >= self._macro_hard_veto_confidence_floor
+            and self._macro_mode == "advisory"
+            and (
+                (v4.macro.direction_gate == "SKIP_UP"
+                    and position.side == TradeSide.LONG)
+                or (v4.macro.direction_gate == "SKIP_DOWN"
+                    and position.side == TradeSide.SHORT)
+            )
+        ):
+            logger.info(
+                "Position %s continuation: macro advisory conflict "
+                "(mode=advisory, macro=%s/%d/%s, side=%s) — NOT exiting",
+                position.id, v4.macro.bias, v4.macro.confidence,
+                v4.macro.direction_gate, position.side.value,
+            )
 
         # ── Regime deteriorated ──
         if payload.regime in ("CHOPPY", "NO_EDGE"):

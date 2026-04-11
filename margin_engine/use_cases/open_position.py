@@ -101,6 +101,12 @@ class OpenPositionUseCase:
         v4_entry_edge: float = 0.10,
         v4_min_expected_move_bps: float = 15.0,
         v4_allow_mean_reverting: bool = False,
+        # ── Phase A (2026-04-11): macro advisory mode ──
+        v4_macro_mode: str = "advisory",  # "veto" | "advisory"
+        v4_macro_hard_veto_confidence_floor: int = 80,
+        v4_macro_advisory_size_mult_on_conflict: float = 0.75,
+        # ── Phase A: experimental NO_EDGE override (shipped off) ──
+        v4_allow_no_edge_if_exp_move_bps_gte: Optional[float] = None,
         fee_rate_per_side: float = 0.00045,  # Hyperliquid taker, for the reward/risk floor
         # ── legacy v2 path (unchanged from PR #10) ──
         min_conviction: float = 0.20,       # |p-0.5| >= 0.20 → p>0.70 or p<0.30
@@ -126,6 +132,15 @@ class OpenPositionUseCase:
         self._v4_entry_edge = v4_entry_edge
         self._v4_min_expected_move_bps = v4_min_expected_move_bps
         self._v4_allow_mean_reverting = v4_allow_mean_reverting
+        # Phase A macro-mode fields
+        if v4_macro_mode not in ("veto", "advisory"):
+            raise ValueError(
+                f"v4_macro_mode must be 'veto' or 'advisory', got {v4_macro_mode!r}"
+            )
+        self._macro_mode = v4_macro_mode
+        self._macro_hard_veto_confidence_floor = v4_macro_hard_veto_confidence_floor
+        self._macro_advisory_conflict_mult = v4_macro_advisory_size_mult_on_conflict
+        self._allow_no_edge_exp_move_override = v4_allow_no_edge_if_exp_move_bps_gte
         self._fee_rate_per_side = fee_rate_per_side
         # legacy
         self._min_conviction = min_conviction
@@ -340,7 +355,25 @@ class OpenPositionUseCase:
             return None
 
         # ── ① tradeable state (status=ok, prob not None, regime not CHOPPY/NO_EDGE) ──
-        if not payload.is_tradeable:
+        # Phase A: optional NO_EDGE override. When the flag is set and TimesFM's
+        # quantile-derived expected move clears the bar, allow a NO_EDGE candidate
+        # through the gate stack. This exists to capture the 2026-04-11 audit
+        # finding of a 100%-hit-rate bucket (NO_EDGE + BEAR + exp_move>3, n=74),
+        # but ships OFF until a 7-day replay confirms the edge is real.
+        is_tradeable = payload.is_tradeable
+        if (
+            not is_tradeable
+            and payload.regime == "NO_EDGE"
+            and self._allow_no_edge_exp_move_override is not None
+            and payload.expected_move_bps is not None
+            and abs(payload.expected_move_bps) >= self._allow_no_edge_exp_move_override
+        ):
+            is_tradeable = True
+            logger.info(
+                "v4 entry: NO_EDGE override applied (exp_move=%.1f bps >= thr=%.1f)",
+                payload.expected_move_bps, self._allow_no_edge_exp_move_override,
+            )
+        if not is_tradeable:
             self._log_skip("not_tradeable", v4, payload)
             return None
 
@@ -352,15 +385,37 @@ class OpenPositionUseCase:
             return None
 
         # ── ③ macro direction_gate ──
-        # Only enforce when macro status is ok; otherwise ignore the gate
-        # (macro observer unavailable shouldn't block trading indefinitely).
-        if v4.macro.status == "ok":
+        # Phase A (2026-04-11): demoted from hard veto to advisory by default.
+        # 24h audit showed Qwen BEAR calls at 20-30% directional hit rate —
+        # actively anti-predictive. See docs/MACRO_AUDIT_2026-04-11.md.
+        #
+        # Two axes govern the gate:
+        #   - macro.status: only ok rows are considered (unavailable → no-op)
+        #   - macro.confidence >= floor: low-confidence calls are always no-ops
+        #                                regardless of mode (prevents a flat
+        #                                NEUTRAL/0 fallback row from silently
+        #                                scaling down every entry)
+        #
+        # When both conditions hold AND direction_gate opposes side:
+        #   - veto mode     → skip with a specific reason, return None
+        #   - advisory mode → set macro_conflict=True, continue walking gates.
+        #                     The conflict is consumed at gate ⑧ where
+        #                     size_mult is multiplied by the advisory haircut.
+        macro_conflict = False
+        if (
+            v4.macro.status == "ok"
+            and v4.macro.confidence >= self._macro_hard_veto_confidence_floor
+        ):
             if v4.macro.direction_gate == "SKIP_UP" and side == TradeSide.LONG:
-                self._log_skip("macro_skip_up", v4, payload)
-                return None
-            if v4.macro.direction_gate == "SKIP_DOWN" and side == TradeSide.SHORT:
-                self._log_skip("macro_skip_down", v4, payload)
-                return None
+                if self._macro_mode == "veto":
+                    self._log_skip("macro_skip_up_veto", v4, payload)
+                    return None
+                macro_conflict = True
+            elif v4.macro.direction_gate == "SKIP_DOWN" and side == TradeSide.SHORT:
+                if self._macro_mode == "veto":
+                    self._log_skip("macro_skip_down_veto", v4, payload)
+                    return None
+                macro_conflict = True
 
         # ── ④ high-impact event guard — no new entries within 30 min of HIGH/EXTREME ──
         if (
@@ -394,7 +449,21 @@ class OpenPositionUseCase:
         # THEN run the risk check on the potentially-scaled size.
         # This mirrors legacy behaviour where risk gate runs before any
         # exchange side-effect.
+        #
+        # Phase A: when macro is in advisory mode and flagged a conflict
+        # at gate ③ (macro opposes side at confidence >= floor), apply
+        # the advisory haircut on top of whatever size_modifier Qwen
+        # returned. This reduces exposure without blocking the trade.
         size_mult = v4.macro.size_modifier if v4.macro.status == "ok" else 1.0
+        if macro_conflict:
+            size_mult *= self._macro_advisory_conflict_mult
+            logger.info(
+                "v4 entry: macro advisory conflict — size_mult *= %.2f "
+                "(final %.3f, macro=%s/%d/%s, side=%s)",
+                self._macro_advisory_conflict_mult, size_mult,
+                v4.macro.bias, v4.macro.confidence, v4.macro.direction_gate,
+                side.value,
+            )
         preliminary_collateral = Money.usd(
             self._portfolio.starting_capital.amount * self._bet_fraction * size_mult
         )
