@@ -33,6 +33,7 @@ from api.playwright import router as playwright_router
 from api.v58_monitor import router as v58_router
 from api.analysis import router as analysis_router
 from api.margin import router as margin_router
+from api.notes import router as notes_router
 
 log = structlog.get_logger(__name__)
 
@@ -65,6 +66,35 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await session.execute(text("ALTER TABLE system_state ADD COLUMN IF NOT EXISTS live_enabled BOOLEAN DEFAULT FALSE"))
             await session.execute(text("ALTER TABLE system_state ADD COLUMN IF NOT EXISTS active_paper_config_id INTEGER"))
             await session.execute(text("ALTER TABLE system_state ADD COLUMN IF NOT EXISTS active_live_config_id INTEGER"))
+            # NT-01: persistent notes/journal table
+            await session.execute(text("""
+                CREATE TABLE IF NOT EXISTS notes (
+                    id SERIAL PRIMARY KEY,
+                    title VARCHAR(200) NOT NULL DEFAULT '',
+                    body TEXT NOT NULL,
+                    tags VARCHAR(500) NOT NULL DEFAULT '',
+                    status VARCHAR(20) NOT NULL DEFAULT 'open',
+                    author VARCHAR(50) NOT NULL DEFAULT 'claude',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await session.execute(text(
+                "CREATE INDEX IF NOT EXISTS notes_status_updated_idx "
+                "ON notes (status, updated_at DESC)"
+            ))
+            # Seed one initial note so the page isn't empty on first deploy.
+            # SQL escapes the apostrophe in "don't" with '' (string escape).
+            await session.execute(text("""
+                INSERT INTO notes (title, body, tags, status, author)
+                SELECT
+                    'Notes page live (NT-01)',
+                    'This page is a persistent journal for audit observations, to-do items, and working notes. It backs /audit by providing a place to drop quick observations that don''t warrant a new task. Add new notes with the + button. Filter by status or tag. Cmd+Enter submits.',
+                    'nt-01,meta',
+                    'open',
+                    'claude'
+                WHERE NOT EXISTS (SELECT 1 FROM notes WHERE title = 'Notes page live (NT-01)')
+            """))
             await session.commit()
             log.info("hub.migrations_applied")
             # Ensure manual_trades table exists
@@ -117,6 +147,7 @@ app.include_router(playwright_router, prefix="/api", tags=["playwright"])
 app.include_router(v58_router, prefix="/api", tags=["v58-monitor"])
 app.include_router(analysis_router, prefix="/api", tags=["analysis"])
 app.include_router(margin_router, prefix="/api", tags=["margin"])
+app.include_router(notes_router, prefix="/api", tags=["notes"])
 
 
 @app.get("/health", tags=["health"])
