@@ -156,13 +156,15 @@ DB:
 ```sql
 SELECT COUNT(*) AS last_minute_writes
 FROM market_snapshots WHERE snapshot_at > now() - interval '1 minute';
--- Expected: ~360-480 (6-8/sec steady state across 8 (asset, timeframe) pairs at 1Hz)
+-- Expected: ~130-170 (single-writer steady state)
 
 SELECT date_trunc('second', snapshot_at) AS sec, COUNT(*) AS writes
 FROM market_snapshots WHERE snapshot_at > now() - interval '15 seconds'
 GROUP BY 1 ORDER BY 1 DESC;
--- Expected: 6-8 per second, NO second showing ~12-16 (that would mean dual writer)
+-- Expected: 2-3 per second, NO second showing 5-6+ (that would mean dual writer)
 ```
+
+**Baseline note:** the collector polls 8 `(asset, timeframe)` pairs per cycle but Polymarket Gamma API round-trip time forces the actual cycle length to ~3-4 s regardless of the `POLL_INTERVAL=1` config. That yields ~2.3 writes/sec single-writer. An earlier version of this doc cited 6-8 writes/sec; that figure came from a dual-writer measurement window on 2026-04-11 and was wrong. **If you see 5+ writes/sec in the 15-second bucket, you have two collectors running.**
 
 ### margin-engine (eu-west-2)
 
@@ -198,24 +200,37 @@ curl -sI http://$AWS_FRONTEND_HOST/ | grep last-modified
 
 ### Railway fallback for macro-observer / data-collector / frontend
 
-The Railway service definitions for these three are retained but put to **`sleepApplication: true`** as of 2026-04-11. They can be woken as an emergency fallback if the Montreal or AWS frontend box is unreachable:
+The Railway service definitions for these three are retained but put to **`sleepApplication: true`** as of 2026-04-11. They can be woken as an emergency fallback if the Montreal or AWS frontend box is unreachable.
 
-```bash
-# Wake a Railway service (emergency fallback)
-RT=$(python3 -c "import json; print(json.load(open('~/.railway/config.json'))['user']['token'])")
-curl -sS -X POST "https://backboard.railway.app/graphql/v2" \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $RT" \
-  -d '{"query": "mutation M($i: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: \"<SVC_ID>\", environmentId: \"606d92e2-cf21-4a22-80f8-98b6a65a7f09\", input: $i) }", "variables": {"i": {"sleepApplication": false}}}'
-```
+**⚠ Environment-specific sleep.** The Novakash Railway project has **three environments**: `production`, `staging`, and `develop`. Novakash's actual production workload runs in the `develop` environment (the deploy branch convention predates Railway's env model). If you sleep a service in the `production` env you are sleeping a dormant placeholder, not the live container. You MUST target the `develop` env to stop the actual writer. This was a near-miss on 2026-04-11 — the first sleep mutation hit `production` and looked successful, but macro-observer kept writing fallback rows from the `develop` env until we tracked it down.
+
+Environment IDs (Novakash Railway project):
+- `develop` (LIVE) — `05c003e2-4ccf-4a6d-8ab7-148519bb1209`
+- `production` (dormant) — `606d92e2-cf21-4a22-80f8-98b6a65a7f09`
+- `staging` — `9e316c5c-0546-4b3c-acfb-ea623f8c34a6`
 
 Service IDs:
 - `macro-observer`: `1000d62a-2a66-47a0-b8f0-6226b8e0f95d`
 - `data-collector`: `cc2a3c88-5de6-4242-889c-7e587cb6ae3a`
 - `frontend`: `7501ac09-266f-4b62-b1cc-84822086ecb7`
 - `engine`: `540ad8b3-c8c1-4a38-b896-9dc946ba01f0` (still primary — NOT asleep)
+- `hub`: `6207a7da-54be-4e05-afd3-0b0d024b6a4e` (still primary — NOT asleep)
 
-**Railway wake is a true fallback, not a dual-writer pattern.** The macro-observer and data-collector instances write to the same shared Postgres, so running both Railway and AWS simultaneously causes a dual-writer race (confirmed on 2026-04-11 — the Railway `macro-observer` was writing `NEUTRAL/0 — Fallback — Qwen LLM endpoint unreachable` rows at :02 seconds past every minute alongside the real Montreal writes). If you wake Railway as an emergency fallback, you MUST stop the Montreal container first.
+```bash
+# Sleep a Railway service in the develop env (stop it, keep config)
+RT=$(python3 -c "import json; print(json.load(open('/Users/$USER/.railway/config.json'))['user']['token'])")
+SVC="1000d62a-2a66-47a0-b8f0-6226b8e0f95d"   # macro-observer
+ENV="05c003e2-4ccf-4a6d-8ab7-148519bb1209"   # develop
+curl -sS -X POST "https://backboard.railway.app/graphql/v2" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $RT" \
+  -d "{\"query\": \"mutation M(\$i: ServiceInstanceUpdateInput!) { serviceInstanceUpdate(serviceId: \\\"$SVC\\\", environmentId: \\\"$ENV\\\", input: \$i) }\", \"variables\": {\"i\": {\"sleepApplication\": true}}}"
+
+# Wake a Railway service in the develop env (emergency fallback — set to false)
+# Before waking, stop the Montreal/AWS container FIRST to avoid a dual-writer race.
+```
+
+**Railway wake is a true fallback, not a dual-writer pattern.** The macro-observer and data-collector instances write to the same shared Postgres, so running both Railway and AWS simultaneously causes a dual-writer race (observed twice on 2026-04-11 — the Railway `macro-observer` in the `develop` env was writing `NEUTRAL/0 — Fallback — Qwen LLM endpoint unreachable` rows at a 60s cadence offset from the Montreal writes). If you wake Railway as an emergency fallback, you MUST stop the Montreal container first.
 
 ## The dual-writer class of bug
 
@@ -224,6 +239,8 @@ Any service that writes to the shared Postgres can produce a dual-writer race if
 1. **One source of truth for the deploy config.** macro-observer had both `railway.toml` (watchPatterns) AND the AWS workflow at the same time — Railway silently kept auto-deploying a broken container from pre-Qwen source. Removing `railway.toml` from a migrated service directory is **mandatory**, not optional.
 2. **Always verify in the DB.** The authoritative signal that a migration is complete is "write rate matches single-writer expectation". Query `SELECT COUNT(*) / window_seconds` on the target table and compare to what the expected 1-writer rate should be. If it's 2×, you have a dual writer somewhere.
 3. **Sleep Railway services, don't delete them.** `serviceInstanceUpdate` with `sleepApplication: true` preserves env vars, secrets, and build history. `serviceDelete` is irreversible. Sleep is the fallback-preserving primitive.
+4. **Sleep the right environment.** Railway projects have multiple environments; `serviceInstanceUpdate` takes `environmentId` as a required argument. Check which environment is actually live (query `project(id:...) { services { edges { node { serviceInstances { edges { node { environmentId latestDeployment { status createdAt } } } } } } } }` and look at which env has a recent `SUCCESS`). For Novakash that's the `develop` env, NOT `production` — see the environment-specific sleep section above.
+5. **Fallback rows leave a signature.** macro-observer's `_fallback_signal()` writes `bias='NEUTRAL' AND confidence=0 AND reasoning LIKE '%Fallback%'` with `input_tokens=0, output_tokens=0`. After a migration, grep the last few minutes for that signature — if any rows exist, a writer is reaching the DB without being able to reach the LLM endpoint. That's the telltale sign of a stranded instance in a different region.
 
 ## Common commands cheat sheet
 
