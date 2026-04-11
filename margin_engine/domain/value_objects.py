@@ -316,12 +316,20 @@ class Consensus:
 
 @dataclass(frozen=True)
 class MacroBias:
-    """Claude-generated macro bias from /v4/macro.
+    """Macro bias from /v4/macro (Qwen observer today; macro_v2 classifier
+    after Phase C).
 
     Written by the macro-observer on the TimesFM server every 60 seconds.
-    status='ok' means Claude produced a valid bias; 'unavailable' / 'no_data'
-    mean the observer hasn't written a row recently — in that case the
-    engine should ignore the macro gates rather than hard-skipping.
+    status='ok' means the producer returned a valid bias; 'unavailable' /
+    'no_data' mean the observer hasn't written a row recently — in that
+    case the engine ignores the macro gates rather than hard-skipping.
+
+    `bias`/`confidence`/`direction_gate` describe the OVERALL synthesis
+    across horizons. `timescale_map` carries the per-horizon breakdown
+    (5m/15m/1h/4h) with the same fields per horizon — added in Phase A
+    so Phase C can consume it without another engine deploy. Empty dict
+    when the producer doesn't return a per-horizon map (e.g. legacy
+    responses before the 2026-04-11 schema change).
     """
     bias: str = "NEUTRAL"               # BULL | BEAR | NEUTRAL
     confidence: int = 0                 # 0-100
@@ -332,6 +340,17 @@ class MacroBias:
     reasoning: Optional[str] = None
     age_s: Optional[float] = None
     status: str = "ok"                  # ok | unavailable | no_data
+    timescale_map: dict = field(default_factory=dict)  # {"5m": {...}, ...}
+
+    def for_timescale(self, ts: str) -> Optional[dict]:
+        """Return the per-horizon bias block for a given timescale, or None.
+
+        Used by consumers that want per-primary-timescale bias instead of
+        the overall synthesis. The overall block is still the default
+        because the gate stack was designed around a single bias per tick;
+        Phase C introduces call sites that prefer the per-horizon view.
+        """
+        return self.timescale_map.get(ts) if self.timescale_map else None
 
 
 @dataclass(frozen=True)
@@ -489,6 +508,12 @@ def _parse_consensus(d: dict) -> Consensus:
 
 
 def _parse_macro(d: dict) -> MacroBias:
+    # timescale_map is passthrough-preserved as raw dict; consumers that
+    # want strongly-typed per-horizon blocks can cast it themselves. Keeping
+    # it dict-typed here avoids a second parser for the same shape the
+    # producer already serialises.
+    raw_ts_map = d.get("timescale_map")
+    ts_map = raw_ts_map if isinstance(raw_ts_map, dict) else {}
     return MacroBias(
         bias=str(d.get("bias", "NEUTRAL")),
         confidence=int(d.get("confidence", 0) or 0),
@@ -499,6 +524,7 @@ def _parse_macro(d: dict) -> MacroBias:
         reasoning=d.get("reasoning"),
         age_s=d.get("age_s"),
         status=str(d.get("status", "ok")),
+        timescale_map=ts_map,
     )
 
 
