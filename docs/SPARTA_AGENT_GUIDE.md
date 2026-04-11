@@ -767,18 +767,52 @@ is well-defined enough that a fresh agent can pick it up without re-reading the 
   in a post-rename diff — must still appear).
 - **Audit row**: `SQ-01` progressNotes "PR 1 of 4 (cosmetic class rename)".
 
-### POLY-SOT-b — extend reconciler to closed_positions from Polymarket
+### POLY-SOT-b — extend reconciler to automatic engine trades ✅ SHIPPED (PR #66)
 
-- **What**: POLY-SOT Phase 1 (in flight now) tags `manual_trades` rows with reconciliation
-  state. Phase 2 (this task) extends the same pattern to the engine's automatic trades —
-  every Polymarket trade the engine places gets reconciled against the CLOB 2 minutes later
-  and tagged with `sot_reconciliation_state`.
-- **Rules**: Follow the POLY-SOT Phase 1 schema. Do NOT duplicate the reconciler loop — extend
-  the existing one to iterate both `manual_trades` and the engine trade table (whatever it's
-  called — likely `closed_positions` or similar).
-- **Scope**: `engine/reconciliation/reconciler.py`, possibly a new column on the engine trade
-  table if one doesn't exist.
-- **Audit row**: `POLY-SOT-b`.
+- **Status**: DONE. Shipped 2026-04-11 alongside POLY-SOT-c below.
+- **What shipped**: 8 new columns on the `trades` table mirroring `manual_trades_sot`. New
+  `reconcile_trades_sot()` method that walks the trades table on every 2-minute reconciler
+  pass. Single `_sot_reconciler_loop` asyncio task now walks BOTH tables in each pass —
+  preferred over a sibling loop because it keeps the asyncio surface area minimal. Shared
+  `_compare_to_polymarket(row, poly_status)` helper extracted so the decision matrix lives in
+  exactly one place (no copy-paste drift between the two passes).
+- **Alert dedupe key**: Namespaced by table (`manual_trades:42` vs `trades:42`) so the same
+  numeric ID across tables doesn't collide. Telegram message tagged MANUAL or AUTO prefix
+  so the operator can tell at a glance which surface fired.
+- **Hub**: new `GET /api/v58/trades-sot?limit=50` endpoint mirrors `/manual-trades-sot`.
+- **Frontend**: `TradeTicker.jsx` accepts a new `sotRows` prop (separate from `manualSotRows`)
+  and renders an `AUTO`-prefixed chip. `ExecutionHQ.jsx` fetches `/v58/trades-sot` in parallel.
+- **Tests**: 12 new cases in `engine/tests/test_reconcile_trades_sot.py` mirroring the Phase 1
+  suite, plus a cross-table dedupe test verifying `manual_trades #42` and `trades #42` are
+  independent. Existing 12 Phase 1 tests still pass unmodified.
+- **Scope verified**: `git diff origin/develop -- margin_engine/` → empty.
+
+### POLY-SOT-c — one-shot historical backfill ✅ SHIPPED (PR #66)
+
+- **Status**: DONE. Shipped 2026-04-11 alongside POLY-SOT-b above, but **requires an explicit
+  operator run** — merging the PR does not run the backfill.
+- **What shipped**: `engine/scripts/backfill_sot_reconciliation.py` — a one-shot script that
+  walks every NULL-state row in both `manual_trades` and `trades`, calls
+  `poly_client.get_order_status_sot(order_id)` for rows that persist an order ID, and tags
+  each row using the same `_compare_to_polymarket` helper as the forward reconciler. Rows
+  older than 24h with no order ID get a new terminal state `no_order_id`. Rate-limited
+  100 ms between Polymarket calls. Dry-run mode (`--dry-run`) prints decisions without
+  writing. Idempotent — re-runs are no-ops because the query filter is `WHERE
+  sot_reconciliation_state IS NULL`. Exit codes: 0 success / 1 fatal / 2 partial.
+- **Required operator run** (ONE-SHOT, Montreal box only because Polymarket geo-blocks
+  everywhere else):
+  ```
+  cd /home/novakash/novakash/engine
+  python3 scripts/backfill_sot_reconciliation.py --table both --dry-run
+  # Review the output, then:
+  python3 scripts/backfill_sot_reconciliation.py --table both
+  ```
+- **Why it must run on Montreal specifically**: the script calls the Polymarket CLOB REST API,
+  which is geo-restricted. Running it from anywhere else returns 451/403. The same reason
+  the engine itself runs on Montreal (see "Montreal rules" earlier in this doc).
+- **Audit row**: `POLY-SOT-c` DONE in AuditChecklist with the operator command in progressNotes.
+
+### LT-05 — click-to-execute latency SLA dashboard
 
 ### LT-05 — click-to-execute latency SLA dashboard
 
