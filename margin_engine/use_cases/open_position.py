@@ -107,6 +107,12 @@ class OpenPositionUseCase:
         v4_macro_advisory_size_mult_on_conflict: float = 0.75,
         # ── Phase A: experimental NO_EDGE override (shipped off) ──
         v4_allow_no_edge_if_exp_move_bps_gte: Optional[float] = None,
+        # ── DQ-07: defensive mark-divergence gate (default OFF) ──
+        # When > 0, gate 9.5 in _execute_v4 fetches exchange.get_mark and
+        # rejects the trade if it diverges from v4.last_price by more than
+        # this many bps. Agent D's DQ-05 recommendation as a regression
+        # safety rail — see settings.py for full rationale.
+        v4_max_mark_divergence_bps: float = 0.0,
         fee_rate_per_side: float = 0.00045,  # Hyperliquid taker, for the reward/risk floor
         # ── legacy v2 path (unchanged from PR #10) ──
         min_conviction: float = 0.20,       # |p-0.5| >= 0.20 → p>0.70 or p<0.30
@@ -141,6 +147,8 @@ class OpenPositionUseCase:
         self._macro_hard_veto_confidence_floor = v4_macro_hard_veto_confidence_floor
         self._macro_advisory_conflict_mult = v4_macro_advisory_size_mult_on_conflict
         self._allow_no_edge_exp_move_override = v4_allow_no_edge_if_exp_move_bps_gte
+        # DQ-07 defensive gate — 0.0 / negative = no-op
+        self._v4_max_mark_divergence_bps = v4_max_mark_divergence_bps
         self._fee_rate_per_side = fee_rate_per_side
         # legacy
         self._min_conviction = min_conviction
@@ -476,6 +484,65 @@ class OpenPositionUseCase:
         balance = await self._exchange.get_balance()
         collateral = Money.usd(balance.amount * self._bet_fraction * size_mult)
         requested_notional = collateral * self._portfolio.leverage
+
+        # ── 9.5 (DQ-07): defensive mark-price divergence check ──
+        # v4.last_price is Binance spot from the assembler. The SL/TP ratio
+        # math below is mathematically consistent regardless of venue, but a
+        # stale/mispriced anchor can still trigger an entry off a bad price
+        # (stale spot tick, Hyperliquid basis spike, cross-region latency).
+        # When this setting is > 0, we compare against the exchange's live
+        # mark and reject if the divergence exceeds the threshold.
+        #
+        # Ships DEFAULT OFF (0.0 = no-op). Operators flip via
+        # MARGIN_V4_MAX_MARK_DIVERGENCE_BPS=20 when ready to activate.
+        if self._v4_max_mark_divergence_bps > 0:
+            exchange_mark: Optional[float] = None
+            try:
+                mark_price = await self._exchange.get_mark(
+                    symbol=f"{v4.asset}USDT",
+                    side=side,
+                )
+                # get_mark returns a Price value object with a .value float.
+                exchange_mark = (
+                    float(mark_price.value)
+                    if hasattr(mark_price, "value") else float(mark_price)
+                )
+            except Exception as exc:
+                # Graceful degradation: a transient exchange error must not
+                # block trades. Log loudly and let the candidate through.
+                logger.warning(
+                    "dq07.mark_query_failed — graceful passthrough: %s",
+                    str(exc)[:200],
+                )
+                exchange_mark = None
+
+            if (
+                exchange_mark is not None
+                and v4.last_price is not None
+                and v4.last_price > 0
+            ):
+                divergence_bps = (
+                    abs(exchange_mark - v4.last_price) / v4.last_price * 10_000.0
+                )
+                if divergence_bps > self._v4_max_mark_divergence_bps:
+                    logger.warning(
+                        "dq07.mark_divergence_gate_failed: "
+                        "v4_last_price=%.4f exchange_mark=%.4f "
+                        "divergence_bps=%.2f threshold_bps=%.2f side=%s",
+                        v4.last_price, exchange_mark,
+                        round(divergence_bps, 2),
+                        self._v4_max_mark_divergence_bps,
+                        side.value,
+                    )
+                    self._log_skip("mark_divergence", v4, payload)
+                    return None
+                # Pass log at DEBUG so there's no noise when the gate is hot.
+                logger.debug(
+                    "dq07.mark_divergence_gate_passed: "
+                    "divergence_bps=%.2f threshold_bps=%.2f",
+                    round(divergence_bps, 2),
+                    self._v4_max_mark_divergence_bps,
+                )
 
         # ── ⑩ quantile-derived SL/TP + reward/risk floor ──
         sl_pct, tp_pct = self._sl_tp_from_quantiles(side, payload, v4.last_price)
