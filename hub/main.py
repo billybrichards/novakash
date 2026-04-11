@@ -34,6 +34,7 @@ from api.v58_monitor import router as v58_router
 from api.analysis import router as analysis_router
 from api.margin import router as margin_router
 from api.notes import router as notes_router
+from api.schema import router as schema_router
 
 log = structlog.get_logger(__name__)
 
@@ -154,6 +155,8 @@ app.include_router(v58_router, prefix="/api", tags=["v58-monitor"])
 app.include_router(analysis_router, prefix="/api", tags=["analysis"])
 app.include_router(margin_router, prefix="/api", tags=["margin"])
 app.include_router(notes_router, prefix="/api", tags=["notes"])
+# SCHEMA-01: /schema page — DB table inventory (catalog + live runtime stats)
+app.include_router(schema_router, prefix="/api", tags=["schema"])
 
 
 @app.get("/health", tags=["health"])
