@@ -106,7 +106,7 @@ jobs:
             # margin_engine (porting engine/signals/v2_feature_body.py
             # from novakash PR #13 into margin_engine/adapters/signal).
             # See docs/MACRO_AUDIT_2026-04-11.md for the full audit.
-            set_env MARGIN_V4_PRIMARY_TIMESCALE 15m
+            set_env MARGIN_V4_PRIMARY_TIMESCALE 5m
             set_env MARGIN_V4_TIMESCALES 5m,15m,1h,4h
             set_env MARGIN_V4_STRATEGY fee_aware_15m
             set_env MARGIN_V4_POLL_INTERVAL_S 2.0
