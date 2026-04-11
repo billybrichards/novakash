@@ -2550,19 +2550,89 @@ class Orchestrator:
                         # Build market slug
                         tf = "5m"  # Manual trades default to 5m
                         market_slug = f"{asset.lower()}-updown-{tf}-{window_ts}"
-                        
-                        # Get token ID from recent windows
+
+                        # LT-02: Get CLOB token ID for the requested direction.
+                        #
+                        # Primary source: FiveMinVPINStrategy._recent_windows
+                        # in-memory ring buffer. Fast but volatile — empty
+                        # right after engine startup, and stale windows age
+                        # out of the buffer within minutes.
+                        #
+                        # Fallback source: market_data table, written by the
+                        # data-collector service on Montreal. Persistent
+                        # across restarts, has per-window up_token_id and
+                        # down_token_id. This is the fix for the silent
+                        # "failed_no_token" failure the user reported —
+                        # previously the engine had no fallback and every
+                        # manual trade against a stale window died here
+                        # with no Telegram alert.
                         token_id = None
+                        token_source = None
                         if self._five_min_strategy and hasattr(self._five_min_strategy, '_recent_windows'):
                             for w in reversed(self._five_min_strategy._recent_windows):
                                 if w.window_ts == window_ts:
                                     token_id = w.up_token_id if direction == "YES" else w.down_token_id
+                                    if token_id:
+                                        token_source = "recent_windows"
                                     break
-                        
+
+                        # Fallback: query market_data by (asset, window_ts)
                         if not token_id:
-                            log.warning("manual_trade.no_token_id", trade_id=trade_id)
+                            log.info(
+                                "manual_trade.ring_buffer_miss_fetching_from_db",
+                                trade_id=trade_id,
+                                window_ts=window_ts,
+                                asset=asset,
+                                direction=direction,
+                            )
+                            md_row = await self._db.get_token_ids_from_market_data(
+                                asset=asset, window_ts=window_ts, timeframe=tf,
+                            )
+                            if md_row:
+                                token_id = md_row["up_token_id"] if direction == "YES" else md_row["down_token_id"]
+                                if token_id:
+                                    token_source = "market_data_db"
+                                    log.info(
+                                        "manual_trade.token_id_from_db",
+                                        trade_id=trade_id,
+                                        token_id_prefix=token_id[:20] if len(token_id) > 20 else token_id,
+                                    )
+
+                        if not token_id:
+                            log.warning(
+                                "manual_trade.no_token_id",
+                                trade_id=trade_id,
+                                window_ts=window_ts,
+                                asset=asset,
+                                direction=direction,
+                                tried_sources="recent_windows,market_data_db",
+                            )
                             await self._db.update_manual_trade_status(trade_id, "failed_no_token")
+                            # LT-02: alert on Telegram so the operator knows
+                            # the trade didn't land — previously this failed
+                            # silently and the user thought the button did
+                            # nothing at all.
+                            if self._alerter:
+                                try:
+                                    await self._alerter.send_system_alert(
+                                        f"⚠️ Manual Trade FAILED\n\n"
+                                        f"Trade ID: `{trade_id[:16]}`\n"
+                                        f"Direction: {direction} ({asset} 5m)\n"
+                                        f"Reason: no CLOB token_id found for window_ts={window_ts}\n"
+                                        f"Tried: ring_buffer + market_data_db\n\n"
+                                        f"The window may be too stale (aged out of the ring buffer) "
+                                        f"or data-collector hasn't written it yet. Try a fresh window.",
+                                        level="warning",
+                                    )
+                                except Exception:
+                                    pass  # don't let Telegram break the loop
                             continue
+
+                        log.info(
+                            "manual_trade.token_id_resolved",
+                            trade_id=trade_id,
+                            source=token_source,
+                        )
                         
                         if self._poly_client.paper_mode:
                             # Paper mode — simulate fill

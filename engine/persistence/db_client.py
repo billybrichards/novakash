@@ -1117,6 +1117,48 @@ class DBClient:
             log.debug("db.poll_pending_live_failed", error=str(exc))
             return []
 
+    async def get_token_ids_from_market_data(
+        self, asset: str, window_ts: int, timeframe: str = "5m",
+    ) -> dict | None:
+        """LT-02: fallback lookup for CLOB token_ids when the in-memory
+        ring buffer in FiveMinVPINStrategy._recent_windows doesn't have
+        the window (e.g., engine just restarted, or the user clicked
+        manual trade on a stale window that aged out of the buffer).
+
+        Queries the market_data table which is UPSERTed per window by the
+        data-collector service on the same Montreal box. Returns a dict
+        with keys up_token_id and down_token_id, or None if the row
+        doesn't exist or both token_ids are NULL.
+
+        Bidirectional tolerance (±60s) on the window_ts match because
+        the engine's window_ts is the window-close epoch while the
+        data-collector may UPSERT on the window-open or mid epoch.
+        """
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow("""
+                    SELECT up_token_id, down_token_id
+                    FROM market_data
+                    WHERE asset = $1
+                      AND timeframe = $2
+                      AND window_ts BETWEEN ($3::bigint - 60) AND ($3::bigint + 60)
+                      AND up_token_id IS NOT NULL
+                      AND down_token_id IS NOT NULL
+                    ORDER BY ABS(window_ts - $3::bigint) ASC
+                    LIMIT 1
+                """, asset, timeframe, int(window_ts))
+                if row and row["up_token_id"] and row["down_token_id"]:
+                    return {
+                        "up_token_id": row["up_token_id"],
+                        "down_token_id": row["down_token_id"],
+                    }
+                return None
+        except Exception as exc:
+            log.debug("db.get_token_ids_from_market_data_failed", error=str(exc)[:200])
+            return None
+
     async def update_manual_trade_status(
         self, trade_id: str, status: str, pnl_usd: float = None,
         outcome_direction: str = None, clob_order_id: str = None,
