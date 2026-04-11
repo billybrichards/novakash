@@ -35,6 +35,8 @@ from api.analysis import router as analysis_router
 from api.margin import router as margin_router
 from api.notes import router as notes_router
 from api.schema import router as schema_router
+# CFG-02/03: DB-backed config schema + read-only API
+from api.config_v2 import router as config_v2_router
 
 log = structlog.get_logger(__name__)
 
@@ -110,6 +112,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await ensure_manual_trade_snapshots_table(session)
             except Exception as mts_exc:
                 log.warning("hub.manual_trade_snapshots_migration_error", error=str(mts_exc))
+            # CFG-02: ensure config_keys / config_values / config_history tables exist
+            # and seed config_keys with the inventoried 142+ keys. Idempotent —
+            # re-running on every hub boot is safe and picks up new seed entries.
+            try:
+                from db.config_schema import ensure_config_tables
+                from db.config_seed import seed_config_keys
+                await ensure_config_tables(session)
+                await session.commit()
+                counts = await seed_config_keys(session)
+                await session.commit()
+                log.info("hub.config_seed_done", per_service=counts)
+            except Exception as cfg_exc:
+                log.warning("hub.config_schema_migration_error", error=str(cfg_exc))
             break
     except Exception as exc:
         log.warning("hub.migration_error", error=str(exc))
@@ -157,6 +172,8 @@ app.include_router(margin_router, prefix="/api", tags=["margin"])
 app.include_router(notes_router, prefix="/api", tags=["notes"])
 # SCHEMA-01: /schema page — DB table inventory (catalog + live runtime stats)
 app.include_router(schema_router, prefix="/api", tags=["schema"])
+# CFG-02/03: DB-backed config (read-only in this PR; writes ship in CFG-04)
+app.include_router(config_v2_router, prefix="/api", tags=["config-v2"])
 
 
 @app.get("/health", tags=["health"])
