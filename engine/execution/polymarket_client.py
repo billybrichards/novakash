@@ -18,10 +18,57 @@ import random
 import time
 import uuid
 import warnings
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 import structlog
+
+
+# ─── POLY-SOT data classes ──────────────────────────────────────────────────
+#
+# `PolyOrderStatus` is the source-of-truth payload returned by the new
+# `get_order_status_sot` and `list_recent_orders` methods. It is a thin,
+# typed wrapper that hides Polymarket's wire-format quirks (lowercase vs
+# uppercase status, multiple field names for size_matched, makingAmount vs
+# takingAmount semantics) so the SOT reconciler can compare against the
+# engine's local manual_trades row without re-implementing parsing.
+#
+# Status values are normalised to a small fixed alphabet:
+#     'pending' | 'matched' | 'filled' | 'cancelled' | 'rejected' | 'unknown'
+# 'matched' and 'filled' are both terminal — Polymarket uses 'matched' for
+# instant fills (FAK/FOK) and 'filled' for resting GTC orders that fully
+# matched. The reconciler treats them identically when comparing against
+# engine state.
+
+@dataclass(frozen=True)
+class PolyOrderStatus:
+    """Normalised Polymarket CLOB order status used by the SOT reconciler.
+
+    Named ``PolyOrderStatus`` rather than ``OrderStatus`` to avoid colliding
+    with the existing ``execution.order_manager.OrderStatus`` enum which is
+    already exported from ``execution.__init__`` and represents the engine's
+    own per-trade lifecycle (OPEN/FILLED/RESOLVED_WIN/RESOLVED_LOSS).
+    """
+    order_id: str
+    status: str  # 'pending'|'matched'|'filled'|'cancelled'|'rejected'|'unknown'
+    fill_price: Optional[float]
+    fill_size: Optional[float]
+    timestamp: Optional[datetime]
+    raw: Optional[dict] = None
+
+    @property
+    def is_terminal(self) -> bool:
+        """True if Polymarket considers this order done (filled OR cancelled)."""
+        return self.status in {"matched", "filled", "cancelled", "rejected"}
+
+    @property
+    def is_filled(self) -> bool:
+        """True if Polymarket has booked at least some shares for this order."""
+        return self.status in {"matched", "filled"} or (
+            self.fill_size is not None and self.fill_size > 0
+        )
 
 logger = structlog.get_logger(__name__)
 
@@ -1327,3 +1374,265 @@ class PolymarketClient:
         if isinstance(raw, list):
             return raw
         return []
+
+    # ─── POLY-SOT methods ───────────────────────────────────────────────────
+    #
+    # Two new entry points the SOT reconciler uses to verify that the engine's
+    # local manual_trades rows match what Polymarket actually booked. They
+    # share parsing helpers but expose typed `OrderStatus` results so the
+    # reconciler logic stays free of CLOB wire-format quirks.
+
+    @staticmethod
+    def _normalise_status(raw_status: Any) -> str:
+        """Map Polymarket's status string to the SOT alphabet.
+
+        Polymarket has been seen returning (lowercase): 'live', 'matched',
+        'unmatched', 'delayed', 'filled', 'cancelled', 'canceled', 'rejected'.
+        Some upstream wrappers also UPPERCASE. We collapse to:
+            pending | matched | filled | cancelled | rejected | unknown
+        """
+        if raw_status is None:
+            return "unknown"
+        s = str(raw_status).strip().lower()
+        if not s or s == "unknown":
+            return "unknown"
+        if s == "matched":
+            return "matched"
+        if s == "filled":
+            return "filled"
+        if s in ("live", "delayed", "pending", "open"):
+            return "pending"
+        if s in ("cancelled", "canceled", "expired"):
+            return "cancelled"
+        if s in ("rejected", "unmatched", "failed"):
+            return "rejected"
+        return "unknown"
+
+    @classmethod
+    def _parse_order_status(cls, order_id: str, resp: Any) -> PolyOrderStatus:
+        """Coerce a raw CLOB get_order response into a typed OrderStatus."""
+        def _get(obj, key, default=None):
+            if obj is None:
+                return default
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        status = cls._normalise_status(_get(resp, "status", "unknown"))
+
+        # Fill size: try every key Polymarket has been seen using
+        fill_size: Optional[float] = None
+        for key in ("size_matched", "sizeMatched", "takingAmount", "filled_size"):
+            val = _get(resp, key)
+            if val is not None and val != "":
+                try:
+                    fill_size = float(val)
+                    break
+                except (ValueError, TypeError):
+                    continue
+
+        # Fill price: average price for the executed portion. Polymarket
+        # returns the limit `price` for resting orders and `avgFillPrice` /
+        # `average_price` for matched ones — try them all.
+        fill_price: Optional[float] = None
+        for key in ("avgFillPrice", "average_price", "fill_price", "price"):
+            val = _get(resp, key)
+            if val is not None and val != "":
+                try:
+                    fill_price = float(val)
+                    break
+                except (ValueError, TypeError):
+                    continue
+
+        # Timestamp of last status change. CLOB returns either match_time,
+        # updated_at, or created_at depending on the lifecycle.
+        ts: Optional[datetime] = None
+        for key in ("match_time", "matchTime", "updated_at", "updatedAt", "created_at", "createdAt"):
+            val = _get(resp, key)
+            if val is None:
+                continue
+            try:
+                if isinstance(val, (int, float)):
+                    # epoch seconds
+                    ts = datetime.fromtimestamp(float(val), tz=timezone.utc)
+                else:
+                    # ISO string — try to parse with fromisoformat
+                    s = str(val).replace("Z", "+00:00")
+                    ts = datetime.fromisoformat(s)
+                break
+            except (ValueError, TypeError, OSError):
+                continue
+
+        return PolyOrderStatus(
+            order_id=order_id,
+            status=status,
+            fill_price=fill_price,
+            fill_size=fill_size,
+            timestamp=ts,
+            raw=resp if isinstance(resp, dict) else None,
+        )
+
+    async def get_order_status_sot(self, order_id: str) -> Optional[PolyOrderStatus]:
+        """SOT-grade order status fetch — returns None if Polymarket has no record.
+
+        Distinct from the legacy ``get_order_status`` (which returns a dict
+        with status='NOT_FOUND' for missing orders) so the reconciler can
+        cleanly distinguish:
+          * None             → Polymarket has no order with that ID
+          * OrderStatus(...) → Polymarket has the order, status is reliable
+
+        Paper mode returns a synthetic OrderStatus from the local
+        ``_paper_orders`` dict; this lets the SOT reconciler exercise the
+        full code path in paper mode without hitting the live CLOB.
+
+        Errors talking to the SDK are NOT swallowed — they propagate so the
+        reconciler can record them as `unreconciled` and retry on the next
+        pass instead of marking a row `engine_optimistic` based on a
+        transient network blip.
+        """
+        if not order_id:
+            return None
+
+        if self.paper_mode:
+            paper = self._paper_orders.get(order_id)
+            if paper is None:
+                # In paper mode, manual trades use synthetic IDs like
+                # `manual-paper-...` that aren't in _paper_orders. Treat them
+                # as "filled at requested price" so the SOT reconciler stamps
+                # them `agrees` instead of false-positive `engine_optimistic`.
+                if order_id.startswith("manual-paper-"):
+                    return PolyOrderStatus(
+                        order_id=order_id,
+                        status="filled",
+                        fill_price=None,
+                        fill_size=None,
+                        timestamp=datetime.now(timezone.utc),
+                        raw={"synthetic_paper": True},
+                    )
+                return None
+            try:
+                fill_price = float(paper.get("fill_price")) if paper.get("fill_price") is not None else None
+            except (ValueError, TypeError):
+                fill_price = None
+            try:
+                fill_size = float(paper.get("shares")) if paper.get("shares") is not None else None
+            except (ValueError, TypeError):
+                fill_size = None
+            ts: Optional[datetime] = None
+            try:
+                if paper.get("filled_at"):
+                    ts = datetime.fromtimestamp(float(paper["filled_at"]), tz=timezone.utc)
+            except (ValueError, TypeError, OSError):
+                ts = None
+            return PolyOrderStatus(
+                order_id=order_id,
+                status="filled" if str(paper.get("status", "")).upper() == "FILLED" else "pending",
+                fill_price=fill_price,
+                fill_size=fill_size,
+                timestamp=ts,
+                raw=paper,
+            )
+
+        if not self._clob_client:
+            raise RuntimeError("CLOB client not connected — call connect() first")
+
+        def _fetch():
+            return self._clob_client.get_order(order_id)
+
+        try:
+            resp = await asyncio.to_thread(_fetch)
+        except Exception as exc:
+            # Check for "not found" responses — these are NOT errors, they're
+            # the SOT-defining signal that the order never made it to the CLOB.
+            msg = str(exc).lower()
+            if "404" in msg or "not found" in msg or "not_found" in msg:
+                self._log.info(
+                    "get_order_status_sot.not_found",
+                    order_id=order_id[:20],
+                )
+                return None
+            # Anything else is a real error — let the reconciler decide.
+            raise
+
+        if resp is None:
+            return None
+
+        return self._parse_order_status(order_id, resp)
+
+    async def list_recent_orders(
+        self, since: Optional[datetime] = None, limit: int = 50,
+    ) -> list[PolyOrderStatus]:
+        """Bulk SOT helper — return parsed PolyOrderStatus for recent CLOB orders.
+
+        The reconciler's primary mode is per-order lookup via
+        ``get_order_status_sot``, but this bulk pass is useful when the
+        engine needs to detect ``polymarket_only`` rows (orders Polymarket
+        booked that the engine has no manual_trades record for).
+
+        Paper mode returns parsed entries from the local ``_paper_orders``
+        dict, optionally filtered by ``since``.
+        """
+        if self.paper_mode:
+            results: list[PolyOrderStatus] = []
+            for oid, p in self._paper_orders.items():
+                ts: Optional[datetime] = None
+                try:
+                    if p.get("created_at"):
+                        ts = datetime.fromtimestamp(float(p["created_at"]), tz=timezone.utc)
+                except (ValueError, TypeError, OSError):
+                    ts = None
+                if since is not None and ts is not None and ts < since:
+                    continue
+                try:
+                    fp = float(p.get("fill_price")) if p.get("fill_price") is not None else None
+                except (ValueError, TypeError):
+                    fp = None
+                try:
+                    fs = float(p.get("shares")) if p.get("shares") is not None else None
+                except (ValueError, TypeError):
+                    fs = None
+                results.append(
+                    PolyOrderStatus(
+                        order_id=oid,
+                        status="filled" if str(p.get("status", "")).upper() == "FILLED" else "pending",
+                        fill_price=fp,
+                        fill_size=fs,
+                        timestamp=ts,
+                        raw=p,
+                    )
+                )
+                if len(results) >= limit:
+                    break
+            return results
+
+        if not self._clob_client:
+            raise RuntimeError("CLOB client not connected — call connect() first")
+
+        def _fetch():
+            return self._clob_client.get_orders()
+
+        try:
+            raw = await asyncio.to_thread(_fetch)
+        except Exception as exc:
+            self._log.warning("list_recent_orders.fetch_failed", error=str(exc)[:200])
+            return []
+
+        if isinstance(raw, dict):
+            raw = raw.get("data", [])
+        if not isinstance(raw, list):
+            return []
+
+        results: list[PolyOrderStatus] = []
+        for entry in raw[: int(limit)]:
+            oid = None
+            if isinstance(entry, dict):
+                oid = entry.get("orderID") or entry.get("id") or entry.get("order_id")
+            else:
+                oid = getattr(entry, "orderID", None) or getattr(entry, "id", None)
+            if not oid:
+                continue
+            parsed = self._parse_order_status(str(oid), entry)
+            if since is not None and parsed.timestamp is not None and parsed.timestamp < since:
+                continue
+            results.append(parsed)
+        return results

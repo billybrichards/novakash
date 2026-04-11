@@ -1299,7 +1299,15 @@ class DBClient:
         self, trade_id: str, status: str, pnl_usd: float = None,
         outcome_direction: str = None, clob_order_id: str = None,
     ) -> None:
-        """Update a manual trade after execution or resolution."""
+        """Update a manual trade after execution or resolution.
+
+        POLY-SOT (2026-04-11): when ``clob_order_id`` is provided we now also
+        persist it to the new ``polymarket_order_id`` column so the SOT
+        reconciler loop can later query Polymarket and stamp the
+        ``polymarket_confirmed_*`` / ``sot_reconciliation_state`` columns.
+        Caller doesn't have to know about the SOT plumbing — it just passes
+        the order ID it got back from ``poly_client.place_order(...)``.
+        """
         if not self._pool:
             return
         try:
@@ -1314,9 +1322,195 @@ class DBClient:
                     await conn.execute("""
                         UPDATE manual_trades SET status = $1 WHERE trade_id = $2
                     """, status, trade_id)
-            log.info("db.manual_trade_updated", trade_id=trade_id, status=status)
+                # POLY-SOT: persist the CLOB order ID separately if provided.
+                # Wrapped in its own UPDATE so a missing column on a stale
+                # database (operator hasn't run the migration yet) silently
+                # no-ops the column write but the status update above still
+                # succeeds. The reconciler will catch missing IDs on its
+                # next pass via the `unreconciled` path.
+                if clob_order_id:
+                    try:
+                        await conn.execute("""
+                            UPDATE manual_trades
+                            SET polymarket_order_id = $1
+                            WHERE trade_id = $2
+                              AND (polymarket_order_id IS NULL OR polymarket_order_id = '')
+                        """, clob_order_id, trade_id)
+                    except Exception as col_exc:
+                        log.warning(
+                            "db.manual_trade_polymarket_order_id_update_failed",
+                            trade_id=trade_id,
+                            error=str(col_exc)[:120],
+                        )
+            log.info(
+                "db.manual_trade_updated",
+                trade_id=trade_id,
+                status=status,
+                clob_order_id=clob_order_id[:20] if clob_order_id else None,
+            )
         except Exception as exc:
             log.error("db.manual_trade_update_failed", error=str(exc))
+
+    # ─── POLY-SOT helpers ────────────────────────────────────────────────────
+
+    async def ensure_manual_trades_sot_columns(self) -> None:
+        """Add POLY-SOT columns to manual_trades if missing (idempotent).
+
+        The hub also adds these columns at lifespan startup
+        (hub/api/v58_monitor.py::ensure_manual_trades_table). The engine
+        ensures them too because the engine restart cycle is independent
+        from the hub's, and the SOT reconciler loop will fail loudly if it
+        tries to write a column that doesn't exist yet.
+
+        Mirrors the existing ``ensure_v8_trade_columns`` pattern in this
+        same file.
+        """
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                for col, col_type in [
+                    ("polymarket_order_id", "TEXT"),
+                    ("polymarket_confirmed_status", "TEXT"),
+                    ("polymarket_confirmed_fill_price", "NUMERIC(18,6)"),
+                    ("polymarket_confirmed_size", "NUMERIC(18,6)"),
+                    ("polymarket_confirmed_at", "TIMESTAMPTZ"),
+                    ("polymarket_last_verified_at", "TIMESTAMPTZ"),
+                    ("sot_reconciliation_state", "TEXT"),
+                    ("sot_reconciliation_notes", "TEXT"),
+                ]:
+                    await conn.execute(
+                        f"ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS {col} {col_type}"
+                    )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_manual_trades_polymarket_order_id "
+                    "ON manual_trades(polymarket_order_id) WHERE polymarket_order_id IS NOT NULL"
+                )
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_manual_trades_sot_state "
+                    "ON manual_trades(sot_reconciliation_state) WHERE sot_reconciliation_state IS NOT NULL"
+                )
+            log.info("db.manual_trades_sot_columns_ensured")
+        except Exception as exc:
+            log.warning("db.ensure_manual_trades_sot_columns_failed", error=str(exc))
+
+    async def fetch_manual_trades_for_sot_check(
+        self, since: Optional[datetime] = None, limit: int = 100,
+    ) -> list[dict]:
+        """Return recent manual_trades rows that the SOT reconciler should
+        re-verify against Polymarket.
+
+        Returns rows where:
+          * status indicates the engine *thinks* it executed (executed,
+            executing, open, pending_live, pending_paper)
+          * created_at is older than 30 seconds (the engine has had time to
+            finish its own write)
+          * AND either sot_reconciliation_state is NULL/unreconciled, OR
+            it has been more than 5 minutes since the last verification
+
+        The 30-second floor avoids racing against the manual_trade_poller
+        which may still be inside its retry loop.
+        """
+        if not self._pool:
+            return []
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        trade_id,
+                        polymarket_order_id,
+                        status,
+                        mode,
+                        direction,
+                        entry_price,
+                        stake_usd,
+                        created_at,
+                        polymarket_confirmed_status,
+                        polymarket_confirmed_fill_price,
+                        polymarket_confirmed_size,
+                        polymarket_confirmed_at,
+                        polymarket_last_verified_at,
+                        sot_reconciliation_state,
+                        sot_reconciliation_notes
+                    FROM manual_trades
+                    WHERE created_at < NOW() - INTERVAL '30 seconds'
+                      AND ($1::timestamptz IS NULL OR created_at >= $1)
+                      AND status IN (
+                          'executed', 'executing', 'open',
+                          'pending_live', 'pending_paper', 'live'
+                      )
+                      AND (
+                          sot_reconciliation_state IS NULL
+                          OR sot_reconciliation_state IN ('unreconciled', 'engine_optimistic', 'diverged')
+                          OR polymarket_last_verified_at IS NULL
+                          OR polymarket_last_verified_at < NOW() - INTERVAL '5 minutes'
+                      )
+                    ORDER BY created_at DESC
+                    LIMIT $2
+                    """,
+                    since,
+                    int(limit),
+                )
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            log.warning("db.fetch_manual_trades_for_sot_check_failed", error=str(exc)[:200])
+            return []
+
+    async def update_manual_trade_sot(
+        self,
+        trade_id: str,
+        *,
+        polymarket_confirmed_status: Optional[str],
+        polymarket_confirmed_fill_price: Optional[float],
+        polymarket_confirmed_size: Optional[float],
+        polymarket_confirmed_at: Optional[datetime],
+        sot_reconciliation_state: str,
+        sot_reconciliation_notes: Optional[str],
+    ) -> None:
+        """Stamp a manual_trades row with the latest SOT reconciliation result.
+
+        Always bumps polymarket_last_verified_at = NOW() so the next pass can
+        skip rows that were checked recently. Caller computes the
+        sot_reconciliation_state — see CLOBReconciler.reconcile_manual_trades_sot
+        for the decision matrix.
+        """
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE manual_trades
+                    SET polymarket_confirmed_status = $1,
+                        polymarket_confirmed_fill_price = $2,
+                        polymarket_confirmed_size = $3,
+                        polymarket_confirmed_at = $4,
+                        polymarket_last_verified_at = NOW(),
+                        sot_reconciliation_state = $5,
+                        sot_reconciliation_notes = $6
+                    WHERE trade_id = $7
+                    """,
+                    polymarket_confirmed_status,
+                    polymarket_confirmed_fill_price,
+                    polymarket_confirmed_size,
+                    polymarket_confirmed_at,
+                    sot_reconciliation_state,
+                    sot_reconciliation_notes,
+                    trade_id,
+                )
+            log.info(
+                "db.manual_trade_sot_updated",
+                trade_id=trade_id,
+                state=sot_reconciliation_state,
+                confirmed_status=polymarket_confirmed_status,
+            )
+        except Exception as exc:
+            log.warning(
+                "db.update_manual_trade_sot_failed",
+                trade_id=trade_id,
+                error=str(exc)[:200],
+            )
 
     async def get_window_close(self, window_ts: int, asset: str, timeframe: str) -> float:
         """Get the close price for a resolved window from window_snapshots."""
