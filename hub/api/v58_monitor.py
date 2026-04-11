@@ -2495,6 +2495,135 @@ async def get_execution_hq(
         except Exception:
             pass
 
+        # ── UI-01: Gate heartbeat — last 50 signal_evaluations rows ─────
+        # Surfaces the V10.6 8-gate pipeline status for the operator so
+        # blocking gates are visible in real time. Reads the same
+        # signal_evaluations table as v9_gate_data above, but returns a
+        # flat newest-first array (not a per-window nested dict) plus
+        # per-gate pass/fail derived from `gate_failed` + `gate_passed`.
+        #
+        # The 8 V10.6 gates (in pipeline order, see
+        # engine/strategies/five_min_vpin.py ~line 695):
+        #   G0 eval_offset_bounds  (DS-01, v10.6 EvalOffsetBoundsGate)
+        #   G1 source_agreement    (SourceAgreementGate)
+        #   G2 delta_magnitude     (DeltaMagnitudeGate)
+        #   G3 taker_flow          (TakerFlowGate)
+        #   G4 cg_confirmation     (CGConfirmationGate)
+        #   G5 dune_confidence     (DuneConfidenceGate)
+        #   G6 spread_gate         (SpreadGate)
+        #   G7 dynamic_cap         (DynamicCapGate)
+        gate_heartbeat: list = []
+        try:
+            hbq = text("""
+                SELECT
+                    evaluated_at, window_ts, eval_offset, decision,
+                    gate_failed, gate_passed,
+                    gate_vpin_passed, gate_delta_passed, gate_cg_passed,
+                    gate_twap_passed, gate_timesfm_passed,
+                    v2_probability_up, delta_chainlink, delta_tiingo
+                FROM signal_evaluations
+                ORDER BY evaluated_at DESC
+                LIMIT 50
+            """)
+            hbresult = await session.execute(hbq)
+            hbrows = hbresult.mappings().all()
+
+            # Ordered list of 8 V10.6 gate pipeline keys (G0 .. G7)
+            v106_pipeline_order = [
+                "eval_offset_bounds",
+                "source_agreement",
+                "delta_magnitude",
+                "taker_flow",
+                "cg_confirmation",
+                "dune_confidence",
+                "spread_gate",
+                "dynamic_cap",
+            ]
+            # Aliases the engine may write into gate_failed — some legacy
+            # names (e.g. "cg") predate the V10.6 rename.
+            gate_failed_aliases = {
+                "eval_offset_bounds": "eval_offset_bounds",
+                "source_agreement": "source_agreement",
+                "source_disagree": "source_agreement",
+                "delta_magnitude": "delta_magnitude",
+                "delta": "delta_magnitude",
+                "taker_flow": "taker_flow",
+                "cg_confirmation": "cg_confirmation",
+                "cg_confirm": "cg_confirmation",
+                "cg": "cg_confirmation",
+                "cg_veto": "cg_confirmation",
+                "dune_confidence": "dune_confidence",
+                "dune": "dune_confidence",
+                "timesfm": "dune_confidence",
+                "spread_gate": "spread_gate",
+                "spread": "spread_gate",
+                "dynamic_cap": "dynamic_cap",
+                "cap": "dynamic_cap",
+            }
+
+            for hbr in hbrows:
+                gate_failed_raw = hbr.get("gate_failed")
+                gate_failed_canonical = None
+                if gate_failed_raw:
+                    gate_failed_canonical = gate_failed_aliases.get(
+                        str(gate_failed_raw).strip().lower().replace(" ", "_")
+                    ) or str(gate_failed_raw)
+
+                overall_passed = bool(hbr.get("gate_passed"))
+                gate_results: dict = {}
+                if overall_passed:
+                    # All gates in the pipeline passed
+                    for gname in v106_pipeline_order:
+                        gate_results[gname] = True
+                elif gate_failed_canonical in v106_pipeline_order:
+                    # Pipeline stops at the first failing gate; every
+                    # gate before it passed, the failing gate is False,
+                    # and every gate after it never ran (None).
+                    idx = v106_pipeline_order.index(gate_failed_canonical)
+                    for i, gname in enumerate(v106_pipeline_order):
+                        if i < idx:
+                            gate_results[gname] = True
+                        elif i == idx:
+                            gate_results[gname] = False
+                        else:
+                            gate_results[gname] = None
+                else:
+                    # Unknown failure — fall back to legacy column
+                    # mappings where possible. This mainly triggers for
+                    # pre-V10.6 rows.
+                    legacy = {
+                        "source_agreement": _derive_source_agreement(hbr),
+                        "delta_magnitude": hbr.get("gate_delta_passed"),
+                        "taker_flow": hbr.get("gate_cg_passed"),
+                        "cg_confirmation": hbr.get("gate_cg_passed"),
+                        "dune_confidence": hbr.get("gate_timesfm_passed"),
+                        "spread_gate": None,
+                        "dynamic_cap": None,
+                        "eval_offset_bounds": None,
+                    }
+                    for gname in v106_pipeline_order:
+                        v = legacy.get(gname)
+                        gate_results[gname] = bool(v) if v is not None else None
+
+                gate_heartbeat.append({
+                    "evaluated_at": hbr["evaluated_at"].isoformat() if hbr.get("evaluated_at") else None,
+                    "window_ts": int(hbr["window_ts"]) if hbr.get("window_ts") else None,
+                    "eval_offset": int(hbr["eval_offset"]) if hbr.get("eval_offset") is not None else None,
+                    "decision": hbr.get("decision") or ("TRADE" if overall_passed else "SKIP"),
+                    "gate_failed": gate_failed_canonical,
+                    "gate_failed_raw": gate_failed_raw,
+                    "v2_probability_up": _safe_float(hbr.get("v2_probability_up")),
+                    "gate_results": gate_results,
+                })
+        except Exception as exc:
+            # Swallow — gate_heartbeat is purely cosmetic; the rest of
+            # the payload stays backward compatible.
+            gate_heartbeat = []
+            try:
+                log_ctx = getattr(text, "__name__", "")  # no-op
+            except Exception:
+                pass
+
         return {
             "windows": windows,
             "shadow_stats": shadow_stats,
@@ -2503,6 +2632,7 @@ async def get_execution_hq(
             "v9_stats": v9_stats,
             "v10_stats": v10_stats,
             "v9_gate_data": v9_gate_data,
+            "gate_heartbeat": gate_heartbeat,
         }
     except Exception as exc:
         return {"windows": [], "shadow_stats": {}, "recent_trades": [], "system": {}, "error": str(exc)}
