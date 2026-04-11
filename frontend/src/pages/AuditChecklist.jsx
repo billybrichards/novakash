@@ -598,22 +598,27 @@ const TASKS = [
     id: 'CI-01',
     category: 'ci-cd',
     severity: 'HIGH',
-    status: 'OPEN',
+    status: 'IN_PROGRESS',
     title: 'Montreal CI/CD automation for engine/ (port deploy-macro-observer.yml pattern)',
     files: [
+      { path: '.github/workflows/deploy-engine.yml', line: 1, repo: 'novakash' },
       { path: 'docs/CI_CD.md', line: 20, repo: 'novakash' },
       { path: '.github/workflows/deploy-macro-observer.yml', line: 1, repo: 'novakash' },
-      { path: '.github/workflows/deploy-engine.yml', line: 1, repo: 'novakash' },
+      { path: 'scripts/restart_engine.sh', line: 1, repo: 'novakash' },
     ],
     evidence: [
       'docs/CI_CD.md (6816f86) flags engine/ as "the only major service without a GitHub Actions deploy workflow"',
       'Engine currently relies on Railway git-watcher auto-deploy with no smoke test, no secrets check, no post-deploy health probe, no rollback path',
       'docs/CI_CD.md: "has been observed CRASHED or FAILED in recent deploy history"',
-      'deploy-macro-observer.yml is the canonical template (~200 lines, well-commented)',
-      'Same Montreal box (3.98.114.0) already used by timesfm-service + macro-observer + data-collector; proven deploy pattern',
-      'scripts/restart_engine.sh already encapsulates the process restart — CI can just SSH and run it',
+      'Workflow drafted: 1 job, 13 steps, 15 env secrets, valid YAML confirmed via python3 yaml.safe_load',
+      'Key differences from the macro-observer template: engine is NOT in Docker (raw python3 process via scripts/restart_engine.sh), two-user host (ssh as ubuntu, engine runs as novakash via sudo -u novakash), post-deploy health probe is pgrep process-count + log-grep instead of docker healthcheck',
+      'Error-signature gate thresholds encode expected post-PR #26 state: clob_feed.write_error=0, reconciler.resolve_db_error=0, orphan_fills_error<=5, price_source_disagreement<=30 (will tighten to <5 after DQ-01 ships)',
+      'Requires 15 new GitHub Actions secrets: ENGINE_HOST, ENGINE_SSH_KEY, plus engine runtime credentials (DATABASE_URL, COINGLASS_API_KEY, BINANCE_*, POLY_*, TELEGRAM_*)',
     ],
-    fix: 'Create .github/workflows/deploy-engine.yml mirroring deploy-macro-observer.yml: (1) Require runtime secrets step; (2) base64 SSH key decode; (3) rsync engine/ to /home/novakash/novakash/engine with --exclude .env; (4) template .env from GitHub Actions secrets via sudo tee; (5) invoke scripts/restart_engine.sh via ssh; (6) post-deploy health probe checking sudo systemctl is-active OR pgrep python3.*engine.*main.py; (7) grep last 5 min of engine.log for known error signatures (clob_feed.write_error, reconciler.resolve_db_error, evaluate.price_source_disagreement) and fail the deploy if counts exceed thresholds; (8) tail 30 log lines for success diagnostics. Gate to push events on develop with path filter `engine/**`. Add concurrency group to prevent racing rsyncs. Add ENGINE_HOST + ENGINE_SSH_KEY secrets to billybrichards/novakash.',
+    fix: 'Draft shipped in PR #27. IN_PROGRESS because the workflow only verifies on first fire against the real host — until ENGINE_HOST + ENGINE_SSH_KEY are populated in Actions secrets and a push to develop exercises the deploy, this is drafted-not-proven. Move to DONE after: (a) ENGINE_SSH_KEY bootstrapped onto the novakash-montreal-vnc host authorized_keys for ubuntu user, (b) first manual workflow_dispatch succeeds end-to-end, (c) PE-01/PE-02 error-signature gate passes against the live log.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Drafted .github/workflows/deploy-engine.yml on branch claude/ci/deploy-engine-montreal. 13 steps: checkout, Require runtime secrets, Write SSH key, Ensure host directories, Rsync engine, Rsync scripts, Reset host .env, Template .env from secrets, Restart via scripts/restart_engine.sh, Wait 45s, Process-count health probe, Error-signature log-grep gate, Tail recent logs. Uses injection-defence pattern (env: pull-up for all secrets, --rsync-path="sudo rsync" for novakash-owned paths). Non-secret runtime flags (V10_*, FIVE_MIN_*, LIVE_TRADING_ENABLED, thresholds) are intentionally NOT templated — they stay hand-managed on the host because they change more often than CI deploy cadence. Waiting on operator action to (a) bootstrap ENGINE_SSH_KEY onto the novakash-montreal-vnc box authorized_keys and (b) add the 15 secrets to billybrichards/novakash Actions secrets.' },
+    ],
   },
 ];
 
