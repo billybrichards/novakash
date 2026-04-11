@@ -16,6 +16,7 @@ const NAV_SECTIONS = [
     title: 'POLYMARKET',
     color: '#a855f7',
     items: [
+      { path: '/notes',           label: 'Notes',      icon: '📝', highlight: true, isNew: true },
       { path: '/dashboard',       label: 'Dashboard',  icon: '📊' },
       { path: '/execution-hq',    label: 'Execution HQ', icon: '⚡', highlight: true, isNew: true },
       { path: '/factory',         label: 'Factory Floor', icon: '🏭', highlight: true },

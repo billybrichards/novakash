@@ -35,6 +35,7 @@ import V2Surface from './pages/data-surfaces/V2Surface.jsx';
 import V3Surface from './pages/data-surfaces/V3Surface.jsx';
 import V4Surface from './pages/data-surfaces/V4Surface.jsx';
 import Deployments from './pages/Deployments.jsx';
+import Notes from './pages/Notes.jsx';
 
 export default function App() {
   return (
@@ -87,6 +88,7 @@ export default function App() {
             <Route path="data/v3" element={<V3Surface />} />
             <Route path="data/v4" element={<V4Surface />} />
             <Route path="deployments" element={<Deployments />} />
+            <Route path="notes" element={<Notes />} />
           </Route>
 
           {/* 404 fallback */}

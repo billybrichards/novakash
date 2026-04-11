@@ -163,3 +163,34 @@ class BacktestRun(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class Note(Base):
+    """
+    Observation / to-do / working-note captured during audit sessions.
+
+    Acts as a persistent journal that survives frontend redeploys. Claude
+    and operators can add notes during long audit sessions and read them
+    back in future sessions. Feeds the /notes page (NT-01).
+    """
+
+    __tablename__ = "notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    tags: Mapped[str] = mapped_column(String(500), nullable=False, default="")  # CSV
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="open", index=True
+    )  # open | archived
+    author: Mapped[str] = mapped_column(String(50), nullable=False, default="claude")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+        index=True,
+    )
