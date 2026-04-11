@@ -55,13 +55,51 @@ _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
+def _normalize_async_dsn(url: str) -> str:
+    """Ensure a DATABASE_URL uses the asyncpg SQLAlchemy dialect.
+
+    The shared DATABASE_URL secret is set to `postgresql://...` for
+    compatibility with psycopg2-based tools (migrations, ad-hoc psql,
+    legacy engine services). The hub uses SQLAlchemy's
+    `create_async_engine` which requires the `postgresql+asyncpg://`
+    dialect prefix — without it SQLAlchemy routes to the sync psycopg2
+    dialect and the hub container crashes at startup with
+    `ModuleNotFoundError: No module named 'psycopg2'` (psycopg2 is not
+    in hub/requirements.txt because the hub only needs asyncpg).
+
+    This normaliser handles the common variants without being
+    prescriptive: strip existing driver suffixes and canonicalise to
+    `postgresql+asyncpg://`. Already-correct URLs are a no-op.
+
+    Discovered during the DEP-02 AWS hub migration (2026-04-11): the
+    HUB_HOST / HUB_SSH_KEY / JWT_SECRET secrets unblocked the deploy,
+    then the container crashed on the DATABASE_URL dialect mismatch.
+    """
+    if not url:
+        return url
+    for prefix in (
+        "postgresql+asyncpg://",
+        "postgresql+psycopg2://",
+        "postgresql+psycopg://",
+        "postgres+asyncpg://",
+        "postgres+psycopg2://",
+        "postgres://",
+        "postgresql://",
+    ):
+        if url.startswith(prefix):
+            # Replace whatever we found with the canonical async form.
+            return "postgresql+asyncpg://" + url[len(prefix):]
+    return url
+
+
 async def init_db() -> None:
     """Create the async engine and session factory."""
     global _engine, _session_factory
 
     settings = get_settings()
+    dsn = _normalize_async_dsn(settings.DATABASE_URL)
     _engine = create_async_engine(
-        settings.DATABASE_URL,
+        dsn,
         echo=settings.DEBUG,
         pool_size=10,
         max_overflow=5,
@@ -71,7 +109,23 @@ async def init_db() -> None:
         class_=AsyncSession,
         expire_on_commit=False,
     )
-    log.info("db.engine_created", url=settings.DATABASE_URL)
+    # Log the normalised dsn so we can see the dialect in startup logs,
+    # but don't log credentials — redact everything before the `@` host.
+    log.info("db.engine_created", url=_redact_dsn(dsn))
+
+
+def _redact_dsn(dsn: str) -> str:
+    """Return the dsn with credentials replaced by ``***`` for logging."""
+    if "@" not in dsn:
+        return dsn
+    scheme_end = dsn.find("://")
+    if scheme_end < 0:
+        return dsn
+    scheme = dsn[: scheme_end + 3]
+    rest = dsn[scheme_end + 3:]
+    at = rest.find("@")
+    host = rest[at + 1:]
+    return f"{scheme}***@{host}"
 
 
 async def close_db() -> None:
