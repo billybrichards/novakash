@@ -609,6 +609,8 @@ const TASKS = [
     fix: 'Phase 4 refactor: extract entry logic → engine/use_cases/open_five_min_position.py. Target <500 LOC for the orchestration class. Use margin_engine/use_cases/open_position.py as template.',
     progressNotes: [
       { date: '2026-04-11', note: 'Plan doc shipped PR #51 — docs/CLEAN_ARCHITECT_MIGRATION_PLAN.md (1159 lines, 9 phases). Phase 0 (ports.py scaffold) is queued in the SPARTA doc Appendix D future task queue for next agent pickup.' },
+      { date: '2026-04-11', note: 'PR #75 — Phase 0 ports.py scaffold shipped.' },
+      { date: '2026-04-11', note: 'PR #80 — db_client.py split into 4 per-aggregate repos. Phase 1 next.' },
     ],
   },
   {
@@ -1162,6 +1164,7 @@ const TASKS = [
     fix: 'Draft shipped in PR #27. IN_PROGRESS because the workflow only verifies on first fire against the real host — until ENGINE_HOST + ENGINE_SSH_KEY are populated in Actions secrets and a push to develop exercises the deploy, this is drafted-not-proven. Move to DONE after: (a) ENGINE_SSH_KEY bootstrapped onto the novakash-montreal-vnc host authorized_keys for ubuntu user, (b) first manual workflow_dispatch succeeds end-to-end, (c) PE-01/PE-02 error-signature gate passes against the live log.',
     progressNotes: [
       { date: '2026-04-11', note: 'Drafted .github/workflows/deploy-engine.yml on branch claude/ci/deploy-engine-montreal. 13 steps: checkout, Require runtime secrets, Write SSH key, Ensure host directories, Rsync engine, Rsync scripts, Reset host .env, Template .env from secrets, Restart via scripts/restart_engine.sh, Wait 45s, Process-count health probe, Error-signature log-grep gate, Tail recent logs. Uses injection-defence pattern (env: pull-up for all secrets, --rsync-path="sudo rsync" for novakash-owned paths). Non-secret runtime flags (V10_*, FIVE_MIN_*, LIVE_TRADING_ENABLED, thresholds) are intentionally NOT templated — they stay hand-managed on the host because they change more often than CI deploy cadence. Waiting on operator action to (a) bootstrap ENGINE_SSH_KEY onto the novakash-montreal-vnc box authorized_keys and (b) add the 15 secrets to billybrichards/novakash Actions secrets.' },
+      { date: '2026-04-11', note: 'PR #71 — deploy-engine.yml wired up, ENGINE_HOST set. ENGINE_SSH_KEY still needed.' },
     ],
   },
 
@@ -1481,7 +1484,101 @@ const TASKS = [
     fix: 'Relabelled the SIGNAL header to "SIGNAL▸DIR", widened the SIGNAL/ACTUAL columns from 46px to 54px, and added native HTML title tooltips to every header cell (TIME, SIGNAL, ACTUAL, SRC, GATES, REASON, RESULT) naming the DB column and engine file:line that populates it. Added per-row tooltips on SIGNAL and ACTUAL cells with the specific value and resolution source. Added a small legend strip above the table with plain-English one-liners. Research note shipped at docs/FACTORY_FLOOR_SIGNAL_SOURCE.md with the full trace: SIGNAL = SourceAgreementGate 2/3 vote (CL+TI+BIN), ACTUAL = Polymarket trades.outcome with Binance open→close fallback. Single-file frontend-only change, no engine/hub edits.',
     progressNotes: [
       { date: '2026-04-11', note: 'Shipped this PR. Hover any header cell in RECENT FLOW TIMELINE to see the definitive column definition + file:line citation. Build green.' },
+      { date: '2026-04-11', note: 'PR #69 — signal column clarity with tooltips merged to develop.' },
     ],
+  },
+  {
+    id: 'LIVE-TOGGLE-AUDIT',
+    category: 'ci-cd',
+    severity: 'HIGH',
+    status: 'DONE',
+    title: 'Docs-only toggle path audit with GREEN/YELLOW/RED verdicts',
+    files: [{ path: 'docs/LIVE_TOGGLE_AUDIT.md', line: 1, repo: 'novakash' }],
+    evidence: [
+      'The live/paper toggle path spans orchestrator.py DB heartbeat, .env vars, UI toggle, system_state — no document mapped the full path.',
+      'STOP-01 showed .env changes are silently overridden by DB state on every heartbeat tick.',
+    ],
+    fix: 'PR #72 shipped docs/LIVE_TOGGLE_AUDIT.md mapping every toggle mechanism with GREEN/YELLOW/RED safety verdicts.',
+    progressNotes: [{ date: '2026-04-11', note: 'PR #72 merged to develop.' }],
+  },
+  {
+    id: 'UI-04',
+    category: 'frontend',
+    severity: 'MEDIUM',
+    status: 'DONE',
+    title: 'WindowsTable per-window aggregation view on Factory Floor + Execution HQ',
+    files: [
+      { path: 'frontend/src/pages/FactoryFloor.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/execution-hq/ExecutionHQ.jsx', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Factory Floor and Execution HQ lacked a per-window aggregation view.',
+      'Operator had to mentally group rows by window_ts.',
+    ],
+    fix: 'PR #74 added WindowsTable: per-window aggregation with signal direction, gate pass/fail, trade decision, outcome, PnL.',
+    progressNotes: [{ date: '2026-04-11', note: 'PR #74 merged to develop.' }],
+  },
+  {
+    id: 'POLY-SOT-d',
+    category: 'data-quality',
+    severity: 'HIGH',
+    status: 'IN_PROGRESS',
+    title: 'Reconciler rewrite using poly_fills on-chain SOT',
+    files: [
+      { path: 'engine/reconciliation/reconciler.py', line: 1, repo: 'novakash' },
+      { path: 'engine/persistence/db_client.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'POLY-SOT a/b/c used CLOB API. POLY-SOT-d rewrites to use poly_fills as the on-chain source of truth.',
+      'CLOB API can lag. On-chain poly_fills are the definitive record.',
+    ],
+    fix: 'PR #70 rewrites the reconciler to source truth from poly_fills. Backfill re-run pending on Montreal.',
+    progressNotes: [{ date: '2026-04-11', note: 'PR #70 opened. Core logic shipped. Backfill pending.' }],
+  },
+  {
+    id: 'DATA-ARCH-01',
+    category: 'clean-architect',
+    severity: 'HIGH',
+    status: 'DONE',
+    title: 'Data architecture audit — 39 tables with SOT/DERIVED/CACHE/LEGACY/OPERATIONAL tags',
+    files: [{ path: 'docs/DATA_ARCHITECTURE_AUDIT.md', line: 1, repo: 'novakash' }],
+    evidence: [
+      '39+ tables across 6 services with no architectural role classification.',
+      'Needed for clean-architect migration to distinguish sources of truth from caches.',
+    ],
+    fix: 'PR #81 shipped docs/DATA_ARCHITECTURE_AUDIT.md — all 39 tables tagged with roles and migration notes.',
+    progressNotes: [{ date: '2026-04-11', note: 'PR #81 merged. Canonical data-layer reference.' }],
+  },
+  {
+    id: 'ORCH-AUDIT-01',
+    category: 'clean-architect',
+    severity: 'HIGH',
+    status: 'DONE',
+    title: 'Orchestrator deep audit — 33 methods, 9 use cases, risk matrix',
+    files: [
+      { path: 'docs/ORCHESTRATOR_AUDIT.md', line: 1, repo: 'novakash' },
+      { path: 'engine/strategies/orchestrator.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'orchestrator.py has 33 methods mixing 9 concerns in a single class.',
+      'CA-01 needs a method-level map before extraction can begin safely.',
+    ],
+    fix: 'PR #79 shipped docs/ORCHESTRATOR_AUDIT.md — 33 methods grouped into 9 use cases with extraction risk.',
+    progressNotes: [{ date: '2026-04-11', note: 'PR #79 merged. Extraction guide for CA-01.' }],
+  },
+  {
+    id: 'REPO-AUDIT-01',
+    category: 'clean-architect',
+    severity: 'HIGH',
+    status: 'DONE',
+    title: 'Repo-wide clean-architecture audit — 10 modules graded',
+    files: [{ path: 'docs/REPO_CLEAN_ARCH_AUDIT.md', line: 1, repo: 'novakash' }],
+    evidence: [
+      '10 modules with varying quality. No consistent grading rubric existed.',
+      'Migration needs to know which modules are exemplars vs which need work.',
+    ],
+    fix: 'PR #77 shipped docs/REPO_CLEAN_ARCH_AUDIT.md — margin_engine A, hub B, frontend B, engine D.',
+    progressNotes: [{ date: '2026-04-11', note: 'PR #77 merged. Module-level quality map.' }],
   },
 ];
 
