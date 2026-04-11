@@ -357,6 +357,14 @@ Background agents dispatched at 17:06-17:14 (5 in parallel, isolated worktrees):
   5. Re-enable live trading via the UI toggle
   6. Monitor the first 5-10 manual trades through the decision-snapshot table
 
+### 2026-04-11 — Mega checklist update: PRs #69-81 landed on develop
+
+3 flipped DONE, 3 IN_PROGRESS with notes, 3 new DONE entries.
+
+**DONE:** FACTORY-01 (PR #69), LIVE-TOGGLE-AUDIT (PR #72), UI-04 (PR #74).
+**IN_PROGRESS:** POLY-SOT-d (PR #70, backfill pending), CI-01 (PR #71, ENGINE_SSH_KEY needed), CA-01 (PR #75 ports + PR #80 db_client split).
+**New DONE:** DATA-ARCH-01 (PR #81, 39 tables), ORCH-AUDIT-01 (PR #79, 33 methods), REPO-AUDIT-01 (PR #77, 10 modules).
+
 ## Next up (ordered)
 
 0. **POLY-SOT-c backfill run** — once feat/poly-sot-b-automatic-trades-plus-backfill
