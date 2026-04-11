@@ -1462,6 +1462,27 @@ const TASKS = [
       { date: '2026-04-11', note: 'Shipped this consolidation PR. vite build green. 5-section nav + GATES_CATALOG (10 entries) + /schema Gates tab all live.' },
     ],
   },
+  // ── FACTORY-01 (this PR) — Factory Floor SIGNAL column clarity ────────
+  {
+    id: 'FACTORY-01',
+    category: 'frontend',
+    severity: 'MEDIUM',
+    status: 'DONE',
+    title: 'Factory Floor SIGNAL column — clarify source and meaning',
+    files: [
+      { path: 'frontend/src/pages/FactoryFloor.jsx', line: 1407, repo: 'novakash' },
+      { path: 'docs/FACTORY_FLOOR_SIGNAL_SOURCE.md', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'User feedback 2026-04-11: "the factory floor looks GREAT i notice from the table there would be lots of trades that we would win !! a few losses but this is good !! what signal is that exactly? not super clear"',
+      'The RECENT FLOW TIMELINE table on /factory rendered UP/DOWN under a column labelled SIGNAL with no indication of whether this was the DUNE model direction, the source-agreement vote, or the final pipeline decision. No tooltips on any header cell.',
+      'Tracing the data flow (window_snapshots.direction -> hub/api/v58_monitor.py:1037 -> _row_to_window at :335 -> FactoryFloor.jsx:1449) confirmed the value is signal.direction from the 5m VPIN strategy, which on the v10.5+ prod path is ctx.agreed_direction from SourceAgreementGate (engine/signals/gates.py:281-420).',
+    ],
+    fix: 'Relabelled the SIGNAL header to "SIGNAL▸DIR", widened the SIGNAL/ACTUAL columns from 46px to 54px, and added native HTML title tooltips to every header cell (TIME, SIGNAL, ACTUAL, SRC, GATES, REASON, RESULT) naming the DB column and engine file:line that populates it. Added per-row tooltips on SIGNAL and ACTUAL cells with the specific value and resolution source. Added a small legend strip above the table with plain-English one-liners. Research note shipped at docs/FACTORY_FLOOR_SIGNAL_SOURCE.md with the full trace: SIGNAL = SourceAgreementGate 2/3 vote (CL+TI+BIN), ACTUAL = Polymarket trades.outcome with Binance open→close fallback. Single-file frontend-only change, no engine/hub edits.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Shipped this PR. Hover any header cell in RECENT FLOW TIMELINE to see the definitive column definition + file:line citation. Build green.' },
+    ],
+  },
 ];
 
 // ─── Components ───────────────────────────────────────────────────────────
