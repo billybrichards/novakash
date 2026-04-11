@@ -24,10 +24,11 @@ Usage:
 
 from __future__ import annotations
 
+import copy
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Optional, Protocol
+from typing import Optional, Protocol, Union
 
 import structlog
 
@@ -119,10 +120,56 @@ class GateContext:
     v5_features: Optional[object] = None
 
 
+
+
+# -- Feature flag: immutable gate context (CA-03) -------------------------
+
+_IMMUTABLE_GATES = os.environ.get("ENGINE_IMMUTABLE_GATES", "false").lower() == "true"
+
+
+@dataclass(frozen=True)
+class GateContextDelta:
+    """Immutable delta capturing fields a gate wants to change on GateContext.
+
+    Only fields that are not None are applied during merge. Gates that
+    do not modify context return EMPTY_DELTA.
+    """
+    agreed_direction: Optional[str] = None
+    cg_threshold_modifier: Optional[float] = None
+    cg_confirms: Optional[int] = None
+    cg_bonus: Optional[float] = None
+    dune_probability_up: Optional[float] = None
+    dune_direction: Optional[str] = None
+    dune_model_version: Optional[str] = None
+
+
+EMPTY_DELTA = GateContextDelta()
+
+
+def _merge_context(ctx: GateContext, delta: GateContextDelta) -> GateContext:
+    """Return a NEW GateContext with delta fields applied."""
+    overrides = {}
+    for fn in (
+        "agreed_direction", "cg_threshold_modifier", "cg_confirms",
+        "cg_bonus", "dune_probability_up", "dune_direction", "dune_model_version",
+    ):
+        val = getattr(delta, fn)
+        if val is not None:
+            overrides[fn] = val
+    if not overrides:
+        return ctx
+    return replace(ctx, **overrides)
+
+
 # ── Gate Protocol ───────────────────────────────────────────────────────────
 
 class Gate(Protocol):
-    """Protocol for gate implementations."""
+    """Protocol for gate implementations.
+
+    CA-03: When ENGINE_IMMUTABLE_GATES=true, GatePipeline calls
+    evaluate_immutable() if present, falling back to evaluate()
+    with a mutable copy for unmigrated gates.
+    """
     name: str
     async def evaluate(self, ctx: GateContext) -> GateResult: ...
 
@@ -276,6 +323,11 @@ class EvalOffsetBoundsGate:
         )
 
 
+    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+        """CA-03 immutable path."""
+        result = await self.evaluate(ctx)
+        return (result, EMPTY_DELTA)
+
 # ── Source Agreement Gate ───────────────────────────────────────────────────
 
 class SourceAgreementGate:
@@ -420,6 +472,52 @@ class SourceAgreementGate:
         )
 
 
+    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+        """CA-03 immutable path -- returns agreed_direction delta."""
+        if ctx.delta_chainlink is None or ctx.delta_tiingo is None:
+            return (GateResult(passed=False, gate_name=self.name, reason="missing CL or TI data"), EMPTY_DELTA)
+
+        cl_dir = "UP" if ctx.delta_chainlink > 0 else "DOWN"
+        ti_dir = "UP" if ctx.delta_tiingo > 0 else "DOWN"
+
+        if self._spot_only:
+            if cl_dir == ti_dir:
+                return (
+                    GateResult(passed=True, gate_name=self.name,
+                        reason=f"spot-only {cl_dir} (CL={cl_dir} TI={ti_dir})",
+                        data={"mode": "spot_only", "cl_dir": cl_dir, "ti_dir": ti_dir, "direction": cl_dir}),
+                    GateContextDelta(agreed_direction=cl_dir),
+                )
+            self._log.info("gate.source_agreement.spot_disagree", mode="spot_only", cl_dir=cl_dir, ti_dir=ti_dir)
+            return (
+                GateResult(passed=False, gate_name=self.name,
+                    reason=f"spot disagree: CL={cl_dir} TI={ti_dir} (spot-only mode)",
+                    data={"mode": "spot_only", "cl_dir": cl_dir, "ti_dir": ti_dir}),
+                EMPTY_DELTA,
+            )
+
+        bin_dir = "UP" if ctx.delta_binance is not None and ctx.delta_binance > 0 else "DOWN"
+        up_votes = sum([cl_dir == "UP", ti_dir == "UP", bin_dir == "UP"])
+        down_votes = 3 - up_votes
+        if up_votes >= 2:
+            agreed_dir = "UP"
+        elif down_votes >= 2:
+            agreed_dir = "DOWN"
+        else:
+            return (
+                GateResult(passed=False, gate_name=self.name,
+                    reason=f"CL={cl_dir} TI={ti_dir} BIN={bin_dir} NO MAJORITY",
+                    data={"cl_dir": cl_dir, "ti_dir": ti_dir, "bin_dir": bin_dir, "up_votes": up_votes, "down_votes": down_votes}),
+                EMPTY_DELTA,
+            )
+
+        return (
+            GateResult(passed=True, gate_name=self.name,
+                reason=f"2/3 {agreed_dir} (CL={cl_dir} TI={ti_dir} BIN={bin_dir})",
+                data={"cl_dir": cl_dir, "ti_dir": ti_dir, "bin_dir": bin_dir, "direction": agreed_dir, "up_votes": up_votes, "down_votes": down_votes}),
+            GateContextDelta(agreed_direction=agreed_dir),
+        )
+
 # ── Delta Magnitude Gate (v10.5) ───────────────────────────────────────────
 
 class DeltaMagnitudeGate:
@@ -472,6 +570,11 @@ class DeltaMagnitudeGate:
             data={"abs_delta": abs_delta, "floor": floor},
         )
 
+
+    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+        """CA-03 immutable path."""
+        result = await self.evaluate(ctx)
+        return (result, EMPTY_DELTA)
 
 # ── DUNE Confidence Gate ───────────────────────────────────────────────────
 
@@ -778,6 +881,19 @@ class DuneConfidenceGate:
         )
 
 
+    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+        """CA-03 immutable path -- runs evaluate on a mutable copy, diffs for delta."""
+        mutable_ctx = replace(ctx)
+        result = await self.evaluate(mutable_ctx)
+        kw = {}
+        if mutable_ctx.dune_probability_up != ctx.dune_probability_up:
+            kw["dune_probability_up"] = mutable_ctx.dune_probability_up
+        if mutable_ctx.dune_direction != ctx.dune_direction:
+            kw["dune_direction"] = mutable_ctx.dune_direction
+        if mutable_ctx.dune_model_version != ctx.dune_model_version:
+            kw["dune_model_version"] = mutable_ctx.dune_model_version
+        return (result, GateContextDelta(**kw) if kw else EMPTY_DELTA)
+
 # ── Taker Flow Gate (v10.3 — replaces CoinGlassVetoGate) ─────────────────
 
 class TakerFlowGate:
@@ -887,6 +1003,17 @@ class TakerFlowGate:
         )
 
 
+    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+        """CA-03 immutable path -- runs evaluate on a mutable copy, diffs for delta."""
+        if not self._enabled:
+            return (GateResult(passed=True, gate_name=self.name, reason="disabled (V10_CG_TAKER_GATE=false)"), EMPTY_DELTA)
+        mutable_ctx = replace(ctx)
+        result = await self.evaluate(mutable_ctx)
+        kw = {}
+        if mutable_ctx.cg_threshold_modifier != ctx.cg_threshold_modifier:
+            kw["cg_threshold_modifier"] = mutable_ctx.cg_threshold_modifier
+        return (result, GateContextDelta(**kw) if kw else EMPTY_DELTA)
+
 # ── CoinGlass Confirmation Gate (v10.3 — 3-signal bonus) ─────────────────
 
 class CGConfirmationGate:
@@ -968,6 +1095,17 @@ class CGConfirmationGate:
         )
 
 
+    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+        """CA-03 immutable path -- runs evaluate on a mutable copy, diffs for delta."""
+        mutable_ctx = replace(ctx)
+        result = await self.evaluate(mutable_ctx)
+        kw = {}
+        if mutable_ctx.cg_confirms != ctx.cg_confirms:
+            kw["cg_confirms"] = mutable_ctx.cg_confirms
+        if mutable_ctx.cg_bonus != ctx.cg_bonus:
+            kw["cg_bonus"] = mutable_ctx.cg_bonus
+        return (result, GateContextDelta(**kw) if kw else EMPTY_DELTA)
+
 # ── Polymarket Spread Gate (v10.3) ───────────────────────────────────────
 
 class SpreadGate:
@@ -1008,6 +1146,11 @@ class SpreadGate:
             data={"spread_pct": spread_pct},
         )
 
+
+    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+        """CA-03 immutable path."""
+        result = await self.evaluate(ctx)
+        return (result, EMPTY_DELTA)
 
 # ── CoinGlass Veto Gate (LEGACY — kept for V10_CG_TAKER_GATE=false) ─────
 
@@ -1098,6 +1241,11 @@ class CoinGlassVetoGate:
         )
 
 
+    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+        """CA-03 immutable path."""
+        result = await self.evaluate(ctx)
+        return (result, EMPTY_DELTA)
+
 # ── Dynamic Cap Gate ───────────────────────────────────────────────────────
 
 class DynamicCapGate:
@@ -1175,41 +1323,49 @@ class DynamicCapGate:
             )
 
 
+    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+        """CA-03 immutable path."""
+        result = await self.evaluate(ctx)
+        return (result, EMPTY_DELTA)
+
 # ── Gate Pipeline ──────────────────────────────────────────────────────────
 
 class GatePipeline:
-    """Chains gates in order. Stops at first failure."""
+    """Chains gates in order. Stops at first failure.
+
+    CA-03: ENGINE_IMMUTABLE_GATES=true uses the immutable path where each gate
+    returns (GateResult, GateContextDelta) and the pipeline folds deltas into
+    a new GateContext between gates. The original ctx is never mutated.
+    Default (false): legacy mutable path, gates mutate ctx in-place.
+    """
 
     def __init__(self, gates: list):
         self._gates = gates
         self._log = log.bind(component="gate_pipeline")
 
     async def evaluate(self, ctx: GateContext) -> PipelineResult:
-        results = []
+        if _IMMUTABLE_GATES:
+            return await self._evaluate_immutable(ctx)
+        return await self._evaluate_mutable(ctx)
 
+    async def _evaluate_mutable(self, ctx: GateContext) -> PipelineResult:
+        """Legacy mutable path -- gates mutate ctx in-place."""
+        results = []
         for gate in self._gates:
             result = await gate.evaluate(ctx)
             results.append(result)
-
             if not result.passed:
-                self._log.info("gate.failed",
-                    gate=result.gate_name, reason=result.reason)
+                self._log.info("gate.failed", gate=result.gate_name, reason=result.reason)
                 return PipelineResult(
-                    passed=False,
-                    direction=ctx.agreed_direction,
-                    gate_results=results,
-                    failed_gate=result.gate_name,
+                    passed=False, direction=ctx.agreed_direction,
+                    gate_results=results, failed_gate=result.gate_name,
                     skip_reason=result.reason,
                 )
 
-        # All gates passed — extract cap and DUNE probability
-        cap = None
-        dune_p = None
+        cap, dune_p = None, None
         for r in results:
-            if r.data.get("cap"):
-                cap = r.data["cap"]
-            if r.data.get("dune_p"):
-                dune_p = r.data["dune_p"]
+            if r.data.get("cap"): cap = r.data["cap"]
+            if r.data.get("dune_p"): dune_p = r.data["dune_p"]
 
         self._log.info("gate.all_passed",
             direction=ctx.agreed_direction,
@@ -1218,9 +1374,64 @@ class GatePipeline:
             gates_passed=[r.gate_name for r in results])
 
         return PipelineResult(
-            passed=True,
-            direction=ctx.agreed_direction,
-            cap=cap,
-            dune_p=dune_p,
-            gate_results=results,
+            passed=True, direction=ctx.agreed_direction,
+            cap=cap, dune_p=dune_p, gate_results=results,
         )
+
+    async def _evaluate_immutable(self, ctx: GateContext) -> PipelineResult:
+        """CA-03 immutable path -- folds GateContextDelta between gates.
+
+        The original ctx is NEVER mutated. Each gate that implements
+        evaluate_immutable() returns (GateResult, GateContextDelta).
+        Gates without the method get a mutable COPY passed to evaluate().
+        """
+        results = []
+        current_ctx = ctx  # never mutated
+
+        for gate in self._gates:
+            if hasattr(gate, 'evaluate_immutable'):
+                result, delta = await gate.evaluate_immutable(current_ctx)
+            else:
+                mutable_copy = replace(current_ctx)
+                result = await gate.evaluate(mutable_copy)
+                delta = _infer_delta(current_ctx, mutable_copy)
+
+            results.append(result)
+            if not result.passed:
+                self._log.info("gate.failed", gate=result.gate_name, reason=result.reason)
+                return PipelineResult(
+                    passed=False, direction=current_ctx.agreed_direction,
+                    gate_results=results, failed_gate=result.gate_name,
+                    skip_reason=result.reason,
+                )
+            current_ctx = _merge_context(current_ctx, delta)
+
+        cap, dune_p = None, None
+        for r in results:
+            if r.data.get("cap"): cap = r.data["cap"]
+            if r.data.get("dune_p"): dune_p = r.data["dune_p"]
+
+        self._log.info("gate.all_passed",
+            direction=current_ctx.agreed_direction,
+            cap=f"${cap:.2f}" if cap else "none",
+            dune_p=f"{dune_p:.3f}" if dune_p else "none",
+            gates_passed=[r.gate_name for r in results])
+
+        return PipelineResult(
+            passed=True, direction=current_ctx.agreed_direction,
+            cap=cap, dune_p=dune_p, gate_results=results,
+        )
+
+
+def _infer_delta(before: GateContext, after: GateContext) -> GateContextDelta:
+    """Infer a GateContextDelta by diffing two GateContext instances."""
+    kwargs = {}
+    for fn in (
+        "agreed_direction", "cg_threshold_modifier", "cg_confirms",
+        "cg_bonus", "dune_probability_up", "dune_direction", "dune_model_version",
+    ):
+        bv = getattr(before, fn)
+        av = getattr(after, fn)
+        if bv != av:
+            kwargs[fn] = av
+    return GateContextDelta(**kwargs) if kwargs else EMPTY_DELTA
