@@ -916,11 +916,14 @@ const TASKS = [
     id: 'UI-02',
     category: 'frontend',
     severity: 'MEDIUM',
-    status: 'OPEN',
+    status: 'DONE',
     title: 'Multi-market HQ monitors (BTC/ETH/SOL/XRP × 5m/15m)',
     files: [
       { path: 'frontend/src/pages/execution-hq/ExecutionHQ.jsx', line: 1, repo: 'novakash' },
-      { path: 'engine/config/runtime_config.py', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/execution-hq/components/LiveTab.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/components/Layout.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/App.jsx', line: 1, repo: 'novakash' },
+      { path: 'hub/api/v58_monitor.py', line: 2610, repo: 'novakash' },
     ],
     evidence: [
       'User request 2026-04-11: "please also make it so we can increase the markers for the live trading in the future to btc 5m and 15m and the other 3 assets too etc (should have a diff hq monitor for each) but just bare that in mind whilst you get all this working".',
@@ -928,7 +931,10 @@ const TASKS = [
       'Engine already has FIVE_MIN_ASSETS env var supporting multi-asset 5m. FIFTEEN_MIN_ENABLED + FIFTEEN_MIN_ASSETS for 15m. Historical config: both exist but 15m path is less exercised.',
       'Frontend options: (a) one /execution-hq page with 8 columns (one per market pair), (b) separate /hq/<asset>-<timeframe> routes, (c) one /markets-overview page with 8 tiles + click-through to detail view.',
     ],
-    fix: 'Phase 0 (now): bear this in mind while working on UI-01 (gate heartbeat upgrade). Phase 1 (later): extend /v58/execution-hq endpoint to accept asset + timeframe query params and return per-market data. Phase 2: new /hq/<asset>-<timeframe> routes rendering the same UI but for each market pair. Phase 3: overview tile grid at /markets. Don\'t build this until after LT-02 (live trade execution) works end-to-end — no point multi-marketing a broken path.',
+    fix: 'SHIPPED: (Phase 1) Extended /api/v58/execution-hq to accept asset + timeframe query params with enum validation (asset in {btc,eth,sol,xrp}, timeframe in {5m,15m}). All internal queries filter on asset/timeframe — window_snapshots, signal_evaluations, trades (via market_slug ILIKE prefix), v9/v10 stats. Empty arrays when the collector hasn\'t populated a combo (no 500). Legacy /api/v58/execution-hq without params still defaults to BTC 5m. (Phase 2) New route /execution-hq/:asset/:timeframe with 8 routes for all combos, legacy /execution-hq redirects to /execution-hq/btc/5m. ManualTradePanel is gated to BTC 5m only; other 7 are monitor-only surfaces with a clean "no data yet" banner when the pair has no window_snapshots. (Phase 3) Sidebar nav becomes a collapsible accordion under the Execution HQ parent item with 8 children, auto-expanded when the current route matches a child, BTC 5m flagged with a LIVE pill. (Phase 4 / overview tile grid at /markets: deferred — operator can just open 8 tabs.)',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Shipped UI-02 Phases 1–3. Hub endpoint now accepts asset/timeframe with validation + backward compat. Frontend has 8 routes (btc/eth/sol/xrp × 5m/15m), a sidebar accordion, per-page title, empty-data banner, and ManualTradePanel gated to BTC 5m to avoid cross-market trades. Engine/margin_engine untouched (zero scope leak). Deferred: /markets overview tile grid + multi-market manual trading (both low priority until the non-BTC data-collector path is verified populating signal_evaluations).' },
+    ],
   },
   {
     id: 'UI-01',

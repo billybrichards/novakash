@@ -20,10 +20,12 @@ const INITIAL_CANDLES = [
  * LiveTab — Real-time execution monitoring with collapsible sidebars.
  *
  * Props:
- *   hqData — Data from /api/v58/execution-hq (system, recent_trades, windows)
- *   tick   — Incrementing counter for animation
+ *   hqData    — Data from /api/v58/execution-hq (system, recent_trades, windows)
+ *   tick      — Incrementing counter for animation
+ *   asset     — UI-02: lowercase asset slug, one of btc|eth|sol|xrp (default 'btc')
+ *   timeframe — UI-02: timeframe slug, one of 5m|15m (default '5m')
  */
-export default function LiveTab({ hqData, tick, v9Stats, v9GateData, v10Stats }) {
+export default function LiveTab({ hqData, tick, v9Stats, v9GateData, v10Stats, asset = 'btc', timeframe = '5m' }) {
   const [leftExpanded, setLeftExpanded] = useState(true);
   const [rightExpanded, setRightExpanded] = useState(true);
 
@@ -246,7 +248,7 @@ export default function LiveTab({ hqData, tick, v9Stats, v9GateData, v10Stats })
 
       {/* CENTER COLUMN */}
       <div style={{ ...getCenterStyle(), gridRow: 'span 6', display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0, transition: 'all 300ms' }}>
-        <Panel title="v10 DUNE Gate Pipeline — 19 Checkpoints (T-240 to T-60)" icon={Database} style={{ flex: 1.5, minHeight: 0 }}>
+        <Panel title={`v10 DUNE Gate Pipeline — ${asset.toUpperCase()} ${timeframe} (T-240 to T-60)`} icon={Database} style={{ flex: 1.5, minHeight: 0 }}>
           <GateAuditMatrix currentT={currentT} v9GateData={v9GateData} />
         </Panel>
 

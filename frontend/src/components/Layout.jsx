@@ -11,6 +11,19 @@ import { useApi } from '../hooks/useApi.js';
  * Mobile:  top bar with hamburger → side drawer, bottom tab bar
  */
 
+// UI-02: HQ monitor children — one per asset × timeframe.
+// Order: BTC first (it's the actively-traded pair), then alts in market-cap order.
+const HQ_ASSET_ORDER = ['btc', 'eth', 'sol', 'xrp'];
+const HQ_TIMEFRAMES = ['5m', '15m'];
+const HQ_CHILDREN = HQ_ASSET_ORDER.flatMap(asset =>
+  HQ_TIMEFRAMES.map(tf => ({
+    path: `/execution-hq/${asset}/${tf}`,
+    label: `${asset.toUpperCase()} ${tf}`,
+    // Mark BTC 5m so the sidebar can flag it as the live-trading pair.
+    liveTrading: asset === 'btc' && tf === '5m',
+  }))
+);
+
 const NAV_SECTIONS = [
   {
     title: 'POLYMARKET',
@@ -18,7 +31,18 @@ const NAV_SECTIONS = [
     items: [
       { path: '/notes',           label: 'Notes',      icon: '📝', highlight: true, isNew: true },
       { path: '/dashboard',       label: 'Dashboard',  icon: '📊' },
-      { path: '/execution-hq',    label: 'Execution HQ', icon: '⚡', highlight: true, isNew: true },
+      // UI-02: collapsible parent — click the row to expand the 8 children,
+      // click a child to navigate. Default landing (the parent path) is
+      // BTC 5m to preserve existing behavior.
+      {
+        path: '/execution-hq/btc/5m',
+        pathPrefix: '/execution-hq',
+        label: 'Execution HQ',
+        icon: '⚡',
+        highlight: true,
+        isNew: true,
+        children: HQ_CHILDREN,
+      },
       { path: '/factory',         label: 'Factory Floor', icon: '🏭', highlight: true },
       { path: '/v58',             label: 'Trade Monitor', icon: '🎯', highlight: true },
       { path: '/live',            label: 'Live Trading', icon: '💰', highlight: true },
@@ -347,6 +371,24 @@ export default function Layout() {
   const { user, logout } = useAuth();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // UI-02: accordion expansion state keyed by parent item.path.
+  // An entry present with `true` means the group is open.
+  const [expandedGroups, setExpandedGroups] = useState(() => ({}));
+
+  // Auto-expand any accordion group whose prefix matches the current
+  // route, so an operator who lands on /execution-hq/eth/15m via a
+  // bookmark sees the HQ group pre-opened in the sidebar.
+  useEffect(() => {
+    NAV_SECTIONS.forEach(section => {
+      section.items.forEach(item => {
+        if (!item.children) return;
+        const prefix = item.pathPrefix || item.path;
+        if (location.pathname.startsWith(prefix)) {
+          setExpandedGroups(prev => prev[prefix] ? prev : { ...prev, [prefix]: true });
+        }
+      });
+    });
+  }, [location.pathname]);
 
   // Close sidebar on route change (mobile)
   useEffect(() => {
@@ -354,8 +396,149 @@ export default function Layout() {
   }, [location.pathname]);
 
   const isActive = (path) => location.pathname === path;
+  const isActiveGroup = (item) => {
+    if (!item.children) return false;
+    const prefix = item.pathPrefix || item.path;
+    return location.pathname.startsWith(prefix);
+  };
+
+  const toggleGroup = (item) => {
+    const prefix = item.pathPrefix || item.path;
+    setExpandedGroups(prev => ({ ...prev, [prefix]: !prev[prefix] }));
+  };
+
+  const childLink = (parentItem, child) => {
+    const active = isActive(child.path);
+    // Live-trading pair gets the purple accent; the other 7 are cyan
+    // (matches the ExecutionHQ page header badge).
+    const accent = child.liveTrading ? '#a855f7' : '#06b6d4';
+    return (
+      <Link
+        key={child.path}
+        to={child.path}
+        aria-current={active ? 'page' : undefined}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '6px 14px 6px 32px',
+          borderRadius: 6,
+          textDecoration: 'none',
+          background: active ? `${accent}18` : 'transparent',
+          color: active ? accent : 'rgba(255,255,255,0.5)',
+          borderLeft: `2px solid ${active ? accent : 'transparent'}`,
+          transition: 'all 150ms ease-out',
+          fontSize: 12,
+          fontFamily: "'IBM Plex Mono', monospace",
+          letterSpacing: '0.02em',
+          minHeight: 32,
+        }}
+      >
+        <span style={{
+          width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+          background: child.liveTrading ? '#a855f7' : (active ? '#06b6d4' : 'rgba(6,182,212,0.35)'),
+          boxShadow: child.liveTrading ? '0 0 6px rgba(168,85,247,0.8)' : 'none',
+        }} />
+        <span>{child.label}</span>
+        {child.liveTrading && (
+          <span style={{
+            marginLeft: 'auto',
+            fontSize: 7,
+            color: '#a855f7',
+            letterSpacing: '0.08em',
+            border: '1px solid rgba(168,85,247,0.4)',
+            borderRadius: 2,
+            padding: '1px 3px',
+            background: 'rgba(168,85,247,0.1)',
+            textTransform: 'uppercase',
+          }}>LIVE</span>
+        )}
+      </Link>
+    );
+  };
 
   const navLink = (item) => {
+    // Accordion parent: item has .children
+    if (item.children) {
+      const groupKey = item.pathPrefix || item.path;
+      const expanded = !!expandedGroups[groupKey];
+      const groupActive = isActiveGroup(item);
+      const accentColor = '#06b6d4';
+      return (
+        <div key={`group-${groupKey}`} style={{ display: 'flex', flexDirection: 'column' }}>
+          <button
+            onClick={() => toggleGroup(item)}
+            aria-expanded={expanded}
+            aria-controls={`nav-group-${groupKey}`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '10px 14px',
+              borderRadius: 6,
+              textDecoration: 'none',
+              textAlign: 'left',
+              width: '100%',
+              cursor: 'pointer',
+              background: groupActive
+                ? `${accentColor}18`
+                : 'rgba(6,182,212,0.04)',
+              color: groupActive ? accentColor : 'rgba(6,182,212,0.7)',
+              borderLeft: `2px solid ${groupActive ? accentColor : 'rgba(6,182,212,0.2)'}`,
+              border: 'none',
+              borderLeftWidth: 2,
+              borderLeftStyle: 'solid',
+              borderLeftColor: groupActive ? accentColor : 'rgba(6,182,212,0.2)',
+              transition: 'all 150ms ease-out',
+              fontSize: 13,
+              fontFamily: 'inherit',
+              minHeight: 44,
+            }}
+          >
+            <span style={{ fontSize: 15, lineHeight: 1 }}>{item.icon}</span>
+            <span>{item.label}</span>
+            {item.isNew && !groupActive && (
+              <span style={{
+                marginLeft: 'auto',
+                fontSize: 8,
+                fontFamily: 'IBM Plex Mono, monospace',
+                color: '#06b6d4',
+                letterSpacing: '0.06em',
+                border: '1px solid rgba(6,182,212,0.5)',
+                borderRadius: 3,
+                padding: '1px 4px',
+                background: 'rgba(6,182,212,0.15)',
+                animation: 'pulse 2s infinite',
+              }}>NEW</span>
+            )}
+            <span style={{
+              marginLeft: item.isNew && !groupActive ? 6 : 'auto',
+              fontSize: 10,
+              color: 'rgba(255,255,255,0.4)',
+              transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
+              transition: 'transform 150ms ease-out',
+              lineHeight: 1,
+            }}>▶</span>
+          </button>
+          {expanded && (
+            <div
+              id={`nav-group-${groupKey}`}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 1,
+                padding: '2px 0 4px',
+                borderLeft: '1px dashed rgba(6,182,212,0.15)',
+                marginLeft: 18,
+              }}
+            >
+              {item.children.map(child => childLink(item, child))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
     const active = isActive(item.path);
     // TimesFM / Indicators get a cyan accent when not active
     const accentColor = item.highlight ? '#06b6d4' : '#a855f7';
