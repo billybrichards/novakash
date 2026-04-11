@@ -45,7 +45,12 @@ const NAV_SECTIONS = [
       },
       { path: '/factory',         label: 'Factory Floor', icon: '🏭', highlight: true },
       { path: '/v58',             label: 'Trade Monitor', icon: '🎯', highlight: true },
-      { path: '/live',            label: 'Live Trading', icon: '💰', highlight: true },
+      // FE-08 (2026-04-11): /live is a v7-era wallet / PnL summary view with
+      // NO manual trade button. Renamed from "Live Trading" to "Wallet & PnL"
+      // so operators don't mistake it for the trade-placement path. The
+      // canonical place to place a manual live trade is
+      // /execution-hq → Live tab → ManualTradePanel (see LT-02 / LT-03).
+      { path: '/live',            label: 'Wallet & PnL', icon: '💼', highlight: true },
       { path: '/paper',           label: 'Paper',      icon: '📄' },
     ],
   },
