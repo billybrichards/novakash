@@ -88,7 +88,11 @@ const NAV_SECTIONS = [
       { path: '/positions',       label: 'Positions',  icon: '📍' },
       { path: '/risk',            label: 'Risk',       icon: '🛡️', highlight: true },
       { path: '/system',          label: 'System',     icon: '🖥️' },
-      { path: '/trading-config',  label: 'Config',     icon: '⚙️', highlight: true },
+      // CFG-05: new DB-config browser is the primary "Config" entry point.
+      // The legacy 25-key bundle editor stays accessible as "Trading Cfg"
+      // until CFG-06 lands the editable surface here.
+      { path: '/config',          label: 'Config',     icon: '⚙️', highlight: true, isNew: true },
+      { path: '/trading-config',  label: 'Trading Cfg', icon: '🧰' },
       { path: '/deployments',     label: 'Deployments', icon: '🚀', highlight: true, isNew: true },
       { path: '/audit',           label: 'Audit',      icon: '🔍', highlight: true, isNew: true },
       { path: '/schema',          label: 'DB Schema',  icon: '🗄️', highlight: true, isNew: true },

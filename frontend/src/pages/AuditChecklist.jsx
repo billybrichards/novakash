@@ -114,6 +114,13 @@ const CATEGORIES = [
     description:
       'docs/CI_CD.md (6816f86) explicitly flags engine/ as the only major service without a GitHub Actions deploy workflow. The deploy-macro-observer.yml ~200-line template is the canonical pattern to port. Engine currently relies on Railway git-watcher auto-deploy with no smoke test, no secrets check, no post-deploy health probe, no rollback, and has been observed CRASHED in recent history.',
   },
+  {
+    id: 'config-migration',
+    title: 'CFG · DB-backed config migration',
+    color: T.cyan,
+    description:
+      'Full migration of runtime configuration from .env files to a DB-backed store with hot-reload, audit trail, and a /config UI. Tracked in docs/CONFIG_MIGRATION_PLAN.md (CFG-01). Phase 0/1 (CFG-02/03/05) ships read-only schema + read API + read UI. Phase 1 (CFG-04/06) adds writes + admin claim. Phase 2 (CFG-07/08/10) wires per-service loaders + flips SKIP_DB_CONFIG_SYNC. Phase 3 (CFG-11) cleans up legacy .env reads.',
+  },
 ];
 
 const TASKS = [
@@ -1045,6 +1052,239 @@ const TASKS = [
     progressNotes: [
       { date: '2026-04-11', note: 'Drafted .github/workflows/deploy-engine.yml on branch claude/ci/deploy-engine-montreal. 13 steps: checkout, Require runtime secrets, Write SSH key, Ensure host directories, Rsync engine, Rsync scripts, Reset host .env, Template .env from secrets, Restart via scripts/restart_engine.sh, Wait 45s, Process-count health probe, Error-signature log-grep gate, Tail recent logs. Uses injection-defence pattern (env: pull-up for all secrets, --rsync-path="sudo rsync" for novakash-owned paths). Non-secret runtime flags (V10_*, FIVE_MIN_*, LIVE_TRADING_ENABLED, thresholds) are intentionally NOT templated — they stay hand-managed on the host because they change more often than CI deploy cadence. Waiting on operator action to (a) bootstrap ENGINE_SSH_KEY onto the novakash-montreal-vnc box authorized_keys and (b) add the 15 secrets to billybrichards/novakash Actions secrets.' },
     ],
+  },
+
+  // ── config-migration (CFG) ───────────────────────────────────────────────
+  {
+    id: 'CFG-01',
+    category: 'config-migration',
+    severity: 'MEDIUM',
+    status: 'DONE',
+    title: 'Full DB-backed config migration plan (this doc)',
+    files: [
+      { path: 'docs/CONFIG_MIGRATION_PLAN.md', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      '1243-line plan landed via PR #53. Inventories all 142+ runtime config keys across engine, margin_engine, hub, data-collector, macro-observer, timesfm-service.',
+      'Splits keys into .env-only (secrets, infrastructure, bootstrap flags) vs DB-managed (trading behaviour, thresholds, gates). Decision rules in §2.3.',
+      'Defines new tables (config_keys, config_values, config_history) in §5, hub API surface in §7, frontend UX in §8, phasing in §10.',
+      'Captures the gates.py __init__-capture problem and proposes restart_required=TRUE as the Phase 1 mitigation (§6.3).',
+      'Risk matrix §10 covers hot-reload races, DB outage degrade-safe behaviour, secret exclusion, and bootstrap chicken-and-egg.',
+    ],
+    fix: 'PROPOSAL ONLY — no code changes in PR #53. The plan kicks off CFG-02..CFG-11 implementation work.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Plan merged via PR #53 on develop. CFG-02/03/05 implementation ships in the follow-up PR (this audit page update tracks both PRs).' },
+    ],
+  },
+  {
+    id: 'CFG-02',
+    category: 'config-migration',
+    severity: 'HIGH',
+    status: 'DONE',
+    title: 'config_keys + config_values + config_history DB schema + seed migration',
+    files: [
+      { path: 'hub/db/config_schema.py', line: 1, repo: 'novakash' },
+      { path: 'hub/db/config_seed.py', line: 1, repo: 'novakash' },
+      { path: 'hub/main.py', line: 100, repo: 'novakash' },
+      { path: 'hub/tests/test_config_schema.py', line: 1, repo: 'novakash' },
+      { path: 'hub/tests/test_config_seed.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'New module hub/db/config_schema.py exposes ensure_config_tables() that creates all three tables + the deferrable unique constraint + two indexes via IF NOT EXISTS / DO blocks. Idempotent on re-deploy.',
+      'New module hub/db/config_seed.py contains 175 seed rows across engine (111), margin_engine (51), data-collector (7), macro-observer (6). The plan §4.7 says ~142 — the literal §4.1.x and §4.2.2 tables sum to 175 (the plan summary uses approximate counts). Hub registers 0 keys for v1; timesfm registers 0 (read-only display deferred to CFG-13).',
+      'Secret-exclusion gate enforced via SECRET_PATTERN regex in validate_seed() — any key matching .*_(API_KEY|SECRET|TOKEN|PASSWORD|PRIVATE_KEY|PASSPHRASE|FUNDER_ADDRESS|WALLET_KEY)$ aborts the seed before it touches the DB.',
+      'Idempotent UPSERT preserves operator-set current_value rows: ON CONFLICT (service, key) DO UPDATE SET only refreshes developer-owned fields (type/default/description/category) and never touches current_value.',
+      'Hub lifespan in main.py wires both ensure_config_tables() and seed_config_keys() into the same migration block as ensure_manual_trades_table().',
+      'Tests: 23 unit tests cover schema DDL contents, validate_seed secret rejection, seed_summary counts, idempotency, and the V10_* restart_required flag invariant. All passing.',
+    ],
+    fix: 'SHIPPED — DDL + seed + tests + main.py wiring. New tables coexist alongside trading_configs without touching it. SKIP_DB_CONFIG_SYNC remains true on prod, so the new tables are pure additions with zero behaviour change in production.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'DONE in PR for CFG-02/03/05. Seed loads 175 keys: engine 111, margin_engine 51, data-collector 7, macro-observer 6, hub 0 (v1), timesfm 0 (deferred to CFG-13).' },
+    ],
+  },
+  {
+    id: 'CFG-03',
+    category: 'config-migration',
+    severity: 'HIGH',
+    status: 'DONE',
+    title: 'hub /api/v58/config* read endpoints (GET schema/values/history/services)',
+    files: [
+      { path: 'hub/api/config_v2.py', line: 1, repo: 'novakash' },
+      { path: 'hub/main.py', line: 35, repo: 'novakash' },
+      { path: 'hub/tests/test_config_api.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'New router hub/api/config_v2.py mounts under /api/v58/config/* and exposes four GET endpoints: /services, / (per-service with values), /schema (per-service no values), /history (per-key audit log).',
+      'All endpoints sit behind Depends(get_current_user) — same JWT auth wall the rest of the hub uses. CFG-06 will gate writes on an admin claim.',
+      'POST /api/v58/config returns 501 Not Implemented with a message pointing at CFG-04, so the OpenAPI doc surfaces "coming soon" instead of a 404.',
+      'Type coercion (TEXT in DB → real bool/int/float on the wire) lives in _coerce_value() and is exhaustively tested for bool / int / float / enum / string / failure-passthrough.',
+      'Tests: 15 unit tests cover the four GET endpoints, the 501 POST stub, type coercion, the unknown-service empty-tab behaviour, and the unknown-key 404. All passing against a mock SQLAlchemy session.',
+    ],
+    fix: 'SHIPPED — read-only API, no DB writes. Wired into hub/main.py app.include_router() block. Operator can hit GET /api/v58/config?service=engine after the next hub deploy.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'DONE alongside CFG-02 in the same PR. Endpoints exercised by hub/tests/test_config_api.py via FastAPI TestClient with the auth dependency overridden.' },
+    ],
+  },
+  {
+    id: 'CFG-04',
+    category: 'config-migration',
+    severity: 'HIGH',
+    status: 'OPEN',
+    title: 'hub /api/v58/config POST upsert/rollback/reset + history append',
+    files: [
+      { path: 'hub/api/config_v2.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'CFG-02/03/05 ship the schema + read API + read UI. CFG-04 adds the three POST endpoints planned in CONFIG_MIGRATION_PLAN.md §7.2.',
+      'The POST /api/v58/config stub already returns 501 with a CFG-04 pointer so the OpenAPI surface is clear about where writes will land.',
+      'Each write path must be transactional: config_values UPSERT and config_history INSERT in one transaction, with the history INSERT being the source of truth (never UPDATE / never DELETE).',
+    ],
+    fix: 'TODO — add POST /upsert (single-key write), POST /rollback (revert via history_id), POST /reset (back to default_value). All three append to config_history in the same transaction. Coercion against config_keys.value_type before INSERT.',
+  },
+  {
+    id: 'CFG-05',
+    category: 'config-migration',
+    severity: 'HIGH',
+    status: 'DONE',
+    title: 'frontend /config page (read-only first) with widgets + history drawer',
+    files: [
+      { path: 'frontend/src/pages/Config.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/LegacyConfig.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/App.jsx', line: 67, repo: 'novakash' },
+      { path: 'frontend/src/components/Layout.jsx', line: 90, repo: 'novakash' },
+    ],
+    evidence: [
+      'New page frontend/src/pages/Config.jsx (~500 lines) calls GET /api/v58/config/services + /api/v58/config?service=X. Sidebar lists the services with key counts. Main pane groups keys by category in collapsible sections.',
+      'Per-key row shows: key name, type badge, restart-required chip, read-only chip, current value (or — when at default). Click to expand and reveal description, default, category, last-set-by, last-set-at.',
+      'Filters: text search across key name + description, category dropdown, service-tab in the sidebar.',
+      'Phase banner explicitly says "CFG-02/03/05: read-only schema view. Write access ships in CFG-04 (next PR)." so operators know not to expect editing yet.',
+      'Old 13-key Config.jsx renamed to LegacyConfig.jsx and routed at /legacy-config to preserve any in-flight bookmarks. The /config route now points at the new page; /trading-config still hosts the 25-key bundle editor.',
+      'Layout.jsx sidebar gains the new "Config" entry with isNew flag and demotes the bundle editor to "Trading Cfg" so the new entry is the primary one.',
+    ],
+    fix: 'SHIPPED — read-only frontend with full schema browse + filter + per-key expand. History drawer is a placeholder (the GET /history endpoint exists but the drawer UI lands in CFG-06 alongside the rollback button).',
+    progressNotes: [
+      { date: '2026-04-11', note: 'DONE — Config.jsx + App.jsx + Layout.jsx + LegacyConfig.jsx rename all in the CFG-02/03/05 PR. Build passes.' },
+    ],
+  },
+  {
+    id: 'CFG-06',
+    category: 'config-migration',
+    severity: 'HIGH',
+    status: 'OPEN',
+    title: 'frontend /config editable (admin only) + optimistic concurrency check',
+    files: [
+      { path: 'frontend/src/pages/Config.jsx', line: 1, repo: 'novakash' },
+      { path: 'hub/auth/jwt.py', line: 22, repo: 'novakash' },
+    ],
+    evidence: [
+      'CFG-05 ships read-only. CFG-06 adds the per-key edit widgets + Save button + comment textarea + history drawer + Rollback button.',
+      'Plan §10.3 calls for an If-Unchanged-Since header on writes so two operators editing the same key produce a 409 instead of last-write-wins.',
+      'Plan §13 open question 2: who gets the admin claim? Either everyone-authenticated (ship tomorrow) or admin-claim-on-JWT (need a hub/auth/jwt.py change first).',
+    ],
+    fix: 'TODO after CFG-04 — depends on the write endpoints landing first. Then this is a frontend-only change to flip widgets from read-only to editable based on an admin claim, plus the optimistic concurrency check.',
+  },
+  {
+    id: 'CFG-07',
+    category: 'config-migration',
+    severity: 'CRITICAL',
+    status: 'OPEN',
+    title: 'engine service-side DBConfigLoader with TTL cache + safe degrade',
+    files: [
+      { path: 'engine/config/runtime_config.py', line: 1, repo: 'novakash' },
+      { path: 'engine/config/db_config_loader.py', line: 1, repo: 'novakash' },
+      { path: 'engine/strategies/orchestrator.py', line: 1755, repo: 'novakash' },
+    ],
+    evidence: [
+      'CONFIG_MIGRATION_PLAN.md §6.1 specifies the loader contract: TTL cache, degrade-safe fallback (cache OR env OR compile-time default), never-raise get(), per-tick refresh.',
+      'CFG-07 must not break the existing runtime_config.py public attribute surface — downstream code (five_min_vpin.py, orchestrator.py) reads attributes directly and we cannot afford a 200-file diff.',
+      'Currently SKIP_DB_CONFIG_SYNC=true on prod. CFG-07 ships with the loader wired in but the skip flag still on, so the deploy is zero-risk. Operator flips the flag on a low-traffic window, monitors, rollback by re-flipping.',
+    ],
+    fix: 'TODO — add engine/config/db_config_loader.py per the §6.1 pseudocode, wire boot() + tick() into orchestrator heartbeat, swap runtime_config.py internals to read from config_values instead of trading_configs.config JSONB. Keep SKIP_DB_CONFIG_SYNC semantics intact.',
+  },
+  {
+    id: 'CFG-07b',
+    category: 'config-migration',
+    severity: 'HIGH',
+    status: 'OPEN',
+    title: 'engine gates.py hot-reload refactor (remove __init__-capture)',
+    files: [
+      { path: 'engine/signals/gates.py', line: 201, repo: 'novakash' },
+    ],
+    evidence: [
+      'Plan §6.3 — 8 of 9 gate classes capture env vars at __init__ time. A DB config change does not propagate to the gates until the Python process restarts.',
+      'CFG-02 marks all V10_* / V11_* keys as restart_required=TRUE so the UI surfaces a warning badge until CFG-07b lands.',
+      'Refactor: each gate reads runtime.get(...) at evaluate() time instead of __init__ time. ~9 files, ~9 test updates, 2-day job.',
+    ],
+    fix: 'TODO after CFG-07 — refactor each gate class one at a time, flip restart_required=FALSE in the seed as each gate becomes hot-reloadable.',
+  },
+  {
+    id: 'CFG-08',
+    category: 'config-migration',
+    severity: 'HIGH',
+    status: 'OPEN',
+    title: 'margin_engine service-side DBConfigLoader wiring',
+    files: [
+      { path: 'margin_engine/infrastructure/config/db_config_loader.py', line: 1, repo: 'novakash' },
+      { path: 'margin_engine/infrastructure/config/settings.py', line: 1, repo: 'novakash' },
+      { path: 'margin_engine/main.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Plan §6.2.2 — margin_engine has clean pydantic settings, easier to retrofit than engine. Each pydantic field becomes a property backed by the loader.',
+      'Margin engine still paper-only (DQ-06 fixed), so the cutover is lower-risk than engine.',
+      'Plan §13 question 9 recommends margin_engine first.',
+    ],
+    fix: 'TODO after CFG-04. Same loader contract as CFG-07.',
+  },
+  {
+    id: 'CFG-09',
+    category: 'config-migration',
+    severity: 'MEDIUM',
+    status: 'OPEN',
+    title: 'hub service-side loader (self-referential — tricky, mostly no-op for v1)',
+    files: [
+      { path: 'hub/services/db_config_loader.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Plan §6.2.3 — the hub authors config but does not consume DB-backed config in v1. CFG-09 is a no-op stub task that exists to track the self-referential risk.',
+      'When the hub grows its first DB-managed tunable (not yet — see plan §4.3), this task becomes real.',
+    ],
+    fix: 'TODO — defer until the hub actually has a DB-managed tunable. Until then this is a placeholder.',
+  },
+  {
+    id: 'CFG-10',
+    category: 'config-migration',
+    severity: 'CRITICAL',
+    status: 'OPEN',
+    title: 'migration cutover per service (flip SKIP_DB_CONFIG_SYNC; include macro+data)',
+    files: [
+      { path: '.github/workflows/deploy-engine.yml', line: 1, repo: 'novakash' },
+      { path: '.github/workflows/deploy-margin-engine.yml', line: 1, repo: 'novakash' },
+      { path: 'macro-observer/observer.py', line: 1, repo: 'novakash' },
+      { path: 'data-collector/collector.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Plan §10 — Phase 2 cutover per service. After CFG-07/08 ship the loader, this task flips SKIP_DB_CONFIG_SYNC=false on each host one at a time, monitors, rollback by re-flipping.',
+      'macro-observer and data-collector are tiny surfaces (6 + 7 keys) and can ship in one PR after CFG-07.',
+    ],
+    fix: 'TODO — operator coordination. Per-service flips, not all-at-once.',
+  },
+  {
+    id: 'CFG-11',
+    category: 'config-migration',
+    severity: 'MEDIUM',
+    status: 'OPEN',
+    title: 'frontend audit: retire legacy /config + /trading-config; add cross-links',
+    files: [
+      { path: 'frontend/src/pages/LegacyConfig.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/TradingConfig.jsx', line: 1, repo: 'novakash' },
+      { path: 'hub/api/config.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'After CFG-10 lands the per-service cutover, the legacy /trading-config bundle editor and the hub/api/config.py mini-API are dead weight.',
+      'Plan §11.7 lists the retirement candidates: LegacyConfig.jsx (13-key page, already renamed in CFG-05), TradingConfig.jsx (25-key bundle editor), hub/api/config.py (13-key whitelist endpoint).',
+      'Add ⚙ configure links from ExecutionHQ / MarginEngine / V1-V4 surfaces / Deployments to the relevant /config?service=... tab.',
+    ],
+    fix: 'TODO after CFG-10. Mostly delete-only work plus a small set of cross-link additions.',
   },
 ];
 

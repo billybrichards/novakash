@@ -38,6 +38,10 @@ import Assembler1 from './pages/data-surfaces/Assembler1.jsx';
 import Deployments from './pages/Deployments.jsx';
 import Notes from './pages/Notes.jsx';
 import Schema from './pages/Schema.jsx';
+// CFG-05: new DB-config browser. The legacy 13-key page is preserved at
+// /legacy-config so any in-flight bookmarks survive.
+import Config from './pages/Config.jsx';
+import LegacyConfig from './pages/LegacyConfig.jsx';
 
 export default function App() {
   return (
@@ -66,7 +70,11 @@ export default function App() {
             <Route path="pnl" element={<PnL />} />
             <Route path="risk" element={<Risk />} />
             <Route path="system" element={<System />} />
-            <Route path="config" element={<Navigate to="/trading-config" replace />} />
+            {/* CFG-05: /config now points at the new DB-config browser.
+                The legacy 13-key page lives at /legacy-config; the bundle
+                editor still owns /trading-config until CFG-06 lands. */}
+            <Route path="config" element={<Config />} />
+            <Route path="legacy-config" element={<LegacyConfig />} />
             <Route path="trading-config" element={<TradingConfig />} />
             <Route path="setup" element={<Setup />} />
             <Route path="learn" element={<Learn />} />
