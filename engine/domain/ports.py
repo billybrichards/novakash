@@ -16,6 +16,10 @@ Eight ports, one per subsystem boundary identified in the migration plan
   4.6  Clock
   4.7  WindowStateRepository
   4.8  ConfigPort
+  4.9  TradeRepository
+  4.10 RiskManagerPort
+  4.11 SystemStateRepository
+  4.12 ManualTradeRepository
 
 Reference implementation: ``margin_engine/domain/ports.py``.
 """
@@ -31,8 +35,10 @@ from engine.domain.value_objects import (
     DeltaSet,
     FillResult,
     GateAuditRow,
+    HeartbeatRow,
     OrderBook,
     PendingTrade,
+    RiskStatus,
     SignalEvaluation,
     SitrepPayload,
     SkipSummary,
@@ -380,4 +386,152 @@ class ConfigPort(abc.ABC):
     @abc.abstractmethod
     async def get_bool(self, key: str, default: bool) -> bool:
         """Read a boolean config value, returning *default* if missing."""
+        ...
+
+
+# =====================================================================
+# 4.9  TradeRepository  (Phase 2 -- ReconcilePositionsUseCase)
+# =====================================================================
+
+
+class TradeRepository(abc.ABC):
+    """Read/write access to the trades table for reconciliation.
+
+    Extracted from the inline SQL in ``reconciliation/reconciler.py::_resolve_position``
+    (lines 757--835).  The adapter implementation wraps asyncpg queries and
+    encapsulates the PE-02 / PE-05 type-deduction workarounds that are currently
+    inline in the reconciler.
+    """
+
+    @abc.abstractmethod
+    async def find_by_token_id(self, token_id: str) -> Optional[dict]:
+        """Exact-match lookup by CLOB token_id in trades.metadata->>'token_id'.
+
+        Returns ``None`` if no unresolved trade matches.  The returned dict
+        contains at minimum: ``id``, ``entry_reason``, ``token_id``,
+        ``stake_usd``, ``entry_price``.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def find_by_token_prefix(self, token_id: str) -> Optional[dict]:
+        """Prefix-match fallback when exact match fails.
+
+        Uses bidirectional LIKE with explicit ``::text`` cast (PE-02 fix).
+        """
+        ...
+
+    @abc.abstractmethod
+    async def find_by_approximate_cost(self, cost: float) -> Optional[dict]:
+        """Cost-based fallback when token matching fails entirely.
+
+        Matches the most recent unresolved live trade within $0.50 of *cost*.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def resolve_trade(
+        self,
+        trade_id: str,
+        outcome: str,
+        pnl_usd: float,
+        status: str,
+    ) -> None:
+        """UPDATE trades SET outcome, pnl_usd, resolved_at, status WHERE id.
+
+        Idempotent -- no-op if the trade already has an outcome.
+        """
+        ...
+
+
+# =====================================================================
+# 4.10  RiskManagerPort  (Phase 2 -- PublishHeartbeatUseCase)
+# =====================================================================
+
+
+class RiskManagerPort(abc.ABC):
+    """Read-only view of the risk manager's state.
+
+    The concrete adapter wraps ``execution.risk_manager.RiskManager`` and
+    exposes a frozen RiskStatus value object.  Write operations
+    (record_outcome, sync_bankroll) live on the adapter, not the port,
+    because they are infrastructure-level side effects triggered by the
+    orchestrator -- not by use-case logic.
+    """
+
+    @abc.abstractmethod
+    def get_status(self) -> RiskStatus:
+        """Return a frozen snapshot of the current risk state."""
+        ...
+
+
+# =====================================================================
+# 4.11  SystemStateRepository  (Phase 2 -- PublishHeartbeatUseCase)
+# =====================================================================
+
+
+class SystemStateRepository(abc.ABC):
+    """Writes heartbeat rows and reads mode toggles.
+
+    Extracted from ``persistence.db_client.DBClient.update_system_state``
+    and ``get_mode_toggles``.
+    """
+
+    @abc.abstractmethod
+    async def write_heartbeat(self, row: HeartbeatRow) -> None:
+        """Persist a HeartbeatRow to the system_state table."""
+        ...
+
+    @abc.abstractmethod
+    async def update_feed_status(
+        self,
+        binance: bool,
+        coinglass: bool,
+        chainlink: bool,
+        polymarket: bool,
+        opinion: bool,
+    ) -> None:
+        """Update the feed connectivity flags in the system_state table."""
+        ...
+
+    @abc.abstractmethod
+    async def get_daily_record(self) -> tuple[int, int]:
+        """Return (wins_today, losses_today) from trade_bible."""
+        ...
+
+
+# =====================================================================
+# 4.12  ManualTradeRepository  (Phase 2 -- ExecuteManualTradeUseCase)
+# =====================================================================
+
+
+class ManualTradeRepository(abc.ABC):
+    """Persistence for the manual_trades table status transitions.
+
+    Extracted from ``persistence.db_client.DBClient.update_manual_trade_status``
+    and ``get_token_ids_from_market_data``.
+    """
+
+    @abc.abstractmethod
+    async def update_status(
+        self,
+        trade_id: str,
+        status: str,
+        clob_order_id: Optional[str] = None,
+    ) -> None:
+        """Transition a manual trade row to a new status."""
+        ...
+
+    @abc.abstractmethod
+    async def get_token_ids(
+        self,
+        asset: str,
+        window_ts: int,
+        timeframe: str,
+    ) -> Optional[dict]:
+        """Look up token IDs from the market_data table.
+
+        Returns a dict with ``up_token_id`` and ``down_token_id``, or
+        ``None`` if no row exists.
+        """
         ...
