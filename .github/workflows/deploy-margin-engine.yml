@@ -88,13 +88,25 @@ jobs:
             set_env MARGIN_EXCHANGE_VENUE hyperliquid
             set_env MARGIN_ENGINE_USE_V4_ACTIONS true
             set_env MARGIN_V4_SNAPSHOT_URL http://3.98.114.0:8080
-            # Phase A (2026-04-11): switched from 15m to 5m. The btc_15m
-            # model is 3 days stale ("nogit@v2/btc/btc_15m/nogit/2026-04-08...")
-            # while Sequoia v5 (15a4e3e) is the freshly-promoted 5m model
-            # with ECE 0.0643 and skill +7.23pp. Flip back to 15m only
-            # after Phase B ships fresh auto-promoted 15m candidates.
+            # Phase A.1 hotfix (2026-04-11): reverted to 15m because the
+            # 5m Sequoia v5 scorer is writing constant probability_raw=0.6201
+            # (stuck at p_up=0.6061) — same bug documented in PR #47 commit
+            # message on novakash-timesfm (fd3affc). The scorer's pull-mode
+            # _assemble_features() produces v4-shape features; v5 was
+            # trained on 25 engine-side features via signal_evaluations, so
+            # every inference gets an all-NaN row and LightGBM returns the
+            # missing-default constant. PR #47 added a push-mode
+            # score_from_features() method + POST /v2/probability endpoint,
+            # but the background 1Hz _v2_scoring_loop_for_asset in
+            # app/main.py still uses pull-mode, and margin_engine's
+            # probability_http.py still uses the GET endpoint — so both
+            # writer AND reader paths go through the broken pull-mode.
+            # The 15m/nogit model is v4-shape so pull-mode works for it.
+            # Will flip back to 5m after Phase B.0 wires push-mode into
+            # margin_engine (porting engine/signals/v2_feature_body.py
+            # from novakash PR #13 into margin_engine/adapters/signal).
             # See docs/MACRO_AUDIT_2026-04-11.md for the full audit.
-            set_env MARGIN_V4_PRIMARY_TIMESCALE 5m
+            set_env MARGIN_V4_PRIMARY_TIMESCALE 15m
             set_env MARGIN_V4_TIMESCALES 5m,15m,1h,4h
             set_env MARGIN_V4_STRATEGY fee_aware_15m
             set_env MARGIN_V4_POLL_INTERVAL_S 2.0
