@@ -144,6 +144,9 @@ const NAV_SECTIONS = [
         dataSource: 'hub /api/v58/risk (system_state + trades)' },
       { path: '/system',          label: 'System',     icon: '🖥️',
         dataSource: 'hub /api/v58/system (service health)' },
+      { path: '/factory',         label: 'Factory Floor',    icon: '🏭',
+        highlight: true, isNew: true,
+        dataSource: '/v58/* + /margin/status + /v4/snapshot + /v58/schema/gates' },
     ],
   },
   {
@@ -157,8 +160,6 @@ const NAV_SECTIONS = [
       //   • STALE  = v7/v8 era, works but surfaces old data
       //   • MOCK   = 100% mock data from src/lib/mock-data.js
       //   • LEGACY = superseded by a newer page in a different section
-      { path: '/factory',         label: 'Factory Floor',    icon: '🏭',
-        legacy: true, legacyStatus: 'STALE' },
       { path: '/v58',             label: 'Trade Monitor',    icon: '🎯',
         legacy: true, legacyStatus: 'LEGACY',
         legacyNote: 'Superseded by Execution HQ' },

@@ -282,13 +282,584 @@ function outcomeGateString(o) {
   return checks.map(p => p ? '\u2705' : '\u274C').join('');
 }
 
+// ─── Tab Bar ─────────────────────────────────────────────────────────────────
+// NAV-01 follow-up: Factory Floor becomes the unified "what's what" surface.
+// Each tab is a separate view over the same header chrome.
+const TABS = [
+  { id: 'pipeline',     label: 'Polymarket Pipeline', icon: '🏭', engine: 'polymarket' },
+  { id: 'margin',       label: 'Margin Engine',       icon: '🏦', engine: 'margin_engine' },
+  { id: 'gates',        label: 'All Gates',           icon: '🚦', engine: null },
+  { id: 'compare',      label: 'What\'s What',        icon: '📊', engine: null },
+];
+
+function TabBar({ active, onChange }) {
+  return (
+    <div style={{
+      display: 'flex',
+      gap: 2,
+      marginBottom: 18,
+      borderBottom: `1px solid ${T.border}`,
+    }}>
+      {TABS.map(tab => {
+        const isActive = active === tab.id;
+        const accent = tab.engine === 'polymarket' ? T.purple
+          : tab.engine === 'margin_engine' ? T.warning
+          : T.cyan;
+        return (
+          <button
+            key={tab.id}
+            onClick={() => onChange(tab.id)}
+            style={{
+              background: isActive ? `${accent}14` : 'transparent',
+              border: 'none',
+              borderBottom: `2px solid ${isActive ? accent : 'transparent'}`,
+              color: isActive ? '#fff' : T.label2,
+              fontFamily: T.mono,
+              fontSize: 11,
+              letterSpacing: '0.08em',
+              fontWeight: isActive ? 700 : 500,
+              padding: '10px 16px',
+              cursor: 'pointer',
+              transition: 'all 0.15s ease-in-out',
+            }}
+          >
+            <span style={{ marginRight: 6 }}>{tab.icon}</span>
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Margin Engine View ──────────────────────────────────────────────────────
+// Consumes /margin/status + /v4/snapshot for a snapshot of the Hyperliquid
+// perp trading engine that runs in parallel to the Polymarket 5-min engine.
+function MarginEngineView({ marginData, v4Snapshot, loading }) {
+  if (loading && !marginData) {
+    return <div style={{ color: T.label, fontSize: 12, padding: 20 }}>Loading margin engine…</div>;
+  }
+  if (!marginData) {
+    return (
+      <Card>
+        <div style={{ color: T.loss, fontSize: 11 }}>
+          Margin engine not reachable. Check <code>/margin/status</code> endpoint and
+          that the hub is forwarding from <code>MARGIN_ENGINE_HOST</code>.
+        </div>
+      </Card>
+    );
+  }
+
+  const portfolio = marginData.portfolio || {};
+  const execution = marginData.execution || {};
+  const positions = Array.isArray(marginData.positions) ? marginData.positions : [];
+  const openPositions = positions.filter(p => p.state === 'OPEN');
+  const closedPositions = positions.filter(p => p.state === 'CLOSED');
+  const totalPnl = closedPositions.reduce((sum, p) => sum + (Number(p.realised_pnl) || 0), 0);
+  const winRate = closedPositions.length > 0
+    ? (closedPositions.filter(p => Number(p.realised_pnl) > 0).length / closedPositions.length * 100).toFixed(1)
+    : '—';
+  const killSwitch = portfolio.kill_switch;
+  const primaryTs = execution.primary_timescale ?? portfolio.primary_timescale ?? '?';
+  const v4Macro = v4Snapshot?.macro;
+  const v4TsMap = v4Snapshot?.timescale_map || v4Snapshot?.timescales || {};
+
+  return (
+    <div>
+      {/* Top strip — kill switch + mode + primary_ts + equity */}
+      <Card style={{ marginBottom: 14, padding: '14px 16px' }}>
+        <div style={{ display: 'flex', gap: 20, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontSize: 9, color: T.label, marginBottom: 3 }}>MODE</div>
+            <span style={{
+              fontSize: 12,
+              fontWeight: 700,
+              color: execution.paper_mode !== false ? T.purple : T.loss,
+            }}>
+              {execution.paper_mode !== false ? 'PAPER' : 'LIVE'}
+            </span>
+          </div>
+          <div>
+            <div style={{ fontSize: 9, color: T.label, marginBottom: 3 }}>KILL SWITCH</div>
+            <span style={{
+              fontSize: 12,
+              fontWeight: 700,
+              color: killSwitch ? T.loss : T.profit,
+            }}>
+              {killSwitch ? 'TRIPPED' : 'OPEN'}
+            </span>
+          </div>
+          <div>
+            <div style={{ fontSize: 9, color: T.label, marginBottom: 3 }}>PRIMARY TS</div>
+            <span style={{ fontSize: 13, color: T.cyan, fontWeight: 600 }}>{primaryTs}</span>
+          </div>
+          <div>
+            <div style={{ fontSize: 9, color: T.label, marginBottom: 3 }}>EQUITY</div>
+            <span style={{ fontSize: 13, color: '#fff', fontWeight: 600 }}>
+              ${fmt(portfolio.equity, 2)}
+            </span>
+          </div>
+          <div>
+            <div style={{ fontSize: 9, color: T.label, marginBottom: 3 }}>PNL (TOT)</div>
+            <span style={{
+              fontSize: 13,
+              fontWeight: 600,
+              color: totalPnl > 0 ? T.profit : totalPnl < 0 ? T.loss : T.label2,
+            }}>
+              ${fmt(totalPnl, 2)}
+            </span>
+          </div>
+          <div>
+            <div style={{ fontSize: 9, color: T.label, marginBottom: 3 }}>WIN RATE</div>
+            <span style={{ fontSize: 13, color: T.cyan, fontWeight: 600 }}>{winRate}%</span>
+          </div>
+          <div>
+            <div style={{ fontSize: 9, color: T.label, marginBottom: 3 }}>OPEN</div>
+            <span style={{ fontSize: 13, color: T.profit, fontWeight: 600 }}>
+              {openPositions.length}
+            </span>
+          </div>
+          <div>
+            <div style={{ fontSize: 9, color: T.label, marginBottom: 3 }}>CLOSED</div>
+            <span style={{ fontSize: 13, color: T.label2, fontWeight: 600 }}>
+              {closedPositions.length}
+            </span>
+          </div>
+        </div>
+      </Card>
+
+      {/* Open positions + v4 snapshot — side by side */}
+      <div style={{ display: 'flex', gap: 14, marginBottom: 14, flexWrap: 'wrap' }}>
+        <Card style={{ flex: 2, minWidth: 380 }}>
+          <SectionLabel>OPEN POSITIONS</SectionLabel>
+          {openPositions.length === 0 ? (
+            <div style={{ fontSize: 11, color: T.label, padding: '8px 0' }}>
+              No open positions. Engine is waiting for a qualifying v4 entry.
+            </div>
+          ) : (
+            openPositions.slice(0, 6).map((p, i) => (
+              <div key={i} style={{
+                display: 'grid',
+                gridTemplateColumns: '40px 60px 80px 80px 80px 1fr',
+                gap: 8,
+                padding: '6px 0',
+                borderBottom: `1px solid ${T.border}`,
+                fontSize: 10,
+              }}>
+                <span style={{
+                  fontWeight: 700,
+                  color: p.side === 'LONG' ? T.profit : T.loss,
+                }}>{p.side}</span>
+                <span style={{ color: T.label2 }}>{p.asset || 'BTC'}</span>
+                <span style={{ color: '#fff' }}>{fmt(p.entry_price, 2)}</span>
+                <span style={{ color: T.label2 }}>{fmt(p.mark_price, 2)}</span>
+                <span style={{
+                  fontWeight: 600,
+                  color: Number(p.unrealised_pnl) > 0 ? T.profit : T.loss,
+                }}>${fmt(p.unrealised_pnl, 2)}</span>
+                <span style={{ color: T.label, fontSize: 9 }}>
+                  {p.strategy_version || ''} · opened {utcHHMM(p.opened_at)}
+                </span>
+              </div>
+            ))
+          )}
+        </Card>
+
+        <Card style={{ flex: 1.3, minWidth: 280 }}>
+          <SectionLabel>V4 ENTRY SNAPSHOT</SectionLabel>
+          <div style={{ fontSize: 10, marginBottom: 8 }}>
+            <div style={{ color: T.label, marginBottom: 2 }}>MACRO BIAS</div>
+            <span style={{
+              fontWeight: 700,
+              padding: '2px 8px',
+              borderRadius: 3,
+              fontSize: 11,
+              background: v4Macro?.bias === 'BULL' ? 'rgba(74,222,128,0.12)'
+                : v4Macro?.bias === 'BEAR' ? 'rgba(248,113,113,0.12)'
+                : 'rgba(255,255,255,0.04)',
+              color: v4Macro?.bias === 'BULL' ? T.profit
+                : v4Macro?.bias === 'BEAR' ? T.loss
+                : T.label2,
+            }}>
+              {v4Macro?.bias || '—'} ({v4Macro?.confidence != null ? `${v4Macro.confidence}%` : '—'})
+            </span>
+          </div>
+          <div style={{ fontSize: 10, marginBottom: 8 }}>
+            <div style={{ color: T.label, marginBottom: 2 }}>SOURCE</div>
+            <span style={{ color: T.cyan }}>
+              {v4Snapshot?.macro_source || 'qwen'}
+            </span>
+          </div>
+          {Object.keys(v4TsMap).length > 0 && (
+            <div style={{ fontSize: 10 }}>
+              <div style={{ color: T.label, marginBottom: 4 }}>PER-HORIZON</div>
+              {Object.entries(v4TsMap).map(([ts, data]) => {
+                const d = data || {};
+                const bias = d.bias || d.direction;
+                return (
+                  <div key={ts} style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    fontSize: 9,
+                    padding: '2px 0',
+                  }}>
+                    <span style={{ color: T.label2 }}>{ts}</span>
+                    <span style={{
+                      color: bias === 'BULL' ? T.profit
+                        : bias === 'BEAR' ? T.loss
+                        : T.label,
+                      fontWeight: 600,
+                    }}>
+                      {bias || '—'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+      </div>
+
+      {/* Last 8 closed positions */}
+      <Card>
+        <SectionLabel>RECENT CLOSED POSITIONS</SectionLabel>
+        {closedPositions.length === 0 ? (
+          <div style={{ fontSize: 11, color: T.label, padding: '8px 0' }}>No closed positions.</div>
+        ) : (
+          <div>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: '50px 50px 80px 80px 80px 60px 1fr',
+              gap: 8,
+              padding: '4px 0 6px',
+              borderBottom: `1px solid ${T.border}`,
+              fontSize: 9,
+              color: T.label,
+              letterSpacing: '0.08em',
+            }}>
+              <span>TIME</span>
+              <span>SIDE</span>
+              <span>ENTRY</span>
+              <span>EXIT</span>
+              <span>PNL</span>
+              <span>OUTCOME</span>
+              <span>EXIT REASON</span>
+            </div>
+            {closedPositions.slice(0, 8).map((p, i) => {
+              const pnl = Number(p.realised_pnl);
+              const win = pnl > 0;
+              return (
+                <div key={i} style={{
+                  display: 'grid',
+                  gridTemplateColumns: '50px 50px 80px 80px 80px 60px 1fr',
+                  gap: 8,
+                  padding: '5px 0',
+                  borderBottom: `1px solid ${T.border}`,
+                  fontSize: 10,
+                  background: win ? 'rgba(74,222,128,0.04)' : 'rgba(248,113,113,0.04)',
+                }}>
+                  <span style={{ color: T.label2 }}>{utcHHMM(p.closed_at)}</span>
+                  <span style={{
+                    fontWeight: 700,
+                    color: p.side === 'LONG' ? T.profit : T.loss,
+                  }}>{p.side}</span>
+                  <span style={{ color: '#fff' }}>{fmt(p.entry_price, 2)}</span>
+                  <span style={{ color: T.label2 }}>{fmt(p.exit_price, 2)}</span>
+                  <span style={{
+                    fontWeight: 600,
+                    color: win ? T.profit : T.loss,
+                  }}>${fmt(pnl, 2)}</span>
+                  <span style={{
+                    fontWeight: 700,
+                    color: win ? T.profit : T.loss,
+                  }}>{win ? 'WIN' : 'LOSS'}</span>
+                  <span style={{ color: T.label, fontSize: 9 }}>
+                    {p.exit_reason || '—'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// ─── All Gates View ──────────────────────────────────────────────────────────
+// Consumes /api/v58/schema/gates to show the full GATES_CATALOG grouped by
+// engine. Each gate is an expandable card.
+function AllGatesView({ gatesData, loading }) {
+  const [expanded, setExpanded] = useState(null);
+
+  if (loading && !gatesData) {
+    return <div style={{ color: T.label, fontSize: 12, padding: 20 }}>Loading gates catalog…</div>;
+  }
+  if (!gatesData || !gatesData.items || gatesData.items.length === 0) {
+    return (
+      <Card>
+        <div style={{ color: T.warning, fontSize: 11 }}>
+          Gates catalog empty. Check <code>/api/v58/schema/gates</code> endpoint
+          and <code>hub/db/schema_catalog.py</code>.
+        </div>
+      </Card>
+    );
+  }
+
+  const byEngine = gatesData.by_engine || {};
+  const engineColor = (eng) => {
+    if (eng === 'polymarket') return T.purple;
+    if (eng === 'margin_engine') return T.warning;
+    return T.label;
+  };
+
+  return (
+    <div>
+      {/* Summary strip */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
+        {Object.entries(byEngine).map(([eng, items]) => (
+          <Card key={eng} style={{ flex: '0 0 auto', padding: '12px 16px', minWidth: 180 }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <div style={{
+                width: 10,
+                height: 10,
+                borderRadius: '50%',
+                background: engineColor(eng),
+                boxShadow: `0 0 6px ${engineColor(eng)}88`,
+              }} />
+              <div>
+                <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em' }}>
+                  {eng.toUpperCase()}
+                </div>
+                <div style={{ fontSize: 18, color: '#fff', fontWeight: 700 }}>
+                  {items.length} gates
+                </div>
+              </div>
+            </div>
+          </Card>
+        ))}
+        <Card style={{ flex: '0 0 auto', padding: '12px 16px', minWidth: 180 }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <div style={{ width: 10, height: 10, borderRadius: '50%', background: T.cyan }} />
+            <div>
+              <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em' }}>TOTAL</div>
+              <div style={{ fontSize: 18, color: '#fff', fontWeight: 700 }}>
+                {gatesData.count ?? gatesData.items.length}
+              </div>
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      {/* Gates accordion list */}
+      <Card style={{ padding: 0, overflow: 'hidden' }}>
+        {gatesData.items.map((gate, idx) => {
+          const isExpanded = expanded === gate.key;
+          const color = engineColor(gate.engine);
+          return (
+            <div key={gate.key} style={{
+              borderBottom: idx < gatesData.items.length - 1 ? `1px solid ${T.border}` : 'none',
+            }}>
+              <button
+                onClick={() => setExpanded(isExpanded ? null : gate.key)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  width: '100%',
+                  padding: '12px 16px',
+                  background: isExpanded ? `${color}08` : 'transparent',
+                  border: 'none',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontFamily: T.mono,
+                  color: '#fff',
+                }}
+              >
+                <div style={{
+                  background: `${color}20`,
+                  border: `1px solid ${color}55`,
+                  color,
+                  padding: '3px 8px',
+                  borderRadius: 4,
+                  fontSize: 10,
+                  fontWeight: 700,
+                  minWidth: 42,
+                  textAlign: 'center',
+                }}>
+                  {gate.pipeline_position || '?'}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600 }}>{gate.key}</div>
+                  <div style={{
+                    fontSize: 9,
+                    color: T.label,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}>
+                    {gate.class_name} · {gate.file}
+                  </div>
+                </div>
+                <div style={{
+                  fontSize: 9,
+                  padding: '2px 8px',
+                  borderRadius: 3,
+                  background: gate.status === 'active' ? 'rgba(74,222,128,0.12)'
+                    : gate.status === 'shadow' ? 'rgba(245,158,11,0.12)'
+                    : 'rgba(255,255,255,0.04)',
+                  color: gate.status === 'active' ? T.profit
+                    : gate.status === 'shadow' ? T.warning
+                    : T.label,
+                  letterSpacing: '0.08em',
+                  fontWeight: 600,
+                }}>
+                  {(gate.status || 'unknown').toUpperCase()}
+                </div>
+                <div style={{
+                  fontSize: 10,
+                  color: T.label,
+                  transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                  transition: 'transform 150ms',
+                }}>▶</div>
+              </button>
+              {isExpanded && (
+                <div style={{
+                  padding: '14px 16px 18px 70px',
+                  background: 'rgba(255,255,255,0.01)',
+                  borderTop: `1px solid ${T.border}`,
+                }}>
+                  <div style={{ fontSize: 11, color: '#fff', lineHeight: 1.5, marginBottom: 12 }}>
+                    {gate.purpose || '(no purpose documented)'}
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                    <GateFieldList title="Inputs" items={gate.inputs} color={T.cyan} />
+                    <GateFieldList title="Outputs" items={gate.outputs} color={T.purple} />
+                    <GateFieldList title="Env Flags" items={gate.env_flags} color={T.warning} />
+                    <GateFieldList title="Fail Reasons" items={gate.fail_reasons} color={T.loss} />
+                    <GateFieldList title="Tables Read" items={gate.tables_read} color={T.cyan} />
+                    <GateFieldList title="Tables Written" items={gate.tables_written} color={T.profit} />
+                  </div>
+                  {gate.notes && (
+                    <div style={{
+                      marginTop: 12,
+                      padding: '8px 12px',
+                      background: 'rgba(245,158,11,0.06)',
+                      border: '1px solid rgba(245,158,11,0.2)',
+                      borderRadius: 4,
+                      fontSize: 10,
+                      color: T.warning,
+                      lineHeight: 1.5,
+                    }}>
+                      <strong>NOTE:</strong> {gate.notes}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </Card>
+    </div>
+  );
+}
+
+function GateFieldList({ title, items, color }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div>
+      <div style={{
+        fontSize: 9,
+        color: T.label,
+        letterSpacing: '0.1em',
+        marginBottom: 4,
+      }}>
+        {title.toUpperCase()}
+      </div>
+      {items.map((it, i) => (
+        <div key={i} style={{
+          fontSize: 10,
+          color,
+          padding: '2px 0',
+          fontFamily: T.mono,
+        }}>
+          · {typeof it === 'string' ? it : JSON.stringify(it)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── What's What Comparison View ────────────────────────────────────────────
+// Hand-curated table contrasting the two live engines. This is static content
+// documenting architectural decisions — not a live query.
+function CompareView() {
+  const rows = [
+    { field: 'Purpose',          poly: '5-minute Polymarket UP/DOWN binary options',        margin: 'Hyperliquid BTC perpetual margin trading' },
+    { field: 'Horizon',          poly: '5 min windows, UP/DOWN terminal price',              margin: '5m/15m/1h/4h fused signals + continuous positions' },
+    { field: 'Venue',            poly: 'Polymarket (binary options CLOB)',                  margin: 'Hyperliquid (perp, cross-margin)' },
+    { field: 'Decision cadence', poly: 'Once per 5-min window close',                       margin: 'Continuous — opens when v4 entry fires, manages until stop/target' },
+    { field: 'Decision surface', poly: 'V10.6 eight-gate pipeline (DS-01)',                 margin: 'v4 10-gate stack + macro advisory + session gates' },
+    { field: 'Primary model',    poly: 'ELM v3 composite + timesfm point forecast',         margin: 'Sequoia v5 LightGBM (5m primary after Phase A)' },
+    { field: 'Feature source',   poly: 'Pull-mode _assemble_features (v4-shape)',           margin: 'Push-mode POST /v2/probability OR POST /predict (v5-shape)' },
+    { field: 'Data tables',      poly: 'signal_evaluations + trades + ticks_v3_composite', margin: 'margin_positions + margin_signals + margin_logs + ticks_v2_probability' },
+    { field: 'Kill switch',      poly: 'V10_6_ENABLED (global) + per-gate flags',           margin: 'KillSwitchPort (trips on drawdown + latency + outlier PnL)' },
+    { field: 'Paper mode',       poly: 'PAPER_MODE=true in engine/.env',                    margin: 'EXECUTION_PAPER_MODE=true in margin_engine/.env' },
+    { field: 'Hot-swap',         poly: 'V58 hot-reload via /v58/admin/reload',              margin: 'Retrain-driven — v5 current.json auto-promoted every 4h' },
+    { field: 'CI/CD',            poly: 'develop → Railway frontend + DO engine box',       margin: 'develop → deploy-margin-engine.yml → eu-west-2 EC2' },
+    { field: 'Auto-deploy',      poly: 'push to develop (engine/, frontend/, hub/)',       margin: 'push to develop + path margin_engine/**' },
+    { field: 'Health probe',     poly: '/v58/windows + /v58/outcomes',                     margin: '/margin/status' },
+    { field: 'Macro consumer',   poly: 'Qwen observer → v58 gate (hard veto)',             margin: 'v4 fusion → macro advisory (conflict haircut, not hard veto)' },
+    { field: 'Gate count',       poly: '8 (V10.6 pipeline)',                               margin: '10 (v4 entry) + 5 (v4 continuation)' },
+  ];
+
+  return (
+    <Card style={{ padding: 0, overflow: 'hidden' }}>
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: '160px 1fr 1fr',
+        gap: 0,
+        background: 'rgba(6,182,212,0.06)',
+        padding: '12px 16px',
+        borderBottom: `1px solid ${T.border}`,
+      }}>
+        <div style={{ fontSize: 9, color: T.label, letterSpacing: '0.1em', fontWeight: 700 }}>FIELD</div>
+        <div style={{ fontSize: 9, color: T.purple, letterSpacing: '0.1em', fontWeight: 700 }}>
+          🏭 POLYMARKET ENGINE
+        </div>
+        <div style={{ fontSize: 9, color: T.warning, letterSpacing: '0.1em', fontWeight: 700 }}>
+          🏦 MARGIN ENGINE
+        </div>
+      </div>
+      {rows.map((row, i) => (
+        <div key={i} style={{
+          display: 'grid',
+          gridTemplateColumns: '160px 1fr 1fr',
+          gap: 0,
+          padding: '10px 16px',
+          borderBottom: i < rows.length - 1 ? `1px solid ${T.border}` : 'none',
+          fontSize: 11,
+          lineHeight: 1.5,
+        }}>
+          <div style={{ color: T.label2, fontWeight: 600 }}>{row.field}</div>
+          <div style={{ color: '#fff', paddingRight: 14 }}>{row.poly}</div>
+          <div style={{ color: '#fff' }}>{row.margin}</div>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
 // =============================================================================
 // Main Component
 // =============================================================================
 export default function FactoryFloor() {
   const api = useApi();
 
-  // ── State ──────────────────────────────────────────────────────────────────
+  // ── Tab state ──────────────────────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState('pipeline');
+
+  // ── State (Polymarket pipeline) ────────────────────────────────────────────
   const [latestWindow, setLatestWindow] = useState(null);
   const [outcomes, setOutcomes]         = useState([]);
   const [accuracy, setAccuracy]         = useState(null);
@@ -297,6 +868,13 @@ export default function FactoryFloor() {
   const [systemStatus, setSystemStatus] = useState(null);
   const [tick, setTick]                 = useState(0);
   const [loading, setLoading]           = useState(true);
+
+  // ── State (Margin Engine + Gates) ─────────────────────────────────────────
+  const [marginData, setMarginData]       = useState(null);
+  const [v4Snapshot, setV4Snapshot]       = useState(null);
+  const [marginLoading, setMarginLoading] = useState(false);
+  const [gatesData, setGatesData]         = useState(null);
+  const [gatesLoading, setGatesLoading]   = useState(false);
 
   // ── Tick counter (drives clock + progress bar, 1 state update vs 2) ───────
   useEffect(() => {
@@ -349,7 +927,36 @@ export default function FactoryFloor() {
     } catch (err) { console.warn('[FactoryFloor] system fetch:', err?.message); }
   }, [api]);
 
-  // ── Polling setup ──────────────────────────────────────────────────────────
+  // ── Margin engine fetch (only polls while the margin tab is active) ───────
+  const fetchMargin = useCallback(async () => {
+    setMarginLoading(true);
+    try {
+      const [marginRes, v4Res] = await Promise.allSettled([
+        api('GET', '/margin/status'),
+        api('GET', '/v4/snapshot?asset=BTC&timescales=5m,15m,1h,4h&strategy=fee_aware_15m'),
+      ]);
+      if (marginRes.status === 'fulfilled') {
+        setMarginData(marginRes.value?.data ?? marginRes.value ?? null);
+      }
+      if (v4Res.status === 'fulfilled') {
+        setV4Snapshot(v4Res.value?.data ?? v4Res.value ?? null);
+      }
+    } catch (err) { console.warn('[FactoryFloor] margin fetch:', err?.message); }
+    setMarginLoading(false);
+  }, [api]);
+
+  // ── Gates catalog fetch (one-shot, cached for the session) ────────────────
+  const fetchGates = useCallback(async () => {
+    if (gatesData) return;  // cache: load once per session
+    setGatesLoading(true);
+    try {
+      const res = await api('GET', '/v58/schema/gates');
+      setGatesData(res?.data ?? res ?? null);
+    } catch (err) { console.warn('[FactoryFloor] gates fetch:', err?.message); }
+    setGatesLoading(false);
+  }, [api, gatesData]);
+
+  // ── Polling setup (Polymarket pipeline — always running) ──────────────────
   useEffect(() => {
     fetchPrimary();
     fetchPrices();
@@ -365,6 +972,21 @@ export default function FactoryFloor() {
       clearInterval(idSystem);
     };
   }, [fetchPrimary, fetchPrices, fetchSystem, api]);
+
+  // ── Tab-activated fetches ─────────────────────────────────────────────────
+  // Margin: refresh on mount + every 5s while tab is active.
+  // Gates: one-shot on first visit.
+  useEffect(() => {
+    if (activeTab === 'margin') {
+      fetchMargin();
+      const id = setInterval(fetchMargin, 5000);
+      return () => clearInterval(id);
+    }
+    if (activeTab === 'gates') {
+      fetchGates();
+    }
+    return undefined;
+  }, [activeTab, fetchMargin, fetchGates]);
 
   // ── Derived values ─────────────────────────────────────────────────────────
   const w = latestWindow;
@@ -485,6 +1107,31 @@ export default function FactoryFloor() {
         </div>
       </div>
 
+      {/* ─── Tab Bar ───────────────────────────────────────────────────────── */}
+      <TabBar active={activeTab} onChange={setActiveTab} />
+
+      {/* ─── TAB: Margin Engine ─────────────────────────────────────────── */}
+      {activeTab === 'margin' && (
+        <MarginEngineView
+          marginData={marginData}
+          v4Snapshot={v4Snapshot}
+          loading={marginLoading}
+        />
+      )}
+
+      {/* ─── TAB: All Gates ─────────────────────────────────────────────── */}
+      {activeTab === 'gates' && (
+        <AllGatesView gatesData={gatesData} loading={gatesLoading} />
+      )}
+
+      {/* ─── TAB: What's What Comparison ──────────────────────────────────── */}
+      {activeTab === 'compare' && (
+        <CompareView />
+      )}
+
+      {/* ─── TAB: Polymarket Pipeline (default) ──────────────────────────── */}
+      {activeTab === 'pipeline' && (
+      <>
       {/* ─── SECTION 2: Pipeline Flow ──────────────────────────────────────── */}
       <div className="ff-pipeline" style={{
         display: 'flex',
@@ -904,6 +1551,8 @@ export default function FactoryFloor() {
           </div>
         </Card>
       </div>
+      </>
+      )}
     </div>
   );
 }
