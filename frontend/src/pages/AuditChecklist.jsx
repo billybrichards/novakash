@@ -643,20 +643,28 @@ const TASKS = [
     id: 'LT-04',
     category: 'ci-cd',
     severity: 'HIGH',
-    status: 'OPEN',
+    status: 'DONE',
     title: 'Reduce manual trade click-to-execute latency to near-instant',
     files: [
-      { path: 'engine/strategies/orchestrator.py', line: 2515, repo: 'novakash' },
+      { path: 'engine/strategies/orchestrator.py', line: 2525, repo: 'novakash' },
+      { path: 'engine/persistence/db_client.py', line: 75, repo: 'novakash' },
+      { path: 'hub/api/v58_monitor.py', line: 1641, repo: 'novakash' },
+      { path: 'engine/tests/test_manual_trade_fast_path.py', line: 1, repo: 'novakash' },
       { path: 'frontend/src/pages/execution-hq/components/ManualTradePanel.jsx', line: 1, repo: 'novakash' },
     ],
     evidence: [
       'User request 2026-04-11: "the time from me clicking trade and it going through needs to be near instant".',
       'Current latency chain: click → frontend POST → nginx → Railway hub (cross-region hop ~500ms-1s) → Postgres write → engine polls every ~5-10s → engine executes → Polymarket API call → fill returned.',
       'DEP-02 (hub migration) addresses the hub-to-Montreal RTT portion. LT-04 addresses the engine polling interval.',
-      'Current poll: orchestrator.py:2515 polls poll_pending_live_trades() on whatever the main loop tick cadence is. Need to confirm the interval — could be 1s, could be 10s — and decide whether to reduce it to 1s (simple) or switch to Postgres LISTEN/NOTIFY (immediate, sub-100ms).',
-      'LISTEN/NOTIFY pattern: hub INSERTs a row → hub ALSO pg_notify(\'manual_trades\', trade_id) → engine has an async task that LISTENs on that channel → wakes the poll loop the instant the INSERT lands.',
+      'Current poll: orchestrator.py:2515 polls poll_pending_live_trades() on whatever the main loop tick cadence is. Confirmed as 1s. Switched to PostgreSQL LISTEN/NOTIFY (hybrid event-driven + 1s safety-net poll) which drops NOTIFY-to-execute latency to tens of milliseconds.',
+      'LISTEN/NOTIFY pattern: hub INSERTs a row → hub emits `SELECT pg_notify(\'manual_trade_pending\', trade_id)` → engine has a pinned asyncpg connection that LISTENs on that channel → `asyncio.Event` fires → poll loop\'s `await asyncio.wait_for(event.wait(), timeout=1)` returns immediately.',
     ],
-    fix: 'Phase 1 (simple, after DEP-02): reduce manual trade poll interval to 1s. Low risk, small diff. Phase 2 (proper): add Postgres LISTEN/NOTIFY via asyncpg add_listener. Hub adds a `pg_notify("manual_trades", trade_id)` call after the INSERT in v58_monitor.py:1388. Engine adds an async listener task in orchestrator.py that wakes the poll loop on notification. Trade execution latency drops from ~5-10s polling + hub-RTT to ~100ms end-to-end (once DEP-02 also eliminates the cross-region hop).',
+    fix: 'Shipped via PR (LT-04). Engine side: new listen()/ensure_listening()/stop_listening() on DBClient that opens a dedicated asyncpg connection and calls add_listener(\'manual_trade_pending\', callback). Orchestrator._manual_trade_poller now does `await asyncio.wait_for(self._manual_trade_notify_event.wait(), timeout=1)` and clears the event each tick. Hub side: v58_monitor.post_manual_trade emits `SELECT pg_notify(\'manual_trade_pending\', :trade_id)` after the INSERT commit (wrapped in try/except — NOTIFY failure is non-fatal because the 1s poll still picks the row up). Safety-net preserved: if the LISTEN connection dies, ensure_listening re-opens it on the next tick and the 1s poll still fires in the meantime. LT-02 DB fallback preserved — the fast path uses the exact same token_id lookup code. New test file engine/tests/test_manual_trade_fast_path.py pins down all 5 invariants (7 tests, all passing).',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Investigation confirmed poll was already 1s, not 5-10s — orchestrator.py:2535 called `await asyncio.sleep(1)` at the top of each iteration. So the ceiling latency was already 1s worst-case, not 5-10s. Still worth shipping LISTEN/NOTIFY for the sub-100ms happy path, especially once DEP-02 moves the hub to the same AWS region as the engine DB connection.' },
+      { date: '2026-04-11', note: 'Chose Option A (PostgreSQL LISTEN/NOTIFY) over Option B (HTTP kick) because the engine has no web server — adding one just for a single internal endpoint is overkill. NOTIFY fits naturally into the existing asyncpg stack and avoids opening a new port on the Montreal host. Hybrid design keeps the 1s poll as a safety net so any LISTEN connection failure is zero-regression vs pre-LT-04.' },
+      { date: '2026-04-11', note: 'Latency: NOTIFY-to-place_order measured <500ms in unit tests (FakePolyClient returns instantly — real Polymarket round-trip is ~200-500ms irreducible floor). Test suite: 7 tests all green (happy path, stale NOTIFY safe no-op, dropped LISTEN → poll fallback, LT-02 DB fallback regression check, multiple NOTIFYs batch-drained, channel-name sanity check).' },
+    ],
   },
 
   // ── frontend ────────────────────────────────────────────────────────────
