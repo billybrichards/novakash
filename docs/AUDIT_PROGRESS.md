@@ -46,6 +46,15 @@ Deep clean-architect audit covering:
 - Both fixes ship in the same PR #26 rev-2 as the checklist update to avoid deploy races. Neither is verified in production until CI-01 lands (see below) — until then, verification is a manual `scripts/restart_engine.sh` via Montreal rules + `journalctl -u` tail.
 - **FE-02 DONE** — audit checklist page is live locally (`npm run build` green, rendered end-to-end via playwright against the dev server, filter + expand interactions confirmed). Merge of PR #26 lands it at `/audit` on the AWS frontend host.
 
+### 2026-04-11 — PE-05 hotfix: second CASE WHEN $1 type ambiguity in reconciler
+
+- **PE-05 MEDIUM DONE** — `reconciler.resolve_db_error` came back at 2 errors in 20 minutes (6/hour) after the PR #26 merge + 12:22 UTC engine restart. The PE-02 fix in PR #26 addressed the prefix-match fallback at `reconciler.py:765-776` but MISSED a second instance of the same bug class at `reconciler.py:824-834`.
+- **Root cause**: the UPDATE used `$1` in two incompatible type contexts: `SET outcome = $1` (deduces `outcome` column type, likely varchar) AND `CASE WHEN $1 = 'WIN'` (literal-comparison, deduces text). asyncpg can't reconcile → "inconsistent types deduced for parameter $1 — text versus character varying".
+- **Fix**: drop the inline CASE WHEN, use the pre-computed `status` variable from line 720 as a fourth parameter. Matches the working pattern already used at line 613 and line 958 elsewhere in the same file.
+- **Observed in production** at 2026-04-11 12:37:50 UTC and 12:42:36 UTC with condition_ids 0x6a79489fc86780cf52 and 0xd8eb483a4613119414.
+- **PR #29** on branch `claude/fix/pe05-reconciler-case-when`. 15-line diff with inline comment explaining the type-deduction bug. Needs merge + Montreal git pull + engine restart to verify 0 errors live.
+- **Lesson learned**: the error-signature gate in CI-01 (PR #28) would have caught this — it's exactly the scenario the gate was designed for. Once CI-01 starts firing on every deploy, similar class-of-bug regressions will block the merge instead of landing silently.
+
 ### 2026-04-11 — INC-01 Montreal host crash + recovery + DEP-01 shipped
 
 - **INC-01 HIGH DONE** — Montreal host networking wedged at ~11:05 UTC, engine died at 12:00:54 UTC.
