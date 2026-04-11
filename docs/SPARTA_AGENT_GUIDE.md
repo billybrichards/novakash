@@ -634,18 +634,191 @@ Before using `superpowers:dispatching-parallel-agents` for a batch of work:
 
 | Doc | What it is |
 |---|---|
+| **`docs/AUDIT_PROGRESS.md`** | **THE PROGRESS TRACKER.** Chronological session log, one section per distinct work block. Every `/audit` `progressNotes` entry has a matching bullet here. **Read this FIRST when starting a session** — it tells you what's been shipped, what's in flight, and what's next. |
+| **`/audit` page in the frontend** | Master project to-do list (open / in-progress / done) with filter + severity + category. Edit `frontend/src/pages/AuditChecklist.jsx` `TASKS` array in-file, no backend writes. The UI is the authoritative status view; this doc is the rationale log. |
 | `docs/CI_CD.md` | **Authoritative** CI/CD reference. Branch conventions, service map, secrets, deploy mechanics, rollback paths, dual-writer defence. Read before touching any `.github/workflows/` file. Mirrored in both repos. |
-| `docs/AUDIT_PROGRESS.md` | Living session log for the 2026-04-11 clean-architect audit. Chronological order. One bullet per action, one paragraph per decision. Every `/audit` `progressNotes` entry has a matching bullet here. |
+| `docs/CLEAN_ARCHITECT_MIGRATION_PLAN.md` | **CA-01..04 plan.** 9-phase migration from the 3,109-LOC `five_min_vpin.py` god class to the margin_engine-style clean architecture. Phase 0 (ports.py) is the zero-risk entry point. Read this before touching anything in `engine/strategies/` or `engine/signals/`. |
+| `docs/CONFIG_MIGRATION_PLAN.md` | **CFG-01 plan.** Full env-var-to-DB migration across all 6 services, 142 keys inventoried, 11 CFG-* sub-tasks scheduled. Read this before adding new runtime config. |
+| `docs/FRONTEND_AUDIT_2026-04-11.md` | Read-only audit of every frontend route. 21 pages OK, 5 partial, 5 stale, 1 pure-mock. Proposed FE-08..FE-13 remediation tasks. Read this before touching any frontend page you're not already working on. |
+| `docs/POST_MERGE_AUDIT_2026-04-11.md` | Verification of every PR from the 2026-04-11 afternoon batch. Pass/fail per PR, AST parse + test results, P0 findings. Consult before declaring any of those PRs "landed safely". |
 | `docs/V10_6_DECISION_SURFACE_PROPOSAL.md` | (timesfm repo) V10.6 decision surface spec grounded in 85,805 Sequoia v4 predictions + 198 backfilled live trades. The 865-outcome evidence base. |
 | `docs/SEQUOIA_V5_GO_LIVE_LOG.md` | (timesfm repo) Sequoia v5.2 promotion timeline. ECE 0.0643 (35% better than v4), skill +7.23pp, live since 2026-04-10 13:21:33 UTC. |
+| `docs/CHANGELOG-DQ01-POLY-SPOT-ONLY-CONSENSUS.md` | DQ-01 motivation + activation plan + rollback. Reference for the `V11_POLY_SPOT_ONLY_CONSENSUS` flag. |
 | `frontend/src/pages/AuditChecklist.jsx` | The `/audit` page. Edit `TASKS`, `CATEGORIES`, `SESSION_META` in-file. No backend writes. |
 | `frontend/src/pages/Deployments.jsx` | The `/deployments` page. `SERVICES` array mirrors `docs/CI_CD.md`. Live probes every 15s for services with HTTP health. |
+| `frontend/src/pages/Schema.jsx` | (SCHEMA-01 in flight) The `/schema` page — all DB tables, purposes, writers, readers, active/legacy status. Authoritative DB inventory view. |
+| `frontend/src/pages/Config.jsx` | (CFG-02/03 in flight) The `/config` page — read-only view of all 142 runtime config keys across every service. Write access ships in CFG-04. |
 | `.github/workflows/deploy-engine.yml` | Canonical error-signature gate example (`CI-01`, step 12). |
 | `.github/workflows/deploy-macro-observer.yml` | Canonical template for every other AWS deploy workflow. |
 | `scripts/restart_engine.sh` | Canonical engine restart. Rotates the log, kills existing, starts new, verifies one PID. Never replace with a raw `nohup`. |
-| `engine/config/runtime_config.py` | Env-var convention. DB `trading_configs` > env vars > code defaults. Singleton `runtime` synced every heartbeat (~10s). |
-| `engine/signals/gates.py` | Where gate logic lives. `V10_6_ENABLED` short-circuit at line 201 is the canonical feature-flag pattern. |
-| `margin_engine/use_cases/open_position.py` | The clean-architecture reference. `_execute_v4()` is the 10-gate v4 stack. This is what `engine/` should look like after CA-01..CA-04 land. |
+| `engine/config/runtime_config.py` | Env-var convention. DB `trading_configs` > env vars > code defaults. Singleton `runtime` synced every heartbeat (~10s). **Being superseded** by CFG-01 `config_keys` tables — read the migration plan first. |
+| `engine/signals/gates.py` | Where gate logic lives. `V10_6_ENABLED` short-circuit at line 201 is the canonical feature-flag pattern. `V11_POLY_SPOT_ONLY_CONSENSUS` in `SourceAgreementGate` is the 2026-04-11 addition. |
+| `margin_engine/use_cases/open_position.py` | The clean-architecture reference. `_execute_v4()` is the 10-gate v4 stack with the DQ-07 `mark_divergence` gate at 9.5. This is what `engine/` should look like after CA-01..CA-04 land. |
+
+---
+
+## Appendix D — Future task queue (pick these up in any order, with the rules below)
+
+These are the tasks that were scoped and **not yet shipped** as of 2026-04-11 evening. Each one
+is well-defined enough that a fresh agent can pick it up without re-reading the whole repo.
+**Rules every agent must follow**:
+
+1. **Check `docs/AUDIT_PROGRESS.md` first** to confirm the task isn't already done.
+2. **Read the task's cited prior-art files before writing any new code.**
+3. **Default-off feature flag for any trading-logic change.** No exceptions.
+4. **`/audit` checklist row updated in the SAME commit** as the code change, with a
+   `progressNotes` entry citing the PR number and file:line pointers.
+5. **Scope strictness.** If your PR touches files outside the task's declared scope, either
+   justify it in the PR body or abort and re-scope. `git diff origin/develop -- UNSCOPED_DIRS`
+   must be empty.
+6. **Both repos when applicable.** SPARTA + CI_CD + shared docs live in both `novakash` and
+   `novakash-timesfm-repo`. If you touch one, touch the other in the matching PR.
+7. **No nested agent dispatches from inside a background agent.** The main session is the only
+   dispatch root. Agents that spawn sub-agents fragment the work and make worktrees unrecoverable.
+
+### CA-01..04 Phase 0 — port protocols in `engine/domain/ports.py`
+
+- **What**: Add a new file `engine/domain/ports.py` containing the 8 port protocols defined in
+  `docs/CLEAN_ARCHITECT_MIGRATION_PLAN.md` §4 (MarketFeedPort, ConsensusPricePort,
+  SignalRepository, PolymarketClient, AlerterPort, Clock, WindowStateRepository, ConfigPort).
+  No concrete implementations, no use-case extraction — just the protocols, sibling to existing
+  code. Zero runtime risk.
+- **Rules**: Read `margin_engine/domain/ports.py` first. Match that style. Use `typing.Protocol`.
+- **Scope**: exactly `engine/domain/ports.py` (new file). Zero other files touched. Adds a new
+  `domain/` directory alongside existing `strategies/`, `signals/`, etc.
+- **Verification**: `python3 -c "from engine.domain import ports; print([p.__name__ for p in dir(ports)])"` lists all 8 protocols.
+- **Audit row**: `CA-01` progressNotes "Phase 0 shipped — ports.py as read-only scaffold".
+
+### CA-01..04 Phase 1 — value objects in `engine/domain/value_objects.py`
+
+- **What**: Extract `Window`, `Tick`, `DeltaSet`, `SignalEvaluation`, `ClobSnapshot`,
+  `GateContext`, `GateResult` into a new `engine/domain/value_objects.py` as immutable dataclasses.
+  `GateContext` and `GateResult` already exist in `engine/signals/gates.py` — move them and
+  re-export from the old location for backward compat.
+- **Rules**: Immutable (`@dataclass(frozen=True)` where the field isn't mutated), no methods
+  beyond `from_dict` / `to_dict`. No I/O. Follows `margin_engine/domain/value_objects.py` pattern.
+- **Scope**: `engine/domain/value_objects.py` (new), `engine/signals/gates.py` (re-export),
+  `engine/tests/test_gates.py` or similar (update imports if any).
+- **Verification**: All existing engine tests still pass.
+- **Audit row**: `CA-01` progressNotes "Phase 1 shipped — value objects extracted".
+
+### CFG-04 — write endpoints + config hot-apply
+
+- **What**: Extend `hub/api/config.py` (shipped by CFG-02/03) with write endpoints:
+  - `POST /api/v58/config` — upsert a single key (service, key, value, comment), writes to
+    `config_values` + `config_history`
+  - `POST /api/v58/config/bulk` — apply multiple changes atomically in one transaction
+  - `POST /api/v58/config/rollback/{history_id}` — restore a prior value from `config_history`
+- **Rules**: JWT `Depends(get_current_user)` enforced. Every write MUST insert a `config_history`
+  row in the same transaction as the `config_values` upsert — never orphan a write. Return
+  `{restart_required: true}` in the response body for any key with `restart_required=TRUE` so
+  the frontend can warn the operator.
+- **Scope**: `hub/api/config.py`, `hub/tests/test_config_api.py`, `frontend/src/pages/Config.jsx`
+  (add the edit widgets), `frontend/src/pages/AuditChecklist.jsx` (CFG-04 row DONE).
+- **Verification**: unit tests for each endpoint + round-trip test (POST a value, GET it back,
+  POST a different value, GET the history, rollback).
+- **Audit row**: `CFG-04` progressNotes "Write endpoints + config hot-apply shipped".
+
+### CFG-07 — engine service-side loader with TTL cache + safe degrade
+
+- **What**: Add a `ConfigLoader` class in `engine/config/loader.py` that replaces the inline
+  `os.environ.get` calls with a DB-backed lookup. TTL cache refresh every 10s (same cadence as
+  the existing heartbeat). Fallback chain: DB → .env → code default. If the DB query fails
+  (transient outage), use the last-known-good cache for up to 5 minutes before fail-closing.
+- **Rules**: **Never fail-close a trading-hot-path lookup on a transient DB error.** The loader
+  must degrade gracefully. Gate flags that require a restart must be loaded ONCE at startup and
+  cached immutably — the loader must NOT hot-swap those mid-window (see CFG-01 plan §9 hot-reload
+  risk matrix).
+- **Scope**: `engine/config/loader.py` (new), `engine/strategies/five_min_vpin.py` (call sites),
+  `engine/signals/gates.py` (call sites). **Do not touch `runtime_config.py`** — it stays as the
+  legacy sync for now, to be removed in Phase 3 after cutover validation.
+- **Verification**: Characterisation tests pinning pre-cutover behaviour, then post-cutover
+  tests pinning new loader behaviour, then a toggle flag `ENGINE_USE_DB_CONFIG_LOADER=true` on
+  a single dev box for 24h before flipping in prod.
+- **Audit row**: `CFG-07` progressNotes with the 24h validation window notes.
+
+### SCHEMA-01b — auto-discovery of new DB tables (follow-up to SCHEMA-01)
+
+- **What**: Extend the `/schema` page with a "discover" button that runs `SELECT table_name FROM
+  information_schema.tables WHERE table_schema = 'public'` and diffs the live table list against
+  `hub/db/schema_catalog.py`. Any tables in the DB but NOT in the catalog appear as a "drift"
+  warning. Any tables in the catalog but NOT in the DB appear as "missing in prod".
+- **Rules**: Read-only. Does NOT auto-add entries to the catalog — the catalog is intentionally
+  hand-curated. The warning is the signal that a human needs to add the entry.
+- **Scope**: `hub/api/schema.py`, `frontend/src/pages/Schema.jsx`, `frontend/src/pages/AuditChecklist.jsx`.
+- **Verification**: Create a throwaway table in a test DB, confirm it shows up as "drift".
+- **Audit row**: `SCHEMA-01b` progressNotes.
+
+### SQ-01 PR 1 — cosmetic ELM → unbranded rename
+
+- **What**: The 4-PR rollout plan from Agent E (see `docs/AUDIT_PROGRESS.md`). PR 1 is
+  **cosmetic only**: rename `engine/data/feeds/elm_prediction_recorder.py` →
+  `prediction_recorder.py`, `class ELMPredictionRecorder` → `PredictionRecorder`, ctor kwarg
+  `elm_client` → `model_client`, update all 4 call sites. DO NOT touch log event names
+  (`elm_recorder.*`), DB table name (`ticks_elm_predictions`), or the `signal_evaluations`
+  gate column names — those are PR 2, 3, 4 respectively.
+- **Rules**: The CI-02 gate (shipped PR #49) has zero-tolerance signatures on
+  `elm_recorder.write_error` and `elm_recorder.query_error`. PR 1 must NOT touch these log
+  strings or the deploy will fail loudly. PR 2 is the one that ships those rename plus a
+  matching CI gate signature update in the same commit.
+- **Scope**: `engine/data/feeds/elm_prediction_recorder.py` → renamed file, `engine/strategies/orchestrator.py`
+  lines 665-676, `engine/tests/test_elm_prediction_recorder.py` → renamed file.
+- **Verification**: Engine tests still pass. Log events are unchanged (grep for `elm_recorder.`
+  in a post-rename diff — must still appear).
+- **Audit row**: `SQ-01` progressNotes "PR 1 of 4 (cosmetic class rename)".
+
+### POLY-SOT-b — extend reconciler to closed_positions from Polymarket
+
+- **What**: POLY-SOT Phase 1 (in flight now) tags `manual_trades` rows with reconciliation
+  state. Phase 2 (this task) extends the same pattern to the engine's automatic trades —
+  every Polymarket trade the engine places gets reconciled against the CLOB 2 minutes later
+  and tagged with `sot_reconciliation_state`.
+- **Rules**: Follow the POLY-SOT Phase 1 schema. Do NOT duplicate the reconciler loop — extend
+  the existing one to iterate both `manual_trades` and the engine trade table (whatever it's
+  called — likely `closed_positions` or similar).
+- **Scope**: `engine/reconciliation/reconciler.py`, possibly a new column on the engine trade
+  table if one doesn't exist.
+- **Audit row**: `POLY-SOT-b`.
+
+### LT-05 — click-to-execute latency SLA dashboard
+
+- **What**: Surface p50 / p95 / p99 click-to-execute latency on the ExecutionHQ Live tab,
+  measured from the hub's INSERT commit to the engine's `polymarket_client.place_order` return.
+  Uses the `manual_trades.created_at` and `manual_trades.executed_at` timestamps. Alert if p95
+  exceeds 1s (the LT-04 SLA).
+- **Rules**: Read-only page. Calls a new `/api/v58/manual-trade-latency?window=1h` hub endpoint.
+- **Scope**: `hub/api/v58_monitor.py` (new endpoint), `frontend/src/pages/execution-hq/components/*` (new
+  chip or sub-panel), `frontend/src/pages/AuditChecklist.jsx` (LT-05 row OPEN/DONE).
+- **Audit row**: `LT-05`.
+
+### UI-03 — multi-market ManualTradePanel (conditionally enable for ETH 5m)
+
+- **What**: Once UI-02 is live (shipped PR #55) and POLY-SOT is live, the ManualTradePanel can
+  be safely enabled for a second market. Start with ETH 5m. Behind a feature flag
+  `UI_ENABLE_MULTI_MARKET_MANUAL_TRADE=false` so the default stays BTC-only.
+- **Rules**: Flag default-off. Needs end-to-end test: place a paper trade on ETH 5m, confirm
+  the decision snapshot DB captured it, confirm the reconciler tagged it correctly. Only
+  enable on real money AFTER the paper round-trip is clean.
+- **Scope**: `frontend/src/pages/execution-hq/components/ManualTradePanel.jsx`, `hub/api/v58_monitor.py`
+  (if it hardcodes BTC anywhere).
+- **Audit row**: `UI-03`.
+
+### FE-09..FE-13 — remediate the frontend audit findings
+
+- `FE-09` MEDIUM — retire / wire `/indicators` (currently 100% mock data from
+  `src/lib/mock-data.js`). Options: delete the route, or wire it to real indicator data.
+- `FE-10` HIGH — fix silent demo-data fallbacks on Dashboard / Paper / Positions / Risk. Add a
+  visible "demo data" banner when the hub returns empty.
+- `FE-11` MEDIUM — wire real candles into Execution HQ price chart (currently locally simulated).
+- `FE-12` LOW — retire / rev the Changelog page (9 versions behind).
+- `FE-13` LOW — legacy `elm` signal key on `/composite` and `/data/v3`. Blocked on SQ-01 PR 3.
+
+### Each FE-0X task:
+- **Read `docs/FRONTEND_AUDIT_2026-04-11.md`** for the specific file:line evidence
+- **Scope**: only the pages cited in the evidence, and `AuditChecklist.jsx` for the row flip
+- **Audit row**: status flip + progressNotes
+
+---
 
 ---
 
