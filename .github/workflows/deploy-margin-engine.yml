@@ -77,6 +77,15 @@ jobs:
 
             # v4 wiring against Montreal timesfm service
             set_env MARGIN_PAPER_MODE true
+            # DQ-06: explicitly pin the paper venue to hyperliquid. The
+            # paper+binance branch in main.py constructs PaperExchangeAdapter
+            # without a price_getter and prices every fill against a frozen
+            # $80k constant. Hyperliquid wiring correctly plumbs
+            # HyperliquidPriceFeed as the price source. Without this line,
+            # whatever was previously on the host .env sticks (set_env is
+            # update-in-place or append, never remove), so a previous deploy
+            # that landed in the broken branch could persist across restarts.
+            set_env MARGIN_EXCHANGE_VENUE hyperliquid
             set_env MARGIN_ENGINE_USE_V4_ACTIONS true
             set_env MARGIN_V4_SNAPSHOT_URL http://3.98.114.0:8080
             set_env MARGIN_V4_PRIMARY_TIMESCALE 15m
@@ -86,7 +95,7 @@ jobs:
             set_env MARGIN_V4_FRESHNESS_S 10.0
 
             echo "v4 env keys after templating:"
-            grep -E "^MARGIN_(PAPER_MODE|ENGINE_USE_V4|V4_)" "$ENV_FILE" || true
+            grep -E "^MARGIN_(PAPER_MODE|EXCHANGE_VENUE|ENGINE_USE_V4|V4_)" "$ENV_FILE" || true
 
             # Cleanup old backups (keep last 5)
             ls -1t "${ENV_FILE}".bak.* 2>/dev/null | tail -n +6 | xargs -r rm -f
