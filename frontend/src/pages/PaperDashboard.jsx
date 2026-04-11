@@ -885,6 +885,7 @@ export default function PaperDashboard() {
           }}>
             Paper Trading Dashboard
           </h1>
+          <span style={{ fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3, background: 'rgba(168,85,247,0.12)', color: '#a855f7', border: '1px solid rgba(168,85,247,0.3)', letterSpacing: '0.06em', fontFamily: T.font }}>POLYMARKET 5m</span>
           <DataBadge isLive={isLive} loading={loading} />
         </div>
         <div style={{ color: T.label, fontSize: 12 }}>

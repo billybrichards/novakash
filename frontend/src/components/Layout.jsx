@@ -74,6 +74,7 @@ const NAV_SECTIONS = [
         icon: '⚡',
         highlight: true,
         isNew: true,
+        strategy: 'Polymarket 5m',
         dataSource: 'signal_evaluations + market_data + manual_trades (+ UI-01 gate heartbeat)',
         children: HQ_CHILDREN,
       },
@@ -83,10 +84,13 @@ const NAV_SECTIONS = [
       // canonical place to place a manual live trade is
       // /execution-hq → Live tab → ManualTradePanel (see LT-02 / LT-03).
       { path: '/live',    label: 'Wallet & PnL', icon: '💼',
+        strategy: 'Polymarket 5m',
         dataSource: 'trades + wallet_snapshots' },
       { path: '/paper',   label: 'Paper Mode',   icon: '📄',
+        strategy: 'Polymarket 5m',
         dataSource: 'trades (paper venue rows)' },
       { path: '/notes',   label: 'Notes',        icon: '📝', highlight: true,
+        strategy: 'System',
         dataSource: 'notes (hub/api/notes.py)' },
     ],
   },
@@ -95,6 +99,7 @@ const NAV_SECTIONS = [
     color: '#f59e0b',
     items: [
       { path: '/margin',     label: 'Margin Engine', icon: '🏦', highlight: true,
+        strategy: 'Hyperliquid Perps',
         dataSource: 'margin_positions + margin_signals + margin_logs' },
     ],
   },
@@ -106,18 +111,25 @@ const NAV_SECTIONS = [
       // layers. V1/V2/V3/V4 per-layer pages stay as fallbacks for drilling
       // into a single layer in isolation.
       { path: '/data/assembler1', label: 'Assembler1',      icon: '🎛️', highlight: true, isNew: true,
+        strategy: 'Both',
         dataSource: 'POST /api/predict envelope + GET /api/predict/ticks_vs_outcomes (timesfm service)' },
       { path: '/data/v4',         label: 'V4 Fusion',       icon: '🧭', highlight: true,
+        strategy: 'Hyperliquid Perps',
         dataSource: 'GET /v4/snapshot (timesfm service)' },
       { path: '/data/v3',         label: 'V3 Composite',    icon: '🧬',
+        strategy: 'Both',
         dataSource: 'GET /v3/snapshot + ticks_v3_composite' },
       { path: '/data/v2',         label: 'V2 Probability',  icon: '📊',
+        strategy: 'Both',
         dataSource: 'POST /v2/probability/5m + /15m' },
       { path: '/data/v1',         label: 'V1 Forecast',     icon: '🔮',
+        strategy: 'Both',
         dataSource: 'POST /forecast (legacy point-forecast)' },
       { path: '/timesfm',         label: 'TimesFM v2',      icon: '🔮',
+        strategy: 'Both',
         dataSource: 'POST /v2/probability (raw probe)' },
       { path: '/composite',       label: 'Composite V3',    icon: '🧬',
+        strategy: 'Hyperliquid Perps',
         dataSource: 'ticks_v3_composite (margin_engine view)' },
     ],
   },
@@ -126,26 +138,35 @@ const NAV_SECTIONS = [
     color: '#64748b',
     items: [
       { path: '/dashboard',       label: 'Dashboard',  icon: '📊',
+        strategy: 'Polymarket 5m',
         dataSource: 'hub /api/v58/dashboard (signal_evaluations + trades)' },
       { path: '/audit',           label: 'Audit',      icon: '🔍', highlight: true, isNew: true,
+        strategy: 'Both',
         dataSource: 'hardcoded TASKS array (no backend)' },
       { path: '/schema',          label: 'DB Schema',  icon: '🗄️', highlight: true, isNew: true,
+        strategy: 'System',
         dataSource: 'GET /api/v58/schema/tables (41 tables catalogued)' },
       { path: '/deployments',     label: 'Deployments', icon: '🚀', highlight: true, isNew: true,
+        strategy: 'System',
         dataSource: 'hardcoded SERVICES array + live health probes' },
       // CFG-05: new DB-config browser is the primary "Config" entry point.
       // The legacy 25-key bundle editor stays accessible as "Trading Cfg"
       // until CFG-06 lands the editable surface here.
       { path: '/config',          label: 'Config',     icon: '⚙️', highlight: true, isNew: true,
+        strategy: 'Both',
         dataSource: 'GET /api/v58/config (config_keys + config_values, 175 keys)' },
       { path: '/positions',       label: 'Positions',  icon: '📍',
+        strategy: 'Polymarket 5m',
         dataSource: 'hub /api/v58/positions (trades aggregation)' },
       { path: '/risk',            label: 'Risk',       icon: '🛡️', highlight: true,
+        strategy: 'Polymarket 5m',
         dataSource: 'hub /api/v58/risk (system_state + trades)' },
       { path: '/system',          label: 'System',     icon: '🖥️',
+        strategy: 'System',
         dataSource: 'hub /api/v58/system (service health)' },
       { path: '/factory',         label: 'Factory Floor',    icon: '🏭',
         highlight: true, isNew: true,
+        strategy: 'Both',
         dataSource: '/v58/* + /margin/status + /v4/snapshot + /v58/schema/gates' },
     ],
   },
@@ -598,19 +619,16 @@ export default function Layout() {
           >
             <span style={{ fontSize: 15, lineHeight: 1 }}>{item.icon}</span>
             <span>{item.label}</span>
-            {item.isNew && !groupActive && (
+            {item.strategy && (
               <span style={{
-                marginLeft: 'auto',
-                fontSize: 8,
-                fontFamily: 'IBM Plex Mono, monospace',
-                color: '#06b6d4',
+                marginLeft: 'auto', fontSize: 7, fontFamily: 'IBM Plex Mono, monospace',
+                color: item.strategy === 'Polymarket 5m' ? '#a855f7' : item.strategy === 'Hyperliquid Perps' ? '#f59e0b' : '#06b6d4',
                 letterSpacing: '0.06em',
-                border: '1px solid rgba(6,182,212,0.5)',
-                borderRadius: 3,
-                padding: '1px 4px',
-                background: 'rgba(6,182,212,0.15)',
-                animation: 'pulse 2s infinite',
-              }}>NEW</span>
+                border: `1px solid ${item.strategy === 'Polymarket 5m' ? 'rgba(168,85,247,0.44)' : item.strategy === 'Hyperliquid Perps' ? 'rgba(245,158,11,0.44)' : 'rgba(6,182,212,0.44)'}`,
+                borderRadius: 2, padding: '1px 3px',
+                background: item.strategy === 'Polymarket 5m' ? 'rgba(168,85,247,0.11)' : item.strategy === 'Hyperliquid Perps' ? 'rgba(245,158,11,0.11)' : 'rgba(6,182,212,0.11)',
+                whiteSpace: 'nowrap', flexShrink: 0,
+              }}>{item.strategy === 'Polymarket 5m' ? 'POLY' : item.strategy === 'Hyperliquid Perps' ? 'PERPS' : 'POLY+PERPS'}</span>
             )}
             <span style={{
               marginLeft: item.isNew && !groupActive ? 6 : 'auto',
@@ -650,9 +668,12 @@ export default function Layout() {
       ? '#64748b'
       : item.highlight ? '#06b6d4' : '#a855f7';
     const tooltipParts = [];
+    if (item.strategy) tooltipParts.push(`Strategy: ${item.strategy}`);
     if (item.dataSource) tooltipParts.push(`Data: ${item.dataSource}`);
     if (item.legacyNote) tooltipParts.push(`Note: ${item.legacyNote}`);
     const tooltip = tooltipParts.length ? tooltipParts.join('\n') : undefined;
+    const STRAT_COLORS = { 'Polymarket 5m': '#a855f7', 'Hyperliquid Perps': '#f59e0b', 'Both': '#06b6d4', 'System': '#64748b' };
+    const stratColor = item.strategy ? (STRAT_COLORS[item.strategy] || '#64748b') : null;
     return (
       <Link
         key={item.path}
@@ -688,6 +709,15 @@ export default function Layout() {
       >
         <span style={{ fontSize: 15, lineHeight: 1, filter: isLegacy ? 'grayscale(1)' : 'none' }}>{item.icon}</span>
         <span style={{ textDecoration: isLegacy ? 'line-through' : 'none', textDecorationColor: 'rgba(100,116,139,0.3)' }}>{item.label}</span>
+        {!isLegacy && item.strategy && (
+          <span style={{
+            marginLeft: 'auto', fontSize: 7, fontFamily: 'IBM Plex Mono, monospace',
+            color: stratColor, letterSpacing: '0.06em',
+            border: `1px solid ${stratColor}44`, borderRadius: 2,
+            padding: '1px 3px', background: `${stratColor}11`,
+            whiteSpace: 'nowrap', flexShrink: 0,
+          }}>{item.strategy === 'Polymarket 5m' ? 'POLY' : item.strategy === 'Hyperliquid Perps' ? 'PERPS' : item.strategy === 'Both' ? 'POLY+PERPS' : 'SYS'}</span>
+        )}
         {isLegacy && item.legacyStatus && (
           <span style={{
             marginLeft: 'auto',
@@ -701,7 +731,7 @@ export default function Layout() {
             background: 'rgba(100,116,139,0.1)',
           }}>{item.legacyStatus}</span>
         )}
-        {!isLegacy && item.highlight && !active && (
+        {!isLegacy && item.highlight && !active && !item.strategy && (
           <span style={{
             marginLeft: 'auto',
             fontSize: 8,

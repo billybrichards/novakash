@@ -637,6 +637,7 @@ export default function V2Surface() {
                 border="rgba(168,85,247,0.3)"
                 value="Sequoia v5.2"
               />
+              <Chip color={T.cyan} bg="rgba(6,182,212,0.12)" border="rgba(6,182,212,0.3)" value="Poly + Perps" title="Calibrated probability feeds both trading strategies" />
               <Chip
                 color={T.cyan}
                 bg="rgba(6,182,212,0.12)"

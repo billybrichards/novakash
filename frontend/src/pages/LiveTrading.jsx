@@ -69,7 +69,7 @@ export default function LiveTrading() {
     <div style={{ background: T.bg, minHeight: '100vh', fontFamily: T.mono, color: '#fff', padding: '20px 24px 60px' }}>
       {/* Header with mode indicator */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-        <h1 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>💰 Live Trading</h1>
+        <h1 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>💰 Wallet & PnL</h1>
         <span style={{
           padding: '4px 12px', borderRadius: 6, fontSize: 12, fontWeight: 800,
           background: isLive ? 'rgba(239,68,68,0.15)' : 'rgba(168,85,247,0.15)',
@@ -79,9 +79,18 @@ export default function LiveTrading() {
         }}>
           {modeLabel}
         </span>
+        <span style={{
+          fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
+          background: 'rgba(168,85,247,0.12)', color: '#a855f7',
+          border: '1px solid rgba(168,85,247,0.3)', letterSpacing: '0.06em',
+        }}>POLYMARKET 5m</span>
         <span style={{ fontSize: 9, color: T.label2 }}>
           Heartbeat: {engine.last_heartbeat ? new Date(engine.last_heartbeat).toLocaleTimeString() : '—'}
         </span>
+      </div>
+      <div style={{ fontSize: 9, color: T.label, marginBottom: 16, maxWidth: 700, lineHeight: 1.4 }}>
+        Polymarket wallet balance, bankroll tracking, daily P&L, and recent trade breakdown. Read-only summary view.
+        <span style={{ color: 'rgba(255,255,255,0.15)', marginLeft: 6 }}>Data: trades + wallet_snapshots</span>
       </div>
 
       {/* Engine Status */}

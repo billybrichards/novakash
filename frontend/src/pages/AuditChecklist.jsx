@@ -1956,6 +1956,7 @@ export default function AuditChecklist() {
           >
             STATIC
           </span>
+          <span style={{ fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3, background: 'rgba(6,182,212,0.12)', color: T.cyan, border: '1px solid rgba(6,182,212,0.3)', fontFamily: T.mono, letterSpacing: '0.06em' }}>POLY + PERPS</span>
         </h1>
         <p style={{ fontSize: 10, color: T.textMuted, margin: '4px 0 0', maxWidth: 900, lineHeight: 1.5 }}>
           {SESSION_META.summary}

@@ -255,6 +255,18 @@ export default function ExecutionHQ() {
             </span>
           </div>
 
+          {/* Strategy badge */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '4px 10px', borderRadius: 3,
+            background: 'rgba(168,85,247,0.08)',
+            border: '1px solid rgba(168,85,247,0.25)',
+            fontFamily: "'JetBrains Mono', monospace",
+          }}>
+            <span style={{ fontSize: 8, fontWeight: 700, color: T.purple, letterSpacing: '0.06em' }}>POLYMARKET 5m</span>
+            <span style={{ fontSize: 8, color: T.textDim }}>Binary Options</span>
+          </div>
+
           {/* System info */}
           <div style={{ fontFamily: 'monospace', fontSize: 12, color: T.textMuted, display: 'flex', gap: 16 }}>
             <span>MODE: <span style={{ color: hqData?.system?.paper_mode ? T.amber : T.cyan }}>

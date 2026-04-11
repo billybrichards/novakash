@@ -149,7 +149,8 @@ export default function MarginEngine() {
             )}
           </h1>
           <p style={{ fontSize: 9, color: T.textMuted, margin: '2px 0 0' }}>
-            Composite signal &rarr; {venueLabel.toLowerCase()} {isHyperliquid ? 'perps' : 'margin'} | eu-west-2
+            Hyperliquid perpetual futures trading engine. Composite v3 signal &rarr; {venueLabel.toLowerCase()} {isHyperliquid ? 'perps' : 'margin'} | eu-west-2
+            <span style={{ color: T.textDim, marginLeft: 6 }}>Data: margin_positions + margin_signals + /v3/snapshot + /v4/snapshot</span>
           </p>
         </div>
 

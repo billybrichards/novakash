@@ -757,6 +757,7 @@ export default function V4Surface() {
                 border="rgba(168,85,247,0.3)"
                 value="fusion"
               />
+              <Chip color={T.amber} bg="rgba(245,158,11,0.12)" border="rgba(245,158,11,0.3)" value="Hyperliquid Perps" title="Primary decision surface for the Hyperliquid perpetual futures margin engine" />
               <Chip
                 color={T.cyan}
                 bg="rgba(6,182,212,0.12)"
