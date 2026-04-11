@@ -209,21 +209,25 @@ jobs:
           REMOTE
 
       - name: Post-deploy health probe — error signatures
-        # The regression gate. Grep the last ~2 minutes of engine.log
+        # CI-02 (2026-04-11): extended to include PE-06 signatures.
+        #
+        # The regression gate. Grep the last ~10k lines of engine.log
         # for known error signatures and fail the deploy if any
-        # exceed their tolerance. The thresholds encode what we expect
-        # after the 2026-04-11 audit fixes land:
+        # exceed their tolerance. Thresholds encode the expected state
+        # after the 2026-04-11 audit fixes:
         #
-        #   clob_feed.write_error          -> 0   (PE-01 fix)
-        #   reconciler.resolve_db_error    -> 0   (PE-02 fix)
-        #   reconciler.orphan_fills_error  -> 5   (PE-03 transient Poly API noise)
-        #   price_source_disagreement      -> 30  (pre-DQ-01; tighten after fix)
-        #   evaluate.no_current_price      -> 2   (cold-start tolerated)
-        #   reconciler.no_trade_match      -> 5   (orphan reconciler noise)
+        #   clob_feed.write_error             -> 0   (PE-01 fix)
+        #   reconciler.resolve_db_error       -> 0   (PE-02 / PE-05 fix)
+        #   reconciler.orphan_fills_error     -> 5   (PE-03 transient Poly API noise)
+        #   price_source_disagreement         -> 30  (pre-DQ-01; tighten to 5 after flag on)
+        #   evaluate.no_current_price         -> 2   (cold-start tolerated)
+        #   reconciler.no_trade_match         -> 5   (orphan reconciler noise)
+        #   elm_recorder.write_error          -> 0   (PE-06 JSON quoting fix)
+        #   elm_recorder.query_error          -> 0   (PE-06 sibling bug-class)
         #
-        # A future step in the DQ-01 rollout should tighten the
-        # price_source_disagreement threshold to <5 once
-        # V11_POLY_SPOT_ONLY_CONSENSUS is on.
+        # The PE-06 signatures fire 16x per 30s sweep if the dict-str bug
+        # regresses, so any non-zero count in a 10k-line scan is a loud
+        # failure signal and the deploy should fail.
         run: |
           ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" bash -s <<'REMOTE'
           set -e
@@ -251,12 +255,15 @@ jobs:
           }
           echo "=== engine.log error signature scan (last ~10k lines) ==="
           failed=0
-          check_signature "clob_feed.write_error"             0  || failed=1
-          check_signature "reconciler.resolve_db_error"       0  || failed=1
-          check_signature "reconciler.orphan_fills_error"     5  || failed=1
+          check_signature "clob_feed.write_error"              0  || failed=1
+          check_signature "reconciler.resolve_db_error"        0  || failed=1
+          check_signature "reconciler.orphan_fills_error"      5  || failed=1
           check_signature "evaluate.price_source_disagreement" 30 || failed=1
-          check_signature "evaluate.no_current_price"         2  || failed=1
-          check_signature "reconciler.no_trade_match"         5  || failed=1
+          check_signature "evaluate.no_current_price"          2  || failed=1
+          check_signature "reconciler.no_trade_match"          5  || failed=1
+          # CI-02 additions — Sequoia recorder JSON / asyncpg regression signatures.
+          check_signature "elm_recorder.write_error"           0  || failed=1
+          check_signature "elm_recorder.query_error"           0  || failed=1
           if [ $failed -eq 1 ]; then
             echo "::error::engine log error-signature gate failed"
             exit 1
