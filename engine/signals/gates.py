@@ -127,6 +127,155 @@ class Gate(Protocol):
     async def evaluate(self, ctx: GateContext) -> GateResult: ...
 
 
+# ── V10.6 Eval Offset Bounds Gate (DS-01) ───────────────────────────────────
+
+class EvalOffsetBoundsGate:
+    """G0: V10.6 hard eval_offset bounds — default OFF.
+
+    The V10.6 decision surface (docs/V10_6_DECISION_SURFACE_PROPOSAL.md
+    in the novakash-timesfm-repo, §3.4) identifies a single safe
+    tradeable window `[V10_6_MIN_EVAL_OFFSET, V10_6_MAX_EVAL_OFFSET]`
+    inside which Sequoia v5's calibration holds. Trades outside the
+    window are unconditionally skipped because:
+
+      - eval_offset > max → too far from close → model calibration not
+        yet resolved. Empirical: T-180-240 had 47.62% WR and −33.96%
+        ROI across 865 resolved v4 predictions + 21 tagged live trades.
+      - eval_offset < min → too close to close → insufficient reaction
+        time for the strategy to react if conditions flip. v10.6 sets
+        this floor at T-90.
+
+    This is DS-01 in the audit checklist — the single simplest V10.6
+    component. The full grid (per-regime min_p, UP penalty, proportional
+    sizing, confidence haircut) is NOT implemented here; those are
+    tracked as separate audit tasks.
+
+    ⚠ SAFETY — default OFF ⚠
+
+    This gate is gated by `V10_6_ENABLED` and defaults to `false`. When
+    disabled (the default after merging this PR to develop → EC2), the
+    gate is a pure no-op that returns `passed=True` unconditionally and
+    never even reads `ctx.eval_offset`. The existing 7-gate pipeline
+    (SourceAgreement → DeltaMagnitude → TakerFlow → CGConfirmation →
+    DuneConfidence → Spread → DynamicCap) remains bit-for-bit
+    unchanged in its trading behaviour.
+
+    The operator flips `V10_6_ENABLED=true` on the host to turn the
+    hard-block logic on. This matches the "default off + operator flip"
+    pattern used for `MARGIN_ENGINE_USE_V4_ACTIONS` in PR #16.
+
+    ⚠ ENV VAR NAMING — deliberate divergence from the V10.6 proposal ⚠
+
+    The V10.6 proposal doc §3.4 names the env vars `V10_MIN_EVAL_OFFSET`
+    and `V10_MAX_EVAL_OFFSET`. Those names are already in use by the
+    existing `DuneConfidenceGate` (gates.py line ~358) with different
+    semantics — there, `V10_MIN_EVAL_OFFSET` acts as a MAXIMUM offset
+    (blocks `ctx.eval_offset > _min_offset`, currently set to 180/200
+    in production). Re-using the same name here would silently
+    repurpose the variable on flag flip and immediately break trading.
+
+    To protect against that foot-gun, this gate uses NAMESPACED env
+    vars `V10_6_MIN_EVAL_OFFSET` / `V10_6_MAX_EVAL_OFFSET`. A separate
+    follow-up task can rename or consolidate once all v10.6 components
+    land. The defaults (90 and 180) match the proposal doc exactly.
+
+    Env vars:
+      - `V10_6_ENABLED`            — master flag. Default `false`.
+      - `V10_6_MIN_EVAL_OFFSET`    — lower bound, inclusive. Default 90.
+      - `V10_6_MAX_EVAL_OFFSET`    — upper bound, inclusive. Default 180.
+
+    Evidence:
+      865 resolved Polymarket outcomes analysed against v4 predictions:
+        T-60-120:   105 trades, 67.62% WR, −2.23% ROI (near-breakeven)
+        T-120-180:   72 trades, 55.56% WR, −13.39% ROI
+        T-180-240:   21 trades, 47.62% WR, −33.96% ROI (catastrophic)
+      Only the T-90-180 band is reliable under v4/v5 calibration.
+    """
+    name = "eval_offset_bounds"
+
+    def __init__(self):
+        # Read env vars at gate construction time (module import time),
+        # same pattern as DeltaMagnitudeGate, TakerFlowGate, etc. This
+        # means operator must restart the engine to pick up flag
+        # changes — matches existing gate ergonomics.
+        self._enabled = os.environ.get("V10_6_ENABLED", "false").lower() == "true"
+        self._min_offset = int(os.environ.get("V10_6_MIN_EVAL_OFFSET", "90"))
+        self._max_offset = int(os.environ.get("V10_6_MAX_EVAL_OFFSET", "180"))
+        self._log = log.bind(gate="eval_offset_bounds")
+
+    async def evaluate(self, ctx: GateContext) -> GateResult:
+        # ── SAFETY: default-off no-op path ──
+        # When V10_6_ENABLED is false, this gate is a pure pass-through.
+        # It deliberately does NOT read ctx.eval_offset or any other
+        # context field — the goal is to be as close to "not in the
+        # pipeline at all" as possible while still being wired up. This
+        # guarantees zero behaviour change in production after merging
+        # this PR to develop, until an operator flips the flag.
+        if not self._enabled:
+            return GateResult(
+                passed=True, gate_name=self.name,
+                reason="disabled (V10_6_ENABLED=false)",
+            )
+
+        # ── ENABLED: hard-block outside [min, max] ──
+        offset = ctx.eval_offset
+
+        # Missing eval_offset: fail closed. Better to skip one trade
+        # than to take a bad trade because the context plumbing
+        # dropped the field — but log it so telemetry catches the bug.
+        if offset is None:
+            self._log.info(
+                "gate.v10_6_eval_offset_blocked",
+                offset=None,
+                min=self._min_offset,
+                max=self._max_offset,
+                reason="missing eval_offset",
+            )
+            return GateResult(
+                passed=False, gate_name=self.name,
+                reason="V10.6: missing eval_offset (fail-closed)",
+                data={"offset": None, "min": self._min_offset, "max": self._max_offset},
+            )
+
+        # Below min: too close to close, not enough reaction time
+        if offset < self._min_offset:
+            reason = f"V10.6: too late (T-{offset} < T-{self._min_offset})"
+            self._log.info(
+                "gate.v10_6_eval_offset_blocked",
+                offset=offset,
+                min=self._min_offset,
+                max=self._max_offset,
+                reason=reason,
+            )
+            return GateResult(
+                passed=False, gate_name=self.name, reason=reason,
+                data={"offset": offset, "min": self._min_offset, "max": self._max_offset},
+            )
+
+        # Above max: too far from close, v4/v5 calibration not yet
+        # resolved — catastrophic historically (−33.96% ROI at T-180-240)
+        if offset > self._max_offset:
+            reason = f"V10.6: too early (T-{offset} > T-{self._max_offset})"
+            self._log.info(
+                "gate.v10_6_eval_offset_blocked",
+                offset=offset,
+                min=self._min_offset,
+                max=self._max_offset,
+                reason=reason,
+            )
+            return GateResult(
+                passed=False, gate_name=self.name, reason=reason,
+                data={"offset": offset, "min": self._min_offset, "max": self._max_offset},
+            )
+
+        # Inside [min, max] inclusive — the safe tradeable band
+        return GateResult(
+            passed=True, gate_name=self.name,
+            reason=f"V10.6: T-{offset} in safe band [T-{self._min_offset}, T-{self._max_offset}]",
+            data={"offset": offset, "min": self._min_offset, "max": self._max_offset},
+        )
+
+
 # ── Source Agreement Gate ───────────────────────────────────────────────────
 
 class SourceAgreementGate:

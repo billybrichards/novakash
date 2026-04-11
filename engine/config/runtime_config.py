@@ -204,6 +204,28 @@ class RuntimeConfig:
         # FIVE_MIN_EVAL_INTERVAL: Seconds between eval ticks (2 = 2s polling, 10 = v9 default)
         self.five_min_eval_interval: int = int(os.environ.get("FIVE_MIN_EVAL_INTERVAL", "10"))
 
+        # ── v10.6: Sequoia v5 decision surface (DS-01 — eval_offset bounds) ─
+        # V10_6_ENABLED: master flag for the v10.6 decision surface.
+        # DEFAULTS OFF — merging this PR to develop is zero-behaviour-change
+        # in production. Operator flips this on the host to enable. Matches
+        # the MARGIN_ENGINE_USE_V4_ACTIONS pattern from margin_engine PR #16.
+        self.v10_6_enabled: bool = os.environ.get("V10_6_ENABLED", "false").lower() == "true"
+        # V10_6_MIN_EVAL_OFFSET / V10_6_MAX_EVAL_OFFSET: inclusive bounds on
+        # ctx.eval_offset for the v10.6 EvalOffsetBoundsGate.
+        #
+        # ⚠ Namespaced under V10_6_ on purpose: the existing
+        # DuneConfidenceGate already reads V10_MIN_EVAL_OFFSET with
+        # OPPOSITE semantics (there it acts as a MAXIMUM offset,
+        # production value 180/200). Reusing that name here would
+        # silently repurpose the variable on flag flip and break trading.
+        # See gates.py EvalOffsetBoundsGate docstring for rationale.
+        #
+        # Defaults match docs/V10_6_DECISION_SURFACE_PROPOSAL.md §3.4:
+        #   90 = refuse to trade closer than T-90 to window close
+        #  180 = refuse to trade further than T-180 from window close
+        self.v10_6_min_eval_offset: int = int(os.environ.get("V10_6_MIN_EVAL_OFFSET", "90"))
+        self.v10_6_max_eval_offset: int = int(os.environ.get("V10_6_MAX_EVAL_OFFSET", "180"))
+
         # ── Sync metadata ─────────────────────────────────────────────────
         self._active_config_id: Optional[int] = None
         self._active_config_name: Optional[str] = None
