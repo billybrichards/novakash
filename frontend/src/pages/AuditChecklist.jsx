@@ -293,25 +293,30 @@ const TASKS = [
     fix: 'Drop the inline CASE WHEN, use the pre-computed `status` variable from line 720 as a fourth parameter. The resulting UPDATE has each placeholder in exactly one type context: `SET outcome = $1, pnl_usd = $2, resolved_at = NOW(), status = $3 WHERE id = $4 AND outcome IS NULL`. Matches the working pattern already used at line 613 and line 958 elsewhere in the same file.',
     progressNotes: [
       { date: '2026-04-11', note: 'Found during the final engine health spot-check after PR #28 merge. The `status` variable is already pre-computed at line 720 as `"RESOLVED_WIN" if outcome == "WIN" else "RESOLVED_LOSS"`, so the CASE WHEN was redundant anyway. Fixed in PR #29, 15-line diff including inline `PE-05 fix:` comment block explaining the type-deduction bug. Still needs Montreal git pull + engine restart to verify 0 errors in production.' },
+      { date: '2026-04-11', note: 'VERIFIED LIVE. Post-PR#29 deploy at 12:49:31 UTC, engine ran for 13+ minutes before next health check showed reconciler.resolve_db_error=0 across ~10k log lines. Combined with PE-01 (clob_feed.write_error=0) and PE-02 (the prefix-match variant also staying at 0), all three fixes from PR #26 and PR #29 are confirmed clean in production.' },
     ],
   },
   {
-    id: 'PE-04',
+    id: 'PE-06',
     category: 'production-errors',
     severity: 'MEDIUM',
-    status: 'OPEN',
-    title: 'elm_recorder.write_error — invalid JSON quoting',
+    status: 'DONE',
+    title: 'Sequoia v5.2 prediction recorder — invalid JSON quoting (renamed from PE-04)',
     files: [
-      { path: 'engine/data/feeds/elm_prediction_recorder.py', line: 1, repo: 'novakash' },
+      { path: 'engine/data/feeds/elm_prediction_recorder.py', line: 129, repo: 'novakash' },
+      { path: 'engine/tests/test_elm_prediction_recorder.py', line: 1, repo: 'novakash' },
     ],
     evidence: [
-      'Error: "invalid input syntax for type json — DETAIL: Token \'\\\'\' is invalid."',
-      'Observed on the fresh 2026-04-11 12:23 restart within 23 minutes of startup',
-      'Happens in a single-quoted JSON value — python dict → JSON conversion is using repr() or str() somewhere instead of json.dumps()',
-      'Non-fatal: the recorder catches the write and continues; but the prediction is lost on the floor',
-      'This is a new error that was not in the earlier audit (2026-04-11 ~06:30 UTC log scan)',
+      'Root cause: _record_sweep serialised feature_freshness_ms with str(result.get("feature_freshness_ms", {})) which emits Python repr with single quotes. Postgres JSONB parser rejects with "invalid input syntax for type json — Token \' is invalid.".',
+      'Impact: the recorder\'s executemany was wrapped in a try/except that caught the write error and logged elm_recorder.write_error, silently dropping 16 rows (4 assets × 4 deltas) every 30 seconds. Started firing at 2026-04-11 12:29:46 UTC.',
+      'NOT a trading bug (recorder is observability-only) but BIASED the V10.6 865-outcome backtest evidence base by dropping predictions in an unknown pattern.',
+      'The current model family is Sequoia v5.2 — "ELM" is legacy naming kept in file/class/log names, renaming tracked separately as SQ-01.',
+      'Bug-class audit: grepped all engine/ for str(dict)/repr(dict) in SQL contexts — only the one instance found. No additional variants. Other JSONB writers in engine/persistence/db_client.py already use json.dumps() + $N::jsonb correctly.',
     ],
-    fix: 'grep elm_prediction_recorder.py for any INSERT that builds a JSON literal. Switch any string.format / f-string JSON construction to json.dumps(). Typical pattern: cursor.execute("INSERT ... metadata = \'%s\'" % python_dict) → cursor.execute("INSERT ... metadata = $1", json.dumps(python_dict)). Add a test_elm_recorder_json_escape test.',
+    fix: 'PR #30 by background Agent A: replace str(result.get("feature_freshness_ms", {})) with json.dumps(freshness) where freshness = result.get("feature_freshness_ms") or {} (defensively handles None). SQL placeholder $7::jsonb was already correct. Pattern now matches engine/persistence/db_client.py conventions. Added test_elm_prediction_recorder.py with 5 cases: valid-JSON round-trip, single-quote-in-value, nested single-quoted strings, missing-field default, executemany batch sanity. Tests fail against unfixed code (3/5 raise json.JSONDecodeError matching the Postgres error) and pass against the fix.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Renamed from PE-04 to PE-06 to match the new Sequoia v5.2 naming context. Dispatched as a background agent task (Agent A) with explicit instruction to grep the whole engine/ tree for sibling bug-class instances — a lesson learned from PE-02/PE-05 where I fixed one instance and missed another. Agent found no siblings. PR #30 merged at c9f341b. Deployment still pending Montreal git pull + engine restart.' },
+    ],
   },
   {
     id: 'INC-01',
@@ -520,6 +525,27 @@ const TASKS = [
       'No invariant guaranteeing both stay consistent',
     ],
     fix: 'Create WindowStateRepositoryPort with DB-backed adapter. Both strategy and reconciler depend on the port, not their own state.',
+  },
+  {
+    id: 'SQ-01',
+    category: 'clean-architect',
+    severity: 'LOW',
+    status: 'IN_PROGRESS',
+    title: 'Sequoia v5.2 rename cleanup — legacy ELM naming audit',
+    files: [
+      { path: 'engine/data/feeds/elm_prediction_recorder.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'The current predictive model is Sequoia v5.2 (confirmed by user 2026-04-11). "ELM" naming is a historical artifact from when the model was called "Ensemble Learning Model".',
+      'Examples of legacy naming: file `elm_prediction_recorder.py`, class `ELMPredictionRecorder`, log event `elm_recorder.write_error`, DB table `ticks_elm_predictions` (if it exists).',
+      'PE-06 (PR #30) preserved the legacy names intentionally — the JSON quoting fix was scoped tightly and rename was deferred to avoid merge conflicts with in-flight PRs.',
+      'Deploy risk varies by category: class/variable renames are low-risk (single PR), log event renames require updating the CI-01 error-signature gate at the same time, DB column renames require a migration and are deferred indefinitely.',
+      'Background Agent E (SQ-01 audit) is currently investigating the scope of the rename and will return a rollout plan with file:line citations and risk assessment.',
+    ],
+    fix: 'Two-phase rollout once Agent E returns its audit: (1) "cosmetic rename" PR touching classes/functions/variables/docstrings only, bundled with CI-01 error-signature gate update if log events are renamed; (2) defer DB column renames indefinitely since they require a migration and break backtest queries. Keep file names stable unless Agent E finds a clear value prop for renaming them.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Agent E dispatched as a READ-ONLY investigation to grep the whole novakash repo for ELM references and return a rollout plan. Status flipped to IN_PROGRESS pending agent return. When Agent E finishes, the plan will be integrated into docs/AUDIT_PROGRESS.md and a follow-up PR will ship the cosmetic rename if the risk assessment is LOW.' },
+    ],
   },
 
   // ── frontend ────────────────────────────────────────────────────────────

@@ -46,6 +46,49 @@ Deep clean-architect audit covering:
 - Both fixes ship in the same PR #26 rev-2 as the checklist update to avoid deploy races. Neither is verified in production until CI-01 lands (see below) — until then, verification is a manual `scripts/restart_engine.sh` via Montreal rules + `journalctl -u` tail.
 - **FE-02 DONE** — audit checklist page is live locally (`npm run build` green, rendered end-to-end via playwright against the dev server, filter + expand interactions confirmed). Merge of PR #26 lands it at `/audit` on the AWS frontend host.
 
+### 2026-04-11 — Parallel agent dispatch: PE-06 done, DS-01/FE-04-06/DQ-05/SQ-01 in flight
+
+User clarified during the session that the current model family is **Sequoia v5.2** and "ELM" is legacy naming — a historical artifact from when the model was called "Ensemble Learning Model". This reframes PE-04 (the elm_recorder.write_error bug) as PE-06 since it's really a Sequoia v5.2 prediction-recorder bug, and it matters specifically because the V10.6 decision surface uses 865 recorded predictions as its backtest evidence base — silent prediction drops bias that evidence.
+
+To parallelise the rest of the audit work safely, I dispatched **5 background agents** in isolated git worktrees (using `superpowers:using-git-worktrees` + `superpowers:dispatching-parallel-agents`):
+
+- **Agent A (PE-06 DONE)**: Sequoia v5.2 prediction recorder JSON quoting fix. Found `str(result.get("feature_freshness_ms", {}))` in `engine/data/feeds/elm_prediction_recorder.py:129` — Python `str(dict)` emits repr-style single quotes, Postgres JSONB rejects. Fixed with `json.dumps()`, added 5-test coverage that fails-on-unfixed / passes-on-fixed, grepped the whole engine/ tree for sibling bug-class instances (PE-02/PE-05 lesson — bug-class clusters come in pairs). Only one instance found. **PR #30 merged at `c9f341b`**. Preserved legacy ELM file/class/log names — rename tracked separately as SQ-01.
+- **Agent B (DS-01 in flight)**: V10.6 `EvalOffsetBoundsGate` — new gate class in `engine/signals/gates.py` that hard-blocks trades outside `[90, 180]` eval_offset, gated behind `V10_6_ENABLED=false` by default so the merge is zero-behavior-change. Branch `claude/feat/ds01-eval-offset-bounds-gate`.
+- **Agent C (FE-04/05/06 in flight)**: Three frontend data surface pages — `/data/v1`, `/data/v2`, `/data/v3` — mirroring the `/data/v4` V4Surface.jsx template. Covers v1 legacy point forecast, v2 LightGBM probability + quantiles, v3 composite + regime. Branch `claude/feat/fe04-05-06-v1-v2-v3-data-surfaces`.
+- **Agent D (DQ-05 investigation in flight)**: READ-ONLY audit of margin_engine's price reference path. Confirms or rejects the hypothesis that `_execute_v4()` is using `consensus.reference_price` (first-available, often Binance spot) where a Hyperliquid perp mark price is needed. Returns a written report, no code changes.
+- **Agent E (SQ-01 investigation in flight)**: READ-ONLY audit of ELM → Sequoia v5.2 rename scope across the novakash repo. Returns a categorised rename plan with risk assessment (file names, class names, log events, DB columns, env vars) so a follow-up PR can execute the rename mechanically. Added SQ-01 to the checklist as IN_PROGRESS.
+
+**Parallelism safety constraints baked into the agent prompts**:
+
+- Agents A/B touch disjoint files in `engine/` (recorder vs gates+config). No conflicts.
+- Agent C explicitly told NOT to touch `AuditChecklist.jsx`, `V4Surface.jsx`, `Deployments.jsx`, engine code, or margin_engine code. Its scope is strictly `frontend/src/pages/data-surfaces/V{1,2,3}Surface.jsx` + additive entries in `App.jsx`/`Layout.jsx`/`hub/api/margin.py`.
+- Agents D and E are READ-ONLY — zero file changes, zero merge risk.
+- DS-01 (Agent B) **must default OFF behind `V10_6_ENABLED=false`** — explicitly documented in the agent prompt with the margin_engine PR #16 `MARGIN_ENGINE_USE_V4_ACTIONS` as the canonical precedent pattern. This is the hard safety boundary for the trading engine.
+
+**What I deliberately did NOT dispatch as parallel agents**:
+
+- **DQ-01 (Polymarket spot/futures reference fix)** — actual trading engine change, must be behind a feature flag, serialised after DS-01 lands so both V10.6 and DQ-01 rollouts don't compete on `engine/signals/gates.py`.
+- **V4-01 (retrofit v4 into Polymarket engine)** — multi-week architectural change, needs planning not dispatch.
+- **CA-01..CA-04 (clean-architect refactors)** — same reason. Need a plan before dispatch.
+- **PE-03 (orphan_fills_error log downgrade)** — too trivial to parallelise.
+- **DS-02/DS-03 (informational)** — not actionable, already captured in the checklist.
+
+**Post-PR#30 production verification**: After PR #30 merges, the Montreal host still needs `git pull origin develop + scripts/restart_engine.sh` to pick up the PE-06 fix. Until then, the recorder bug continues silently dropping predictions. The deploy + verify happens in the main session after Agents B and C land their PRs (to avoid two restarts in 20 minutes). Until then, Agent D's DQ-05 report and Agent E's SQ-01 audit will be integrated into this file as addenda.
+
+**Engine health spot-check (post PE-05 deploy + pre-PE-06 deploy)**: PID 2384 → 4488 after 12:49:31 UTC restart, ~13 min uptime, CPU 5.8%, MEM 4.7%. Error signatures over last ~5k log lines:
+
+```
+clob_feed.write_error         = 0   (PE-01 holding)
+reconciler.resolve_db_error   = 0   (PE-05 holding — confirmed clean)
+reconciler.orphan_fills_error = 0   (transient Poly noise not firing right now)
+binance_ws.disconnected       = 0
+polymarket_ws.disconnected    = 0
+tiingo_feed.poll_error        = 0
+price_source_disagreement    = 86  (expected pre-DQ-01)
+```
+
+All zero-threshold gates holding at 0. Engine is trading cleanly.
+
 ### 2026-04-11 — PE-05 hotfix: second CASE WHEN $1 type ambiguity in reconciler
 
 - **PE-05 MEDIUM DONE** — `reconciler.resolve_db_error` came back at 2 errors in 20 minutes (6/hour) after the PR #26 merge + 12:22 UTC engine restart. The PE-02 fix in PR #26 addressed the prefix-match fallback at `reconciler.py:765-776` but MISSED a second instance of the same bug class at `reconciler.py:824-834`.
