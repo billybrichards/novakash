@@ -55,11 +55,12 @@ const STATUS_COLOR = {
 const SESSION_META = {
   title: 'Clean-Architect Audit · 2026-04-11',
   summary:
-    'Deep audit of the Polymarket engine (engine/) against the margin_engine/ reference architecture, the v4 fusion surface on novakash-timesfm-repo, and PR #18 reconciler regressions. Covers data-quality, decision-surface gaps, and production errors.',
+    'Deep audit of the Polymarket engine (engine/) against the margin_engine/ reference architecture, the v4 fusion surface on novakash-timesfm-repo, and PR #18 reconciler regressions. Covers data-quality, decision-surface gaps, production errors, v1-v4 observability surfaces, and engine CI/CD automation.',
   startedAt: '2026-04-11',
+  progressLog: 'docs/AUDIT_PROGRESS.md',
   repos: [
-    { name: 'novakash', branch: 'develop', head: '1313b04' },
-    { name: 'novakash-timesfm-repo', branch: 'main', head: '72f234e' },
+    { name: 'novakash', branch: 'develop', head: '6816f86' },
+    { name: 'novakash-timesfm-repo', branch: 'main', head: 'af51523' },
   ],
 };
 
@@ -105,6 +106,13 @@ const CATEGORIES = [
     color: T.green,
     description:
       'V4Panel landed in PR #22 on the /margin page. This audit page ships next. Both observe paper-mode margin_engine; the Polymarket engine has no equivalent surface.',
+  },
+  {
+    id: 'ci-cd',
+    title: 'CI/CD · Montreal Automation',
+    color: '#f97316',
+    description:
+      'docs/CI_CD.md (6816f86) explicitly flags engine/ as the only major service without a GitHub Actions deploy workflow. The deploy-macro-observer.yml ~200-line template is the canonical pattern to port. Engine currently relies on Railway git-watcher auto-deploy with no smoke test, no secrets check, no post-deploy health probe, no rollback, and has been observed CRASHED in recent history.',
   },
 ];
 
@@ -186,36 +194,42 @@ const TASKS = [
     id: 'PE-01',
     category: 'production-errors',
     severity: 'HIGH',
-    status: 'OPEN',
+    status: 'DONE',
     title: 'clob_feed.write_error — 1090/hour since 2026-04-07',
     files: [
       { path: 'engine/data/feeds/clob_feed.py', line: 130, repo: 'novakash' },
     ],
     evidence: [
       'Error: "the server expects 10 arguments for this query, 11 were passed"',
-      'clob_book_snapshots INSERT has 11 column names, VALUES (NOW(), $1..$10) has 10 slots + literal, but call passes 11 positional args',
-      'clob_book_snapshots row count currently 0 (table never populated)',
+      'clob_book_snapshots INSERT column list was missing `ts` — 11 columns vs 11 Python args while VALUES had only $1..$10',
+      'clob_book_snapshots row count was 0 for 4 days (silent since 2026-04-07)',
       'Bug introduced in commit e3d026c 2026-04-07 — not a PR #18 regression',
-      'Primary ticks_clob INSERT (lines 112-127) still succeeds; only comprehensive snapshot table is dead',
+      'Primary ticks_clob INSERT (lines 112-127) was always fine; only comprehensive snapshot table was dead',
     ],
-    fix: 'Add `ts,` at the top of column list (line 133), change `$10` to `$11` in VALUES clause. Five-character diff.',
+    fix: 'Add `ts,` at the top of column list, add `$11` to VALUES clause. Now matches the 12-column / 12-value / 11-param pattern of the ticks_clob INSERT above.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Fixed in PR #26 rev-2. 15-line diff in engine/data/feeds/clob_feed.py with inline comment tagging PE-01. Needs deploy-engine workflow + Montreal restart to verify clob_book_snapshots row count > 0.' },
+    ],
   },
   {
     id: 'PE-02',
     category: 'production-errors',
     severity: 'MEDIUM',
-    status: 'OPEN',
+    status: 'DONE',
     title: 'reconciler.resolve_db_error — PR #18 regression (4/hour)',
     files: [
       { path: 'engine/reconciliation/reconciler.py', line: 765, repo: 'novakash' },
     ],
     evidence: [
       'Error: "inconsistent types deduced for parameter $1 — text versus character varying"',
-      'Bidirectional prefix-match LIKE pattern uses $1 and $2 instead of $1::text in both sides',
-      'Working pattern at lines 185-186 uses single parameter with single match',
-      'Each failure is a silent reconciler match miss for the runtime fast-path',
+      'Bidirectional prefix-match LIKE used $1 and $2 instead of $1::text in both sides',
+      'Working pattern at lines 185-186 uses single parameter with explicit cast',
+      'Each failure was a silent reconciler match miss for the runtime fast-path',
     ],
-    fix: 'Replace `LIKE $1 || \'%\' OR $2 LIKE metadata->>\'token_id\' || \'%\'` with `LIKE $1::text || \'%\' OR $1::text LIKE metadata->>\'token_id\' || \'%\'` (single parameter, explicit cast). Match the pattern already used at lines 185-186.',
+    fix: 'Replaced `LIKE $1 || \'%\' OR $2 LIKE metadata->>\'token_id\' || \'%\'` with `LIKE $1::text || \'%\' OR $1::text LIKE metadata->>\'token_id\' || \'%\'`. Single parameter, explicit cast, matches the working pattern at lines 185-186.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Fixed in PR #26 rev-2 alongside PE-01. Needs engine restart via scripts/restart_engine.sh to clear the error stream. Will be verified automatically once CI-01 lands and every deploy runs a post-deploy error-signature probe.' },
+    ],
   },
   {
     id: 'PE-03',
@@ -440,7 +454,7 @@ const TASKS = [
     id: 'FE-02',
     category: 'frontend',
     severity: 'MEDIUM',
-    status: 'IN_PROGRESS',
+    status: 'DONE',
     title: 'Audit checklist page (this page)',
     files: [
       { path: 'frontend/src/pages/AuditChecklist.jsx', line: 1, repo: 'novakash' },
@@ -450,9 +464,14 @@ const TASKS = [
     evidence: [
       'New /audit route with static task data',
       'Categorized checklist with severity, status, file:line citations',
-      'Will deploy automatically on push to develop via deploy-frontend.yml',
+      'Deploys automatically on push to develop via deploy-frontend.yml',
+      'Rev-2 adds progressNotes rendering, CI/CD category, 5 new tasks (CI-01, FE-04..07), and docs/AUDIT_PROGRESS.md pointer',
     ],
-    fix: 'Ship in current PR. Marks IN_PROGRESS until CI confirms the build and AWS serves the page.',
+    fix: 'Shipped in PR #26. Rev-2 adds the progress tracking mechanism and the CI/CD + v1-v4 surface task seeds requested in the 2026-04-11 session.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'PR #26 opened; local vite build green; rendered end-to-end via playwright on the dev server and confirmed filter + expand interactions. Merged → deploy-frontend.yml serves it at /audit on ${AWS_FRONTEND_HOST}.' },
+      { date: '2026-04-11', note: 'Rev-2: progressNotes rendering added, new CI-CD category, CI-01 + FE-04..07 seeded, PE-01/PE-02/FE-02 marked DONE with completion notes.' },
+    ],
   },
   {
     id: 'FE-03',
@@ -470,6 +489,107 @@ const TASKS = [
       'Operator has to cross-check logs to understand why a trade was skipped',
     ],
     fix: 'After V4-01 lands, build a Polymarket mirror of V4Panel showing what the engine saw when it skipped/entered a window.',
+  },
+  {
+    id: 'FE-04',
+    category: 'frontend',
+    severity: 'MEDIUM',
+    status: 'OPEN',
+    title: 'V1 data surface page (/data/v1) — legacy timesfm point forecast',
+    files: [
+      { path: 'frontend/src/pages/data-surfaces/V1Surface.jsx', line: 1, repo: 'novakash' },
+      { path: 'hub/api/margin.py', line: 105, repo: 'novakash' },
+    ],
+    evidence: [
+      'No frontend page currently shows the original v1 TimesFM point forecast (direction + confidence)',
+      '/timesfm page is about v2 probability, not the v1 raw forecast',
+      'Operators cannot see what v1 was predicting without log hunting',
+    ],
+    fix: 'New /data/v1 page rendering asset selector + 60-step point forecast line chart + confidence bars + the last 10 v1 predictions vs oracle outcomes. Proxy through hub/api/margin.py → timesfm /v1/forecast or nearest equivalent. Reuse the margin-engine dark theme (T constants).',
+  },
+  {
+    id: 'FE-05',
+    category: 'frontend',
+    severity: 'MEDIUM',
+    status: 'OPEN',
+    title: 'V2 data surface page (/data/v2) — LightGBM probability + quantiles',
+    files: [
+      { path: 'frontend/src/pages/data-surfaces/V2Surface.jsx', line: 1, repo: 'novakash' },
+      { path: 'hub/api/margin.py', line: 105, repo: 'novakash' },
+      { path: 'app/v2_routes.py', line: 1, repo: 'novakash-timesfm-repo' },
+    ],
+    evidence: [
+      '/v2/probability returns LightGBM calibrated scalar + full quantile surface',
+      'Current /timesfm page exists but is cramped and mixes v2 with other concerns',
+      'No way to visually diagnose v2 constant-leaf / train-serve skew at a glance (which was the v5 cutover bug)',
+    ],
+    fix: 'New /data/v2 page: 5m/15m/1h timescale tabs; p_up gauge; raw vs calibrated probability; quantile fan chart (p10/p25/p50/p75/p90); push-mode feature table showing the 25 v5 features that were actually sent to the scorer; last 20 predictions with hit/miss. Expose model_version, feature_sha, last_inference_ms, and raw probability variance over the last 1000 inferences so drift is visible.',
+  },
+  {
+    id: 'FE-06',
+    category: 'frontend',
+    severity: 'MEDIUM',
+    status: 'OPEN',
+    title: 'V3 data surface page (/data/v3) — composite signal + regime',
+    files: [
+      { path: 'frontend/src/pages/data-surfaces/V3Surface.jsx', line: 1, repo: 'novakash' },
+      { path: 'hub/api/margin.py', line: 105, repo: 'novakash' },
+    ],
+    evidence: [
+      '/v3/snapshot already proxied in hub/api/margin.py:105 and consumed by SignalPanel',
+      'SignalPanel shows the 7 sub-signals but not the full 9-timescale composite map',
+      'Cascade exhaustion_t, alignment across timescales, and v3 regime classifier logic are not surfaced',
+    ],
+    fix: 'New /data/v3 page: 9-timescale heatmap of composite_v3; 7-signal radar chart per timescale (elm/cascade/taker/oi/funding/vpin/momentum); cascade FSM timeline with exhaustion_t; regime history strip (NORMAL/TRANSITION/CASCADE/CHOPPY/NO_EDGE); alignment bar across short-term timescales. Makes the v3 regime classifier inspectable without reading Python source.',
+  },
+  {
+    id: 'FE-07',
+    category: 'frontend',
+    severity: 'HIGH',
+    status: 'DONE',
+    title: 'V4 data surface page (/data/v4) — fusion snapshot + per-source health',
+    files: [
+      { path: 'frontend/src/pages/data-surfaces/V4Surface.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/App.jsx', line: 34, repo: 'novakash' },
+      { path: 'frontend/src/components/Layout.jsx', line: 40, repo: 'novakash' },
+      { path: 'hub/api/margin.py', line: 125, repo: 'novakash' },
+    ],
+    evidence: [
+      '/v4/snapshot is the richest surface in the stack and was previously only embedded in /margin',
+      'New /data/v4 page polls /api/v4/snapshot every 4s with asset selector (BTC/ETH/SOL/XRP)',
+      'ConsensusStrip: per-source chips with price + age_ms, max/mean divergence, agreement score, safe_to_trade verdict',
+      'MacroCard: Qwen bias + confidence + direction gate + size/threshold modifiers + reasoning + per-timescale bias map',
+      'EventsTimeline: upcoming macro events coloured by impact (EXTREME/HIGH/MEDIUM/LOW) with minutes-to-go',
+      'Per-timescale grid: p_up vs raw, expected_move, vol_forecast, compact quantile fan (p10-p50-p90), regime + cascade + conviction chips, gate-stack reason line',
+      'Raw JSON peek at the bottom for diagnostics',
+    ],
+    fix: 'Shipped the dedicated /data/v4 page in PR #26 rev-2. Next: FE-04/05/06 (v1, v2, v3 equivalents). Stretch: wire /v4/orderflow liquidation pressure into the footer once the assembler exposes it reliably.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Built in PR #26 rev-2 alongside the checklist extension. Reuses the theme tokens from V4Panel but gets the full viewport. Nav entry "V4 Fusion 🧭" added under ANALYSIS in the sidebar, route /data/v4 wired in App.jsx. Data path: useApi → /api/v4/snapshot → hub/api/margin.py:125 → TIMESFM_URL /v4/snapshot.' },
+    ],
+  },
+
+  // ── ci-cd ───────────────────────────────────────────────────────────────
+  {
+    id: 'CI-01',
+    category: 'ci-cd',
+    severity: 'HIGH',
+    status: 'OPEN',
+    title: 'Montreal CI/CD automation for engine/ (port deploy-macro-observer.yml pattern)',
+    files: [
+      { path: 'docs/CI_CD.md', line: 20, repo: 'novakash' },
+      { path: '.github/workflows/deploy-macro-observer.yml', line: 1, repo: 'novakash' },
+      { path: '.github/workflows/deploy-engine.yml', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'docs/CI_CD.md (6816f86) flags engine/ as "the only major service without a GitHub Actions deploy workflow"',
+      'Engine currently relies on Railway git-watcher auto-deploy with no smoke test, no secrets check, no post-deploy health probe, no rollback path',
+      'docs/CI_CD.md: "has been observed CRASHED or FAILED in recent deploy history"',
+      'deploy-macro-observer.yml is the canonical template (~200 lines, well-commented)',
+      'Same Montreal box (3.98.114.0) already used by timesfm-service + macro-observer + data-collector; proven deploy pattern',
+      'scripts/restart_engine.sh already encapsulates the process restart — CI can just SSH and run it',
+    ],
+    fix: 'Create .github/workflows/deploy-engine.yml mirroring deploy-macro-observer.yml: (1) Require runtime secrets step; (2) base64 SSH key decode; (3) rsync engine/ to /home/novakash/novakash/engine with --exclude .env; (4) template .env from GitHub Actions secrets via sudo tee; (5) invoke scripts/restart_engine.sh via ssh; (6) post-deploy health probe checking sudo systemctl is-active OR pgrep python3.*engine.*main.py; (7) grep last 5 min of engine.log for known error signatures (clob_feed.write_error, reconciler.resolve_db_error, evaluate.price_source_disagreement) and fail the deploy if counts exceed thresholds; (8) tail 30 log lines for success diagnostics. Gate to push events on develop with path filter `engine/**`. Add concurrency group to prevent racing rsyncs. Add ENGINE_HOST + ENGINE_SSH_KEY secrets to billybrichards/novakash.',
   },
 ];
 
@@ -651,7 +771,7 @@ function TaskCard({ task, categoryColor }) {
             </ul>
           </div>
 
-          <div>
+          <div style={{ marginBottom: task.progressNotes?.length ? 10 : 0 }}>
             <div
               style={{
                 fontSize: 8,
@@ -677,6 +797,65 @@ function TaskCard({ task, categoryColor }) {
               {task.fix}
             </div>
           </div>
+
+          {task.progressNotes && task.progressNotes.length > 0 && (
+            <div>
+              <div
+                style={{
+                  fontSize: 8,
+                  color: T.textMuted,
+                  fontWeight: 800,
+                  letterSpacing: '0.08em',
+                  marginBottom: 4,
+                }}
+              >
+                PROGRESS LOG
+              </div>
+              <div
+                style={{
+                  padding: '6px 8px',
+                  background: 'rgba(168,85,247,0.05)',
+                  border: '1px solid rgba(168,85,247,0.15)',
+                  borderRadius: 4,
+                }}
+              >
+                {task.progressNotes.map((entry, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      display: 'flex',
+                      gap: 8,
+                      alignItems: 'flex-start',
+                      marginBottom:
+                        i === task.progressNotes.length - 1 ? 0 : 6,
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 9,
+                        color: T.purple,
+                        fontFamily: T.mono,
+                        fontWeight: 800,
+                        whiteSpace: 'nowrap',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {entry.date}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 10,
+                        color: T.text,
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      {entry.note}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

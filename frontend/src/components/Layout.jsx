@@ -37,6 +37,7 @@ const NAV_SECTIONS = [
     color: '#06b6d4',
     items: [
       { path: '/timesfm',         label: 'TimesFM v2', icon: '🔮', highlight: true },
+      { path: '/data/v4',         label: 'V4 Fusion',  icon: '🧭', highlight: true, isNew: true },
       { path: '/indicators',      label: 'Indicators', icon: '📈', highlight: true },
       { path: '/windows',         label: 'Window Results', icon: '📊', highlight: true },
       { path: '/strategy',        label: 'Strategy Analysis', icon: '🧪', highlight: true },
