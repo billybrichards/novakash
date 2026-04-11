@@ -1378,6 +1378,11 @@ class DBClient:
                     ("polymarket_last_verified_at", "TIMESTAMPTZ"),
                     ("sot_reconciliation_state", "TEXT"),
                     ("sot_reconciliation_notes", "TEXT"),
+                    # POLY-SOT-d: on-chain Polygon tx hash (from poly_fills).
+                    # NULL until the reconciler matches this row to a
+                    # poly_fills row. The tx hash is the cryptographic proof
+                    # that the fill actually landed on-chain.
+                    ("polymarket_tx_hash", "TEXT"),
                 ]:
                     await conn.execute(
                         f"ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS {col} {col_type}"
@@ -1389,6 +1394,13 @@ class DBClient:
                 await conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_manual_trades_sot_state "
                     "ON manual_trades(sot_reconciliation_state) WHERE sot_reconciliation_state IS NOT NULL"
+                )
+                # POLY-SOT-d: partial index on non-NULL tx hashes so the
+                # audit path (show the on-chain proof for a specific trade)
+                # stays cheap.
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_manual_trades_tx_hash "
+                    "ON manual_trades(polymarket_tx_hash) WHERE polymarket_tx_hash IS NOT NULL"
                 )
             log.info("db.manual_trades_sot_columns_ensured")
         except Exception as exc:
@@ -1538,6 +1550,9 @@ class DBClient:
                     ("polymarket_last_verified_at", "TIMESTAMPTZ"),
                     ("sot_reconciliation_state", "TEXT"),
                     ("sot_reconciliation_notes", "TEXT"),
+                    # POLY-SOT-d: on-chain Polygon tx hash (from poly_fills).
+                    # See manual_trades ensure method for the full rationale.
+                    ("polymarket_tx_hash", "TEXT"),
                 ]:
                     await conn.execute(
                         f"ALTER TABLE trades ADD COLUMN IF NOT EXISTS {col} {col_type}"
@@ -1549,6 +1564,11 @@ class DBClient:
                 await conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_trades_sot_state "
                     "ON trades(sot_reconciliation_state) WHERE sot_reconciliation_state IS NOT NULL"
+                )
+                # POLY-SOT-d: partial index on non-NULL tx hashes.
+                await conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_trades_tx_hash "
+                    "ON trades(polymarket_tx_hash) WHERE polymarket_tx_hash IS NOT NULL"
                 )
             log.info("db.trades_sot_columns_ensured")
         except Exception as exc:
