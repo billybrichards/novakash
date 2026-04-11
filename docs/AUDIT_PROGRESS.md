@@ -46,6 +46,40 @@ Deep clean-architect audit covering:
 - Both fixes ship in the same PR #26 rev-2 as the checklist update to avoid deploy races. Neither is verified in production until CI-01 lands (see below) — until then, verification is a manual `scripts/restart_engine.sh` via Montreal rules + `journalctl -u` tail.
 - **FE-02 DONE** — audit checklist page is live locally (`npm run build` green, rendered end-to-end via playwright against the dev server, filter + expand interactions confirmed). Merge of PR #26 lands it at `/audit` on the AWS frontend host.
 
+### 2026-04-11 — STOP-01 emergency: live trading paused + lesson about DB-backed mode toggle
+
+**User reported 14:56 UTC**: "please pause live trading till we have finished our fixes we are making some really terrible trade decisions". Specifically flagged the pattern: "a DOWN after 2 consecutive previous UP markets and other indicators in my view felt obvious it was either going up or down when we voted up or down respectively".
+
+**First pause attempt — FAILED**:
+1. SSH Montreal + set `LIVE_TRADING_ENABLED=false` + `PAPER_MODE=true` in `/home/novakash/novakash/engine/.env`
+2. Call `scripts/restart_engine.sh` — wrapper hung at the "restarting engine" step (SSH session backgrounded)
+3. After a long delay, the restart completed and the engine came back... **but auto-switched PAPER → LIVE at 15:06 UTC** per the user's Telegram screenshot. Config showed `v7.1 | Gate: 0.45 | Cap: $0.70 | Bet: 10%` — an OLD trading_config.
+
+**Root cause of the auto-revert**: `engine/strategies/orchestrator.py:1755` has a mode-sync heartbeat that reads `system_state.paper_enabled` + `system_state.live_enabled` from the DB on every tick and overrides the in-memory `paper_mode` accordingly. The `.env` value is ignored if the DB says otherwise. This is how the UI toggle works — the frontend flips the DB row, the engine picks it up on next heartbeat, and the mode switches. It's a feature, not a bug, but it means **flipping the `.env` alone is not sufficient to pause trading** — you must also update the DB.
+
+**Second pause attempt — SUCCESS**:
+1. `pkill -9 -f "python3 main.py"` via SSH — engine process gone
+2. User manually flipped the UI toggle → updated `system_state.paper_enabled=true/live_enabled=false` in DB at 14:08:43 UTC
+3. Restarted engine inline (bypassing the hanging wrapper) — PID 13549 at 14:10:48 UTC
+4. Verified: `system_state` row shows `paper_enabled=t/live_enabled=f`, 0 `is_live` trades in last 5 min, `place_order.requested paper_mode=True` + `place_order.paper_filled` log lines confirm paper simulation
+
+**Lesson learned — to be documented in the SPARTA guide**: the correct pause procedure is:
+
+1. Flip the UI toggle at `/system` OR directly `UPDATE system_state SET paper_enabled=true, live_enabled=false WHERE id = (SELECT id FROM system_state ORDER BY id DESC LIMIT 1);`
+2. Optionally also flip `.env` for belt-and-braces on next restart
+3. Optionally `pkill` the engine to force an immediate heartbeat (within 60s otherwise)
+4. Verify with `SELECT COUNT(*) FROM trades WHERE is_live=true AND created_at > NOW() - INTERVAL '5 minutes';` — expect 0
+
+Flipping `.env` alone is insufficient because the DB-backed mode heartbeat overrides it.
+
+**New scope added to the checklist**:
+- **STOP-01 DONE** — this incident, with root-cause + lesson
+- **LT-02 HIGH OPEN** — live trade panel reported broken by user; full flow exists in code (ManualTradePanel → /v58/manual-trade → manual_trades.status=pending_live → engine poll → polymarket_client) but something is silently failing in practice
+- **LT-03 HIGH OPEN** — decision-snapshot DB for manual trades (operator-vs-engine ground truth)
+- **UI-02 MEDIUM OPEN** — multi-market HQ monitors for BTC/ETH/SOL/XRP × 5m/15m (deferred behind LT-02)
+- **NT-01 DONE** — PR #36 merged at b35163d
+- **DQ-06 DONE** — PR #35 merged at 1c5b047, deploy-margin-engine.yml fired green
+
 ### 2026-04-11 — Agent D (DQ-05 investigation) report
 
 **VERDICT: DQ-05 is a false alarm as literally stated, but Agent D discovered a bigger bug (DQ-06) and recommended a defensive fix (DQ-07).**
