@@ -82,6 +82,34 @@ async def run() -> None:
     effective_spread_bps: float | None = None
 
     if paper and venue == "binance":
+        # DQ-06: This branch is intentionally broken. PaperExchangeAdapter is
+        # constructed without a price_getter, so its _last_price stays at the
+        # 80000.0 class default forever and every paper fill prices against a
+        # frozen $80k constant — producing garbage validation PnL.
+        #
+        # The fix is not to wire a Binance spot price feed here (that would
+        # give us paper-mode Binance PnL, but we validate against Hyperliquid
+        # perp, so it's the wrong unit). The fix is to make sure the operator
+        # never lands in this branch: the CI deploy workflow now templates
+        # MARGIN_EXCHANGE_VENUE=hyperliquid on every deploy, and settings.py's
+        # default is "hyperliquid".
+        #
+        # If we still get here, something is wrong on the host. Fail loud
+        # instead of silently burning validation PnL. The operator should
+        # either (a) set MARGIN_EXCHANGE_VENUE=hyperliquid in the .env and
+        # restart, or (b) explicitly set MARGIN_ALLOW_BROKEN_PAPER_BINANCE=1
+        # for a one-off case where they genuinely want the frozen-$80k behavior.
+        import os
+        if os.environ.get("MARGIN_ALLOW_BROKEN_PAPER_BINANCE") != "1":
+            raise RuntimeError(
+                "margin_engine: paper+binance wiring is broken (DQ-06). "
+                "PaperExchangeAdapter has no price_getter on this branch, "
+                "so _last_price stays stuck at the 80000.0 default and all "
+                "paper fills price against a frozen constant. Set "
+                "MARGIN_EXCHANGE_VENUE=hyperliquid in /opt/margin-engine/.env "
+                "and restart. Override with MARGIN_ALLOW_BROKEN_PAPER_BINANCE=1 "
+                "only if you explicitly want the broken behavior."
+            )
         from margin_engine.adapters.exchange.paper import PaperExchangeAdapter
         effective_fee_rate = settings.effective_paper_fee_rate
         effective_spread_bps = settings.effective_paper_spread_bps
@@ -91,8 +119,10 @@ async def run() -> None:
             fee_rate=effective_fee_rate,
         )
         price_feed_source = "internal"
-        logger.info(
-            "Using PAPER exchange (Binance model): fee=%.5f/side spread=%.2fbp",
+        logger.warning(
+            "DQ-06: Using PAPER exchange (Binance model) with frozen $80k price — "
+            "MARGIN_ALLOW_BROKEN_PAPER_BINANCE=1 override is set. "
+            "fee=%.5f/side spread=%.2fbp",
             effective_fee_rate, effective_spread_bps,
         )
 

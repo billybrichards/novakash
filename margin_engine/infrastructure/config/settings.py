@@ -28,7 +28,17 @@ class MarginSettings(BaseSettings):
     # Which execution venue we model (paper) or trade on (live). Orthogonal to
     # paper_mode — see the 2x2 matrix in main.py. Only "binance" has a live
     # adapter today; "hyperliquid" is paper-only until the signing layer lands.
-    exchange_venue: str = "binance"
+    #
+    # DQ-06: defaults to "hyperliquid" because the paper+binance branch in
+    # main.py constructs PaperExchangeAdapter WITHOUT a price_getter, so
+    # _last_price stays stuck at the 80000.0 class default and every
+    # paper fill prices against a frozen $80k constant — producing garbage
+    # validation PnL. The paper+hyperliquid branch correctly wires
+    # HyperliquidPriceFeed as the price source. User confirmed 2026-04-11
+    # that the paper venue should be hyperliquid. The CI deploy workflow
+    # also explicitly templates MARGIN_EXCHANGE_VENUE=hyperliquid on every
+    # deploy so the host .env stays aligned even if it drifts.
+    exchange_venue: str = "hyperliquid"
 
     # ── Paper exchange fee calibration ──
     # Binance spot margin default ≈ 0.001 per side (0.1%, 20 bps RT).
