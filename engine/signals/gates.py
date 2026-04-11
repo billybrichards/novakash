@@ -279,20 +279,68 @@ class EvalOffsetBoundsGate:
 # ── Source Agreement Gate ───────────────────────────────────────────────────
 
 class SourceAgreementGate:
-    """G1: 2/3 majority vote from Chainlink, Tiingo, Binance.
+    """G1: source agreement vote — direction consensus between price feeds.
 
-    v11.1: Changed from unanimous CL+TI agreement to 2/3 majority.
-    
-    Evidence (Apr 8-10 2026, 7 evaluations):
+    This gate runs in one of two modes, selected at engine start by the
+    `V11_POLY_SPOT_ONLY_CONSENSUS` env var:
+
+    ── Mode A (default, V11_POLY_SPOT_ONLY_CONSENSUS=false) ──
+    2/3 majority vote across Chainlink, Tiingo, and Binance.
+
+    v11.1 ruleset. Introduced to lift the old v11.0 unanimous CL+TI
+    pass rate (56.9%) to 98.2% by adding Binance as a tiebreaker. The
+    assumption was that Binance's systematic DOWN bias (83.1% DOWN
+    calls, see docs/CHANGELOG-v11.1-SOURCE-AGREEMENT-2-3-MAJORITY.md)
+    would be neutralised in aggregate because CL+TI unanimity already
+    captures most valid signals — Binance only tips the vote on
+    windows where CL and TI disagree.
+
+    Issue discovered 2026-04-11: on a CL=UP, TI=DOWN, BIN=DOWN window
+    (19.6% of all evaluations by historical frequency) the 2/3 rule
+    sides with BIN's systematic DOWN and approves a DOWN trade even
+    though one of the two unbiased spot sources was calling UP. The
+    gate uses futures data to break a spot-source tie, and futures
+    has a known structural lean.
+
+    ── Mode B (V11_POLY_SPOT_ONLY_CONSENSUS=true) ──
+    Spot-only consensus: Chainlink + Tiingo only. Both spot feeds
+    must agree on direction or the gate fails with `spot_disagree`.
+
+    Binance spot/futures feeds are STILL READ AND USED by downstream
+    gates and by VPIN / taker-flow / liquidations — this flag only
+    removes Binance from the **consensus vote**, nothing else.
+
+    Activation plan: this ships default OFF so merge is a zero-
+    behaviour-change deploy. Once operator flips the env var on the
+    Montreal host and restarts the engine, Mode B takes effect. If
+    Mode B's pass rate drops too low in live telemetry, operator
+    flips it back to false and we're back on the v11.1 2/3 rule with
+    no code change.
+
+    Evidence snapshot (2026-04-08 → 2026-04-10, 7 evaluations, see
+    v11.1 changelog):
       - CL+TI unanimous: 56.9% pass rate
-      - 2/3 majority: 98.2% pass rate
-      - Binance bias: 83.1% DOWN signals (systematic bias, not market signal)
-      - Most common disagreement: CL=UP, TI=DOWN, BIN=DOWN (19.6% of windows)
-    
-    The 2/3 rule captures valid 2-source agreements while neutralizing
-    Binance's systematic DOWN bias through majority vote.
+      - 2/3 CL+TI+BIN: 98.2% pass rate
+      - Binance: 83.1% DOWN signals (biased, not a market signal)
+
+    Env vars (read at __init__ time, same pattern as
+    EvalOffsetBoundsGate / DeltaMagnitudeGate — operator must restart
+    the engine to pick up flag changes):
+      - `V11_POLY_SPOT_ONLY_CONSENSUS` — master flag for Mode B.
+        Default `false`. Accepts `true`/`false` case-insensitively.
     """
     name = "source_agreement"
+
+    def __init__(self):
+        # Read env at construction time — same pattern as
+        # EvalOffsetBoundsGate at gates.py:196. Flipping the flag
+        # requires an engine restart. This is a deliberate ergonomic
+        # trade: keeps the hot path free of env lookups (one per
+        # window × thousands of windows per day).
+        self._spot_only = (
+            os.environ.get("V11_POLY_SPOT_ONLY_CONSENSUS", "false").lower() == "true"
+        )
+        self._log = log.bind(gate="source_agreement")
 
     async def evaluate(self, ctx: GateContext) -> GateResult:
         if ctx.delta_chainlink is None or ctx.delta_tiingo is None:
@@ -303,6 +351,47 @@ class SourceAgreementGate:
 
         cl_dir = "UP" if ctx.delta_chainlink > 0 else "DOWN"
         ti_dir = "UP" if ctx.delta_tiingo > 0 else "DOWN"
+
+        # ── Mode B: spot-only consensus (V11_POLY_SPOT_ONLY_CONSENSUS=true) ──
+        # Binance is excluded from the vote. The two spot sources must
+        # agree or the gate fails. This is stricter than the 2/3 rule
+        # and matches the pre-v11.1 unanimous CL+TI behaviour, but the
+        # name / reason strings tag it as v11/DQ-01 so operators can
+        # tell from logs which mode the engine is running.
+        if self._spot_only:
+            if cl_dir == ti_dir:
+                agreed_dir = cl_dir
+                ctx.agreed_direction = agreed_dir
+                return GateResult(
+                    passed=True, gate_name=self.name,
+                    reason=f"spot-only {agreed_dir} (CL={cl_dir} TI={ti_dir})",
+                    data={
+                        "mode": "spot_only",
+                        "cl_dir": cl_dir,
+                        "ti_dir": ti_dir,
+                        "direction": agreed_dir,
+                    },
+                )
+            # Spot sources disagree — Binance is intentionally ignored
+            # in this mode, so there is no tiebreaker and the window
+            # is skipped. This is the v11.0 pass/fail boundary.
+            self._log.info(
+                "gate.source_agreement.spot_disagree",
+                mode="spot_only",
+                cl_dir=cl_dir,
+                ti_dir=ti_dir,
+            )
+            return GateResult(
+                passed=False, gate_name=self.name,
+                reason=f"spot disagree: CL={cl_dir} TI={ti_dir} (spot-only mode)",
+                data={
+                    "mode": "spot_only",
+                    "cl_dir": cl_dir,
+                    "ti_dir": ti_dir,
+                },
+            )
+
+        # ── Mode A: 2/3 majority vote (default, v11.1 legacy path) ──
         bin_dir = "UP" if ctx.delta_binance is not None and ctx.delta_binance > 0 else "DOWN"
 
         # Count votes for each direction
