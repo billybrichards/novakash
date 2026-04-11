@@ -1,5 +1,6 @@
 """PostgreSQL Window Repository -- per-aggregate persistence for window data.
 
+Partially implements :class:`engine.domain.ports.WindowStateRepository`.
 Handles all window_snapshots CRUD, shadow trade resolution, post-resolution
 analysis, window predictions, and evaluation tick queries.
 
@@ -19,11 +20,19 @@ from typing import Any, Optional
 import asyncpg
 import structlog
 
+from engine.domain.ports import WindowStateRepository
+from engine.domain.value_objects import WindowKey, WindowOutcome
+
 log = structlog.get_logger(__name__)
 
 
-class PgWindowRepository:
+class PgWindowRepository(WindowStateRepository):
     """asyncpg-backed window snapshot repository.
+
+    Partially implements :class:`WindowStateRepository` -- the
+    ``was_traded``/``mark_traded``/``was_resolved``/``mark_resolved``/
+    ``load_recent_traded`` methods are ``NotImplementedError`` stubs
+    pending Phase 2 migration of the in-memory traded-window sets.
 
     Accepts an ``asyncpg.Pool`` -- the same pool the legacy ``DBClient``
     uses.  Methods copy SQL verbatim from ``db_client.py`` so behaviour
@@ -734,3 +743,56 @@ class PgWindowRepository:
                 """, window_ts, asset, "5m", oracle_winner.upper())
         except Exception as exc:
             log.warning("db.update_prediction_outcome_failed", error=str(exc)[:120])
+
+    # ======================================================================
+    # WindowStateRepository port methods (stubs -- Phase 2)
+    # ======================================================================
+
+    async def was_traded(self, key: WindowKey) -> bool:
+        """Return ``True`` if the given window has already been traded.
+
+        .. note:: Stub -- will be implemented in Phase 2 when the in-memory
+           ``_traded_windows`` set is migrated to PG-backed state.
+        """
+        # TODO: TECH_DEBT - implement once traded-window tracking moves to PG (Phase 2)
+        raise NotImplementedError("PgWindowRepository.was_traded -- Phase 2")
+
+    async def mark_traded(
+        self,
+        key: WindowKey,
+        order_id: str,
+    ) -> None:
+        """Record that a trade was placed for the given window.
+
+        .. note:: Stub -- will be implemented in Phase 2.
+        """
+        # TODO: TECH_DEBT - implement once traded-window tracking moves to PG (Phase 2)
+        raise NotImplementedError("PgWindowRepository.mark_traded -- Phase 2")
+
+    async def was_resolved(self, key: WindowKey) -> bool:
+        """Return ``True`` if the given window has already been resolved.
+
+        .. note:: Stub -- will be implemented in Phase 2.
+        """
+        # TODO: TECH_DEBT - implement once resolution tracking moves to PG (Phase 2)
+        raise NotImplementedError("PgWindowRepository.was_resolved -- Phase 2")
+
+    async def mark_resolved(
+        self,
+        key: WindowKey,
+        outcome: WindowOutcome,
+    ) -> None:
+        """Record the resolution outcome for the given window.
+
+        .. note:: Stub -- will be implemented in Phase 2.
+        """
+        # TODO: TECH_DEBT - implement once resolution tracking moves to PG (Phase 2)
+        raise NotImplementedError("PgWindowRepository.mark_resolved -- Phase 2")
+
+    async def load_recent_traded(self, hours: int) -> set[WindowKey]:
+        """Bulk load at engine startup to warm any in-memory cache.
+
+        .. note:: Stub -- will be implemented in Phase 2.
+        """
+        # TODO: TECH_DEBT - implement once traded-window tracking moves to PG (Phase 2)
+        raise NotImplementedError("PgWindowRepository.load_recent_traded -- Phase 2")
