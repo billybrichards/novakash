@@ -31,7 +31,7 @@ class CLOBFeed:
     def __init__(self, poly_client, db_pool, polymarket_feed=None):
         """
         Args:
-            poly_client: PolymarketClient instance (has _clob_client for book queries)
+            poly_client: PolymarketClient instance (exposes clob_client property for book queries)
             db_pool: asyncpg connection pool for Railway DB writes
             polymarket_feed: Polymarket5MinFeed to get current window token IDs
         """
@@ -69,10 +69,10 @@ class CLOBFeed:
             return
 
         try:
-            if not self._poly._clob_client:
+            if not self._poly.clob_client:
                 return
 
-            client = self._poly._clob_client
+            client = self._poly.clob_client
 
             # Fetch UP token book
             # CLOB asks are sorted DESCENDING — best (lowest) ask is LAST
