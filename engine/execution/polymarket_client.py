@@ -151,6 +151,17 @@ class PolymarketClient:
                     "Set this explicitly to confirm intent before enabling live mode."
                 )
 
+    @property
+    def clob_client(self):
+        """Public read-only accessor for the underlying ClobClient handle.
+
+        Returns None in paper mode or before connect() is called.
+        Prefer high-level methods (place_order, get_order_book_spread, etc.)
+        when possible; this accessor exists for callers like CLOBFeed that
+        need direct book queries.
+        """
+        return self._clob_client
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------

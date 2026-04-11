@@ -1,20 +1,20 @@
 """PostgreSQL Window Repository -- per-aggregate persistence for window data.
 
-Partially implements :class:`engine.domain.ports.WindowStateRepository`.
-Handles all window_snapshots CRUD, shadow trade resolution, post-resolution
+Implements :class:`engine.domain.ports.WindowStateRepository` -- the single
+owner of traded/resolved window state (CA-04, Phase 5).
+
+Also handles all window_snapshots CRUD, shadow trade resolution, post-resolution
 analysis, window predictions, and evaluation tick queries.
 
 Delegates to the **exact same SQL** that ``engine/persistence/db_client.py``
 uses today.  This is a thin structural split -- zero behaviour change.
 
-Phase 2 will wire this into the composition root.  Until then, nothing
-imports this module so there is zero runtime risk.
-
-Audit: CA-01 (Clean Architecture migration -- split god-class DBClient).
+Audit: CA-01 / CA-04 (Clean Architecture migration).
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import asyncpg
@@ -29,10 +29,12 @@ log = structlog.get_logger(__name__)
 class PgWindowRepository(WindowStateRepository):
     """asyncpg-backed window snapshot repository.
 
-    Partially implements :class:`WindowStateRepository` -- the
-    ``was_traded``/``mark_traded``/``was_resolved``/``mark_resolved``/
-    ``load_recent_traded`` methods are ``NotImplementedError`` stubs
-    pending Phase 2 migration of the in-memory traded-window sets.
+    Implements :class:`WindowStateRepository` -- ``was_traded``,
+    ``mark_traded``, ``was_resolved``, ``mark_resolved``, and
+    ``load_recent_traded`` backed by the ``window_states`` table.
+
+    Also retains all legacy window_snapshots / window_predictions
+    methods for backward compatibility.
 
     Accepts an ``asyncpg.Pool`` -- the same pool the legacy ``DBClient``
     uses.  Methods copy SQL verbatim from ``db_client.py`` so behaviour
@@ -747,52 +749,96 @@ class PgWindowRepository(WindowStateRepository):
     # ======================================================================
     # WindowStateRepository port methods (stubs -- Phase 2)
     # ======================================================================
+    # WindowStateRepository implementation (CA-04, Phase 5)
+    # Single owner of traded/resolved state -- replaces triple in-memory sets
+    # ======================================================================
+
+    async def ensure_window_states_table(self) -> None:
+        if not self._pool: return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute("""CREATE TABLE IF NOT EXISTS window_states (
+                    window_key VARCHAR(64) PRIMARY KEY, asset VARCHAR(10) NOT NULL,
+                    window_ts BIGINT NOT NULL, duration_secs INTEGER NOT NULL DEFAULT 300,
+                    traded_at TIMESTAMPTZ, traded_order_id TEXT, resolved_at TIMESTAMPTZ,
+                    resolved_outcome TEXT, resolved_pnl_usd NUMERIC,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+                await conn.execute("""CREATE INDEX IF NOT EXISTS idx_window_states_traded_at
+                    ON window_states (traded_at) WHERE traded_at IS NOT NULL""")
+                await conn.execute("""CREATE INDEX IF NOT EXISTS idx_window_states_resolved_at
+                    ON window_states (resolved_at) WHERE resolved_at IS NOT NULL""")
+                await conn.execute("""CREATE INDEX IF NOT EXISTS idx_window_states_asset_ts
+                    ON window_states (asset, window_ts)""")
+            log.info("db.window_states_table_ensured")
+        except Exception as exc:
+            log.error("db.ensure_window_states_table_failed", error=str(exc)[:200])
 
     async def was_traded(self, key: WindowKey) -> bool:
-        """Return ``True`` if the given window has already been traded.
+        if not self._pool: return False
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM window_states WHERE window_key = )", str(key))
+                return bool(row)
+        except Exception as exc:
+            log.warning("db.was_traded_failed", key=str(key), error=str(exc)[:120])
+            return False
 
-        .. note:: Stub -- will be implemented in Phase 2 when the in-memory
-           ``_traded_windows`` set is migrated to PG-backed state.
-        """
-        # TODO: TECH_DEBT - implement once traded-window tracking moves to PG (Phase 2)
-        raise NotImplementedError("PgWindowRepository.was_traded -- Phase 2")
-
-    async def mark_traded(
-        self,
-        key: WindowKey,
-        order_id: str,
-    ) -> None:
-        """Record that a trade was placed for the given window.
-
-        .. note:: Stub -- will be implemented in Phase 2.
-        """
-        # TODO: TECH_DEBT - implement once traded-window tracking moves to PG (Phase 2)
-        raise NotImplementedError("PgWindowRepository.mark_traded -- Phase 2")
+    async def mark_traded(self, key: WindowKey, order_id: str) -> None:
+        if not self._pool: return
+        key_str = str(key)
+        parts = key_str.rsplit("-", 1)
+        asset = parts[0] if len(parts) == 2 else "BTC"
+        try: window_ts = int(parts[1]) if len(parts) == 2 else 0
+        except ValueError: window_ts = 0
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO window_states (window_key, asset, window_ts, traded_at, traded_order_id)
+                    VALUES (, , , , )
+                    ON CONFLICT (window_key) DO UPDATE
+                        SET traded_order_id = EXCLUDED.traded_order_id
+                        WHERE window_states.traded_order_id IS NULL
+                           OR window_states.traded_order_id = 'pending'
+                """, key_str, asset, window_ts, datetime.now(timezone.utc), order_id)
+            log.debug("db.mark_traded", key=key_str, order_id=order_id[:20] if order_id else None)
+        except Exception as exc:
+            log.warning("db.mark_traded_failed", key=key_str, error=str(exc)[:120])
 
     async def was_resolved(self, key: WindowKey) -> bool:
-        """Return ``True`` if the given window has already been resolved.
+        if not self._pool: return False
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchval("""
+                    SELECT EXISTS(SELECT 1 FROM window_states
+                    WHERE window_key =  AND resolved_at IS NOT NULL)""", str(key))
+                return bool(row)
+        except Exception as exc:
+            log.warning("db.was_resolved_failed", key=str(key), error=str(exc)[:120])
+            return False
 
-        .. note:: Stub -- will be implemented in Phase 2.
-        """
-        # TODO: TECH_DEBT - implement once resolution tracking moves to PG (Phase 2)
-        raise NotImplementedError("PgWindowRepository.was_resolved -- Phase 2")
-
-    async def mark_resolved(
-        self,
-        key: WindowKey,
-        outcome: WindowOutcome,
-    ) -> None:
-        """Record the resolution outcome for the given window.
-
-        .. note:: Stub -- will be implemented in Phase 2.
-        """
-        # TODO: TECH_DEBT - implement once resolution tracking moves to PG (Phase 2)
-        raise NotImplementedError("PgWindowRepository.mark_resolved -- Phase 2")
+    async def mark_resolved(self, key: WindowKey, outcome: WindowOutcome) -> None:
+        if not self._pool: return
+        key_str = str(key)
+        outcome_str = str(outcome) if outcome is not None else None
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE window_states SET resolved_at = \, resolved_outcome =                     WHERE window_key = """, key_str, datetime.now(timezone.utc), outcome_str)
+            log.debug("db.mark_resolved", key=key_str, outcome=outcome_str)
+        except Exception as exc:
+            log.warning("db.mark_resolved_failed", key=key_str, error=str(exc)[:120])
 
     async def load_recent_traded(self, hours: int) -> set[WindowKey]:
-        """Bulk load at engine startup to warm any in-memory cache.
-
-        .. note:: Stub -- will be implemented in Phase 2.
-        """
-        # TODO: TECH_DEBT - implement once traded-window tracking moves to PG (Phase 2)
-        raise NotImplementedError("PgWindowRepository.load_recent_traded -- Phase 2")
+        if not self._pool: return set()
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT window_key FROM window_states
+                    WHERE traded_at > NOW() - (\ || ' hours')::interval""", str(hours))
+                keys: set[WindowKey] = {r["window_key"] for r in rows}
+                log.info("db.load_recent_traded", count=len(keys), hours=hours)
+                return keys
+        except Exception as exc:
+            log.warning("db.load_recent_traded_failed", hours=hours, error=str(exc)[:120])
+            return set()

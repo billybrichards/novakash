@@ -5,10 +5,11 @@ Each sub-package implements one or more domain ports defined in
 
 Sub-packages
 ------------
-alert           Telegram alerter (AlerterPort)
-clock           System clock (Clock)
-consensus       Three-source consensus price feed (ConsensusPricePort)
-market_feed     Market data feed adapters (MarketFeedPort)
+market_feed     Market data feed adapters (Tiingo REST)
 persistence     PostgreSQL repository implementations
-prediction      TimesFM v1/v2 forecast adapters
 """
+
+__all__ = [
+    "market_feed",
+    "persistence",
+]
