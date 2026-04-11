@@ -8,6 +8,7 @@ import ManualTradePanel from './components/ManualTradePanel.jsx';
 import TradeTicker from './components/TradeTicker.jsx';
 import TradeToast from './components/TradeToast.jsx';
 import { T } from './components/constants.js';
+import WindowsTable from '../../components/WindowsTable.jsx';
 
 // UI-02: canonical HQ asset / timeframe sets. Keep in sync with
 // hub/api/v58_monitor.py::_HQ_ASSETS / _HQ_TIMEFRAMES.
@@ -364,6 +365,14 @@ export default function ExecutionHQ() {
       )}
       {(!loading || hqData) && activeTab === 'retro' && (
         <RetroTab windows={windows} shadowStats={shadowStats} v9Stats={v9Stats} v10Stats={v10Stats} recentTrades={hqData?.recent_trades || []} />
+      )}
+
+
+      {/* ─── UI-04: Per-Window Aggregation ──────────────────────────────────── */}
+      {(!loading || hqData) && activeTab === 'retro' && (
+        <div style={{ padding: '0 0 8px', flexShrink: 0 }}>
+          <WindowsTable asset={asset} timeframe={timeframe} limit={50} />
+        </div>
       )}
 
       {/* Trade toast notification (portal) */}

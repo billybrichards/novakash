@@ -3512,3 +3512,411 @@ async def get_wallet_live(
         }
     except Exception as exc:
         return {"wallet": {}, "open_positions": [], "recent_resolved": [], "error": str(exc)}
+
+
+# ─── UI-04: Per-Window Aggregation ────────────────────────────────────────────
+# The engine evaluates each 5-minute window continuously from T-240 down to
+# T-60, firing ~20-40 `signal_evaluations` rows per window. The Factory
+# Floor and Execution HQ surfaces historically rendered those raw eval rows
+# one-per-table-row, which made it impossible to see "what happened for
+# window 18:30 as a whole" at a glance.
+#
+# This endpoint collapses the per-eval rows down to ONE row per window and
+# joins in the market outcome + any trade that fired. The result is a
+# WIN/LOSS/SKIP view that matches how an operator actually thinks about
+# the 5-minute trading cadence.
+#
+# Source: user feedback 2026-04-11 — "those are individual eval signals
+# and not one window (5m) at a time".
+@router.get("/v58/factory-windows")
+async def get_factory_windows(
+    asset: str = Query("btc", description="lowercase asset slug — btc/eth/sol/xrp"),
+    timeframe: str = Query("5m", description="5m or 15m"),
+    limit: int = Query(50, ge=1, le=200, description="number of windows to aggregate"),
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    Per-window aggregation view (UI-04).
+
+    Collapses N eval rows per 5-minute window into a single row showing:
+      - final decision (TRADE / SKIP)
+      - the gate that blocked it (if SKIP)
+      - the actual close direction from market_data
+      - the WIN / LOSS / SKIP result
+      - eval count (how many evals were run on this window)
+      - final v2_probability_up, vpin, regime, direction
+      - optional dune_p_up_trajectory (one value per eval, T-240 -> T-60)
+      - optional trade_row_id + sot_state if a trade actually fired
+
+    Query params:
+      - asset: lowercase slug (btc/eth/sol/xrp). Normalized to uppercase
+        when querying signal_evaluations (the engine writes uppercase).
+      - timeframe: 5m or 15m
+      - limit: 1..200 windows, newest-first
+
+    Returns:
+      {
+        "asset": "btc",
+        "timeframe": "5m",
+        "windows": [ <window row>, ... ],
+        "summary": {
+          "total_windows": N,
+          "trades": T,
+          "skips": S,
+          "wins": W,
+          "losses": L,
+          "skipped_unresolved": U,
+          "win_rate_pct": pct or null,
+        },
+      }
+
+    Notes:
+      - signal_evaluations.window_ts is BIGINT epoch seconds.
+      - signal_evaluations.asset is stored UPPERCASE ("BTC"), so we
+        normalize the incoming lowercase slug.
+      - For each window the "final" eval is the one closest to T-60 (the
+        last eval before the window closes). signal_evaluations.eval_offset
+        is the seconds-to-close, so MIN(eval_offset) is the latest eval.
+      - We pick gate_failed from the LAST eval (closest to close) — the
+        final blocking gate — not the FIRST eval.
+      - Market resolution comes from market_data (populated by the
+        resolver after the 5-minute window closes on Polymarket).
+      - Trades are linked via trades.metadata->>'window_ts' (JSON string)
+        — the same join used elsewhere in this file.
+      - WIN/LOSS is only computed for TRADE decisions where the engine's
+        final_direction matches (WIN) or disagrees (LOSS) with the
+        actual_close_direction from market_data. SKIP decisions render as
+        "SKIP" with no result column.
+    """
+    asset_lower = (asset or "").strip().lower()
+    if asset_lower not in {"btc", "eth", "sol", "xrp"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid asset '{asset}'. Valid: btc, eth, sol, xrp",
+        )
+    if timeframe not in {"5m", "15m"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid timeframe '{timeframe}'. Valid: 5m, 15m",
+        )
+    asset_upper = asset_lower.upper()
+
+    try:
+        # ── Step 1: per-window aggregation of signal_evaluations ───────────
+        # The engine stores one row per (window_ts, asset, timeframe,
+        # eval_offset) tuple. eval_offset counts down from T-240 to T-60,
+        # so MIN(eval_offset) is the LAST eval (closest to window close).
+        # We use a window function + DISTINCT ON equivalent to pick the
+        # last row per window efficiently in one query.
+        agg_q = text("""
+            WITH ranked AS (
+                SELECT
+                    window_ts, asset, timeframe, eval_offset,
+                    decision, gate_passed, gate_failed,
+                    v2_probability_up, v2_direction,
+                    delta_chainlink, delta_tiingo, delta_source,
+                    vpin, regime,
+                    evaluated_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY window_ts
+                        ORDER BY eval_offset ASC, evaluated_at DESC
+                    ) AS rnk,
+                    COUNT(*)  OVER (PARTITION BY window_ts) AS eval_count,
+                    MAX(window_ts) OVER () AS max_ts
+                FROM signal_evaluations
+                WHERE asset = :asset_upper
+                  AND timeframe = :timeframe
+                  AND window_ts IN (
+                      SELECT DISTINCT window_ts
+                      FROM signal_evaluations
+                      WHERE asset = :asset_upper AND timeframe = :timeframe
+                      ORDER BY window_ts DESC
+                      LIMIT :limit
+                  )
+            )
+            SELECT
+                window_ts, asset, timeframe, eval_count, eval_offset AS final_eval_offset,
+                decision AS final_decision, gate_passed AS final_gate_passed,
+                gate_failed AS final_gate_failed,
+                v2_probability_up AS final_v2_p_up,
+                v2_direction AS final_v2_direction,
+                delta_chainlink AS final_delta_cl,
+                delta_tiingo AS final_delta_ti,
+                delta_source AS final_delta_src,
+                vpin AS final_vpin, regime AS final_regime,
+                evaluated_at AS final_evaluated_at
+            FROM ranked
+            WHERE rnk = 1
+            ORDER BY window_ts DESC
+        """)
+        agg_rows = (await session.execute(
+            agg_q,
+            {"asset_upper": asset_upper, "timeframe": timeframe, "limit": limit},
+        )).mappings().all()
+
+        if not agg_rows:
+            return {
+                "asset": asset_lower,
+                "timeframe": timeframe,
+                "windows": [],
+                "summary": {
+                    "total_windows": 0, "trades": 0, "skips": 0,
+                    "wins": 0, "losses": 0, "skipped_unresolved": 0,
+                    "win_rate_pct": None,
+                },
+            }
+
+        window_ts_list = [int(r["window_ts"]) for r in agg_rows]
+
+        # ── Step 2: DUNE probability trajectory for each window ────────────
+        # One P(up) per eval, ordered T-240 -> T-60 so the frontend can
+        # render a mini sparkline. We pull all evals for the window set in
+        # one query and bucket them client-side.
+        traj_q = text("""
+            SELECT window_ts, eval_offset, v2_probability_up
+            FROM signal_evaluations
+            WHERE asset = :asset_upper
+              AND timeframe = :timeframe
+              AND window_ts = ANY(:ts_list)
+            ORDER BY window_ts DESC, eval_offset DESC
+        """)
+        traj_rows = (await session.execute(
+            traj_q,
+            {
+                "asset_upper": asset_upper,
+                "timeframe": timeframe,
+                "ts_list": window_ts_list,
+            },
+        )).mappings().all()
+        trajectories: dict[int, list[float]] = {}
+        for tr in traj_rows:
+            wts = int(tr["window_ts"])
+            p = _safe_float(tr.get("v2_probability_up"))
+            if p is None:
+                continue
+            trajectories.setdefault(wts, []).append(round(float(p), 4))
+
+        # ── Step 3: market outcomes ────────────────────────────────────────
+        # market_data is populated by the resolver after the window closes.
+        # outcome is 'UP' / 'DOWN'. Unresolved windows have outcome = NULL.
+        mkt_q = text("""
+            SELECT window_ts, outcome, open_price, close_price, resolved
+            FROM market_data
+            WHERE asset = :asset_upper
+              AND timeframe = :timeframe
+              AND window_ts = ANY(:ts_list)
+        """)
+        mkt_rows = (await session.execute(
+            mkt_q,
+            {
+                "asset_upper": asset_upper,
+                "timeframe": timeframe,
+                "ts_list": window_ts_list,
+            },
+        )).mappings().all()
+        outcomes_by_ts: dict[int, dict] = {}
+        for mr in mkt_rows:
+            wts = int(mr["window_ts"])
+            outcomes_by_ts[wts] = {
+                "outcome": mr.get("outcome"),
+                "open_price": _safe_float(mr.get("open_price")),
+                "close_price": _safe_float(mr.get("close_price")),
+                "resolved": bool(mr.get("resolved")) if mr.get("resolved") is not None else False,
+            }
+
+        # ── Step 4: matching trades ────────────────────────────────────────
+        # Automatic engine trades link to the window via
+        # metadata->>'window_ts' — use the same pattern as /v58/outcomes
+        # and /v58/execution-hq. Pick the most recent trade per window so
+        # re-fires during the same window collapse to a single row.
+        trd_q = text("""
+            SELECT
+                (metadata::json->>'window_ts')::bigint AS window_ts,
+                MAX(id) AS trade_row_id,
+                MAX(direction) AS trade_direction,
+                MAX(outcome) AS trade_outcome,
+                MAX(sot_reconciliation_state) AS sot_state
+            FROM trades
+            WHERE strategy = 'five_min_vpin'
+              AND metadata IS NOT NULL
+              AND (metadata::json->>'window_ts') IS NOT NULL
+              AND (metadata::json->>'window_ts')::bigint = ANY(:ts_list)
+            GROUP BY (metadata::json->>'window_ts')::bigint
+        """)
+        try:
+            trd_rows = (await session.execute(
+                trd_q, {"ts_list": window_ts_list},
+            )).mappings().all()
+        except Exception:
+            # If the metadata cast blows up (e.g. a row has a non-integer
+            # window_ts in its JSON) fall back to empty trade data rather
+            # than 500 the whole endpoint.
+            trd_rows = []
+        trades_by_ts: dict[int, dict] = {}
+        for tr in trd_rows:
+            wts = int(tr["window_ts"]) if tr.get("window_ts") is not None else None
+            if wts is None:
+                continue
+            trades_by_ts[wts] = {
+                "trade_row_id": int(tr["trade_row_id"]) if tr.get("trade_row_id") is not None else None,
+                "trade_direction": tr.get("trade_direction"),
+                "trade_outcome": tr.get("trade_outcome"),
+                "sot_state": tr.get("sot_state"),
+            }
+
+        # ── Step 5: compose the output rows + summary ──────────────────────
+        windows_out: list[dict] = []
+        summary = {
+            "total_windows": 0,
+            "trades": 0,
+            "skips": 0,
+            "wins": 0,
+            "losses": 0,
+            "skipped_unresolved": 0,
+        }
+
+        for ar in agg_rows:
+            wts = int(ar["window_ts"])
+            decision_raw = (ar.get("final_decision") or "SKIP").upper()
+            is_trade = decision_raw == "TRADE" and bool(ar.get("final_gate_passed"))
+
+            # Derive final_direction: engine's final call. Prefer
+            # v2_direction (explicit UP/DOWN enum) if present, otherwise
+            # derive from v2_probability_up.
+            v2_dir = ar.get("final_v2_direction")
+            p_up_final = _safe_float(ar.get("final_v2_p_up"))
+            final_direction: Optional[str] = None
+            if v2_dir:
+                final_direction = "UP" if str(v2_dir).upper().startswith("UP") else "DOWN"
+            elif p_up_final is not None:
+                final_direction = "UP" if p_up_final >= 0.5 else "DOWN"
+
+            # Blocking gate: the gate_failed field on the LAST eval is the
+            # gate that would have blocked a trade if the pipeline ran to
+            # completion. Only meaningful on SKIP rows.
+            gate_failed_raw = ar.get("final_gate_failed")
+            first_blocking_gate: Optional[str] = None
+            blocking_reason: Optional[str] = None
+            if not is_trade and gate_failed_raw:
+                first_blocking_gate = str(gate_failed_raw)
+                # Human-readable reason hint — for DUNE gate, surface the
+                # P(dir) shortfall which is by far the most common block.
+                if "dune" in first_blocking_gate.lower() and p_up_final is not None:
+                    p_dir = max(p_up_final, 1.0 - p_up_final)
+                    blocking_reason = f"DUNE P(dir)={p_dir:.3f} < 0.65"
+                elif "delta" in first_blocking_gate.lower():
+                    dcl = _safe_float(ar.get("final_delta_cl"))
+                    if dcl is not None:
+                        blocking_reason = f"delta_cl={dcl * 100:.3f}% below threshold"
+                    else:
+                        blocking_reason = "delta below threshold"
+                elif "source_agreement" in first_blocking_gate.lower():
+                    blocking_reason = "Chainlink + Tiingo disagree on direction"
+                elif "vpin" in first_blocking_gate.lower():
+                    vp = _safe_float(ar.get("final_vpin"))
+                    blocking_reason = f"VPIN={vp:.3f} < gate 0.45" if vp is not None else "VPIN below gate"
+                else:
+                    blocking_reason = first_blocking_gate.replace("_", " ")
+
+            # Market outcome
+            outcome_row = outcomes_by_ts.get(wts) or {}
+            actual_close_direction = outcome_row.get("outcome")
+            if actual_close_direction:
+                actual_close_direction = str(actual_close_direction).upper()
+
+            # Trade row
+            trade_row = trades_by_ts.get(wts) or {}
+
+            # WIN/LOSS/SKIP result
+            result: Optional[str] = None
+            if is_trade:
+                summary["trades"] += 1
+                # Prefer the trade's own outcome column if resolver wrote
+                # it; otherwise fall back to market_data direction match.
+                trade_outcome_val = trade_row.get("trade_outcome")
+                if trade_outcome_val:
+                    tov = str(trade_outcome_val).upper()
+                    if "WIN" in tov:
+                        result = "WIN"
+                    elif "LOSS" in tov or "LOSE" in tov:
+                        result = "LOSS"
+                if result is None and actual_close_direction and final_direction:
+                    result = "WIN" if actual_close_direction == final_direction else "LOSS"
+                if result == "WIN":
+                    summary["wins"] += 1
+                elif result == "LOSS":
+                    summary["losses"] += 1
+            else:
+                summary["skips"] += 1
+                if actual_close_direction is None:
+                    summary["skipped_unresolved"] += 1
+                result = "SKIP"
+
+            summary["total_windows"] += 1
+
+            # ISO window_start (UTC)
+            try:
+                window_start_iso = datetime.fromtimestamp(wts, tz=timezone.utc).isoformat()
+            except Exception:
+                window_start_iso = None
+
+            final_evaluated_at = ar.get("final_evaluated_at")
+            if final_evaluated_at and hasattr(final_evaluated_at, "isoformat"):
+                final_evaluated_iso = final_evaluated_at.isoformat()
+            else:
+                final_evaluated_iso = None
+
+            windows_out.append({
+                "window_ts": wts,
+                "window_start": window_start_iso,
+                "asset": asset_lower,
+                "timeframe": timeframe,
+                "eval_count": int(ar["eval_count"]) if ar.get("eval_count") is not None else 0,
+                "final_decision": "TRADE" if is_trade else "SKIP",
+                "final_direction": final_direction,
+                "first_blocking_gate": first_blocking_gate,
+                "blocking_reason": blocking_reason,
+                "actual_close_direction": actual_close_direction,
+                "result": result,
+                "trade_row_id": trade_row.get("trade_row_id"),
+                "trade_direction": trade_row.get("trade_direction"),
+                "sot_state": trade_row.get("sot_state"),
+                "v2_p_up_final": round(p_up_final, 4) if p_up_final is not None else None,
+                "vpin_final": _safe_float(ar.get("final_vpin")),
+                "regime_final": ar.get("final_regime"),
+                "delta_source_final": ar.get("final_delta_src"),
+                "final_eval_offset": int(ar["final_eval_offset"]) if ar.get("final_eval_offset") is not None else None,
+                "final_evaluated_at": final_evaluated_iso,
+                "open_price": outcome_row.get("open_price"),
+                "close_price": outcome_row.get("close_price"),
+                "dune_p_up_trajectory": trajectories.get(wts, []),
+            })
+
+        wins_plus_losses = summary["wins"] + summary["losses"]
+        summary["win_rate_pct"] = (
+            round(summary["wins"] / wins_plus_losses * 100, 1)
+            if wins_plus_losses > 0 else None
+        )
+
+        return {
+            "asset": asset_lower,
+            "timeframe": timeframe,
+            "windows": windows_out,
+            "summary": summary,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("v58.factory_windows_error", error=str(exc)[:200])
+        return {
+            "asset": asset_lower,
+            "timeframe": timeframe,
+            "windows": [],
+            "summary": {
+                "total_windows": 0, "trades": 0, "skips": 0,
+                "wins": 0, "losses": 0, "skipped_unresolved": 0,
+                "win_rate_pct": None,
+            },
+            "error": str(exc)[:200],
+        }

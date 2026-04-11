@@ -11,6 +11,7 @@ import React, {
   useState, useEffect, useCallback, useMemo,
 } from 'react';
 import { useApi } from '../hooks/useApi.js';
+import WindowsTable from '../components/WindowsTable.jsx';
 
 // ─── Theme tokens (same as V58Monitor) ───────────────────────────────────────
 const T = {
@@ -1570,6 +1571,12 @@ export default function FactoryFloor() {
           <div style={{ fontSize: 11, color: T.label, padding: '10px 0' }}>No recent outcomes</div>
         )}
       </Card>
+
+
+      {/* ─── SECTION 4b: Per-Window Aggregation (UI-04) ────────────────────── */}
+      <div style={{ marginBottom: 20 }}>
+        <WindowsTable asset="btc" timeframe="5m" limit={50} />
+      </div>
 
       {/* ─── SECTION 5: Bottom Stats Row ───────────────────────────────────── */}
       <div className="ff-bottom-row" style={{
