@@ -26,7 +26,10 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Optional, Callable, Awaitable
+from typing import Optional, Callable, Awaitable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from engine.domain.ports import WindowStateRepository
 
 import structlog
 
@@ -113,6 +116,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         twap_tracker: Optional[TWAPTracker] = None,
         timesfm_client: Optional[TimesFMClient] = None,
         tiingo_adapter=None,  # CA-02: Optional TiingoRestAdapter (MarketFeedPort)
+        window_state_repo: Optional["WindowStateRepository"] = None,  # CA-04: Phase 5 dual-write
     ) -> None:
         super().__init__(
             name="five_min_vpin",
@@ -130,6 +134,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._twap = twap_tracker  # v5.7: TWAP-delta direction tracker
         self._timesfm = timesfm_client  # v6.0 — DEPRECATED: use .timesfm_client / .set_timesfm_client()
         self._tiingo_adapter = tiingo_adapter  # CA-02: TiingoRestAdapter (MarketFeedPort) for candle delta
+        self._window_state = window_state_repo  # CA-04: Phase 5 WindowStateRepository (dual-write)
         self._timesfm_v2 = None  # v8.1 — DEPRECATED: use .timesfm_v2_client / .set_timesfm_v2_client()
         self._tick_recorder = None  # DEPRECATED: use .set_tick_recorder()
         self._evaluator = WindowEvaluator()
@@ -816,6 +821,12 @@ class FiveMinVPINStrategy(BaseStrategy):
                 # Mark window as traded (dedup for subsequent 2s evals + restart survival)
                 self._traded_windows.add(_window_key_v10)
                 self._last_executed_window = _window_key_v10  # backward compat
+                # CA-04 Phase 5: dual-write to WindowStateRepository (alongside in-memory set)
+                if self._window_state is not None:
+                    try:
+                        await self._window_state.mark_traded(_window_key_v10, "pending")
+                    except Exception as _ws_exc:
+                        self._log.warning("window_state.mark_traded_failed", key=_window_key_v10, error=str(_ws_exc)[:80])
 
                 # v10.3: extract gate data for Telegram alerts + DB logging
                 _v103_gate_data = {}
@@ -2125,6 +2136,12 @@ class FiveMinVPINStrategy(BaseStrategy):
         # Track executed window (DB-backed dedup — survives restarts)
         self._traded_windows.add(window_key)
         self._last_executed_window = window_key  # backward compat
+        # CA-04 Phase 5: dual-write to WindowStateRepository (alongside in-memory set)
+        if self._window_state is not None:
+            try:
+                await self._window_state.mark_traded(window_key, "pending")
+            except Exception as _ws_exc:
+                self._log.warning("window_state.mark_traded_failed", key=window_key, error=str(_ws_exc)[:80])
 
     def _evaluate_signal(
         self,
@@ -2811,6 +2828,15 @@ class FiveMinVPINStrategy(BaseStrategy):
         
         # Use the real CLOB order ID so we can track it on-chain
         order_id = clob_order_id if not self._poly.paper_mode else f"5min-{uuid.uuid4().hex[:12]}"
+
+
+        # CA-04 Phase 5: dual-write with real order_id (upserts over "pending")
+        if self._window_state is not None:
+            _wk = f"{window.asset}-{window.window_ts}"
+            try:
+                await self._window_state.mark_traded(_wk, order_id or "unknown")
+            except Exception as _ws_exc:
+                self._log.warning("window_state.mark_traded_exec_failed", key=_wk, error=str(_ws_exc)[:80])
         
         # Calculate fee
         fee_mult = 0.072  # Polymarket fee
