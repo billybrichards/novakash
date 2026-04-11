@@ -112,6 +112,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         geoblock_check_fn: Optional[Callable[[], bool]] = None,
         twap_tracker: Optional[TWAPTracker] = None,
         timesfm_client: Optional[TimesFMClient] = None,
+        evaluate_use_case=None,  # Phase 3: EvaluateWindowUseCase (optional)
     ) -> None:
         super().__init__(
             name="five_min_vpin",
@@ -130,6 +131,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._timesfm = timesfm_client  # v6.0: TimesFM forecast client (for comparison alerts)
         self._timesfm_v2 = None  # v8.1: TimesFM v2.2 calibrated probability client (injected by orchestrator)
         self._tick_recorder = None  # TickRecorder injected by orchestrator after start
+        self._evaluate_uc = evaluate_use_case  # Phase 3: EvaluateWindowUseCase
         self._evaluator = WindowEvaluator()
         
         # CRITICAL: DB-backed dedup — survives engine restarts.
@@ -298,6 +300,20 @@ class FiveMinVPINStrategy(BaseStrategy):
         (e.g. T-90s, then T-60s). Deduplicates: won't trade the same window twice,
         but will still record the window snapshot and send alerts for all offsets.
         """
+        # -- Phase 3: Clean Architecture delegation --
+        # When ENGINE_USE_CLEAN_EVALUATE_WINDOW=true and the use case is
+        # injected, delegate to the extracted EvaluateWindowUseCase.
+        # The legacy path below remains COMPLETELY UNCHANGED.
+        if (
+            os.environ.get("ENGINE_USE_CLEAN_EVALUATE_WINDOW") == "true"
+            and self._evaluate_uc is not None
+        ):
+            result = await self._evaluate_uc.execute(window, state)
+            if result.signal is not None:
+                await self._execute_trade(state, result.signal)
+            return
+        # -- End Phase 3 delegation --
+
         window_key = f"{window.asset}-{window.window_ts}"
         eval_offset = getattr(window, "eval_offset", None)
 
