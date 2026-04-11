@@ -117,6 +117,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         timesfm_client: Optional[TimesFMClient] = None,
         tiingo_adapter=None,  # CA-02: Optional TiingoRestAdapter (MarketFeedPort)
         window_state_repo: Optional["WindowStateRepository"] = None,  # CA-04: Phase 5 dual-write
+        evaluate_use_case=None,  # CA-01 Phase 3: EvaluateWindowUseCase (flagged off)
     ) -> None:
         super().__init__(
             name="five_min_vpin",
@@ -135,6 +136,7 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._timesfm = timesfm_client  # v6.0 — DEPRECATED: use .timesfm_client / .set_timesfm_client()
         self._tiingo_adapter = tiingo_adapter  # CA-02: TiingoRestAdapter (MarketFeedPort) for candle delta
         self._window_state = window_state_repo  # CA-04: Phase 5 WindowStateRepository (dual-write)
+        self._evaluate_uc = evaluate_use_case  # CA-01 Phase 3: EvaluateWindowUseCase
         self._timesfm_v2 = None  # v8.1 — DEPRECATED: use .timesfm_v2_client / .set_timesfm_v2_client()
         self._tick_recorder = None  # DEPRECATED: use .set_tick_recorder()
         self._evaluator = WindowEvaluator()
@@ -384,6 +386,18 @@ class FiveMinVPINStrategy(BaseStrategy):
         (e.g. T-90s, then T-60s). Deduplicates: won't trade the same window twice,
         but will still record the window snapshot and send alerts for all offsets.
         """
+
+        # ── CA-01 Phase 3: delegate to EvaluateWindowUseCase when flagged on ──
+        if (
+            os.environ.get("ENGINE_USE_CLEAN_EVALUATE_WINDOW") == "true"
+            and self._evaluate_uc is not None
+        ):
+            result = await self._evaluate_uc.execute(window, state)
+            if result.signal is not None:
+                await self._execute_trade(state, result.signal)
+            return
+        # -- End Phase 3 delegation --
+
         window_key = f"{window.asset}-{window.window_ts}"
         eval_offset = getattr(window, "eval_offset", None)
 
