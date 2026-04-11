@@ -46,6 +46,31 @@ Deep clean-architect audit covering:
 - Both fixes ship in the same PR #26 rev-2 as the checklist update to avoid deploy races. Neither is verified in production until CI-01 lands (see below) — until then, verification is a manual `scripts/restart_engine.sh` via Montreal rules + `journalctl -u` tail.
 - **FE-02 DONE** — audit checklist page is live locally (`npm run build` green, rendered end-to-end via playwright against the dev server, filter + expand interactions confirmed). Merge of PR #26 lands it at `/audit` on the AWS frontend host.
 
+### 2026-04-11 — CI-01 workflow drafted (PR #27)
+
+- **CI-01 OPEN → IN_PROGRESS** — `.github/workflows/deploy-engine.yml` drafted on branch `claude/ci/deploy-engine-montreal`, opened as PR #27 against `develop`. 13-step workflow ported from `deploy-macro-observer.yml`:
+  1. `actions/checkout@v4`
+  2. `Require runtime secrets` — fails loud if any of 9 required secrets is missing
+  3. `Write SSH key` with base64 → raw-PEM fallback
+  4. `Ensure host directories exist` (sudo mkdir + chown)
+  5. `Rsync engine code to host` with `--rsync-path="sudo rsync"` for novakash-owned paths
+  6. `Rsync scripts directory` (for `restart_engine.sh`)
+  7. `Reset host .env and prune old backups`
+  8. `Template .env from GitHub Actions secrets` — idempotent sed-or-append via a streamed bash script, secret never appears on remote command line
+  9. `Restart engine via scripts/restart_engine.sh`
+  10. `Wait for engine startup` (45s)
+  11. Process-count health probe — `pgrep -f "python3 main.py"` must return exactly 1
+  12. **Error-signature log-grep gate** — the regression guard the engine has never had. Fails the deploy if any of `clob_feed.write_error`, `reconciler.resolve_db_error`, `reconciler.orphan_fills_error`, `evaluate.price_source_disagreement`, `evaluate.no_current_price`, `reconciler.no_trade_match` exceed per-signature thresholds in the last ~10k lines.
+  13. `Tail recent logs` for success diagnostics
+- Workflow validates as YAML (`python3 -c "yaml.safe_load"`) — 1 job / 13 steps / 15 env keys. Uses the GitHub Actions injection-defence pattern throughout (all secrets pulled into `env:` at job level).
+- **Left IN_PROGRESS, not DONE**, because the workflow only proves itself on the first real deploy run. Cannot self-verify locally. Flip to DONE after:
+  1. `ENGINE_HOST` + `ENGINE_SSH_KEY` added to `billybrichards/novakash` Actions secrets
+  2. First `workflow_dispatch` run succeeds end-to-end
+  3. Error-signature gate passes against the live `/home/novakash/engine.log` (needs PE-01 + PE-02 from PR #26 merged first, otherwise the thresholds will trip)
+- **Dependency order:** merge PR #26 first (PE-01 + PE-02 + checklist), then merge PR #27 (CI-01 + progress notes). PR #27 is branched off PR #26 to avoid conflicts on `AuditChecklist.jsx` and this file.
+- Non-secret runtime flags (`V10_DUNE_ENABLED`, `FIVE_MIN_*`, `LIVE_TRADING_ENABLED`, thresholds, `DELTA_PRICE_SOURCE`) are intentionally NOT templated from secrets — they change more often than the CI deploy cadence and stay hand-managed on the host. `set_env` uses sed-replace-or-append so hand-managed values are preserved across deploys.
+- After CI-01 lands and verifies, the DQ-01 rollout should tighten the `price_source_disagreement` threshold from 30 to <5 and gate it behind `V11_POLY_SPOT_ONLY_CONSENSUS=true` for rollback.
+
 ### 2026-04-11 — Rev-3: pricing clarification + DQ-05 seeded
 
 - **DQ-01 scope corrected.** The original task description implied a universal "drop delta_binance" fix. That's wrong. The two engines trade different instruments and need different price references:

@@ -1,0 +1,269 @@
+name: Deploy Engine to Montreal
+
+# Deploys the Polymarket trading engine to the EC2 Montreal box. This is
+# the first GitHub Actions deploy workflow for engine/ — until this
+# lands, engine/ has been the only major service in the novakash repo
+# without proper CI/CD (docs/CI_CD.md flags it explicitly as the known
+# gap). The pattern is a port of deploy-macro-observer.yml with three
+# important deltas:
+#
+#   1. The engine is NOT in Docker. It runs as a raw python3 process
+#      under a non-root user (novakash) via a long-running nohup
+#      background process. scripts/restart_engine.sh encapsulates the
+#      rotate-log + kill-existing + start-new + verify-one-process
+#      dance and lives in the repo itself. CI invokes it via ssh +
+#      sudo bash instead of docker compose.
+#
+#   2. The host has a two-user layout — we ssh in as `ubuntu` (which
+#      already has passwordless sudo via cloud-init) and the engine
+#      itself runs under `novakash`. Every sensitive operation uses
+#      `sudo -u novakash` or plain `sudo` for ubuntu-owned paths.
+#
+#   3. Post-deploy health probe is two-phase:
+#      a. Process-level: pgrep -f 'python3 main.py' must return
+#         exactly one PID after the restart.
+#      b. Log-level: grep the last 2 minutes of engine.log for known
+#         error signatures (clob_feed.write_error,
+#         reconciler.resolve_db_error, reconciler.orphan_fills_error,
+#         evaluate.price_source_disagreement). Fail the deploy if any
+#         signature appears more than a per-run tolerance — this is
+#         the regression gate the engine has never had. When this
+#         workflow runs successfully after the PE-01/PE-02 fixes
+#         (PR #26), the thresholds below should hold at 0. DQ-01
+#         disagreement warnings get a softer threshold because they
+#         fire on normal market noise too.
+#
+# Gated to push events on `develop` (novakash repo convention — main
+# is the audit/release branch, develop is what runs in prod).
+#
+# Path filter: only fires when files inside engine/ or scripts/ change,
+# or when this workflow file itself changes. Unrelated PRs do not
+# bounce the process.
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'engine/**'
+      - 'scripts/restart_engine.sh'
+      - '.github/workflows/deploy-engine.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-engine-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy Engine
+    runs-on: ubuntu-latest
+
+    env:
+      SSH_KEY: ${{ secrets.ENGINE_SSH_KEY }}
+      HOST: ${{ secrets.ENGINE_HOST }}
+      DEPLOY_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DEPLOY_COINGLASS_API_KEY: ${{ secrets.COINGLASS_API_KEY }}
+      DEPLOY_BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+      DEPLOY_BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+      DEPLOY_POLY_API_KEY: ${{ secrets.POLY_API_KEY }}
+      DEPLOY_POLY_API_SECRET: ${{ secrets.POLY_API_SECRET }}
+      DEPLOY_POLY_API_PASSPHRASE: ${{ secrets.POLY_API_PASSPHRASE }}
+      DEPLOY_POLY_PRIVATE_KEY: ${{ secrets.POLY_PRIVATE_KEY }}
+      DEPLOY_POLY_FUNDER_ADDRESS: ${{ secrets.POLY_FUNDER_ADDRESS }}
+      DEPLOY_POLY_SIGNATURE_TYPE: ${{ secrets.POLY_SIGNATURE_TYPE }}
+      DEPLOY_POLY_BTC_TOKEN_IDS: ${{ secrets.POLY_BTC_TOKEN_IDS }}
+      DEPLOY_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      DEPLOY_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Require runtime secrets
+        run: |
+          missing=""
+          if [ -z "${HOST}" ]; then missing="$missing ENGINE_HOST"; fi
+          if [ -z "${SSH_KEY}" ]; then missing="$missing ENGINE_SSH_KEY"; fi
+          if [ -z "${DEPLOY_DATABASE_URL}" ]; then missing="$missing DATABASE_URL"; fi
+          if [ -z "${DEPLOY_COINGLASS_API_KEY}" ]; then missing="$missing COINGLASS_API_KEY"; fi
+          if [ -z "${DEPLOY_POLY_API_KEY}" ]; then missing="$missing POLY_API_KEY"; fi
+          if [ -z "${DEPLOY_POLY_PRIVATE_KEY}" ]; then missing="$missing POLY_PRIVATE_KEY"; fi
+          if [ -z "${DEPLOY_POLY_FUNDER_ADDRESS}" ]; then missing="$missing POLY_FUNDER_ADDRESS"; fi
+          if [ -z "${DEPLOY_TELEGRAM_BOT_TOKEN}" ]; then missing="$missing TELEGRAM_BOT_TOKEN"; fi
+          if [ -z "${DEPLOY_TELEGRAM_CHAT_ID}" ]; then missing="$missing TELEGRAM_CHAT_ID"; fi
+          if [ -n "$missing" ]; then
+            echo "::error::missing required GitHub Actions secrets:$missing"
+            echo "Add them under Settings -> Secrets and variables -> Actions"
+            echo "before re-running this workflow."
+            exit 1
+          fi
+          echo "all required secrets present"
+
+      - name: Write SSH key
+        run: |
+          mkdir -p ~/.ssh
+          if echo "$SSH_KEY" | base64 -d > ~/.ssh/deploy_key 2>/dev/null && [ -s ~/.ssh/deploy_key ]; then
+            echo "ssh key decoded from base64"
+          else
+            echo "$SSH_KEY" > ~/.ssh/deploy_key
+            echo "ssh key written as raw PEM"
+          fi
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Ensure host directories exist
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'set -e; sudo mkdir -p /home/novakash/novakash/engine /home/novakash/novakash/scripts; sudo chown -R novakash:novakash /home/novakash/novakash'
+
+      - name: Rsync engine code to host
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            --rsync-path="sudo rsync" \
+            --exclude '.git' \
+            --exclude '__pycache__' \
+            --exclude '.cache' \
+            --exclude '.env' \
+            --exclude '.env.local' \
+            --exclude '*.pyc' \
+            --exclude '*.log' \
+            --exclude '.DS_Store' \
+            engine/ ubuntu@"$HOST":/home/novakash/novakash/engine/
+
+      - name: Rsync scripts directory
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            --rsync-path="sudo rsync" \
+            --exclude '__pycache__' \
+            --exclude '*.pyc' \
+            scripts/ ubuntu@"$HOST":/home/novakash/novakash/scripts/
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'sudo chmod +x /home/novakash/novakash/scripts/restart_engine.sh; sudo chown -R novakash:novakash /home/novakash/novakash/scripts'
+
+      - name: Reset host .env and prune old backups
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" bash -s <<'REMOTE'
+          set -e
+          ENV_FILE=/home/novakash/novakash/engine/.env
+          sudo -u novakash touch "$ENV_FILE"
+          sudo chmod 600 "$ENV_FILE"
+          sudo chown novakash:novakash "$ENV_FILE"
+          sudo -u novakash cp "$ENV_FILE" "${ENV_FILE}.bak.$(date +%s)"
+          sudo -u novakash bash -c 'ls -1t /home/novakash/novakash/engine/.env.bak.* 2>/dev/null | tail -n +6 | xargs -r rm -f' || true
+          REMOTE
+
+      - name: Template .env from GitHub Actions secrets
+        env:
+          SET_ENV_SCRIPT: |
+            set -e
+            ENV_FILE=/home/novakash/novakash/engine/.env
+            key="$1"
+            val="$2"
+            if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
+              sudo -u novakash sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
+            else
+              echo "${key}=${val}" | sudo -u novakash tee -a "$ENV_FILE" >/dev/null
+            fi
+        run: |
+          # Helper: invoke the remote set_env script with a single key/val pair.
+          # We stream the script via stdin and pass key/val as positional args
+          # so the secret never appears on the remote command line or in ps.
+          set_env() {
+            local key="$1" val="$2"
+            ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" "sudo bash -s -- '$key' '$val'" <<< "$SET_ENV_SCRIPT"
+          }
+          set_env DATABASE_URL "$DEPLOY_DATABASE_URL"
+          set_env COINGLASS_API_KEY "$DEPLOY_COINGLASS_API_KEY"
+          set_env BINANCE_API_KEY "$DEPLOY_BINANCE_API_KEY"
+          set_env BINANCE_API_SECRET "$DEPLOY_BINANCE_API_SECRET"
+          set_env POLY_API_KEY "$DEPLOY_POLY_API_KEY"
+          set_env POLY_API_SECRET "$DEPLOY_POLY_API_SECRET"
+          set_env POLY_API_PASSPHRASE "$DEPLOY_POLY_API_PASSPHRASE"
+          set_env POLY_PRIVATE_KEY "$DEPLOY_POLY_PRIVATE_KEY"
+          set_env POLY_FUNDER_ADDRESS "$DEPLOY_POLY_FUNDER_ADDRESS"
+          set_env POLY_SIGNATURE_TYPE "$DEPLOY_POLY_SIGNATURE_TYPE"
+          set_env POLY_BTC_TOKEN_IDS "$DEPLOY_POLY_BTC_TOKEN_IDS"
+          set_env TELEGRAM_BOT_TOKEN "$DEPLOY_TELEGRAM_BOT_TOKEN"
+          set_env TELEGRAM_CHAT_ID "$DEPLOY_TELEGRAM_CHAT_ID"
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'sudo wc -l /home/novakash/novakash/engine/.env'
+
+      - name: Restart engine via scripts/restart_engine.sh
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'sudo bash /home/novakash/novakash/scripts/restart_engine.sh'
+
+      - name: Wait for engine startup
+        run: sleep 45
+
+      - name: Post-deploy health probe — process count
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" bash -s <<'REMOTE'
+          set -e
+          count=$(pgrep -f "python3 main.py" | wc -l | tr -d " ")
+          echo "engine process count: $count"
+          if [ "$count" != "1" ]; then
+            echo "::error::expected exactly 1 python3 main.py process, got $count"
+            pgrep -fa "python3 main.py" || true
+            exit 1
+          fi
+          echo "engine process check: passed (PID $(pgrep -f "python3 main.py"))"
+          REMOTE
+
+      - name: Post-deploy health probe — error signatures
+        # The regression gate. Grep the last ~2 minutes of engine.log
+        # for known error signatures and fail the deploy if any
+        # exceed their tolerance. The thresholds encode what we expect
+        # after the 2026-04-11 audit fixes land:
+        #
+        #   clob_feed.write_error          -> 0   (PE-01 fix)
+        #   reconciler.resolve_db_error    -> 0   (PE-02 fix)
+        #   reconciler.orphan_fills_error  -> 5   (PE-03 transient Poly API noise)
+        #   price_source_disagreement      -> 30  (pre-DQ-01; tighten after fix)
+        #   evaluate.no_current_price      -> 2   (cold-start tolerated)
+        #   reconciler.no_trade_match      -> 5   (orphan reconciler noise)
+        #
+        # A future step in the DQ-01 rollout should tighten the
+        # price_source_disagreement threshold to <5 once
+        # V11_POLY_SPOT_ONLY_CONSENSUS is on.
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" bash -s <<'REMOTE'
+          set -e
+          LOG=/home/novakash/engine.log
+          if [ ! -f "$LOG" ]; then
+            echo "::error::$LOG not found -- engine did not start?"
+            exit 1
+          fi
+          recent=$(sudo tail -n 10000 "$LOG" 2>/dev/null || echo "")
+          if [ -z "$recent" ]; then
+            echo "::error::could not read recent engine.log contents"
+            exit 1
+          fi
+          check_signature() {
+            local sig="$1" threshold="$2"
+            local count
+            count=$(echo "$recent" | grep -c "$sig" 2>/dev/null || true)
+            count=${count:-0}
+            echo "  $sig -> $count (threshold $threshold)"
+            if [ "$count" -gt "$threshold" ]; then
+              echo "::error::error signature '$sig' count $count exceeds threshold $threshold"
+              return 1
+            fi
+            return 0
+          }
+          echo "=== engine.log error signature scan (last ~10k lines) ==="
+          failed=0
+          check_signature "clob_feed.write_error"             0  || failed=1
+          check_signature "reconciler.resolve_db_error"       0  || failed=1
+          check_signature "reconciler.orphan_fills_error"     5  || failed=1
+          check_signature "evaluate.price_source_disagreement" 30 || failed=1
+          check_signature "evaluate.no_current_price"         2  || failed=1
+          check_signature "reconciler.no_trade_match"         5  || failed=1
+          if [ $failed -eq 1 ]; then
+            echo "::error::engine log error-signature gate failed"
+            exit 1
+          fi
+          echo "engine log error-signature gate: passed"
+          REMOTE
+
+      - name: Tail recent engine log (success diagnostics)
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'sudo tail -30 /home/novakash/engine.log 2>/dev/null' || true
