@@ -103,6 +103,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await ensure_manual_trades_table(session)
             except Exception as mt_exc:
                 log.warning("hub.manual_trades_migration_error", error=str(mt_exc))
+            # LT-03: ensure manual_trade_snapshots table exists
+            try:
+                from api.v58_monitor import ensure_manual_trade_snapshots_table
+                await ensure_manual_trade_snapshots_table(session)
+            except Exception as mts_exc:
+                log.warning("hub.manual_trade_snapshots_migration_error", error=str(mts_exc))
             break
     except Exception as exc:
         log.warning("hub.migration_error", error=str(exc))

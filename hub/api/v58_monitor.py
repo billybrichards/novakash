@@ -17,11 +17,14 @@ GET  /api/v58/window-detail/{ts}   — detailed window data for a specific times
 
 from __future__ import annotations
 
+import json
+import os
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
 import httpx
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -30,6 +33,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth.jwt import TokenData
 from auth.middleware import get_current_user
 from db.database import get_session
+
+log = structlog.get_logger(__name__)
+
+# TIMESFM proxy base — same env var margin.py uses; never talks to Polymarket,
+# only to our own TimesFM service hosting the v3/v4 decision surfaces.
+TIMESFM_URL = os.environ.get("TIMESFM_URL", "http://localhost:8001")
 
 router = APIRouter()
 
@@ -61,6 +70,73 @@ async def ensure_manual_trades_table(session: AsyncSession) -> None:
     await session.execute(text("""
         ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS order_type VARCHAR(5) DEFAULT 'FAK'
     """))
+    await session.commit()
+
+
+async def ensure_manual_trade_snapshots_table(session: AsyncSession) -> None:
+    """
+    LT-03 — Create manual_trade_snapshots table for operator-vs-engine
+    ground-truth analysis.
+
+    Every manual trade placed through /api/v58/manual-trade writes a companion
+    row into this table capturing the full decision context at the moment the
+    operator clicked: v4 fusion surface, v3 composite, last 5 resolved
+    outcomes, macro bias, VPIN, and what the engine's gate pipeline would have
+    decided for that same window. After resolution we know whether the
+    operator was right, whether the engine was right, and where they disagree.
+
+    JSONB columns let us capture the full surface without forcing a schema
+    for every field the decision surface might add in future.
+    """
+    await session.execute(text("""
+        CREATE TABLE IF NOT EXISTS manual_trade_snapshots (
+            id SERIAL PRIMARY KEY,
+            trade_id VARCHAR(64) NOT NULL,
+            window_ts BIGINT NOT NULL,
+            taken_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+            -- Operator input
+            operator_rationale TEXT,
+            operator_direction CHAR(2) NOT NULL,
+
+            -- Full v4 fusion surface at decision time (complete JSON)
+            v4_snapshot JSONB,
+
+            -- v3 composite signal surface (complete JSON)
+            v3_snapshot JSONB,
+
+            -- Last 5 resolved window outcomes preceding this decision
+            last_5_window_outcomes JSONB,
+
+            -- What the engine's gate pipeline decided for this window
+            engine_would_have_done CHAR(5),
+            engine_gate_reason VARCHAR(100),
+            engine_direction CHAR(2),
+
+            -- VPIN, macro bias snapshot
+            vpin NUMERIC(6,4),
+            macro_bias VARCHAR(16),
+            macro_confidence INTEGER,
+
+            -- Resolution (populated later when the trade resolves)
+            resolved_at TIMESTAMPTZ,
+            resolved_outcome CHAR(2),
+            resolved_pnl_usd NUMERIC(10,4),
+            operator_was_right BOOLEAN,
+            engine_was_right BOOLEAN,
+
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+    """))
+    await session.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_mts_trade_id ON manual_trade_snapshots(trade_id)"
+    ))
+    await session.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_mts_window_ts ON manual_trade_snapshots(window_ts DESC)"
+    ))
+    await session.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_mts_taken_at ON manual_trade_snapshots(taken_at DESC)"
+    ))
     await session.commit()
 
 
@@ -1161,6 +1237,183 @@ class ManualTradeRequest(BaseModel):
     order_type: str = "FAK"           # FAK, FOK, or GTC
     price_override: Optional[float] = None  # manual entry price override
     stake_usd: float = 4.0           # stake in USD
+    # LT-03 — free-text "why did the operator click?" captured at trade time
+    operator_rationale: Optional[str] = None
+
+
+# ─── LT-03 decision-snapshot helper ───────────────────────────────────────────
+
+async def _capture_trade_snapshot(
+    session: AsyncSession,
+    trade_id: str,
+    window_ts: Optional[int],
+    asset: str,
+    operator_direction: str,
+    operator_rationale: Optional[str],
+) -> None:
+    """
+    Capture the full decision context at the moment the operator clicked.
+
+    Writes one row into manual_trade_snapshots joining:
+      - v4 fusion surface from TIMESFM (macro bias, per-TS recommended_action)
+      - v3 composite signal surface from TIMESFM
+      - last 5 resolved window outcomes from market_data
+      - engine's gate-pipeline decision from signal_evaluations (if present)
+      - VPIN, macro bias, macro confidence
+
+    All upstream calls are wrapped in individual try/except so partial data
+    still produces a snapshot row — the outer caller wraps this whole function
+    in another try/except so even a total failure can't block trade execution.
+    """
+    # Ensure the table exists (cheap no-op after first call)
+    try:
+        await ensure_manual_trade_snapshots_table(session)
+    except Exception:
+        # Table creation failed — bail, the outer try/except logs this
+        return
+
+    # Normalise operator direction to CHAR(2) column: UP / DN
+    op_dir_2 = "UP" if operator_direction.upper() == "UP" else "DN"
+
+    # --- Fetch v4 fusion surface (5m + 15m + 1h) ---
+    v4_snap: Optional[dict] = None
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            v4_resp = await client.get(
+                f"{TIMESFM_URL}/v4/snapshot",
+                params={"asset": asset, "timescales": "5m,15m,1h"},
+            )
+            if v4_resp.status_code == 200:
+                v4_snap = v4_resp.json()
+    except Exception:
+        v4_snap = None
+
+    # --- Fetch v3 composite signal surface ---
+    v3_snap: Optional[dict] = None
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            v3_resp = await client.get(
+                f"{TIMESFM_URL}/v3/snapshot",
+                params={"asset": asset},
+            )
+            if v3_resp.status_code == 200:
+                v3_snap = v3_resp.json()
+    except Exception:
+        v3_snap = None
+
+    # --- Last 5 resolved window outcomes preceding this decision ---
+    last_5_outcomes: list[dict] = []
+    try:
+        q = text("""
+            SELECT window_ts, outcome, close_price, open_price
+            FROM market_data
+            WHERE asset = :asset
+              AND timeframe = '5m'
+              AND resolved = true
+              AND outcome IS NOT NULL
+            ORDER BY window_ts DESC
+            LIMIT 5
+        """)
+        res = await session.execute(q, {"asset": asset})
+        for row in res.mappings():
+            open_p = _safe_float(row.get("open_price"))
+            close_p = _safe_float(row.get("close_price"))
+            delta_pct = None
+            if open_p and close_p and open_p != 0:
+                delta_pct = (close_p - open_p) / open_p
+            last_5_outcomes.append({
+                "window_ts": int(row["window_ts"]) if row.get("window_ts") is not None else None,
+                "outcome": row.get("outcome"),
+                "open_price": open_p,
+                "close_price": close_p,
+                "outcome_price_delta_pct": delta_pct,
+            })
+    except Exception:
+        last_5_outcomes = []
+
+    # --- What would the engine's gate pipeline have decided for THIS window? ---
+    engine_would: Optional[str] = None
+    engine_dir: Optional[str] = None
+    engine_reason: Optional[str] = None
+    vpin_val: Optional[float] = None
+    if window_ts is not None:
+        try:
+            # window_ts from the frontend may be ms or s; signal_evaluations
+            # stores epoch seconds, so normalise both sides.
+            ts_s = window_ts // 1000 if window_ts > 1e10 else window_ts
+            q = text("""
+                SELECT decision, gate_failed, v2_direction, v2_probability_up, vpin
+                FROM signal_evaluations
+                WHERE asset = :asset
+                  AND window_ts = :ts_s
+                ORDER BY evaluated_at DESC NULLS LAST, eval_offset DESC
+                LIMIT 1
+            """)
+            res = await session.execute(q, {"asset": asset, "ts_s": int(ts_s)})
+            row = res.mappings().first()
+            if row:
+                engine_would = (row.get("decision") or "SKIP")[:5]
+                raw_dir = row.get("v2_direction")
+                if raw_dir:
+                    engine_dir = "UP" if str(raw_dir).upper() == "UP" else "DN"
+                elif row.get("v2_probability_up") is not None:
+                    p_up = _safe_float(row.get("v2_probability_up"))
+                    if p_up is not None:
+                        engine_dir = "UP" if p_up >= 0.5 else "DN"
+                raw_reason = row.get("gate_failed")
+                if raw_reason:
+                    engine_reason = str(raw_reason)[:100]
+                vpin_val = _safe_float(row.get("vpin"))
+        except Exception:
+            pass
+
+    # --- Macro bias + confidence lifted from v4 snapshot if present ---
+    macro_bias: Optional[str] = None
+    macro_conf: Optional[int] = None
+    if v4_snap:
+        try:
+            macro = v4_snap.get("macro") or {}
+            raw_bias = macro.get("bias")
+            if raw_bias:
+                macro_bias = str(raw_bias)[:16]
+            raw_conf = macro.get("confidence")
+            if raw_conf is not None:
+                try:
+                    macro_conf = int(float(raw_conf))
+                except (TypeError, ValueError):
+                    macro_conf = None
+        except Exception:
+            pass
+
+    # --- Insert the snapshot row ---
+    await session.execute(text("""
+        INSERT INTO manual_trade_snapshots (
+            trade_id, window_ts, operator_rationale, operator_direction,
+            v4_snapshot, v3_snapshot, last_5_window_outcomes,
+            engine_would_have_done, engine_gate_reason, engine_direction,
+            vpin, macro_bias, macro_confidence
+        ) VALUES (
+            :trade_id, :window_ts, :rationale, :op_dir,
+            CAST(:v4 AS JSONB), CAST(:v3 AS JSONB), CAST(:outcomes AS JSONB),
+            :eng_would, :eng_reason, :eng_dir,
+            :vpin, :macro_bias, :macro_conf
+        )
+    """), {
+        "trade_id": trade_id,
+        "window_ts": int(window_ts) if window_ts is not None else 0,
+        "rationale": operator_rationale,
+        "op_dir": op_dir_2,
+        "v4": json.dumps(v4_snap) if v4_snap else None,
+        "v3": json.dumps(v3_snap) if v3_snap else None,
+        "outcomes": json.dumps(last_5_outcomes),
+        "eng_would": engine_would,
+        "eng_reason": engine_reason,
+        "eng_dir": engine_dir,
+        "vpin": vpin_val,
+        "macro_bias": macro_bias,
+        "macro_conf": macro_conf,
+    })
+    await session.commit()
 
 
 # ─── Gamma price helper ───────────────────────────────────────────────────────
@@ -1387,6 +1640,26 @@ async def post_manual_trade(
     })
     await session.commit()
 
+    # ── LT-03: capture decision snapshot for operator-vs-engine analysis ──
+    # This block is wrapped in a top-level try so a snapshot capture failure
+    # can NEVER break the trade execution path — the manual_trades row has
+    # already been committed above by the time we reach here.
+    try:
+        await _capture_trade_snapshot(
+            session=session,
+            trade_id=trade_id,
+            window_ts=body.window_ts,
+            asset=body.asset,
+            operator_direction=direction,
+            operator_rationale=body.operator_rationale,
+        )
+    except Exception as snap_exc:
+        log.warning(
+            "lt03.snapshot_capture_failed",
+            error=str(snap_exc)[:200],
+            trade_id=trade_id,
+        )
+
     return {
         "trade_id": trade_id,
         "direction": direction,
@@ -1561,6 +1834,100 @@ async def _resolve_open_trades(session: AsyncSession) -> None:
         await session.commit()
     except Exception:
         pass  # Non-critical — don't fail the main request
+
+
+@router.get("/v58/manual-trade-snapshots")
+async def get_manual_trade_snapshots(
+    limit: int = Query(50, ge=1, le=500),
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    LT-03 — return recent manual-trade decision snapshots joined with the
+    resolved outcome from the manual_trades row.
+
+    This is the read endpoint a future `/decision-review` frontend page will
+    hit to render the side-by-side operator-vs-engine comparison. For now
+    it's read-only and paginated via `limit` only — no filtering, no
+    pagination cursors. Populated incrementally by every manual-trade POST.
+    """
+    # Ensure the table exists so a fresh DB doesn't 500 the frontend
+    try:
+        await ensure_manual_trade_snapshots_table(session)
+    except Exception as exc:
+        return {"rows": [], "count": 0, "error": f"schema: {exc}"}
+
+    try:
+        q = text("""
+            SELECT
+                mts.id,
+                mts.trade_id,
+                mts.window_ts,
+                mts.taken_at,
+                mts.operator_rationale,
+                mts.operator_direction,
+                mts.v4_snapshot,
+                mts.v3_snapshot,
+                mts.last_5_window_outcomes,
+                mts.engine_would_have_done,
+                mts.engine_gate_reason,
+                mts.engine_direction,
+                mts.vpin,
+                mts.macro_bias,
+                mts.macro_confidence,
+                mts.resolved_at       AS mts_resolved_at,
+                mts.resolved_outcome,
+                mts.resolved_pnl_usd,
+                mts.operator_was_right,
+                mts.engine_was_right,
+                mt.pnl_usd            AS mt_pnl_usd,
+                mt.outcome_direction  AS mt_outcome_direction,
+                mt.resolved_at        AS mt_resolved_at,
+                mt.status             AS mt_status,
+                mt.mode               AS mt_mode,
+                mt.stake_usd          AS mt_stake_usd
+            FROM manual_trade_snapshots mts
+            LEFT JOIN manual_trades mt ON mt.trade_id = mts.trade_id
+            ORDER BY mts.taken_at DESC
+            LIMIT :lim
+        """)
+        res = await session.execute(q, {"lim": limit})
+        rows_out: list[dict] = []
+        for r in res.mappings():
+            rows_out.append({
+                "id": r.get("id"),
+                "trade_id": r.get("trade_id"),
+                "window_ts": r.get("window_ts"),
+                "taken_at": r["taken_at"].isoformat() if r.get("taken_at") else None,
+                "operator_rationale": r.get("operator_rationale"),
+                "operator_direction": r.get("operator_direction"),
+                "v4_snapshot": r.get("v4_snapshot"),
+                "v3_snapshot": r.get("v3_snapshot"),
+                "last_5_window_outcomes": r.get("last_5_window_outcomes"),
+                "engine_would_have_done": r.get("engine_would_have_done"),
+                "engine_gate_reason": r.get("engine_gate_reason"),
+                "engine_direction": r.get("engine_direction"),
+                "vpin": _safe_float(r.get("vpin")),
+                "macro_bias": r.get("macro_bias"),
+                "macro_confidence": r.get("macro_confidence"),
+                "resolved_at": (
+                    r["mts_resolved_at"].isoformat()
+                    if r.get("mts_resolved_at")
+                    else (r["mt_resolved_at"].isoformat() if r.get("mt_resolved_at") else None)
+                ),
+                "resolved_outcome": r.get("resolved_outcome") or r.get("mt_outcome_direction"),
+                "resolved_pnl_usd": _safe_float(r.get("resolved_pnl_usd"))
+                                    if r.get("resolved_pnl_usd") is not None
+                                    else _safe_float(r.get("mt_pnl_usd")),
+                "operator_was_right": r.get("operator_was_right"),
+                "engine_was_right": r.get("engine_was_right"),
+                "mt_status": r.get("mt_status"),
+                "mt_mode": r.get("mt_mode"),
+                "mt_stake_usd": _safe_float(r.get("mt_stake_usd")),
+            })
+        return {"rows": rows_out, "count": len(rows_out)}
+    except Exception as exc:
+        return {"rows": [], "count": 0, "error": str(exc)}
 
 
 @router.get("/v58/window-detail/{window_ts}")
