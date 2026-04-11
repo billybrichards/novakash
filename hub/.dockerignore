@@ -1,0 +1,19 @@
+# Keep secrets and dev artefacts out of the image layer. The deploy
+# workflow templates .env onto the host separately, so baking one in
+# would silently shadow it.
+.env
+.env.*
+!.env.example
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.venv
+venv
+.DS_Store
+.git
+.gitignore
+docker-compose.yml
+Dockerfile
+Dockerfile.aws

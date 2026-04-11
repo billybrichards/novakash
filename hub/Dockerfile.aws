@@ -1,0 +1,57 @@
+# AWS (Montreal EC2) build of the BTC-Trader Hub FastAPI backend.
+#
+# DEP-02 (Railway -> AWS Montreal) migration — see docs/CI_CD.md and
+# .github/workflows/deploy-hub.yml. This file is deliberately separate
+# from the existing hub/Dockerfile so the Railway auto-deploy (watching
+# `hub/Dockerfile`) keeps working through the parallel-deploy window.
+#
+# Context: the docker-compose.yml next to this file is rsynced to
+# /home/ubuntu/hub/ on the Montreal EC2 box (`3.98.114.0`, same host as
+# timesfm-service, macro-observer, data-collector). Build context is the
+# rsynced hub/ directory itself (compose `context: .`), matching the
+# macro-observer and data-collector pattern.
+#
+# Port: 8091. Chosen because:
+#   - 8080 is already bound by timesfm-service on this box
+#   - 8090 is the margin-engine status port (eu-west-2 but the convention
+#     is shared so it doesn't drift)
+#   - 8091 keeps the hub port within the "hub/signal services" range and
+#     makes the frontend nginx upstream flip a one-line change when the
+#     Railway -> AWS cutover happens in a follow-up PR.
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Build deps for asyncpg wheels + libpq for any future psycopg fallback.
+# libpq-dev is a belt-and-braces include; asyncpg ships wheels so gcc
+# alone is usually enough, but keeping libpq-dev matches what the
+# Railway image has been running with for months.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python deps first so the layer is cached independently of
+# source changes.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the hub source. `.dockerignore` keeps .env, __pycache__,
+# and the SQLite dev file out of the image.
+COPY . /app/
+
+EXPOSE 8091
+
+# Healthcheck hits the /health endpoint which main.py already defines
+# (returns {"status": "ok"}). Using python + urllib avoids adding curl
+# to the runtime path even though we installed it above for ssh-debug
+# purposes.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8091/health', timeout=3).getcode() == 200 else 1)" || exit 1
+
+# Bind to 0.0.0.0:8091 explicitly. The Railway Dockerfile uses
+# ${PORT:-8000} because Railway injects PORT; on AWS we pin to 8091 so
+# the port is deterministic across restarts and matches the compose
+# publish mapping.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8091"]
