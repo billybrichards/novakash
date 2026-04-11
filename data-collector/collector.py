@@ -18,11 +18,17 @@ import json
 import os
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import aiohttp
 import asyncpg
 import structlog
+
+# Heartbeat file for Docker healthcheck on AWS Montreal. Touched at the top
+# of every collect cycle. If the file is older than 30s the container is
+# unhealthy and restart-policy bounces it. No-op outside Docker.
+_HEARTBEAT_PATH = Path("/tmp/collector.alive")
 
 log = structlog.get_logger()
 
@@ -519,6 +525,12 @@ async def main():
             try:
                 cycle += 1
                 t0 = time.time()
+                # Docker healthcheck heartbeat — touched every cycle so a
+                # wedged loop or DB deadlock self-heals via restart policy.
+                try:
+                    _HEARTBEAT_PATH.touch()
+                except Exception:  # noqa: BLE001 — heartbeat is best-effort
+                    pass
                 await collect_cycle(session, pool, cycle)
                 elapsed = time.time() - t0
                 

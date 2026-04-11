@@ -1,0 +1,158 @@
+name: Deploy Data Collector to AWS
+
+# Deploys the data-collector service to the EC2 Montreal box (the same
+# 3.98.114.0 host that runs timesfm-service and macro-observer). This was
+# migrated from Railway to AWS on 2026-04-11 to:
+#   1. Unify ops with timesfm + macro-observer (one box, one log location,
+#      one set of credentials, one place to ssh into when something breaks)
+#   2. Stop the Railway deploys that have been FAILED on every push since
+#      the 2026-04-11 merge cascade started; the Railway build context
+#      was misrouting (same class of bug that forced the macro-observer
+#      migration earlier the same day)
+#   3. Drop the ~$10/mo Railway hosting cost (the collector is a ~30 MB
+#      Python loop polling Polymarket Gamma at 1Hz — invisible alongside
+#      TimesFM)
+#
+# The service is a pure DB writer: reads from Polymarket Gamma (public,
+# no key) and writes `market_data` + `market_snapshots` rows to the
+# shared Railway Postgres. Only one runtime secret: DATABASE_URL.
+#
+# The deploy is gated to push events on `develop` (matching the rest of
+# the novakash repo's deploy convention — main is the audit/release
+# branch, develop is what actually runs in prod).
+#
+# Path filter: only fires when files inside data-collector/ change so
+# unrelated PRs do not bounce the container.
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'data-collector/**'
+      - '.github/workflows/deploy-data-collector.yml'
+  workflow_dispatch:  # Manual redeploy from the Actions tab
+
+# Cancel any in-flight deploy of the same branch when a new push lands.
+# Prevents two rsync runs racing each other on the host.
+concurrency:
+  group: deploy-data-collector-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy Data Collector
+    runs-on: ubuntu-latest
+
+    # Pull all secrets into env: blocks first so the run: scripts below
+    # never interpolate ${{ }} expressions directly. This is the
+    # GitHub Actions injection-defence pattern from
+    # https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+    env:
+      SSH_KEY: ${{ secrets.MACRO_OBSERVER_SSH_KEY }}
+      HOST: ${{ secrets.MACRO_OBSERVER_HOST }}
+      DEPLOY_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Require runtime secrets
+        # Refuse to deploy if any required secret is missing. Templating
+        # an empty .env onto the host would silently break the collector
+        # on the next container restart -- fail loudly here instead.
+        run: |
+          missing=""
+          if [ -z "${HOST}" ]; then missing="$missing MACRO_OBSERVER_HOST"; fi
+          if [ -z "${SSH_KEY}" ]; then missing="$missing MACRO_OBSERVER_SSH_KEY"; fi
+          if [ -z "${DEPLOY_DATABASE_URL}" ]; then missing="$missing DATABASE_URL"; fi
+          if [ -n "$missing" ]; then
+            echo "::error::missing required GitHub Actions secrets:$missing"
+            echo "Add them under Settings -> Secrets and variables -> Actions"
+            echo "before re-running this workflow."
+            exit 1
+          fi
+          echo "all required secrets present"
+
+      - name: Write SSH key
+        # Reuses MACRO_OBSERVER_SSH_KEY because data-collector deploys
+        # to the same Montreal box as macro-observer. The key was
+        # bootstrapped into ubuntu@3.98.114.0's authorized_keys via the
+        # one-shot bootstrap workflow that ran earlier on 2026-04-11;
+        # adding a second key per service would be ceremony without
+        # meaningful isolation (both services run as the same ubuntu
+        # user in sibling docker-compose stacks anyway).
+        run: |
+          mkdir -p ~/.ssh
+          if echo "$SSH_KEY" | base64 -d > ~/.ssh/deploy_key 2>/dev/null && [ -s ~/.ssh/deploy_key ]; then
+            echo "ssh key decoded from base64"
+          else
+            echo "$SSH_KEY" > ~/.ssh/deploy_key
+            echo "ssh key written as raw PEM"
+          fi
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Ensure host directory exists
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'mkdir -p /home/ubuntu/data-collector'
+
+      - name: Rsync code to EC2
+        # --exclude '.env' protects the host secrets file from being wiped
+        # by --delete. The host .env is managed out-of-band by the
+        # "Template .env on host" step below, which re-templates it from
+        # GitHub Actions secrets on every deploy.
+        run: |
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            --exclude '.git' \
+            --exclude '__pycache__' \
+            --exclude '.cache' \
+            --exclude '.env' \
+            --exclude '*.pyc' \
+            --exclude '.DS_Store' \
+            data-collector/ ubuntu@"$HOST":/home/ubuntu/data-collector/
+
+      - name: Template .env on host
+        # Single source of truth for data-collector runtime config.
+        # Re-templated on every deploy so credential rotation lands
+        # automatically without having to ssh in by hand.
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" "cat > /home/ubuntu/data-collector/.env" <<ENV
+          DATABASE_URL=${DEPLOY_DATABASE_URL}
+          MODE=collect
+          LOG_LEVEL=info
+          ENV
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'chmod 600 /home/ubuntu/data-collector/.env && wc -l /home/ubuntu/data-collector/.env'
+
+      - name: Rebuild image and recreate container
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'set -e; cd /home/ubuntu/data-collector && docker compose build && docker compose up -d --force-recreate'
+
+      - name: Wait for healthcheck
+        # Compose healthcheck is 20s interval + 5s timeout + 30s
+        # start_period. Give it 45s to definitively report healthy -- the
+        # collector polls at 1Hz and touches the heartbeat on the first
+        # cycle, so the health status usually flips to "healthy" within
+        # the first 20s tick.
+        run: |
+          set -e
+          echo "waiting 45s for first cycles..."
+          sleep 45
+
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'docker ps --filter name=data-collector --format "{{.Names}} {{.Status}}"'
+
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" '
+            health=$(docker inspect --format "{{.State.Health.Status}}" data-collector)
+            echo "container health: $health"
+            if [ "$health" != "healthy" ] && [ "$health" != "starting" ]; then
+              echo "::error::data-collector container health is $health"
+              docker logs --tail 50 data-collector
+              exit 1
+            fi
+          '
+
+          echo "data-collector deploy succeeded"
+
+      - name: Tail recent logs (success diagnostics)
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'docker logs --tail 30 data-collector 2>&1' || true
