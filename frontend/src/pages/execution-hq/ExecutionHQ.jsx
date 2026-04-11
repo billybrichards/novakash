@@ -68,6 +68,9 @@ export default function ExecutionHQ() {
   // alongside hqData and passed into TradeTicker so the always-visible
   // strip surfaces engine_optimistic / diverged manual trades immediately.
   const [manualSotRows, setManualSotRows] = useState([]);
+  // POLY-SOT-b — same for the automatic-trade table. Pulled in parallel
+  // and rendered with an AUTO prefix on the chip.
+  const [sotRows, setSotRows] = useState([]);
 
   // Tick counter for animations
   useEffect(() => {
@@ -88,8 +91,9 @@ export default function ExecutionHQ() {
   // timeframe so each HQ page only sees its own market's data.
   // POLY-SOT (this PR): also fetches /v58/manual-trades-sot in parallel
   // so the trade ticker can render the SOT chip alongside engine trades.
-  // Only requested for the live-trading pair (BTC 5m) since the other 7
-  // routes are monitor-only and never produce manual_trades rows.
+  // POLY-SOT-b: also fetches /v58/trades-sot in parallel for automatic
+  // engine trades. Only requested for the live-trading pair (BTC 5m)
+  // since the other 7 routes are monitor-only and never write trade rows.
   const fetchData = async () => {
     try {
       const hqUrl = `/v58/execution-hq?limit=200&asset=${encodeURIComponent(asset)}&timeframe=${encodeURIComponent(timeframe)}`;
@@ -99,9 +103,10 @@ export default function ExecutionHQ() {
       ];
       if (isLiveTradingPair) {
         calls.push(api('GET', '/v58/manual-trades-sot?limit=10'));
+        calls.push(api('GET', '/v58/trades-sot?limit=10'));
       }
       const results = await Promise.allSettled(calls);
-      const [hqRes, statsRes, sotRes] = results;
+      const [hqRes, statsRes, manualSotRes, autoSotRes] = results;
 
       if (hqRes && hqRes.status === 'fulfilled') {
         setHqData(hqRes.value?.data || hqRes.value);
@@ -109,10 +114,15 @@ export default function ExecutionHQ() {
       if (statsRes && statsRes.status === 'fulfilled') {
         setDashStats(statsRes.value?.data || statsRes.value);
       }
-      if (sotRes && sotRes.status === 'fulfilled') {
-        const sotData = sotRes.value?.data || sotRes.value;
+      if (manualSotRes && manualSotRes.status === 'fulfilled') {
+        const sotData = manualSotRes.value?.data || manualSotRes.value;
         const rows = Array.isArray(sotData?.rows) ? sotData.rows : [];
         setManualSotRows(rows);
+      }
+      if (autoSotRes && autoSotRes.status === 'fulfilled') {
+        const autoSotData = autoSotRes.value?.data || autoSotRes.value;
+        const rows = Array.isArray(autoSotData?.rows) ? autoSotData.rows : [];
+        setSotRows(rows);
       }
       setError(null);
     } catch (err) {
@@ -295,6 +305,7 @@ export default function ExecutionHQ() {
       <TradeTicker
         recentTrades={hqData?.recent_trades || []}
         manualSotRows={manualSotRows}
+        sotRows={sotRows}
       />
 
       {/* Error banner */}

@@ -108,6 +108,12 @@ class CLOBReconciler:
         # don't spam Telegram every time the SOT loop finds the same
         # divergence. Cleared on engine restart — that's intentional, an
         # operator-visible alert at engine startup is fine.
+        #
+        # POLY-SOT-b: dedupe key is now namespaced by table — e.g.
+        # "manual_trades:42" vs "trades:42" — because manual_trades.id and
+        # trades.id are independent integer sequences. Without the namespace
+        # an alert on manual_trades #42 would suppress an alert on
+        # automatic trades #42, hiding a real divergence.
         self._sot_alerted_trade_ids: set[str] = set()
 
         self._log = log.bind(component="clob_reconciler")
@@ -1122,6 +1128,146 @@ class CLOBReconciler:
     # Polymarket never actually booked the trade. This is exactly the failure
     # mode the user flagged on 2026-04-11.
 
+    def _compare_to_polymarket(
+        self,
+        engine_row: dict,
+        poly_status: "Optional[PolyOrderStatus]",
+    ) -> dict:
+        """Pure comparison: engine row + Polymarket status → SOT decision.
+
+        POLY-SOT-b: extracted from the body of ``reconcile_manual_trades_sot``
+        so the new ``reconcile_trades_sot`` (and any future per-row caller)
+        can re-use the exact same decision matrix without copy-paste drift.
+
+        The caller is responsible for:
+          * fetching the engine row
+          * calling ``poly_client.get_order_status_sot(...)`` (or passing None
+            if there is no order ID / Polymarket returned no record)
+          * persisting the result via the appropriate ``update_*_sot`` helper
+          * firing the Telegram alert (if ``should_alert=True``)
+          * incrementing the right counter on the summary
+
+        Returns a dict with keys:
+          * ``state``: one of agrees | unreconciled | engine_optimistic |
+            polymarket_only | diverged
+          * ``notes``: human-readable explanation (or None on agrees)
+          * ``confirmed_status``, ``confirmed_price``, ``confirmed_size``,
+            ``confirmed_at``: values to write back to the row (may be None)
+          * ``should_alert``: True iff the state warrants a Telegram alert
+        """
+        engine_status = (engine_row.get("status") or "").lower()
+        engine_fill_price = _to_float(engine_row.get("entry_price"))
+
+        # Case 1: Polymarket has no record at all (None means 404 or empty).
+        if poly_status is None:
+            if engine_status in ("failed_no_token",) or engine_status.startswith(
+                "failed"
+            ):
+                # Engine knows it failed AND Polymarket also has nothing —
+                # they agree on the negative. Mark agrees, no alert.
+                return {
+                    "state": "agrees",
+                    "notes": "engine failed and polymarket has no record — both agree on no fill",
+                    "confirmed_status": None,
+                    "confirmed_price": None,
+                    "confirmed_size": None,
+                    "confirmed_at": None,
+                    "should_alert": False,
+                }
+            poly_order_id = engine_row.get("polymarket_order_id")
+            notes = (
+                f"engine status={engine_status} order_id={str(poly_order_id)[:20]} "
+                f"— polymarket returned no record (404 or empty)"
+            )
+            return {
+                "state": "engine_optimistic",
+                "notes": notes,
+                "confirmed_status": None,
+                "confirmed_price": None,
+                "confirmed_size": None,
+                "confirmed_at": None,
+                "should_alert": True,
+            }
+
+        # Polymarket returned a record — extract its fields.
+        confirmed_status = poly_status.status
+        confirmed_price = poly_status.fill_price
+        confirmed_size = poly_status.fill_size
+        confirmed_at = poly_status.timestamp
+
+        # Case 2: engine says failed but Polymarket has a fill — polymarket_only.
+        if engine_status.startswith("failed") and poly_status.is_filled:
+            notes = (
+                f"engine status={engine_status} but polymarket has filled order "
+                f"size={confirmed_size} price={confirmed_price}"
+            )
+            return {
+                "state": "polymarket_only",
+                "notes": notes,
+                "confirmed_status": confirmed_status,
+                "confirmed_price": confirmed_price,
+                "confirmed_size": confirmed_size,
+                "confirmed_at": confirmed_at,
+                "should_alert": True,
+            }
+
+        # Case 3: Polymarket order not yet terminal — unreconciled, no alert.
+        if not poly_status.is_terminal:
+            return {
+                "state": "unreconciled",
+                "notes": f"polymarket status={confirmed_status} (still pending)",
+                "confirmed_status": confirmed_status,
+                "confirmed_price": confirmed_price,
+                "confirmed_size": confirmed_size,
+                "confirmed_at": confirmed_at,
+                "should_alert": False,
+            }
+
+        # Case 4: Terminal — compare numbers.
+        divergence_notes: list[str] = []
+        if (
+            engine_fill_price is not None
+            and confirmed_price is not None
+            and engine_fill_price > 0
+        ):
+            price_pct = (
+                abs(confirmed_price - engine_fill_price) / engine_fill_price * 100.0
+            )
+            if price_pct > self._sot_price_tolerance_pct:
+                divergence_notes.append(
+                    f"price diff {price_pct:.2f}% (engine={engine_fill_price:.4f} "
+                    f"poly={confirmed_price:.4f})"
+                )
+
+        if (
+            engine_status in ("executed", "open", "live", "filled", "matched")
+            and confirmed_size is not None
+            and confirmed_size <= 0
+        ):
+            divergence_notes.append("polymarket fill_size = 0 despite terminal status")
+
+        if divergence_notes:
+            return {
+                "state": "diverged",
+                "notes": "; ".join(divergence_notes),
+                "confirmed_status": confirmed_status,
+                "confirmed_price": confirmed_price,
+                "confirmed_size": confirmed_size,
+                "confirmed_at": confirmed_at,
+                "should_alert": True,
+            }
+
+        # Case 5: All checks passed → agrees.
+        return {
+            "state": "agrees",
+            "notes": None,
+            "confirmed_status": confirmed_status,
+            "confirmed_price": confirmed_price,
+            "confirmed_size": confirmed_size,
+            "confirmed_at": confirmed_at,
+            "should_alert": False,
+        }
+
     async def reconcile_manual_trades_sot(
         self,
         since: Optional[datetime] = None,
@@ -1429,8 +1575,11 @@ class CLOBReconciler:
             )
             summary.agrees += 1
             # Clear the alert tracking — once it agrees, future divergences
-            # should re-alert.
-            self._sot_alerted_trade_ids.discard(trade_id)
+            # should re-alert. Use the table-namespaced key so we only clear
+            # the manual_trades entry, not a hypothetical collision with the
+            # automatic trades table.
+            self._sot_alerted_trade_ids.discard(f"manual_trades:{trade_id}")
+            self._sot_alerted_trade_ids.discard(trade_id)  # legacy fallback
             row_record["state"] = "agrees"
             summary.rows.append(row_record)
 
@@ -1447,21 +1596,213 @@ class CLOBReconciler:
         )
         return summary
 
+    # ------------------------------------------------------------------
+    # POLY-SOT-b — same SOT pass against the `trades` table for engine-
+    # initiated automatic trades. Uses the shared `_compare_to_polymarket`
+    # helper above so the decision matrix stays in lock-step with the
+    # manual_trades pass.
+    # ------------------------------------------------------------------
+
+    async def reconcile_trades_sot(
+        self,
+        since: Optional[datetime] = None,
+        limit: int = 100,
+    ) -> "ReconciliationSummary":
+        """Source-of-truth reconciliation for the `trades` (automatic) table.
+
+        Mirrors ``reconcile_manual_trades_sot`` but walks the engine's
+        automatic-trade table instead of the operator manual-trade table.
+        Both pull from Polymarket via the same ``get_order_status_sot``
+        method, both compare via ``_compare_to_polymarket``, and both
+        persist via the same column alphabet.
+
+        The only differences:
+          * table name (``trades`` vs ``manual_trades``)
+          * primary key type (int ``id`` vs string ``trade_id``)
+          * the engine status alphabet (FILLED/OPEN/EXPIRED vs executed/open/etc.)
+          * the alert dedupe key uses ``"trades:"`` namespace
+        """
+        summary = ReconciliationSummary()
+        if not self._pool:
+            return summary
+
+        db = _TradesPoolDBClient(self._pool)
+
+        rows = await db.fetch_trades_for_sot_check(since=since, limit=limit)
+        summary.checked = len(rows)
+        if not rows:
+            return summary
+
+        for row in rows:
+            trade_id = row["trade_id"]
+            poly_order_id = row.get("polymarket_order_id")
+            engine_status = (row.get("status") or "").lower()
+
+            row_record: dict = {
+                "trade_id": trade_id,
+                "engine_status": engine_status,
+                "polymarket_order_id": poly_order_id,
+                "table": "trades",
+            }
+
+            # No order ID → see if we should age this row out as
+            # engine_optimistic or just leave as unreconciled.
+            if not poly_order_id:
+                summary.skipped_no_order_id += 1
+                created_at = row.get("created_at")
+                age_minutes: Optional[float] = None
+                if isinstance(created_at, datetime):
+                    age_minutes = (
+                        datetime.now(timezone.utc) - created_at
+                    ).total_seconds() / 60.0
+                # The trades table uses uppercase status — extend the
+                # "engine thinks it executed" set to match.
+                if (
+                    age_minutes is not None
+                    and age_minutes > 2.0
+                    and engine_status in (
+                        "filled", "open", "matched", "executed", "expired",
+                    )
+                ):
+                    notes = (
+                        f"engine status={engine_status} but no clob_order_id "
+                        f"after {age_minutes:.1f}min — orchestrator may have "
+                        f"crashed before persisting the order ID"
+                    )
+                    await db.update_trade_sot(
+                        trade_id=trade_id,
+                        polymarket_confirmed_status=None,
+                        polymarket_confirmed_fill_price=None,
+                        polymarket_confirmed_size=None,
+                        polymarket_confirmed_at=None,
+                        sot_reconciliation_state="engine_optimistic",
+                        sot_reconciliation_notes=notes,
+                    )
+                    summary.engine_optimistic += 1
+                    if await self._fire_sot_alert(
+                        trade_id, "engine_optimistic", notes, row, table="trades"
+                    ):
+                        summary.alerts_fired += 1
+                    row_record["state"] = "engine_optimistic"
+                else:
+                    await db.update_trade_sot(
+                        trade_id=trade_id,
+                        polymarket_confirmed_status=None,
+                        polymarket_confirmed_fill_price=None,
+                        polymarket_confirmed_size=None,
+                        polymarket_confirmed_at=None,
+                        sot_reconciliation_state="unreconciled",
+                        sot_reconciliation_notes="no polymarket_order_id yet",
+                    )
+                    summary.unreconciled += 1
+                    row_record["state"] = "unreconciled"
+                summary.rows.append(row_record)
+                continue
+
+            # Have an order ID — query Polymarket.
+            try:
+                order = await self._poly.get_order_status_sot(poly_order_id)
+            except Exception as exc:
+                summary.errors += 1
+                self._log.warning(
+                    "reconcile_trades_sot.fetch_failed",
+                    trade_id=trade_id,
+                    order_id=str(poly_order_id)[:20],
+                    error=str(exc)[:200],
+                )
+                # Preserve the prior state — don't regress to engine_optimistic
+                # because of a transient error.
+                await db.update_trade_sot(
+                    trade_id=trade_id,
+                    polymarket_confirmed_status=row.get("polymarket_confirmed_status"),
+                    polymarket_confirmed_fill_price=_to_float(
+                        row.get("polymarket_confirmed_fill_price")
+                    ),
+                    polymarket_confirmed_size=_to_float(
+                        row.get("polymarket_confirmed_size")
+                    ),
+                    polymarket_confirmed_at=row.get("polymarket_confirmed_at"),
+                    sot_reconciliation_state=row.get("sot_reconciliation_state")
+                    or "unreconciled",
+                    sot_reconciliation_notes=(
+                        f"transient fetch error: {str(exc)[:120]}"
+                    ),
+                )
+                row_record["state"] = "error"
+                summary.rows.append(row_record)
+                continue
+
+            # Run the shared comparison helper.
+            decision = self._compare_to_polymarket(row, order)
+            state = decision["state"]
+
+            await db.update_trade_sot(
+                trade_id=trade_id,
+                polymarket_confirmed_status=decision["confirmed_status"],
+                polymarket_confirmed_fill_price=decision["confirmed_price"],
+                polymarket_confirmed_size=decision["confirmed_size"],
+                polymarket_confirmed_at=decision["confirmed_at"],
+                sot_reconciliation_state=state,
+                sot_reconciliation_notes=decision["notes"],
+            )
+
+            if state == "agrees":
+                summary.agrees += 1
+                # Clear any prior alert dedupe so a future regression alerts.
+                self._sot_alerted_trade_ids.discard(f"trades:{trade_id}")
+            elif state == "unreconciled":
+                summary.unreconciled += 1
+            elif state == "engine_optimistic":
+                summary.engine_optimistic += 1
+            elif state == "polymarket_only":
+                summary.polymarket_only += 1
+            elif state == "diverged":
+                summary.diverged += 1
+
+            if decision["should_alert"]:
+                if await self._fire_sot_alert(
+                    trade_id, state, decision["notes"] or "", row, table="trades"
+                ):
+                    summary.alerts_fired += 1
+
+            row_record["state"] = state
+            summary.rows.append(row_record)
+
+        self._log.info(
+            "reconcile_trades_sot.complete",
+            checked=summary.checked,
+            agrees=summary.agrees,
+            unreconciled=summary.unreconciled,
+            engine_optimistic=summary.engine_optimistic,
+            polymarket_only=summary.polymarket_only,
+            diverged=summary.diverged,
+            errors=summary.errors,
+            alerts=summary.alerts_fired,
+        )
+        return summary
+
     async def _fire_sot_alert(
         self,
-        trade_id: str,
+        trade_id,
         state: str,
         notes: str,
         row: dict,
+        table: str = "manual_trades",
     ) -> bool:
-        """Send a Telegram alert for an SOT divergence (deduped per trade_id).
+        """Send a Telegram alert for an SOT divergence (deduped per table:trade_id).
 
         Returns True if an alert was actually sent, False if it was suppressed
         because we've already alerted on this trade_id since engine startup.
+
+        POLY-SOT-b: ``table`` parameter namespaces the dedupe key so an alert
+        on manual_trades #42 doesn't suppress one on automatic trades #42.
+        Defaults to ``"manual_trades"`` for backwards compatibility with the
+        existing Phase 1 call sites and tests.
         """
-        if trade_id in self._sot_alerted_trade_ids:
+        dedupe_key = f"{table}:{trade_id}"
+        if dedupe_key in self._sot_alerted_trade_ids:
             return False
-        self._sot_alerted_trade_ids.add(trade_id)
+        self._sot_alerted_trade_ids.add(dedupe_key)
 
         emoji = {
             "engine_optimistic": "🚨",
@@ -1476,9 +1817,17 @@ class CLOBReconciler:
             stake_str = f"${float(stake):.2f}"
         except (ValueError, TypeError):
             stake_str = "$?"
+        # trade_id can be a string (manual_trades) or int (trades) — slice
+        # only when it's a string to avoid TypeError on the int path.
+        tid_display = (
+            trade_id[:16] if isinstance(trade_id, str) else f"#{trade_id}"
+        )
+        # Tag the table so the operator knows which surface fired
+        # without having to dig into the trade ID format.
+        table_label = "AUTO" if table == "trades" else "MANUAL"
         msg = (
             f"{emoji} *POLY-SOT divergence: {title}*\n"
-            f"Trade `{trade_id[:16]}` · {direction} · {stake_str}\n"
+            f"{table_label} trade `{tid_display}` · {direction} · {stake_str}\n"
             f"Engine status: `{engine_status}`\n"
             f"Notes: {notes}\n"
             f"\n"
@@ -1489,6 +1838,7 @@ class CLOBReconciler:
             self._log.warning(
                 "reconcile_sot.alert_fired",
                 trade_id=trade_id,
+                table=table,
                 state=state,
             )
             return True
@@ -1496,6 +1846,7 @@ class CLOBReconciler:
             self._log.warning(
                 "reconcile_sot.alert_failed",
                 trade_id=trade_id,
+                table=table,
                 state=state,
                 error=str(exc)[:120],
             )
@@ -1632,6 +1983,122 @@ class _PoolDBClient:
         except Exception as exc:
             log.warning(
                 "reconcile_sot.update_row_failed",
+                trade_id=trade_id,
+                state=sot_reconciliation_state,
+                error=str(exc)[:200],
+            )
+
+
+class _TradesPoolDBClient:
+    """POLY-SOT-b adapter — same shape as ``_PoolDBClient`` but for the
+    automatic ``trades`` table instead of operator ``manual_trades``.
+
+    The trades table uses ``id`` (integer primary key) and stores its
+    Polymarket order ID in ``clob_order_id`` (added by the v8 migration).
+    POLY-SOT-b adds a parallel ``polymarket_order_id`` column to the same
+    table — the SELECT here ``COALESCE``s both so historical rows that
+    have only the v8 column still flow through the reconciler.
+
+    Mirrors ``DBClient.fetch_trades_for_sot_check`` and
+    ``DBClient.update_trade_sot`` byte-for-byte.
+    """
+
+    def __init__(self, pool) -> None:
+        self._pool = pool
+
+    async def fetch_trades_for_sot_check(
+        self,
+        since: Optional[datetime] = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        id AS trade_id,
+                        order_id,
+                        COALESCE(polymarket_order_id, clob_order_id) AS polymarket_order_id,
+                        status,
+                        mode,
+                        direction,
+                        entry_price,
+                        stake_usd,
+                        fill_price,
+                        fill_size,
+                        created_at,
+                        is_live,
+                        polymarket_confirmed_status,
+                        polymarket_confirmed_fill_price,
+                        polymarket_confirmed_size,
+                        polymarket_confirmed_at,
+                        polymarket_last_verified_at,
+                        sot_reconciliation_state,
+                        sot_reconciliation_notes
+                    FROM trades
+                    WHERE created_at < NOW() - INTERVAL '30 seconds'
+                      AND ($1::timestamptz IS NULL OR created_at >= $1)
+                      AND COALESCE(is_live, FALSE) = TRUE
+                      AND status IN (
+                          'FILLED', 'OPEN', 'PENDING', 'MATCHED',
+                          'filled', 'open', 'pending', 'matched',
+                          'EXPIRED', 'expired'
+                      )
+                      AND (
+                          sot_reconciliation_state IS NULL
+                          OR sot_reconciliation_state IN ('unreconciled', 'engine_optimistic', 'diverged')
+                          OR polymarket_last_verified_at IS NULL
+                          OR polymarket_last_verified_at < NOW() - INTERVAL '5 minutes'
+                      )
+                    ORDER BY created_at DESC
+                    LIMIT $2
+                    """,
+                    since,
+                    int(limit),
+                )
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            log.warning(
+                "reconcile_trades_sot.fetch_rows_failed", error=str(exc)[:200]
+            )
+            return []
+
+    async def update_trade_sot(
+        self,
+        trade_id,
+        *,
+        polymarket_confirmed_status: Optional[str],
+        polymarket_confirmed_fill_price: Optional[float],
+        polymarket_confirmed_size: Optional[float],
+        polymarket_confirmed_at: Optional[datetime],
+        sot_reconciliation_state: str,
+        sot_reconciliation_notes: Optional[str],
+    ) -> None:
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE trades
+                    SET polymarket_confirmed_status = $1,
+                        polymarket_confirmed_fill_price = $2,
+                        polymarket_confirmed_size = $3,
+                        polymarket_confirmed_at = $4,
+                        polymarket_last_verified_at = NOW(),
+                        sot_reconciliation_state = $5,
+                        sot_reconciliation_notes = $6
+                    WHERE id = $7
+                    """,
+                    polymarket_confirmed_status,
+                    polymarket_confirmed_fill_price,
+                    polymarket_confirmed_size,
+                    polymarket_confirmed_at,
+                    sot_reconciliation_state,
+                    sot_reconciliation_notes,
+                    int(trade_id),
+                )
+        except Exception as exc:
+            log.warning(
+                "reconcile_trades_sot.update_row_failed",
                 trade_id=trade_id,
                 state=sot_reconciliation_state,
                 error=str(exc)[:200],

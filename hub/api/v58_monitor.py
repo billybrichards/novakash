@@ -104,6 +104,40 @@ async def ensure_manual_trades_table(session: AsyncSession) -> None:
     await session.commit()
 
 
+async def ensure_trades_sot_columns(session: AsyncSession) -> None:
+    """POLY-SOT-b — add SOT columns to the existing `trades` table.
+
+    The `trades` table itself is created by hub/db/schema.sql at first
+    deployment; this function only ALTERs in the SOT columns added in
+    this PR. Mirrors ensure_manual_trades_table's POLY-SOT block but for
+    automatic engine trades.
+
+    See migrations/add_trades_sot_columns.sql for the canonical migration.
+    Each ALTER is independently idempotent so a partial historical apply
+    still converges to the full schema after one more lifespan startup.
+    """
+    for ddl in (
+        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS polymarket_order_id TEXT",
+        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS polymarket_confirmed_status TEXT",
+        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS polymarket_confirmed_fill_price NUMERIC(18,6)",
+        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS polymarket_confirmed_size NUMERIC(18,6)",
+        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS polymarket_confirmed_at TIMESTAMPTZ",
+        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS polymarket_last_verified_at TIMESTAMPTZ",
+        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS sot_reconciliation_state TEXT",
+        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS sot_reconciliation_notes TEXT",
+    ):
+        await session.execute(text(ddl))
+    await session.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_trades_polymarket_order_id "
+        "ON trades(polymarket_order_id) WHERE polymarket_order_id IS NOT NULL"
+    ))
+    await session.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_trades_sot_state "
+        "ON trades(sot_reconciliation_state) WHERE sot_reconciliation_state IS NOT NULL"
+    ))
+    await session.commit()
+
+
 async def ensure_manual_trade_snapshots_table(session: AsyncSession) -> None:
     """
     LT-03 — Create manual_trade_snapshots table for operator-vs-engine
@@ -2083,6 +2117,134 @@ async def get_manual_trades_sot(
                 "pnl_usd": _safe_float(r.get("pnl_usd")),
                 "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
                 "resolved_at": r["resolved_at"].isoformat() if r.get("resolved_at") else None,
+                "polymarket_order_id": r.get("polymarket_order_id"),
+                "polymarket_confirmed_status": r.get("polymarket_confirmed_status"),
+                "polymarket_confirmed_fill_price": _safe_float(r.get("polymarket_confirmed_fill_price")),
+                "polymarket_confirmed_size": _safe_float(r.get("polymarket_confirmed_size")),
+                "polymarket_confirmed_at": (
+                    r["polymarket_confirmed_at"].isoformat()
+                    if r.get("polymarket_confirmed_at") else None
+                ),
+                "polymarket_last_verified_at": (
+                    r["polymarket_last_verified_at"].isoformat()
+                    if r.get("polymarket_last_verified_at") else None
+                ),
+                "sot_reconciliation_state": sot_state,
+                "sot_reconciliation_notes": r.get("sot_reconciliation_notes"),
+            })
+
+        return {
+            "rows": out,
+            "count": len(out),
+            "counts": counts,
+        }
+    except Exception as exc:
+        return {"rows": [], "count": 0, "counts": {}, "error": str(exc)}
+
+
+@router.get("/v58/trades-sot")
+async def get_trades_sot(
+    limit: int = Query(50, ge=1, le=500),
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """POLY-SOT-b — return recent automatic-trade rows joined with their
+    Polymarket source-of-truth fields.
+
+    Mirrors `/v58/manual-trades-sot` but reads from the `trades` table
+    instead of `manual_trades`. Used by the frontend TradeTicker chip so
+    automatic engine trades surface the same green / yellow / red SOT
+    indicator as operator manual trades.
+
+    The state alphabet (kept in sync with the reconciler):
+      - agrees             — engine and Polymarket agree (green chip)
+      - unreconciled       — Polymarket order not yet terminal (yellow)
+      - engine_optimistic  — engine claims executed, Polymarket has no record (red)
+      - polymarket_only    — engine says failed but Polymarket has fill (red)
+      - diverged           — fill_price/size mismatch beyond tolerance (red)
+      - no_order_id        — backfilled row with no order ID persisted (yellow/red)
+      - NULL               — never checked (yellow)
+
+    Returns the most recent live rows by created_at desc, capped at `limit`.
+    """
+    # Make sure the SOT columns exist before we query, so a fresh DB doesn't
+    # 500 the frontend chip on first paint.
+    try:
+        await ensure_trades_sot_columns(session)
+    except Exception as exc:
+        return {"rows": [], "count": 0, "error": f"schema: {exc}"}
+
+    try:
+        q = text("""
+            SELECT
+                id,
+                order_id,
+                strategy,
+                venue,
+                market_slug,
+                direction,
+                entry_price,
+                stake_usd,
+                status,
+                outcome,
+                pnl_usd,
+                mode,
+                is_live,
+                created_at,
+                resolved_at,
+                clob_order_id,
+                fill_price,
+                fill_size,
+                COALESCE(polymarket_order_id, clob_order_id) AS polymarket_order_id,
+                polymarket_confirmed_status,
+                polymarket_confirmed_fill_price,
+                polymarket_confirmed_size,
+                polymarket_confirmed_at,
+                polymarket_last_verified_at,
+                sot_reconciliation_state,
+                sot_reconciliation_notes
+            FROM trades
+            WHERE COALESCE(is_live, FALSE) = TRUE
+            ORDER BY created_at DESC
+            LIMIT :lim
+        """)
+        result = await session.execute(q, {"lim": limit})
+        rows = result.mappings().all()
+
+        out: list[dict] = []
+        counts = {
+            "agrees": 0,
+            "unreconciled": 0,
+            "engine_optimistic": 0,
+            "polymarket_only": 0,
+            "diverged": 0,
+            "no_order_id": 0,
+            "null": 0,
+        }
+        for r in rows:
+            sot_state = r.get("sot_reconciliation_state")
+            counts_key = sot_state if sot_state in counts else "null"
+            counts[counts_key] = counts.get(counts_key, 0) + 1
+            out.append({
+                "id": r.get("id"),
+                "trade_id": r.get("id"),  # alias so the frontend can key the same way
+                "order_id": r.get("order_id"),
+                "strategy": r.get("strategy"),
+                "venue": r.get("venue"),
+                "market_slug": r.get("market_slug"),
+                "direction": r.get("direction"),
+                "entry_price": _safe_float(r.get("entry_price")),
+                "stake_usd": _safe_float(r.get("stake_usd")),
+                "status": r.get("status"),
+                "outcome": r.get("outcome"),
+                "pnl_usd": _safe_float(r.get("pnl_usd")),
+                "mode": r.get("mode"),
+                "is_live": r.get("is_live"),
+                "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+                "resolved_at": r["resolved_at"].isoformat() if r.get("resolved_at") else None,
+                "clob_order_id": r.get("clob_order_id"),
+                "fill_price": _safe_float(r.get("fill_price")),
+                "fill_size": _safe_float(r.get("fill_size")),
                 "polymarket_order_id": r.get("polymarket_order_id"),
                 "polymarket_confirmed_status": r.get("polymarket_confirmed_status"),
                 "polymarket_confirmed_fill_price": _safe_float(r.get("polymarket_confirmed_fill_price")),

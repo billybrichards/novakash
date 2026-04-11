@@ -299,6 +299,49 @@ const TASKS = [
       { date: '2026-04-11', note: 'SHIPPED in PR feat/poly-sot-reconciler. Mirrors the margin_engine ExchangePort pattern for Polymarket manual trades. Always-on in paper + live. Within 2 minutes of any engine_optimistic / diverged / polymarket_only event the reconciler fires a Telegram alert and the frontend ticker shows a red chip. Test plan: 12 unit tests covering every decision branch + dedupe + transient-error preservation. Operator activation: nothing — runs automatically on next engine restart, schema migration is idempotent and the hub auto-applies it on its own lifespan startup.' },
     ],
   },
+  {
+    id: 'POLY-SOT-b',
+    category: 'data-quality',
+    severity: 'HIGH',
+    status: 'DONE',
+    title: 'Extend POLY-SOT to automatic engine trades (`trades` table)',
+    files: [
+      { path: 'migrations/add_trades_sot_columns.sql', line: 1, repo: 'novakash' },
+      { path: 'engine/persistence/db_client.py', line: 1515, repo: 'novakash' },
+      { path: 'engine/reconciliation/reconciler.py', line: 1125, repo: 'novakash' },
+      { path: 'engine/strategies/orchestrator.py', line: 770, repo: 'novakash' },
+      { path: 'engine/tests/test_reconcile_trades_sot.py', line: 1, repo: 'novakash' },
+      { path: 'hub/api/v58_monitor.py', line: 2110, repo: 'novakash' },
+      { path: 'frontend/src/pages/execution-hq/components/TradeTicker.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/execution-hq/ExecutionHQ.jsx', line: 70, repo: 'novakash' },
+    ],
+    evidence: [
+      'POLY-SOT Phase 1 (PR #62) only covered the operator manual_trades table. The engine writes automatic trades to a different table — `trades` — that had no SOT columns and no reconciler pass.',
+      'Failure mode: an automatic engine trade that times out / partial-fills / fails on the CLOB would still get status=FILLED in the trades table without anything cross-checking against Polymarket.',
+    ],
+    fix: 'SHIPPED. (1) Schema: 8 new columns on `trades` mirroring manual_trades — polymarket_order_id, polymarket_confirmed_status, polymarket_confirmed_fill_price, polymarket_confirmed_size, polymarket_confirmed_at, polymarket_last_verified_at, sot_reconciliation_state, sot_reconciliation_notes. New ensure_trades_sot_columns helper on both engine (DBClient) and hub. (2) Reconciler: extracted shared `_compare_to_polymarket` helper that both reconcile_manual_trades_sot and reconcile_trades_sot call — single source of truth for the decision matrix. New `reconcile_trades_sot` walks the trades table via `_TradesPoolDBClient` adapter. (3) Orchestrator: existing `_sot_reconciler_loop` now walks both tables in the same pass (single asyncio task). (4) Telegram dedupe key namespaced by table — `manual_trades:42` vs `trades:42` — so the same numeric ID across tables doesn\'t collide. (5) Hub: new GET /api/v58/trades-sot?limit=50 endpoint returning live automatic-trade rows with their SOT fields. (6) Frontend: TradeTicker.jsx accepts a new `sotRows` prop (in addition to `manualSotRows`); ExecutionHQ.jsx fetches /v58/trades-sot in parallel and passes it through. Same green/yellow/red chip style with an `AUTO` prefix to distinguish from `MANUAL`. (7) Tests: 12 new pytest cases in test_reconcile_trades_sot.py mirroring the manual_trades suite + a cross-table dedupe test verifying manual #42 and trades #42 are independent.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'SHIPPED in PR feat/poly-sot-b-automatic-trades-plus-backfill. Operator activation: nothing — runs automatically on next engine restart, schema migration is idempotent and the hub auto-applies it on its own lifespan startup. Existing 12 POLY-SOT Phase 1 tests still pass unmodified.' },
+    ],
+  },
+  {
+    id: 'POLY-SOT-c',
+    category: 'data-quality',
+    severity: 'MEDIUM',
+    status: 'DONE',
+    title: 'One-shot historical backfill for SOT reconciliation',
+    files: [
+      { path: 'engine/scripts/backfill_sot_reconciliation.py', line: 1, repo: 'novakash' },
+      { path: 'engine/tests/test_reconcile_trades_sot.py', line: 540, repo: 'novakash' },
+    ],
+    evidence: [
+      'The forward POLY-SOT reconciler only stamps rows written after its merge timestamp. Every historical manual_trades row written before PR #62, and every historical trades row written before this PR, has sot_reconciliation_state = NULL. Without a backfill the dashboard would show "unreconciled" forever for legacy rows.',
+    ],
+    fix: 'SHIPPED. New one-shot script engine/scripts/backfill_sot_reconciliation.py walks both tables, calls poly_client.get_order_status_sot() for rows that have an order ID, and tags each row using the same `_compare_to_polymarket` helper as the forward reconciler. Rows older than 24h with no order ID get a new terminal state `no_order_id`. Younger rows are skipped so the forward reconciler can pick them up. Rate-limited (100ms between calls) to avoid hammering the CLOB on a catch-up burst. Dry-run mode (`--dry-run`) prints decisions without writing. Idempotent — re-runs are no-ops because the WHERE clause filters on `sot_reconciliation_state IS NULL`. Exit codes: 0 success / 1 fatal / 2 partial. Operator command: `python3 scripts/backfill_sot_reconciliation.py --table both --dry-run` then without --dry-run after review. Runs on the Montreal box (geo restriction). 3 new pytest cases verify the row-decision logic.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'SHIPPED in PR feat/poly-sot-b-automatic-trades-plus-backfill. Deployment checklist item added to docs/AUDIT_PROGRESS.md "Next up" section so the operator remembers to run the backfill on the Montreal box after merge.' },
+    ],
+  },
 
   // ── production-errors ───────────────────────────────────────────────────
   {
