@@ -265,14 +265,118 @@ All zero-threshold gates holding at 0. Engine is trading cleanly.
 - **Added "ci-cd" category** (orange) to the checklist; CI-01 is the sole seed.
 - **Added `progressNotes` field** to the task schema. Each task can now carry a list of `{ date, note }` entries which render inside the expanded card in a purple panel. The `/audit` UI becomes the authoritative session trail and this file is the matching audit log.
 
+### 2026-04-11 — Session 2 afternoon continuation: DQ-01 + CI-02 shipped, 5 bg agents dispatched
+
+Continuing the afternoon session after the context-compaction break. State at resume:
+PR #44 (DEP-02 hub migration infra) had just merged, Agents K (LT-03) and L (CA-01..04)
+were dispatched in the background, and DQ-01 had not yet started. Agent L hit the
+"out of extra usage · resets 5pm Europe/London" cap and failed with no doc produced.
+Same for Agent M (CFG-01) which was dispatched shortly after. Both were re-dispatched
+after the usage reset.
+
+Shipped this afternoon:
+
+- **DQ-07 PR #45** — defensive `mark_divergence` gate in margin_engine, default OFF via
+  `MARGIN_V4_MAX_MARK_DIVERGENCE_BPS=0.0`. 18/18 tests pass (4 new + 14 existing). Gate
+  is the "option (b)" recommendation from Agent D's DQ-05 investigation: catches any
+  class of v4.last_price vs exchange mark drift without retraining the quantiles on
+  perp-native data. Operator flips the env var on the host to activate.
+- **UI-01 PR #46** — V10.6 gate heartbeat section in Execution HQ Live tab. Renders the
+  8 canonical gates (G0 EvalOffsetBoundsGate → G7 DynamicCapGate) with live pass/fail
+  status, a TRADE/SKIP decision pill, a rail of the last 20 evaluations, and an
+  aggregate breakdown of blocking-gate shares. Data source is `/api/v58/execution-hq`
+  extended with a new `gate_heartbeat` array derived from `signal_evaluations`.
+- **LT-03 PR #47** — manual trade decision-snapshot DB. `manual_trade_snapshots` table
+  with JSONB columns for v4_snapshot, v3_snapshot, last-5 resolved window outcomes,
+  engine decision, macro bias, and a new `operator_rationale` text field captured
+  from the ManualTradePanel. Snapshot capture is isolated from trade execution
+  (trade row commits first, then snapshot write is wrapped in try/except). Failure
+  never blocks a trade. Operator-vs-engine ground truth for future calibration.
+- **DQ-01 PR #48** — `V11_POLY_SPOT_ONLY_CONSENSUS` feature flag for SourceAgreementGate.
+  Default OFF. When the operator flips it on the Montreal host and restarts, the
+  gate drops `delta_binance` from the consensus vote entirely and requires unanimous
+  CL + TI agreement. Binance is still consumed by VPIN / taker-flow / liquidations /
+  every other downstream gate — only the consensus vote changes. 16 new test cases +
+  7 sibling DS-01 tests = 23/23 passing. Motivated by the v11.1 changelog evidence
+  table: Binance has 83.1% DOWN bias and the 2/3 rule passes CL=UP TI=DOWN BIN=DOWN
+  (19.6% of all windows) as DOWN — biased source sides with lean-DOWN spot and
+  outvotes the balanced spot. The user flagged this on 2026-04-11 as the source of
+  "really terrible trade decisions".
+- **CI-02 PR #49** — extended `deploy-engine.yml` error-signature gate to cover the
+  PE-06 Sequoia recorder signatures (`elm_recorder.write_error`,
+  `elm_recorder.query_error`) with threshold 0. Closes the observability gap Agent E
+  flagged: PE-06 fired 16×/30s for days and was only caught by incidental grep.
+  Also clarified that `reconciler.resolve_db_error` covers both PE-02 AND PE-05.
+
+Background agents dispatched at 17:06-17:14 (5 in parallel, isolated worktrees):
+
+- **CA-01..04** (`a51a798d3cd3e54c4`) — clean-architect migration plan DOC. Produces
+  `docs/CLEAN_ARCHITECT_MIGRATION_PLAN.md` with 8 migration phases, port protocols,
+  use case extractions, risk matrix, and rollback per phase. PLAN ONLY, no code.
+  Uses `margin_engine/` as the reference architecture and targets the
+  `engine/strategies/five_min_vpin.py` 3096-line god class as the primary shrink
+  target.
+- **CFG-01** (`a5e3fb62b018785b4`) — config-to-DB migration plan DOC. Produces
+  `docs/CONFIG_MIGRATION_PLAN.md` inventorying every env var across every service,
+  with a phased cutover plan, DB schema, hub API surface, and frontend UX mockups.
+  PLAN ONLY, no code. Targets the operator's ask: "flip a gate flag from the
+  frontend instead of SSH'ing onto the Montreal box".
+- **Frontend audit** (`a8c10d2f084bb9a9d`) — READ-ONLY audit of every frontend route
+  before live trading resumes. Produces `docs/FRONTEND_AUDIT_2026-04-11.md` with a
+  per-route status table, legacy-tab retirement list, operator critical-path
+  checklist (gate heartbeat / manual trade panel / decision snapshot / multi-market
+  monitors), and proposed FE-* follow-up tasks.
+- **UI-02** (`a5b04b7df9c039e32`) — multi-market HQ monitors. Parameterises
+  ExecutionHQ by `:asset/:timeframe` and ships dedicated monitor pages for all 8
+  combinations (BTC/ETH/SOL/XRP × 5m/15m). Reuses GateHeartbeat.jsx. ManualTradePanel
+  is conditionally rendered only for BTC 5m (the asset we're actively trading) to
+  prevent accidental cross-market trades. Hub endpoint extended with query params
+  + graceful "no data yet" for assets the data-collector isn't yet writing.
+- **LT-04** (`a52579618fce0906d`) — near-instant click-to-execute latency. Target
+  <1s end-to-end on the happy path (vs current ~5-10s dominated by the engine-side
+  poll interval). Agent chooses between LISTEN/NOTIFY (option A) and HTTP-kick +
+  tight poll (option B) based on the existing asyncpg connection handling.
+  Preserves the LT-02 token_id DB fallback and Montreal rules (engine still owns
+  all Polymarket calls).
+
+## Live trading status at session end
+
+- **Paused** per the earlier UI toggle + engine restart (STOP-01 incident). Not
+  re-verified in this continuation session — no passwordless SSH key available for
+  Montreal auth this session, hub API endpoint `/api/v58/mode-status` returned 404
+  and `/api/v58/execution-hq` returned 401. The user's earlier "I have updated the
+  UI which should have done it" is the last known state.
+- **Paper trading**: presumed still running on BTC 5m to keep the 865-outcome
+  evidence base growing. Not verified this session.
+- **Before flipping live back on**, the operator should:
+  1. Confirm UI-02 has merged and all 8 HQ monitors render
+  2. Confirm the frontend audit agent's report shows no broken pages
+  3. Confirm LT-04 has merged so click-to-execute is <1s
+  4. Flip `V11_POLY_SPOT_ONLY_CONSENSUS=true` on the Montreal host and watch the
+     gate heartbeat UI for `spot disagree` events replacing the `2/3` reason strings
+  5. Re-enable live trading via the UI toggle
+  6. Monitor the first 5-10 manual trades through the decision-snapshot table
+
 ## Next up (ordered)
 
-1. **Build FE-07** (`/data/v4`) — highest leverage; the richest surface deserves the best UI and the existing `V4Panel.jsx` is 80% of the component library.
-2. **Open PR for CI-01** once FE-07 lands — ~200-line YAML port of `deploy-macro-observer.yml`, zero runtime risk until it fires, deploys the Phase 0 fixes automatically on first run.
-3. **DS-01 Phase 2a** — `EvalOffsetBoundsGate` (hardblock outside `[90, 180]`). Single new gate in `engine/signals/gates.py`, two env vars. Lowest-risk piece of V10.6.
-4. **DQ-01** — drop `delta_binance` from the source-agreement consensus vote behind `V11_USE_SPOT_ONLY_CONSENSUS=true`. Deploy behind flag, monitor 4h, then make default.
-5. **FE-04 / FE-05 / FE-06** — v1, v2, v3 data surfaces in order of descending diagnostic value.
-6. **V4-01** — retrofit `V4SnapshotPort` into `engine/`. Path A (extend god class, fast) vs Path B (build new use case on `margin_engine/` substrate) still an open decision.
+1. **Merge agent PRs as they land** — CA-01..04 plan doc, CFG-01 plan doc, frontend
+   audit, UI-02 multi-market monitors, LT-04 fast path. All are tracked in the
+   corresponding `a*` agent IDs above.
+2. **Frontend audit triage** — read the audit report and open new FE-* tasks for
+   any broken / stale pages before live trading resumes.
+3. **UI-02 landing → update operator runbook** — the "how to resume live trading"
+   checklist must reference `/execution-hq/btc/5m` as the canonical live view.
+4. **Start CA-01..04 Phase 0** — once the plan doc merges, the first concrete
+   refactor is defining `engine/domain/ports.py` alongside the existing code
+   (pure addition, zero behaviour change). This is the first shrink of the god
+   class.
+5. **Start CFG-01 Phase 0** — build the `config_keys` / `config_values` /
+   `config_history` tables and the hub read-only `/api/v58/config/schema`
+   endpoint. No UI editing yet — read-only first.
+6. **DQ-01 activation** — operator flips the flag and validates the gate heartbeat
+   shows `spot disagree` events. If pass rate drops from ~98% to ~57% and trade
+   freq drops ~40%, we know the flag is taking effect. A/B for 24h and keep or
+   revert based on PnL signal.
 
 ## Conventions
 
