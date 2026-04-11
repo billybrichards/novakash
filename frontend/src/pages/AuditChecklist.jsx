@@ -274,6 +274,28 @@ const TASKS = [
     fix: 'No code change. Consider downgrading log level from warning to debug.',
   },
   {
+    id: 'PE-05',
+    category: 'production-errors',
+    severity: 'MEDIUM',
+    status: 'DONE',
+    title: 'reconciler.resolve_db_error STILL firing — second CASE WHEN $1 type ambiguity',
+    files: [
+      { path: 'engine/reconciliation/reconciler.py', line: 824, repo: 'novakash' },
+    ],
+    evidence: [
+      'After PR #26 (PE-02 fix) and the 12:22 UTC engine restart, the reconciler.resolve_db_error signature came back at 2 errors in 20 minutes (6/hour)',
+      'Investigation revealed my PE-02 fix addressed the prefix-match fallback (lines 765-776) but MISSED a second instance of the same bug class in the UPDATE query at lines 824-834',
+      'The UPDATE used `$1` in two incompatible contexts: assignment (`SET outcome = $1` — column type deduced) AND comparison inside a CASE WHEN (`CASE WHEN $1 = \'WIN\'` — literal-comparison deduces text). If the `outcome` column is declared varchar, asyncpg fails with "inconsistent types deduced for parameter $1 — text versus character varying"',
+      'Observed in production at 2026-04-11 12:37:50 UTC and 12:42:36 UTC with condition_ids 0x6a79489fc86780cf52 and 0xd8eb483a4613119414',
+      'Same symptom as PE-02: a silent reconciler match miss for the runtime fast-path — the trade resolves via the EXACT match at line 745 but then fails to get UPDATE-tagged with outcome/pnl',
+      'PE-02 verified the fix was in place on the host (`\\$1::text || \'%\'` at lines 772-773) but this second instance was in a different query',
+    ],
+    fix: 'Drop the inline CASE WHEN, use the pre-computed `status` variable from line 720 as a fourth parameter. The resulting UPDATE has each placeholder in exactly one type context: `SET outcome = $1, pnl_usd = $2, resolved_at = NOW(), status = $3 WHERE id = $4 AND outcome IS NULL`. Matches the working pattern already used at line 613 and line 958 elsewhere in the same file.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Found during the final engine health spot-check after PR #28 merge. The `status` variable is already pre-computed at line 720 as `"RESOLVED_WIN" if outcome == "WIN" else "RESOLVED_LOSS"`, so the CASE WHEN was redundant anyway. Fixed in PR #29, 15-line diff including inline `PE-05 fix:` comment block explaining the type-deduction bug. Still needs Montreal git pull + engine restart to verify 0 errors in production.' },
+    ],
+  },
+  {
     id: 'PE-04',
     category: 'production-errors',
     severity: 'MEDIUM',

@@ -821,15 +821,23 @@ class CLOBReconciler:
                         else:
                             trade_pnl = round(-trade_stake, 4)
 
+                        # PE-05 fix: the previous UPDATE used `$1` in both an
+                        # assignment (`SET outcome = $1`) and a comparison
+                        # inside a CASE WHEN (`CASE WHEN $1 = 'WIN'`). asyncpg
+                        # couldn't reconcile those two type contexts when
+                        # `outcome` was declared varchar but the literal
+                        # `'WIN'` deduced as text — raising "inconsistent
+                        # types deduced for parameter $1 — text versus
+                        # character varying". The status value is already
+                        # pre-computed at line 720, so use it directly as
+                        # a separate parameter and drop the CASE WHEN.
                         await conn.execute(
                             """UPDATE trades SET outcome = $1, pnl_usd = $2,
-                                      resolved_at = NOW(),
-                                      status = CASE WHEN $1 = 'WIN'
-                                               THEN 'RESOLVED_WIN'
-                                               ELSE 'RESOLVED_LOSS' END
-                               WHERE id = $3 AND outcome IS NULL""",
+                                      resolved_at = NOW(), status = $3
+                               WHERE id = $4 AND outcome IS NULL""",
                             outcome,
                             trade_pnl,
+                            status,
                             matched_trade_id,
                         )
                         self._log.info(
