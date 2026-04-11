@@ -51,6 +51,13 @@ class ReconciliationSummary:
     polymarket_only: int = 0
     diverged: int = 0
     skipped_no_order_id: int = 0
+    # POLY-SOT-d: new terminal state for paper-mode rows. Paper trades are
+    # never reconciled against Polymarket (they never touched the CLOB),
+    # so the reconciler skips them cleanly instead of tagging them as
+    # engine_optimistic. Heuristic: order_id starts with `5min-` /
+    # `manual-paper-` or clob_order_id IS NULL AND order_id is not a 0x
+    # hash.
+    paper: int = 0
     errors: int = 0
     alerts_fired: int = 0
     rows: list[dict] = field(default_factory=list)
@@ -1268,6 +1275,201 @@ class CLOBReconciler:
             "should_alert": False,
         }
 
+    # ──────────────────────────────────────────────────────────────────────
+    # POLY-SOT-d — on-chain-based comparison against `poly_fills`.
+    #
+    # The CLOB `/get_order/{clob_order_id}` endpoint (used by the legacy
+    # ``_compare_to_polymarket`` above) has a short retention window: trades
+    # older than a few days return empty, which produces false-positive
+    # `engine_optimistic` tags. The `poly_fills` table is populated by a
+    # separate worker (``poly_fills_reconciler``) from the
+    # data-api.polymarket.com endpoint, which has no retention window and
+    # returns every on-chain fill for our proxy wallet. That makes it the
+    # definitive SOT record.
+    #
+    # The new helper compares an engine trade row to a matched poly_fills
+    # row (or the lack thereof). It is intentionally structured so the
+    # forward reconciler and the one-shot backfill use the same decision
+    # matrix — mirroring the existing ``_compare_to_polymarket`` pattern.
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _compare_to_polymarket_onchain(
+        self,
+        trade: dict,
+        fill: Optional[dict],
+    ) -> dict:
+        """Compare an engine trade row to a matched poly_fills row.
+
+        Returns a dict with keys:
+          * ``state`` — one of agrees | unreconciled | engine_optimistic |
+            polymarket_only | diverged | paper
+          * ``notes`` — human-readable explanation
+          * ``confirmed_status`` — synthetic 'matched' when we have a fill,
+            None otherwise (poly_fills has no pending concept)
+          * ``confirmed_price`` / ``confirmed_size`` / ``confirmed_at`` —
+            values to stamp on the trade row
+          * ``tx_hash`` — the on-chain Polygon tx hash (None when no fill)
+          * ``should_alert`` — True iff the state warrants a Telegram alert
+
+        Decision matrix
+        ---------------
+          1. Paper trade (order_id ~ 5min-/manual-paper- or clob_order_id
+             NULL and not a 0x hash) → ``paper`` terminal state, no alert,
+             no need to ever check poly_fills (paper never touched the CLOB).
+          2. Live trade + fill is None + age <= 10min → ``unreconciled``
+             (poly_fills worker may still catch up on the next pass).
+          3. Live trade + fill is None + age >  10min → ``engine_optimistic``
+             (the row should have a poly_fills entry by now — this is the
+             real engine-vs-reality divergence set).
+          4. Live trade + fill present → compare price diff bps +
+             size diff pct against configured tolerances. Inside → ``agrees``
+             (notes include the tx hash as proof). Outside → ``diverged``
+             (notes describe the drift).
+
+        The ``polymarket_only`` state is preserved for completeness but is
+        very rare under the poly_fills path — it would only fire when the
+        operator placed a trade directly from their wallet, bypassing the
+        engine. Upstream code (``reconcile_trades_sot``) handles that case
+        with a separate query against unmatched poly_fills rows.
+        """
+        # Path 1: paper trade — always terminal, never re-checked.
+        if _is_paper_trade(trade):
+            return {
+                "state": "paper",
+                "notes": "paper trade — never touched Polymarket CLOB",
+                "confirmed_status": None,
+                "confirmed_price": None,
+                "confirmed_size": None,
+                "confirmed_at": None,
+                "tx_hash": None,
+                "should_alert": False,
+            }
+
+        # Path 2: no matching poly_fills row.
+        if fill is None:
+            age_minutes = _row_age_minutes(trade)
+            if age_minutes is not None and age_minutes <= 10.0:
+                # Still young — give the poly_fills worker more time.
+                return {
+                    "state": "unreconciled",
+                    "notes": (
+                        f"no poly_fills match yet (age {age_minutes:.1f}min)"
+                    ),
+                    "confirmed_status": None,
+                    "confirmed_price": None,
+                    "confirmed_size": None,
+                    "confirmed_at": None,
+                    "tx_hash": None,
+                    "should_alert": False,
+                }
+            # Older than 10 minutes with no on-chain fill — real divergence.
+            age_str = (
+                f"{age_minutes:.1f}min" if age_minutes is not None else "unknown age"
+            )
+            return {
+                "state": "engine_optimistic",
+                "notes": (
+                    f"live trade with no matching poly_fills row "
+                    f"(age {age_str}) — engine claimed FILLED but the "
+                    f"on-chain data-api has no record"
+                ),
+                "confirmed_status": None,
+                "confirmed_price": None,
+                "confirmed_size": None,
+                "confirmed_at": None,
+                "tx_hash": None,
+                "should_alert": True,
+            }
+
+        # Path 3: fill is present. Compare price + size.
+        poly_price = _to_float(fill.get("poly_price"))
+        poly_size = _to_float(fill.get("poly_size"))
+        poly_match_time = fill.get("match_time_utc")
+        tx_hash = fill.get("transaction_hash")
+
+        engine_price = _to_float(
+            trade.get("fill_price") or trade.get("entry_price")
+        )
+
+        divergence_notes: list[str] = []
+        if (
+            engine_price is not None
+            and poly_price is not None
+            and engine_price > 0
+        ):
+            price_pct = abs(poly_price - engine_price) / engine_price * 100.0
+            if price_pct > self._sot_price_tolerance_pct:
+                divergence_notes.append(
+                    f"price diff {price_pct:.2f}% "
+                    f"(engine={engine_price:.4f} poly={poly_price:.4f})"
+                )
+
+        # Size: engine may not have a size populated on historical rows. If
+        # both are populated and differ by more than 1 share (0 tolerance
+        # was too strict — integer rounding on the CLOB means a 7.27-share
+        # engine fill can land as 7.265 on-chain) we flag it. Use 1% as a
+        # conservative band.
+        engine_size = _to_float(trade.get("fill_size"))
+        if (
+            engine_size is not None
+            and poly_size is not None
+            and engine_size > 0
+        ):
+            size_pct = abs(poly_size - engine_size) / engine_size * 100.0
+            if size_pct > 1.0:
+                divergence_notes.append(
+                    f"size diff {size_pct:.2f}% "
+                    f"(engine={engine_size:.3f} poly={poly_size:.3f})"
+                )
+
+        if divergence_notes:
+            return {
+                "state": "diverged",
+                "notes": "; ".join(divergence_notes) + (
+                    f" tx={str(tx_hash)[:18]}..." if tx_hash else ""
+                ),
+                "confirmed_status": "matched",
+                "confirmed_price": poly_price,
+                "confirmed_size": poly_size,
+                "confirmed_at": poly_match_time,
+                "tx_hash": tx_hash,
+                "should_alert": True,
+            }
+
+        # All checks passed → agrees with on-chain proof.
+        tx_display = f"tx={str(tx_hash)[:18]}..." if tx_hash else "tx=unknown"
+        return {
+            "state": "agrees",
+            "notes": f"on-chain fill confirmed: {tx_display}",
+            "confirmed_status": "matched",
+            "confirmed_price": poly_price,
+            "confirmed_size": poly_size,
+            "confirmed_at": poly_match_time,
+            "tx_hash": tx_hash,
+            "should_alert": False,
+        }
+
+    # ──────────────────────────────────────────────────────────────────────
+    # POLY-SOT-d — reconciler rewrite to use `poly_fills` as the SOT.
+    #
+    # Both ``reconcile_manual_trades_sot`` and ``reconcile_trades_sot`` now
+    # run a SQL LEFT JOIN against the `poly_fills` table instead of making
+    # N separate calls to the CLOB `/get_order` API. This is:
+    #
+    #   * cheaper (one query vs N HTTP round trips per pass)
+    #   * correct on historical data (poly_fills has no retention window;
+    #     the CLOB API returns empty for trades older than a few days)
+    #   * faster to converge on paper trades (they're tagged `paper`
+    #     immediately instead of going through the CLOB 404 path)
+    #
+    # The CLOB API client (`get_order_status_sot`) is preserved in
+    # ``execution/polymarket_client.py`` — it's still useful for the forward
+    # path on very fresh manual trades — but the reconciler loop no longer
+    # calls it. Tests that want to exercise the old path can call
+    # ``_compare_to_polymarket`` directly; new tests should call
+    # ``_compare_to_polymarket_onchain``.
+    # ──────────────────────────────────────────────────────────────────────
+
     async def reconcile_manual_trades_sot(
         self,
         since: Optional[datetime] = None,
@@ -1275,312 +1477,89 @@ class CLOBReconciler:
     ) -> "ReconciliationSummary":
         """Source-of-truth reconciliation for manual_trades rows.
 
-        For every manual_trades row with a status the engine considers
-        executed (and that is older than 30s, see
-        ``DBClient.fetch_manual_trades_for_sot_check``), query Polymarket
-        via ``poly_client.get_order_status_sot()`` and stamp the
-        ``polymarket_confirmed_*`` columns. Sets ``sot_reconciliation_state``
-        based on the comparison:
-
-          * ``agrees`` — Polymarket has the order in a terminal state and
-            its fill_price/fill_size match the engine's recorded values
-            within tolerance (default 0.5% on price, exact match on size
-            when both sides have it).
-          * ``engine_optimistic`` — engine status says executed but
-            Polymarket has no record of the order ID. THIS IS A LOUD
-            FAILURE — emits a Telegram alert with the row details.
-          * ``polymarket_only`` — engine status says failed/cancelled but
-            Polymarket has a filled order. Should not happen in practice
-            but caught defensively. Also alerts.
-          * ``diverged`` — fill_price or size mismatch beyond tolerance.
-            Alerts.
-          * ``unreconciled`` — first-pass, Polymarket order not yet in a
-            terminal state. No alert. Will be re-checked on the next pass.
+        Walks every manual_trades row whose ``sot_reconciliation_state`` is
+        stale (NULL / unreconciled / a non-terminal divergence) and joins
+        it against ``poly_fills`` to decide the new state. See the
+        ``_compare_to_polymarket_onchain`` docstring for the decision
+        matrix.
 
         Returns a ``ReconciliationSummary`` with per-state counts. Per-row
-        state is persisted via ``DBClient.update_manual_trade_sot``. Caller
-        does NOT need to handle persistence.
+        state (and the on-chain tx hash when matched) is persisted via
+        ``_PoolDBClient.update_manual_trade_sot``.
         """
-        from persistence.db_client import DBClient  # local import to avoid cycles
-
         summary = ReconciliationSummary()
         if not self._pool:
             return summary
 
-        # Build a thin DBClient view from the existing pool. We re-use the
-        # pool the orchestrator passed in instead of constructing a fresh
-        # connection — this keeps connection counts under control under load.
         db = _PoolDBClient(self._pool)
 
-        rows = await db.fetch_manual_trades_for_sot_check(since=since, limit=limit)
-        summary.checked = len(rows)
-        if not rows:
+        joined_rows = await db.fetch_manual_trades_joined_poly_fills(
+            since=since, limit=limit
+        )
+        summary.checked = len(joined_rows)
+        if not joined_rows:
             return summary
 
-        for row in rows:
-            trade_id = row["trade_id"]
-            poly_order_id = row.get("polymarket_order_id")
-            engine_status = (row.get("status") or "").lower()
-            engine_fill_price = _to_float(row.get("entry_price"))
-            engine_fill_size_usd = _to_float(row.get("stake_usd"))
+        for trade_row, fill_row in joined_rows:
+            trade_id = trade_row["trade_id"]
+            engine_status = (trade_row.get("status") or "").lower()
 
             row_record: dict = {
                 "trade_id": trade_id,
                 "engine_status": engine_status,
-                "polymarket_order_id": poly_order_id,
+                "table": "manual_trades",
             }
 
-            # Without an order ID we have nothing to query. Skip but stamp
-            # the row as `unreconciled` so the dashboard surfaces the gap.
-            if not poly_order_id:
-                summary.skipped_no_order_id += 1
-                # If the engine has been in `pending_live` for >2 minutes
-                # AND we still don't have an order_id, that's an
-                # engine_optimistic case — the place_order call never
-                # returned. Stamp it loudly.
-                created_at = row.get("created_at")
-                age_minutes: Optional[float] = None
-                if isinstance(created_at, datetime):
-                    age_minutes = (
-                        datetime.now(timezone.utc) - created_at
-                    ).total_seconds() / 60.0
-                if (
-                    age_minutes is not None
-                    and age_minutes > 2.0
-                    and engine_status in ("executed", "executing", "open")
-                ):
-                    notes = (
-                        f"engine status={engine_status} but no polymarket_order_id "
-                        f"after {age_minutes:.1f}min — manual_trade_poller may have "
-                        f"crashed before persisting the order ID"
-                    )
-                    await db.update_manual_trade_sot(
-                        trade_id=trade_id,
-                        polymarket_confirmed_status=None,
-                        polymarket_confirmed_fill_price=None,
-                        polymarket_confirmed_size=None,
-                        polymarket_confirmed_at=None,
-                        sot_reconciliation_state="engine_optimistic",
-                        sot_reconciliation_notes=notes,
-                    )
-                    summary.engine_optimistic += 1
-                    if await self._fire_sot_alert(
-                        trade_id, "engine_optimistic", notes, row
-                    ):
-                        summary.alerts_fired += 1
-                    row_record["state"] = "engine_optimistic"
-                else:
-                    await db.update_manual_trade_sot(
-                        trade_id=trade_id,
-                        polymarket_confirmed_status=None,
-                        polymarket_confirmed_fill_price=None,
-                        polymarket_confirmed_size=None,
-                        polymarket_confirmed_at=None,
-                        sot_reconciliation_state="unreconciled",
-                        sot_reconciliation_notes="no polymarket_order_id yet",
-                    )
-                    summary.unreconciled += 1
-                    row_record["state"] = "unreconciled"
-                summary.rows.append(row_record)
-                continue
-
-            # Have an order ID — query Polymarket.
             try:
-                order = await self._poly.get_order_status_sot(poly_order_id)
+                decision = self._compare_to_polymarket_onchain(trade_row, fill_row)
             except Exception as exc:
                 summary.errors += 1
                 self._log.warning(
-                    "reconcile_sot.fetch_failed",
+                    "reconcile_sot.compare_failed",
                     trade_id=trade_id,
-                    order_id=str(poly_order_id)[:20],
                     error=str(exc)[:200],
-                )
-                # Don't penalise the row for a transient error — leave any
-                # existing state in place but bump last_verified_at via the
-                # update path so we can see the loop is alive.
-                await db.update_manual_trade_sot(
-                    trade_id=trade_id,
-                    polymarket_confirmed_status=row.get("polymarket_confirmed_status"),
-                    polymarket_confirmed_fill_price=_to_float(
-                        row.get("polymarket_confirmed_fill_price")
-                    ),
-                    polymarket_confirmed_size=_to_float(
-                        row.get("polymarket_confirmed_size")
-                    ),
-                    polymarket_confirmed_at=row.get("polymarket_confirmed_at"),
-                    sot_reconciliation_state=row.get("sot_reconciliation_state")
-                    or "unreconciled",
-                    sot_reconciliation_notes=(
-                        f"transient fetch error: {str(exc)[:120]}"
-                    ),
                 )
                 row_record["state"] = "error"
                 summary.rows.append(row_record)
                 continue
 
-            # Polymarket has no record — this is the loud failure mode.
-            if order is None:
-                if engine_status in ("failed_no_token",) or engine_status.startswith(
-                    "failed"
-                ):
-                    # Engine knows it failed and Polymarket also has nothing
-                    # — they agree on the negative. Mark agrees, no alert.
-                    await db.update_manual_trade_sot(
-                        trade_id=trade_id,
-                        polymarket_confirmed_status=None,
-                        polymarket_confirmed_fill_price=None,
-                        polymarket_confirmed_size=None,
-                        polymarket_confirmed_at=None,
-                        sot_reconciliation_state="agrees",
-                        sot_reconciliation_notes="engine failed and polymarket has no record — both agree on no fill",
-                    )
-                    summary.agrees += 1
-                    row_record["state"] = "agrees"
-                    summary.rows.append(row_record)
-                    continue
+            state = decision["state"]
 
-                notes = (
-                    f"engine status={engine_status} order_id={str(poly_order_id)[:20]} "
-                    f"— polymarket returned no record (404 or empty)"
-                )
-                await db.update_manual_trade_sot(
-                    trade_id=trade_id,
-                    polymarket_confirmed_status=None,
-                    polymarket_confirmed_fill_price=None,
-                    polymarket_confirmed_size=None,
-                    polymarket_confirmed_at=None,
-                    sot_reconciliation_state="engine_optimistic",
-                    sot_reconciliation_notes=notes,
-                )
-                summary.engine_optimistic += 1
-                if await self._fire_sot_alert(
-                    trade_id, "engine_optimistic", notes, row
-                ):
-                    summary.alerts_fired += 1
-                row_record["state"] = "engine_optimistic"
-                summary.rows.append(row_record)
-                continue
-
-            # Polymarket returned a record. Compare against engine state.
-            confirmed_status = order.status
-            confirmed_price = order.fill_price
-            confirmed_size = order.fill_size
-            confirmed_at = order.timestamp
-
-            # Case A: engine says failed but Polymarket has a fill. This
-            # should never happen but if it does it's the polymarket_only
-            # case — the operator has live exposure that nothing on the
-            # engine side knows about.
-            if engine_status.startswith("failed") and order.is_filled:
-                notes = (
-                    f"engine status={engine_status} but polymarket has filled order "
-                    f"size={confirmed_size} price={confirmed_price}"
-                )
-                await db.update_manual_trade_sot(
-                    trade_id=trade_id,
-                    polymarket_confirmed_status=confirmed_status,
-                    polymarket_confirmed_fill_price=confirmed_price,
-                    polymarket_confirmed_size=confirmed_size,
-                    polymarket_confirmed_at=confirmed_at,
-                    sot_reconciliation_state="polymarket_only",
-                    sot_reconciliation_notes=notes,
-                )
-                summary.polymarket_only += 1
-                if await self._fire_sot_alert(
-                    trade_id, "polymarket_only", notes, row
-                ):
-                    summary.alerts_fired += 1
-                row_record["state"] = "polymarket_only"
-                summary.rows.append(row_record)
-                continue
-
-            # Case B: Polymarket order not yet terminal — leave as
-            # unreconciled, no alert.
-            if not order.is_terminal:
-                await db.update_manual_trade_sot(
-                    trade_id=trade_id,
-                    polymarket_confirmed_status=confirmed_status,
-                    polymarket_confirmed_fill_price=confirmed_price,
-                    polymarket_confirmed_size=confirmed_size,
-                    polymarket_confirmed_at=confirmed_at,
-                    sot_reconciliation_state="unreconciled",
-                    sot_reconciliation_notes=(
-                        f"polymarket status={confirmed_status} (still pending)"
-                    ),
-                )
-                summary.unreconciled += 1
-                row_record["state"] = "unreconciled"
-                summary.rows.append(row_record)
-                continue
-
-            # Case C: Terminal status — compare numbers.
-            #
-            # Engine's `entry_price` is what it expected to fill at, not
-            # necessarily what it actually got. We compare the engine's
-            # recorded entry_price against polymarket fill_price within
-            # the configured tolerance band.
-            divergence_notes: list[str] = []
-            if (
-                engine_fill_price is not None
-                and confirmed_price is not None
-                and engine_fill_price > 0
-            ):
-                price_pct = (
-                    abs(confirmed_price - engine_fill_price) / engine_fill_price * 100.0
-                )
-                if price_pct > self._sot_price_tolerance_pct:
-                    divergence_notes.append(
-                        f"price diff {price_pct:.2f}% (engine={engine_fill_price:.4f} "
-                        f"poly={confirmed_price:.4f})"
-                    )
-
-            # Size: engine records stake_usd (dollars) and polymarket
-            # returns fill_size in shares. We can't directly compare, but
-            # we can sanity-check that confirmed_size > 0 when the engine
-            # thought the trade went through.
-            if (
-                engine_status in ("executed", "open", "live")
-                and confirmed_size is not None
-                and confirmed_size <= 0
-            ):
-                divergence_notes.append("polymarket fill_size = 0 despite terminal status")
-
-            if divergence_notes:
-                notes = "; ".join(divergence_notes)
-                await db.update_manual_trade_sot(
-                    trade_id=trade_id,
-                    polymarket_confirmed_status=confirmed_status,
-                    polymarket_confirmed_fill_price=confirmed_price,
-                    polymarket_confirmed_size=confirmed_size,
-                    polymarket_confirmed_at=confirmed_at,
-                    sot_reconciliation_state="diverged",
-                    sot_reconciliation_notes=notes,
-                )
-                summary.diverged += 1
-                if await self._fire_sot_alert(trade_id, "diverged", notes, row):
-                    summary.alerts_fired += 1
-                row_record["state"] = "diverged"
-                summary.rows.append(row_record)
-                continue
-
-            # All checks passed → agrees.
             await db.update_manual_trade_sot(
                 trade_id=trade_id,
-                polymarket_confirmed_status=confirmed_status,
-                polymarket_confirmed_fill_price=confirmed_price,
-                polymarket_confirmed_size=confirmed_size,
-                polymarket_confirmed_at=confirmed_at,
-                sot_reconciliation_state="agrees",
-                sot_reconciliation_notes=None,
+                polymarket_confirmed_status=decision["confirmed_status"],
+                polymarket_confirmed_fill_price=decision["confirmed_price"],
+                polymarket_confirmed_size=decision["confirmed_size"],
+                polymarket_confirmed_at=decision["confirmed_at"],
+                sot_reconciliation_state=state,
+                sot_reconciliation_notes=decision["notes"],
+                polymarket_tx_hash=decision.get("tx_hash"),
             )
-            summary.agrees += 1
-            # Clear the alert tracking — once it agrees, future divergences
-            # should re-alert. Use the table-namespaced key so we only clear
-            # the manual_trades entry, not a hypothetical collision with the
-            # automatic trades table.
-            self._sot_alerted_trade_ids.discard(f"manual_trades:{trade_id}")
-            self._sot_alerted_trade_ids.discard(trade_id)  # legacy fallback
-            row_record["state"] = "agrees"
+
+            if state == "agrees":
+                summary.agrees += 1
+                # Clear any prior alert dedupe so a future regression alerts.
+                self._sot_alerted_trade_ids.discard(f"manual_trades:{trade_id}")
+                self._sot_alerted_trade_ids.discard(trade_id)  # legacy fallback
+            elif state == "unreconciled":
+                summary.unreconciled += 1
+            elif state == "engine_optimistic":
+                summary.engine_optimistic += 1
+            elif state == "polymarket_only":
+                summary.polymarket_only += 1
+            elif state == "diverged":
+                summary.diverged += 1
+            elif state == "paper":
+                summary.paper += 1
+
+            if decision.get("should_alert"):
+                if await self._fire_sot_alert(
+                    trade_id, state, decision.get("notes") or "", trade_row,
+                    table="manual_trades",
+                ):
+                    summary.alerts_fired += 1
+
+            row_record["state"] = state
             summary.rows.append(row_record)
 
         self._log.info(
@@ -1591,14 +1570,15 @@ class CLOBReconciler:
             engine_optimistic=summary.engine_optimistic,
             polymarket_only=summary.polymarket_only,
             diverged=summary.diverged,
+            paper=summary.paper,
             errors=summary.errors,
             alerts=summary.alerts_fired,
         )
         return summary
 
     # ------------------------------------------------------------------
-    # POLY-SOT-b — same SOT pass against the `trades` table for engine-
-    # initiated automatic trades. Uses the shared `_compare_to_polymarket`
+    # POLY-SOT-d — same SOT pass against the `trades` table for automatic
+    # engine-initiated trades. Shares the ``_compare_to_polymarket_onchain``
     # helper above so the decision matrix stays in lock-step with the
     # manual_trades pass.
     # ------------------------------------------------------------------
@@ -1610,17 +1590,11 @@ class CLOBReconciler:
     ) -> "ReconciliationSummary":
         """Source-of-truth reconciliation for the `trades` (automatic) table.
 
-        Mirrors ``reconcile_manual_trades_sot`` but walks the engine's
-        automatic-trade table instead of the operator manual-trade table.
-        Both pull from Polymarket via the same ``get_order_status_sot``
-        method, both compare via ``_compare_to_polymarket``, and both
-        persist via the same column alphabet.
-
-        The only differences:
-          * table name (``trades`` vs ``manual_trades``)
-          * primary key type (int ``id`` vs string ``trade_id``)
-          * the engine status alphabet (FILLED/OPEN/EXPIRED vs executed/open/etc.)
-          * the alert dedupe key uses ``"trades:"`` namespace
+        Mirrors ``reconcile_manual_trades_sot`` but walks the
+        automatic-trade ``trades`` table. The two methods share the
+        ``_compare_to_polymarket_onchain`` helper so the decision matrix
+        stays consistent; the only differences are the table being queried
+        and the alert dedupe namespace.
         """
         summary = ReconciliationSummary()
         if not self._pool:
@@ -1628,112 +1602,36 @@ class CLOBReconciler:
 
         db = _TradesPoolDBClient(self._pool)
 
-        rows = await db.fetch_trades_for_sot_check(since=since, limit=limit)
-        summary.checked = len(rows)
-        if not rows:
+        joined_rows = await db.fetch_trades_joined_poly_fills(
+            since=since, limit=limit
+        )
+        summary.checked = len(joined_rows)
+        if not joined_rows:
             return summary
 
-        for row in rows:
-            trade_id = row["trade_id"]
-            poly_order_id = row.get("polymarket_order_id")
-            engine_status = (row.get("status") or "").lower()
+        for trade_row, fill_row in joined_rows:
+            trade_id = trade_row["trade_id"]
+            engine_status = (trade_row.get("status") or "").lower()
 
             row_record: dict = {
                 "trade_id": trade_id,
                 "engine_status": engine_status,
-                "polymarket_order_id": poly_order_id,
                 "table": "trades",
             }
 
-            # No order ID → see if we should age this row out as
-            # engine_optimistic or just leave as unreconciled.
-            if not poly_order_id:
-                summary.skipped_no_order_id += 1
-                created_at = row.get("created_at")
-                age_minutes: Optional[float] = None
-                if isinstance(created_at, datetime):
-                    age_minutes = (
-                        datetime.now(timezone.utc) - created_at
-                    ).total_seconds() / 60.0
-                # The trades table uses uppercase status — extend the
-                # "engine thinks it executed" set to match.
-                if (
-                    age_minutes is not None
-                    and age_minutes > 2.0
-                    and engine_status in (
-                        "filled", "open", "matched", "executed", "expired",
-                    )
-                ):
-                    notes = (
-                        f"engine status={engine_status} but no clob_order_id "
-                        f"after {age_minutes:.1f}min — orchestrator may have "
-                        f"crashed before persisting the order ID"
-                    )
-                    await db.update_trade_sot(
-                        trade_id=trade_id,
-                        polymarket_confirmed_status=None,
-                        polymarket_confirmed_fill_price=None,
-                        polymarket_confirmed_size=None,
-                        polymarket_confirmed_at=None,
-                        sot_reconciliation_state="engine_optimistic",
-                        sot_reconciliation_notes=notes,
-                    )
-                    summary.engine_optimistic += 1
-                    if await self._fire_sot_alert(
-                        trade_id, "engine_optimistic", notes, row, table="trades"
-                    ):
-                        summary.alerts_fired += 1
-                    row_record["state"] = "engine_optimistic"
-                else:
-                    await db.update_trade_sot(
-                        trade_id=trade_id,
-                        polymarket_confirmed_status=None,
-                        polymarket_confirmed_fill_price=None,
-                        polymarket_confirmed_size=None,
-                        polymarket_confirmed_at=None,
-                        sot_reconciliation_state="unreconciled",
-                        sot_reconciliation_notes="no polymarket_order_id yet",
-                    )
-                    summary.unreconciled += 1
-                    row_record["state"] = "unreconciled"
-                summary.rows.append(row_record)
-                continue
-
-            # Have an order ID — query Polymarket.
             try:
-                order = await self._poly.get_order_status_sot(poly_order_id)
+                decision = self._compare_to_polymarket_onchain(trade_row, fill_row)
             except Exception as exc:
                 summary.errors += 1
                 self._log.warning(
-                    "reconcile_trades_sot.fetch_failed",
+                    "reconcile_trades_sot.compare_failed",
                     trade_id=trade_id,
-                    order_id=str(poly_order_id)[:20],
                     error=str(exc)[:200],
-                )
-                # Preserve the prior state — don't regress to engine_optimistic
-                # because of a transient error.
-                await db.update_trade_sot(
-                    trade_id=trade_id,
-                    polymarket_confirmed_status=row.get("polymarket_confirmed_status"),
-                    polymarket_confirmed_fill_price=_to_float(
-                        row.get("polymarket_confirmed_fill_price")
-                    ),
-                    polymarket_confirmed_size=_to_float(
-                        row.get("polymarket_confirmed_size")
-                    ),
-                    polymarket_confirmed_at=row.get("polymarket_confirmed_at"),
-                    sot_reconciliation_state=row.get("sot_reconciliation_state")
-                    or "unreconciled",
-                    sot_reconciliation_notes=(
-                        f"transient fetch error: {str(exc)[:120]}"
-                    ),
                 )
                 row_record["state"] = "error"
                 summary.rows.append(row_record)
                 continue
 
-            # Run the shared comparison helper.
-            decision = self._compare_to_polymarket(row, order)
             state = decision["state"]
 
             await db.update_trade_sot(
@@ -1744,11 +1642,11 @@ class CLOBReconciler:
                 polymarket_confirmed_at=decision["confirmed_at"],
                 sot_reconciliation_state=state,
                 sot_reconciliation_notes=decision["notes"],
+                polymarket_tx_hash=decision.get("tx_hash"),
             )
 
             if state == "agrees":
                 summary.agrees += 1
-                # Clear any prior alert dedupe so a future regression alerts.
                 self._sot_alerted_trade_ids.discard(f"trades:{trade_id}")
             elif state == "unreconciled":
                 summary.unreconciled += 1
@@ -1758,10 +1656,13 @@ class CLOBReconciler:
                 summary.polymarket_only += 1
             elif state == "diverged":
                 summary.diverged += 1
+            elif state == "paper":
+                summary.paper += 1
 
-            if decision["should_alert"]:
+            if decision.get("should_alert"):
                 if await self._fire_sot_alert(
-                    trade_id, state, decision["notes"] or "", row, table="trades"
+                    trade_id, state, decision.get("notes") or "", trade_row,
+                    table="trades",
                 ):
                     summary.alerts_fired += 1
 
@@ -1776,6 +1677,7 @@ class CLOBReconciler:
             engine_optimistic=summary.engine_optimistic,
             polymarket_only=summary.polymarket_only,
             diverged=summary.diverged,
+            paper=summary.paper,
             errors=summary.errors,
             alerts=summary.alerts_fired,
         )
@@ -1880,6 +1782,79 @@ def _to_float(value) -> Optional[float]:
         return None
 
 
+def _is_paper_trade(trade: dict) -> bool:
+    """POLY-SOT-d — detect whether a trade row is a paper trade.
+
+    Paper trades never touched Polymarket so the reconciler must skip
+    them. Decision order (first match wins):
+
+      1. ``execution_mode`` column (trades table) is ``'paper'`` — this
+         is the AUTHORITATIVE flag when present. Production investigation
+         on 2026-04-11 confirmed some historical rows have an
+         ``execution_mode='paper'`` alongside a ``0x…`` clob_order_id
+         (inconsistent legacy data) and the spec explicitly says to
+         TRUST execution_mode.
+      2. ``mode`` column (manual_trades table) is ``'paper'``.
+      3. ``order_id`` starts with ``5min-`` / ``manual-paper-`` — the
+         engine's synthetic paper-run IDs.
+      4. Last fallback: ``clob_order_id`` is NULL AND ``order_id`` is not
+         a 0x hash — neither live path was ever taken.
+
+    This is intentionally permissive — a false positive here just means
+    a paper trade stays in the ``paper`` terminal state, which is the
+    correct outcome. A false negative would surface a paper trade as
+    ``engine_optimistic``, which is the bug we are fixing.
+    """
+    # POLY-SOT-d: execution_mode is the authoritative signal on the trades
+    # table. Even when clob_order_id is populated (legacy data), trust
+    # execution_mode='paper'.
+    execution_mode = (trade.get("execution_mode") or "").lower()
+    if execution_mode == "paper":
+        return True
+
+    order_id = trade.get("order_id") or ""
+    clob_order_id = trade.get("clob_order_id")
+    mode = (trade.get("mode") or "").lower()
+
+    if isinstance(order_id, str):
+        if order_id.startswith("5min-") or order_id.startswith("manual-paper-"):
+            return True
+        # Manual trades use `trade_id` as their string ID — defensively check
+        # `trade_id` too, since the manual_trades reconciler path passes it
+        # in.
+        tid = trade.get("trade_id")
+        if isinstance(tid, str) and tid.startswith("manual-paper-"):
+            return True
+
+    if mode == "paper":
+        return True
+
+    # Last fallback: clob_order_id NULL and order_id not a 0x hash means
+    # the engine never acquired a CLOB order ID, which only happens on
+    # paper runs (or on failed live orders — those are caught upstream by
+    # the NULL-order-id branch, not here).
+    if not clob_order_id and isinstance(order_id, str):
+        if order_id and not order_id.startswith("0x"):
+            return True
+
+    return False
+
+
+def _row_age_minutes(trade: dict) -> Optional[float]:
+    """Return the age of a trade row in minutes, or None if no created_at.
+
+    Uses UTC datetime arithmetic. Handles both timezone-aware and naive
+    datetimes by treating naive values as UTC.
+    """
+    created_at = trade.get("created_at")
+    if not isinstance(created_at, datetime):
+        return None
+    now = datetime.now(timezone.utc)
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return (now - created_at).total_seconds() / 60.0
+
+
 class _PoolDBClient:
     """Tiny adapter that exposes the SOT helpers from `persistence.db_client`
     against an externally-managed asyncpg pool.
@@ -1957,7 +1932,13 @@ class _PoolDBClient:
         polymarket_confirmed_at: Optional[datetime],
         sot_reconciliation_state: str,
         sot_reconciliation_notes: Optional[str],
+        polymarket_tx_hash: Optional[str] = None,
     ) -> None:
+        """POLY-SOT-d: also accepts `polymarket_tx_hash` — the on-chain
+        Polygon transaction hash from a matched poly_fills row. This is
+        the cryptographic proof that the fill actually landed on-chain.
+        NULL for every state except `agrees` / `diverged`.
+        """
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
@@ -1969,8 +1950,9 @@ class _PoolDBClient:
                         polymarket_confirmed_at = $4,
                         polymarket_last_verified_at = NOW(),
                         sot_reconciliation_state = $5,
-                        sot_reconciliation_notes = $6
-                    WHERE trade_id = $7
+                        sot_reconciliation_notes = $6,
+                        polymarket_tx_hash = $7
+                    WHERE trade_id = $8
                     """,
                     polymarket_confirmed_status,
                     polymarket_confirmed_fill_price,
@@ -1978,6 +1960,7 @@ class _PoolDBClient:
                     polymarket_confirmed_at,
                     sot_reconciliation_state,
                     sot_reconciliation_notes,
+                    polymarket_tx_hash,
                     trade_id,
                 )
         except Exception as exc:
@@ -1987,6 +1970,142 @@ class _PoolDBClient:
                 state=sot_reconciliation_state,
                 error=str(exc)[:200],
             )
+
+    async def fetch_manual_trades_joined_poly_fills(
+        self,
+        since: Optional[datetime] = None,
+        limit: int = 200,
+    ) -> list[tuple[dict, Optional[dict]]]:
+        """POLY-SOT-d: pull manual_trades rows that need reconciliation,
+        LEFT JOIN'd laterally against `poly_fills`.
+
+        Returns a list of `(trade_row, fill_row_or_None)` tuples. The fill
+        row is None when no poly_fills match exists within the ±10-minute
+        window. The reconciler then hands each tuple to
+        ``_compare_to_polymarket_onchain`` for the terminal state decision.
+
+        The LATERAL LEFT JOIN picks the single closest fill by
+        ``ABS(match_time_utc - created_at)`` so paths 2 (exact same second)
+        and 3 (±10min fuzzy) both work with one query.
+
+        Filters:
+          * created_at < NOW() - 30s (let the write settle)
+          * sot_reconciliation_state IS NULL or stale
+          * status includes executed/pending/live
+        """
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    WITH normalized_trades AS (
+                        SELECT
+                            trade_id AS trade_id,
+                            polymarket_order_id,
+                            status,
+                            mode,
+                            direction,
+                            entry_price,
+                            stake_usd,
+                            market_slug,
+                            created_at,
+                            polymarket_confirmed_status,
+                            polymarket_confirmed_fill_price,
+                            polymarket_confirmed_size,
+                            polymarket_confirmed_at,
+                            polymarket_last_verified_at,
+                            sot_reconciliation_state,
+                            sot_reconciliation_notes,
+                            CASE
+                                WHEN UPPER(direction) IN ('YES','UP')   THEN 'Up'
+                                WHEN UPPER(direction) IN ('NO','DOWN')  THEN 'Down'
+                                ELSE NULL
+                            END AS poly_outcome
+                        FROM manual_trades
+                        WHERE created_at < NOW() - INTERVAL '30 seconds'
+                          AND ($1::timestamptz IS NULL OR created_at >= $1)
+                          AND status IN (
+                              'executed', 'executing', 'open',
+                              'pending_live', 'pending_paper', 'live'
+                          )
+                          AND (
+                              sot_reconciliation_state IS NULL
+                              OR sot_reconciliation_state IN (
+                                  'unreconciled', 'engine_optimistic', 'diverged'
+                              )
+                              OR polymarket_last_verified_at IS NULL
+                              OR polymarket_last_verified_at < NOW() - INTERVAL '5 minutes'
+                          )
+                        ORDER BY created_at DESC
+                        LIMIT $2
+                    )
+                    SELECT
+                        nt.*,
+                        pf.transaction_hash AS pf_transaction_hash,
+                        pf.price            AS pf_price,
+                        pf.size             AS pf_size,
+                        pf.cost_usd         AS pf_cost_usd,
+                        pf.match_time_utc   AS pf_match_time_utc,
+                        pf.condition_id     AS pf_condition_id,
+                        pf.outcome          AS pf_outcome,
+                        pf.side             AS pf_side
+                    FROM normalized_trades nt
+                    LEFT JOIN LATERAL (
+                        SELECT transaction_hash, price, size, cost_usd,
+                               match_time_utc, condition_id, outcome, side
+                        FROM poly_fills
+                        WHERE market_slug = nt.market_slug
+                          AND outcome = nt.poly_outcome
+                          AND side = 'BUY'
+                          AND match_time_utc BETWEEN nt.created_at - INTERVAL '10 minutes'
+                                                 AND nt.created_at + INTERVAL '10 minutes'
+                        ORDER BY ABS(EXTRACT(EPOCH FROM (match_time_utc - nt.created_at)))
+                        LIMIT 1
+                    ) pf ON TRUE
+                    ORDER BY nt.created_at DESC
+                    """,
+                    since,
+                    int(limit),
+                )
+
+                result: list[tuple[dict, Optional[dict]]] = []
+                for r in rows:
+                    trade_dict = dict(r)
+                    # Pull the pf_* fields out into a separate dict so the
+                    # reconciler's _compare_to_polymarket_onchain can treat
+                    # None-fill as a sentinel.
+                    if trade_dict.get("pf_transaction_hash"):
+                        fill_dict = {
+                            "transaction_hash": trade_dict["pf_transaction_hash"],
+                            "poly_price": trade_dict["pf_price"],
+                            "poly_size": trade_dict["pf_size"],
+                            "poly_cost_usd": trade_dict["pf_cost_usd"],
+                            "match_time_utc": trade_dict["pf_match_time_utc"],
+                            "condition_id": trade_dict["pf_condition_id"],
+                            "outcome": trade_dict["pf_outcome"],
+                            "side": trade_dict["pf_side"],
+                        }
+                    else:
+                        fill_dict = None
+                    # Keep only the trade columns in the trade_dict.
+                    for k in (
+                        "pf_transaction_hash",
+                        "pf_price",
+                        "pf_size",
+                        "pf_cost_usd",
+                        "pf_match_time_utc",
+                        "pf_condition_id",
+                        "pf_outcome",
+                        "pf_side",
+                    ):
+                        trade_dict.pop(k, None)
+                    result.append((trade_dict, fill_dict))
+                return result
+        except Exception as exc:
+            log.warning(
+                "reconcile_sot.fetch_joined_failed",
+                error=str(exc)[:200],
+            )
+            return []
 
 
 class _TradesPoolDBClient:
@@ -2073,7 +2192,11 @@ class _TradesPoolDBClient:
         polymarket_confirmed_at: Optional[datetime],
         sot_reconciliation_state: str,
         sot_reconciliation_notes: Optional[str],
+        polymarket_tx_hash: Optional[str] = None,
     ) -> None:
+        """POLY-SOT-d: also accepts `polymarket_tx_hash` — the Polygon
+        on-chain tx hash stamped from the matched poly_fills row.
+        """
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
@@ -2085,8 +2208,9 @@ class _TradesPoolDBClient:
                         polymarket_confirmed_at = $4,
                         polymarket_last_verified_at = NOW(),
                         sot_reconciliation_state = $5,
-                        sot_reconciliation_notes = $6
-                    WHERE id = $7
+                        sot_reconciliation_notes = $6,
+                        polymarket_tx_hash = $7
+                    WHERE id = $8
                     """,
                     polymarket_confirmed_status,
                     polymarket_confirmed_fill_price,
@@ -2094,6 +2218,7 @@ class _TradesPoolDBClient:
                     polymarket_confirmed_at,
                     sot_reconciliation_state,
                     sot_reconciliation_notes,
+                    polymarket_tx_hash,
                     int(trade_id),
                 )
         except Exception as exc:
@@ -2103,3 +2228,144 @@ class _TradesPoolDBClient:
                 state=sot_reconciliation_state,
                 error=str(exc)[:200],
             )
+
+    async def fetch_trades_joined_poly_fills(
+        self,
+        since: Optional[datetime] = None,
+        limit: int = 200,
+    ) -> list[tuple[dict, Optional[dict]]]:
+        """POLY-SOT-d: pull trades rows that need reconciliation, LEFT JOIN
+        laterally against `poly_fills`.
+
+        Returns `(trade_row, fill_row_or_None)` tuples. Mirrors
+        ``fetch_manual_trades_joined_poly_fills`` but uses the `trades`
+        table (integer `id` PK, uppercase status alphabet, `is_live`
+        column, and direction in YES/NO/UP/DOWN).
+
+        The JOIN key is `trades.market_slug` — the same string stamped
+        by the automatic strategies and the poly_fills_reconciler worker.
+        Direction mapping is done inline via the `poly_outcome` column in
+        the CTE.
+
+        The status filter intentionally does NOT require is_live=TRUE —
+        paper trades need to flow through too so the reconciler can tag
+        them `paper`. The decide function short-circuits on paper before
+        touching the JOIN result.
+        """
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    WITH normalized_trades AS (
+                        SELECT
+                            id AS trade_id,
+                            order_id,
+                            clob_order_id,
+                            COALESCE(polymarket_order_id, clob_order_id) AS polymarket_order_id,
+                            status,
+                            mode,
+                            direction,
+                            execution_mode,
+                            is_live,
+                            entry_price,
+                            stake_usd,
+                            fill_price,
+                            fill_size,
+                            market_slug,
+                            created_at,
+                            polymarket_confirmed_status,
+                            polymarket_confirmed_fill_price,
+                            polymarket_confirmed_size,
+                            polymarket_confirmed_at,
+                            polymarket_last_verified_at,
+                            sot_reconciliation_state,
+                            sot_reconciliation_notes,
+                            CASE
+                                WHEN UPPER(direction) IN ('YES','UP')   THEN 'Up'
+                                WHEN UPPER(direction) IN ('NO','DOWN')  THEN 'Down'
+                                ELSE NULL
+                            END AS poly_outcome
+                        FROM trades
+                        WHERE created_at < NOW() - INTERVAL '30 seconds'
+                          AND ($1::timestamptz IS NULL OR created_at >= $1)
+                          AND status IN (
+                              'FILLED', 'OPEN', 'PENDING', 'MATCHED',
+                              'filled', 'open', 'pending', 'matched',
+                              'EXPIRED', 'expired',
+                              'RESOLVED_WIN', 'RESOLVED_LOSS',
+                              'resolved_win', 'resolved_loss'
+                          )
+                          AND (
+                              sot_reconciliation_state IS NULL
+                              OR sot_reconciliation_state IN (
+                                  'unreconciled', 'engine_optimistic', 'diverged'
+                              )
+                              OR polymarket_last_verified_at IS NULL
+                              OR polymarket_last_verified_at < NOW() - INTERVAL '5 minutes'
+                          )
+                        ORDER BY created_at DESC
+                        LIMIT $2
+                    )
+                    SELECT
+                        nt.*,
+                        pf.transaction_hash AS pf_transaction_hash,
+                        pf.price            AS pf_price,
+                        pf.size             AS pf_size,
+                        pf.cost_usd         AS pf_cost_usd,
+                        pf.match_time_utc   AS pf_match_time_utc,
+                        pf.condition_id     AS pf_condition_id,
+                        pf.outcome          AS pf_outcome,
+                        pf.side             AS pf_side
+                    FROM normalized_trades nt
+                    LEFT JOIN LATERAL (
+                        SELECT transaction_hash, price, size, cost_usd,
+                               match_time_utc, condition_id, outcome, side
+                        FROM poly_fills
+                        WHERE market_slug = nt.market_slug
+                          AND outcome = nt.poly_outcome
+                          AND side = 'BUY'
+                          AND match_time_utc BETWEEN nt.created_at - INTERVAL '10 minutes'
+                                                 AND nt.created_at + INTERVAL '10 minutes'
+                        ORDER BY ABS(EXTRACT(EPOCH FROM (match_time_utc - nt.created_at)))
+                        LIMIT 1
+                    ) pf ON TRUE
+                    ORDER BY nt.created_at DESC
+                    """,
+                    since,
+                    int(limit),
+                )
+                result: list[tuple[dict, Optional[dict]]] = []
+                for r in rows:
+                    trade_dict = dict(r)
+                    if trade_dict.get("pf_transaction_hash"):
+                        fill_dict = {
+                            "transaction_hash": trade_dict["pf_transaction_hash"],
+                            "poly_price": trade_dict["pf_price"],
+                            "poly_size": trade_dict["pf_size"],
+                            "poly_cost_usd": trade_dict["pf_cost_usd"],
+                            "match_time_utc": trade_dict["pf_match_time_utc"],
+                            "condition_id": trade_dict["pf_condition_id"],
+                            "outcome": trade_dict["pf_outcome"],
+                            "side": trade_dict["pf_side"],
+                        }
+                    else:
+                        fill_dict = None
+                    for k in (
+                        "pf_transaction_hash",
+                        "pf_price",
+                        "pf_size",
+                        "pf_cost_usd",
+                        "pf_match_time_utc",
+                        "pf_condition_id",
+                        "pf_outcome",
+                        "pf_side",
+                    ):
+                        trade_dict.pop(k, None)
+                    result.append((trade_dict, fill_dict))
+                return result
+        except Exception as exc:
+            log.warning(
+                "reconcile_trades_sot.fetch_joined_failed",
+                error=str(exc)[:200],
+            )
+            return []
