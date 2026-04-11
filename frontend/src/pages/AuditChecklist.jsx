@@ -233,6 +233,7 @@ const TASKS = [
     fix: 'Add `ts,` at the top of column list, add `$11` to VALUES clause. Now matches the 12-column / 12-value / 11-param pattern of the ticks_clob INSERT above.',
     progressNotes: [
       { date: '2026-04-11', note: 'Fixed in PR #26 rev-2. 15-line diff in engine/data/feeds/clob_feed.py with inline comment tagging PE-01. Needs deploy-engine workflow + Montreal restart to verify clob_book_snapshots row count > 0.' },
+      { date: '2026-04-11', note: 'VERIFIED LIVE. After Montreal host reboot (INC-01) + git pull develop + scripts/restart_engine.sh, engine has been running for 7 min with clob_feed.write_error count = 0. Previous error rate was 1090/hour. PE-01 fix is live in production.' },
     ],
   },
   {
@@ -253,6 +254,7 @@ const TASKS = [
     fix: 'Replaced `LIKE $1 || \'%\' OR $2 LIKE metadata->>\'token_id\' || \'%\'` with `LIKE $1::text || \'%\' OR $1::text LIKE metadata->>\'token_id\' || \'%\'`. Single parameter, explicit cast, matches the working pattern at lines 185-186.',
     progressNotes: [
       { date: '2026-04-11', note: 'Fixed in PR #26 rev-2 alongside PE-01. Needs engine restart via scripts/restart_engine.sh to clear the error stream. Will be verified automatically once CI-01 lands and every deploy runs a post-deploy error-signature probe.' },
+      { date: '2026-04-11', note: 'VERIFIED LIVE. After the same restart that verified PE-01, reconciler.resolve_db_error count = 0 across the last 5000 log lines. Previous error rate was 4/hour. PE-02 fix is live in production.' },
     ],
   },
   {
@@ -270,6 +272,48 @@ const TASKS = [
       'Not a bug; log noise from Polymarket API connection drops',
     ],
     fix: 'No code change. Consider downgrading log level from warning to debug.',
+  },
+  {
+    id: 'PE-04',
+    category: 'production-errors',
+    severity: 'MEDIUM',
+    status: 'OPEN',
+    title: 'elm_recorder.write_error — invalid JSON quoting',
+    files: [
+      { path: 'engine/data/feeds/elm_prediction_recorder.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Error: "invalid input syntax for type json — DETAIL: Token \'\\\'\' is invalid."',
+      'Observed on the fresh 2026-04-11 12:23 restart within 23 minutes of startup',
+      'Happens in a single-quoted JSON value — python dict → JSON conversion is using repr() or str() somewhere instead of json.dumps()',
+      'Non-fatal: the recorder catches the write and continues; but the prediction is lost on the floor',
+      'This is a new error that was not in the earlier audit (2026-04-11 ~06:30 UTC log scan)',
+    ],
+    fix: 'grep elm_prediction_recorder.py for any INSERT that builds a JSON literal. Switch any string.format / f-string JSON construction to json.dumps(). Typical pattern: cursor.execute("INSERT ... metadata = \'%s\'" % python_dict) → cursor.execute("INSERT ... metadata = $1", json.dumps(python_dict)). Add a test_elm_recorder_json_escape test.',
+  },
+  {
+    id: 'INC-01',
+    category: 'production-errors',
+    severity: 'HIGH',
+    status: 'DONE',
+    title: 'Montreal host network outage → engine crash (2026-04-11 11:05–12:11 UTC)',
+    files: [
+      { path: '/home/novakash/engine-20260411-122257.log', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Engine stopped responding at 12:00:54 UTC after 55 min of cascading network failures',
+      'Symptoms (11:05 → 12:00): tiingo_feed.poll_error (empty), chainlink.poll_error (empty), coinglass.poll_error (empty), v2.probability.timeout, binance_ws.disconnected "timed out during opening handshake", polymarket_ws.disconnected same',
+      'Smoking gun at 11:54:06 UTC: chainlink_feed.asset_error "Temporary failure in name resolution" for polygon-bor-rpc.publicnode.com — DNS broken on the host itself',
+      'Also: db.write_window_snapshot_failed → even asyncpg DB writes failing',
+      'Post-crash state: process dead, sshd banner exchange timing out (host networking wedged), SSM agent unregistered, EC2 status checks "ok" (kernel healthy, userspace broken)',
+      'Recovery: aws ec2 reboot-instances i-0785ed930423ae9fd at 12:11:11 UTC. Rebooted in ~1 min, sshd responsive at 12:17 UTC, engine restarted cleanly at 12:23 UTC via git pull develop + scripts/restart_engine.sh',
+      'Root cause: unclear whether this was a networking blip at the AWS edge or an internal runaway process exhausting FDs/sockets on the t3.medium',
+      'Current state: engine back trading, PE-01 + PE-02 fixes verified live (0 errors each)',
+    ],
+    fix: 'CI-01 error-signature gate (PR #27) will catch the next similar event automatically. Additional hardening candidates for a future task: (a) add a simple systemd unit wrapping scripts/restart_engine.sh so crash recovery is automatic, (b) enable SSM agent + the Systems Manager instance role so we have a second remote path when sshd wedges, (c) CloudWatch alarm on engine.log write silence >120s.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Engine back trading at 12:23 UTC. 7 minutes of clean runtime confirmed via tail of engine.log: clob_feed.prices firing every 2-3s, chainlink_feed.written 4 rows every 5s, window.change at 12:30:00 (new 5m window 1775910600 opened at $72861.85), window.monitoring_started for BTC-1775910600. PE-01/PE-02 error-signature gates both at 0.' },
+    ],
   },
 
   // ── decision-surface ────────────────────────────────────────────────────
@@ -592,28 +636,60 @@ const TASKS = [
       { date: '2026-04-11', note: 'Built in PR #26 rev-2 alongside the checklist extension. Reuses the theme tokens from V4Panel but gets the full viewport. Nav entry "V4 Fusion 🧭" added under ANALYSIS in the sidebar, route /data/v4 wired in App.jsx. Data path: useApi → /api/v4/snapshot → hub/api/margin.py:125 → TIMESFM_URL /v4/snapshot.' },
     ],
   },
+  {
+    id: 'DEP-01',
+    category: 'frontend',
+    severity: 'MEDIUM',
+    status: 'DONE',
+    title: '/deployments AWS services overview page',
+    files: [
+      { path: 'frontend/src/pages/Deployments.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/App.jsx', line: 34, repo: 'novakash' },
+      { path: 'frontend/src/components/Layout.jsx', line: 58, repo: 'novakash' },
+      { path: 'docs/CI_CD.md', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Static registry mirroring docs/CI_CD.md — one card per service with repo/branch/host/workflow/secrets/notes',
+      'CI/CD status chips: active (green) | drafted (amber) | legacy-Railway (orange)',
+      'Live health probes via existing hub endpoints (15s interval) for services that expose them: timesfm via /v4/snapshot, margin-engine via /margin/status, frontend via direct fetch /, hub via /api/system/status',
+      'Services without reachable health endpoints (engine, macro-observer, data-collector) show workflow state only — authoritative truth lives in GitHub Actions',
+      'Status summary strip: TOTAL / ACTIVE / DRAFTED / LEGACY counts',
+      'Refresh button + lastRefresh timestamp',
+      'Footer points at docs/CI_CD.md as the authoritative spec + /audit for in-flight tasks',
+      '7 services registered: timesfm, macro-observer, data-collector, margin-engine, hub, frontend, engine',
+    ],
+    fix: 'Shipped in PR #27 rev-2. Future iterations should pull most-recent GitHub Actions workflow run status + CI-01 error-signature counts from the GH Actions REST API once CI-01 starts firing.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Built during the post-INC-01 engine recovery session. Route wired under SYSTEM sidebar section with "🚀 Deployments" label. Built on top of the CI-01 PR #27 branch so it ships alongside deploy-engine.yml (which it visualises).' },
+    ],
+  },
 
   // ── ci-cd ───────────────────────────────────────────────────────────────
   {
     id: 'CI-01',
     category: 'ci-cd',
     severity: 'HIGH',
-    status: 'OPEN',
+    status: 'IN_PROGRESS',
     title: 'Montreal CI/CD automation for engine/ (port deploy-macro-observer.yml pattern)',
     files: [
+      { path: '.github/workflows/deploy-engine.yml', line: 1, repo: 'novakash' },
       { path: 'docs/CI_CD.md', line: 20, repo: 'novakash' },
       { path: '.github/workflows/deploy-macro-observer.yml', line: 1, repo: 'novakash' },
-      { path: '.github/workflows/deploy-engine.yml', line: 1, repo: 'novakash' },
+      { path: 'scripts/restart_engine.sh', line: 1, repo: 'novakash' },
     ],
     evidence: [
       'docs/CI_CD.md (6816f86) flags engine/ as "the only major service without a GitHub Actions deploy workflow"',
       'Engine currently relies on Railway git-watcher auto-deploy with no smoke test, no secrets check, no post-deploy health probe, no rollback path',
       'docs/CI_CD.md: "has been observed CRASHED or FAILED in recent deploy history"',
-      'deploy-macro-observer.yml is the canonical template (~200 lines, well-commented)',
-      'Same Montreal box (3.98.114.0) already used by timesfm-service + macro-observer + data-collector; proven deploy pattern',
-      'scripts/restart_engine.sh already encapsulates the process restart — CI can just SSH and run it',
+      'Workflow drafted: 1 job, 13 steps, 15 env secrets, valid YAML confirmed via python3 yaml.safe_load',
+      'Key differences from the macro-observer template: engine is NOT in Docker (raw python3 process via scripts/restart_engine.sh), two-user host (ssh as ubuntu, engine runs as novakash via sudo -u novakash), post-deploy health probe is pgrep process-count + log-grep instead of docker healthcheck',
+      'Error-signature gate thresholds encode expected post-PR #26 state: clob_feed.write_error=0, reconciler.resolve_db_error=0, orphan_fills_error<=5, price_source_disagreement<=30 (will tighten to <5 after DQ-01 ships)',
+      'Requires 15 new GitHub Actions secrets: ENGINE_HOST, ENGINE_SSH_KEY, plus engine runtime credentials (DATABASE_URL, COINGLASS_API_KEY, BINANCE_*, POLY_*, TELEGRAM_*)',
     ],
-    fix: 'Create .github/workflows/deploy-engine.yml mirroring deploy-macro-observer.yml: (1) Require runtime secrets step; (2) base64 SSH key decode; (3) rsync engine/ to /home/novakash/novakash/engine with --exclude .env; (4) template .env from GitHub Actions secrets via sudo tee; (5) invoke scripts/restart_engine.sh via ssh; (6) post-deploy health probe checking sudo systemctl is-active OR pgrep python3.*engine.*main.py; (7) grep last 5 min of engine.log for known error signatures (clob_feed.write_error, reconciler.resolve_db_error, evaluate.price_source_disagreement) and fail the deploy if counts exceed thresholds; (8) tail 30 log lines for success diagnostics. Gate to push events on develop with path filter `engine/**`. Add concurrency group to prevent racing rsyncs. Add ENGINE_HOST + ENGINE_SSH_KEY secrets to billybrichards/novakash.',
+    fix: 'Draft shipped in PR #27. IN_PROGRESS because the workflow only verifies on first fire against the real host — until ENGINE_HOST + ENGINE_SSH_KEY are populated in Actions secrets and a push to develop exercises the deploy, this is drafted-not-proven. Move to DONE after: (a) ENGINE_SSH_KEY bootstrapped onto the novakash-montreal-vnc host authorized_keys for ubuntu user, (b) first manual workflow_dispatch succeeds end-to-end, (c) PE-01/PE-02 error-signature gate passes against the live log.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Drafted .github/workflows/deploy-engine.yml on branch claude/ci/deploy-engine-montreal. 13 steps: checkout, Require runtime secrets, Write SSH key, Ensure host directories, Rsync engine, Rsync scripts, Reset host .env, Template .env from secrets, Restart via scripts/restart_engine.sh, Wait 45s, Process-count health probe, Error-signature log-grep gate, Tail recent logs. Uses injection-defence pattern (env: pull-up for all secrets, --rsync-path="sudo rsync" for novakash-owned paths). Non-secret runtime flags (V10_*, FIVE_MIN_*, LIVE_TRADING_ENABLED, thresholds) are intentionally NOT templated — they stay hand-managed on the host because they change more often than CI deploy cadence. Waiting on operator action to (a) bootstrap ENGINE_SSH_KEY onto the novakash-montreal-vnc box authorized_keys and (b) add the 15 secrets to billybrichards/novakash Actions secrets.' },
+    ],
   },
 ];
 

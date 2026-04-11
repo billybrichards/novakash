@@ -31,6 +31,7 @@ import MarginEngine from './pages/margin-engine/MarginEngine.jsx';
 import CompositeSignals from './pages/CompositeSignals.jsx';
 import AuditChecklist from './pages/AuditChecklist.jsx';
 import V4Surface from './pages/data-surfaces/V4Surface.jsx';
+import Deployments from './pages/Deployments.jsx';
 
 export default function App() {
   return (
@@ -79,6 +80,7 @@ export default function App() {
             <Route path="recommendations" element={<Recommendations />} />
             <Route path="audit" element={<AuditChecklist />} />
             <Route path="data/v4" element={<V4Surface />} />
+            <Route path="deployments" element={<Deployments />} />
           </Route>
 
           {/* 404 fallback */}

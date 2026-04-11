@@ -46,6 +46,43 @@ Deep clean-architect audit covering:
 - Both fixes ship in the same PR #26 rev-2 as the checklist update to avoid deploy races. Neither is verified in production until CI-01 lands (see below) — until then, verification is a manual `scripts/restart_engine.sh` via Montreal rules + `journalctl -u` tail.
 - **FE-02 DONE** — audit checklist page is live locally (`npm run build` green, rendered end-to-end via playwright against the dev server, filter + expand interactions confirmed). Merge of PR #26 lands it at `/audit` on the AWS frontend host.
 
+### 2026-04-11 — INC-01 Montreal host crash + recovery + DEP-01 shipped
+
+- **INC-01 HIGH DONE** — Montreal host networking wedged at ~11:05 UTC, engine died at 12:00:54 UTC.
+- **Symptoms** (engine.log 11:05 → 12:00): tiingo/chainlink/coinglass poll errors (empty), v2.probability.timeout, binance_ws.disconnected "timed out during opening handshake", polymarket_ws.disconnected same. Smoking gun at 11:54:06 UTC — `chainlink_feed.asset_error: Temporary failure in name resolution` for polygon-bor-rpc.publicnode.com. DNS broken on the host itself.
+- **Diagnosis path**: aws ec2 describe-instance-status showed `running/ok/ok` but SSH banner exchange timed out. AWS SSM agent was unregistered (`Systems Manager's instance management role is not configured for account`), so the secondary remote path was unavailable. Had to reboot via `aws ec2 reboot-instances i-0785ed930423ae9fd`.
+- **Recovery**: reboot at 12:11:11 UTC, sshd responsive at 12:17 UTC. SSH'd in, confirmed engine dead + log archive. `git pull origin develop` (picked up `816135e` = PR #26 merge with PE-01/PE-02 fixes). `sudo bash scripts/restart_engine.sh` at 12:22:57 UTC — log rotated to `engine-20260411-122257.log` (380K), pkill + start + verify. Engine PID 2384, 6.3% CPU, 4.3% MEM, processing cleanly.
+- **Verification (7 min post-restart)**: `clob_feed.write_error = 0` (down from 1090/hour, PE-01 fix live), `reconciler.resolve_db_error = 0` (down from 4/hour, PE-02 fix live), `orphan_fills_error = 0`, `binance_ws.disconnected = 0`, `polymarket_ws.disconnected = 0`, `tiingo_feed.poll_error = 0`, `price_source_disagreement = 37` (just over the 30 threshold, expected pre-DQ-01). Live signals: `clob_feed.prices` every 2-3s, `chainlink_feed.written` 4 rows every 5s, `window.change` at 12:30:00 ts=1775910600 open=$72861.85, `window.monitoring_started` for BTC-1775910600.
+- **New bug surfaced**: PE-04 `elm_recorder.write_error — invalid input syntax for type json, DETAIL: Token ' is invalid.` — a quoting bug in the ELM prediction recorder. Non-fatal (catch-and-continue) but means individual predictions are being silently dropped. Needs a test-driven fix switching any string-interpolated JSON to `json.dumps()`.
+- **DEP-01 DONE** — built the `/deployments` frontend page during post-INC-01 recovery. Static registry mirroring `docs/CI_CD.md` with live health probes (15s interval) for services that expose them through the hub proxy. 7 services: timesfm (active + probe), macro-observer (active, no probe), data-collector (active, no probe), margin-engine (active + probe), hub (legacy Railway + probe), frontend (active + direct probe), engine (drafted via CI-01, no probe yet). Status summary strip (TOTAL / ACTIVE / DRAFTED / LEGACY counts). Nav entry `🚀 Deployments` under SYSTEM. Footer points at `docs/CI_CD.md` + `/audit`.
+- **Hardening candidates for future INC-XX prevention** (NOT in scope for this PR): (a) systemd unit wrapping `scripts/restart_engine.sh` so crash recovery is automatic, (b) enable SSM agent with the Systems Manager instance role so we have a second remote path when sshd wedges, (c) CloudWatch alarm on engine.log write silence >120s, (d) the CI-01 error-signature gate itself — once active, every future deploy auto-validates against the known-bad list.
+- **PRs:** #26 merged (`816135e`). PR #27 is live on `claude/ci/deploy-engine-montreal`, base currently `claude/frontend/audit-checklist-page` (needs retarget to `develop` now that #26 is merged). This session's work extends PR #27 with the `/deployments` page, DEP-01 / PE-04 / INC-01 checklist entries, and the PE-01 / PE-02 "verified live" progressNotes.
+
+### 2026-04-11 — CI-01 workflow drafted (PR #27)
+
+- **CI-01 OPEN → IN_PROGRESS** — `.github/workflows/deploy-engine.yml` drafted on branch `claude/ci/deploy-engine-montreal`, opened as PR #27 against `develop`. 13-step workflow ported from `deploy-macro-observer.yml`:
+  1. `actions/checkout@v4`
+  2. `Require runtime secrets` — fails loud if any of 9 required secrets is missing
+  3. `Write SSH key` with base64 → raw-PEM fallback
+  4. `Ensure host directories exist` (sudo mkdir + chown)
+  5. `Rsync engine code to host` with `--rsync-path="sudo rsync"` for novakash-owned paths
+  6. `Rsync scripts directory` (for `restart_engine.sh`)
+  7. `Reset host .env and prune old backups`
+  8. `Template .env from GitHub Actions secrets` — idempotent sed-or-append via a streamed bash script, secret never appears on remote command line
+  9. `Restart engine via scripts/restart_engine.sh`
+  10. `Wait for engine startup` (45s)
+  11. Process-count health probe — `pgrep -f "python3 main.py"` must return exactly 1
+  12. **Error-signature log-grep gate** — the regression guard the engine has never had. Fails the deploy if any of `clob_feed.write_error`, `reconciler.resolve_db_error`, `reconciler.orphan_fills_error`, `evaluate.price_source_disagreement`, `evaluate.no_current_price`, `reconciler.no_trade_match` exceed per-signature thresholds in the last ~10k lines.
+  13. `Tail recent logs` for success diagnostics
+- Workflow validates as YAML (`python3 -c "yaml.safe_load"`) — 1 job / 13 steps / 15 env keys. Uses the GitHub Actions injection-defence pattern throughout (all secrets pulled into `env:` at job level).
+- **Left IN_PROGRESS, not DONE**, because the workflow only proves itself on the first real deploy run. Cannot self-verify locally. Flip to DONE after:
+  1. `ENGINE_HOST` + `ENGINE_SSH_KEY` added to `billybrichards/novakash` Actions secrets
+  2. First `workflow_dispatch` run succeeds end-to-end
+  3. Error-signature gate passes against the live `/home/novakash/engine.log` (needs PE-01 + PE-02 from PR #26 merged first, otherwise the thresholds will trip)
+- **Dependency order:** merge PR #26 first (PE-01 + PE-02 + checklist), then merge PR #27 (CI-01 + progress notes). PR #27 is branched off PR #26 to avoid conflicts on `AuditChecklist.jsx` and this file.
+- Non-secret runtime flags (`V10_DUNE_ENABLED`, `FIVE_MIN_*`, `LIVE_TRADING_ENABLED`, thresholds, `DELTA_PRICE_SOURCE`) are intentionally NOT templated from secrets — they change more often than the CI deploy cadence and stay hand-managed on the host. `set_env` uses sed-replace-or-append so hand-managed values are preserved across deploys.
+- After CI-01 lands and verifies, the DQ-01 rollout should tighten the `price_source_disagreement` threshold from 30 to <5 and gate it behind `V11_POLY_SPOT_ONLY_CONSENSUS=true` for rollback.
+
 ### 2026-04-11 — Rev-3: pricing clarification + DQ-05 seeded
 
 - **DQ-01 scope corrected.** The original task description implied a universal "drop delta_binance" fix. That's wrong. The two engines trade different instruments and need different price references:
