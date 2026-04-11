@@ -91,6 +91,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "polymarket",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "ticks_* -> gate_pipeline -> signal_evaluations -> trades",
         "purpose": (
             "Per-window gate decision + outcome (one row per window per "
             "eval_offset). Primary backtest evidence base — the 865-outcome "
@@ -127,6 +129,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "polymarket",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "ticks_* -> gate_pipeline -> window_snapshots",
         "purpose": (
             "Coarser per-window snapshot — one row per resolved window. "
             "Holds the engine's final view: open/close, vpin, regime, all "
@@ -161,6 +165,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "polymarket",
         "status": "active",
+        "sot_class": "DERIVED",
+        "data_flow": "elm_prediction_recorder -> ticks_elm_predictions",
         "purpose": (
             "Sequoia v5.2 / ELM model probability predictions. Legacy "
             "'elm' name retained from PE-06 fix because the table existed "
@@ -191,6 +197,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "polymarket",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "hub POST -> manual_trades -> orchestrator poller -> execution",
         "purpose": (
             "Operator-placed manual trades (paper or live). One row per "
             "click of the ManualTradePanel. The hub writes the row, the "
@@ -221,6 +229,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "polymarket",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "hub POST -> manual_trade_snapshots (paired with manual_trades)",
         "purpose": (
             "LT-03 decision-snapshot table. One row per manual_trades row. "
             "JSONB captures full v4 fusion surface, v3 composite snapshot, "
@@ -250,6 +260,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "data-collector",
         "category": "data",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "data-collector -> market_data -> engine token_id lookup",
         "purpose": (
             "One row per Polymarket window — slug, condition_id, up/down "
             "prices, best bid/ask, spread, volume, liquidity, up_token_id, "
@@ -281,6 +293,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "data-collector",
         "category": "data",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "data-collector -> market_snapshots (append-only intra-window)",
         "purpose": (
             "Append-only intra-window price snapshots — multiple readings "
             "per window (every collector poll). Useful for debugging "
@@ -302,6 +316,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "exec",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "clob_feed -> clob_book_snapshots -> gate_pipeline + post-mortem",
         "purpose": (
             "CLOB order book snapshots per window. PE-01 fix added this. "
             "Captures top-of-book + depth for both UP and DOWN tokens, "
@@ -327,6 +343,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "exec",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "clob_executor -> clob_execution_log -> fok_ladder_attempts",
         "purpose": (
             "Every FOK / GTC order placement attempt: target price, max/"
             "min cap, CLOB state at submission, fok_attempt_num, fill "
@@ -350,6 +368,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "exec",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "clob_executor -> fok_ladder_attempts (child of clob_execution_log)",
         "purpose": (
             "Per-attempt rows for the FOK ladder. One row per ladder rung, "
             "linked back to the parent clob_execution_log row."
@@ -371,6 +391,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "exec",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "order_router -> order_audit_log",
         "purpose": (
             "Cross-mode order submission audit (FOK / GTC / GTD). One row "
             "per order submitted, tracking status transitions and fill "
@@ -394,6 +416,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "exec",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "data-api reconciler -> poly_fills -> pnl (ground truth)",
         "purpose": (
             "Authoritative source-of-truth record of every Polymarket CLOB "
             "fill, sourced from data-api.polymarket.com. Append-only and "
@@ -425,6 +449,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "polymarket",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "polymarket public API -> poly_trade_history -> pnl reconciliation",
         "purpose": (
             "Polymarket trade history snapshot — fetched every 5min from "
             "Polymarket public API for the proxy wallet. Append-only by "
@@ -446,6 +472,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "polymarket",
         "status": "active",
+        "sot_class": "DERIVED",
+        "data_flow": "signal_evaluations + window_snapshots -> post_resolution_analyses",
         "purpose": (
             "AI-written post-resolution analysis per window — what the "
             "oracle said, n_ticks, missed_profit_usd, blocked_loss_usd, "
@@ -469,6 +497,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "polymarket",
         "status": "active",
+        "sot_class": "DERIVED",
+        "data_flow": "ticks_* -> window_predictions (cross-source accuracy)",
         "purpose": (
             "Tiingo + Chainlink directional prediction per window — was "
             "Tiingo right? Was Chainlink right? Was our v2 signal right? "
@@ -489,6 +519,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "polymarket",
         "status": "legacy",
+        "sot_class": "LEGACY",
+        "data_flow": "gate_pipeline -> gate_audit (superseded by signal_evaluations)",
         "purpose": (
             "v8.0 per-window gate pass/fail audit trail. Predates "
             "signal_evaluations which captures the same information at "
@@ -516,6 +548,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "polymarket",
         "status": "active",
+        "sot_class": "DERIVED",
+        "data_flow": "trades INSERT trigger -> trade_bible (auto-populated)",
         "purpose": (
             "Auto-populated derived table joining trades + entry_reason "
             "metadata, with config_version (v10/v9/v8/v2.2), eval_tier "
@@ -547,6 +581,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "data",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "binance WS -> tick_recorder -> ticks_binance -> vpin calc",
         "purpose": (
             "Buffered Binance aggTrade ticks (price, qty, is_buyer_maker, "
             "vpin). Batch-flushed every 1s by the tick recorder. Source "
@@ -571,6 +607,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "data",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "coinglass API -> tick_recorder -> ticks_coinglass -> cg features",
         "purpose": (
             "Coinglass derivatives data: OI, liquidations, long/short %, "
             "funding, top-trader %, taker buy/sell. One row per poll per "
@@ -593,6 +631,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "data",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "gamma API -> tick_recorder -> ticks_gamma -> price discovery",
         "purpose": (
             "Polymarket gamma-API price ticks per window: up_price, "
             "down_price, slug, up/down token ids, source attribution. "
@@ -613,6 +653,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "data",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "timesfm-service HTTP -> tick_recorder -> ticks_timesfm -> gate_timesfm",
         "purpose": (
             "TimesFM forecast ticks per window: predicted_close, p10/p50/"
             "p90 quantiles, direction, confidence, fetch latency. Drives "
@@ -641,6 +683,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "polymarket",
         "status": "active",
+        "sot_class": "OPERATIONAL",
+        "data_flow": "playwright session -> playwright_state -> hub dashboard",
         "purpose": (
             "Single-row snapshot of the Playwright browser session: "
             "logged_in, browser_alive, USDC balance, positions JSON, "
@@ -664,6 +708,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "polymarket",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "playwright redeem sweep -> redeem_events (append-only log)",
         "purpose": (
             "Append-only log of redeem sweeps run via the Playwright "
             "browser — redeemed_count, failed_count, total_value, full "
@@ -683,6 +729,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "engine",
         "category": "polymarket",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "clob_reconciler -> wallet_snapshots -> pnl wallet curve",
         "purpose": (
             "USDC balance polled directly from the Polymarket CLOB by the "
             "reconciler. Append-only timeseries used to plot wallet "
@@ -709,6 +757,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "margin_engine",
         "category": "margin",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "margin_engine gates -> margin_positions (open/close lifecycle)",
         "purpose": (
             "Open + closed margin positions on Binance margin / Hyperliquid. "
             "One row per position id. Tracks side, leverage, entry_price, "
@@ -739,6 +789,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "margin_engine",
         "category": "margin",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "margin_engine -> margin_signals (composite score recording)",
         "purpose": (
             "Per-tick signal evaluations for the perp trader — composite "
             "score, broken-out elm/cascade/taker/oi/funding/vpin/momentum, "
@@ -762,6 +814,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "margin_engine",
         "category": "margin",
         "status": "active",
+        "sot_class": "OPERATIONAL",
+        "data_flow": "margin_engine -> margin_logs (structured log sink)",
         "purpose": (
             "Async-flushed structured log records from the margin engine — "
             "level, logger, message, extra JSONB. Mirrors stdout but is "
@@ -787,6 +841,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "macro-observer",
         "category": "macro",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "macro-observer LLM -> macro_signals -> engine macro veto + margin gate",
         "purpose": (
             "Macro regime / funding / basis snapshots emitted by the LLM "
             "observer. bias (BULL/BEAR/NEUTRAL), confidence (0-100), "
@@ -819,6 +875,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "macro-observer",
         "category": "macro",
         "status": "active",
+        "sot_class": "OPERATIONAL",
+        "data_flow": "macro-observer calendar refresh -> macro_events -> event-proximity check",
         "purpose": (
             "Pre-loaded economic calendar — Fed / CPI / FOMC events with "
             "impact rating (LOW / MEDIUM / HIGH / EXTREME) and "
@@ -846,6 +904,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "hub",
         "category": "hub",
         "status": "active",
+        "sot_class": "OPERATIONAL",
+        "data_flow": "hub auth -> users",
         "purpose": (
             "Dashboard authentication accounts. Username + bcrypt hashed "
             "password. Tiny — typically just the operator + a few audit "
@@ -868,6 +928,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "hub",
         "category": "hub",
         "status": "active",
+        "sot_class": "OPERATIONAL",
+        "data_flow": "hub notes API -> notes (audit journal)",
         "purpose": (
             "DB-backed audit journal — observations, TODOs, working notes "
             "added during long audit sessions. Survives frontend "
@@ -895,6 +957,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "hub",
         "category": "hub",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "engine -> trades -> trade_bible trigger -> pnl (engine-reported)",
         "purpose": (
             "Hub-side trade record — order_id, strategy, venue, "
             "market_slug, direction (YES/NO/ARB), entry_price, stake, "
@@ -925,6 +989,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "hub",
         "category": "hub",
         "status": "legacy",
+        "sot_class": "LEGACY",
+        "data_flow": "engine (rare) -> signals (superseded by signal_evaluations)",
         "purpose": (
             "Generic signal-event log — VPIN, cascade, arb, regime "
             "snapshots dumped as JSONB. Predates the structured "
@@ -951,6 +1017,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "hub",
         "category": "hub",
         "status": "legacy",
+        "sot_class": "DERIVED",
+        "data_flow": "pnl_service end-of-day rollup -> daily_pnl (will be replaced by poly_fills agg)",
         "purpose": (
             "Pre-aggregated daily P&L stats — total_pnl, wins, losses, "
             "win_rate, bankroll_end, strategy_breakdown JSONB. Designed "
@@ -979,6 +1047,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "hub",
         "category": "hub",
         "status": "active",
+        "sot_class": "OPERATIONAL",
+        "data_flow": "hub + engine -> system_state (singleton mode/config source of truth)",
         "purpose": (
             "Single-row k/v store for live_enabled, paper_enabled, mode, "
             "active_paper_config_id, active_live_config_id. The HOT "
@@ -1011,6 +1081,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "hub",
         "category": "hub",
         "status": "legacy",
+        "sot_class": "OPERATIONAL",
+        "data_flow": "hub CRUD -> trading_configs (being replaced by config_keys/values)",
         "purpose": (
             "DB-backed trading config overlay — name, version, JSONB "
             "config blob, mode (paper/live), is_active, is_approved, "
@@ -1044,6 +1116,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "hub",
         "category": "hub",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "backtest API + scripts -> backtest_runs",
         "purpose": (
             "Stored backtest results — strategy, start/end, total_pnl, "
             "num_trades, win_rate, sharpe, max_drawdown, params + full "
@@ -1064,64 +1138,194 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     },
 
     # ══════════════════════════════════════════════════════════════════════
-    # PLANNED — not yet shipped
+    # CONFIG V2 — CFG-02/03 (shipped, active)
     # ══════════════════════════════════════════════════════════════════════
 
     "config_keys": {
         "service": "hub",
         "category": "hub",
-        "status": "deprecated",
+        "status": "active",
+        "sot_class": "OPERATIONAL",
+        "data_flow": "config_seed -> config_keys (CFG-02 structured catalog)",
         "purpose": (
-            "PLANNED (CFG-02): structured config-key catalog. Not yet "
-            "created. When CFG-02 lands, this will hold one row per known "
-            "config key with type, default, validation, and ownership."
+            "CFG-02 structured config-key catalog. One row per known "
+            "config key per service, with type, default, validation, "
+            "and ownership. Created on every hub boot by config_seed."
         ),
-        "writers": ["(planned — see CONFIG_MIGRATION_PLAN.md)"],
-        "readers": ["(planned)"],
+        "writers": [
+            "hub/db/config_seed.py (seed on boot)",
+            "hub/db/config_schema.py (DDL)",
+        ],
+        "readers": [
+            "hub/api/config_v2.py",
+        ],
         "recency_column": None,
         "docs": [
             "docs/CONFIG_MIGRATION_PLAN.md",
         ],
         "notes": (
-            "Listed here so the inventory matches the design doc. Will "
-            "flip to status='active' when CFG-02 ships."
+            "CFG-02 shipped. Table exists and is seeded on every hub "
+            "boot. UNIQUE (service, key)."
         ),
     },
 
     "config_values": {
         "service": "hub",
         "category": "hub",
-        "status": "deprecated",
+        "status": "active",
+        "sot_class": "OPERATIONAL",
+        "data_flow": "config API -> config_values (CFG-02 per-mode values)",
         "purpose": (
-            "PLANNED (CFG-02): per-mode value table. One row per "
+            "CFG-02 per-mode config value table. One row per "
             "(key, mode) with current value, last-changed-by, "
-            "last-changed-at."
+            "last-changed-at. Seeded on every hub boot."
         ),
-        "writers": ["(planned)"],
-        "readers": ["(planned)"],
+        "writers": [
+            "hub/db/config_seed.py (seed on boot)",
+            "hub/api/config_v2.py (value updates)",
+        ],
+        "readers": [
+            "hub/api/config_v2.py",
+        ],
         "recency_column": None,
         "docs": [
             "docs/CONFIG_MIGRATION_PLAN.md",
         ],
-        "notes": "Planned. Not yet created.",
+        "notes": "CFG-02 shipped. Table exists and is seeded on every hub boot.",
     },
 
     "config_history": {
         "service": "hub",
         "category": "hub",
-        "status": "deprecated",
+        "status": "active",
+        "sot_class": "OPERATIONAL",
+        "data_flow": "config API -> config_history (CFG-03 append-only audit log)",
         "purpose": (
-            "PLANNED (CFG-03): full append-only audit log of every config "
-            "value change. Used for post-incident replay."
+            "CFG-03 append-only audit log of every config value change. "
+            "Used for post-incident replay. One row per config mutation."
         ),
-        "writers": ["(planned)"],
-        "readers": ["(planned)"],
+        "writers": [
+            "hub/api/config_v2.py (writes on every config change)",
+        ],
+        "readers": [
+            "hub/api/config_v2.py (history view)",
+        ],
         "recency_column": None,
         "docs": [
             "docs/CONFIG_MIGRATION_PLAN.md",
         ],
-        "notes": "Planned. Not yet created.",
+        "notes": "CFG-03 shipped. Table exists. Append-only.",
     },
+
+
+    # ══════════════════════════════════════════════════════════════════════
+    # MISSING FROM CATALOG — added by data architecture audit 2026-04-11
+    # ══════════════════════════════════════════════════════════════════════
+
+    "countdown_evaluations": {
+        "service": "engine",
+        "category": "polymarket",
+        "status": "active",
+        "sot_class": "DERIVED",
+        "data_flow": "gate_pipeline -> countdown_evaluations (T-180/T-120/T-90/T-60 snapshots)",
+        "purpose": (
+            "Multi-stage countdown snapshot per window (T-180 / T-120 / "
+            "T-90 / T-60). Captures gate state at each countdown stage "
+            "so post-resolution analysis can see how the decision surface "
+            "evolved as the window approached close."
+        ),
+        "writers": [
+            "engine/persistence/db_client.py::write_countdown_evaluation",
+            "engine/adapters/persistence/pg_signal_repo.py",
+        ],
+        "readers": [
+            "hub/api/v58_monitor.py (countdown endpoints, window detail)",
+        ],
+        "recency_column": "evaluated_at",
+        "docs": ["docs/DATA_ARCHITECTURE_AUDIT_2026-04-11.md"],
+        "notes": (
+            "Added by data architecture audit 2026-04-11. No CREATE TABLE "
+            "DDL found in codebase. Needs composite index on (window_ts, stage)."
+        ),
+    },
+
+    "telegram_notifications": {
+        "service": "engine",
+        "category": "polymarket",
+        "status": "active",
+        "sot_class": "OPERATIONAL",
+        "data_flow": "engine alerts + macro-observer -> telegram_notifications (dedup + audit)",
+        "purpose": (
+            "Deduplication and audit log for Telegram notifications. "
+            "Prevents duplicate alerts for the same event and provides "
+            "a queryable history of all notifications sent."
+        ),
+        "writers": ["engine/alerts/telegram.py", "macro-observer/observer.py"],
+        "readers": ["macro-observer/observer.py (dedup check before sending)"],
+        "recency_column": "created_at",
+        "docs": ["docs/DATA_ARCHITECTURE_AUDIT_2026-04-11.md"],
+        "notes": (
+            "Added by data architecture audit 2026-04-11. DUAL-WRITER: "
+            "engine + macro-observer (append-only, low risk). Needs "
+            "composite dedup index on (bot_id, location, window_id)."
+        ),
+    },
+
+    "analysis_docs": {
+        "service": "hub",
+        "category": "hub",
+        "status": "active",
+        "sot_class": "OPERATIONAL",
+        "data_flow": "hub analysis API -> analysis_docs (doc library)",
+        "purpose": (
+            "Analysis library documents. Stores longer-form analysis "
+            "write-ups that complement the quick notes table."
+        ),
+        "writers": ["hub/api/analysis.py (POST /api/analysis)"],
+        "readers": ["hub/api/analysis.py (GET /api/analysis)"],
+        "recency_column": "created_at",
+        "docs": ["docs/DATA_ARCHITECTURE_AUDIT_2026-04-11.md"],
+        "notes": "Added by data architecture audit 2026-04-11. Needs GIN index on tags.",
+    },
+
+    "timesfm_forecasts": {
+        "service": "timesfm-service",
+        "category": "external",
+        "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "timesfm-service -> timesfm_forecasts -> hub forecast page",
+        "purpose": (
+            "TimesFM forecast results written by the external "
+            "timesfm-service and read by the hub forecast page. "
+            "Cross-repo table."
+        ),
+        "writers": ["(see novakash-timesfm-repo)"],
+        "readers": ["hub/api/forecast.py (5 SELECT queries for forecast display)"],
+        "recency_column": "created_at",
+        "docs": ["docs/DATA_ARCHITECTURE_AUDIT_2026-04-11.md", "see novakash-timesfm-repo"],
+        "notes": "Added by data architecture audit 2026-04-11. Cross-repo table.",
+    },
+
+    "ai_analyses": {
+        "service": "hub",
+        "category": "hub",
+        "status": "legacy",
+        "sot_class": "LEGACY",
+        "data_flow": "no active writer -> ai_analyses -> macro-observer (silent failure)",
+        "purpose": (
+            "Claude pre-trade assessment summaries. No active writer. "
+            "The only reader wraps the query in a bare except and silently fails."
+        ),
+        "writers": [],
+        "readers": ["macro-observer/observer.py::fetch_recent_ai_analyses (bare except)"],
+        "recency_column": None,
+        "docs": ["docs/DATA_ARCHITECTURE_AUDIT_2026-04-11.md"],
+        "notes": (
+            "Added by data architecture audit 2026-04-11. DEAD TABLE: "
+            "no writer, no DDL. Candidate for DROP."
+        ),
+    },
+
 
     # ══════════════════════════════════════════════════════════════════════
     # EXTERNAL — different repo (timesfm-service)
@@ -1131,6 +1335,8 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "service": "timesfm-service",
         "category": "external",
         "status": "active",
+        "sot_class": "SOT",
+        "data_flow": "timesfm-service -> ticks_v3_composite (external DB)",
         "purpose": (
             "v3 composite scorer outputs. Lives in the timesfm-service "
             "DB, NOT in the main novakash trader DB. Listed here only as "
@@ -1188,6 +1394,8 @@ def status_breakdown() -> dict[str, int]:
 #     "service": str            — owning service name
 #     "category": str           — polymarket | margin | macro | data | hub | exec | external
 #     "status": str             — active | legacy | deprecated
+#     "sot_class": str          — SOT | DERIVED | CACHE | LEGACY | OPERATIONAL
+#     "data_flow": str          — position in the data pipeline (e.g. "ticks_* -> signal_evaluations -> trades")
 #     "purpose": str            — one-paragraph human-readable purpose
 #     "writers": list[str]      — file paths + brief annotation
 #     "readers": list[str]      — file paths + brief annotation
