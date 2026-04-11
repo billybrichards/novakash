@@ -126,16 +126,24 @@ class CLOBFeed:
                             up_spread, down_spread,
                         )
                         
-                        # Write comprehensive snapshot to new table
+                        # Write comprehensive snapshot to new table.
+                        # PE-01 fix: the column list was missing `ts` so the 11
+                        # column names did not line up with the 11 VALUES slots
+                        # the Python call was passing — NOW() was consuming one
+                        # column slot but no positional parameter. asyncpg
+                        # reported "server expects 10 arguments for this query,
+                        # 11 were passed". Adding `ts` first + a fresh $11
+                        # keeps NOW() inline as the ts value and makes the
+                        # column / VALUES / Python-arg counts all reconcile.
                         await conn.execute(
                             """
                             INSERT INTO clob_book_snapshots (
-                                asset, timeframe, window_ts,
+                                ts, asset, timeframe, window_ts,
                                 up_token_id, down_token_id,
                                 up_best_bid, up_best_ask,
                                 down_best_bid, down_best_ask,
                                 up_spread, down_spread
-                            ) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                            ) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                             ON CONFLICT (window_ts, up_token_id, down_token_id, ts) DO NOTHING
                             """,
                             "BTC", "5m", window.window_ts,

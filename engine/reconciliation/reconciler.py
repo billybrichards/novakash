@@ -753,7 +753,14 @@ class CLOBReconciler:
                             _pos_token_id,
                         )
 
-                    # Prefix match fallback: token_id may differ by 1 char in length
+                    # Prefix match fallback: token_id may differ by 1 char in length.
+                    # PE-02 fix: using two parameters ($1 and $2) in the
+                    # bidirectional LIKE made asyncpg unable to deduce whether
+                    # the placeholder was text or varchar — it would fail with
+                    # "inconsistent types deduced for parameter $1 — text vs
+                    # character varying". Cast a single parameter to ::text
+                    # explicitly, matching the working pattern in the startup
+                    # backfill (lines 185-186).
                     if not match and _pos_token_id and len(_pos_token_id) > 10:
                         match = await conn.fetchrow(
                             """SELECT id, metadata->>'entry_reason' as reason,
@@ -762,10 +769,9 @@ class CLOBReconciler:
                                WHERE is_live = true
                                  AND outcome IS NULL
                                  AND metadata->>'token_id' IS NOT NULL
-                                 AND (metadata->>'token_id' LIKE $1 || '%'
-                                      OR $2 LIKE metadata->>'token_id' || '%')
+                                 AND (metadata->>'token_id' LIKE $1::text || '%'
+                                      OR $1::text LIKE metadata->>'token_id' || '%')
                                ORDER BY created_at DESC LIMIT 1""",
-                            _pos_token_id[:60],
                             _pos_token_id,
                         )
                         if match:
