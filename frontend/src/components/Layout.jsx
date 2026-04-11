@@ -54,6 +54,7 @@ const NAV_SECTIONS = [
       { path: '/risk',            label: 'Risk',       icon: '🛡️', highlight: true },
       { path: '/system',          label: 'System',     icon: '🖥️' },
       { path: '/trading-config',  label: 'Config',     icon: '⚙️', highlight: true },
+      { path: '/audit',           label: 'Audit',      icon: '🔍', highlight: true, isNew: true },
       { path: '/changelog',       label: 'Changelog',  icon: '📝' },
     ],
   },

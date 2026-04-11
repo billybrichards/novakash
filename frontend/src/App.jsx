@@ -29,6 +29,7 @@ import Recommendations from './pages/Recommendations.jsx';
 import ExecutionHQ from './pages/execution-hq/ExecutionHQ.jsx';
 import MarginEngine from './pages/margin-engine/MarginEngine.jsx';
 import CompositeSignals from './pages/CompositeSignals.jsx';
+import AuditChecklist from './pages/AuditChecklist.jsx';
 
 export default function App() {
   return (
@@ -75,6 +76,7 @@ export default function App() {
             <Route path="margin" element={<MarginEngine />} />
             <Route path="composite" element={<CompositeSignals />} />
             <Route path="recommendations" element={<Recommendations />} />
+            <Route path="audit" element={<AuditChecklist />} />
           </Route>
 
           {/* 404 fallback */}
