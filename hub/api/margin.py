@@ -117,3 +117,57 @@ async def v3_health(
 ) -> dict:
     """Proxy to TimesFM — v3 system status."""
     return await _proxy_get(TIMESFM_URL, "/v3/health")
+
+
+# ─── V4 Fusion Decision Surface ────────────────────────────────────────────
+
+
+@router.get("/v4/snapshot")
+async def v4_snapshot(
+    asset: str = Query(default="BTC"),
+    timescales: str = Query(default="5m,15m,1h,4h"),
+    strategy: str = Query(default="fee_aware_15m"),
+    max_age_s: int = Query(default=120, ge=10, le=600),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    Proxy to TimesFM — fused decision surface for paper-mode monitoring.
+
+    Returns the same payload the margin engine consumes: macro bias +
+    per-timescale recommended_action with the gate stack's actual reason
+    (e.g. macro_gate_skip_up, regime_choppy_skip, quantile_fee_wall_skip).
+
+    The frontend polls this so a human can see why the engine is skipping
+    or entering — the surface is self-explaining.
+    """
+    return await _proxy_get(
+        TIMESFM_URL, "/v4/snapshot",
+        {
+            "asset": asset,
+            "timescales": timescales,
+            "strategy": strategy,
+            "max_age_s": max_age_s,
+        },
+    )
+
+
+@router.get("/v4/macro")
+async def v4_macro(
+    asset: str = Query(default="BTC"),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """Proxy to TimesFM — Qwen-generated macro bias with per-timescale map."""
+    return await _proxy_get(TIMESFM_URL, "/v4/macro", {"asset": asset})
+
+
+@router.get("/v4/recommendation")
+async def v4_recommendation(
+    asset: str = Query(default="BTC"),
+    strategy: str = Query(default="fee_aware_15m"),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """Proxy to TimesFM — recommended_action only (no full snapshot)."""
+    return await _proxy_get(
+        TIMESFM_URL, "/v4/recommendation",
+        {"asset": asset, "strategy": strategy},
+    )

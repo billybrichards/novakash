@@ -4,6 +4,7 @@ import { T } from './components/constants.js';
 import PositionsPanel from './components/PositionsPanel.jsx';
 import SignalPanel from './components/SignalPanel.jsx';
 import TradeTimelinePanel from './components/TradeTimelinePanel.jsx';
+import V4Panel from './components/V4Panel.jsx';
 
 function StatusDot({ active, label, activeText, inactiveText, amber }) {
   const color = active ? T.green : amber ? T.amber : T.red;
@@ -26,14 +27,16 @@ export default function MarginEngine() {
   const [activeTab, setActiveTab] = useState('live');
   const [marginData, setMarginData] = useState(null);
   const [signalSnapshot, setSignalSnapshot] = useState(null);
+  const [v4Snapshot, setV4Snapshot] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   const fetchData = async () => {
     try {
-      const [marginRes, signalRes] = await Promise.allSettled([
+      const [marginRes, signalRes, v4Res] = await Promise.allSettled([
         api('GET', '/margin/status'),
         api('GET', '/v3/snapshot?asset=BTC'),
+        api('GET', '/v4/snapshot?asset=BTC&timescales=5m,15m,1h,4h&strategy=fee_aware_15m'),
       ]);
 
       if (marginRes.status === 'fulfilled') {
@@ -41,6 +44,9 @@ export default function MarginEngine() {
       }
       if (signalRes.status === 'fulfilled') {
         setSignalSnapshot(signalRes.value?.data || signalRes.value);
+      }
+      if (v4Res.status === 'fulfilled') {
+        setV4Snapshot(v4Res.value?.data || v4Res.value);
       }
       setError(null);
     } catch (err) {
@@ -71,6 +77,17 @@ export default function MarginEngine() {
   const engineOnline = !!marginData;
   const signalsOnline = signalSnapshot?.timescales && Object.values(signalSnapshot.timescales).some(v => v !== null);
   const killSwitch = portfolio.kill_switch;
+
+  // V4 fusion liveness — engine is using v4 actions when both macro and
+  // consensus are populated AND the macro signal is reasonably fresh.
+  const v4Macro = v4Snapshot?.macro;
+  const v4Consensus = v4Snapshot?.consensus;
+  const v4Online = !!(v4Macro && v4Consensus);
+  const v4Fresh = v4Macro?.age_s != null && v4Macro.age_s < 180;
+  const v4Healthy = v4Online && v4Fresh && v4Consensus.safe_to_trade;
+  const v4SourceText = v4Macro
+    ? `${v4Macro.bias || '?'}/${v4Macro.direction_gate || '?'}`
+    : 'No data';
 
   // Execution-context derived UI helpers — all read with optional chaining
   // so an old engine deploy without the `execution` block falls back cleanly.
@@ -162,6 +179,13 @@ export default function MarginEngine() {
       }}>
         <StatusDot active={engineOnline} label="Engine" activeText="Connected" inactiveText="Offline" />
         <StatusDot active={signalsOnline} label="Signal Feed" activeText="Receiving" inactiveText="Waiting" amber={!signalsOnline && engineOnline} />
+        <StatusDot
+          active={v4Healthy}
+          label="V4 Fusion"
+          activeText={v4SourceText}
+          inactiveText={v4Online ? (v4Fresh ? 'Unsafe' : 'Stale') : 'Waiting'}
+          amber={v4Online && !v4Healthy}
+        />
         {execution.venue && (
           <StatusDot
             active={priceFeedHealthy}
@@ -229,7 +253,10 @@ export default function MarginEngine() {
 
       {activeTab === 'live' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {/* Composite signals */}
+          {/* V4 fusion decision surface — this is what the engine consumes */}
+          <V4Panel snapshot={v4Snapshot} />
+
+          {/* Composite signals (raw v3 sub-signals) */}
           <SignalPanel snapshot={signalSnapshot} />
 
           {/* Open positions */}
