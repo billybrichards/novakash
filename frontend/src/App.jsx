@@ -34,6 +34,7 @@ import V1Surface from './pages/data-surfaces/V1Surface.jsx';
 import V2Surface from './pages/data-surfaces/V2Surface.jsx';
 import V3Surface from './pages/data-surfaces/V3Surface.jsx';
 import V4Surface from './pages/data-surfaces/V4Surface.jsx';
+import Assembler1 from './pages/data-surfaces/Assembler1.jsx';
 import Deployments from './pages/Deployments.jsx';
 import Notes from './pages/Notes.jsx';
 
@@ -91,6 +92,7 @@ export default function App() {
             <Route path="data/v2" element={<V2Surface />} />
             <Route path="data/v3" element={<V3Surface />} />
             <Route path="data/v4" element={<V4Surface />} />
+            <Route path="data/assembler1" element={<Assembler1 />} />
             <Route path="deployments" element={<Deployments />} />
             <Route path="notes" element={<Notes />} />
           </Route>
