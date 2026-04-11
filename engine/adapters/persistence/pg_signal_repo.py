@@ -37,11 +37,12 @@ class PgSignalRepository(SignalRepository):
 
     # -- SignalRepository port methods -------------------------------------
 
-    async def write_signal_evaluation(self, data: dict) -> None:
+    async def write_signal_evaluation(self, data: dict) -> None:  # type: ignore[override]
         """Persist one signal evaluation row to ``signal_evaluations`` table.
 
         Verbatim SQL from ``DBClient.write_signal_evaluation``.
         """
+        # TODO: TECH_DEBT - accept SignalEvaluation VO once Phase 1 populates its fields
         if not self._pool:
             return
         try:
@@ -153,11 +154,12 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning("db.write_signal_evaluation_failed", error=str(exc)[:200])
 
-    async def write_clob_snapshot(self, data: dict) -> None:
+    async def write_clob_snapshot(self, data: dict) -> None:  # type: ignore[override]
         """Persist one CLOB book snapshot to ``clob_book_snapshots`` table.
 
         Verbatim SQL from ``DBClient.write_clob_book_snapshot``.
         """
+        # TODO: TECH_DEBT - accept ClobSnapshot VO once Phase 1 populates its fields
         if not self._pool:
             return
         try:
@@ -201,11 +203,12 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning("db.write_clob_book_snapshot_failed", error=str(exc)[:200])
 
-    async def write_gate_audit(self, data: dict) -> None:
+    async def write_gate_audit(self, data: dict) -> None:  # type: ignore[override]
         """Persist one gate audit record for a window evaluation.
 
         Verbatim SQL from ``DBClient.write_gate_audit``.
         """
+        # TODO: TECH_DEBT - accept GateAuditRow VO once Phase 1 populates its fields
         if not self._pool:
             return
         try:
@@ -284,13 +287,14 @@ class PgSignalRepository(SignalRepository):
         except Exception as exc:
             log.warning("db.write_gate_audit_failed", error=str(exc)[:200])
 
-    async def write_window_snapshot(self, snapshot: dict) -> None:
+    async def write_window_snapshot(self, snapshot: dict) -> None:  # type: ignore[override]
         """Persist a 5m/15m window evaluation snapshot.
 
         Verbatim SQL from ``DBClient.write_window_snapshot``.
         All fields are optional -- missing keys default to None.
         Conflicts on (window_ts, asset, timeframe, eval_offset) are upserted.
         """
+        # TODO: TECH_DEBT - accept WindowSnapshot VO once Phase 1 populates its fields
         if not self._pool:
             return
         try:
