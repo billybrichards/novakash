@@ -78,7 +78,11 @@ export default function App() {
             <Route path="live" element={<LiveTrading />} />
             <Route path="analysis" element={<AnalysisLibrary />} />
             <Route path="factory" element={<FactoryFloor />} />
-            <Route path="execution-hq" element={<ExecutionHQ />} />
+            {/* UI-02: Multi-market HQ monitors — 4 assets × 2 timeframes.
+                The legacy /execution-hq path redirects to the BTC 5m default
+                so bookmarks and the old sidebar link keep working. */}
+            <Route path="execution-hq" element={<Navigate to="/execution-hq/btc/5m" replace />} />
+            <Route path="execution-hq/:asset/:timeframe" element={<ExecutionHQ />} />
             <Route path="margin" element={<MarginEngine />} />
             <Route path="composite" element={<CompositeSignals />} />
             <Route path="recommendations" element={<Recommendations />} />

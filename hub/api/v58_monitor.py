@@ -2607,32 +2607,76 @@ async def get_wallet_status(
 
 # ─── Execution HQ endpoint ─────────────────────────────────────────────────
 
+# UI-02: canonical asset / timeframe sets for the multi-market HQ monitors.
+# Kept at module scope so they're easy to grow and easy to import from tests.
+_HQ_ASSETS = {"btc", "eth", "sol", "xrp"}
+_HQ_TIMEFRAMES = {"5m", "15m"}
+
+
 @router.get("/v58/execution-hq")
 async def get_execution_hq(
     limit: int = Query(200, ge=1, le=500),
     shadow_only: bool = Query(False),
-    asset: Optional[str] = Query(None),
+    asset: str = Query("btc"),
+    timeframe: str = Query("5m"),
     session: AsyncSession = Depends(get_session),
     user: TokenData = Depends(get_current_user),
 ) -> dict:
     """
     Combined endpoint for the Execution HQ dashboard.
 
+    Query params (UI-02):
+    - ``asset``     — one of {btc, eth, sol, xrp}. Defaults to ``btc`` so the
+                      unparameterised call ``/api/v58/execution-hq`` keeps the
+                      legacy BTC-5m behavior for backward compatibility.
+    - ``timeframe`` — one of {5m, 15m}. Defaults to ``5m``.
+
     Returns:
     - windows: recent window snapshots with all columns including shadow resolution
     - shadow_stats: aggregate stats on missed opportunities
     - recent_trades: last 20 trades for execution log
     - system: current engine state (bankroll, mode, status)
+    - gate_heartbeat: last 50 signal_evaluations rows for the asset/timeframe
+    - asset / timeframe: echoed back so the client can verify the request
+
+    If the asset/timeframe combo isn't being written by the data-collector yet
+    (e.g. ETH 15m on day 1), this returns empty arrays — **not** a 500 — so
+    the UI can render a clean "no data yet" banner.
     """
+    asset_norm = (asset or "").strip().lower()
+    tf_norm = (timeframe or "").strip().lower()
+    if asset_norm not in _HQ_ASSETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown asset '{asset}'. Valid: {sorted(_HQ_ASSETS)}",
+        )
+    if tf_norm not in _HQ_TIMEFRAMES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown timeframe '{timeframe}'. Valid: {sorted(_HQ_TIMEFRAMES)}",
+        )
+    # Engine writes asset uppercased in window_snapshots/signal_evaluations
+    # (see FiveMinSignal + db_client INSERTs), but we normalise incoming
+    # params to lowercase so the route and caller don't have to care.
+    asset_upper = asset_norm.upper()
+    # trades.market_slug follows the pattern "<asset>-updown-<tf>-<ts>"
+    # and the engine lowercases the asset part (see
+    # engine/strategies/five_min_vpin.py ~line 2528).
+    market_slug_prefix = f"{asset_norm}-updown-{tf_norm}-"
+
     try:
         # ── Windows with shadow data ──────────────────────────────────────
         # Build WHERE clauses safely using parameterised conditions
-        conditions = ["ws.timeframe = '5m'"]
-        params: dict = {"limit": limit}
+        conditions = [
+            "ws.asset = :asset",
+            "ws.timeframe = :timeframe",
+        ]
+        params: dict = {
+            "limit": limit,
+            "asset": asset_upper,
+            "timeframe": tf_norm,
+        }
 
-        if asset:
-            conditions.append("ws.asset = :asset")
-            params["asset"] = asset
         if shadow_only:
             conditions.append("ws.shadow_would_win = TRUE")
             conditions.append("ws.trade_placed = FALSE")
@@ -2662,6 +2706,7 @@ async def get_execution_hq(
                 SELECT outcome, metadata::json->>'entry_reason' AS entry_reason
                 FROM trades
                 WHERE strategy = 'five_min_vpin'
+                  AND market_slug ILIKE :market_slug_like
                   AND (metadata::json->>'window_ts')::bigint = ws.window_ts
                   AND outcome IS NOT NULL
                 ORDER BY created_at DESC
@@ -2671,16 +2716,20 @@ async def get_execution_hq(
             ORDER BY ws.window_ts DESC
             LIMIT :limit
         """)
+        params["market_slug_like"] = market_slug_prefix + "%"
         result = await session.execute(q, params)
         rows = result.mappings().all()
         windows = [_row_to_window(r) for r in rows]
 
-        # ── Shadow stats (always unfiltered for aggregate view) ───────────
-        stats_conditions = ["timeframe = '5m'"]
-        stats_params: dict = {}
-        if asset:
-            stats_conditions.append("asset = :asset")
-            stats_params["asset"] = asset
+        # ── Shadow stats (scoped to this asset/timeframe) ─────────────────
+        stats_conditions = [
+            "asset = :asset",
+            "timeframe = :timeframe",
+        ]
+        stats_params: dict = {
+            "asset": asset_upper,
+            "timeframe": tf_norm,
+        }
 
         stats_where = " AND ".join(stats_conditions)
 
@@ -2721,15 +2770,19 @@ async def get_execution_hq(
         }
 
         # ── Recent trades (execution log) ─────────────────────────────────
+        # Filter by market_slug prefix so each HQ only shows trades for its
+        # asset × timeframe. Engine writes market_slug as
+        # "<asset_lower>-updown-<tf>-<window_ts>" (see five_min_vpin.py ~2528).
         tq = text("""
             SELECT id, strategy, direction, entry_price, stake_usd,
                    outcome, pnl_usd, created_at, status
             FROM trades
             WHERE strategy = 'five_min_vpin'
+              AND market_slug ILIKE :market_slug_like
             ORDER BY created_at DESC
             LIMIT 20
         """)
-        tresult = await session.execute(tq)
+        tresult = await session.execute(tq, {"market_slug_like": market_slug_prefix + "%"})
         trows = tresult.mappings().all()
         recent_trades = [{
             "id": r["id"],
@@ -2766,11 +2819,12 @@ async def get_execution_hq(
                     COUNT(*) AS total
                 FROM trades t
                 WHERE t.strategy = 'five_min_vpin'
+                  AND t.market_slug ILIKE :market_slug_like
                   AND t.outcome IS NOT NULL
                   AND (t.engine_version LIKE 'v10%'
                        OR t.metadata::text LIKE '%v10_DUNE%')
             """)
-            v10r = await session.execute(v10q)
+            v10r = await session.execute(v10q, {"market_slug_like": market_slug_prefix + "%"})
             v10row = v10r.mappings().first()
             if v10row:
                 w = int(v10row["wins"] or 0)
@@ -2794,10 +2848,11 @@ async def get_execution_hq(
                     COUNT(*) AS total
                 FROM trades t
                 WHERE t.strategy = 'five_min_vpin'
+                  AND t.market_slug ILIKE :market_slug_like
                   AND t.outcome IS NOT NULL
                   AND (t.engine_version LIKE 'v9%' OR t.engine_version LIKE 'v10%')
             """)
-            v9r = await session.execute(v9q)
+            v9r = await session.execute(v9q, {"market_slug_like": market_slug_prefix + "%"})
             v9row = v9r.mappings().first()
             if v9row:
                 w = int(v9row["wins"] or 0)
@@ -2822,14 +2877,19 @@ async def get_execution_hq(
                     delta_chainlink, delta_tiingo, delta_source,
                     vpin, regime, v2_probability_up
                 FROM signal_evaluations
-                WHERE window_ts >= (
+                WHERE asset = :asset
+                  AND timeframe = :timeframe
+                  AND window_ts >= (
                     SELECT COALESCE(MAX(window_ts) - 1800, 0)
                     FROM signal_evaluations
-                )
+                    WHERE asset = :asset AND timeframe = :timeframe
+                  )
                 ORDER BY window_ts DESC, eval_offset DESC
                 LIMIT 500
             """)
-            gresult = await session.execute(gq)
+            gresult = await session.execute(
+                gq, {"asset": asset_upper, "timeframe": tf_norm}
+            )
             grows = gresult.mappings().all()
             for gr in grows:
                 wts = int(gr["window_ts"]) if gr["window_ts"] else 0
@@ -2889,10 +2949,14 @@ async def get_execution_hq(
                     gate_twap_passed, gate_timesfm_passed,
                     v2_probability_up, delta_chainlink, delta_tiingo
                 FROM signal_evaluations
+                WHERE asset = :asset
+                  AND timeframe = :timeframe
                 ORDER BY evaluated_at DESC
                 LIMIT 50
             """)
-            hbresult = await session.execute(hbq)
+            hbresult = await session.execute(
+                hbq, {"asset": asset_upper, "timeframe": tf_norm}
+            )
             hbrows = hbresult.mappings().all()
 
             # Ordered list of 8 V10.6 gate pipeline keys (G0 .. G7)
@@ -2992,6 +3056,8 @@ async def get_execution_hq(
                 pass
 
         return {
+            "asset": asset_norm,
+            "timeframe": tf_norm,
             "windows": windows,
             "shadow_stats": shadow_stats,
             "recent_trades": recent_trades,
@@ -3001,8 +3067,23 @@ async def get_execution_hq(
             "v9_gate_data": v9_gate_data,
             "gate_heartbeat": gate_heartbeat,
         }
+    except HTTPException:
+        # Don't swallow the 400 we raised above for bad asset/timeframe.
+        raise
     except Exception as exc:
-        return {"windows": [], "shadow_stats": {}, "recent_trades": [], "system": {}, "error": str(exc)}
+        return {
+            "asset": asset_norm,
+            "timeframe": tf_norm,
+            "windows": [],
+            "shadow_stats": {},
+            "recent_trades": [],
+            "system": {},
+            "v9_stats": {"wins": 0, "losses": 0, "wr_pct": 0.0, "total_trades": 0},
+            "v10_stats": {"wins": 0, "losses": 0, "wr_pct": 0.0, "total_trades": 0},
+            "v9_gate_data": {},
+            "gate_heartbeat": [],
+            "error": str(exc),
+        }
 
 
 @router.get("/wallet/live")
