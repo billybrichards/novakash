@@ -357,6 +357,14 @@ Background agents dispatched at 17:06-17:14 (5 in parallel, isolated worktrees):
   5. Re-enable live trading via the UI toggle
   6. Monitor the first 5-10 manual trades through the decision-snapshot table
 
+### 2026-04-11 — Session PRs: reconciler, factory tooltips, CI deploy, toggle audit, CA Phase 0
+
+- **POLY-SOT-d IN_PROGRESS** — PR #70: reconciler rewrite to use poly_fills on-chain SOT via SQL LATERAL LEFT JOIN. Replaces per-trade Polymarket CLOB API calls with a single-query reconciliation pass. Pending merge + backfill re-run.
+- **FACTORY-01 DONE** — PR #69: SIGNAL column source clarified with tooltips on Factory Floor. Every signal column now shows its upstream data source on hover.
+- **CI-01 updated** — PR #71: deploy-engine.yml complete. ENGINE_HOST secret set in GitHub Actions. ENGINE_SSH_KEY still needed before first deploy fires.
+- **LIVE-TOGGLE-AUDIT DONE** — PR #72: docs-only read-only audit of the live trading toggle mechanism. Clarifies that the UI toggle (system_state DB update via orchestrator.py:1755 heartbeat) is the canonical control path, not .env edits.
+- **CA-01 Phase 0 in flight** — engine/domain/ports.py with 8 port protocols + value_objects.py stubs. Pure addition, zero behaviour change. First concrete shrink of the god class.
+
 ## Next up (ordered)
 
 0. **POLY-SOT-c backfill run** — once feat/poly-sot-b-automatic-trades-plus-backfill

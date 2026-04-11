@@ -342,6 +342,24 @@ const TASKS = [
       { date: '2026-04-11', note: 'SHIPPED in PR #66. Deployment checklist item added to docs/AUDIT_PROGRESS.md "Next up" section so the operator remembers to run the backfill on the Montreal box after merge. Run command: `cd /home/novakash/novakash/engine && python3 scripts/backfill_sot_reconciliation.py --table both --dry-run` → review → rerun without --dry-run.' },
     ],
   },
+  {
+    id: 'POLY-SOT-d',
+    category: 'data-quality',
+    severity: 'HIGH',
+    status: 'IN_PROGRESS',
+    title: 'Reconciler rewrite — poly_fills on-chain SOT via SQL LATERAL LEFT JOIN',
+    files: [
+      { path: 'engine/reconciliation/reconciler.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Current reconciler walks rows in Python and calls the Polymarket CLOB API per-trade. This is slow, rate-limited, and fragile during API outages.',
+      'PR #70 rewrites the reconciler to use poly_fills as the on-chain source of truth, joined via SQL LATERAL LEFT JOIN for a single-query reconciliation pass.',
+    ],
+    fix: 'PR #70 — reconciler rewrite to use poly_fills on-chain SOT via SQL LATERAL LEFT JOIN. Pending merge + backfill re-run.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'PR #70 — reconciler rewrite to use poly_fills on-chain SOT via SQL LATERAL LEFT JOIN. Pending merge + backfill re-run.' },
+    ],
+  },
 
   // ── production-errors ───────────────────────────────────────────────────
   {
@@ -609,6 +627,7 @@ const TASKS = [
     fix: 'Phase 4 refactor: extract entry logic → engine/use_cases/open_five_min_position.py. Target <500 LOC for the orchestration class. Use margin_engine/use_cases/open_position.py as template.',
     progressNotes: [
       { date: '2026-04-11', note: 'Plan doc shipped PR #51 — docs/CLEAN_ARCHITECT_MIGRATION_PLAN.md (1159 lines, 9 phases). Phase 0 (ports.py scaffold) is queued in the SPARTA doc Appendix D future task queue for next agent pickup.' },
+      { date: '2026-04-11', note: 'Phase 0 in flight — engine/domain/ports.py with 8 port protocols + value_objects.py stubs.' },
     ],
   },
   {
@@ -1162,6 +1181,7 @@ const TASKS = [
     fix: 'Draft shipped in PR #27. IN_PROGRESS because the workflow only verifies on first fire against the real host — until ENGINE_HOST + ENGINE_SSH_KEY are populated in Actions secrets and a push to develop exercises the deploy, this is drafted-not-proven. Move to DONE after: (a) ENGINE_SSH_KEY bootstrapped onto the novakash-montreal-vnc host authorized_keys for ubuntu user, (b) first manual workflow_dispatch succeeds end-to-end, (c) PE-01/PE-02 error-signature gate passes against the live log.',
     progressNotes: [
       { date: '2026-04-11', note: 'Drafted .github/workflows/deploy-engine.yml on branch claude/ci/deploy-engine-montreal. 13 steps: checkout, Require runtime secrets, Write SSH key, Ensure host directories, Rsync engine, Rsync scripts, Reset host .env, Template .env from secrets, Restart via scripts/restart_engine.sh, Wait 45s, Process-count health probe, Error-signature log-grep gate, Tail recent logs. Uses injection-defence pattern (env: pull-up for all secrets, --rsync-path="sudo rsync" for novakash-owned paths). Non-secret runtime flags (V10_*, FIVE_MIN_*, LIVE_TRADING_ENABLED, thresholds) are intentionally NOT templated — they stay hand-managed on the host because they change more often than CI deploy cadence. Waiting on operator action to (a) bootstrap ENGINE_SSH_KEY onto the novakash-montreal-vnc box authorized_keys and (b) add the 15 secrets to billybrichards/novakash Actions secrets.' },
+      { date: '2026-04-11', note: 'PR #71 — deploy-engine.yml complete. ENGINE_HOST secret set. ENGINE_SSH_KEY still needed before first deploy.' },
     ],
   },
 
@@ -1460,6 +1480,47 @@ const TASKS = [
     fix: 'Consolidation PR ships 5-section nav (LIVE TRADING, MARGIN ENGINE, DATA SURFACES, OPS & SYSTEM, LEGACY), every entry gets a dataSource field rendered as an HTML title tooltip, legacy entries render greyscale + strikethrough + legacy chip, Assembler1 is promoted to primary DATA SURFACES entry, V1/V2/V3/V4 Surfaces kept as per-layer references. GATES_CATALOG in hub/db/schema_catalog.py documents all 8 V10.6 gates + 2 margin_engine v4 inline gates with inputs/outputs/env_flags/fail_reasons/tables_read/tables_written. New /api/v58/schema/gates endpoint + "Gates & Signals" tab on /schema page with accordion UI and cross-reference tables. Bulk AuditChecklist status flip for 21 stale rows.',
     progressNotes: [
       { date: '2026-04-11', note: 'Shipped this consolidation PR. vite build green. 5-section nav + GATES_CATALOG (10 entries) + /schema Gates tab all live.' },
+    ],
+  },
+
+  // ── FACTORY-01 — signal column source clarity ─────────────────────────
+  {
+    id: 'FACTORY-01',
+    category: 'frontend',
+    severity: 'MEDIUM',
+    status: 'DONE',
+    title: 'Factory Floor signal column source clarified with tooltips',
+    files: [
+      { path: 'frontend/src/pages/FactoryFloor.jsx', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Operator feedback: signal columns on the Factory Floor page had no indication of which data source or pipeline stage they originated from.',
+      'PR #69 adds tooltips clarifying the source for each signal column.',
+    ],
+    fix: 'SHIPPED in PR #69. Tooltips added to every signal column on Factory Floor indicating the upstream data source.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'PR #69 — SIGNAL column source clarified with tooltips on Factory Floor.' },
+    ],
+  },
+
+  // ── LIVE-TOGGLE-AUDIT — docs-only read-only audit ─────────────────────
+  {
+    id: 'LIVE-TOGGLE-AUDIT',
+    category: 'frontend',
+    severity: 'LOW',
+    status: 'DONE',
+    title: 'Live toggle mechanism — docs-only read-only audit',
+    files: [
+      { path: 'engine/strategies/orchestrator.py', line: 1755, repo: 'novakash' },
+    ],
+    evidence: [
+      'INC-01 (STOP-01) revealed that the live/paper toggle mechanism was poorly documented.',
+      'orchestrator.py:1755 polls system_state.paper_enabled/live_enabled from DB on every heartbeat, overriding .env values.',
+      'PR #72 is a docs-only read-only audit of the toggle mechanism, clarifying the correct operator procedure.',
+    ],
+    fix: 'SHIPPED in PR #72. Documentation-only audit of the live trading toggle mechanism. Clarifies that the UI toggle (system_state DB update) is the canonical control path, not .env edits.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'PR #72 — docs-only read-only audit of the live toggle mechanism. Clarifies DB-backed system_state as canonical control path.' },
     ],
   },
 ];
