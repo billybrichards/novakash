@@ -48,7 +48,17 @@ export default function System() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-semibold text-white">System Status</h2>
+      <div className="mb-2">
+        <div className="flex items-center gap-3 mb-1">
+          <h2 className="text-xl font-semibold text-white">System Status</h2>
+          <span className="text-[7px] font-bold tracking-wider px-1.5 py-0.5 rounded border" style={{ background: 'rgba(100,116,139,0.1)', color: '#64748b', borderColor: 'rgba(100,116,139,0.3)' }}>SYSTEM</span>
+        </div>
+        <p className="text-[10px] text-white/35 max-w-2xl leading-relaxed">
+          Polymarket engine health, kill switch, data feed connections, and system toggles.
+          Covers both the Polymarket 5m binary options engine and global infrastructure state.
+          <span className="text-white/20 ml-2">Data: GET /api/system/status</span>
+        </p>
+      </div>
 
       {/* Engine Status */}
       <div className="bg-[var(--card)] border border-[var(--border)] rounded-lg p-6">

@@ -1718,6 +1718,12 @@ export default function Dashboard() {
       {/* Header bar */}
       <div style={styles.header}>
         <span style={styles.headerTitle}>◈ NOVAKASH</span>
+        <span style={{
+          fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
+          background: 'rgba(168,85,247,0.12)', color: '#a855f7',
+          border: '1px solid rgba(168,85,247,0.3)',
+          letterSpacing: '0.06em', fontFamily: "'IBM Plex Mono', monospace",
+        }}>POLYMARKET 5m</span>
 
         <div style={styles.statPill}>
           <span style={styles.statLabel}>Balance</span>
@@ -1767,6 +1773,12 @@ export default function Dashboard() {
         </div>
 
         {loading && <Loader />}
+      </div>
+
+      {/* About description */}
+      <div style={{ padding: '4px 16px 8px', fontSize: 9, color: 'rgba(255,255,255,0.25)', lineHeight: 1.5, maxWidth: 900 }}>
+        Polymarket 5m binary options dashboard. VPIN, cascade state, arb spread, equity curve, win-rate and P&L charts.
+        <span style={{ color: 'rgba(255,255,255,0.15)', marginLeft: 6 }}>Data: hub /api/v58/dashboard (signal_evaluations + trades)</span>
       </div>
 
       {/* Body */}

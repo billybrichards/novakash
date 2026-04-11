@@ -1024,9 +1024,11 @@ export default function Assembler1() {
                                       fontFamily: T.mono, letterSpacing: '0.05em' }}>
             /data/assembler1
           </span>
+          <span style={{ fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3, marginLeft: 12, background: 'rgba(6,182,212,0.12)', color: T.cyan, border: '1px solid rgba(6,182,212,0.3)', fontFamily: T.mono, letterSpacing: '0.06em' }}>POLY + PERPS</span>
         </h1>
         <div style={{ fontSize: 11, color: T.textMuted, marginTop: 4 }}>
-          Canonical reference dashboard for POST /predict envelope + target ensemble schema
+          Canonical reference dashboard for POST /predict envelope + target ensemble schema.
+          Unified view of all 4 prediction layers (v1-v4) serving both Polymarket 5m binary options and Hyperliquid perpetual futures strategies.
         </div>
       </div>
 

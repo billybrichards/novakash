@@ -386,6 +386,7 @@ export default function V1Surface() {
                 border="rgba(245,158,11,0.3)"
                 value="legacy"
               />
+              <Chip color={T.cyan} bg="rgba(6,182,212,0.12)" border="rgba(6,182,212,0.3)" value="Poly + Perps" title="Legacy point forecast, superseded by v2. BTC only." />
               <Chip
                 color={T.cyan}
                 bg="rgba(6,182,212,0.12)"

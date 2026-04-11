@@ -134,6 +134,11 @@ export default function CompositeSignals() {
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <h1 style={{ fontSize: 18, fontWeight: 800, color: '#fff', margin: 0 }}>V3 Composite Signals</h1>
+            <span style={{
+              fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
+              background: 'rgba(245,158,11,0.12)', color: '#f59e0b',
+              border: '1px solid rgba(245,158,11,0.3)', letterSpacing: '0.06em',
+            }}>HYPERLIQUID PERPS</span>
             {displaySnapshot?.model?.model_family && (
               <div
                 title={displaySnapshot.model.model_version || ''}
@@ -148,7 +153,9 @@ export default function CompositeSignals() {
               </div>
             )}
           </div>
-          <p style={{ fontSize: 10, color: T.label, margin: '4px 0 0' }}>7-signal fusion across 9 timescales</p>
+          <p style={{ fontSize: 10, color: T.label, margin: '4px 0 0' }}>7-signal fusion across 9 timescales. Primary signal source for the Hyperliquid perpetual futures margin engine.
+            <span style={{ color: 'rgba(255,255,255,0.15)', marginLeft: 6 }}>Data: ticks_v3_composite (margin_engine view)</span>
+          </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {isStale && (

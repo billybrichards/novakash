@@ -722,6 +722,7 @@ export default function V3Surface() {
                 border="rgba(168,85,247,0.3)"
                 value="composite"
               />
+              <Chip color={T.cyan} bg="rgba(6,182,212,0.12)" border="rgba(6,182,212,0.3)" value="Poly + Perps" title="Feeds both Polymarket 5m binary options and Hyperliquid perpetual futures strategies" />
               <Chip
                 color={T.cyan}
                 bg="rgba(6,182,212,0.12)"

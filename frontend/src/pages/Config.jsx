@@ -575,12 +575,15 @@ export default function Config() {
               fontFamily: T.mono,
             }}
           >
-            CFG-02/03/05 — DB-backed config schema, read-only frontend
+            CFG-02/03/05 — DB-backed config schema, read-only frontend.
+            Covers all services: Engine (Polymarket 5m), Margin Engine (Hyperliquid Perps), Hub, Data Collector, Macro Observer.
+            <span style={{ color: T.textDim, marginLeft: 6 }}>Data: GET /api/v58/config (175 keys)</span>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <Chip color={T.cyan}>READ-ONLY</Chip>
           <Chip color={T.purple}>v1</Chip>
+          <Chip color={T.cyan} title="Config spans both Polymarket and Hyperliquid trading strategies">POLY + PERPS</Chip>
         </div>
       </div>
 

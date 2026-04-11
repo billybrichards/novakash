@@ -726,6 +726,7 @@ export default function Notes() {
             <Chip color={T.cyan} bg="rgba(6,182,212,0.12)" border="rgba(6,182,212,0.3)">
               NT-01
             </Chip>
+            <Chip color={T.textMuted} bg="rgba(100,116,139,0.1)" border="rgba(100,116,139,0.3)">SYSTEM</Chip>
           </h1>
           <p
             style={{

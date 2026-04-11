@@ -274,8 +274,9 @@ function HeaderSummary({ summary, generatedAt, onRefresh, refreshing }) {
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <div style={{ fontSize: 10, color: T.purple, fontFamily: T.mono, letterSpacing: '0.1em' }}>
-            DATABASE SCHEMA INVENTORY (SCHEMA-01)
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 10, color: T.purple, fontFamily: T.mono, letterSpacing: '0.1em' }}>DATABASE SCHEMA INVENTORY (SCHEMA-01)</span>
+            <span style={{ fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3, background: 'rgba(100,116,139,0.1)', color: '#64748b', border: '1px solid rgba(100,116,139,0.3)', fontFamily: T.mono, letterSpacing: '0.06em' }}>SYSTEM</span>
           </div>
           <div style={{ fontSize: 14, color: T.white, fontWeight: 600, marginTop: 4 }}>
             Every tracked DB table — purpose, writers, readers, active/legacy status

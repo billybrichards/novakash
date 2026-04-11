@@ -581,6 +581,7 @@ export default function Deployments() {
             border="rgba(6,182,212,0.3)"
             value="AWS services"
           />
+          <span style={{ fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3, background: 'rgba(100,116,139,0.1)', color: '#64748b', border: '1px solid rgba(100,116,139,0.3)', fontFamily: T.mono, letterSpacing: '0.06em' }}>SYSTEM</span>
         </h1>
         <p
           style={{

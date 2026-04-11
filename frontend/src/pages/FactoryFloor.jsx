@@ -1067,21 +1067,23 @@ export default function FactoryFloor() {
         gap: 16,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{
-            fontSize: 15,
-            fontWeight: 700,
-            letterSpacing: '0.08em',
-            color: '#fff',
-          }}>
-            TRADING FACTORY FLOOR
-          </span>
-          <span style={{
-            fontSize: 10,
-            color: T.label,
-            letterSpacing: '0.06em',
-          }}>
-            {clock}
-          </span>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{
+                fontSize: 15, fontWeight: 700, letterSpacing: '0.08em', color: '#fff',
+              }}>TRADING FACTORY FLOOR</span>
+              <span style={{
+                fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3,
+                background: 'rgba(6,182,212,0.12)', color: '#06b6d4',
+                border: '1px solid rgba(6,182,212,0.3)', letterSpacing: '0.06em',
+              }}>POLY + PERPS</span>
+              <span style={{ fontSize: 10, color: T.label, letterSpacing: '0.06em' }}>{clock}</span>
+            </div>
+            <span style={{ fontSize: 9, color: T.label, maxWidth: 700, lineHeight: 1.4 }}>
+              Unified pipeline view of both trading strategies. Polymarket 5m binary options (engine/) and Hyperliquid perpetual futures (margin_engine/).
+              Data: /v58/* + /margin/status + /v4/snapshot + /v58/schema/gates
+            </span>
+          </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           {/* Paper/Live badge */}
