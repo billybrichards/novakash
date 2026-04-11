@@ -46,6 +46,14 @@ Deep clean-architect audit covering:
 - Both fixes ship in the same PR #26 rev-2 as the checklist update to avoid deploy races. Neither is verified in production until CI-01 lands (see below) — until then, verification is a manual `scripts/restart_engine.sh` via Montreal rules + `journalctl -u` tail.
 - **FE-02 DONE** — audit checklist page is live locally (`npm run build` green, rendered end-to-end via playwright against the dev server, filter + expand interactions confirmed). Merge of PR #26 lands it at `/audit` on the AWS frontend host.
 
+### 2026-04-11 — Rev-3: pricing clarification + DQ-05 seeded
+
+- **DQ-01 scope corrected.** The original task description implied a universal "drop delta_binance" fix. That's wrong. The two engines trade different instruments and need different price references:
+  - `engine/` (Polymarket) resolves via oracle against BTC/USD **spot**. Direction signals must be spot-aligned. Binance Futures WS is fine for VPIN / liquidation detection but wrong for direction. Fix remains as stated but the rollout flag is renamed `V11_POLY_SPOT_ONLY_CONSENSUS` for clarity.
+  - `margin_engine/` trades Hyperliquid **perps**. PnL is realised against the perp mark price, so every price reference must be perp-native. Applying the Polymarket fix here would break it.
+- **DQ-05 HIGH OPEN** — new task for the margin_engine pricing audit. Investigates which field of `/v4/snapshot` the 10-gate v4 stack uses as the price context, and whether `consensus.reference_price` (first-available source, often Binance spot) is being used where a Hyperliquid mark price is needed. No immediate fix — needs live trading data to validate.
+- Data-quality category description updated to reflect the venue split.
+
 ### 2026-04-11 — Rev-2: new tasks seeded
 
 - **CI-01 OPEN** — Montreal CI/CD automation for `engine/`, port of `deploy-macro-observer.yml`. Fix description spells out the 8-step workflow, including post-deploy error-signature grep that would auto-catch regressions like PE-01 / PE-02 on every future deploy.

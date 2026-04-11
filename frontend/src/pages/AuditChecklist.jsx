@@ -70,7 +70,7 @@ const CATEGORIES = [
     title: 'Data Quality — Price References',
     color: T.red,
     description:
-      'Root-cause bugs in how the Polymarket engine computes deltas across Binance/Tiingo/Chainlink sources. These contaminate every v5 signal regardless of model quality.',
+      'Venue-specific price reference bugs. Polymarket engine (engine/) resolves against oracle spot and needs spot-aligned deltas. margin_engine trades Hyperliquid perps and needs perp/mark-aligned deltas. Mixing the two contaminates signals regardless of model quality. Tracked as two tasks: DQ-01 (Polymarket) and DQ-05 (margin_engine).',
   },
   {
     id: 'production-errors',
@@ -123,21 +123,26 @@ const TASKS = [
     category: 'data-quality',
     severity: 'CRITICAL',
     status: 'OPEN',
-    title: 'Binance spot/futures reference mismatch in delta_binance',
+    title: 'Binance spot/futures reference mismatch in delta_binance (Polymarket engine only)',
     files: [
       { path: 'engine/data/feeds/binance_ws.py', line: 26, repo: 'novakash' },
       { path: 'engine/data/feeds/polymarket_5min.py', line: 464, repo: 'novakash' },
       { path: 'engine/strategies/five_min_vpin.py', line: 344, repo: 'novakash' },
     ],
     evidence: [
-      'WS feed connects to wss://fstream.binance.com (Binance Futures perp)',
+      'Polymarket engine resolves via oracle against BTC/USD spot — so direction signals must be measured against spot, not perp.',
+      'WS feed connects to wss://fstream.binance.com (Binance Futures perp) — this is fine for VPIN and liquidation signals (both futures-native) but wrong for measuring spot-equivalent move.',
       'window.open_price is fetched from api.binance.com (Binance Spot)',
-      'delta_binance = (futures_price - spot_open) / spot_open — this is basis, not movement',
-      'Measured last 2h, n=1393: avg_binance = -0.0551% (systematic bearish bias)',
+      'delta_binance = (futures_price - spot_open) / spot_open — this is basis + spot move, not spot move alone',
+      'Measured last 2h, n=1393: avg_binance = -0.0551% (systematic bearish bias from persistent negative basis in bearish funding regime)',
       'Sign distribution: binance=DOWN in 93% of evals, primary=UP in 59%',
       'Root cause of 280+/hr evaluate.price_source_disagreement warnings',
+      'IMPORTANT: this diagnosis applies to the Polymarket engine (engine/) ONLY. margin_engine (DQ-05) trades Hyperliquid perps directly and wants perp references, not spot.',
     ],
-    fix: 'Drop delta_binance from SourceAgreementGate consensus vote. Keep futures WS for VPIN/liquidations (they are futures-correct), use only Tiingo 5m candle + Chainlink for direction. Add feature flag V11_BINANCE_SPOT_REF for rollback.',
+    fix: 'In engine/ (Polymarket) ONLY: drop delta_binance from SourceAgreementGate consensus vote. Keep futures WS for VPIN / liquidation detection (those are futures-native and correct). Use only Tiingo 5m candle (spot) + Chainlink (polygon oracle) for direction — both resolve-aligned with the Polymarket oracle. Feature flag V11_POLY_SPOT_ONLY_CONSENSUS=true for rollback. Do NOT apply this fix to margin_engine — see DQ-05.',
+    progressNotes: [
+      { date: '2026-04-11', note: 'Correction: initial diagnosis ("drop delta_binance universally") was too broad. The margin_engine trades Hyperliquid perps and wants perp references. The fix is venue-specific: Polymarket engine → spot only, margin_engine → perp/mark only. Split into DQ-01 (Polymarket, this task) and DQ-05 (margin_engine pricing audit).' },
+    ],
   },
   {
     id: 'DQ-02',
@@ -187,6 +192,25 @@ const TASKS = [
       'Likely the POST→GET fallback path not stamping version correctly',
     ],
     fix: 'Grep INSERT sites for signal_evaluations, confirm v2_model_version is always set when v2_probability_up is.',
+  },
+  {
+    id: 'DQ-05',
+    category: 'data-quality',
+    severity: 'HIGH',
+    status: 'OPEN',
+    title: 'margin_engine pricing audit — confirm perp/mark reference alignment',
+    files: [
+      { path: 'margin_engine/adapters/signal/probability_http.py', line: 1, repo: 'novakash' },
+      { path: 'margin_engine/use_cases/open_position.py', line: 1, repo: 'novakash' },
+      { path: 'margin_engine/domain/value_objects.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'margin_engine trades Hyperliquid perpetuals as the primary venue (Binance cross-margin as secondary)',
+      'PnL is realised against perp mark price, not spot — so every price reference in the entry/exit/PnL path must be perp-native',
+      'v4 /snapshot consensus pulls 6 sources including spot (Binance spot, Coinbase, Kraken, Tiingo spot) AND futures (CoinGlass mark). Need to audit which subset the margin_engine actually uses for direction vs confirmation',
+      'If the 10-gate v4 stack (PR #16) uses consensus.reference_price for the price context but reference_price is first-available (often Binance spot), then a Hyperliquid perp trade is being evaluated against a spot reference — an inverse of the Polymarket engine problem in DQ-01',
+    ],
+    fix: 'Read margin_engine/use_cases/open_position.py _execute_v4() path to confirm which field of the snapshot is used for price context. If consensus.reference_price is the spot-composite, either (a) add a mark_price field to the v4 snapshot response sourced from the exchange the engine actually trades on (Hyperliquid mark for primary venue, Binance mark for secondary), or (b) have the margin_engine use its exchange adapter\'s own mark price and treat v4 consensus as a direction-gate-only (skip trade if any source massively disagrees) rather than a PnL reference. Option (b) is lighter-touch. No immediate fix shipped — needs live trading data to validate.',
   },
 
   // ── production-errors ───────────────────────────────────────────────────
