@@ -769,6 +769,13 @@ class Orchestrator:
         except Exception as exc:
             log.warning("orchestrator.ensure_manual_trades_sot_columns_failed", error=str(exc))
 
+        # 6d3. POLY-SOT-b: same for the `trades` table — automatic engine
+        # trades now get the same SOT treatment as operator manual trades.
+        try:
+            await self._db.ensure_trades_sot_columns()
+        except Exception as exc:
+            log.warning("orchestrator.ensure_trades_sot_columns_failed", error=str(exc))
+
         # 6f. Recover open trades from previous sessions (startup trade recovery)
         try:
             recovered = await self._order_manager.recover_open_trades(self._db)
@@ -2803,19 +2810,31 @@ class Orchestrator:
         log.info("manual_trade_poller.stopped")
 
     async def _sot_reconciler_loop(self) -> None:
-        """POLY-SOT — every 2 minutes, verify manual_trades rows against Polymarket.
+        """POLY-SOT — every 2 minutes, verify manual_trades AND trades rows against Polymarket.
 
-        This loop is the safety net for the manual_trade_poller. The poller
-        writes status='open' / 'executed' immediately after place_order()
-        returns, but doesn't re-query Polymarket to confirm that the order
-        actually landed. If place_order() times out, retries, or partially
-        executes, the engine DB would happily claim success.
+        This loop is the safety net for both write paths into the database:
+          * ``manual_trades`` — written by ``_manual_trade_poller`` after the
+            operator clicks Execute.
+          * ``trades`` — written by the engine's automatic strategies after
+            ``_poly_client.place_order(...)`` returns.
 
-        The SOT loop closes that gap: it iterates manual_trades rows older
+        Both paths suffer from the same failure mode: the engine writes
+        status='open' / 'FILLED' immediately after place_order() returns,
+        without re-querying Polymarket to confirm the order actually landed.
+        If place_order() times out, retries, or partially executes, the
+        engine DB would happily claim success.
+
+        The SOT loop closes that gap on BOTH tables: it iterates rows older
         than 30 seconds, calls polymarket_client.get_order_status_sot(), and
-        stamps the row with the authoritative polymarket_confirmed_* fields
+        stamps each row with the authoritative polymarket_confirmed_* fields
         plus a sot_reconciliation_state. On `engine_optimistic` or `diverged`
         rows it fires a Telegram alert.
+
+        POLY-SOT-b: the same pass now walks both tables in sequence so the
+        operator gets a unified view of "everything the engine touched
+        Polymarket about" without spawning a second asyncio task. The
+        Telegram dedupe key is namespaced by table so manual_trades #42 and
+        trades #42 are treated as independent.
 
         Always-on: runs in both paper and live mode. In paper mode the
         reconciler stamps every paper trade `agrees` because PolymarketClient
@@ -2855,23 +2874,46 @@ class Orchestrator:
         log.info("sot_reconciler_loop.started", interval_seconds=interval_s)
 
         while not self._shutdown_event.is_set():
+            # POLY-SOT-b: walk both tables in the same pass — manual_trades
+            # for operator trades, then `trades` for automatic engine trades.
+            # Single-task design (rather than two parallel loops) keeps the
+            # asyncio surface area smaller and ensures the two passes don't
+            # race against each other on shared CLOB rate limits.
             try:
-                summary = await sot_reconciler.reconcile_manual_trades_sot(limit=100)
-                if summary.checked > 0:
+                manual_summary = await sot_reconciler.reconcile_manual_trades_sot(limit=100)
+                if manual_summary.checked > 0:
                     log.info(
-                        "sot_reconciler_loop.pass_complete",
-                        checked=summary.checked,
-                        agrees=summary.agrees,
-                        unreconciled=summary.unreconciled,
-                        engine_optimistic=summary.engine_optimistic,
-                        polymarket_only=summary.polymarket_only,
-                        diverged=summary.diverged,
-                        alerts=summary.alerts_fired,
+                        "sot_reconciler_loop.manual_pass_complete",
+                        checked=manual_summary.checked,
+                        agrees=manual_summary.agrees,
+                        unreconciled=manual_summary.unreconciled,
+                        engine_optimistic=manual_summary.engine_optimistic,
+                        polymarket_only=manual_summary.polymarket_only,
+                        diverged=manual_summary.diverged,
+                        alerts=manual_summary.alerts_fired,
                     )
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                log.error("sot_reconciler_loop.pass_error", error=str(exc)[:200])
+                log.error("sot_reconciler_loop.manual_pass_error", error=str(exc)[:200])
+
+            try:
+                trades_summary = await sot_reconciler.reconcile_trades_sot(limit=100)
+                if trades_summary.checked > 0:
+                    log.info(
+                        "sot_reconciler_loop.trades_pass_complete",
+                        checked=trades_summary.checked,
+                        agrees=trades_summary.agrees,
+                        unreconciled=trades_summary.unreconciled,
+                        engine_optimistic=trades_summary.engine_optimistic,
+                        polymarket_only=trades_summary.polymarket_only,
+                        diverged=trades_summary.diverged,
+                        alerts=trades_summary.alerts_fired,
+                    )
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                log.error("sot_reconciler_loop.trades_pass_error", error=str(exc)[:200])
 
             try:
                 await asyncio.wait_for(

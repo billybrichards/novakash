@@ -12,8 +12,11 @@ import { sotColors } from './sot.jsx';
  *                    ticker with a colour-coded SOT chip showing whether
  *                    Polymarket has confirmed the order. Mirrors the
  *                    margin_engine pattern where the exchange is the SOT.
+ *   sotRows       -- POLY-SOT-b: optional array from /api/v58/trades-sot.
+ *                    Same shape as manualSotRows but keyed by trades.id for
+ *                    automatic engine trades. Renders the same chip style.
  */
-export default function TradeTicker({ recentTrades, manualSotRows }) {
+export default function TradeTicker({ recentTrades, manualSotRows, sotRows }) {
   const items = useMemo(() => {
     const out = [];
 
@@ -31,12 +34,38 @@ export default function TradeTicker({ recentTrades, manualSotRows }) {
           tooltipParts.push(`poly fill: $${Number(m.polymarket_confirmed_fill_price).toFixed(4)}`);
         }
         out.push({
-          key: `sot-${m.trade_id}`,
+          key: `sot-manual-${m.trade_id}`,
           isSot: true,
           color: colors.fg,
           bg: colors.bg,
           border: colors.border,
           text: `MANUAL ${dir}${stake != null ? ' $' + Number(stake).toFixed(2) : ''} ${colors.label}`,
+          tooltip: tooltipParts.join(' | '),
+        });
+      }
+    }
+
+    // POLY-SOT-b: do the same for automatic engine trades. Cap at 5 so the
+    // ticker doesn't drown in routine `agrees` rows. Same chip style as the
+    // manual trades, with an `AUTO` prefix so the operator can tell them
+    // apart at a glance.
+    if (Array.isArray(sotRows) && sotRows.length > 0) {
+      for (const t of sotRows.slice(0, 5)) {
+        const colors = sotColors(t.sot_reconciliation_state);
+        const dir = t.direction || '?';
+        const stake = t.stake_usd;
+        const tooltipParts = [`SOT: ${colors.label}`];
+        if (t.sot_reconciliation_notes) tooltipParts.push(t.sot_reconciliation_notes);
+        if (t.polymarket_confirmed_fill_price != null) {
+          tooltipParts.push(`poly fill: $${Number(t.polymarket_confirmed_fill_price).toFixed(4)}`);
+        }
+        out.push({
+          key: `sot-auto-${t.id || t.trade_id}`,
+          isSot: true,
+          color: colors.fg,
+          bg: colors.bg,
+          border: colors.border,
+          text: `AUTO ${dir}${stake != null ? ' $' + Number(stake).toFixed(2) : ''} ${colors.label}`,
           tooltip: tooltipParts.join(' | '),
         });
       }
@@ -78,7 +107,7 @@ export default function TradeTicker({ recentTrades, manualSotRows }) {
       });
     }
     return out;
-  }, [recentTrades, manualSotRows]);
+  }, [recentTrades, manualSotRows, sotRows]);
 
   if (items.length === 0) return null;
 

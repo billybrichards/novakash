@@ -359,6 +359,20 @@ Background agents dispatched at 17:06-17:14 (5 in parallel, isolated worktrees):
 
 ## Next up (ordered)
 
+0. **POLY-SOT-c backfill run** — once feat/poly-sot-b-automatic-trades-plus-backfill
+   merges to develop and lands on the Montreal box, the operator must run the
+   one-shot historical backfill so legacy `manual_trades` and `trades` rows get
+   non-NULL `sot_reconciliation_state`. Steps (Montreal box only — geo
+   restriction):
+   ```
+   cd /home/novakash/novakash/engine
+   python3 scripts/backfill_sot_reconciliation.py --table both --dry-run
+   # review the output, then for real:
+   python3 scripts/backfill_sot_reconciliation.py --table both
+   ```
+   Idempotent — safe to re-run. Verify in the UI by checking that the SOT
+   chip on the TradeTicker shows green/yellow rather than blank for old
+   trades. See AuditChecklist `POLY-SOT-c`.
 1. **Merge agent PRs as they land** — CA-01..04 plan doc, CFG-01 plan doc, frontend
    audit, UI-02 multi-market monitors, LT-04 fast path. All are tracked in the
    corresponding `a*` agent IDs above.
