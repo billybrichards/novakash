@@ -61,17 +61,34 @@ export default function DataHealthStrip({ hqData, v4Snapshot, v3Snapshot }) {
   const vpinValue = vpinVal != null ? fmt(vpinVal, 3) : 'NO DATA';
 
   // --- Source Agreement ---
-  const srcAgree = gateResults.gate_agreement;
+  // Primary: gate_heartbeat.gate_results.source_agreement (V10 gate result)
+  // Fallback: gate_heartbeat.gate_results.gate_agreement
+  // Fallback: V4 consensus sources count
+  const srcAgreementGate = gateResults.source_agreement ?? gateResults.gate_agreement;
+  const conSourcesObjForSrc = v4Snapshot?.consensus?.sources || {};
+  const conSourcesForSrc = Array.isArray(conSourcesObjForSrc)
+    ? conSourcesObjForSrc
+    : Object.values(conSourcesObjForSrc);
+  const liveSrcCount = conSourcesForSrc.filter(s => s?.available === true || (s?.price != null && s?.price > 0)).length;
+
   let srcStatus = 'red';
   let srcValue = 'NO DATA';
-  if (srcAgree != null) {
-    if (srcAgree === true || srcAgree === 'PASS' || srcAgree === 'pass') {
+  if (srcAgreementGate != null) {
+    if (srcAgreementGate === true || srcAgreementGate === 'PASS' || srcAgreementGate === 'pass') {
       srcStatus = 'green';
       srcValue = 'AGREE';
-    } else {
+    } else if (srcAgreementGate === false || srcAgreementGate === 'FAIL' || srcAgreementGate === 'fail') {
       srcStatus = 'yellow';
       srcValue = 'DISAGREE';
+    } else {
+      // Numeric or object — treat as agreeing if truthy
+      srcStatus = 'green';
+      srcValue = 'AGREE';
     }
+  } else if (liveSrcCount > 0) {
+    // Fall back to V4 consensus source count
+    srcStatus = liveSrcCount >= 3 ? 'green' : 'yellow';
+    srcValue = `${liveSrcCount} sources`;
   }
 
   // --- Consensus (from v4 snapshot) ---
