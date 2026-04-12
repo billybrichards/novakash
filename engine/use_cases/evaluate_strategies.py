@@ -156,7 +156,30 @@ class EvaluateStrategiesUseCase:
                         collateral_pct=decision.collateral_pct,
                         entry_reason=decision.entry_reason,
                         skip_reason=decision.skip_reason,
-                        metadata_json=json.dumps(decision.metadata),
+                        metadata_json=json.dumps({
+                            # Strategy-specific metadata (gates, V4 fields etc)
+                            **decision.metadata,
+                            # Shared context injected at the use case level
+                            # so every strategy record has the full signal vector
+                            "_ctx": {
+                                "delta_pct": ctx.delta_pct if ctx else None,
+                                "vpin": ctx.vpin if ctx else None,
+                                "regime": ctx.regime if ctx and hasattr(ctx, "regime") else None,
+                                "eval_offset": eval_offset,
+                                "delta_source": getattr(ctx, "delta_source", None) if ctx else None,
+                                "delta_tiingo": getattr(ctx, "delta_tiingo", None) if ctx else None,
+                                "delta_chainlink": getattr(ctx, "delta_chainlink", None) if ctx else None,
+                                "delta_binance": getattr(ctx, "delta_binance", None) if ctx else None,
+                                "v4_p_up": ctx.v4_snapshot.probability_up if ctx and ctx.v4_snapshot else None,
+                                "v4_regime": ctx.v4_snapshot.regime if ctx and ctx.v4_snapshot else None,
+                                "v4_regime_conf": ctx.v4_snapshot.regime_confidence if ctx and ctx.v4_snapshot else None,
+                                "v4_conviction": ctx.v4_snapshot.conviction if ctx and ctx.v4_snapshot else None,
+                                "v4_sub_signals": ctx.v4_snapshot.sub_signals if ctx and ctx.v4_snapshot else None,
+                                "v4_macro_bias": (ctx.v4_snapshot.macro or {}).get("bias") if ctx and ctx.v4_snapshot else None,
+                                "poly_trade_advised": (ctx.v4_snapshot.polymarket_outcome or {}).get("trade_advised") if ctx and ctx.v4_snapshot and ctx.v4_snapshot.polymarket_outcome else None,
+                                "poly_timing": (ctx.v4_snapshot.polymarket_outcome or {}).get("timing") if ctx and ctx.v4_snapshot and ctx.v4_snapshot.polymarket_outcome else None,
+                            },
+                        }),
                         evaluated_at=now,
                     )
                     asyncio.create_task(self._safe_write(record))
@@ -222,35 +245,80 @@ class EvaluateStrategiesUseCase:
         window_ts: int,
         eval_offset: int,
     ) -> None:
-        """Write a signal_evaluations row from the strategy context.
+        """Write a signal_evaluations row with full decision vector.
 
-        This breaks the V2 probability cold_start loop: the timesfm service
-        needs fresh signal_evaluations rows to compute probabilities, and
-        the engine needs probabilities for the DUNE gate.  Writing here
-        ensures signal_evaluations stay fresh regardless of which strategy
-        path is active.
+        Captures every signal available at this evaluation moment so the
+        Strategy Lab and window analysis modal have the complete picture:
+        price sources, VPIN, regime, V4 surface (probability, conviction,
+        regime, sub-signals, consensus, macro, polymarket outcome).
         """
         try:
             v4 = ctx.v4_snapshot
+            poly = v4.polymarket_outcome if v4 else None
+
+            # V4 sub-signals
+            sigs = v4.sub_signals if v4 else {}
+
+            # Infer direction from V4 probability or decision
+            if decision.direction:
+                direction = decision.direction
+            elif v4 and v4.probability_up is not None:
+                direction = "UP" if v4.probability_up > 0.5 else "DOWN"
+            else:
+                direction = None
+
             await self._db.write_signal_evaluation({
+                # Window identification
                 "window_ts": window_ts,
                 "asset": asset,
                 "timeframe": "5m",
                 "eval_offset": eval_offset,
-                "delta_pct": ctx.delta_pct,
-                "vpin": ctx.vpin,
-                "regime": ctx.regime if hasattr(ctx, "regime") else None,
-                "decision": decision.action,
-                "gate_passed": decision.action == "TRADE",
-                "gate_failed": decision.skip_reason if decision.action == "SKIP" else None,
-                "v2_probability_up": v4.probability_up if v4 else None,
-                "v2_direction": decision.direction,
-                "direction": decision.direction or ("UP" if (v4 and v4.probability_up and v4.probability_up > 0.5) else "DOWN"),
+
+                # Price sources
                 "binance_price": getattr(ctx, "binance_price", None),
+                "delta_pct": ctx.delta_pct,
                 "delta_binance": getattr(ctx, "delta_binance", None),
                 "delta_tiingo": getattr(ctx, "delta_tiingo", None),
                 "delta_chainlink": getattr(ctx, "delta_chainlink", None),
                 "delta_source": getattr(ctx, "delta_source", None),
+
+                # Market microstructure
+                "vpin": ctx.vpin,
+                "regime": ctx.regime if hasattr(ctx, "regime") else None,
+
+                # V10 decision (this write is for the V10 strategy's result)
+                "decision": decision.action,
+                "gate_passed": decision.action == "TRADE",
+                "gate_failed": decision.skip_reason if decision.action == "SKIP" else None,
+                "direction": direction,
+
+                # Sequoia V5.2 probability
+                "v2_probability_up": v4.probability_up if v4 else None,
+                "v2_direction": direction,
+
+                # V4 surface enrichment — stored via v2_quantiles JSONB field
+                # This lets the signal_evaluations table carry the full V4 context
+                # without a schema change.
+                "v2_quantiles": json.dumps({
+                    "v4_regime": v4.regime if v4 else None,
+                    "v4_regime_confidence": v4.regime_confidence if v4 else None,
+                    "v4_regime_persistence": v4.regime_persistence if v4 else None,
+                    "v4_conviction": v4.conviction if v4 else None,
+                    "v4_conviction_score": v4.conviction_score if v4 else None,
+                    "v4_sub_signals": sigs,
+                    "v4_consensus_safe": (v4.consensus or {}).get("safe_to_trade") if v4 else None,
+                    "v4_consensus_sources": len([
+                        s for s in ((v4.consensus or {}).get("sources") or {}).values()
+                        if isinstance(s, dict) and s.get("available")
+                    ]) if v4 else None,
+                    "v4_macro_bias": (v4.macro or {}).get("bias") if v4 else None,
+                    "v4_macro_source": (v4.macro or {}).get("macro_source") if v4 else None,
+                    "poly_direction": poly.get("direction") if poly else None,
+                    "poly_trade_advised": poly.get("trade_advised") if poly else None,
+                    "poly_confidence_distance": poly.get("confidence_distance") if poly else None,
+                    "poly_timing": poly.get("timing") if poly else None,
+                    "poly_reason": poly.get("reason") if poly else None,
+                }) if (v4 or poly) else None,
             })
         except Exception as exc:
             log.warning("strategy.signal_eval_write_error", error=str(exc)[:200])
