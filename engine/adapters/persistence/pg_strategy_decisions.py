@@ -26,8 +26,17 @@ class PgStrategyDecisionRepository(StrategyDecisionRepository):
     Accepts an ``asyncpg.Pool`` -- the same pool the legacy ``DBClient`` uses.
     """
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
+    def __init__(self, pool: Optional[asyncpg.Pool] = None, db_client: Optional[object] = None) -> None:
         self._pool = pool
+        self._db_client = db_client  # fallback: extract pool lazily from DBClient
+
+    def _get_pool(self) -> Optional[asyncpg.Pool]:
+        if self._pool:
+            return self._pool
+        if self._db_client:
+            # DBClient stores pool as _pool attribute
+            return getattr(self._db_client, "_pool", None)
+        return None
 
     async def write_decision(self, decision: StrategyDecisionRecord) -> None:
         """Persist one strategy decision row.
@@ -35,10 +44,11 @@ class PgStrategyDecisionRepository(StrategyDecisionRepository):
         Idempotent by (strategy_id, asset, window_ts, eval_offset) via
         ON CONFLICT DO UPDATE.
         """
-        if not self._pool:
+        pool = self._get_pool()
+        if not pool:
             return
         try:
-            async with self._pool.acquire() as conn:
+            async with pool.acquire() as conn:
                 await conn.execute(
                     """
                     INSERT INTO strategy_decisions (
@@ -102,10 +112,11 @@ class PgStrategyDecisionRepository(StrategyDecisionRepository):
         window_ts: int,
     ) -> list[StrategyDecisionRecord]:
         """Read all strategy decisions for a window."""
-        if not self._pool:
+        pool = self._get_pool()
+        if not pool:
             return []
         try:
-            async with self._pool.acquire() as conn:
+            async with pool.acquire() as conn:
                 rows = await conn.fetch(
                     """
                     SELECT strategy_id, strategy_version, asset, window_ts,

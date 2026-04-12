@@ -394,11 +394,9 @@ class Orchestrator:
                 v4_snapshot_port = V4SnapshotHttpAdapter()
 
             from adapters.persistence.pg_strategy_decisions import PgStrategyDecisionRepository
-            # PgStrategyDecisionRepository needs the asyncpg pool directly
-            # self._db is the DBClient wrapper — the pool is available after start()
-            # We pass db_client and the repo will use its pool property
-            _pool = getattr(self._db, "_pool", None) or getattr(self._db, "pool", None)
-            _decision_repo = PgStrategyDecisionRepository(pool=_pool) if _pool else None
+            # Pass the db_client — the repo extracts the pool lazily via _get_pool()
+            # so it works even though the pool isn't connected at __init__ time
+            _decision_repo = PgStrategyDecisionRepository(db_client=self._db)
 
             self._evaluate_strategies_uc = EvaluateStrategiesUseCase(
                 strategies=strategy_pairs,
