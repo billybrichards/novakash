@@ -325,24 +325,134 @@ function MarketContextColumn({ hqData, v4Snapshot }) {
 
 // --- Right Column: V4 Recommended Action ---
 
-function V4ActionColumn({ v4Snapshot, hqData }) {
-  const timescales = v4Snapshot?.timescales || {};
+function PolymarketOutcomeBlock({ outcome }) {
+  const [extrasOpen, setExtrasOpen] = useState(false);
 
-  const [activeTs, setActiveTs] = useState('5m');
-  const tsData = timescales[activeTs] || {};
+  const direction = outcome.direction || '\u2014';
+  const tradeAdvised = outcome.trade_advised;
+  const confidence = outcome.confidence ?? null;
+  const confDist = outcome.confidence_distance ?? null;
+  const regime = outcome.regime || '\u2014';
+  const timing = outcome.timing || '\u2014';
+  const reason = outcome.reason || '\u2014';
+  const extras = outcome.extras || {};
+  const hasExtras = Object.keys(extras).length > 0;
 
+  const dirColor = direction === 'UP' ? T.green : direction === 'DOWN' ? T.red : T.textDim;
+  const advisedColor = tradeAdvised === true || tradeAdvised === 'YES' ? T.green : T.red;
+  const advisedLabel = tradeAdvised === true || tradeAdvised === 'YES' ? 'YES' : 'NO';
+
+  return (
+    <>
+      {/* Direction */}
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 6 }}>
+        <span style={{ fontSize: 20, fontWeight: 800, color: dirColor }}>
+          {direction === 'UP' ? '\u25B2 UP' : direction === 'DOWN' ? '\u25BC DOWN' : direction}
+        </span>
+        <span style={{
+          fontSize: 10, fontWeight: 700, color: advisedColor,
+          padding: '2px 8px', borderRadius: 3,
+          background: `${advisedColor}15`, border: `1px solid ${advisedColor}30`,
+        }}>
+          TRADE: {advisedLabel}
+        </span>
+      </div>
+
+      {/* Confidence + Distance */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 6 }}>
+        {confidence != null && (
+          <div>
+            <SubLabel>Confidence</SubLabel>
+            <span style={{ fontSize: 13, fontWeight: 700, color: T.text, marginLeft: 4 }}>
+              {fmt(confidence, 3)}
+            </span>
+          </div>
+        )}
+        {confDist != null && (
+          <div>
+            <SubLabel>Conf Distance</SubLabel>
+            <span style={{
+              fontSize: 13, fontWeight: 700, marginLeft: 4,
+              color: confDist > 0 ? T.green : T.amber,
+            }}>
+              {confDist > 0 ? '+' : ''}{fmt(confDist, 3)}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Regime + Timing */}
+      <div style={{
+        display: 'flex', gap: 8, marginBottom: 6, flexWrap: 'wrap',
+      }}>
+        <div style={{
+          padding: '2px 6px', borderRadius: 3, fontSize: 9, fontWeight: 700,
+          background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.3)',
+          color: T.purple,
+        }}>
+          {regime}
+        </div>
+        <div style={{
+          padding: '2px 6px', borderRadius: 3, fontSize: 9, fontWeight: 700,
+          background: 'rgba(6,182,212,0.1)', border: '1px solid rgba(6,182,212,0.3)',
+          color: T.cyan,
+        }}>
+          {timing}
+        </div>
+      </div>
+
+      {/* Reason */}
+      <div style={{
+        fontSize: 9, color: T.textMuted, marginBottom: 6,
+        padding: '4px 6px', background: 'rgba(255,255,255,0.02)', borderRadius: 3,
+        wordBreak: 'break-word', lineHeight: 1.4,
+      }}>
+        {reason}
+      </div>
+
+      {/* Collapsible extras */}
+      {hasExtras && (
+        <div>
+          <button onClick={() => setExtrasOpen(!extrasOpen)} style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            fontSize: 9, color: T.purple, fontWeight: 600, fontFamily: T.mono,
+            padding: '2px 0', letterSpacing: '0.04em',
+          }}>
+            {extrasOpen ? '\u25BC' : '\u25B6'} EXTRAS ({Object.keys(extras).length})
+          </button>
+          {extrasOpen && (
+            <div style={{
+              marginTop: 4, padding: '4px 6px', borderRadius: 3,
+              background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
+              fontSize: 9, color: T.textMuted, lineHeight: 1.5,
+            }}>
+              {Object.entries(extras).map(([k, v]) => (
+                <div key={k} style={{ display: 'flex', gap: 6 }}>
+                  <span style={{ color: T.purple, minWidth: 80, flexShrink: 0 }}>{k}:</span>
+                  <span style={{ wordBreak: 'break-word' }}>
+                    {typeof v === 'object' ? JSON.stringify(v) : String(v)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+function MarginActionFallback({ tsData, hqData }) {
   const side = tsData.side || tsData.direction || '\u2014';
   const conviction = tsData.conviction || 'NONE';
   const reason = tsData.reason || tsData.skip_reason || '\u2014';
   const score = tsData.conviction_score ?? tsData.score ?? null;
 
-  // Quantiles
-  const quantiles = tsData.quantiles || v4Snapshot?.quantiles || {};
+  const quantiles = tsData.quantiles || {};
   const p10 = quantiles.p10 ?? null;
   const p50 = quantiles.p50 ?? null;
   const p90 = quantiles.p90 ?? null;
 
-  // Engine decided vs V4 says
   const engineDir = hqData?.windows?.[0]?.direction || null;
   const v4Dir = tsData.side || tsData.direction || null;
   const disagree = engineDir && v4Dir && engineDir.toUpperCase() !== v4Dir.toUpperCase() &&
@@ -356,6 +466,74 @@ function V4ActionColumn({ v4Snapshot, hqData }) {
     : conviction === 'MEDIUM' ? T.cyan
     : conviction === 'LOW' ? T.amber
     : T.textDim;
+
+  return (
+    <>
+      <div style={{
+        fontSize: 8, color: T.amber, fontWeight: 600, marginBottom: 6,
+        padding: '2px 6px', borderRadius: 3,
+        background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)',
+      }}>
+        MARGIN FALLBACK
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 6 }}>
+        <span style={{ fontSize: 20, fontWeight: 800, color: sideColor }}>{side}</span>
+        <span style={{
+          fontSize: 11, fontWeight: 700, color: convColor,
+          padding: '2px 6px', borderRadius: 3,
+          background: `${convColor}15`, border: `1px solid ${convColor}30`,
+        }}>
+          {conviction}
+          {score != null && <span style={{ marginLeft: 4, fontSize: 9, color: T.textMuted }}>{fmt(score, 2)}</span>}
+        </span>
+      </div>
+
+      <div style={{
+        fontSize: 9, color: T.textMuted, marginBottom: 8,
+        padding: '4px 6px', background: 'rgba(255,255,255,0.02)', borderRadius: 3,
+        wordBreak: 'break-word',
+      }}>
+        {reason}
+      </div>
+
+      {(p10 != null || p50 != null || p90 != null) && (
+        <div style={{ marginBottom: 8 }}>
+          <SubLabel>Quantile Fan</SubLabel>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 8, marginTop: 3,
+            padding: '4px 6px', background: 'rgba(255,255,255,0.02)', borderRadius: 3,
+          }}>
+            <span style={{ fontSize: 9, color: T.red }}>P10: {p10 != null ? fmt(p10, 2) : '\u2014'}</span>
+            <span style={{ fontSize: 10, fontWeight: 700, color: T.text }}>P50: {p50 != null ? fmt(p50, 2) : '\u2014'}</span>
+            <span style={{ fontSize: 9, color: T.green }}>P90: {p90 != null ? fmt(p90, 2) : '\u2014'}</span>
+          </div>
+        </div>
+      )}
+
+      {disagree && (
+        <div style={{
+          padding: '4px 8px', borderRadius: 3, marginTop: 4,
+          background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)',
+          fontSize: 9, color: T.amber, fontWeight: 600,
+        }}>
+          V4 says {v4Dir}, engine decided {engineDir}
+        </div>
+      )}
+    </>
+  );
+}
+
+function V4ActionColumn({ v4Snapshot, hqData }) {
+  const timescales = v4Snapshot?.timescales || {};
+
+  const [activeTs, setActiveTs] = useState('5m');
+  const tsData = timescales[activeTs] || {};
+
+  // Prefer polymarket_live_recommended_outcome, fall back to margin_recommended_action / raw tsData
+  const polyOutcome = tsData.polymarket_live_recommended_outcome || null;
+  const marginAction = tsData.margin_recommended_action || null;
+  const hasPolyOutcome = polyOutcome && Object.keys(polyOutcome).length > 0;
 
   return (
     <Card style={{ flex: '1 1 0', minWidth: 200 }}>
@@ -374,52 +552,12 @@ function V4ActionColumn({ v4Snapshot, hqData }) {
         ))}
       </div>
 
-      {/* Side + Conviction */}
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 6 }}>
-        <span style={{ fontSize: 20, fontWeight: 800, color: sideColor }}>{side}</span>
-        <span style={{
-          fontSize: 11, fontWeight: 700, color: convColor,
-          padding: '2px 6px', borderRadius: 3,
-          background: `${convColor}15`, border: `1px solid ${convColor}30`,
-        }}>
-          {conviction}
-          {score != null && <span style={{ marginLeft: 4, fontSize: 9, color: T.textMuted }}>{fmt(score, 2)}</span>}
-        </span>
-      </div>
-
-      {/* Reason */}
-      <div style={{
-        fontSize: 9, color: T.textMuted, marginBottom: 8,
-        padding: '4px 6px', background: 'rgba(255,255,255,0.02)', borderRadius: 3,
-        wordBreak: 'break-word',
-      }}>
-        {reason}
-      </div>
-
-      {/* Quantile fan */}
-      {(p10 != null || p50 != null || p90 != null) && (
-        <div style={{ marginBottom: 8 }}>
-          <SubLabel>Quantile Fan</SubLabel>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 8, marginTop: 3,
-            padding: '4px 6px', background: 'rgba(255,255,255,0.02)', borderRadius: 3,
-          }}>
-            <span style={{ fontSize: 9, color: T.red }}>P10: {p10 != null ? fmt(p10, 2) : '\u2014'}</span>
-            <span style={{ fontSize: 10, fontWeight: 700, color: T.text }}>P50: {p50 != null ? fmt(p50, 2) : '\u2014'}</span>
-            <span style={{ fontSize: 9, color: T.green }}>P90: {p90 != null ? fmt(p90, 2) : '\u2014'}</span>
-          </div>
-        </div>
-      )}
-
-      {/* Disagreement banner */}
-      {disagree && (
-        <div style={{
-          padding: '4px 8px', borderRadius: 3, marginTop: 4,
-          background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)',
-          fontSize: 9, color: T.amber, fontWeight: 600,
-        }}>
-          V4 says {v4Dir}, engine decided {engineDir}
-        </div>
+      {hasPolyOutcome ? (
+        <PolymarketOutcomeBlock outcome={polyOutcome} />
+      ) : marginAction ? (
+        <MarginActionFallback tsData={marginAction} hqData={hqData} />
+      ) : (
+        <MarginActionFallback tsData={tsData} hqData={hqData} />
       )}
     </Card>
   );
