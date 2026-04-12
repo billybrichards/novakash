@@ -242,22 +242,43 @@ export default function StrategyFloor({ strategyId }) {
     return m;
   }, [outcomes]);
 
-  // Gate tightness stats
+  // Derive model direction from metadata (direction is null on SKIPs)
+  function getModelDir(d) {
+    if (d.direction) return d.direction;
+    try {
+      const m = JSON.parse(d.metadata_json || '{}');
+      const pUp = m._ctx?.v4_p_up ?? m.v4_p_up;
+      if (pUp != null) return pUp < 0.5 ? 'DOWN' : 'UP';
+    } catch {}
+    return null;
+  }
+
+  // Gate tightness stats — uses model direction, not decision direction
   const gateTightness = useMemo(() => {
-    let skipped = 0, wouldHaveWon = 0;
+    let skipped = 0, wouldHaveWon = 0, wouldHaveLost = 0;
     for (const d of windowDecisions) {
       if (d.action !== 'TRADE') {
         skipped++;
         const o = outcomeMap[d.window_ts];
         const actual = o?.actual_direction || (o?.close_price > o?.open_price ? 'UP' : o?.close_price < o?.open_price ? 'DOWN' : null);
-        // Would this strategy's direction have won?
-        if (actual && d.direction && d.direction === actual) {
+        const modelDir = getModelDir(d);
+        // Would this strategy's INTENDED direction have won?
+        // For v4_down_only: only count if model said DOWN (strategy would trade DOWN)
+        // For v4_up_asian: only count if model said UP (strategy would trade UP)
+        const stratDir = config.direction; // 'DOWN' or 'UP'
+        if (actual && modelDir === stratDir && modelDir === actual) {
           wouldHaveWon++;
+        } else if (actual && modelDir === stratDir && modelDir !== actual) {
+          wouldHaveLost++;
         }
       }
     }
-    return { skipped, wouldHaveWon, pct: skipped > 0 ? Math.round(100 * wouldHaveWon / skipped) : 0 };
-  }, [windowDecisions, outcomeMap]);
+    const relevant = wouldHaveWon + wouldHaveLost;
+    return {
+      skipped, wouldHaveWon, wouldHaveLost, relevant,
+      pct: relevant > 0 ? Math.round(100 * wouldHaveWon / relevant) : 0,
+    };
+  }, [windowDecisions, outcomeMap, config.direction]);
 
   // Current UTC hour for Asian session check
   const nowHour = new Date().getUTCHours();
@@ -427,16 +448,21 @@ export default function StrategyFloor({ strategyId }) {
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px 0' }}>
           <span style={{ fontSize: 9, color: config.color, letterSpacing: '0.1em', fontWeight: 700 }}>RECENT WINDOWS ({windowDecisions.length})</span>
-          {gateTightness.skipped > 0 && (
+          {gateTightness.relevant > 0 ? (
             <span style={{
               fontSize: 9, padding: '2px 8px', borderRadius: 3, fontWeight: 600,
-              background: gateTightness.pct > 80 ? 'rgba(239,68,68,0.12)' : gateTightness.pct > 50 ? 'rgba(245,158,11,0.12)' : 'rgba(71,85,105,0.15)',
-              color: gateTightness.pct > 80 ? T.red : gateTightness.pct > 50 ? T.amber : T.textMuted,
+              background: gateTightness.pct > 80 ? 'rgba(239,68,68,0.12)' : gateTightness.pct > 50 ? 'rgba(245,158,11,0.12)' : 'rgba(16,185,129,0.08)',
+              color: gateTightness.pct > 80 ? T.red : gateTightness.pct > 50 ? T.amber : T.green,
             }}>
-              {gateTightness.wouldHaveWon}/{gateTightness.skipped} skipped would have won ({gateTightness.pct}%)
-              {gateTightness.pct > 80 && ' \u2014 GATES MAY BE TOO TIGHT'}
+              {gateTightness.wouldHaveWon} missed wins / {gateTightness.relevant} {config.direction} signals ({gateTightness.pct}% missed)
+              {gateTightness.pct > 80 && ' \u2014 GATES TOO TIGHT'}
+              {gateTightness.pct === 0 && gateTightness.relevant > 0 && ' \u2014 gates working perfectly'}
             </span>
-          )}
+          ) : gateTightness.skipped > 0 ? (
+            <span style={{ fontSize: 9, color: T.textDim }}>
+              {gateTightness.skipped} skips (no {config.direction} signals — model predicted opposite)
+            </span>
+          ) : null}
         </div>
 
         <div style={{ maxHeight: 500, overflowY: 'auto', padding: '0 0 4px' }}>
@@ -456,10 +482,15 @@ export default function StrategyFloor({ strategyId }) {
               {windowDecisions.map((d, i) => {
                 const o = outcomeMap[d.window_ts] || {};
                 const actual = o.actual_direction || (o.close_price > o.open_price ? 'UP' : o.close_price < o.open_price ? 'DOWN' : null);
+                const modelDir = getModelDir(d);
                 const isTrade = d.action === 'TRADE';
-                const isWin = isTrade && d.direction && actual && d.direction === actual;
-                const isLoss = isTrade && d.direction && actual && d.direction !== actual;
-                const wouldHaveWon = !isTrade && d.direction && actual && d.direction === actual;
+                const isWin = isTrade && (d.direction || modelDir) && actual && (d.direction || modelDir) === actual;
+                const isLoss = isTrade && (d.direction || modelDir) && actual && (d.direction || modelDir) !== actual;
+                // "Missed?" = strategy's target direction matched actual, but we skipped
+                const stratDir = config.direction; // 'DOWN' or 'UP'
+                const wouldHaveTraded = !isTrade && modelDir === stratDir;
+                const wouldHaveWon = wouldHaveTraded && actual === stratDir;
+                const wouldHaveLost = wouldHaveTraded && actual && actual !== stratDir;
 
                 const rowBg = isWin ? 'rgba(16,185,129,0.04)' : isLoss ? 'rgba(239,68,68,0.04)' : 'transparent';
                 const rowOpacity = isTrade ? 1 : 0.6;
@@ -476,7 +507,7 @@ export default function StrategyFloor({ strategyId }) {
                         </span>
                       ) : '\u2014'}
                     </td>
-                    <td style={{ ...td, color: dirColor(d.direction), fontWeight: 600 }}>{d.direction || '\u2014'}</td>
+                    <td style={{ ...td, color: dirColor(modelDir), fontWeight: 600 }}>{modelDir || '\u2014'}</td>
                     <td style={td}>
                       <span style={{
                         padding: '1px 6px', borderRadius: 2, fontSize: 9, fontWeight: 700,
@@ -497,9 +528,15 @@ export default function StrategyFloor({ strategyId }) {
                     </td>
                     <td style={td}>
                       {wouldHaveWon ? (
-                        <span style={{ color: T.amber, fontWeight: 700, fontSize: 9 }}>\u26A0 YES</span>
-                      ) : !isTrade && actual ? (
-                        <span style={{ color: T.textDim, fontSize: 9 }}>no</span>
+                        <span style={{ color: T.amber, fontWeight: 700, fontSize: 9 }}>{'\u26A0'} MISSED WIN</span>
+                      ) : wouldHaveLost ? (
+                        <span style={{ color: T.green, fontSize: 9 }}>{'\u2713'} correct skip</span>
+                      ) : wouldHaveTraded ? (
+                        <span style={{ color: T.textDim, fontSize: 9 }}>unresolved</span>
+                      ) : !isTrade && modelDir !== config.direction ? (
+                        <span style={{ color: T.textDim, fontSize: 9 }}>wrong dir ({modelDir})</span>
+                      ) : !isTrade ? (
+                        <span style={{ color: T.textDim, fontSize: 9 }}>{'\u2014'}</span>
                       ) : '\u2014'}
                     </td>
                   </tr>
