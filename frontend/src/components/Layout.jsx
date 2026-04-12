@@ -67,6 +67,9 @@ const NAV_SECTIONS = [
       { path: '/polymarket/monitor', label: 'Monitor', icon: '\u{1F4E1}', highlight: true, isNew: true,
         strategy: 'Polymarket 5m',
         dataSource: 'v58/execution-hq + v4/snapshot + v3/snapshot + v58/accuracy + v58/outcomes' },
+      { path: '/polymarket/evaluate', label: 'Evaluate', icon: '\u{1F4CA}', highlight: true, isNew: true,
+        strategy: 'Polymarket 5m',
+        dataSource: 'v58/stats + v58/accuracy + v58/outcomes + v58/execution-hq + pnl/daily' },
     ],
   },
   {

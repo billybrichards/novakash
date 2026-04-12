@@ -43,6 +43,7 @@ import Schema from './pages/Schema.jsx';
 import Config from './pages/Config.jsx';
 import LegacyConfig from './pages/LegacyConfig.jsx';
 import PolymarketMonitor from './pages/polymarket/Monitor.jsx';
+import PolymarketEvaluate from './pages/polymarket/Evaluate.jsx';
 
 export default function App() {
   return (
@@ -109,6 +110,7 @@ export default function App() {
             {/* Polymarket Monitor — new unified trading dashboard */}
             <Route path="polymarket" element={<Navigate to="/polymarket/monitor" replace />} />
             <Route path="polymarket/monitor" element={<PolymarketMonitor />} />
+            <Route path="polymarket/evaluate" element={<PolymarketEvaluate />} />
           </Route>
 
           {/* 404 fallback */}
