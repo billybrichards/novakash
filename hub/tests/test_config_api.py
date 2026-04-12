@@ -375,9 +375,9 @@ def test_get_history_for_unknown_key_returns_404():
     assert "unknown config key" in res.json()["detail"]
 
 
-def test_post_config_returns_501_with_cfg04_pointer():
-    """POST is not implemented in this PR — return 501 with a clear
-    message pointing at CFG-04 instead of a 404 or generic 500."""
+def test_post_config_returns_400_with_endpoint_pointers():
+    """The generic POST now returns 400 pointing callers to the specific
+    write endpoints (upsert, rollback, reset) added in CFG-04."""
     session = _make_mock_session()
     client = TestClient(_build_app_with_mock_session(session))
 
@@ -385,7 +385,8 @@ def test_post_config_returns_501_with_cfg04_pointer():
         "/api/v58/config",
         json={"service": "engine", "key": "BET_FRACTION", "value": 0.05},
     )
-    assert res.status_code == 501
+    assert res.status_code == 400
     detail = res.json()["detail"]
-    assert "CFG-04" in detail
-    assert "not implemented" in detail.lower()
+    assert "upsert" in detail
+    assert "rollback" in detail
+    assert "reset" in detail
