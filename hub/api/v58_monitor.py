@@ -3766,3 +3766,187 @@ async def get_factory_windows(
             },
             "error": str(exc)[:200],
         }
+
+
+# ─── Strategy Decisions (SP-05) ─────────────────────────────────────────────
+
+
+@router.get("/v58/strategy-decisions")
+async def strategy_decisions(
+    strategy_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    db: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+):
+    """Return recent strategy decisions (LIVE + GHOST)."""
+    try:
+        where_clauses = []
+        params: dict = {"lim": limit}
+        if strategy_id:
+            where_clauses.append("strategy_id = :sid")
+            params["sid"] = strategy_id
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        rows = (
+            await db.execute(
+                text(f"""
+                    SELECT strategy_id, strategy_version, mode, asset,
+                           window_ts, timeframe, eval_offset,
+                           action, direction, confidence, confidence_score,
+                           entry_cap, collateral_pct, entry_reason, skip_reason,
+                           executed, order_id, fill_price, fill_size,
+                           metadata_json::text AS metadata_json,
+                           evaluated_at
+                    FROM strategy_decisions
+                    {where_sql}
+                    ORDER BY evaluated_at DESC
+                    LIMIT :lim
+                """),
+                params,
+            )
+        ).mappings().all()
+        decisions = []
+        for r in rows:
+            meta = r["metadata_json"] or "{}"
+            try:
+                meta_parsed = json.loads(meta)
+            except Exception:
+                meta_parsed = {}
+            decisions.append({
+                "strategy_id": r["strategy_id"],
+                "strategy_version": r["strategy_version"],
+                "mode": r["mode"],
+                "asset": r["asset"],
+                "window_ts": r["window_ts"],
+                "timeframe": r["timeframe"],
+                "eval_offset": r["eval_offset"],
+                "action": r["action"],
+                "direction": r["direction"],
+                "confidence": r["confidence"],
+                "confidence_score": _safe_float(r["confidence_score"]),
+                "entry_cap": _safe_float(r["entry_cap"]),
+                "collateral_pct": _safe_float(r["collateral_pct"]),
+                "entry_reason": r["entry_reason"],
+                "skip_reason": r["skip_reason"],
+                "executed": r["executed"],
+                "order_id": r["order_id"],
+                "fill_price": _safe_float(r["fill_price"]),
+                "fill_size": _safe_float(r["fill_size"]),
+                "metadata": meta_parsed,
+                "evaluated_at": r["evaluated_at"].isoformat() if r["evaluated_at"] else None,
+            })
+        return {"decisions": decisions}
+    except Exception as exc:
+        log.warning("v58.strategy_decisions_error", error=str(exc)[:200])
+        return {"decisions": [], "error": str(exc)[:200]}
+
+
+@router.get("/v58/strategy-comparison")
+async def strategy_comparison(
+    days: int = Query(default=7, ge=1, le=90),
+    db: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+):
+    """Per-strategy aggregated comparison over the last N days.
+
+    Joins strategy_decisions with window_snapshots to determine actual
+    outcome, then computes W/L/accuracy/cumulative would-be PnL per strategy.
+    """
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        rows = (
+            await db.execute(
+                text("""
+                    SELECT
+                        sd.strategy_id,
+                        sd.mode,
+                        sd.action,
+                        sd.direction,
+                        sd.confidence_score,
+                        sd.skip_reason,
+                        sd.fill_price,
+                        sd.fill_size,
+                        sd.window_ts,
+                        sd.evaluated_at,
+                        ws.actual_direction,
+                        ws.gamma_up_price,
+                        ws.gamma_down_price
+                    FROM strategy_decisions sd
+                    LEFT JOIN window_snapshots ws
+                        ON sd.asset = ws.asset
+                        AND sd.window_ts = ws.window_ts
+                    WHERE sd.evaluated_at >= :cutoff
+                    ORDER BY sd.evaluated_at
+                """),
+                {"cutoff": cutoff},
+            )
+        ).mappings().all()
+
+        # Aggregate per strategy
+        strats: dict = {}
+        for r in rows:
+            sid = r["strategy_id"]
+            if sid not in strats:
+                strats[sid] = {
+                    "strategy_id": sid,
+                    "mode": r["mode"],
+                    "total_evals": 0,
+                    "trades": 0,
+                    "skips": 0,
+                    "errors": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "unresolved": 0,
+                    "cum_pnl": 0.0,
+                    "accuracy": None,
+                    "daily": {},
+                }
+            s = strats[sid]
+            s["total_evals"] += 1
+            action = (r["action"] or "").upper()
+            if action == "TRADE":
+                s["trades"] += 1
+                actual = r["actual_direction"]
+                if actual:
+                    is_win = (r["direction"] or "").upper() == actual.upper()
+                    if is_win:
+                        s["wins"] += 1
+                    else:
+                        s["losses"] += 1
+                    # PnL estimate
+                    up_price = _safe_float(r["gamma_up_price"])
+                    down_price = _safe_float(r["gamma_down_price"])
+                    direction = (r["direction"] or "").upper()
+                    if up_price and down_price and up_price > 0.01 and up_price < 0.99:
+                        entry = up_price if direction == "UP" else down_price
+                        pnl = ((1 - entry) * 4) if is_win else (-(entry) * 4)
+                    else:
+                        pnl = 2.0 if is_win else -2.0
+                    s["cum_pnl"] += pnl
+                    # Daily breakdown
+                    day_key = r["evaluated_at"].strftime("%Y-%m-%d") if r["evaluated_at"] else "unknown"
+                    if day_key not in s["daily"]:
+                        s["daily"][day_key] = {"wins": 0, "losses": 0, "pnl": 0.0}
+                    s["daily"][day_key]["wins" if is_win else "losses"] += 1
+                    s["daily"][day_key]["pnl"] += pnl
+                else:
+                    s["unresolved"] += 1
+            elif action == "SKIP":
+                s["skips"] += 1
+            elif action == "ERROR":
+                s["errors"] += 1
+
+        # Compute accuracy
+        for s in strats.values():
+            total_resolved = s["wins"] + s["losses"]
+            s["accuracy"] = round(s["wins"] / total_resolved * 100, 1) if total_resolved > 0 else None
+            s["cum_pnl"] = round(s["cum_pnl"], 2)
+            # Convert daily dict to sorted list
+            s["daily"] = [
+                {"date": k, **v}
+                for k, v in sorted(s["daily"].items())
+            ]
+
+        return {"strategies": list(strats.values()), "days": days}
+    except Exception as exc:
+        log.warning("v58.strategy_comparison_error", error=str(exc)[:200])
+        return {"strategies": [], "days": days, "error": str(exc)[:200]}
