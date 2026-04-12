@@ -405,9 +405,12 @@ class V4Snapshot:
     macro: dict                         # Qwen/LightGBM bias, direction_gate, size_modifier
     quantiles: dict                     # p10-p90
 
+    # Polymarket live recommended outcome (clean venue-specific block)
+    polymarket_outcome: Optional[dict] = None  # direction, trade_advised, confidence, extras
+
     # Metadata
-    timescale: str                      # "5m" | "15m"
-    timestamp: float                    # When snapshot was generated
+    timescale: str = "5m"
+    timestamp: float = 0.0
 
 
 @dataclass(frozen=True)

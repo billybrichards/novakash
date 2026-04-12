@@ -74,9 +74,13 @@ class V4FusionStrategy:
             return self._error("v4_snapshot_missing")
 
         # ── Polymarket venue-aware path ─────────────────────────────
-        # The polymarket_5m strategy template emits extras.venue="polymarket"
-        # and extras.trade=True/False. When present, trust the template's
-        # pre-computed trade decision and confidence_distance.
+        # The V4 surface provides a clean `polymarket_live_recommended_outcome`
+        # block with direction, trade_advised, confidence metrics, and extras.
+        poly = snap.polymarket_outcome
+        if poly is not None:
+            return self._evaluate_polymarket_v2(snap, ctx, poly)
+
+        # Fallback: detect from recommended_action extras (old timesfm builds)
         rec_extras = self._get_rec_extras(snap)
         if rec_extras.get("venue") == "polymarket":
             return self._evaluate_polymarket(snap, ctx, rec_extras)
@@ -105,10 +109,13 @@ class V4FusionStrategy:
         if direction is None:
             direction = "UP" if p_up > 0.5 else "DOWN"
 
-        # Gate 5: Macro direction_gate
+        # Gate 5: Macro direction_gate (ALLOW_ALL = pass through)
         macro_gate = snap.macro.get("direction_gate")
-        if macro_gate is not None and macro_gate != direction:
-            return self._skip(f"macro direction_gate={macro_gate} vs {direction}")
+        if macro_gate and macro_gate not in ("ALLOW_ALL", None):
+            if macro_gate == "LONG_ONLY" and direction == "DOWN":
+                return self._skip(f"macro direction_gate=LONG_ONLY blocks DOWN")
+            if macro_gate == "SHORT_ONLY" and direction == "UP":
+                return self._skip(f"macro direction_gate=SHORT_ONLY blocks UP")
 
         # Sizing from V4 recommendation
         collateral_pct = snap.recommended_collateral_pct
@@ -155,6 +162,54 @@ class V4FusionStrategy:
             }
         return {}
 
+    def _evaluate_polymarket_v2(
+        self, snap: V4Snapshot, ctx: StrategyContext, poly: dict
+    ) -> StrategyDecision:
+        """Evaluate using the clean polymarket_live_recommended_outcome block.
+
+        This is the preferred path when the V4 surface provides the new
+        venue-specific recommendation with direction, trade_advised,
+        confidence metrics, timing, and extras.
+        """
+        direction = poly.get("direction")
+        trade_advised = poly.get("trade_advised", False)
+        confidence = poly.get("confidence", 0.5)
+        distance = poly.get("confidence_distance", abs(confidence - 0.5))
+        reason = poly.get("reason", "unknown")
+        timing = poly.get("timing", "unknown")
+        max_entry = poly.get("max_entry_price")
+
+        if not trade_advised:
+            return self._skip(f"polymarket: {reason} (timing={timing}, dist={distance:.3f})")
+
+        if not direction:
+            return self._skip("polymarket: no direction")
+
+        # Macro direction_gate: ALLOW_ALL passes, LONG_ONLY/SHORT_ONLY filters
+        macro_gate = snap.macro.get("direction_gate")
+        if macro_gate and macro_gate not in ("ALLOW_ALL", None):
+            if macro_gate == "LONG_ONLY" and direction == "DOWN":
+                return self._skip(f"macro direction_gate=LONG_ONLY blocks DOWN")
+            if macro_gate == "SHORT_ONLY" and direction == "UP":
+                return self._skip(f"macro direction_gate=SHORT_ONLY blocks UP")
+
+        return StrategyDecision(
+            action="TRADE",
+            direction=direction,
+            confidence=snap.conviction or f"dist_{distance:.2f}",
+            confidence_score=distance * 2.0,
+            entry_cap=max_entry,
+            collateral_pct=snap.recommended_collateral_pct,
+            strategy_id=self.strategy_id,
+            strategy_version=self.version,
+            entry_reason=f"polymarket_{reason}_T{ctx.eval_offset}",
+            skip_reason=None,
+            metadata={
+                **self._build_metadata(snap),
+                "polymarket_outcome": poly,
+            },
+        )
+
     def _evaluate_polymarket(
         self, snap: V4Snapshot, ctx: StrategyContext, extras: dict
     ) -> StrategyDecision:
@@ -173,10 +228,14 @@ class V4FusionStrategy:
             reason = snap.recommended_reason or "polymarket_template_skip"
             return self._skip(f"polymarket: {reason} (dist={distance:.3f})")
 
-        # Macro direction_gate still applies
+        # Macro direction_gate: ALLOW_ALL = pass, LONG_ONLY/SHORT_ONLY = filter
         macro_gate = snap.macro.get("direction_gate")
-        if macro_gate is not None and macro_gate != direction:
-            return self._skip(f"macro direction_gate={macro_gate} vs {direction}")
+        if macro_gate and macro_gate not in ("ALLOW_ALL", None):
+            # LONG_ONLY blocks DOWN, SHORT_ONLY blocks UP
+            if macro_gate == "LONG_ONLY" and direction == "DOWN":
+                return self._skip(f"macro direction_gate=LONG_ONLY blocks DOWN")
+            if macro_gate == "SHORT_ONLY" and direction == "UP":
+                return self._skip(f"macro direction_gate=SHORT_ONLY blocks UP")
 
         # Use max_entry_price from extras if available
         max_entry = extras.get("max_entry_price")

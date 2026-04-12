@@ -103,6 +103,7 @@ class V4SnapshotHttpAdapter:
                 consensus=data.get("consensus", {}),  # top-level
                 macro=data.get("macro", {}),            # top-level
                 quantiles=ts_data.get("quantiles_at_close") or ts_data.get("quantiles_full", {}),
+                polymarket_outcome=ts_data.get("polymarket_live_recommended_outcome"),
                 timescale=timescale,
                 timestamp=float(data.get("ts", 0.0)),
             )
