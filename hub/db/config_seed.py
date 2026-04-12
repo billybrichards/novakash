@@ -443,6 +443,14 @@ _ENGINE_KEYS: list[tuple] = [
     ("engine", "V4_FUSION_ENABLED", "bool", "true",
      "Enable V4 fusion strategy evaluation.",
      "thresholds", False),
+    ("engine", "V4_DOWN_ONLY_MODE", "enum", "LIVE",
+     "V4 DOWN-only strategy mode: LIVE=primary paper trading, GHOST=shadow, OFF=disabled. "
+     "DOWN filter (skip UP predictions, 1.5-53% WR) + CLOB sizing (2x at >=0.75 ask). "
+     "See docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md.",
+     "thresholds", False),
+    ("engine", "V4_DOWN_ONLY_ENABLED", "bool", "true",
+     "Enable V4 DOWN-only strategy evaluation (SIG-03/SIG-04).",
+     "thresholds", False),
 
     # ── Operational mode flags ─────────────────────────────────────────────────
     ("engine", "PAPER_MODE", "bool", "true",

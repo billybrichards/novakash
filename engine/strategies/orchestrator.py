@@ -388,6 +388,7 @@ class Orchestrator:
             v4_snapshot_port = None
             if v4_enabled:
                 from adapters.strategies.v4_fusion_strategy import V4FusionStrategy
+                from adapters.strategies.v4_down_only_strategy import V4DownOnlyStrategy
                 from adapters.v4_snapshot_http import V4SnapshotHttpAdapter
 
                 v4_mode = runtime.v4_fusion_mode
@@ -397,6 +398,14 @@ class Orchestrator:
                 v4_strat = V4FusionStrategy()
                 strategy_pairs.append((v4_reg, v4_strat))
                 v4_snapshot_port = V4SnapshotHttpAdapter()
+
+                # V4 DOWN-Only: DOWN filter + CLOB sizing (SIG-03/SIG-04)
+                if runtime.v4_down_only_enabled:
+                    v4_down_mode = runtime.v4_down_only_mode
+                    v4_down_reg = StrategyRegistration(
+                        strategy_id="v4_down_only", mode=v4_down_mode, enabled=True, priority=3,
+                    )
+                    strategy_pairs.append((v4_down_reg, V4DownOnlyStrategy()))
 
             from adapters.persistence.pg_strategy_decisions import PgStrategyDecisionRepository
             # Pass the db_client — the repo extracts the pool lazily via _get_pool()

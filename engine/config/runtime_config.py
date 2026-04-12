@@ -78,6 +78,9 @@ _DB_KEY_MAP: dict[str, tuple[str, type]] = {
     "V4_FUSION_ENABLED":         ("v4_fusion_enabled", bool),
     "V10_6_MIN_EVAL_OFFSET_STRATEGY": ("v10_6_min_eval_offset", int),
     "V10_6_MAX_EVAL_OFFSET_STRATEGY": ("v10_6_max_eval_offset", int),
+    # SIG-03/SIG-04: V4 DOWN-only strategy (DOWN filter + CLOB sizing)
+    "V4_DOWN_ONLY_MODE":         ("v4_down_only_mode", str),
+    "V4_DOWN_ONLY_ENABLED":      ("v4_down_only_enabled", bool),
 }
 
 
@@ -240,6 +243,9 @@ class RuntimeConfig:
         self.v10_gate_mode: str = os.environ.get("V10_GATE_MODE", "LIVE").upper()
         self.v4_fusion_mode: str = os.environ.get("V4_FUSION_MODE", "GHOST").upper()
         self.v4_fusion_enabled: bool = os.environ.get("V4_FUSION_ENABLED", "false").lower() == "true"
+        # SIG-03/SIG-04: V4 DOWN-only strategy (DOWN filter + CLOB sizing)
+        self.v4_down_only_mode: str = os.environ.get("V4_DOWN_ONLY_MODE", "LIVE").upper()
+        self.v4_down_only_enabled: bool = os.environ.get("V4_DOWN_ONLY_ENABLED", "true").lower() == "true"
 
         # ── Sync metadata ─────────────────────────────────────────────────
         self._active_config_id: Optional[int] = None

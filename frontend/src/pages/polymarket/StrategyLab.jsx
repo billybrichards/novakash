@@ -14,141 +14,197 @@ import WindowAnalysisModal from './components/WindowAnalysisModal.jsx';
  */
 
 // ── Strategy Config Panel ───────────────────────────────────────────────────
+// Dynamic strategy selector — reads live modes from config API, allows inline
+// LIVE / GHOST / OFF toggle per strategy without leaving the page.
 
-function StrategyConfigPanel() {
-  const [expanded, setExpanded] = useState(false);
+const STRATEGIES_META = [
+  {
+    id: 'v4_down_only',
+    label: 'V4 DOWN-ONLY',
+    configKey: 'V4_DOWN_ONLY_MODE',
+    description: 'DOWN filter + CLOB sizing. 76–99% WR. PRIMARY strategy.',
+    color: '#10b981',    // green — this is the recommended primary
+    badge: 'PRIMARY',
+    defaultMode: 'LIVE',
+  },
+  {
+    id: 'v4_fusion',
+    label: 'V4 FUSION',
+    configKey: 'V4_FUSION_MODE',
+    description: 'Full V4 surface (UP+DOWN). Baseline comparison.',
+    color: '#06b6d4',    // cyan
+    badge: null,
+    defaultMode: 'GHOST',
+  },
+  {
+    id: 'v10_gate',
+    label: 'V10 GATE',
+    configKey: 'V10_GATE_MODE',
+    description: 'Legacy 8-gate pipeline. Shadow reference.',
+    color: '#a855f7',    // purple
+    badge: null,
+    defaultMode: 'GHOST',
+  },
+];
 
-  const row = (label, value, valueColor) => (
-    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '3px 0' }}>
-      <span style={{ fontSize: 9, color: T.textMuted, letterSpacing: '0.06em', minWidth: 160, flexShrink: 0 }}>
-        {label}
-      </span>
-      <span style={{ fontSize: 10, color: valueColor || T.text, fontWeight: 600 }}>
-        {value}
-      </span>
-    </div>
-  );
+const MODE_COLORS = {
+  LIVE: { bg: 'rgba(16,185,129,0.15)', color: '#10b981' },
+  GHOST: { bg: 'rgba(168,85,247,0.15)', color: '#a855f7' },
+  OFF: { bg: 'rgba(100,116,139,0.12)', color: '#64748b' },
+};
 
-  const divider = () => (
-    <div style={{ height: 1, background: T.border, margin: '6px 0' }} />
-  );
+function StrategyConfigPanel({ api }) {
+  const [modes, setModes] = useState({});   // { V4_DOWN_ONLY_MODE: 'LIVE', ... }
+  const [saving, setSaving] = useState(null);
+  const [error, setError] = useState(null);
+
+  // Fetch current modes on mount
+  useEffect(() => {
+    if (!api) return;
+    (async () => {
+      try {
+        const res = await api.get('/api/v58/config?service=engine');
+        const keys = res?.keys || [];
+        const m = {};
+        for (const strat of STRATEGIES_META) {
+          const found = keys.find(k => k.key === strat.configKey);
+          m[strat.configKey] = (found?.current_value ?? strat.defaultMode).toUpperCase();
+        }
+        setModes(m);
+      } catch {
+        // Fallback to defaults
+        const m = {};
+        for (const s of STRATEGIES_META) m[s.configKey] = s.defaultMode;
+        setModes(m);
+      }
+    })();
+  }, [api]);
+
+  const setMode = async (configKey, newMode) => {
+    if (saving) return;
+
+    // Enforce: only 1 LIVE strategy per Polymarket account (single execution path).
+    // Multiple LIVE strategies would both place real orders on the same account.
+    // TODO (MULTI-ACCOUNT-01): support multiple Polymarket accounts for parallel LIVE strategies.
+    if (newMode === 'LIVE') {
+      const otherLive = STRATEGIES_META.find(
+        s => s.configKey !== configKey && modes[s.configKey] === 'LIVE'
+      );
+      if (otherLive) {
+        setError(`Only 1 LIVE strategy allowed per account. Set ${otherLive.label} to GHOST first.`);
+        return;
+      }
+    }
+
+    setSaving(configKey);
+    setError(null);
+    try {
+      await api.post('/api/v58/config/upsert', {
+        service: 'engine',
+        key: configKey,
+        value: newMode,
+        reason: `strategy mode set to ${newMode} via StrategyLab`,
+      });
+      setModes(prev => ({ ...prev, [configKey]: newMode }));
+    } catch (e) {
+      setError(`Failed to set ${configKey}: ${e.message}`);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const liveCounts = STRATEGIES_META.filter(s => modes[s.configKey] === 'LIVE').length;
 
   return (
     <div style={{
-      background: T.headerBg,
-      border: `1px solid ${T.cardBorder}`,
-      borderLeft: `3px solid ${T.cyan}`,
+      background: 'rgba(15,23,42,0.9)',
+      border: `1px solid rgba(51,65,85,1)`,
+      borderLeft: `3px solid #10b981`,
       borderRadius: 6,
       marginBottom: 14,
-      overflow: 'hidden',
+      padding: '10px 14px',
     }}>
-      {/* Collapsed bar — always visible */}
-      <div
-        onClick={() => setExpanded(e => !e)}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10,
-          padding: '8px 14px',
-          cursor: 'pointer',
-          userSelect: 'none',
-        }}
-      >
-        <span style={{ fontSize: 9, color: T.cyan, letterSpacing: '0.1em', fontWeight: 700 }}>
-          STRATEGY CONFIG
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+        <span style={{ fontSize: 9, color: '#10b981', letterSpacing: '0.1em', fontWeight: 700 }}>
+          STRATEGY SELECTOR
         </span>
-        <span style={{
-          fontSize: 9,
-          padding: '1px 7px',
-          borderRadius: 3,
-          background: 'rgba(6,182,212,0.15)',
-          color: T.cyan,
-          fontWeight: 700,
-          letterSpacing: '0.08em',
-        }}>
-          V4 LIVE (paper)
+        <span style={{ fontSize: 9, color: T.textMuted }}>
+          {liveCounts} LIVE · {STRATEGIES_META.length - liveCounts} GHOST/OFF
         </span>
-        <span style={{
-          fontSize: 9,
-          padding: '1px 7px',
-          borderRadius: 3,
-          background: 'rgba(168,85,247,0.15)',
-          color: T.purple,
-          fontWeight: 700,
-          letterSpacing: '0.08em',
-        }}>
-          V10 GHOST
-        </span>
-        <span style={{
-          fontSize: 9,
-          padding: '1px 7px',
-          borderRadius: 3,
-          background: 'rgba(245,158,11,0.12)',
-          color: T.amber,
-          fontWeight: 600,
-          letterSpacing: '0.07em',
-        }}>
-          timing: T-30 to T-180
-        </span>
-        <span style={{
-          fontSize: 9,
-          padding: '1px 7px',
-          borderRadius: 3,
-          background: 'rgba(245,158,11,0.12)',
-          color: T.amber,
-          fontWeight: 600,
-          letterSpacing: '0.07em',
-        }}>
-          conf_dist ≥ 0.12
-        </span>
-        <span style={{ marginLeft: 'auto', fontSize: 10, color: T.textMuted }}>
-          {expanded ? '▲' : '▼'}
-        </span>
+        {error && (
+          <span style={{ fontSize: 9, color: T.red, marginLeft: 8 }}>{error}</span>
+        )}
       </div>
 
-      {/* Expanded detail */}
-      {expanded && (
-        <div style={{ padding: '0 14px 12px' }}>
-          {divider()}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+        {STRATEGIES_META.map(strat => {
+          const currentMode = modes[strat.configKey] || strat.defaultMode;
+          const isSaving = saving === strat.configKey;
+          return (
+            <div key={strat.id} style={{
+              border: `1px solid ${currentMode === 'LIVE' ? strat.color : 'rgba(51,65,85,0.8)'}`,
+              borderRadius: 5,
+              padding: '8px 10px',
+              background: currentMode === 'LIVE' ? `${strat.color}10` : 'transparent',
+              transition: 'all 0.15s',
+            }}>
+              {/* Header */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: strat.color }}>{strat.label}</span>
+                {strat.badge && (
+                  <span style={{
+                    fontSize: 8, padding: '1px 5px', borderRadius: 2,
+                    background: `${strat.color}25`, color: strat.color, fontWeight: 700,
+                  }}>{strat.badge}</span>
+                )}
+              </div>
+              <div style={{ fontSize: 9, color: T.textMuted, marginBottom: 8, lineHeight: 1.4 }}>
+                {strat.description}
+              </div>
 
-          {/* Strategy modes */}
-          <div style={{ fontSize: 9, color: T.textDim, letterSpacing: '0.08em', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>
-            Active Strategies
-          </div>
-          {row('V4 Fusion', 'LIVE — paper trading (executes real orders)', T.cyan)}
-          {row('V10 Gate', 'GHOST — shadow mode, no execution', T.purple)}
+              {/* Mode toggle buttons */}
+              <div style={{ display: 'flex', gap: 4 }}>
+                {['LIVE', 'GHOST', 'OFF'].map(mode => {
+                  const active = currentMode === mode;
+                  const mc = MODE_COLORS[mode];
+                  return (
+                    <button
+                      key={mode}
+                      onClick={() => !active && setMode(strat.configKey, mode)}
+                      disabled={isSaving}
+                      style={{
+                        flex: 1,
+                        padding: '3px 0',
+                        fontSize: 9,
+                        fontFamily: T.mono,
+                        fontWeight: active ? 700 : 400,
+                        border: `1px solid ${active ? mc.color : 'rgba(51,65,85,0.6)'}`,
+                        borderRadius: 3,
+                        background: active ? mc.bg : 'transparent',
+                        color: active ? mc.color : T.textMuted,
+                        cursor: active ? 'default' : 'pointer',
+                        opacity: isSaving ? 0.5 : 1,
+                        transition: 'all 0.1s',
+                      }}
+                    >
+                      {isSaving && active ? '…' : mode}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
 
-          {divider()}
-
-          {/* Gates */}
-          <div style={{ fontSize: 9, color: T.textDim, letterSpacing: '0.08em', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>
-            Active Gates
-          </div>
-          {row('Timing window', 'optimal — T-30 to T-180 (seconds before window close)', T.amber)}
-          {row('Confidence distance', '≥ 0.12 (|P(direction) - 0.5|)', T.amber)}
-          {row('CLOB divergence (late)', 'late window T-5 to T-30: (Sequoia − CLOB implied) > 0.04', T.amber)}
-
-          {divider()}
-
-          {/* Model status */}
-          <div style={{ fontSize: 9, color: T.textDim, letterSpacing: '0.08em', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>
-            Model Status
-          </div>
-          {row('Current model', 'Sequoia v5.2 (trained 2026-04-10)', T.green)}
-          {row('Retrain outcome', 'New model NOT promoted — ECE worse. Current model stays.', T.amber)}
-
-          {divider()}
-
-          {/* Dataset caveat */}
-          <div style={{ fontSize: 9, color: T.textDim, letterSpacing: '0.08em', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>
-            Dataset Caveat
-          </div>
-          {row('Training set bias', '84% DOWN dataset — DOWN signals inflated by bearish period bias', T.red)}
-          <div style={{ fontSize: 9, color: T.textDim, marginTop: 4, lineHeight: 1.5 }}>
-            Interpret DOWN confidence scores with caution. UP signals are relatively underconfident vs actual accuracy.
-          </div>
-        </div>
-      )}
+      <div style={{ marginTop: 8, fontSize: 9, color: T.textDim, lineHeight: 1.5 }}>
+        LIVE = executes paper/real trades · GHOST = evaluates only, no execution · OFF = disabled.
+        Engine picks up mode change within 10s (hot-reload via DB config sync).{' '}
+        <span style={{ color: T.amber }}>
+          Only 1 strategy may be LIVE per Polymarket account (prevents duplicate order placement).
+        </span>
+        {' '}To run multiple strategies LIVE, configure separate Polymarket accounts (MULTI-ACCOUNT-01).
+      </div>
     </div>
   );
 }
@@ -1051,6 +1107,7 @@ function ShadowComparison({ api }) {
   const strategies = comparison?.strategies || [];
   const v10 = strategies.find(s => s.strategy_id === 'v10_gate');
   const v4 = strategies.find(s => s.strategy_id === 'v4_fusion');
+  const v4down = strategies.find(s => s.strategy_id === 'v4_down_only');
 
   // Group decisions by window_ts for side-by-side timeline
   const windowMap = {};
@@ -1137,12 +1194,13 @@ function ShadowComparison({ api }) {
         ))}
       </div>
 
-      {/* Summary cards: V10 vs V4 side by side */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+      {/* Summary cards: all 3 strategies */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12, marginBottom: 16 }}>
         {[
-          { strat: v10, label: 'V10 GATE', currentMode: 'GHOST', borderColor: T.purple },
-          { strat: v4, label: 'V4 FUSION', currentMode: 'LIVE', borderColor: T.cyan },
-        ].map(({ strat, label, currentMode, borderColor }) => {
+          { strat: v4down, label: 'V4 DOWN-ONLY', currentMode: 'LIVE', borderColor: '#10b981', badge: 'PRIMARY' },
+          { strat: v4, label: 'V4 FUSION', currentMode: 'GHOST', borderColor: T.cyan, badge: null },
+          { strat: v10, label: 'V10 GATE', currentMode: 'GHOST', borderColor: T.purple, badge: null },
+        ].map(({ strat, label, currentMode, borderColor, badge }) => {
           // historical mode stored in DB rows (may differ from current config)
           const histMode = strat?.mode?.toUpperCase() || currentMode;
           const modeColor = currentMode === 'LIVE' ? T.cyan : T.purple;
@@ -1155,6 +1213,12 @@ function ShadowComparison({ api }) {
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: borderColor }}>{label}</span>
+              {badge && (
+                <span style={{
+                  fontSize: 7, padding: '1px 5px', borderRadius: 2,
+                  background: `${borderColor}25`, color: borderColor, fontWeight: 700,
+                }}>{badge}</span>
+              )}
               {/* Current mode badge */}
               <span style={{
                 fontSize: 8, padding: '1px 6px', borderRadius: 3,
@@ -1577,7 +1641,7 @@ export default function StrategyLab() {
       </div>
 
       {/* Strategy Config Panel */}
-      <StrategyConfigPanel />
+      <StrategyConfigPanel api={api} />
 
       {/* Tabs */}
       <div style={S.tabs}>
