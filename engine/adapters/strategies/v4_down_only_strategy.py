@@ -32,6 +32,11 @@ _CLOB_SIZING: list[tuple[float, float, str]] = [
 
 _MAX_COLLATERAL_PCT = 0.10   # cap: never bet more than 10% per trade
 
+# Timing window validated from 897K-sample analysis — T-90 to T-150 has 90.3% WR.
+# Outside this band accuracy degrades to ~50-65%.
+_MIN_EVAL_OFFSET = 90
+_MAX_EVAL_OFFSET = 150
+
 
 class V4DownOnlyStrategy(V4FusionStrategy):
     """V4 fusion surface with DOWN-only direction filter + CLOB sizing."""
@@ -56,9 +61,16 @@ class V4DownOnlyStrategy(V4FusionStrategy):
     def _apply_down_only(
         self, decision: StrategyDecision, ctx: StrategyContext
     ) -> StrategyDecision:
-        """Post-process V4 decision: filter UP, size DOWN by CLOB ask."""
+        """Post-process V4 decision: timing gate, UP filter, CLOB sizing."""
         if decision.action != "TRADE":
             return decision
+
+        # Timing gate: only trade T-90 to T-150 (validated sweet spot, 90.3% WR)
+        offset = ctx.eval_offset
+        if offset is not None and not (_MIN_EVAL_OFFSET <= offset <= _MAX_EVAL_OFFSET):
+            return self._skip(
+                f"down_only_timing: T-{offset} outside T-{_MIN_EVAL_OFFSET} to T-{_MAX_EVAL_OFFSET}"
+            )
 
         # Filter: skip all UP predictions
         if decision.direction == "UP":
