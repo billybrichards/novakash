@@ -107,18 +107,25 @@ export default function DataHealthStrip({ hqData, v4Snapshot, v3Snapshot }) {
   let v3Status = v3Score != null ? 'green' : 'red';
   const v3Value = v3Score != null ? fmt(v3Score, 3) : 'NO DATA';
 
-  // --- V4 Conviction ---
+  // --- V4 Conviction (prefer polymarket_live_recommended_outcome) ---
   const timescales = v4Snapshot?.timescales || {};
   const ts5m = timescales['5m'] || {};
-  const conviction = ts5m.conviction || null;
+  const polyOutcome = ts5m.polymarket_live_recommended_outcome || null;
   let v4Status = 'grey';
   let v4Value = 'NOT WIRED';
-  if (conviction && conviction !== 'NONE') {
-    v4Status = 'green';
-    v4Value = conviction;
-  } else if (conviction === 'NONE') {
-    v4Status = 'yellow';
-    v4Value = 'NONE';
+  if (polyOutcome && polyOutcome.trade_advised != null) {
+    const advised = polyOutcome.trade_advised === true || polyOutcome.trade_advised === 'YES';
+    v4Status = advised ? 'green' : 'yellow';
+    v4Value = advised ? 'TRADE: YES' : 'TRADE: NO';
+  } else {
+    const conviction = ts5m.conviction || null;
+    if (conviction && conviction !== 'NONE') {
+      v4Status = 'green';
+      v4Value = conviction;
+    } else if (conviction === 'NONE') {
+      v4Status = 'yellow';
+      v4Value = 'NONE';
+    }
   }
 
   return (
