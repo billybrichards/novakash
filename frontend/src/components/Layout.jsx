@@ -28,6 +28,8 @@ const NAV_SECTIONS = [
       { path: '/polymarket/monitor', label: 'Monitor', icon: 'M' },
       { path: '/polymarket/floor', label: 'Floor', icon: 'F' },
       { path: '/polymarket/evaluate', label: 'Evaluate', icon: 'E' },
+      { path: '/polymarket/down-only', label: 'DOWN Floor', icon: '\u25BC' },
+      { path: '/polymarket/up-asian', label: 'UP Floor', icon: '\u25B2' },
       { path: '/polymarket/strategy-lab', label: 'Strategy Lab', icon: 'S' },
       { path: '/polymarket/strategy-history', label: 'History', icon: 'H' },
       { path: '/config', label: 'Configure', icon: 'C' },
