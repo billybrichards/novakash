@@ -2219,6 +2219,28 @@ const TASKS = [
       { date: '2026-04-12', note: 'Sizing schedule determined from 897K sample analysis. Gate design specified in DOWN_ONLY_STRATEGY_2026-04-12.md. Requires SIG-03 (DirectionFilterGate) to be implemented first — sizing only meaningful for DOWN predictions.' },
     ],
   },
+  {
+    id: 'MULTI-ACCOUNT-01',
+    category: 'signal-optimization',
+    severity: 'MEDIUM',
+    status: 'OPEN',
+    title: 'Multi-Polymarket-account support: run multiple LIVE strategies in parallel',
+    files: [
+      { path: 'frontend/src/pages/polymarket/StrategyLab.jsx', line: 56, repo: 'novakash' },
+      { path: 'engine/strategies/orchestrator.py', line: 365, repo: 'novakash' },
+      { path: 'engine/execution/polymarket_client.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Currently enforced: only 1 LIVE strategy per Polymarket account (prevents duplicate order placement)',
+      'StrategyLab UI blocks setting a second strategy to LIVE with an inline error message',
+      'Each strategy shares the same PolymarketClient, so LIVE=two strategies = two order sets on one account',
+      'Fix: instantiate a separate PolymarketClient per strategy, each with its own wallet credentials',
+    ],
+    fix: 'Add multi-account config: POLY_ACCOUNT_1_KEY, POLY_ACCOUNT_2_KEY, POLY_ACCOUNT_3_KEY. Map each strategy to an account in trading_configs. Instantiate separate PolymarketClient per registered strategy in orchestrator. Each account manages its own order flow independently. Then allow multiple LIVE strategies in StrategyLab UI.',
+    progressNotes: [
+      { date: '2026-04-12', note: 'Single-LIVE enforcement added to StrategyLab UI (StrategyConfigPanel). Tooltip explains the restriction. This task tracks the multi-account work needed to lift it.' },
+    ],
+  },
 ];
 
 // ─── Components ───────────────────────────────────────────────────────────
