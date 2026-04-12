@@ -170,6 +170,12 @@ class V4FusionStrategy:
         This is the preferred path when the V4 surface provides the new
         venue-specific recommendation with direction, trade_advised,
         confidence metrics, timing, and extras.
+
+        Timing gates (T = seconds to window close):
+          - early (>T-180): hard skip — too far from resolution
+          - optimal (T-30 to T-180): trade if confidence + trade_advised pass
+          - late_window (T-5 to T-30): trade only if CLOB divergence >= 4pp
+          - expired (<T-5): hard skip
         """
         direction = poly.get("direction")
         trade_advised = poly.get("trade_advised", False)
@@ -179,9 +185,30 @@ class V4FusionStrategy:
         timing = poly.get("timing", "unknown")
         max_entry = poly.get("max_entry_price")
 
-        # Timing gate: only trade in the T-90 to T-150 sweet spot ("optimal")
-        if timing in ("late", "expired", "early"):
-            return self._skip(f"polymarket: timing={timing} — outside sweet spot T-90 to T-150")
+        # Expired / too early: hard skip
+        if timing in ("expired", "early"):
+            return self._skip(f"polymarket: timing={timing} — outside window")
+
+        # Late window (T-5 to T-30): only trade with CLOB divergence confirmation.
+        # Requires Sequoia to be ahead of CLOB by at least 4pp — i.e. the market
+        # hasn't already priced in our edge before we can place the order.
+        if timing == "late_window":
+            extras = poly.get("extras", {})
+            clob_implied = extras.get("clob_implied_prob")
+            if clob_implied is not None:
+                divergence = abs(confidence - 0.5) - abs(float(clob_implied) - 0.5)
+                if divergence < 0.04:
+                    return self._skip(
+                        f"polymarket: late_window but CLOB already priced (div={divergence:.3f} < 0.04)"
+                    )
+                # Falls through to trade — CLOB divergence confirmed
+            else:
+                # No CLOB data available — skip late_window to be safe
+                return self._skip("polymarket: late_window but no CLOB data")
+
+        # Legacy "late" label (pre-T30 change) — treat as hard skip
+        if timing == "late":
+            return self._skip(f"polymarket: timing=late — outside window")
 
         # Confidence gate: mod/weak bands are anti-predictive below 0.12
         if distance < 0.12:
