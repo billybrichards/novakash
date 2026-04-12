@@ -877,7 +877,7 @@ async def get_outcomes(
     """
     try:
         q = text("""
-            SELECT
+            SELECT DISTINCT ON (ws.window_ts, ws.asset)
                 ws.window_ts, ws.asset, ws.timeframe,
                 ws.open_price, ws.close_price, ws.delta_pct,
                 ws.direction, ws.trade_placed, ws.skip_reason,
@@ -918,7 +918,7 @@ async def get_outcomes(
             WHERE (CAST(:asset AS VARCHAR) IS NULL OR ws.asset = :asset)
               AND ws.close_price IS NOT NULL
               AND ws.timeframe = '5m'
-            ORDER BY ws.window_ts DESC
+            ORDER BY ws.window_ts DESC, ws.asset, ws.eval_offset DESC NULLS LAST
             LIMIT :limit
         """)
         result = await session.execute(q, {"limit": limit, "asset": asset})
@@ -944,7 +944,7 @@ async def get_accuracy(
     """
     try:
         q = text("""
-            SELECT
+            SELECT DISTINCT ON (ws.window_ts, ws.asset)
                 ws.window_ts, ws.asset, ws.timeframe,
                 ws.open_price, ws.close_price, ws.delta_pct,
                 ws.direction, ws.trade_placed, ws.skip_reason,
@@ -979,7 +979,7 @@ async def get_accuracy(
               AND ws.close_price IS NOT NULL
               AND ws.open_price IS NOT NULL
               AND ws.timeframe = '5m'
-            ORDER BY ws.window_ts DESC
+            ORDER BY ws.window_ts DESC, ws.asset, ws.eval_offset DESC NULLS LAST
             LIMIT :limit
         """)
         result = await session.execute(q, {"limit": limit, "asset": asset})
@@ -3954,6 +3954,139 @@ async def strategy_comparison(
     except Exception as exc:
         log.warning("v58.strategy_comparison_error", error=str(exc)[:200])
         return {"strategies": [], "days": days, "error": str(exc)[:200]}
+
+
+# ─── Strategy Windows — per-window table for Evaluate page ──────────────────
+
+@router.get("/v58/strategy-windows")
+async def strategy_windows(
+    limit: int = Query(default=100, ge=10, le=500),
+    asset: Optional[str] = Query(default="BTC"),
+    db: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+):
+    """Per-window strategy comparison table for the Evaluate page.
+
+    Returns one row per 5-min window with:
+    - actual_direction (UP/DOWN from window_snapshots close vs open)
+    - each strategy's best decision for that window (action, direction, skip_reason)
+
+    Designed for side-by-side strategy table: select any N strategies,
+    show their TRADE/SKIP decision and WIN/LOSS outcome per window.
+    """
+    try:
+        # Get distinct windows with best decision per strategy per window.
+        # "Best" = lowest eval_offset in the T-90-150 range; fallback to latest overall.
+        rows = (await db.execute(text("""
+            WITH distinct_windows AS (
+                SELECT DISTINCT ON (sd.window_ts)
+                    sd.window_ts,
+                    sd.asset,
+                    COALESCE(ws.open_price, 0)  AS open_price,
+                    COALESCE(ws.close_price, 0) AS close_price,
+                    CASE
+                        WHEN ws.close_price > ws.open_price THEN 'UP'
+                        WHEN ws.close_price < ws.open_price THEN 'DOWN'
+                        ELSE NULL
+                    END AS actual_direction,
+                    ws.vpin,
+                    ws.regime,
+                    ws.delta_source
+                FROM strategy_decisions sd
+                LEFT JOIN window_snapshots ws
+                    ON ws.window_ts = sd.window_ts AND ws.asset = sd.asset
+                WHERE sd.asset = :asset
+                ORDER BY sd.window_ts DESC
+                LIMIT :limit
+            ),
+            best_per_strategy AS (
+                SELECT DISTINCT ON (sd.window_ts, sd.asset, sd.strategy_id)
+                    sd.window_ts,
+                    sd.asset,
+                    sd.strategy_id,
+                    sd.mode,
+                    sd.action,
+                    sd.direction,
+                    sd.skip_reason,
+                    sd.entry_reason,
+                    sd.confidence_score,
+                    sd.eval_offset,
+                    sd.evaluated_at
+                FROM strategy_decisions sd
+                WHERE sd.asset = :asset
+                ORDER BY sd.window_ts DESC, sd.asset, sd.strategy_id,
+                    -- prefer sweet-spot eval_offset (90-150), then latest
+                    CASE WHEN sd.eval_offset BETWEEN 90 AND 150 THEN 0 ELSE 1 END,
+                    sd.eval_offset DESC
+            )
+            SELECT
+                dw.window_ts,
+                dw.asset,
+                dw.open_price,
+                dw.close_price,
+                dw.actual_direction,
+                dw.vpin,
+                dw.regime,
+                dw.delta_source,
+                bps.strategy_id,
+                bps.mode,
+                bps.action,
+                bps.direction         AS strategy_direction,
+                bps.skip_reason,
+                bps.entry_reason,
+                bps.confidence_score,
+                bps.eval_offset
+            FROM distinct_windows dw
+            LEFT JOIN best_per_strategy bps
+                ON bps.window_ts = dw.window_ts AND bps.asset = dw.asset
+            ORDER BY dw.window_ts DESC, bps.strategy_id
+        """), {"asset": asset, "limit": limit})).mappings().all()
+
+        # Pivot: group by window_ts → nested strategies dict
+        windows: dict = {}
+        for r in rows:
+            wts = r["window_ts"]
+            if wts not in windows:
+                windows[wts] = {
+                    "window_ts": wts,
+                    "asset": r["asset"],
+                    "open_price": _safe_float(r["open_price"]),
+                    "close_price": _safe_float(r["close_price"]),
+                    "actual_direction": r["actual_direction"],
+                    "vpin": _safe_float(r["vpin"]),
+                    "regime": r["regime"],
+                    "delta_source": r["delta_source"],
+                    "strategies": {},
+                }
+            if r["strategy_id"]:
+                actual = r["actual_direction"]
+                action = (r["action"] or "").upper()
+                strat_dir = (r["strategy_direction"] or "").upper()
+                # Determine outcome for this strategy's decision
+                outcome = None
+                if action == "TRADE" and actual:
+                    outcome = "WIN" if strat_dir == actual else "LOSS"
+                elif action == "SKIP":
+                    outcome = "SKIP"
+                windows[wts]["strategies"][r["strategy_id"]] = {
+                    "mode": r["mode"],
+                    "action": action,
+                    "direction": r["strategy_direction"],
+                    "skip_reason": r["skip_reason"],
+                    "entry_reason": r["entry_reason"],
+                    "confidence_score": _safe_float(r["confidence_score"]),
+                    "eval_offset": r["eval_offset"],
+                    "outcome": outcome,
+                }
+
+        return {
+            "windows": list(windows.values()),
+            "count": len(windows),
+            "known_strategies": ["v10_gate", "v4_fusion", "v4_down_only"],
+        }
+    except Exception as exc:
+        log.warning("v58.strategy_windows_error", error=str(exc)[:200])
+        return {"windows": [], "count": 0, "error": str(exc)[:200]}
 
 
 # ─── Window Analysis — per-window evaluation timeline ────────────────────────
