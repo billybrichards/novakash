@@ -1,18 +1,17 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useApi } from '../../hooks/useApi.js';
 import { T, GATE_NAMES, fmt, utcHHMM, pct } from './components/theme.js';
-import WindowAnalysisModal from './components/WindowAnalysisModal.jsx';
 
 /**
  * Polymarket Evaluate — "How Am I Doing?"
  *
  * Performance analysis dashboard with 4 sections:
- *   A. Performance Summary Cards
- *   B. Signal vs Outcome Table (filterable)
+ *   A. Strategy Summary Cards (from /v58/strategy-comparison)
+ *   B. Strategy Comparison Table — per-window, multi-strategy columns
  *   C. Accuracy by Signal Component
  *   D. P&L Charts (inline SVG — no chart library)
  *
- * Polls 5 endpoints every 30s.
+ * Polls endpoints every 30s.
  */
 
 // ─── Gate pipeline names (V10.6 order) ──────────────────────────────────────
@@ -34,6 +33,23 @@ const DATE_RANGES = [
   { key: '30d', label: '30d', hours: 720 },
   { key: 'all', label: 'All', hours: Infinity },
 ];
+
+// ─── Strategy display metadata ───────────────────────────────────────────────
+const STRATEGY_META = {
+  v10_gate:     { label: 'V10 Gate',      color: '#a855f7' },
+  v4_fusion:    { label: 'V4 Fusion',     color: '#06b6d4' },
+  v4_down_only: { label: 'V4 Down-Only',  color: '#10b981' },
+  v4_up_asian:  { label: 'V4 Up Asian',   color: '#f59e0b' },
+};
+const FALLBACK_COLORS = ['#a855f7', '#06b6d4', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6'];
+
+function strategyMeta(key, index) {
+  if (STRATEGY_META[key]) return STRATEGY_META[key];
+  return {
+    label: key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+    color: FALLBACK_COLORS[(index || 0) % FALLBACK_COLORS.length],
+  };
+}
 
 // ─── Inject keyframes once ──────────────────────────────────────────────────
 if (typeof document !== 'undefined' && !document.getElementById('pm-eval-styles')) {
@@ -61,6 +77,15 @@ const S = {
     fontFamily: T.mono, cursor: 'pointer', border: 'none',
     background: active ? T.cyan : 'rgba(51,65,85,0.5)',
     color: active ? '#000' : T.textMuted,
+    fontWeight: active ? 700 : 400,
+    transition: 'all 0.15s',
+  }),
+  pillColored: (active, color) => ({
+    padding: '3px 10px', borderRadius: 3, fontSize: 10,
+    fontFamily: T.mono, cursor: 'pointer',
+    border: `1px solid ${active ? color : 'transparent'}`,
+    background: active ? `${color}22` : 'rgba(51,65,85,0.3)',
+    color: active ? color : T.textMuted,
     fontWeight: active ? 700 : 400,
     transition: 'all 0.15s',
   }),
@@ -150,7 +175,7 @@ function vpinBucket(vpin) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  SECTION A: Performance Summary Cards
+//  SECTION A: Strategy Summary Cards
 // ═══════════════════════════════════════════════════════════════════════════
 
 function SummaryCards({ accuracy, stats }) {
@@ -212,171 +237,128 @@ function SummaryCards({ accuracy, stats }) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  SECTION B: Signal vs Outcome Table
+//  SECTION B: Strategy Comparison Table
 // ═══════════════════════════════════════════════════════════════════════════
 
-function OutcomeFilters({ dateRange, setDateRange, direction, setDirection, outcome, setOutcome, gateFilter, setGateFilter }) {
+function StrategySelector({ knownStrategies, selectedStrategies, setSelectedStrategies, comparisonStats }) {
+  const statsMap = useMemo(() => {
+    const m = {};
+    if (comparisonStats) for (const s of comparisonStats) m[s.strategy_id || s.strategy || s.name] = s;
+    return m;
+  }, [comparisonStats]);
+
+  const toggle = (key) => {
+    setSelectedStrategies(prev => {
+      if (prev.includes(key)) return prev.length === 1 ? prev : prev.filter(k => k !== key);
+      return prev.length >= 3 ? [...prev.slice(1), key] : [...prev, key];
+    });
+  };
+
   return (
-    <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap', marginBottom: 10 }}>
-      {/* Date range */}
-      <div style={{ display: 'flex', gap: 3 }}>
-        {DATE_RANGES.map(r => (
-          <button key={r.key} style={S.pill(dateRange === r.key)} onClick={() => setDateRange(r.key)}>
-            {r.label}
+    <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+      <span style={{ fontSize: 9, color: T.textDim, fontFamily: T.mono }}>STRATEGIES:</span>
+      {knownStrategies.map((key, i) => {
+        const meta = strategyMeta(key, i);
+        const active = selectedStrategies.includes(key);
+        const wr = statsMap[key]?.accuracy;
+        const label = wr != null ? `${meta.label} ${Number(wr).toFixed(0)}%` : meta.label;
+        return (
+          <button key={key} style={S.pillColored(active, meta.color)} onClick={() => toggle(key)}
+            title={active ? 'Hide' : selectedStrategies.length >= 3 ? 'Replaces oldest' : 'Show'}>
+            {label}
           </button>
-        ))}
-      </div>
-
-      {/* Direction */}
-      <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
-        <span style={{ fontSize: 9, color: T.textDim, fontFamily: T.mono, marginRight: 4 }}>DIR:</span>
-        {['all', 'UP', 'DOWN'].map(d => (
-          <button key={d} style={S.pill(direction === d)} onClick={() => setDirection(d)}>
-            {d === 'all' ? 'All' : d}
-          </button>
-        ))}
-      </div>
-
-      {/* Outcome */}
-      <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
-        <span style={{ fontSize: 9, color: T.textDim, fontFamily: T.mono, marginRight: 4 }}>RESULT:</span>
-        {['all', 'WIN', 'LOSS', 'SKIP'].map(o => (
-          <button key={o} style={S.pill(outcome === o)} onClick={() => setOutcome(o)}>
-            {o === 'all' ? 'All' : o}
-          </button>
-        ))}
-      </div>
-
-      {/* Gate filter */}
-      <div style={{ display: 'flex', gap: 3, alignItems: 'center' }}>
-        <span style={{ fontSize: 9, color: T.textDim, fontFamily: T.mono, marginRight: 4 }}>GATE:</span>
-        <select
-          value={gateFilter}
-          onChange={e => setGateFilter(e.target.value)}
-          style={{
-            background: 'rgba(51,65,85,0.5)', color: T.text, border: `1px solid ${T.border}`,
-            borderRadius: 3, padding: '2px 6px', fontSize: 10, fontFamily: T.mono,
-          }}
-        >
-          <option value="all">All</option>
-          {GATE_PIPELINE.map(g => (
-            <option key={g.key} value={g.key}>{g.label}</option>
-          ))}
-        </select>
-      </div>
+        );
+      })}
+      <span style={{ fontSize: 9, color: T.textDim, fontFamily: T.mono }}>(max 3 columns)</span>
     </div>
   );
 }
 
+function StratOutcomeChip({ outcome }) {
+  if (outcome === 'WIN') return <span style={{ padding: '1px 5px', borderRadius: 2, fontSize: 8, fontFamily: T.mono, background: 'rgba(16,185,129,0.15)', color: T.green, fontWeight: 700 }}>WIN</span>;
+  if (outcome === 'LOSS') return <span style={{ padding: '1px 5px', borderRadius: 2, fontSize: 8, fontFamily: T.mono, background: 'rgba(239,68,68,0.12)', color: T.red, fontWeight: 700 }}>LOSS</span>;
+  if (outcome === 'SKIP') return <span style={{ color: T.textDim, fontSize: 9, fontFamily: T.mono }}>SKIP</span>;
+  return <span style={{ color: T.textDim, fontSize: 9 }}>{'\u2014'}</span>;
+}
 
-function OutcomeTable({ outcomes, gateMap }) {
-  if (!outcomes.length) {
+function StrategyComparisonTable({ strategyWindows, selectedStrategies, knownStrategies }) {
+  if (!strategyWindows || !strategyWindows.length) {
     return (
       <div style={{ ...S.card, textAlign: 'center', padding: 30, color: T.textDim, fontSize: 11, fontFamily: T.mono }}>
-        No resolved windows match filters
+        No window data — waiting for /v58/strategy-windows
       </div>
     );
   }
 
+  const activeCols = knownStrategies.filter(k => selectedStrategies.includes(k));
+
   return (
-    <div style={{ ...S.card, padding: 0, overflow: 'auto', maxHeight: 480 }}>
+    <div style={{ ...S.card, padding: 0, overflow: 'auto', maxHeight: 520 }}>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
-          <tr style={{ background: T.headerBg, position: 'sticky', top: 0, zIndex: 1 }}>
-            <th style={S.th}>Window</th>
-            <th style={S.th}>Signal</th>
-            <th style={S.th}>Actual</th>
-            <th style={S.th}>Result</th>
-            <th style={S.th}>Sequoia p_up</th>
-            <th style={S.th}>VPIN</th>
-            <th style={S.th}>Src Agree</th>
-            <th style={S.th}>Regime</th>
-            <th style={S.th}>Gate</th>
-            <th style={S.th}>Block Reason</th>
-            <th style={S.th}>Would-Have P&L</th>
+          <tr style={{ background: T.headerBg, position: 'sticky', top: 0, zIndex: 2 }}>
+            <th style={S.th}>Time</th>
+            <th style={{ ...S.th, textAlign: 'center' }}>Actual</th>
+            <th style={{ ...S.th, fontSize: 8 }}>VPIN</th>
+            <th style={{ ...S.th, fontSize: 8 }}>Regime</th>
+            {activeCols.map((key, i) => {
+              const meta = strategyMeta(key, knownStrategies.indexOf(key));
+              return (
+                <th key={key} colSpan={2} style={{ ...S.th, textAlign: 'center', color: meta.color, borderLeft: `2px solid ${meta.color}33` }}>
+                  {meta.label}
+                </th>
+              );
+            })}
+          </tr>
+          <tr style={{ background: T.headerBg, position: 'sticky', top: 25, zIndex: 1 }}>
+            {['', '', '', ''].map((_, i) => <th key={i} style={{ ...S.th, borderBottom: `2px solid ${T.border}` }} />)}
+            {activeCols.map(key => {
+              const meta = strategyMeta(key, knownStrategies.indexOf(key));
+              return (
+                <React.Fragment key={key}>
+                  <th style={{ ...S.th, borderBottom: `2px solid ${T.border}`, borderLeft: `2px solid ${meta.color}33`, textAlign: 'center', color: T.textMuted }}>Action</th>
+                  <th style={{ ...S.th, borderBottom: `2px solid ${T.border}`, textAlign: 'center', color: T.textMuted }}>Result</th>
+                </React.Fragment>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
-          {outcomes.map((o, i) => {
-            const gate = gateMap[o.window_ts_epoch] || null;
-            const gateDecision = gate?.decision || (o.v58_would_trade ? 'TRADE' : 'SKIP');
-            const gateFailed = gate?.gate_failed || o.v58_skip_reason || o.skip_reason || null;
-
-            const correct = o.v58_would_trade ? o.v58_correct : null;
-            const chip = outcomeChip(correct);
-
-            // For skipped windows, show ungated outcome
-            const ungatedChip = outcomeChip(o.ungated_correct);
-
-            // Source agreement: check if Chainlink+Tiingo agree via delta sources
-            const srcAgree = o.tfm_v57c_agree;
-
+          {strategyWindows.map((w, i) => {
+            const allSkip = activeCols.every(key => { const sd = w.strategies?.[key]; return !sd || sd.action === 'SKIP'; });
             return (
-              <tr key={o.window_ts || i} style={{
-                background: i % 2 === 0 ? 'transparent' : 'rgba(15,23,42,0.3)',
-                cursor: 'pointer',
-              }} onClick={() => {
-                const epoch = o.window_ts_epoch || (() => {
-                  if (!o.window_ts) return 0;
-                  const d = new Date(o.window_ts);
-                  return isNaN(d) ? 0 : Math.floor(d.getTime() / 1000);
-                })();
-                if (epoch) setAnalysisWindow(epoch);
-              }} title="Click to analyze window">
-                <td style={S.td}>{windowTime(o.window_ts)}</td>
-                <td style={{ ...S.td, color: dirColor(o.direction), fontWeight: 600 }}>
-                  {o.direction || '\u2014'}
-                </td>
-                <td style={{ ...S.td, color: dirColor(o.actual_direction), fontWeight: 600 }}>
-                  {o.actual_direction || '\u2014'}
-                </td>
-                <td style={S.td}>
-                  {o.v58_would_trade ? (
-                    <span style={{
-                      padding: '1px 6px', borderRadius: 2, fontSize: 9,
-                      background: chip.bg, color: chip.color, fontWeight: 600,
-                    }}>
-                      {chip.label}
-                    </span>
-                  ) : (
-                    <span style={{ color: T.textDim, fontSize: 9 }}>
-                      SKIP {ungatedChip.label !== '\u2014' ? `(${ungatedChip.label})` : ''}
-                    </span>
-                  )}
-                </td>
-                <td style={{ ...S.td, color: T.purple }}>
-                  {o.confidence != null ? fmt(o.confidence, 3) : '\u2014'}
-                </td>
-                <td style={{ ...S.td, color: (o.vpin || 0) >= 0.55 ? T.amber : T.text }}>
-                  {o.vpin != null ? fmt(o.vpin, 3) : '\u2014'}
-                </td>
-                <td style={S.td}>
-                  <span style={{
-                    color: srcAgree === true ? T.green : srcAgree === false ? T.red : T.textDim,
-                    fontSize: 9, fontWeight: 600,
-                  }}>
-                    {srcAgree === true ? 'AGREE' : srcAgree === false ? 'DISAGREE' : '\u2014'}
-                  </span>
-                </td>
-                <td style={{ ...S.td, fontSize: 9, color: T.textMuted }}>
-                  {o.regime || o.v71_regime || '\u2014'}
-                </td>
-                <td style={S.td}>
-                  <span style={{
-                    padding: '1px 6px', borderRadius: 2, fontSize: 9, fontWeight: 600,
-                    background: gateDecision === 'TRADE' ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.08)',
-                    color: gateDecision === 'TRADE' ? T.green : T.red,
-                  }}>
-                    {gateDecision}
-                  </span>
-                </td>
-                <td style={{ ...S.td, fontSize: 9, color: T.textMuted, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis' }}
-                  title={gateFailed || ''}>
-                  {gateDecision === 'SKIP' ? (gateFailed || '\u2014') : '\u2014'}
-                </td>
-                <td style={{ ...S.td, color: pnlColor(o.ungated_pnl), fontWeight: 600 }}>
-                  {!o.v58_would_trade && o.ungated_pnl != null ? fmtPnl(o.ungated_pnl) : '\u2014'}
-                </td>
+              <tr key={w.window_ts || i} style={{ background: i % 2 === 0 ? 'transparent' : 'rgba(15,23,42,0.3)', opacity: allSkip ? 0.45 : 1 }}>
+                <td style={{ ...S.td, color: allSkip ? T.textDim : T.text }}>{windowTime(w.window_ts)}</td>
+                <td style={{ ...S.td, textAlign: 'center', fontWeight: 700, color: dirColor(w.actual_direction) }}>{w.actual_direction || '\u2014'}</td>
+                <td style={{ ...S.td, color: (w.vpin || 0) >= 0.55 ? T.amber : T.textDim, fontSize: 9 }}>{w.vpin != null ? fmt(w.vpin, 3) : '\u2014'}</td>
+                <td style={{ ...S.td, fontSize: 9, color: T.textMuted }}>{(w.regime || '\u2014').slice(0, 12)}</td>
+                {activeCols.map(key => {
+                  const meta = strategyMeta(key, knownStrategies.indexOf(key));
+                  const sd = w.strategies?.[key];
+                  if (!sd) return (
+                    <React.Fragment key={key}>
+                      <td style={{ ...S.td, borderLeft: `2px solid ${meta.color}22`, textAlign: 'center', color: T.textDim }}>{'\u2014'}</td>
+                      <td style={{ ...S.td, textAlign: 'center' }}><StratOutcomeChip outcome={null} /></td>
+                    </React.Fragment>
+                  );
+                  let actionLabel = 'SKIP', actionColor = T.textDim;
+                  if (sd.action === 'TRADE') {
+                    actionLabel = sd.direction === 'UP' ? 'TRADE\u2191' : sd.direction === 'DOWN' ? 'TRADE\u2193' : 'TRADE';
+                    actionColor = sd.direction === 'UP' ? T.green : T.red;
+                  }
+                  const modeColor = sd.mode === 'LIVE' ? T.green : T.purple;
+                  return (
+                    <React.Fragment key={key}>
+                      <td style={{ ...S.td, borderLeft: `2px solid ${meta.color}22`, textAlign: 'center' }} title={sd.skip_reason || ''}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 }}>
+                          <span style={{ color: actionColor, fontWeight: sd.action === 'TRADE' ? 700 : 400, fontSize: 10 }}>{actionLabel}</span>
+                          {sd.mode && <span style={{ padding: '0 3px', borderRadius: 2, fontSize: 7, fontFamily: T.mono, fontWeight: 700, background: sd.mode === 'LIVE' ? 'rgba(16,185,129,0.15)' : 'rgba(168,85,247,0.12)', color: modeColor }}>{sd.mode}</span>}
+                        </div>
+                      </td>
+                      <td style={{ ...S.td, textAlign: 'center' }}><StratOutcomeChip outcome={sd.outcome} /></td>
+                    </React.Fragment>
+                  );
+                })}
               </tr>
             );
           })}
@@ -702,192 +684,141 @@ function DailyPnlBars({ dailyPnl }) {
 export default function Evaluate() {
   const api = useApi();
 
-  // Data state
+  // Legacy data (Section C + D)
   const [accuracy, setAccuracy] = useState(null);
   const [outcomes, setOutcomes] = useState([]);
-  const [stats, setStats] = useState(null);
-  const [hqData, setHqData] = useState(null);
   const [dailyPnl, setDailyPnl] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Filter state
-  const [dateRange, setDateRange] = useState('30d');
-  const [direction, setDirection] = useState('all');
-  const [outcome, setOutcome] = useState('all');
-  const [gateFilter, setGateFilter] = useState('all');
+  // Strategy comparison data (Section A + B)
+  const [comparisonStats, setComparisonStats] = useState(null);
+  const [strategyWindows, setStrategyWindows] = useState([]);
+  const [knownStrategies, setKnownStrategies] = useState(['v10_gate', 'v4_fusion', 'v4_down_only', 'v4_up_asian']);
+  const [selectedStrategies, setSelectedStrategies] = useState(['v4_down_only', 'v4_up_asian', 'v4_fusion']);
 
-  // Window analysis modal
-  const [analysisWindow, setAnalysisWindow] = useState(null);
-
-  // Browser tab title
   useEffect(() => {
     const prev = document.title;
     document.title = 'Evaluate \u2014 Polymarket \u2014 Novakash';
     return () => { document.title = prev; };
   }, []);
 
-  // Fetch all endpoints
   const fetchData = useCallback(async () => {
     try {
       const results = await Promise.allSettled([
-        api('GET', '/v58/stats?days=30'),
         api('GET', '/v58/accuracy?limit=100'),
         api('GET', '/v58/outcomes?limit=100'),
-        api('GET', '/v58/execution-hq?asset=btc&timeframe=5m'),
         api('GET', '/pnl/daily'),
+        api('GET', '/v58/strategy-comparison?days=7'),
+        api('GET', '/v58/strategy-windows?limit=100&asset=BTC'),
       ]);
+      const [accRes, outRes, pnlRes, compRes, winRes] = results;
 
-      const [statsRes, accRes, outRes, hqRes, pnlRes] = results;
-
-      if (statsRes.status === 'fulfilled') {
-        setStats(statsRes.value?.data || statsRes.value);
-      }
-      if (accRes.status === 'fulfilled') {
-        setAccuracy(accRes.value?.data || accRes.value);
-      }
+      if (accRes.status === 'fulfilled') setAccuracy(accRes.value?.data || accRes.value);
       if (outRes.status === 'fulfilled') {
-        const outData = outRes.value?.data || outRes.value;
-        setOutcomes(outData?.outcomes ?? (Array.isArray(outData) ? outData : []));
-      }
-      if (hqRes.status === 'fulfilled') {
-        setHqData(hqRes.value?.data || hqRes.value);
+        const d = outRes.value?.data || outRes.value;
+        setOutcomes(d?.outcomes ?? (Array.isArray(d) ? d : []));
       }
       if (pnlRes.status === 'fulfilled') {
-        const pnlData = pnlRes.value?.data || pnlRes.value;
-        setDailyPnl(pnlData?.data ?? (Array.isArray(pnlData) ? pnlData : []));
+        const d = pnlRes.value?.data || pnlRes.value;
+        setDailyPnl(d?.data ?? (Array.isArray(d) ? d : []));
       }
-
+      if (compRes.status === 'fulfilled') {
+        const d = compRes.value?.data || compRes.value;
+        setComparisonStats(Array.isArray(d) ? d : (d?.strategies ?? null));
+      }
+      if (winRes.status === 'fulfilled') {
+        const d = winRes.value?.data || winRes.value;
+        setStrategyWindows(d?.windows ?? (Array.isArray(d) ? d : []));
+        if (d?.known_strategies?.length) {
+          setKnownStrategies(prev => {
+            const merged = [...prev];
+            for (const k of d.known_strategies) if (!merged.includes(k)) merged.push(k);
+            return merged;
+          });
+        }
+      }
       setError(null);
     } catch (err) {
-      setError(err.message || 'Failed to fetch data');
+      setError(err.message || 'Failed to fetch');
     } finally {
       setLoading(false);
     }
   }, [api]);
 
-  // Initial fetch
   useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { const t = setInterval(fetchData, 30000); return () => clearInterval(t); }, [fetchData]);
 
-  // Poll every 30s
-  useEffect(() => {
-    const interval = setInterval(fetchData, 30000);
-    return () => clearInterval(interval);
-  }, [fetchData]);
-
-  // Build gate heartbeat lookup: window_ts_epoch -> gate data
-  const gateMap = useMemo(() => {
-    const map = {};
-    if (hqData?.gate_heartbeat) {
-      for (const g of hqData.gate_heartbeat) {
-        if (g.window_ts) {
-          map[g.window_ts] = g;
-        }
-      }
-    }
-    return map;
-  }, [hqData]);
-
-  // Filter outcomes
-  const filteredOutcomes = useMemo(() => {
-    const now = Date.now();
-    const rangeHours = DATE_RANGES.find(r => r.key === dateRange)?.hours ?? Infinity;
-
-    return outcomes
-      .map(o => ({
-        ...o,
-        window_ts_epoch: (() => {
-          // Parse window_ts to epoch seconds for gate_heartbeat matching
-          if (!o.window_ts) return 0;
-          const d = new Date(o.window_ts);
-          return Math.floor(d.getTime() / 1000);
-        })(),
-      }))
-      .filter(o => {
-        // Date range
-        if (rangeHours < Infinity) {
-          const age = now - parseWindowTs(o.window_ts);
-          if (age > rangeHours * 3600 * 1000) return false;
-        }
-        // Direction
-        if (direction !== 'all' && o.direction !== direction) return false;
-
-        // Outcome
-        if (outcome === 'WIN' && o.v58_correct !== true) return false;
-        if (outcome === 'LOSS' && o.v58_correct !== false) return false;
-        if (outcome === 'SKIP' && o.v58_would_trade !== false) return false;
-
-        // Gate filter
-        if (gateFilter !== 'all') {
-          const gate = gateMap[o.window_ts_epoch];
-          if (!gate) return true; // No gate data, show anyway
-          if (gate.gate_failed !== gateFilter) return false;
-        }
-
-        return true;
-      });
-  }, [outcomes, dateRange, direction, outcome, gateFilter, gateMap]);
-
-  // P&L timeline from accuracy data
   const pnlTimeline = accuracy?.pnl_timeline || [];
+  const windowCount = strategyWindows.length || outcomes.length;
 
   return (
-    <div style={{
-      minHeight: '100vh', background: T.bg, color: T.text,
-      padding: 12, fontFamily: T.mono,
-      overflowY: 'auto',
-    }}>
+    <div style={{ minHeight: '100vh', background: T.bg, color: T.text, padding: 12, fontFamily: T.mono, overflowY: 'auto' }}>
       {/* Header */}
-      <div style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        marginBottom: 12,
-      }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-          <h1 style={{ fontSize: 16, fontWeight: 700, color: T.white, margin: 0, fontFamily: T.mono }}>
-            Evaluate
-          </h1>
-          <span style={{ fontSize: 10, color: T.textMuted, fontFamily: T.mono }}>
-            Polymarket Performance Analysis
-          </span>
+          <h1 style={{ fontSize: 16, fontWeight: 700, color: T.text, margin: 0, fontFamily: T.mono }}>Evaluate</h1>
+          <span style={{ fontSize: 10, color: T.textMuted, fontFamily: T.mono }}>Polymarket Performance Analysis</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {loading && (
-            <span style={{ fontSize: 9, color: T.textDim, fontFamily: T.mono, animation: 'pulse 1.5s ease-in-out infinite' }}>
-              loading...
-            </span>
-          )}
-          <span style={{ fontSize: 9, color: T.textDim, fontFamily: T.mono }}>
-            {outcomes.length} windows
-          </span>
+          {loading && <span style={{ fontSize: 9, color: T.textDim, fontFamily: T.mono }}>loading...</span>}
+          <span style={{ fontSize: 9, color: T.textDim, fontFamily: T.mono }}>{windowCount} windows</span>
         </div>
       </div>
 
-      {/* Error banner */}
       {error && (
-        <div style={{
-          background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
-          padding: '5px 10px', borderRadius: 3, marginBottom: 8, fontSize: 10,
-          fontFamily: T.mono, color: '#fca5a5',
-        }}>
+        <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', padding: '5px 10px', borderRadius: 3, marginBottom: 8, fontSize: 10, fontFamily: T.mono, color: '#fca5a5' }}>
           API Error: {error}
         </div>
       )}
 
-      {/* Section A: Summary Cards */}
+      {/* Section A: Strategy Summary Cards */}
       <div style={{ marginBottom: 12 }}>
-        <SummaryCards accuracy={accuracy} stats={stats} />
+        <div style={S.sectionTitle}>Strategy Performance (7 days)</div>
+        {comparisonStats && comparisonStats.length > 0 ? (
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(comparisonStats.length, 4)}, 1fr)`, gap: 8 }}>
+            {comparisonStats.map((s, i) => {
+              const key = s.strategy_id || s.strategy || s.name || `s${i}`;
+              const meta = strategyMeta(key, i);
+              const wr = s.accuracy != null ? Number(s.accuracy) : null;
+              const wrColor = wr == null ? T.textDim : wr >= 60 ? T.green : wr >= 50 ? T.amber : T.red;
+              const mode = s.mode || 'GHOST';
+              return (
+                <div key={key} style={{ ...S.card, borderColor: `${meta.color}44` }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <span style={{ fontSize: 9, color: meta.color, fontFamily: T.mono, fontWeight: 700, textTransform: 'uppercase' }}>{meta.label}</span>
+                    <span style={{ padding: '1px 5px', borderRadius: 2, fontSize: 8, fontFamily: T.mono, fontWeight: 700, background: mode === 'LIVE' ? 'rgba(16,185,129,0.15)' : 'rgba(168,85,247,0.15)', color: mode === 'LIVE' ? T.green : T.purple }}>{mode}</span>
+                  </div>
+                  <div style={{ fontSize: 26, fontWeight: 700, fontFamily: T.mono, color: wrColor, lineHeight: 1 }}>{wr != null ? `${wr.toFixed(1)}%` : '\u2014'}</div>
+                  <div style={{ fontSize: 9, color: T.textDim, fontFamily: T.mono, marginTop: 5, display: 'flex', gap: 8 }}>
+                    <span style={{ color: T.green }}>{s.wins ?? 0}W</span>
+                    <span style={{ color: T.red }}>{s.losses ?? 0}L</span>
+                    {s.skips != null && <span>{s.skips}S</span>}
+                  </div>
+                  {s.cum_pnl != null && <div style={{ fontSize: 10, fontFamily: T.mono, color: s.cum_pnl >= 0 ? T.green : T.red, marginTop: 4, fontWeight: 600 }}>{fmtUsd(s.cum_pnl)}</div>}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div style={{ ...S.card, color: T.textDim, fontSize: 10, fontFamily: T.mono }}>Loading strategy comparison...</div>
+        )}
       </div>
 
-      {/* Section B: Signal vs Outcome */}
+      {/* Section B: Strategy Comparison Table */}
       <div style={{ marginBottom: 12 }}>
-        <div style={S.sectionTitle}>Signal vs Outcome Analysis</div>
-        <OutcomeFilters
-          dateRange={dateRange} setDateRange={setDateRange}
-          direction={direction} setDirection={setDirection}
-          outcome={outcome} setOutcome={setOutcome}
-          gateFilter={gateFilter} setGateFilter={setGateFilter}
+        <div style={S.sectionTitle}>Strategy Comparison — Per Window</div>
+        <StrategySelector
+          knownStrategies={knownStrategies}
+          selectedStrategies={selectedStrategies}
+          setSelectedStrategies={setSelectedStrategies}
+          comparisonStats={comparisonStats}
         />
-        <OutcomeTable outcomes={filteredOutcomes} gateMap={gateMap} />
+        <StrategyComparisonTable
+          strategyWindows={strategyWindows}
+          selectedStrategies={selectedStrategies}
+          knownStrategies={knownStrategies}
+        />
       </div>
 
       {/* Section C: Accuracy by Signal Component */}
@@ -904,12 +835,6 @@ export default function Evaluate() {
           <DailyPnlBars dailyPnl={dailyPnl} />
         </div>
       </div>
-
-      {/* Window Analysis Modal */}
-      <WindowAnalysisModal
-        windowTs={analysisWindow}
-        onClose={() => setAnalysisWindow(null)}
-      />
     </div>
   );
 }

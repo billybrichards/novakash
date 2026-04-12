@@ -81,6 +81,9 @@ _DB_KEY_MAP: dict[str, tuple[str, type]] = {
     # SIG-03/SIG-04: V4 DOWN-only strategy (DOWN filter + CLOB sizing)
     "V4_DOWN_ONLY_MODE":         ("v4_down_only_mode", str),
     "V4_DOWN_ONLY_ENABLED":      ("v4_down_only_enabled", bool),
+    # SIG-05: V4 Asian UP strategy (UP-only, Asian session, medium conviction)
+    "V4_UP_ASIAN_MODE":          ("v4_up_asian_mode", str),
+    "V4_UP_ASIAN_ENABLED":       ("v4_up_asian_enabled", bool),
 }
 
 
@@ -248,6 +251,10 @@ class RuntimeConfig:
         # DB config_seed.py seeds V4_DOWN_ONLY_ENABLED=true so live envs enable it on first sync.
         self.v4_down_only_mode: str = os.environ.get("V4_DOWN_ONLY_MODE", "LIVE").upper()
         self.v4_down_only_enabled: bool = os.environ.get("V4_DOWN_ONLY_ENABLED", "false").lower() == "true"
+        # SIG-05: V4 Asian UP strategy (UP-only, Asian session 23-02 UTC, dist 0.15-0.20).
+        # Discovered 2026-04-12: 81-99% WR (5,543 samples). Safe to run alongside v4_down_only.
+        self.v4_up_asian_mode: str = os.environ.get("V4_UP_ASIAN_MODE", "LIVE").upper()
+        self.v4_up_asian_enabled: bool = os.environ.get("V4_UP_ASIAN_ENABLED", "false").lower() == "true"
 
         # ── Sync metadata ─────────────────────────────────────────────────
         self._active_config_id: Optional[int] = None
