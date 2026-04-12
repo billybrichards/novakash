@@ -29,6 +29,7 @@ const NAV_SECTIONS = [
       { path: '/polymarket/floor', label: 'Floor', icon: 'F' },
       { path: '/polymarket/evaluate', label: 'Evaluate', icon: 'E' },
       { path: '/polymarket/strategy-lab', label: 'Strategy Lab', icon: 'S' },
+      { path: '/polymarket/strategy-history', label: 'History', icon: 'H' },
       { path: '/config', label: 'Configure', icon: 'C' },
     ],
   },

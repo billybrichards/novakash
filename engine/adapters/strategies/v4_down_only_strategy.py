@@ -22,13 +22,19 @@ from domain.value_objects import StrategyContext, StrategyDecision
 
 log = structlog.get_logger(__name__)
 
-# CLOB sizing schedule — keyed on clob_down_ask thresholds
+# CLOB sizing schedule — data-driven from 620K sample audit (2026-04-12).
+# Key changes vs v1: bump 0.55-0.75 to 2.0x (97%+ WR), skip <0.25 (53%/31% WR),
+# bump NULL to 1.5x (99% WR — strong moves lack CLOB data).
 _CLOB_SIZING: list[tuple[float, float, str]] = [
-    (0.75, 2.0, "double_confirm_99pct"),   # market + model agree
-    (0.55, 1.5, "strong_98pct"),
-    (0.35, 1.2, "mild_92pct"),
-    (0.0,  1.0, "contrarian_76pct"),       # genuine contrarian
+    (0.55, 2.0, "strong_97pct"),           # 0.55+ all 97%+ WR
+    (0.35, 1.2, "mild_88pct"),             # 88-93% WR
+    (0.25, 1.0, "contrarian_87pct"),       # 87% WR, base Kelly
+    (0.0,  0.0, "skip_sub25_53pct"),       # <0.25 = 53%/31% WR, not tradeable
 ]
+
+# Size modifier when CLOB data is NULL — 99.2% WR historically,
+# strong moves often lack CLOB data because market hasn't caught up.
+_NULL_CLOB_SIZE_MOD = 1.5
 
 _MAX_COLLATERAL_PCT = 0.10   # cap: never bet more than 10% per trade
 
@@ -115,6 +121,10 @@ class V4DownOnlyStrategy(V4FusionStrategy):
         # Apply CLOB-based sizing for DOWN trades
         size_mod, label = self._clob_size_modifier(ctx.clob_down_ask)
 
+        # Skip if CLOB says <0.25 (53%/31% WR — not tradeable)
+        if size_mod == 0.0:
+            return self._skip(f"down_only_clob_skip: clob_down_ask={ctx.clob_down_ask:.3f} {label}")
+
         base_pct = decision.collateral_pct or 0.025
         new_pct = min(base_pct * size_mod, _MAX_COLLATERAL_PCT)
 
@@ -142,8 +152,8 @@ class V4DownOnlyStrategy(V4FusionStrategy):
     ) -> tuple[float, str]:
         """Return (size_modifier, label) based on clob_down_ask."""
         if clob_down_ask is None:
-            return 1.0, "no_clob_data"
+            return _NULL_CLOB_SIZE_MOD, "no_clob_99pct"
         for threshold, modifier, label in _CLOB_SIZING:
             if clob_down_ask >= threshold:
                 return modifier, label
-        return 1.0, "contrarian_76pct"
+        return 0.0, "skip_sub25_53pct"
