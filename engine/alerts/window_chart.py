@@ -59,7 +59,7 @@ def window_snapshot_chart(
     win_rate: float = 0.99,
     # Meta
     location: str = "MTL",
-    engine_version: str = "v7.1",
+    engine_version: str = "v11.2",
 ) -> bytes:
     """Generate window snapshot chart. Returns PNG bytes."""
     try:
