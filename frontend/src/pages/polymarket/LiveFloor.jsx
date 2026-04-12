@@ -334,6 +334,8 @@ export default function LiveFloor() {
     : null;
   const latestV10 = latestDecisionTs ? decisionMap[latestDecisionTs]?.['v10_gate'] : null;
   const latestV4 = latestDecisionTs ? decisionMap[latestDecisionTs]?.['v4_fusion'] : null;
+  const latestDown = latestDecisionTs ? decisionMap[latestDecisionTs]?.['v4_down_only'] : null;
+  const latestUpAsian = latestDecisionTs ? decisionMap[latestDecisionTs]?.['v4_up_asian'] : null;
 
   return (
     <div style={S.page}>
@@ -384,95 +386,47 @@ export default function LiveFloor() {
             )}
           </div>
 
-          {/* 2. Active Strategy Decisions */}
-          <div style={S.row}>
-            {/* V10 Gate (LIVE) */}
-            <div style={S.stratCard(true)}>
-              <div style={S.stratLabel(T.cyan)}>
-                V10 Gate
-                <span style={S.modeBadge(T.cyan)}>LIVE</span>
+          {/* 2. Active Strategy Decisions — all 4 */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginBottom: 8 }}>
+            {[
+              { label: 'V4 Down-Only', data: latestDown, color: '#10b981', mode: 'LIVE' },
+              { label: 'V4 Up Asian', data: latestUpAsian, color: '#f59e0b', mode: 'LIVE' },
+              { label: 'V4 Fusion', data: latestV4, color: '#06b6d4', mode: 'GHOST' },
+              { label: 'V10 Gate', data: latestV10, color: '#a855f7', mode: 'GHOST' },
+            ].map(({ label, data: d, color, mode }) => (
+              <div key={label} style={{
+                ...S.card,
+                borderLeft: `3px solid ${d?.action === 'TRADE' ? color : 'rgba(51,65,85,0.5)'}`,
+                padding: 10,
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <span style={{ fontSize: 9, fontWeight: 700, color, fontFamily: T.mono }}>{label}</span>
+                  <span style={{
+                    fontSize: 7, padding: '1px 5px', borderRadius: 2, fontFamily: T.mono, fontWeight: 700,
+                    background: mode === 'LIVE' ? 'rgba(16,185,129,0.15)' : 'rgba(168,85,247,0.12)',
+                    color: mode === 'LIVE' ? '#10b981' : '#a855f7',
+                  }}>{mode}</span>
+                </div>
+                {d ? (
+                  <>
+                    <div style={S.actionPill(d.action)}>{d.action || 'SKIP'}</div>
+                    <div style={S.metaRow}>
+                      <span style={S.metaItem}>
+                        Dir: <span style={{ ...S.metaValue, color: dirColor(d.direction) }}>{d.direction || '--'}</span>
+                      </span>
+                      <span style={S.metaItem}>T-{d.eval_offset}</span>
+                    </div>
+                    {d.skip_reason && (
+                      <div style={{ fontSize: 8, color: T.textMuted, marginTop: 3 }} title={d.skip_reason}>
+                        {d.skip_reason.slice(0, 40)}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div style={{ color: T.textDim, fontSize: 10 }}>No decision</div>
+                )}
               </div>
-              {latestV10 ? (
-                <>
-                  <div style={S.actionPill(latestV10.action)}>
-                    {latestV10.action || 'SKIP'}
-                  </div>
-                  <div style={S.metaRow}>
-                    <span style={S.metaItem}>
-                      Dir: <span style={{ ...S.metaValue, color: dirColor(latestV10.direction) }}>
-                        {latestV10.direction || '--'}
-                      </span>
-                    </span>
-                    <span style={S.metaItem}>
-                      Conf: <span style={S.metaValue}>
-                        {fmt(latestV10.confidence_score, 3)}
-                      </span>
-                    </span>
-                    <span style={S.metaItem}>
-                      Offset: <span style={S.metaValue}>T-{latestV10.eval_offset}</span>
-                    </span>
-                  </div>
-                  {latestV10.skip_reason && (
-                    <div style={{ fontSize: 9, color: T.textMuted, marginTop: 4 }}>
-                      Skip: {latestV10.skip_reason}
-                    </div>
-                  )}
-                  {latestV10.entry_reason && (
-                    <div style={{ fontSize: 9, color: T.green, marginTop: 4 }}>
-                      Entry: {latestV10.entry_reason}
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div style={{ color: T.textDim, fontSize: 11 }}>No decision yet</div>
-              )}
-            </div>
-
-            {/* V4 Fusion (GHOST) */}
-            <div style={S.stratCard(false)}>
-              <div style={S.stratLabel(T.purple)}>
-                V4 Fusion
-                <span style={S.modeBadge(T.purple)}>GHOST</span>
-              </div>
-              {latestV4 ? (
-                <>
-                  <div style={{
-                    ...S.actionPill(latestV4.action),
-                    background: latestV4.action === 'TRADE' ? 'rgba(168,85,247,0.15)' : 'rgba(71,85,105,0.15)',
-                    color: latestV4.action === 'TRADE' ? T.purple : T.textMuted,
-                  }}>
-                    {latestV4.action || 'SKIP'}
-                  </div>
-                  <div style={S.metaRow}>
-                    <span style={S.metaItem}>
-                      Dir: <span style={{ ...S.metaValue, color: dirColor(latestV4.direction) }}>
-                        {latestV4.direction || '--'}
-                      </span>
-                    </span>
-                    <span style={S.metaItem}>
-                      Conf: <span style={S.metaValue}>
-                        {fmt(latestV4.confidence_score, 3)}
-                      </span>
-                    </span>
-                    <span style={S.metaItem}>
-                      Offset: <span style={S.metaValue}>T-{latestV4.eval_offset}</span>
-                    </span>
-                  </div>
-                  {latestV4.skip_reason && (
-                    <div style={{ fontSize: 9, color: T.textMuted, marginTop: 4 }}>
-                      Skip: {latestV4.skip_reason}
-                    </div>
-                  )}
-                  {latestV4.entry_reason && (
-                    <div style={{ fontSize: 9, color: T.purple, marginTop: 4 }}>
-                      Entry: {latestV4.entry_reason}
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div style={{ color: T.textDim, fontSize: 11 }}>No decision yet</div>
-              )}
-            </div>
+            ))}
           </div>
 
           {/* 3. Recent Windows Table */}
@@ -485,13 +439,12 @@ export default function LiveFloor() {
                 <thead>
                   <tr>
                     <th style={S.th}>Window</th>
-                    <th style={S.th}>Outcome</th>
-                    <th style={{ ...S.th, textAlign: 'center' }}>V10</th>
-                    <th style={{ ...S.th, textAlign: 'center' }}>V10 Dir</th>
-                    <th style={{ ...S.th, textAlign: 'center' }}>V4</th>
-                    <th style={{ ...S.th, textAlign: 'center' }}>V4 Dir</th>
-                    <th style={S.th}>Pred Dir</th>
-                    <th style={S.th}>Actual Dir</th>
+                    <th style={S.th}>Actual</th>
+                    <th style={{ ...S.th, textAlign: 'center', color: '#10b981' }}>Down-Only</th>
+                    <th style={{ ...S.th, textAlign: 'center', color: '#f59e0b' }}>Up Asian</th>
+                    <th style={{ ...S.th, textAlign: 'center', color: '#06b6d4' }}>V4 Fusion</th>
+                    <th style={{ ...S.th, textAlign: 'center', color: '#a855f7' }}>V10 Gate</th>
+                    <th style={S.th}>Signal</th>
                     <th style={S.th}>Confidence</th>
                     <th style={S.th}>VPIN</th>
                   </tr>
@@ -504,11 +457,25 @@ export default function LiveFloor() {
                       return isNaN(d) ? 0 : Math.floor(d.getTime() / 1000);
                     })();
                     const dm = decisionMap[wts] || {};
-                    const v10d = dm['v10_gate'];
-                    const v4d = dm['v4_fusion'];
 
-                    const isCorrect = o.direction && o.actual_direction &&
-                      o.direction.toUpperCase() === o.actual_direction.toUpperCase();
+                    // Render a compact strategy cell: action + direction in one cell
+                    const stratCell = (sid, color) => {
+                      const d = dm[sid];
+                      if (!d) return <td style={{ ...S.td, textAlign: 'center', color: T.textDim, fontSize: 9 }}>--</td>;
+                      const isTrade = d.action === 'TRADE';
+                      const dir = d.direction === 'UP' ? '\u2191' : d.direction === 'DOWN' ? '\u2193' : '';
+                      const label = isTrade ? `TRADE${dir}` : `SKIP`;
+                      return (
+                        <td style={{ ...S.td, textAlign: 'center' }} title={d.skip_reason || d.entry_reason || ''}>
+                          <span style={{
+                            fontSize: 9, fontWeight: isTrade ? 700 : 400,
+                            color: isTrade ? color : T.textDim,
+                          }}>
+                            {label}
+                          </span>
+                        </td>
+                      );
+                    };
 
                     return (
                       <tr key={o.window_ts || i}
@@ -517,57 +484,17 @@ export default function LiveFloor() {
                           background: i % 2 === 0 ? 'transparent' : 'rgba(15,23,42,0.3)',
                           cursor: wts ? 'pointer' : 'default',
                         }}
-                        title={wts ? 'Click to analyze window' : ''}
+                        title={wts ? 'Click to analyze' : ''}
                       >
-                        <td style={{ ...S.td, color: T.text }}>
-                          {o.window_ts ? utcHHMM(o.window_ts) : '--'}
-                        </td>
-                        <td style={S.td}>
-                          {o.v58_would_trade ? (
-                            <span style={S.pill(
-                              isCorrect ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)',
-                              isCorrect ? T.green : T.red,
-                            )}>
-                              {isCorrect ? 'WIN' : 'LOSS'}
-                            </span>
-                          ) : (
-                            <span style={{ color: T.textDim, fontSize: 9 }}>SKIP</span>
-                          )}
-                        </td>
-                        <td style={{ ...S.td, textAlign: 'center' }}>
-                          <span style={S.pill(
-                            (v10d?.action === 'TRADE') ? 'rgba(6,182,212,0.15)' : 'rgba(71,85,105,0.15)',
-                            (v10d?.action === 'TRADE') ? T.cyan : T.textMuted,
-                          )}>
-                            {v10d?.action || '--'}
-                          </span>
-                        </td>
-                        <td style={{ ...S.td, textAlign: 'center', color: dirColor(v10d?.direction), fontWeight: 600 }}>
-                          {v10d?.direction || '--'}
-                        </td>
-                        <td style={{ ...S.td, textAlign: 'center' }}>
-                          <span style={S.pill(
-                            (v4d?.action === 'TRADE') ? 'rgba(168,85,247,0.15)' : 'rgba(71,85,105,0.15)',
-                            (v4d?.action === 'TRADE') ? T.purple : T.textMuted,
-                          )}>
-                            {v4d?.action || '--'}
-                          </span>
-                        </td>
-                        <td style={{ ...S.td, textAlign: 'center', color: dirColor(v4d?.direction), fontWeight: 600 }}>
-                          {v4d?.direction || '--'}
-                        </td>
-                        <td style={{ ...S.td, color: dirColor(o.direction), fontWeight: 600 }}>
-                          {o.direction || '--'}
-                        </td>
-                        <td style={{ ...S.td, color: dirColor(o.actual_direction), fontWeight: 600 }}>
-                          {o.actual_direction || '--'}
-                        </td>
-                        <td style={{ ...S.td, color: T.purple }}>
-                          {o.confidence != null ? fmt(o.confidence, 3) : '--'}
-                        </td>
-                        <td style={{ ...S.td, color: (o.vpin || 0) >= 0.55 ? T.green : T.text }}>
-                          {o.vpin != null ? fmt(o.vpin, 3) : '--'}
-                        </td>
+                        <td style={{ ...S.td, color: T.text }}>{o.window_ts ? utcHHMM(o.window_ts) : '--'}</td>
+                        <td style={{ ...S.td, color: dirColor(o.actual_direction), fontWeight: 600 }}>{o.actual_direction || '--'}</td>
+                        {stratCell('v4_down_only', '#10b981')}
+                        {stratCell('v4_up_asian', '#f59e0b')}
+                        {stratCell('v4_fusion', '#06b6d4')}
+                        {stratCell('v10_gate', '#a855f7')}
+                        <td style={{ ...S.td, color: dirColor(o.direction), fontWeight: 600 }}>{o.direction || '--'}</td>
+                        <td style={{ ...S.td, color: T.purple }}>{o.confidence != null ? fmt(o.confidence, 3) : '--'}</td>
+                        <td style={{ ...S.td, color: (o.vpin || 0) >= 0.55 ? T.green : T.text }}>{o.vpin != null ? fmt(o.vpin, 3) : '--'}</td>
                       </tr>
                     );
                   })}

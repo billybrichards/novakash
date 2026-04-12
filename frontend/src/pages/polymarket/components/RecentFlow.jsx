@@ -47,22 +47,45 @@ function actualDirection(o) {
   return null;
 }
 
-function V4Chip({ decision }) {
-  if (!decision) return <span style={{ color: T.textDim }}>—</span>;
-  const wouldTrade = decision.would_trade === true;
-  const dir = decision.direction || '';
-  const reason = decision.skip_reason || '';
-  const label = wouldTrade
-    ? `TRADE ${dir}`.trim()
-    : `SKIP${reason ? ` (${reason.slice(0, 12)})` : ''}`;
-  const color = wouldTrade ? T.green : T.textDim;
+const STRAT_COLORS = {
+  v4_down_only: '#10b981',
+  v4_up_asian: '#f59e0b',
+  v4_fusion: '#06b6d4',
+  v10_gate: '#a855f7',
+};
+const STRAT_SHORT = {
+  v4_down_only: 'DN',
+  v4_up_asian: 'UP-A',
+  v4_fusion: 'V4F',
+  v10_gate: 'V10',
+};
+
+function StrategyChips({ decisions }) {
+  if (!decisions || !decisions.length) return <span style={{ color: T.textDim, fontSize: 8 }}>{'\u2014'}</span>;
   return (
-    <span style={{
-      fontSize: 8, color,
-      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-    }} title={reason || label}>
-      {label}
-    </span>
+    <div style={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+      {decisions.map((d, i) => {
+        const sid = d.strategy_id || '?';
+        const color = STRAT_COLORS[sid] || T.textMuted;
+        const short = STRAT_SHORT[sid] || sid.slice(0, 4);
+        const isTrade = d.action === 'TRADE';
+        const dir = d.direction === 'UP' ? '\u2191' : d.direction === 'DOWN' ? '\u2193' : '';
+        const label = isTrade ? `${short}${dir}` : short;
+        const skip = d.skip_reason || '';
+        return (
+          <span key={i} title={`${sid}: ${isTrade ? `TRADE ${d.direction}` : `SKIP ${skip}`}`}
+            style={{
+              fontSize: 7, padding: '0 3px', borderRadius: 2, fontFamily: T.mono,
+              fontWeight: isTrade ? 700 : 400,
+              background: isTrade ? `${color}25` : 'transparent',
+              color: isTrade ? color : T.textDim,
+              border: `1px solid ${isTrade ? color : 'transparent'}`,
+            }}>
+            {label}
+          </span>
+        );
+      })}
+    </div>
   );
 }
 
@@ -74,40 +97,33 @@ export default function RecentFlow({ outcomes }) {
   // strategy-decisions returns window_ts as integer epoch seconds.
   // outcomes returns window_ts as ISO string from _row_to_window.
   // We index by both the raw int and ISO string to handle both formats.
-  const [v4Decisions, setV4Decisions] = useState({});
-  const fetchV4Decisions = useCallback(async () => {
+  // Fetch ALL strategy decisions (no strategy_id filter) — index by window_ts
+  const [stratDecisions, setStratDecisions] = useState({}); // { window_ts: [decisions] }
+  const fetchDecisions = useCallback(async () => {
     try {
-      const res = await api('GET', '/v58/strategy-decisions?strategy_id=v4_fusion&limit=50');
+      const res = await api('GET', '/v58/strategy-decisions?limit=200');
       const data = res?.data || res;
       const list = Array.isArray(data) ? data : (data?.decisions ?? []);
       const byTs = {};
       list.forEach(d => {
         if (d.window_ts == null) return;
         const raw = d.window_ts;
-        // Index by raw integer
-        byTs[raw] = d;
-        // Also index by ISO string (what _row_to_window produces)
+        // Group by window_ts (all strategies for same window)
+        if (!byTs[raw]) byTs[raw] = [];
+        byTs[raw].push(d);
+        // Also index by ISO string for format matching
         try {
           const iso = new Date(raw * 1000).toISOString().replace('.000Z', '+00:00');
-          byTs[iso] = d;
-          // Also try without milliseconds offset format
-          byTs[new Date(raw * 1000).toISOString()] = d;
+          if (!byTs[iso]) byTs[iso] = byTs[raw]; // same array ref
+          byTs[new Date(raw * 1000).toISOString()] = byTs[raw];
         } catch (_) {}
       });
-      setV4Decisions(byTs);
-    } catch (_) {
-      // non-critical, leave empty
-    }
+      setStratDecisions(byTs);
+    } catch (_) {}
   }, [api]);
 
-  useEffect(() => {
-    fetchV4Decisions();
-  }, [fetchV4Decisions]);
-
-  // Refresh V4 decisions whenever outcomes change (new windows)
-  useEffect(() => {
-    if (rows.length > 0) fetchV4Decisions();
-  }, [rows.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchDecisions(); }, [fetchDecisions]);
+  useEffect(() => { if (rows.length > 0) fetchDecisions(); }, [rows.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div style={{
@@ -147,7 +163,7 @@ export default function RecentFlow({ outcomes }) {
         <span>SRC</span>
         <span>GATES</span>
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>REASON</span>
-        <span>V4</span>
+        <span>STRATEGIES</span>
         <span style={{ textAlign: 'right' }}>RESULT</span>
       </div>
 
@@ -157,7 +173,7 @@ export default function RecentFlow({ outcomes }) {
         const gateStr = outcomeGateString(o);
         const actual = actualDirection(o);
         // Try all plausible window_ts key formats
-        const v4Decision = v4Decisions[o.window_ts] || null;
+        const windowDecs = stratDecisions[o.window_ts] || [];
         const rowBg = result.text === 'WIN'
           ? 'rgba(16,185,129,0.03)'
           : result.text === 'LOSS'
@@ -195,7 +211,7 @@ export default function RecentFlow({ outcomes }) {
             }} title={o.skip_reason || 'traded'}>
               {o.skip_reason ? o.skip_reason.slice(0, 18) : (o.trade_placed ? 'traded' : '\u2014')}
             </span>
-            <V4Chip decision={v4Decision} />
+            <StrategyChips decisions={windowDecs} />
             <span style={{
               textAlign: 'right', fontWeight: 700, fontSize: 10, color: result.color,
               whiteSpace: 'nowrap',
