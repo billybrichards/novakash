@@ -203,7 +203,21 @@ class OrderManager:
 
             age_secs = now - created_ts
 
-            # ── Reconcile stale trades (> 10 minutes old) against CLOB ──────
+            # ── Auto-expire stale paper trades on restart ──────────────
+            # Paper trade IDs are synthetic (paper-fak-*, manual-paper-*) and
+            # have no CLOB presence. They cannot be reconciled against the chain
+            # so we expire them immediately on restart if they're > 10 minutes old
+            # (their 5-min window is guaranteed to have closed by then).
+            if age_secs > 600 and not order_id.startswith("0x"):
+                await db.mark_trade_expired(order_id)
+                self._log.info(
+                    "order_manager.recover.paper_expired",
+                    order_id=order_id[:32],
+                    age_secs=int(age_secs),
+                )
+                continue
+
+            # ── Reconcile stale live trades (> 10 minutes old) against CLOB ──
             if age_secs > 600 and self._poly_client and order_id.startswith("0x"):
                 try:
                     clob_status = await self._poly_client.get_order_status(order_id)
