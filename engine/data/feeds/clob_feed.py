@@ -22,7 +22,9 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-POLL_INTERVAL = int(os.environ.get("CLOB_POLL_INTERVAL", "2"))  # seconds — need fresh prices for FOK/GTC
+POLL_INTERVAL = int(
+    os.environ.get("CLOB_POLL_INTERVAL", "2")
+)  # seconds — need fresh prices for FOK/GTC
 
 
 class CLOBFeed:
@@ -44,7 +46,7 @@ class CLOBFeed:
     async def start(self) -> None:
         """Begin polling loop."""
         self._running = True
-        log.info("clob_feed.starting", interval=POLL_INTERVAL)
+        log.info("clob_feed.starting", interval=POLL_INTERVAL, paper_mode="enabled")
 
         while self._running:
             try:
@@ -60,7 +62,7 @@ class CLOBFeed:
 
     async def _poll(self) -> None:
         """Fetch CLOB book for current window's tokens."""
-        if not self._feed or not self._poly or self._poly.paper_mode:
+        if not self._feed or not self._poly:
             return
 
         # Get current window info from the feed
@@ -69,25 +71,24 @@ class CLOBFeed:
             return
 
         try:
-            if not self._poly.clob_client:
-                return
+            # Use the new get_clob_order_book method which works in both paper and live mode
+            up_book = await self._poly.get_clob_order_book(window.up_token_id)
+            down_book = await self._poly.get_clob_order_book(window.down_token_id)
 
-            client = self._poly.clob_client
+            # Extract best bid/ask from the book structure
+            up_best_bid = up_book.get("up_best_bid") if up_book else None
+            up_best_ask = up_book.get("up_best_ask") if up_book else None
+            down_best_bid = down_book.get("down_best_bid") if down_book else None
+            down_best_ask = down_book.get("down_best_ask") if down_book else None
 
-            # Fetch UP token book
-            # CLOB asks are sorted DESCENDING — best (lowest) ask is LAST
-            # CLOB bids are sorted DESCENDING — best (highest) bid is FIRST
-            up_book = await asyncio.to_thread(client.get_order_book, window.up_token_id)
-            up_best_bid = float(up_book.bids[0].price) if up_book.bids else None
-            up_best_ask = float(sorted(up_book.asks, key=lambda x: float(x.price))[0].price) if up_book.asks else None
-
-            # Fetch DOWN token book
-            down_book = await asyncio.to_thread(client.get_order_book, window.down_token_id)
-            down_best_bid = float(down_book.bids[0].price) if down_book.bids else None
-            down_best_ask = float(sorted(down_book.asks, key=lambda x: float(x.price))[0].price) if down_book.asks else None
-
-            up_spread = (up_best_ask - up_best_bid) if (up_best_ask and up_best_bid) else None
-            down_spread = (down_best_ask - down_best_bid) if (down_best_ask and down_best_bid) else None
+            up_spread = (
+                (up_best_ask - up_best_bid) if (up_best_ask and up_best_bid) else None
+            )
+            down_spread = (
+                (down_best_ask - down_best_bid)
+                if (down_best_ask and down_best_bid)
+                else None
+            )
 
             # Mid price = (up_best_ask + (1 - down_best_ask)) / 2 if available
             mid = None
@@ -119,13 +120,19 @@ class CLOBFeed:
                                 up_spread, down_spread
                             ) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                             """,
-                            "BTC", "5m", window.window_ts,
-                            window.up_token_id, window.down_token_id,
-                            up_best_bid, up_best_ask,
-                            down_best_bid, down_best_ask,
-                            up_spread, down_spread,
+                            "BTC",
+                            "5m",
+                            window.window_ts,
+                            window.up_token_id,
+                            window.down_token_id,
+                            up_best_bid,
+                            up_best_ask,
+                            down_best_bid,
+                            down_best_ask,
+                            up_spread,
+                            down_spread,
                         )
-                        
+
                         # Write comprehensive snapshot to new table.
                         # PE-01 fix: the column list was missing `ts` so the 11
                         # column names did not line up with the 11 VALUES slots
@@ -146,11 +153,17 @@ class CLOBFeed:
                             ) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                             ON CONFLICT (window_ts, up_token_id, down_token_id, ts) DO NOTHING
                             """,
-                            "BTC", "5m", window.window_ts,
-                            window.up_token_id, window.down_token_id,
-                            up_best_bid, up_best_ask,
-                            down_best_bid, down_best_ask,
-                            up_spread, down_spread,
+                            "BTC",
+                            "5m",
+                            window.window_ts,
+                            window.up_token_id,
+                            window.down_token_id,
+                            up_best_bid,
+                            up_best_ask,
+                            down_best_bid,
+                            down_best_ask,
+                            up_spread,
+                            down_spread,
                         )
                 except Exception as exc:
                     log.error("clob_feed.write_error", error=str(exc)[:80])
