@@ -76,9 +76,13 @@ export default function DataHealthStrip({ hqData, v4Snapshot, v3Snapshot }) {
 
   // --- Consensus (from v4 snapshot) ---
   const consensus = v4Snapshot?.consensus || {};
-  const conSources = consensus.sources || [];
-  const conCount = conSources.filter(s => s.price != null && s.price > 0).length;
-  const conTotal = conSources.length || 6;
+  // consensus.sources is an object {binance_spot: {price, age_ms, available}, ...}
+  const conSourcesObj = consensus.sources || {};
+  const conSourcesArr = Array.isArray(conSourcesObj)
+    ? conSourcesObj
+    : Object.values(conSourcesObj);
+  const conCount = conSourcesArr.filter(s => s?.available === true || (s?.price != null && s?.price > 0)).length;
+  const conTotal = conSourcesArr.length || 6;
   const conDivergence = consensus.max_divergence_bps ?? consensus.divergence_bps ?? null;
   let conStatus = 'red';
   if (conCount >= 5 && (conDivergence == null || conDivergence < 15)) conStatus = 'green';

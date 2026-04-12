@@ -186,9 +186,12 @@ function DirectionColumn({ hqData, v3Snapshot }) {
 function MarketContextColumn({ hqData, v4Snapshot }) {
   const w = hqData?.windows?.[0] || {};
 
-  // Consensus
+  // Consensus — sources is an object {binance_spot: {price, age_ms, available}, ...}
   const consensus = v4Snapshot?.consensus || {};
-  const conSources = consensus.sources || [];
+  const conSourcesRaw = consensus.sources || {};
+  const conSources = Array.isArray(conSourcesRaw)
+    ? conSourcesRaw
+    : Object.entries(conSourcesRaw).map(([name, s]) => ({ name, ...s }));
 
   // Macro
   const macro = v4Snapshot?.macro || {};
@@ -215,7 +218,7 @@ function MarketContextColumn({ hqData, v4Snapshot }) {
         <SubLabel>Consensus ({conSources.length} sources)</SubLabel>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 3 }}>
           {conSources.length > 0 ? conSources.map((s, i) => {
-            const alive = s.price != null && s.price > 0;
+            const alive = s.available === true || (s.price != null && s.price > 0);
             return (
               <div key={i} style={{
                 padding: '2px 6px', borderRadius: 3, fontSize: 9,
