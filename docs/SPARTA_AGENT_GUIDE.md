@@ -117,9 +117,13 @@ gh run list --repo billybrichards/novakash --workflow deploy-frontend.yml --limi
 # JWT expires — re-login if API calls return 401
 ```
 
-### Hub API (AWS Montreal, port 8091)
+### Hub API (AWS Montreal, port 8091) — USE THIS, NOT RAILWAY
+
+The hub was migrated from Railway to AWS Montreal (DEP-02, PR #104). **Always use the AWS hub.**
+Railway hub may be stale. Frontend nginx already points to `3.98.114.0:8091`.
+
 ```bash
-# Get fresh JWT
+# Get fresh JWT — valid 15 minutes
 TOKEN=$(curl -s -X POST http://3.98.114.0:8091/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"billy","password":"novakash2026"}' | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))")
@@ -129,6 +133,7 @@ curl -s "http://3.98.114.0:8091/api/v58/execution-hq?asset=btc&timeframe=5m" -H 
 curl -s "http://3.98.114.0:8091/api/v58/strategy-decisions?limit=10" -H "Authorization: Bearer $TOKEN"
 curl -s "http://3.98.114.0:8091/api/v58/accuracy?limit=100" -H "Authorization: Bearer $TOKEN"
 curl -s "http://3.98.114.0:8091/api/v58/prediction-surface?days=7" -H "Authorization: Bearer $TOKEN"
+curl -s "http://3.98.114.0:8091/health"  # sanity check — returns {"status":"ok"}
 ```
 
 ### TimesFM service (Montreal, port 8080) — no auth
@@ -147,21 +152,39 @@ python3 docs/analysis/run_window_analysis.py  # window accuracy surface
 ```
 
 ### Engine on Montreal (EC2 Instance Connect — key expires in 60s)
+
+Requires AWS IAM permission `ec2-instance-connect:SendSSHPublicKey` on instance `i-0785ed930423ae9fd`.
+
+**If you have AWS root/admin and need to grant yourself access:**
 ```bash
-# Generate temp key and push it
-ssh-keygen -t ed25519 -f /tmp/montreal_key -N "" -q 2>/dev/null
+# 1. Attach AmazonEC2InstanceConnectPolicy to your IAM user/role, OR add inline:
+#    {"Effect":"Allow","Action":"ec2-instance-connect:SendSSHPublicKey",
+#     "Resource":"arn:aws:ec2:ca-central-1:267815793130:instance/i-0785ed930423ae9fd",
+#     "Condition":{"StringEquals":{"ec2:osuser":"ubuntu"}}}
+#
+# 2. Security group sg-0de6838438bfc27ec (novakash-vnc) must allow port 22 from your IP.
+#    Check: aws ec2 describe-security-groups --region ca-central-1 --group-ids sg-0de6838438bfc27ec
+#
+# 3. Test: aws sts get-caller-identity  (confirm authenticated)
+```
+
+```bash
+# Standard access pattern — run every time (key valid 60s only)
+ssh-keygen -t ed25519 -f /tmp/montreal_key -N "" -q 2>/dev/null || true
 aws ec2-instance-connect send-ssh-public-key \
   --region ca-central-1 \
   --instance-id i-0785ed930423ae9fd \
   --instance-os-user ubuntu \
-  --ssh-public-key "$(cat /tmp/montreal_key.pub)"
+  --ssh-public-key "$(cat /tmp/montreal_key.pub)" \
+  2>/dev/null | grep -o '"Success": true'
 ssh -i /tmp/montreal_key -o StrictHostKeyChecking=no ubuntu@15.223.247.178 "COMMAND"
 
 # Useful commands via SSH:
-# sudo tail -50 /home/novakash/engine.log | grep 'strategy\.'     # recent strategy decisions
+# sudo tail -50 /home/novakash/engine.log | grep 'strategy\.'
 # sudo grep -E 'V4_FUSION|V10_GATE|PAPER_MODE|LIVE_TRADING' /home/novakash/novakash/engine/.env
-# sudo pgrep -a 'python3 main.py'                                  # check engine running
-# sudo bash /home/novakash/novakash/scripts/restart_engine.sh </dev/null &  # restart
+# sudo pgrep -a 'python3 main.py'
+# sudo bash /home/novakash/novakash/scripts/restart_engine.sh </dev/null &
+# sudo -u novakash bash -c 'cd /home/novakash/novakash && git pull origin develop'
 ```
 
 ### EC2 instances (key services)

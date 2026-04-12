@@ -4,8 +4,24 @@ Full Signal Evaluation Report
 Runs all standard analyses against Railway PostgreSQL and prints a formatted report.
 
 Usage:
+    # Preferred: get PUB_URL from Railway dashboard (DATABASE_PUBLIC_URL)
     export PUB_URL="postgresql://postgres:PASSWORD@hopper.proxy.rlwy.net:35772/railway"
     python3 docs/analysis/full_signal_report.py
+
+    # Alternative: get via Montreal SSH (requires AWS access)
+    # ssh-keygen -t ed25519 -f /tmp/k -N "" -q
+    # aws ec2-instance-connect send-ssh-public-key --region ca-central-1 \
+    #   --instance-id i-0785ed930423ae9fd --instance-os-user ubuntu \
+    #   --ssh-public-key "$(cat /tmp/k.pub)"
+    # ssh -i /tmp/k ubuntu@15.223.247.178 \
+    #   "sudo grep '^DATABASE_URL=' /home/novakash/novakash/engine/.env | sed 's/postgresql+asyncpg/postgresql/'"
+
+    # Hub API (no DB needed — for quick checks):
+    # TOKEN=$(curl -s -X POST http://3.98.114.0:8091/auth/login \
+    #   -H "Content-Type: application/json" \
+    #   -d '{"username":"billy","password":"novakash2026"}' \
+    #   | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))")
+    # curl -s "http://3.98.114.0:8091/api/v58/accuracy?limit=100" -H "Authorization: Bearer $TOKEN"
 
 Options:
     --hours N     Look-back window for "recent" sections (default: 4)
