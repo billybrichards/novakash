@@ -115,6 +115,13 @@ const CATEGORIES = [
       'docs/CI_CD.md (6816f86) explicitly flags engine/ as the only major service without a GitHub Actions deploy workflow. The deploy-macro-observer.yml ~200-line template is the canonical pattern to port. Engine currently relies on Railway git-watcher auto-deploy with no smoke test, no secrets check, no post-deploy health probe, no rollback, and has been observed CRASHED in recent history.',
   },
   {
+    id: 'signal-optimization',
+    title: 'Signal Optimization · CLOB + Direction Analysis',
+    color: '#22d3ee',
+    description:
+      'Data-driven signal improvements from 897K-sample analysis (2026-04-12). Key finding: DOWN predictions have 76–99% WR; UP predictions have 1.5–53% WR. CLOB data required for full edge — fixed in PR #136. Gates SIG-03/SIG-04 to be implemented next.',
+  },
+  {
     id: 'config-migration',
     title: 'CFG · DB-backed config migration',
     color: T.cyan,
@@ -2167,6 +2174,49 @@ const TASKS = [
     fix: 'RECOMMENDATION: Trade DOWN ONLY. Skip ALL UP predictions. Size 2.0x for contrarian (clob_ask >=0.75). Expected WR: 76-99%. See docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md for full analysis.',
     progressNotes: [
       { date: '2026-04-12', note: 'CRITICAL FINDING: DOWN-only strategy has 99% WR at contrarian ranges. UP predictions are unprofitable (1.5-53% WR). This is an exploit of retail UP bias, not a model signal. Requires V4 strategy update to implement DOWN-only filter.' },
+    ],
+  },
+  {
+    id: 'SIG-03',
+    category: 'signal-optimization',
+    severity: 'HIGH',
+    status: 'OPEN',
+    title: 'DirectionFilterGate: skip all UP predictions (1.5-53% WR)',
+    files: [
+      { path: 'engine/signals/gates.py', line: 1, repo: 'novakash' },
+      { path: 'engine/strategies/five_min_vpin.py', line: 850, repo: 'novakash' },
+    ],
+    evidence: [
+      '897,503-sample analysis (2026-04-12): UP predictions have 1.5–53% WR across all CLOB bands',
+      'DOWN predictions have 76–99% WR across all CLOB bands',
+      'Existing gate pipeline (gates.py) is pluggable — new gates implement Gate protocol',
+      'DirectionFilterGate is ~20 lines: if direction == UP: return GateResult(passed=False)',
+    ],
+    fix: 'Add DirectionFilterGate to engine/signals/gates.py. Insert as G1.5 (after SourceAgreementGate, before DeltaMagnitudeGate). Add V4_DOWN_ONLY env flag for soft rollout. See docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md for implementation spec.',
+    progressNotes: [
+      { date: '2026-04-12', note: 'Gate design specified in DOWN_ONLY_STRATEGY_2026-04-12.md. Architecture: plugs into existing Gate protocol in gates.py, ~20 lines. TODO: implement and wire into V4 pipeline.' },
+    ],
+  },
+  {
+    id: 'SIG-04',
+    category: 'signal-optimization',
+    severity: 'HIGH',
+    status: 'OPEN',
+    title: 'CLOBSizingGate: size UP to 2x based on clob_down_ask (76–99% WR)',
+    files: [
+      { path: 'engine/signals/gates.py', line: 1, repo: 'novakash' },
+      { path: 'engine/strategies/five_min_vpin.py', line: 850, repo: 'novakash' },
+    ],
+    evidence: [
+      'clob_down_ask >= 0.75: 99% WR (175K samples) — both model and market agree DOWN',
+      'clob_down_ask 0.55–0.75: 98% WR (112K samples)',
+      'clob_down_ask 0.35–0.55: 92% WR (87K samples)',
+      'clob_down_ask < 0.35: 76% WR (177K samples) — genuine contrarian',
+      'CLOB data now available in paper mode after PR #136 fix',
+    ],
+    fix: 'Add CLOBSizingGate to engine/signals/gates.py. Insert as G6.5 (after SpreadGate). Sets ctx.size_modifier: 2.0x at >=0.75, 1.5x at 0.55–0.75, 1.2x at 0.35–0.55, 1.0x below. Add size_modifier field to GateContext. See docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md.',
+    progressNotes: [
+      { date: '2026-04-12', note: 'Sizing schedule determined from 897K sample analysis. Gate design specified in DOWN_ONLY_STRATEGY_2026-04-12.md. Requires SIG-03 (DirectionFilterGate) to be implemented first — sizing only meaningful for DOWN predictions.' },
     ],
   },
 ];
