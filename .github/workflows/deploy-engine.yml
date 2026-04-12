@@ -206,7 +206,13 @@ jobs:
 
       - name: Restart engine via scripts/restart_engine.sh
         run: |
-          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'sudo bash /home/novakash/novakash/scripts/restart_engine.sh'
+          # CI-01 fix: the restart script spawns a background python3 process
+          # via nohup+disown. Even after disown, SSH waits for all child fds to
+          # close before exiting. The </dev/null fix in the script itself closes
+          # stdin on the child, and the timeout here is a safety net so CI never
+          # hangs indefinitely if something unexpected keeps the channel open.
+          timeout 90 ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" \
+            'sudo bash /home/novakash/novakash/scripts/restart_engine.sh </dev/null'
 
       - name: Wait for engine startup
         run: sleep 45
