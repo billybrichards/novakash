@@ -458,17 +458,96 @@ Coordinated with the novakash blitz. 15 PRs merged to main:
 - **WINDOW-ANALYSIS-01 (MEDIUM INFO)** — T-120–T-150 sweet spot confirmed in 865-window analysis. CLOB ask asymmetry WR 82% flagged with bearish-dataset caveat. Needs revalidation once V4 LIVE paper accumulates 200+ windows in mixed-regime sessions.
 - **CA-EXEC-INDEPENDENCE (MEDIUM OPEN)** — `EvaluateStrategiesUseCase` currently calls V10 and V4 evaluation in sequence in the same 2s tick. Should be independent `asyncio.gather` tasks so a slow V4 snapshot fetch doesn't delay V10 gate decisions.
 
-## Next up (ordered, updated 2026-04-12 session 2)
+### 2026-04-12 — ME-STRAT audit: margin engine strategy deep dive
 
-0. **Polymarket Evaluate page** — signal-vs-outcome analysis, per-gate accuracy breakdown, P&L charts. Design in spec §3.
-1. **Polymarket Strategy Lab** — historical replay simulator, shadow configs, gate impact analysis. Design in spec §4.
-2. **Macro Phase C** — replace Qwen with per-horizon LightGBM MacroV2Classifier. Plan at ~/.claude/plans/sleepy-forging-cerf.md.
-3. **SQ-01 PR 3** — wire-format dual-emit "elm" + "sequoia" in V3/V4 JSON.
-4. **S6** — 1h/4h model training (no trained models exist for these timescales).
-5. **V4-01** — port V4 fusion surface into the Polymarket engine.
-6. **CA-01 Phase 4** — wire use-case calls behind feature flag.
-7. **POLY-SOT-c backfill** — operator runs on Montreal.
-8. **DQ-01 activation** — flip V11_POLY_SPOT_ONLY_CONSENSUS=true.
+**READ-ONLY analysis of margin_engine and TimesFM data surfaces (v1-v4)**. Comprehensive audit covering all available data surfaces, current strategy implementation, and 8 new strategy proposals.
+
+**Key finding**: V4 fusion layer provides 10 gates, 4 timescales, TimesFM quantiles, V3 composite signals, consensus alignment, macro bias, event calendar, CLOB book, Polymarket window, and orderflow data — but margin_engine currently uses only primary timescale (15m) probability + regime. **V4 underutilization ~70%**.
+
+**Data surface inventory**:
+- **V1 (legacy)**: TimesFM 2.5 200M point forecast + quantiles. Frozen, not actively consumed.
+- **V2 (Sequoia v5.2)**: LightGBM P(UP) with isotonic calibration. 37+ features from price, CoinGlass, Gamma, TimesFM, VPIN. Consumed by margin_engine (legacy path) and v3 composite.
+- **V3 (composite)**: Multi-signal weighted score (ELM, cascade, taker, OI, funding, VPIN, momentum). HMM regime classifier (TRENDING_UP/DOWN, MEAN_REVERTING, CHOPPY, NO_EDGE). Cascade FSM (IDLE→CASCADE→BET→COOLDOWN).
+- **V4 (fusion)**: 10-gate stack with 4 timescales (5m/15m/1h/4h), TimesFM quantiles (p10-p90), consensus alignment, macro bias/confidence/gate, event calendar, CLOB book (bid/ask/imbalance), Polymarket window prices, orderflow (liquidations).
+
+**Current margin engine strategy**: Legacy v2 15m directional. Trigger: |P(UP)-0.5| >= 0.20. Exit: SL 0.6%, TP 0.5%, max hold 15 min, trailing 0.3%. Size: 2% capital at 3x leverage.
+
+**Unused v4 data surfaces**:
+- Multi-timescale probability (5m/1h/4h ignored)
+- TimesFM quantiles for VaR optimization
+- V3 composite signals (only regime used)
+- Consensus alignment score
+- Macro reasoning (only advisory size modifier)
+- Event impact scores
+- CLOB imbalance
+- Polymarket arb opportunities
+- Orderflow cascade detection
+
+**8 new strategy proposals**:
+1. **ME-STRAT-01**: Enable v4 path (currently dark-deployed). Priority: HIGH.
+2. **ME-STRAT-02**: Multi-timescale alignment (3/4 timescales agree). Expected: higher conviction trades, reduced frequency.
+3. **ME-STRAT-03**: Quantile-VaR position sizing. Expected: constant $ risk per trade.
+4. **ME-STRAT-04**: Regime-adaptive strategy selection (trend vs mean-reversion vs no-trade).
+5. **ME-STRAT-05**: Cascade fade strategy (fade forced liquidations).
+6. **ME-STRAT-06**: CLOB book imbalance scalp (short-term scalps).
+7. **ME-STRAT-07**: Macro model calibration (currently 20-30% BEAR hit rate = anti-predictive).
+8. **ME-STRAT-08**: Event-driven pre-positioning (30-60 min before high-impact events).
+
+**Action items**:
+- Enable v4 path in production (paper mode first)
+- Implement multi-timescale alignment strategy
+- Backtest regime-adaptive selection
+- Calibrate macro model (retrain Qwen prompt)
+- Deploy cascade detector for fade strategy
+
+**ME-STRAT-UI-01: Margin Strategy Dashboard**: Design completed at `docs/MARGIN_STRATEGY_DASHBOARD_DESIGN.md`. Dashboard will feature:
+- Strategy cards grid (8 strategies with status badges)
+- Click-to-expand modal with 4 tabs: Overview, Performance, Regime Breakdown, Configuration
+- Regime-based PnL analysis (TRENDING_UP/DOWN, MEAN_REVERTING, CHOPPY)
+- Backtest simulation (client-side)
+- Configuration management (requires restart)
+
+**SIGNAL-COMP-UI-01: Signal Comparison Dashboard**: New task added to /audit checklist. Dashboard will track accuracy of all directional signals:
+- **Sequoia v5.2 (v2)**: LightGBM P(UP) - 5m/15m timescales
+- **V3 Composite**: Weighted ensemble score [-1,+1]
+- **HMM Regime**: 4-state Gaussian HMM (calm_trend/volatile_trend/chop/risk_off) - PR #67
+- **MacroV2**: Heuristic classifier (LONG/SHORT/NEUTRAL) - REPLACES Qwen - PR #71
+- **V4 Consensus**: Multi-timescale alignment score
+- **Cascade FSM**: Liquidation cascade state (IDLE/CASCADE/BET/COOLDOWN)
+
+All 10 items (ME-STRAT-01 through ME-STRAT-08 + ME-STRAT-UI-01 + SIGNAL-COMP-UI-01) added to /audit checklist.
+
+### 2026-04-12 — Session 5: Go-live preparation + deep signal analysis
+
+**Go-live prep completed.** V4 LIVE paper + V10 GHOST active. $101.21 USDC deposited to Polymarket funder address. Wallet: `0x181D2ED714E0f7Fe9c6e4f13711376eDaab25E10`. Engine running on Montreal (PID verified).
+
+**V4 timing + confidence gates deployed.** V4FusionStrategy now gates on:
+- `timing = optimal` (T-30 to T-180) — hard skip on early/late/expired
+- `confidence_distance >= 0.12` — only strong/high confidence bands
+- `late_window` (T-5 to T-30): requires `sequoia_clob_divergence >= 0.04` (Sequoia ahead of CLOB)
+- V4 paper result before fixes: 0W/20L (all at T-60, wrong timing)
+- V4 paper result after fixes: gates correctly blocking weak/late signals
+
+**Window analysis confirmed (2nd run, 70,272 windows).** Sweet spot T-120 to T-150. T-90 cliff = 48.7% (worse than random). Analysis scripts: `docs/analysis/run_window_analysis.py` + `docs/analysis/full_signal_report.py`. Runbook: `docs/analysis/SIGNAL_EVAL_RUNBOOK.md`.
+
+**Retrain pipeline fixed (timesfm PR #75).** Parity check was calling `python -m training.parity_check` with no args (requires `--from-s3 btc`). Fixed. All 5 matrix cells ran. New model NOT promoted — ECE worse than current Sequoia v5.2. Current model stays.
+
+**Major frontend fixes (PRs #133, #134, #135).** FE-MONITOR-01a-e: RecentFlow V4 column, sub-signals parse, gate dedup, SRC Agreement source, bankroll label. Also: direction toggle for manual trades, Live Floor BTC price fix, Overview SQL cast fix.
+
+**SPARTA updated** with access guide (GitHub+AWS CLI), analysis scripts reference, and schema gotchas.
+
+**Signal eval runbook created** (`docs/analysis/SIGNAL_EVAL_RUNBOOK.md`). Covers all tables, queries, config decision framework, schema gotchas. Any agent can run `full_signal_report.py` for current-state analysis.
+
+## Next up (ordered, updated 2026-04-12 session 5)
+
+0. **Go live** — top up wallet confirmed ($101.21 USDC). Flip PAPER→LIVE toggle in Monitor top bar when ready.
+1. **FE-MONITOR-01 remaining** — Sequoia p_up still NO DATA in some scenarios, V3 composite join still using API (not DB), gate pipeline occasional double render. Tracked in audit.
+2. **SIGNAL-CLOB-EDGE-GATE** — gate on (Sequoia p_up - CLOB implied prob) > threshold. Most impactful improvement identified from data.
+3. **V4-TIMING-BUG** — CRITICAL: add `if timing == 'late': skip` guard (fix deployed, verify in next paper session).
+4. **CA-EXEC-INDEPENDENCE** — extract `_execute_trade` into ExecuteTradeUseCase so V4 has fully independent execution path.
+5. **Macro Phase C** — replace Qwen with per-horizon LightGBM MacroV2Classifier.
+6. **Window analysis on neutral BTC period** — current analysis is 84% DOWN biased. Need mixed-regime validation.
+7. **CA-01 Phase 4** — wire use-case calls behind feature flag.
 
 ## Conventions
 

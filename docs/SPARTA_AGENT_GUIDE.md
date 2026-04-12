@@ -77,6 +77,14 @@ actually `DONE`. This created a stale audit that required a catch-up PR the next
 2. Check if any `IN_PROGRESS` or `OPEN` tasks have been completed by recent PRs (check `git log`).
 3. If stale entries exist, update them before starting new work.
 
+**AUDIT_PROGRESS.md structure:** Each session gets a new `### YYYY-MM-DD — Session N` section with:
+- What was shipped (PRs, with links)
+- What was decided (design choices, env var changes)
+- What is still open
+- Updated "Next up" list at the bottom
+
+The "Next up" section at the BOTTOM of AUDIT_PROGRESS.md is the canonical task queue — always update it to reflect current priorities. AuditChecklist.jsx is the UI view; AUDIT_PROGRESS.md is the detailed log.
+
 **At session end (or every 5 PRs, whichever comes first):**
 1. Scan all PRs merged in this session.
 2. For each: is there a matching task in AuditChecklist.jsx? If yes, update status + progressNotes.
