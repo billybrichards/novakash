@@ -580,3 +580,74 @@ CLOB ask interpretation: `clob_down_ask > 0.75` means the market prices DOWN at 
 - **Update checklist + this log in the same commit.** The `progressNotes` entries should mirror a bullet here.
 - **Keep entries terse — one sentence per action, one paragraph per decision.**
 - **Cite file:line or PR numbers** so future-you can retrace without re-reading the whole thread.
+
+### 2026-04-12 — V4 Strategies Implementation for Margin Engine Paper Trading
+
+**PR**: `billybrichards/novakash#<PR-NUMBER>` (feat/v4-strategies-paper-trading)  
+**Commit**: `3c1d530` on `develop`  
+**Status**: ✅ Deployed to AWS eu-west-2 (18.169.244.162), paper trading on Hyperliquid
+
+**What was shipped**:
+
+1. **5 V4-enhanced trading strategies** (142 unit tests passing):
+   - ME-STRAT-01: V4 Foundation - Full V4 data consumption (4 timescales, consensus, macro)
+   - ME-STRAT-02: Multi-Timescale Alignment - 3/4 filter with 1.2x/1.4x size boost
+   - ME-STRAT-03: Quantile-VaR Sizing - Risk-parity sizing 0.5x-2.0x based on VaR
+   - ME-STRAT-04: Regime-Adaptive Selection - Route to trend/mean-reversion/no-trade by regime
+   - ME-STRAT-05: Cascade Fade - Fade liquidation cascades with 0.5x size, 3% stop, 1% TP
+
+2. **Fee-aware position management**:
+   - Fee-adjusted PnL for continuation decisions
+   - Multi-timescale alignment for hold/exit (4/4 → 2.0x, 3/4 → 1.5x, 2/4 → 1.0x)
+   - Partial take-profit (25% at 75% TP, 50% at 50% TP + weak signal)
+   - Hold extension based on conviction, alignment, regime
+
+3. **Frontend dashboards**:
+   - Signal Comparison Dashboard (`/signal-comparison`)
+   - Margin Strategy Dashboard (`/margin-strategies`)
+
+4. **Backend API endpoints**:
+   - `GET /api/v58/signal-comparison`
+   - `GET /api/margin/positions`
+   - `GET /api/margin/strategy-stats`
+
+5. **CI/CD configuration**:
+   - `deploy-margin-engine.yml` updated with V4 strategy env vars
+   - Auto-deploys on merge to `develop`
+   - Paper mode enabled on Hyperliquid
+
+**Files changed**:
+- 33 new files (10,926 insertions)
+- 12 modified files
+- 5 strategy services in `margin_engine/services/`
+- 5 test files (142 tests)
+- 2 frontend dashboards
+- 10 documentation files
+
+**Configuration enabled**:
+```bash
+MARGIN_ENGINE_USE_V4_ACTIONS=true
+MARGIN_ALIGNMENT_ENABLED=true
+MARGIN_ALIGNMENT_MIN_TIMESCALES=3
+MARGIN_FEE_AWARE_CONTINUATION_ENABLED=true
+MARGIN_CONTINUATION_ALIGNMENT_ENABLED=true
+MARGIN_CONTINUATION_MIN_TIMESCALES=2
+MARGIN_CONTINUATION_HOLD_EXTENSION_MAX=2.0
+MARGIN_FEE_AWARE_PARTIAL_TP_THRESHOLD=0.75
+MARGIN_FEE_AWARE_PARTIAL_TP_SIZE=0.25
+MARGIN_MAX_PARTIAL_CLOSES=3
+```
+
+**Next steps**:
+1. Monitor overnight performance (24-48 hours)
+2. Enable additional strategies (regime-adaptive, cascade fade) via env vars
+3. Implement missing backend API data (signal-comparison needs accuracy queries)
+4. Analyze 24h performance data
+5. Optimize strategy parameters based on live data
+6. Prepare for live trading after 2-4 weeks paper validation
+
+**Related tasks**:
+- ME-STRAT-01 to ME-STRAT-05: All DONE (shipped in this PR)
+- Dashboard backend APIs: OPEN (needs implementation)
+- Performance analysis: OPEN (waiting for 24h data)
+- Strategy optimization: OPEN (waiting for performance data)
