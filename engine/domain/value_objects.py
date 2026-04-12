@@ -194,6 +194,13 @@ class SitrepPayload:
     recent_trades_block: str = ""
     pending_block: str = ""
     coinglass_block: str = ""
+    # v12: HMM regime from V4 snapshot
+    hmm_regime: Optional[str] = None
+    hmm_regime_confidence: Optional[float] = None
+    # v12: Feed health status
+    feed_health: Optional[dict] = None
+    # v12: Strategy port last decisions summary
+    strategy_summary: Optional[str] = None
 
 
 @dataclass(frozen=True)

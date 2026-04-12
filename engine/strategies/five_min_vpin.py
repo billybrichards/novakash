@@ -157,6 +157,9 @@ class FiveMinVPINStrategy(BaseStrategy):
         # Window info buffer (populated by feed callbacks)
         self._pending_windows: list = []  # DEPRECATED: use .pending_windows / .append_pending_window()
 
+        # ── v12: Strategy Port decisions (injected by orchestrator per-window) ──
+        self._pending_strategy_decisions: Optional[list] = None
+
         # ── G4: Order rate limiter state ──────────────────────────────────────
         self._order_timestamps: list[float] = []  # timestamps of recent orders
         self._last_order_time: float = 0.0
@@ -1904,12 +1907,16 @@ class FiveMinVPINStrategy(BaseStrategy):
             if self._alerter and _is_final_offset:
                 try:
                     _hist = list(self._window_eval_history.get(_window_key, []))
-                    async def _send_summary_all_skip(wk=_window_key, h=_hist):
+                    # v12: Consume strategy port decisions for skip summary
+                    _sp_decs = self._pending_strategy_decisions
+                    self._pending_strategy_decisions = None
+                    async def _send_summary_all_skip(wk=_window_key, h=_hist, sp=_sp_decs):
                         try:
                             await self._alerter.send_window_summary(
                                 window_id=wk,
                                 eval_history=h,
                                 traded=False,
+                                strategy_decisions=sp,
                             )
                         except Exception as _se:
                             self._log.error("alert.window_summary_failed", error=str(_se), window_key=wk)
@@ -2100,6 +2107,10 @@ class FiveMinVPINStrategy(BaseStrategy):
                     }
                     reason = f"VPIN {current_vpin:.3f} ({_snap_regime}), delta {delta_pct:+.4f}%"
                     
+                    # v12: Grab strategy port decisions if available
+                    _sp_decisions = self._pending_strategy_decisions
+                    self._pending_strategy_decisions = None  # consume once
+
                     # Send decision + AI analysis (separated for timeout resilience)
                     await self._alerter.send_trade_decision_detailed(
                         window_id=window_id,
@@ -2108,6 +2119,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                         reason=reason,
                         gamma_up=window_snapshot.get("gamma_up_price"),
                         gamma_down=window_snapshot.get("gamma_down_price"),
+                        strategy_decisions=_sp_decisions,
                     )
                 except Exception as alert_exc:
                     self._log.error("alert.trade_decision_failed", error=str(alert_exc), window_ts=window.window_ts)
