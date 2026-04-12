@@ -126,16 +126,21 @@ function GatePipelineStrip({ hqData }) {
     });
 
   return (
-    <div style={{
-      flex: '1.2 1 0', minWidth: 0,
-    }}>
-      <div style={{
-        fontSize: 8, color: T.purple, letterSpacing: '0.12em',
-        fontWeight: 700, textTransform: 'uppercase', marginBottom: 6,
-      }}>Gate Pipeline</div>
-      <div style={{
-        display: 'flex', flexWrap: 'wrap', gap: 4,
-      }}>
+    <div style={{ flex: '1.2 1 0', minWidth: 0 }}>
+
+      {/* V10 Gate Pipeline */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <div style={{
+          fontSize: 8, color: T.purple, letterSpacing: '0.12em',
+          fontWeight: 700, textTransform: 'uppercase',
+        }}>Gate Pipeline</div>
+        <span style={{
+          fontSize: 7, padding: '1px 6px', borderRadius: 3,
+          background: 'rgba(168,85,247,0.15)', color: T.purple,
+          fontWeight: 700, letterSpacing: '0.06em',
+        }}>V10 GHOST</span>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
         {chips.map(g => (
           <GateChip key={g.key} name={g.key} displayName={g.displayName} passed={g.passed} value={g.value} threshold={g.threshold} extraLabel={g.extraLabel} />
         ))}
@@ -143,14 +148,13 @@ function GatePipelineStrip({ hqData }) {
           <GateChip key={g.key} {...g} />
         ))}
       </div>
-      {/* Overall result */}
       {hb.skip_reason && (
         <div style={{
-          marginTop: 6, padding: '3px 8px', borderRadius: 3,
+          marginTop: 4, padding: '2px 8px', borderRadius: 3,
           background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)',
           fontSize: 9, color: T.red, fontFamily: T.mono,
         }}>
-          Blocked: {hb.skip_reason}
+          V10 blocked: {hb.skip_reason}
         </div>
       )}
     </div>
