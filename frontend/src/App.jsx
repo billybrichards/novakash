@@ -46,6 +46,7 @@ import LegacyConfig from './pages/LegacyConfig.jsx';
 import PolymarketMonitor from './pages/polymarket/Monitor.jsx';
 import PolymarketEvaluate from './pages/polymarket/Evaluate.jsx';
 import StrategyLab from './pages/polymarket/StrategyLab.jsx';
+import PolymarketOverview from './pages/polymarket/Overview.jsx';
 
 export default function App() {
   return (
@@ -66,7 +67,7 @@ export default function App() {
             }
           >
             <Route index element={<Navigate to="/polymarket/monitor" replace />} />
-            <Route path="dashboard" element={<Dashboard />} />
+            <Route path="dashboard" element={<PolymarketOverview />} />
             <Route path="paper" element={<PaperDashboard />} />
             {/* PaperTrading removed — duplicate of Dashboard, use /paper instead */}
             <Route path="positions" element={<Positions />} />
@@ -112,6 +113,7 @@ export default function App() {
             <Route path="schema" element={<Schema />} />
             {/* Polymarket Monitor — new unified trading dashboard */}
             <Route path="polymarket" element={<Navigate to="/polymarket/monitor" replace />} />
+            <Route path="polymarket/overview" element={<PolymarketOverview />} />
             <Route path="polymarket/monitor" element={<PolymarketMonitor />} />
             <Route path="polymarket/evaluate" element={<PolymarketEvaluate />} />
             <Route path="polymarket/strategy-lab" element={<StrategyLab />} />
