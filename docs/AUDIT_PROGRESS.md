@@ -365,40 +365,72 @@ Background agents dispatched at 17:06-17:14 (5 in parallel, isolated worktrees):
 **IN_PROGRESS:** POLY-SOT-d (PR #70, backfill pending), CI-01 (PR #71, ENGINE_SSH_KEY needed), CA-01 (PR #75 ports + PR #80 db_client split).
 **New DONE:** DATA-ARCH-01 (PR #81, 39 tables), ORCH-AUDIT-01 (PR #79, 33 methods), REPO-AUDIT-01 (PR #77, 10 modules).
 
-## Next up (ordered)
+### 2026-04-11 — Late-night clean-architecture blitz: PRs #82-103
 
-0. **POLY-SOT-c backfill run** — once feat/poly-sot-b-automatic-trades-plus-backfill
-   merges to develop and lands on the Montreal box, the operator must run the
-   one-shot historical backfill so legacy `manual_trades` and `trades` rows get
-   non-NULL `sot_reconciliation_state`. Steps (Montreal box only — geo
-   restriction):
+The evening session shipped 22 PRs completing the clean-architecture migration through Phase 3, plus supporting audit docs, frontend polish, and security fixes. All merged to develop between 22:12 and 22:56 UTC.
+
+**Audit docs (PRs #82, #85):**
+- PR #82 — repo-wide clean architecture audit v3 (source-level, all 14 modules)
+- PR #85 — mega audit checklist update for PRs #69-81
+
+**Security + decoupling (PRs #86, #87):**
+- PR #86 — decoupled orchestrator from five_min_vpin private internals (prerequisite for CA-01 extractions)
+- PR #87 — **security fix**: removed hardcoded Tiingo API key, extracted TiingoRestAdapter (CA-02)
+
+**Frontend polish (PRs #89, #90):**
+- PR #89 — synced schema catalog with data architecture audit findings
+- PR #90 — strategy badges and data source labels on all frontend pages
+
+**Clean-arch core (PRs #83, #92, #93, #95, #96, #99, #100, #101, #103):**
+- PR #83 — wired persistence adapters to domain port interfaces
+- PR #92 — Phase 2 adapter shims for all remaining ports (14 files)
+- PR #93 — split polymarket_client.py into paper/live adapter classes
+- PR #95 — **CA-03 DONE**: immutable GateContext with delta fold pipeline (229-line test suite)
+- PR #96 — audit quick wins: DDL extraction to hub/db/migrations, _DBShim removal, public accessors
+- PR #99 — Phase 1 fill 22 value object stubs with real fields and validation (144-line test suite)
+- PR #100 — **CA-04 DONE**: WindowStateRepository as single owner of traded/resolved state (82-line test suite, new window_states table)
+- PR #101 — 3 remaining use cases extracted (execute_manual_trade, publish_heartbeat, reconcile_positions) + 4 new ports + VO updates. 36 tests.
+- PR #103 — **Phase 3**: EvaluateWindowUseCase extraction (flagged off, 13 tests). Core _evaluate_window logic now in engine/use_cases/evaluate_window.py.
+
+**CI fix (PR #84):**
+- PR #84 — excluded clean-arch dirs from deploy-engine path filter
+
+**Status flips in AuditChecklist.jsx:**
+- **CA-02 → DONE** (ports/adapters layer fully wired: PRs #75, #83, #87, #92, #93)
+- **CA-03 → DONE** (immutable GateContext: PR #95)
+- **CA-04 → DONE** (WindowStateRepository: PR #100)
+- **POLY-SOT-d → DONE** (poly_fills on-chain SOT: PR #70)
+- **CA-01 remains IN_PROGRESS** — Phases 0-3 shipped, Phase 4 (wiring) + beyond still pending
+- **New entries:** REPO-AUDIT-02, CA-05, CA-06, FE-09, SCHEMA-02
+
+### 2026-04-11 — novakash-timesfm-repo parallel work (PRs #51-65 on main)
+
+Coordinated with the novakash blitz. 15 PRs merged to main:
+- PRs #51-53 — v4 Phases 2-5 (strategy templates, futures feed, per-timescale macro), CI cleanup
+- PR #54 — SPARTA_AGENT_GUIDE.md mirrored to timesfm repo
+- PRs #56-58 — POST /predict versioned envelope, SPARTA Appendix D, VPIN ensemble plan doc
+- PRs #59-62 — v5 push-mode fixes (4 PRs: scoring loop, /v2/probability, v4_snapshot_assembler, v3 composite cache dispatch)
+- PR #63 — SPARTA doc sync (POLY-SOT-b/c shipped)
+- PRs #61, #65 — VPIN Section 1 (binance trades feed + volume-clock BVC + BTC calibration)
+
+## Next up (ordered, updated 2026-04-12)
+
+0. **POLY-SOT-c backfill run** — operator must run the one-shot historical
+   backfill on Montreal so legacy rows get non-NULL `sot_reconciliation_state`:
    ```
    cd /home/novakash/novakash/engine
    python3 scripts/backfill_sot_reconciliation.py --table both --dry-run
    # review the output, then for real:
    python3 scripts/backfill_sot_reconciliation.py --table both
    ```
-   Idempotent — safe to re-run. Verify in the UI by checking that the SOT
-   chip on the TradeTicker shows green/yellow rather than blank for old
-   trades. See AuditChecklist `POLY-SOT-c`.
-1. **Merge agent PRs as they land** — CA-01..04 plan doc, CFG-01 plan doc, frontend
-   audit, UI-02 multi-market monitors, LT-04 fast path. All are tracked in the
-   corresponding `a*` agent IDs above.
-2. **Frontend audit triage** — read the audit report and open new FE-* tasks for
-   any broken / stale pages before live trading resumes.
-3. **UI-02 landing → update operator runbook** — the "how to resume live trading"
-   checklist must reference `/execution-hq/btc/5m` as the canonical live view.
-4. **Start CA-01..04 Phase 0** — once the plan doc merges, the first concrete
-   refactor is defining `engine/domain/ports.py` alongside the existing code
-   (pure addition, zero behaviour change). This is the first shrink of the god
-   class.
-5. **Start CFG-01 Phase 0** — build the `config_keys` / `config_values` /
-   `config_history` tables and the hub read-only `/api/v58/config/schema`
-   endpoint. No UI editing yet — read-only first.
-6. **DQ-01 activation** — operator flips the flag and validates the gate heartbeat
-   shows `spot disagree` events. If pass rate drops from ~98% to ~57% and trade
-   freq drops ~40%, we know the flag is taking effect. A/B for 24h and keep or
-   revert based on PnL signal.
+1. **CA-01 Phase 4** — wire use-case calls into five_min_vpin.py behind feature
+   flag, replacing direct method calls with the extracted use cases. This is the
+   big integration step.
+2. **CFG-04** — hub config POST endpoints (upsert/rollback/reset + history).
+3. **CFG-06** — frontend /config editable with admin claim.
+4. **V4-01** — port v4 fusion surface into the Polymarket engine (the big one).
+5. **DQ-01 activation** — operator flips V11_POLY_SPOT_ONLY_CONSENSUS=true.
+6. **CI-01 completion** — ENGINE_SSH_KEY still needed for first live deploy.
 
 ## Conventions
 

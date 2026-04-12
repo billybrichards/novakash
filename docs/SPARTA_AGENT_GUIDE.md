@@ -65,6 +65,27 @@ When you finish a task:
    audit trail stay in sync.
 4. Reference the task ID in the commit message: `fix(engine): PE-06 — JSON quoting in prediction recorder`.
 
+### Audit-update discipline (MANDATORY)
+
+**Every PR that ships code MUST include audit updates in the same commit or a follow-up in the
+same session.** This is non-negotiable. The 2026-04-11 late-night blitz shipped 22 PRs (#82-#103)
+without updating the checklist, leaving CA-02/CA-03/CA-04 stuck at `IN_PROGRESS` when they were
+actually `DONE`. This created a stale audit that required a catch-up PR the next day.
+
+**At session start:**
+1. Read `docs/AUDIT_PROGRESS.md` and `frontend/src/pages/AuditChecklist.jsx`.
+2. Check if any `IN_PROGRESS` or `OPEN` tasks have been completed by recent PRs (check `git log`).
+3. If stale entries exist, update them before starting new work.
+
+**At session end (or every 5 PRs, whichever comes first):**
+1. Scan all PRs merged in this session.
+2. For each: is there a matching task in AuditChecklist.jsx? If yes, update status + progressNotes.
+   If no matching task exists and the PR is non-trivial, add a new task entry.
+3. Add a dated section to `docs/AUDIT_PROGRESS.md` summarising what shipped.
+4. Commit the audit updates.
+
+**The rule:** if you shipped it, track it. If you can't remember whether you tracked it, check.
+
 ### Category severity conventions
 
 - **CRITICAL red** — trading-loss class. Stops the line.
