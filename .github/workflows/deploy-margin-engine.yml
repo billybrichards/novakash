@@ -112,6 +112,19 @@ jobs:
             set_env MARGIN_V4_POLL_INTERVAL_S 2.0
             set_env MARGIN_V4_FRESHNESS_S 10.0
 
+            # V4 Strategies (2026-04-12): Enable multi-timescale alignment
+            # and fee-aware continuation for paper trading on Hyperliquid
+            set_env MARGIN_ALIGNMENT_ENABLED true
+            set_env MARGIN_ALIGNMENT_MIN_TIMESCALES 3
+            set_env MARGIN_FEE_AWARE_CONTINUATION_ENABLED true
+            set_env MARGIN_CONTINUATION_ALIGNMENT_ENABLED true
+            set_env MARGIN_CONTINUATION_MIN_TIMESCALES 2
+            set_env MARGIN_CONTINUATION_HOLD_EXTENSION_MAX 2.0
+            set_env MARGIN_MAX_PARTIAL_CLOSES 3
+            set_env MARGIN_PARTIAL_CLOSE_COOLDOWN_S 300.0
+            set_env MARGIN_FEE_AWARE_PARTIAL_TP_THRESHOLD 0.75
+            set_env MARGIN_FEE_AWARE_PARTIAL_TP_SIZE 0.25
+
             # Phase A (2026-04-11): macro gate demoted from hard veto to
             # advisory by default. 24h audit showed Qwen BEAR calls at
             # 20-30% directional hit rate — actively anti-predictive.
