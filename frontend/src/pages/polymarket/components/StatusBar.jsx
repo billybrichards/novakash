@@ -135,7 +135,7 @@ export default function StatusBar({ hqData, dashStats, accuracy, tradeStats }) {
   }, []);
 
   const system = hqData?.system || {};
-  const isPaper = system.paper_mode !== false;
+  const isPaper = system.paper_mode === true || system.paper_enabled === true;
   const bankroll = dashStats?.balance ?? system.bankroll ?? 0;
 
   // Session W/L from v10_stats

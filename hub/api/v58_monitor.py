@@ -4082,7 +4082,7 @@ async def strategy_windows(
         return {
             "windows": list(windows.values()),
             "count": len(windows),
-            "known_strategies": ["v10_gate", "v4_fusion", "v4_down_only"],
+            "known_strategies": ["v10_gate", "v4_fusion", "v4_down_only", "v4_up_asian"],
         }
     except Exception as exc:
         log.warning("v58.strategy_windows_error", error=str(exc)[:200])
