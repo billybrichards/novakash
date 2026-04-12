@@ -72,7 +72,7 @@ function SignalBar({ name, value, maxVal = 1 }) {
 
 // --- Left Column: Direction & Confidence ---
 
-function DirectionColumn({ hqData, v3Snapshot }) {
+function DirectionColumn({ hqData, v4Snapshot, v3Snapshot }) {
   const w = hqData?.windows?.[0] || {};
   const direction = w.direction || '\u2014';
   const isUp = direction === 'UP';
@@ -85,8 +85,8 @@ function DirectionColumn({ hqData, v3Snapshot }) {
   const v10Stats = hqData?.v10_stats || {};
   const wrPct = v10Stats.wr_pct ?? null;
 
-  // Sequoia p_up
-  const pUp = w.v2_probability_up ?? null;
+  // Sequoia p_up — check timescale-level first (v4Snapshot?.timescales?.["5m"]?.probability_up)
+  const pUp = v4Snapshot?.timescales?.['5m']?.probability_up ?? w.v2_probability_up ?? null;
 
   // V3 composite
   const v3 = v3Snapshot || {};
@@ -206,8 +206,8 @@ function MarketContextColumn({ hqData, v4Snapshot }) {
   // VPIN
   const vpinVal = w.vpin ?? null;
 
-  // Sub-signals from the window or hq data
-  const subSignals = w.sub_signals || hqData?.sub_signals || {};
+  // Sub-signals: nested under timescales.5m.sub_signals in v4Snapshot, fall back to window/hq
+  const subSignals = v4Snapshot?.timescales?.['5m']?.sub_signals || w.sub_signals || hqData?.sub_signals || {};
 
   return (
     <Card style={{ flex: '1.3 1 0', minWidth: 260 }}>
@@ -574,7 +574,7 @@ export default function SignalSurface({ hqData, v4Snapshot, v3Snapshot }) {
       display: 'flex', gap: 6, marginBottom: 6,
       flexShrink: 0, minHeight: 0,
     }}>
-      <DirectionColumn hqData={hqData} v3Snapshot={v3Snapshot} />
+      <DirectionColumn hqData={hqData} v4Snapshot={v4Snapshot} v3Snapshot={v3Snapshot} />
       <MarketContextColumn hqData={hqData} v4Snapshot={v4Snapshot} />
       <V4ActionColumn v4Snapshot={v4Snapshot} hqData={hqData} />
     </div>

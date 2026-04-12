@@ -201,7 +201,9 @@ export default function StatusBar({ hqData, dashStats, accuracy, tradeStats }) {
 
         {/* Bankroll */}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-          <span style={{ fontSize: 8, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Bankroll</span>
+          <span style={{ fontSize: 8, color: T.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+            Bankroll{isPaper ? ' (paper)' : ' (DB)'}
+          </span>
           <span style={{ fontSize: 15, fontWeight: 700, color: T.green }}>${fmt(bankroll)}</span>
         </div>
 
