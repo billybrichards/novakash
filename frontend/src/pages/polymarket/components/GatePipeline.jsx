@@ -1,6 +1,10 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { T, fmt, GATE_NAMES } from './theme.js';
 import { useApi } from '../../../hooks/useApi.js';
+
+// Read cap mode from localStorage (same keys as StatusBar uses)
+function getCapMode()  { return localStorage.getItem('btc-trader-cap-mode')  || 'dynamic'; }
+function getCapValue() { return localStorage.getItem('btc-trader-cap-value') || '0.65'; }
 
 /**
  * Band 4 — Gate Pipeline (left) + Manual Trade Panel (right).
@@ -11,7 +15,7 @@ import { useApi } from '../../../hooks/useApi.js';
 
 // --- Gate Chip ---
 
-function GateChip({ name, displayName, passed, value, threshold }) {
+function GateChip({ name, displayName, passed, value, threshold, extraLabel }) {
   const color = passed ? T.green : T.red;
   return (
     <div style={{
@@ -25,6 +29,14 @@ function GateChip({ name, displayName, passed, value, threshold }) {
         <span style={{ fontSize: 9, fontWeight: 700, color: T.text, letterSpacing: '0.04em' }}>
           {displayName}
         </span>
+        {extraLabel && (
+          <span style={{
+            fontSize: 7, padding: '1px 4px', borderRadius: 2,
+            background: extraLabel.startsWith('MAN') ? 'rgba(168,85,247,0.15)' : 'rgba(6,182,212,0.15)',
+            color: extraLabel.startsWith('MAN') ? T.purple : T.cyan,
+            fontWeight: 700, letterSpacing: '0.05em',
+          }}>{extraLabel}</span>
+        )}
       </div>
       <div style={{ fontSize: 8, color: T.textMuted, lineHeight: 1.3 }}>
         {value != null && threshold != null ? (
@@ -46,6 +58,17 @@ function GateChip({ name, displayName, passed, value, threshold }) {
 function GatePipelineStrip({ hqData }) {
   const hb = hqData?.gate_heartbeat?.[0] || {};
   const gateResults = hb.gate_results || {};
+
+  // Track cap mode from localStorage so chip label updates when user changes it
+  const [capMode, setCapMode] = useState(getCapMode);
+  const [capValue, setCapValue] = useState(getCapValue);
+  useEffect(() => {
+    const onStorage = () => { setCapMode(getCapMode()); setCapValue(getCapValue()); };
+    window.addEventListener('storage', onStorage);
+    // Also poll — same-tab changes don't fire storage events
+    const t = setInterval(onStorage, 1000);
+    return () => { window.removeEventListener('storage', onStorage); clearInterval(t); };
+  }, []);
 
   // Build gate chips from gate_results. The keys in gate_results vary,
   // so we map known gates and display what we find.
@@ -76,7 +99,20 @@ function GatePipelineStrip({ hqData }) {
       if (typeof threshold === 'number') threshold = fmt(threshold, 3);
     }
 
-    return { key, displayName, passed, value, threshold };
+    // For gate_cap: augment threshold label with current cap mode indicator
+    let extraLabel = null;
+    if (key === 'gate_cap') {
+      if (capMode === 'manual') {
+        extraLabel = `MAN $${capValue}`;
+        // Override threshold display with manual cap when engine result has none
+        if (threshold == null) threshold = `$${capValue}`;
+      } else {
+        extraLabel = 'AUTO';
+        if (threshold == null) threshold = 'dynamic';
+      }
+    }
+
+    return { key, displayName, passed, value, threshold, extraLabel };
   });
 
   // Also check for any extra gates in the results we didn't list
@@ -101,7 +137,7 @@ function GatePipelineStrip({ hqData }) {
         display: 'flex', flexWrap: 'wrap', gap: 4,
       }}>
         {chips.map(g => (
-          <GateChip key={g.key} {...g} />
+          <GateChip key={g.key} name={g.key} displayName={g.displayName} passed={g.passed} value={g.value} threshold={g.threshold} extraLabel={g.extraLabel} />
         ))}
         {extraGates.map(g => (
           <GateChip key={g.key} {...g} />

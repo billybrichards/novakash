@@ -1,5 +1,106 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { T, fmt } from './theme.js';
+import { useApi } from '../../../hooks/useApi.js';
+
+// ── localStorage keys ────────────────────────────────────────────────────────
+const LS_CAP_MODE  = 'btc-trader-cap-mode';   // 'dynamic' | 'manual'
+const LS_CAP_VALUE = 'btc-trader-cap-value';  // e.g. '0.65'
+
+function readCapMode()  { return localStorage.getItem(LS_CAP_MODE)  || 'dynamic'; }
+function readCapValue() { return localStorage.getItem(LS_CAP_VALUE) || '0.65'; }
+
+// ── Cap Mode Toggle component ─────────────────────────────────────────────────
+function CapModeControl() {
+  const api = useApi();
+  const [mode, setMode]   = useState(readCapMode);
+  const [value, setValue] = useState(readCapValue);
+  const [saved, setSaved] = useState(false);  // brief "SAVED" flash
+  const saveTimer = useRef(null);
+
+  // Persist to localStorage whenever either changes
+  useEffect(() => { localStorage.setItem(LS_CAP_MODE,  mode);  }, [mode]);
+  useEffect(() => { localStorage.setItem(LS_CAP_VALUE, value); }, [value]);
+
+  const persist = useCallback(async (nextMode, nextValue) => {
+    // Fire-and-forget: write both keys to the engine config
+    try {
+      const isDynamic = nextMode === 'dynamic';
+      await Promise.all([
+        api.post('/v58/config/upsert', {
+          service: 'engine', key: 'V10_DYNAMIC_CAP_MODE', value: String(isDynamic),
+        }),
+        api.post('/v58/config/upsert', {
+          service: 'engine', key: 'V10_MANUAL_CAP', value: String(nextValue),
+        }),
+      ]);
+      setSaved(true);
+      clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(() => setSaved(false), 1500);
+    } catch (_) {
+      // Non-critical: localStorage already updated, engine will pick up on restart
+    }
+  }, [api]);
+
+  const toggleMode = () => {
+    const next = mode === 'dynamic' ? 'manual' : 'dynamic';
+    setMode(next);
+    persist(next, value);
+  };
+
+  const handleValueChange = (e) => {
+    const raw = e.target.value;
+    setValue(raw);
+    const num = parseFloat(raw);
+    if (!isNaN(num) && num >= 0.30 && num <= 0.90) {
+      persist(mode, num.toFixed(2));
+    }
+  };
+
+  const isDynamic = mode === 'dynamic';
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      {/* Mode toggle button */}
+      <button
+        onClick={toggleMode}
+        title={isDynamic ? 'Click to switch to Manual cap' : 'Click to switch to Dynamic cap'}
+        style={{
+          padding: '3px 8px', borderRadius: 3, border: 'none', cursor: 'pointer',
+          fontFamily: T.mono, fontSize: 10, fontWeight: 700, letterSpacing: '0.08em',
+          background: isDynamic ? 'rgba(6,182,212,0.15)' : 'rgba(168,85,247,0.15)',
+          color: isDynamic ? T.cyan : T.purple,
+          boxShadow: `0 0 0 1px ${isDynamic ? 'rgba(6,182,212,0.35)' : 'rgba(168,85,247,0.35)'}`,
+          transition: 'all 0.15s',
+        }}
+      >
+        {isDynamic ? 'AUTO CAP' : 'MAN CAP'}
+      </button>
+
+      {/* Manual value input — only visible in manual mode */}
+      {!isDynamic && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
+          <span style={{ fontSize: 9, color: T.textMuted }}>$</span>
+          <input
+            type="number"
+            min="0.30" max="0.90" step="0.01"
+            value={value}
+            onChange={handleValueChange}
+            style={{
+              width: 46, padding: '2px 4px', borderRadius: 3, textAlign: 'center',
+              background: 'rgba(0,0,0,0.35)', border: `1px solid ${T.purple}55`,
+              color: T.purple, fontFamily: T.mono, fontSize: 11, fontWeight: 700,
+            }}
+          />
+        </div>
+      )}
+
+      {/* Brief "SAVED" flash */}
+      {saved && (
+        <span style={{ fontSize: 8, color: T.green, letterSpacing: '0.06em' }}>SAVED</span>
+      )}
+    </div>
+  );
+}
 
 /**
  * Band 1 — Status Bar (pinned top).
@@ -142,6 +243,11 @@ export default function StatusBar({ hqData, dashStats, accuracy, tradeStats }) {
             }}>{countdown}</span>
           </div>
         </div>
+
+        <div style={{ height: 16, width: 1, background: T.cardBorder }} />
+
+        {/* Cap mode toggle */}
+        <CapModeControl />
 
         <div style={{ height: 16, width: 1, background: T.cardBorder }} />
 
