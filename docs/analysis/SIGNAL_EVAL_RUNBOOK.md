@@ -8,7 +8,29 @@
 
 ## Section 1: Quick Start
 
-### Get the Database URL
+### Hub API (preferred — no DB credentials needed)
+
+All signal data is accessible via the AWS hub at `http://3.98.114.0:8091`. Use this first.
+
+```bash
+# Get JWT token from AWS hub (not Railway — Railway hub may be stale)
+TOKEN=$(curl -s -X POST http://3.98.114.0:8091/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"billy","password":"novakash2026"}' \
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))")
+
+# Key analysis endpoints
+curl -s "http://3.98.114.0:8091/api/v58/accuracy?limit=100" -H "Authorization: Bearer $TOKEN"
+curl -s "http://3.98.114.0:8091/api/v58/strategy-decisions?limit=50" -H "Authorization: Bearer $TOKEN"
+curl -s "http://3.98.114.0:8091/api/v58/prediction-surface?days=7" -H "Authorization: Bearer $TOKEN"
+curl -s "http://3.98.114.0:8091/api/v58/execution-hq?asset=btc&timeframe=5m" -H "Authorization: Bearer $TOKEN"
+
+# TimesFM live surface (no auth required)
+curl -s "http://3.98.114.0:8080/v4/snapshot?asset=btc&timescales=5m"
+curl -s "http://3.98.114.0:8080/v3/snapshot?asset=btc"
+```
+
+### Get the Database URL (for direct SQL queries)
 
 **Option A — Railway dashboard**
 
@@ -18,33 +40,66 @@
    postgresql://postgres:PASSWORD@hopper.proxy.rlwy.net:35772/railway
    ```
 
-**Option B — Montreal SSH (engine .env)**
+**Option B — Montreal SSH (if you have AWS access)**
 
 ```bash
-# SSH to Montreal via EC2 Instance Connect (fresh temp key required)
-# Instance: i-0785ed930423ae9fd, region: ca-central-1b
-sudo grep '^DATABASE_URL=' /home/novakash/novakash/engine/.env \
-  | sed 's/postgresql+asyncpg/postgresql/'
+# Step 1: Generate a temp key (valid 60s — must connect immediately after)
+ssh-keygen -t ed25519 -f /tmp/analysis_key -N "" -q 2>/dev/null || true
+
+# Step 2: Push public key to instance via EC2 Instance Connect
+aws ec2-instance-connect send-ssh-public-key \
+  --region ca-central-1 \
+  --instance-id i-0785ed930423ae9fd \
+  --instance-os-user ubuntu \
+  --ssh-public-key "$(cat /tmp/analysis_key.pub)"
+
+# Step 3: SSH immediately (key expires in 60s)
+ssh -i /tmp/analysis_key -o StrictHostKeyChecking=no ubuntu@15.223.247.178 \
+  "sudo grep '^DATABASE_URL=' /home/novakash/novakash/engine/.env | sed 's/postgresql+asyncpg/postgresql/'"
 ```
 
-This returns the internal URL reachable only from Montreal. Use Option A for external analysis.
+**How to grant yourself EC2 Instance Connect access (if you have AWS root/admin):**
 
-### Set environment variable
+```bash
+# 1. Ensure the IAM user/role has ec2-instance-connect:SendSSHPublicKey permission.
+#    Attach the managed policy AmazonEC2InstanceConnectPolicy, or add inline:
+#    {
+#      "Effect": "Allow",
+#      "Action": "ec2-instance-connect:SendSSHPublicKey",
+#      "Resource": "arn:aws:ec2:ca-central-1:267815793130:instance/i-0785ed930423ae9fd",
+#      "Condition": {"StringEquals": {"ec2:osuser": "ubuntu"}}
+#    }
+#
+# 2. Ensure the instance's security group allows SSH (port 22) from your IP.
+#    The instance i-0785ed930423ae9fd is in sg-0de6838438bfc27ec (novakash-vnc).
+#    Check: aws ec2 describe-security-groups --region ca-central-1 --group-ids sg-0de6838438bfc27ec
+#
+# 3. Verify the EC2 Instance Connect endpoint service is enabled in ca-central-1.
+#    (It should be — it's a managed AWS service, not custom infrastructure)
+#
+# 4. Test:
+aws sts get-caller-identity  # confirm you're authenticated
+aws ec2-instance-connect send-ssh-public-key \
+  --region ca-central-1 \
+  --instance-id i-0785ed930423ae9fd \
+  --instance-os-user ubuntu \
+  --ssh-public-key "$(cat /tmp/analysis_key.pub)"
+# Should return {"RequestId": "...", "Success": true}
+```
+
+### Set environment variable and run scripts
 
 ```bash
 export PUB_URL="postgresql://postgres:PASSWORD@hopper.proxy.rlwy.net:35772/railway"
-```
 
-### Run the quick window analysis
-
-```bash
+# Quick window accuracy surface
 python3 docs/analysis/run_window_analysis.py
-```
 
-### Run the full report
+# Full current-state report (7 sections)
+python3 docs/analysis/full_signal_report.py --hours 4
 
-```bash
-python3 docs/analysis/full_signal_report.py
+# With options
+python3 docs/analysis/full_signal_report.py --hours 1 --asset BTC --no-color
 ```
 
 ---
