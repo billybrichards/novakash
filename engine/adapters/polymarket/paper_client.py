@@ -27,12 +27,12 @@ from typing import Any, Optional
 
 import structlog
 
-from engine.domain.ports import PolymarketClientPort
+from domain.ports import PolymarketClientPort
 
 # Re-use the PolyOrderStatus data class from the original module so both
 # adapters share a single canonical type.  When the domain model is
 # fleshed out this will move into engine/domain/value_objects.py.
-from engine.execution.polymarket_client import PolyOrderStatus
+from execution.polymarket_client import PolyOrderStatus
 
 logger = structlog.get_logger(__name__)
 

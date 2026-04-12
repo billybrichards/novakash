@@ -20,8 +20,8 @@ from typing import Optional
 
 import structlog
 
-from engine.domain.ports import ConsensusPricePort, MarketFeedPort
-from engine.domain.value_objects import DeltaSet
+from domain.ports import ConsensusPricePort, MarketFeedPort
+from domain.value_objects import DeltaSet
 
 log = structlog.get_logger(__name__)
 

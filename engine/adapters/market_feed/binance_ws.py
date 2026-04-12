@@ -23,8 +23,8 @@ from typing import TYPE_CHECKING, Optional
 
 import structlog
 
-from engine.domain.ports import MarketFeedPort
-from engine.domain.value_objects import Tick, WindowClose
+from domain.ports import MarketFeedPort
+from domain.value_objects import Tick, WindowClose
 
 if TYPE_CHECKING:
     from data.feeds.binance_ws import BinanceWebSocketFeed

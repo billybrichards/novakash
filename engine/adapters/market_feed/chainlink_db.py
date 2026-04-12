@@ -19,11 +19,11 @@ from typing import TYPE_CHECKING, Optional
 
 import structlog
 
-from engine.domain.ports import MarketFeedPort
-from engine.domain.value_objects import Tick, WindowClose
+from domain.ports import MarketFeedPort
+from domain.value_objects import Tick, WindowClose
 
 if TYPE_CHECKING:
-    from engine.persistence.db_client import DBClient
+    from persistence.db_client import DBClient
 
 log = structlog.get_logger(__name__)
 

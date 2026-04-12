@@ -11,10 +11,10 @@ PgTradeRepository    Trade record persistence (placed, resolved, PnL).
 PgWindowRepository   Window snapshot persistence.
 """
 
-from engine.adapters.persistence.pg_signal_repo import PgSignalRepository
-from engine.adapters.persistence.pg_system_repo import PgSystemRepository
-from engine.adapters.persistence.pg_trade_repo import PgTradeRepository
-from engine.adapters.persistence.pg_window_repo import PgWindowRepository
+from adapters.persistence.pg_signal_repo import PgSignalRepository
+from adapters.persistence.pg_system_repo import PgSystemRepository
+from adapters.persistence.pg_trade_repo import PgTradeRepository
+from adapters.persistence.pg_window_repo import PgWindowRepository
 
 __all__ = [
     "PgSignalRepository",

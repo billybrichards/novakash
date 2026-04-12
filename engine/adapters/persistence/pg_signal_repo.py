@@ -19,7 +19,7 @@ from typing import Any, Optional
 import asyncpg
 import structlog
 
-from engine.domain.ports import SignalRepository
+from domain.ports import SignalRepository
 
 log = structlog.get_logger(__name__)
 

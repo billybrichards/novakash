@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Optional
 import structlog
 
 if TYPE_CHECKING:
-    from engine.signals.timesfm_client import TimesFMClient, TimesFMForecast
+    from signals.timesfm_client import TimesFMClient, TimesFMForecast
 
 log = structlog.get_logger(__name__)
 

@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Optional
 import structlog
 
 if TYPE_CHECKING:
-    from engine.signals.timesfm_v2_client import TimesFMV2Client
+    from signals.timesfm_v2_client import TimesFMV2Client
 
 log = structlog.get_logger(__name__)
 

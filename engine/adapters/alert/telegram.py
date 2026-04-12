@@ -24,8 +24,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from engine.domain.ports import AlerterPort
-from engine.domain.value_objects import (
+from domain.ports import AlerterPort
+from domain.value_objects import (
     SitrepPayload,
     SkipSummary,
     TradeDecision,
@@ -33,7 +33,7 @@ from engine.domain.value_objects import (
 )
 
 if TYPE_CHECKING:
-    from engine.alerts.telegram import TelegramAlerter
+    from alerts.telegram import TelegramAlerter
 
 log = structlog.get_logger(__name__)
 

@@ -24,7 +24,7 @@ from typing import Optional
 import aiohttp
 import structlog
 
-from engine.domain.ports import MarketFeedPort
+from domain.ports import MarketFeedPort
 
 log = structlog.get_logger(__name__)
 

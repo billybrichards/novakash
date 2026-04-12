@@ -31,8 +31,8 @@ from typing import Any, Optional
 
 import structlog
 
-from engine.domain.ports import PolymarketClientPort
-from engine.execution.polymarket_client import PolyOrderStatus
+from domain.ports import PolymarketClientPort
+from execution.polymarket_client import PolyOrderStatus
 
 logger = structlog.get_logger(__name__)
 

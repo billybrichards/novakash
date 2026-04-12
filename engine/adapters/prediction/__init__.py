@@ -13,7 +13,7 @@ For now, the adapters provide:
 - A consistent interface that can be extended to a port later
 """
 
-from engine.adapters.prediction.timesfm_v1 import TimesFMV1Adapter
-from engine.adapters.prediction.timesfm_v2 import TimesFMV2Adapter
+from adapters.prediction.timesfm_v1 import TimesFMV1Adapter
+from adapters.prediction.timesfm_v2 import TimesFMV2Adapter
 
 __all__ = ["TimesFMV1Adapter", "TimesFMV2Adapter"]

@@ -20,8 +20,8 @@ from typing import Any, Optional
 import asyncpg
 import structlog
 
-from engine.domain.ports import WindowStateRepository
-from engine.domain.value_objects import WindowKey, WindowOutcome
+from domain.ports import WindowStateRepository
+from domain.value_objects import WindowKey, WindowOutcome
 
 log = structlog.get_logger(__name__)
 
