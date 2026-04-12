@@ -1,6 +1,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './auth/AuthContext.jsx';
+import { ThemeProvider } from './contexts/ThemeContext.jsx';
 import ProtectedRoute from './auth/ProtectedRoute.jsx';
 import LoginPage from './auth/LoginPage.jsx';
 import Layout from './components/Layout.jsx';
@@ -49,6 +50,7 @@ import StrategyLab from './pages/polymarket/StrategyLab.jsx';
 export default function App() {
   return (
     <BrowserRouter>
+      <ThemeProvider>
       <AuthProvider>
         <Routes>
           {/* Public */}
@@ -63,7 +65,7 @@ export default function App() {
               </ProtectedRoute>
             }
           >
-            <Route index element={<Navigate to="/dashboard" replace />} />
+            <Route index element={<Navigate to="/polymarket/monitor" replace />} />
             <Route path="dashboard" element={<Dashboard />} />
             <Route path="paper" element={<PaperDashboard />} />
             {/* PaperTrading removed — duplicate of Dashboard, use /paper instead */}
@@ -116,9 +118,10 @@ export default function App() {
           </Route>
 
           {/* 404 fallback */}
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="*" element={<Navigate to="/polymarket/monitor" replace />} />
         </Routes>
       </AuthProvider>
+      </ThemeProvider>
     </BrowserRouter>
   );
 }

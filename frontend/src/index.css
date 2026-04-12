@@ -15,6 +15,22 @@
   --text-muted:     rgba(255, 255, 255, 0.25);
 }
 
+/* ── Light Theme Override ──────────────────────────────────── */
+body.theme-light {
+  --bg:             #f8fafc;
+  --card:           rgba(255, 255, 255, 0.95);
+  --card-border:    rgba(203, 213, 225, 1);
+  --border:         rgba(203, 213, 225, 0.6);
+  --accent-purple:  #9333ea;
+  --accent-cyan:    #0891b2;
+  --profit:         #059669;
+  --loss:           #dc2626;
+  --warning:        #d97706;
+  --text-primary:   rgba(15, 23, 42, 0.92);
+  --text-secondary: rgba(71, 85, 105, 0.85);
+  --text-muted:     rgba(100, 116, 139, 0.6);
+}
+
 /* ── Base ───────────────────────────────────────────────────── */
 *, *::before, *::after {
   box-sizing: border-box;

@@ -3,237 +3,77 @@ import { Link, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext.jsx';
 import LiveToggle from './LiveToggle.jsx';
 import { useApi } from '../hooks/useApi.js';
+import { useTheme } from '../contexts/ThemeContext.jsx';
 
 /**
- * Layout — Mobile-first dark nav + main content area.
+ * Layout — Mobile-first dark/light nav + main content area.
  *
- * Desktop: fixed sidebar (240px) + top bar with config dropdown
- * Mobile:  top bar with hamburger → side drawer, bottom tab bar
+ * Desktop: fixed sidebar (220px) + top bar with config dropdown
+ * Mobile:  top bar with hamburger -> side drawer, bottom tab bar
+ *
+ * NAV-02 (2026-04-12): Restructured to 3 primary sections + collapsible legacy.
  */
 
-// UI-02: HQ monitor children — one per asset × timeframe.
-// Order: BTC first (it's the actively-traded pair), then alts in market-cap order.
-const HQ_ASSET_ORDER = ['btc', 'eth', 'sol', 'xrp'];
-const HQ_TIMEFRAMES = ['5m', '15m'];
-const HQ_CHILDREN = HQ_ASSET_ORDER.flatMap(asset =>
-  HQ_TIMEFRAMES.map(tf => ({
-    path: `/execution-hq/${asset}/${tf}`,
-    label: `${asset.toUpperCase()} ${tf}`,
-    // Mark BTC 5m so the sidebar can flag it as the live-trading pair.
-    liveTrading: asset === 'btc' && tf === '5m',
-  }))
-);
+// ── Nav Configuration ────────────────────────────────────────────────────────
+// 3 primary sections: POLYMARKET, MARGIN ENGINE, SYSTEM
+// + 1 collapsible LEGACY section at bottom
 
-// 2026-04-11 NAV-01 consolidation (see docs/AUDIT_PROGRESS.md):
-//
-// The nav went from 4 sections / 28 entries to 5 sections / 35+ entries
-// after UI-02 / NT-01 / FE-04..07 / SCHEMA-01 / CFG-02..05 all landed in
-// one afternoon. The old grouping (POLYMARKET / BINANCE MARGIN / ANALYSIS
-// / SYSTEM) put live-trading-critical pages in the same bucket as dead-
-// weight v7 screens, and there was no way for an operator to tell the
-// difference at a glance.
-//
-// The new grouping is 5 disjoint sections:
-//
-//   1. LIVE TRADING        — pages the operator uses WHEN trading is ON.
-//                             Execution HQ (with multi-market children),
-//                             Wallet & PnL, Paper, Notes.
-//   2. MARGIN ENGINE       — Binance / Hyperliquid perp trader panel.
-//   3. DATA SURFACES       — prediction telemetry. Assembler1 is the
-//                             primary (consolidated view of all 4 layers).
-//                             V1/V2/V3/V4 per-layer views, TimesFM,
-//                             Composite V3 are secondary references.
-//   4. OPS & SYSTEM        — Dashboard, Audit, Deployments, DB Schema,
-//                             Config, Notes, Positions, Risk, System.
-//   5. LEGACY              — pages the frontend audit (docs/FRONTEND_AUDIT
-//                             _2026-04-11.md) flagged as v7/v8 / stale /
-//                             pure mock data. Explicitly labelled so
-//                             operators know not to rely on them.
-//
-// Every non-legacy entry has a `dataSource` field — a short human-
-// readable pointer to the DB table(s) or API endpoint that drives the
-// page. Renders as a tooltip on hover in the sidebar. This is the
-// master "UI component → data source" mapping the user asked for so
-// they stop losing track of which page shows what.
-//
-// Entries marked `legacy: true` render with a greyscale chip in the
-// sidebar, are de-emphasised (muted text colour), and group at the
-// bottom under the LEGACY section header.
 const NAV_SECTIONS = [
   {
+    id: 'polymarket',
     title: 'POLYMARKET',
-    color: '#a855f7',
+    color: '#06b6d4', // cyan accent
     items: [
-      { path: '/polymarket/monitor', label: 'Monitor', icon: '\u{1F4E1}', highlight: true, isNew: true,
-        strategy: 'Polymarket 5m',
-        dataSource: 'v58/execution-hq + v4/snapshot + v3/snapshot + v58/accuracy + v58/outcomes' },
-      { path: '/polymarket/evaluate', label: 'Evaluate', icon: '\u{1F4CA}', highlight: true, isNew: true,
-        strategy: 'Polymarket 5m',
-        dataSource: 'v58/stats + v58/accuracy + v58/outcomes + v58/execution-hq + pnl/daily' },
-      { path: '/polymarket/strategy-lab', label: 'Strategy Lab', icon: '\u{1F9EA}', highlight: true, isNew: true,
-        strategy: 'Polymarket 5m',
-        dataSource: 'v58/outcomes (client-side replay simulator)' },
+      { path: '/polymarket/monitor', label: 'Monitor', icon: 'M' },
+      { path: '/polymarket/evaluate', label: 'Evaluate', icon: 'E' },
+      { path: '/polymarket/strategy-lab', label: 'Strategy Lab', icon: 'S' },
+      { path: '/config', label: 'Configure', icon: 'C' },
     ],
   },
   {
-    title: 'LIVE TRADING',
-    color: '#a855f7',
-    items: [
-      // UI-02: collapsible parent — click the row to expand the 8 children,
-      // click a child to navigate. Default landing (the parent path) is
-      // BTC 5m to preserve existing behavior.
-      {
-        path: '/execution-hq/btc/5m',
-        pathPrefix: '/execution-hq',
-        label: 'Execution HQ',
-        icon: '⚡',
-        highlight: true,
-        isNew: true,
-        strategy: 'Polymarket 5m',
-        dataSource: 'signal_evaluations + market_data + manual_trades (+ UI-01 gate heartbeat)',
-        children: HQ_CHILDREN,
-      },
-      // FE-08 (2026-04-11): /live is a v7-era wallet / PnL summary view with
-      // NO manual trade button. Renamed from "Live Trading" to "Wallet & PnL"
-      // so operators don't mistake it for the trade-placement path. The
-      // canonical place to place a manual live trade is
-      // /execution-hq → Live tab → ManualTradePanel (see LT-02 / LT-03).
-      { path: '/live',    label: 'Wallet & PnL', icon: '💼',
-        strategy: 'Polymarket 5m',
-        dataSource: 'trades + wallet_snapshots' },
-      { path: '/paper',   label: 'Paper Mode',   icon: '📄',
-        strategy: 'Polymarket 5m',
-        dataSource: 'trades (paper venue rows)' },
-      { path: '/notes',   label: 'Notes',        icon: '📝', highlight: true,
-        strategy: 'System',
-        dataSource: 'notes (hub/api/notes.py)' },
-    ],
-  },
-  {
+    id: 'margin',
     title: 'MARGIN ENGINE',
-    color: '#f59e0b',
+    color: '#a855f7', // purple accent
     items: [
-      { path: '/margin',     label: 'Margin Engine', icon: '🏦', highlight: true,
-        strategy: 'Hyperliquid Perps',
-        dataSource: 'margin_positions + margin_signals + margin_logs' },
+      { path: '/margin', label: 'Monitor', icon: 'M' },
+      { path: '/config?service=margin_engine', label: 'Configure', icon: 'C' },
     ],
   },
   {
-    title: 'DATA SURFACES',
-    color: '#06b6d4',
+    id: 'system',
+    title: 'SYSTEM',
+    color: '#64748b', // grey accent
     items: [
-      // Assembler1 is the primary / canonical unified view of all prediction
-      // layers. V1/V2/V3/V4 per-layer pages stay as fallbacks for drilling
-      // into a single layer in isolation.
-      { path: '/data/assembler1', label: 'Assembler1',      icon: '🎛️', highlight: true, isNew: true,
-        strategy: 'Both',
-        dataSource: 'POST /api/predict envelope + GET /api/predict/ticks_vs_outcomes (timesfm service)' },
-      { path: '/data/v4',         label: 'V4 Fusion',       icon: '🧭', highlight: true,
-        strategy: 'Hyperliquid Perps',
-        dataSource: 'GET /v4/snapshot (timesfm service)' },
-      { path: '/data/v3',         label: 'V3 Composite',    icon: '🧬',
-        strategy: 'Both',
-        dataSource: 'GET /v3/snapshot + ticks_v3_composite' },
-      { path: '/data/v2',         label: 'V2 Probability',  icon: '📊',
-        strategy: 'Both',
-        dataSource: 'POST /v2/probability/5m + /15m' },
-      { path: '/data/v1',         label: 'V1 Forecast',     icon: '🔮',
-        strategy: 'Both',
-        dataSource: 'POST /forecast (legacy point-forecast)' },
-      { path: '/timesfm',         label: 'TimesFM v2',      icon: '🔮',
-        strategy: 'Both',
-        dataSource: 'POST /v2/probability (raw probe)' },
-      { path: '/composite',       label: 'Composite V3',    icon: '🧬',
-        strategy: 'Hyperliquid Perps',
-        dataSource: 'ticks_v3_composite (margin_engine view)' },
-    ],
-  },
-  {
-    title: 'OPS & SYSTEM',
-    color: '#64748b',
-    items: [
-      { path: '/dashboard',       label: 'Dashboard',  icon: '📊',
-        strategy: 'Polymarket 5m',
-        dataSource: 'hub /api/v58/dashboard (signal_evaluations + trades)' },
-      { path: '/audit',           label: 'Audit',      icon: '🔍', highlight: true, isNew: true,
-        strategy: 'Both',
-        dataSource: 'hardcoded TASKS array (no backend)' },
-      { path: '/schema',          label: 'DB Schema',  icon: '🗄️', highlight: true, isNew: true,
-        strategy: 'System',
-        dataSource: 'GET /api/v58/schema/tables (41 tables catalogued)' },
-      { path: '/deployments',     label: 'Deployments', icon: '🚀', highlight: true, isNew: true,
-        strategy: 'System',
-        dataSource: 'hardcoded SERVICES array + live health probes' },
-      // CFG-05: new DB-config browser is the primary "Config" entry point.
-      // The legacy 25-key bundle editor stays accessible as "Trading Cfg"
-      // until CFG-06 lands the editable surface here.
-      { path: '/config',          label: 'Config',     icon: '⚙️', highlight: true, isNew: true,
-        strategy: 'Both',
-        dataSource: 'GET /api/v58/config (config_keys + config_values, 175 keys)' },
-      { path: '/positions',       label: 'Positions',  icon: '📍',
-        strategy: 'Polymarket 5m',
-        dataSource: 'hub /api/v58/positions (trades aggregation)' },
-      { path: '/risk',            label: 'Risk',       icon: '🛡️', highlight: true,
-        strategy: 'Polymarket 5m',
-        dataSource: 'hub /api/v58/risk (system_state + trades)' },
-      { path: '/system',          label: 'System',     icon: '🖥️',
-        strategy: 'System',
-        dataSource: 'hub /api/v58/system (service health)' },
-      { path: '/factory',         label: 'Factory Floor',    icon: '🏭',
-        highlight: true, isNew: true,
-        strategy: 'Both',
-        dataSource: '/v58/* + /margin/status + /v4/snapshot + /v58/schema/gates' },
-    ],
-  },
-  {
-    title: 'LEGACY (audit-flagged)',
-    color: '#475569',
-    items: [
-      // These pages all failed the 2026-04-11 frontend audit (see
-      // docs/FRONTEND_AUDIT_2026-04-11.md). They're kept for now so
-      // bookmarks don't 404, but they're clearly labelled so operators
-      // don't rely on them for live-trading decisions. Status chips:
-      //   • STALE  = v7/v8 era, works but surfaces old data
-      //   • MOCK   = 100% mock data from src/lib/mock-data.js
-      //   • LEGACY = superseded by a newer page in a different section
-      { path: '/v58',             label: 'Trade Monitor',    icon: '🎯',
-        legacy: true, legacyStatus: 'LEGACY',
-        legacyNote: 'Superseded by Execution HQ' },
-      { path: '/indicators',      label: 'Indicators',       icon: '📈',
-        legacy: true, legacyStatus: 'MOCK',
-        legacyNote: '100% mock data (FE-09)' },
-      { path: '/windows',         label: 'Window Results',   icon: '📊',
-        legacy: true, legacyStatus: 'STALE' },
-      { path: '/strategy',        label: 'Strategy Analysis', icon: '🧪',
-        legacy: true, legacyStatus: 'STALE' },
-      { path: '/recommendations', label: 'Recalibration',    icon: '🎚️',
-        legacy: true, legacyStatus: 'STALE' },
-      { path: '/trades',          label: 'Trades (legacy)',  icon: '📋',
-        legacy: true, legacyStatus: 'STALE' },
-      { path: '/signals',         label: 'Signals (legacy)', icon: '📡',
-        legacy: true, legacyStatus: 'STALE' },
-      { path: '/pnl',             label: 'P&L (legacy)',     icon: '💰',
-        legacy: true, legacyStatus: 'STALE' },
-      { path: '/trading-config',  label: 'Trading Cfg (legacy)', icon: '🧰',
-        legacy: true, legacyStatus: 'LEGACY',
-        legacyNote: 'Superseded by /config (CFG-02..05)' },
-      { path: '/legacy-config',   label: 'Config (v7)',      icon: '⚙️',
-        legacy: true, legacyStatus: 'LEGACY',
-        legacyNote: 'v7 13-key editor, pre-CFG-01' },
-      { path: '/changelog',       label: 'Changelog',        icon: '📝',
-        legacy: true, legacyStatus: 'STALE',
-        legacyNote: '9 versions behind (FE-12)' },
+      { path: '/system', label: 'Status', icon: 'St' },
+      { path: '/schema', label: 'Schema', icon: 'Sc' },
+      { path: '/deployments', label: 'Deploys', icon: 'D' },
+      { path: '/config', label: 'Config', icon: 'Cf', sectionDedupe: 'system' },
+      { path: '/audit', label: 'Audit', icon: 'A' },
+      { path: '/notes', label: 'Notes', icon: 'N' },
     ],
   },
 ];
 
-// Bottom tab bar items (mobile) — 5 most important
+const LEGACY_ITEMS = [
+  { path: '/dashboard', label: 'Dashboard' },
+  { path: '/factory', label: 'Factory Floor' },
+  { path: '/execution-hq/btc/5m', label: 'Execution HQ' },
+  { path: '/signals', label: 'Signals' },
+  { path: '/trades', label: 'Trades' },
+  { path: '/pnl', label: 'P&L' },
+  { path: '/v58', label: 'V58 Monitor' },
+  { path: '/windows', label: 'Windows' },
+  { path: '/live', label: 'Live' },
+  { path: '/timesfm', label: 'TimesFM' },
+];
+
+// Bottom tab bar items (mobile) — most important primary pages
 const TAB_ITEMS = [
-  { path: '/dashboard',   label: 'Home',   icon: '📊' },
-  { path: '/timesfm',     label: 'Fcst',   icon: '🔮' },
-  { path: '/indicators',  label: 'Sigs',   icon: '📈' },
-  { path: '/positions',   label: 'Pos',    icon: '📍' },
-  { path: '/risk',        label: 'Risk',   icon: '🛡️' },
+  { path: '/polymarket/monitor', label: 'Monitor', icon: 'M' },
+  { path: '/polymarket/evaluate', label: 'Eval', icon: 'E' },
+  { path: '/margin', label: 'Margin', icon: 'P' },
+  { path: '/system', label: 'System', icon: 'S' },
+  { path: '/config', label: 'Config', icon: 'C' },
 ];
 
 // ── Config Dropdown ──────────────────────────────────────────────────────────
@@ -293,8 +133,8 @@ function ConfigDropdown({ onClose }) {
   }, [onClose]);
 
   const paperCfg = data?.paper?.config || {};
-  const paperName = data?.paper?.name || '—';
-  const paperVersion = data?.paper?.version || '—';
+  const paperName = data?.paper?.name || '\u2014';
+  const paperVersion = data?.paper?.version || '\u2014';
   const liveName = data?.live?.name;
   const liveVersion = data?.live?.version;
 
@@ -337,12 +177,11 @@ function ConfigDropdown({ onClose }) {
         {/* Paper config */}
         <div style={{ marginBottom: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-            <span style={{ fontSize: 10 }}>📄</span>
             <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 10 }}>Paper:</span>
             <span style={{ color: '#a855f7', fontFamily: 'IBM Plex Mono, monospace', fontSize: 11, fontWeight: 600 }}>
               {paperName}
             </span>
-            {paperVersion !== '—' && (
+            {paperVersion !== '\u2014' && (
               <span style={{ color: 'rgba(255,255,255,0.2)', fontSize: 10 }}>v{paperVersion}</span>
             )}
           </div>
@@ -352,7 +191,6 @@ function ConfigDropdown({ onClose }) {
         {liveName && (
           <div style={{ marginBottom: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-              <span style={{ fontSize: 10 }}>💰</span>
               <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: 10 }}>Live:</span>
               <span style={{ color: '#f87171', fontFamily: 'IBM Plex Mono, monospace', fontSize: 11, fontWeight: 600 }}>
                 {liveName}
@@ -426,7 +264,7 @@ function ConfigDropdown({ onClose }) {
           }}
         >
           <span>Edit Config</span>
-          <span>→</span>
+          <span>&rarr;</span>
         </Link>
       </div>
     </div>
@@ -479,7 +317,7 @@ function ConfigPill() {
           minHeight: 36,
         }}
       >
-        <span className="pill-icon">📊</span>
+        <span className="pill-icon" style={{ fontSize: 13 }}>&#9881;</span>
         <span className="pill-text">
           VPIN: <span style={{ color: '#f59e0b' }}>{s.vpin.toFixed(2)}</span>
           <span style={{ color: 'rgba(255,255,255,0.2)' }}> | </span>
@@ -494,7 +332,7 @@ function ConfigPill() {
           fontSize: 9,
           transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
           transition: 'transform 200ms ease-out',
-        }}>▼</span>
+        }}>&#9660;</span>
       </button>
 
       {open && <ConfigDropdown onClose={() => setOpen(false)} />}
@@ -502,264 +340,127 @@ function ConfigPill() {
   );
 }
 
+// ── Theme Toggle Button ──────────────────────────────────────────────────────
+function ThemeToggle() {
+  const { mode, toggle } = useTheme();
+  const isLight = mode === 'light';
+  return (
+    <button
+      onClick={toggle}
+      title={isLight ? 'Switch to dark mode' : 'Switch to light mode'}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 36,
+        height: 36,
+        borderRadius: 6,
+        border: '1px solid rgba(255,255,255,0.08)',
+        background: isLight ? 'rgba(15,23,42,0.08)' : 'rgba(255,255,255,0.03)',
+        cursor: 'pointer',
+        transition: 'all 200ms ease-out',
+        color: isLight ? '#0f172a' : 'rgba(255,255,255,0.7)',
+        fontSize: 16,
+        lineHeight: 1,
+        padding: 0,
+        flexShrink: 0,
+      }}
+    >
+      {isLight ? '\u263E' : '\u2600'}
+    </button>
+  );
+}
+
 // ── Main Layout ──────────────────────────────────────────────────────────────
 
 export default function Layout() {
   const { user, logout } = useAuth();
+  const { mode } = useTheme();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  // UI-02: accordion expansion state keyed by parent item.path.
-  // An entry present with `true` means the group is open.
-  const [expandedGroups, setExpandedGroups] = useState(() => ({}));
-
-  // Auto-expand any accordion group whose prefix matches the current
-  // route, so an operator who lands on /execution-hq/eth/15m via a
-  // bookmark sees the HQ group pre-opened in the sidebar.
-  useEffect(() => {
-    NAV_SECTIONS.forEach(section => {
-      section.items.forEach(item => {
-        if (!item.children) return;
-        const prefix = item.pathPrefix || item.path;
-        if (location.pathname.startsWith(prefix)) {
-          setExpandedGroups(prev => prev[prefix] ? prev : { ...prev, [prefix]: true });
-        }
-      });
-    });
-  }, [location.pathname]);
+  const [legacyExpanded, setLegacyExpanded] = useState(false);
 
   // Close sidebar on route change (mobile)
   useEffect(() => {
     setSidebarOpen(false);
   }, [location.pathname]);
 
-  const isActive = (path) => location.pathname === path;
-  const isActiveGroup = (item) => {
-    if (!item.children) return false;
-    const prefix = item.pathPrefix || item.path;
-    return location.pathname.startsWith(prefix);
+  const isActive = (path) => {
+    // For paths with query strings, match just the pathname portion
+    const basePath = path.split('?')[0];
+    return location.pathname === basePath;
   };
 
-  const toggleGroup = (item) => {
-    const prefix = item.pathPrefix || item.path;
-    setExpandedGroups(prev => ({ ...prev, [prefix]: !prev[prefix] }));
-  };
+  const isLight = mode === 'light';
 
-  const childLink = (parentItem, child) => {
-    const active = isActive(child.path);
-    // Live-trading pair gets the purple accent; the other 7 are cyan
-    // (matches the ExecutionHQ page header badge).
-    const accent = child.liveTrading ? '#a855f7' : '#06b6d4';
-    return (
-      <Link
-        key={child.path}
-        to={child.path}
-        aria-current={active ? 'page' : undefined}
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          padding: '6px 14px 6px 32px',
-          borderRadius: 6,
-          textDecoration: 'none',
-          background: active ? `${accent}18` : 'transparent',
-          color: active ? accent : 'rgba(255,255,255,0.5)',
-          borderLeft: `2px solid ${active ? accent : 'transparent'}`,
-          transition: 'all 150ms ease-out',
-          fontSize: 12,
-          fontFamily: "'IBM Plex Mono', monospace",
-          letterSpacing: '0.02em',
-          minHeight: 32,
-        }}
-      >
-        <span style={{
-          width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
-          background: child.liveTrading ? '#a855f7' : (active ? '#06b6d4' : 'rgba(6,182,212,0.35)'),
-          boxShadow: child.liveTrading ? '0 0 6px rgba(168,85,247,0.8)' : 'none',
-        }} />
-        <span>{child.label}</span>
-        {child.liveTrading && (
-          <span style={{
-            marginLeft: 'auto',
-            fontSize: 7,
-            color: '#a855f7',
-            letterSpacing: '0.08em',
-            border: '1px solid rgba(168,85,247,0.4)',
-            borderRadius: 2,
-            padding: '1px 3px',
-            background: 'rgba(168,85,247,0.1)',
-            textTransform: 'uppercase',
-          }}>LIVE</span>
-        )}
-      </Link>
-    );
-  };
+  // Sidebar colors that adapt to theme
+  const sidebarBg = isLight ? 'rgba(241, 245, 249, 0.95)' : 'rgba(0,0,0,0.18)';
+  const sidebarBorder = isLight ? 'rgba(203, 213, 225, 0.6)' : 'rgba(255,255,255,0.05)';
+  const headerBg = isLight ? 'rgba(255,255,255,0.8)' : 'rgba(0,0,0,0.2)';
+  const headerBorder = isLight ? 'rgba(203,213,225,0.4)' : 'rgba(255,255,255,0.05)';
+  const textColor = isLight ? 'rgba(15,23,42,0.7)' : 'rgba(255,255,255,0.45)';
+  const textMuted = isLight ? 'rgba(100,116,139,0.8)' : 'rgba(255,255,255,0.25)';
 
-  const navLink = (item) => {
-    // Accordion parent: item has .children
-    if (item.children) {
-      const groupKey = item.pathPrefix || item.path;
-      const expanded = !!expandedGroups[groupKey];
-      const groupActive = isActiveGroup(item);
-      const accentColor = '#06b6d4';
-      return (
-        <div key={`group-${groupKey}`} style={{ display: 'flex', flexDirection: 'column' }}>
-          <button
-            onClick={() => toggleGroup(item)}
-            aria-expanded={expanded}
-            aria-controls={`nav-group-${groupKey}`}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 10,
-              padding: '10px 14px',
-              borderRadius: 6,
-              textDecoration: 'none',
-              textAlign: 'left',
-              width: '100%',
-              cursor: 'pointer',
-              background: groupActive
-                ? `${accentColor}18`
-                : 'rgba(6,182,212,0.04)',
-              color: groupActive ? accentColor : 'rgba(6,182,212,0.7)',
-              borderLeft: `2px solid ${groupActive ? accentColor : 'rgba(6,182,212,0.2)'}`,
-              border: 'none',
-              borderLeftWidth: 2,
-              borderLeftStyle: 'solid',
-              borderLeftColor: groupActive ? accentColor : 'rgba(6,182,212,0.2)',
-              transition: 'all 150ms ease-out',
-              fontSize: 13,
-              fontFamily: 'inherit',
-              minHeight: 44,
-            }}
-          >
-            <span style={{ fontSize: 15, lineHeight: 1 }}>{item.icon}</span>
-            <span>{item.label}</span>
-            {item.strategy && (
-              <span style={{
-                marginLeft: 'auto', fontSize: 7, fontFamily: 'IBM Plex Mono, monospace',
-                color: item.strategy === 'Polymarket 5m' ? '#a855f7' : item.strategy === 'Hyperliquid Perps' ? '#f59e0b' : '#06b6d4',
-                letterSpacing: '0.06em',
-                border: `1px solid ${item.strategy === 'Polymarket 5m' ? 'rgba(168,85,247,0.44)' : item.strategy === 'Hyperliquid Perps' ? 'rgba(245,158,11,0.44)' : 'rgba(6,182,212,0.44)'}`,
-                borderRadius: 2, padding: '1px 3px',
-                background: item.strategy === 'Polymarket 5m' ? 'rgba(168,85,247,0.11)' : item.strategy === 'Hyperliquid Perps' ? 'rgba(245,158,11,0.11)' : 'rgba(6,182,212,0.11)',
-                whiteSpace: 'nowrap', flexShrink: 0,
-              }}>{item.strategy === 'Polymarket 5m' ? 'POLY' : item.strategy === 'Hyperliquid Perps' ? 'PERPS' : 'POLY+PERPS'}</span>
-            )}
-            <span style={{
-              marginLeft: item.isNew && !groupActive ? 6 : 'auto',
-              fontSize: 10,
-              color: 'rgba(255,255,255,0.4)',
-              transform: expanded ? 'rotate(90deg)' : 'rotate(0deg)',
-              transition: 'transform 150ms ease-out',
-              lineHeight: 1,
-            }}>▶</span>
-          </button>
-          {expanded && (
-            <div
-              id={`nav-group-${groupKey}`}
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 1,
-                padding: '2px 0 4px',
-                borderLeft: '1px dashed rgba(6,182,212,0.15)',
-                marginLeft: 18,
-              }}
-            >
-              {item.children.map(child => childLink(item, child))}
-            </div>
-          )}
-        </div>
-      );
-    }
-
+  const navLink = (item, sectionColor) => {
     const active = isActive(item.path);
-    // NAV-01 (2026-04-11): legacy entries render de-emphasised so the
-    // operator can tell at a glance they're not part of the primary
-    // live-trading path. `dataSource` renders as a native HTML title
-    // tooltip so it doesn't require new DOM or event wiring.
-    const isLegacy = !!item.legacy;
-    const accentColor = isLegacy
-      ? '#64748b'
-      : item.highlight ? '#06b6d4' : '#a855f7';
-    const tooltipParts = [];
-    if (item.strategy) tooltipParts.push(`Strategy: ${item.strategy}`);
-    if (item.dataSource) tooltipParts.push(`Data: ${item.dataSource}`);
-    if (item.legacyNote) tooltipParts.push(`Note: ${item.legacyNote}`);
-    const tooltip = tooltipParts.length ? tooltipParts.join('\n') : undefined;
-    const STRAT_COLORS = { 'Polymarket 5m': '#a855f7', 'Hyperliquid Perps': '#f59e0b', 'Both': '#06b6d4', 'System': '#64748b' };
-    const stratColor = item.strategy ? (STRAT_COLORS[item.strategy] || '#64748b') : null;
     return (
       <Link
-        key={item.path}
+        key={`${item.path}-${item.sectionDedupe || ''}`}
         to={item.path}
-        title={tooltip}
         style={{
           display: 'flex',
           alignItems: 'center',
           gap: 10,
-          padding: '10px 14px',
+          padding: '8px 14px',
           borderRadius: 6,
           textDecoration: 'none',
           background: active
-            ? `${accentColor}18`
-            : isLegacy
-            ? 'rgba(71,85,105,0.04)'
-            : item.highlight
-            ? 'rgba(6,182,212,0.04)'
+            ? `${sectionColor}18`
             : 'transparent',
           color: active
-            ? accentColor
-            : isLegacy
-            ? 'rgba(100,116,139,0.75)'
-            : item.highlight
-            ? 'rgba(6,182,212,0.7)'
-            : 'rgba(255,255,255,0.45)',
-          borderLeft: `2px solid ${active ? accentColor : isLegacy ? 'rgba(100,116,139,0.2)' : item.highlight ? 'rgba(6,182,212,0.2)' : 'transparent'}`,
+            ? sectionColor
+            : textColor,
+          borderLeft: `2px solid ${active ? sectionColor : 'transparent'}`,
           transition: 'all 150ms ease-out',
           fontSize: 13,
-          minHeight: 44,
-          opacity: isLegacy ? 0.75 : 1,
+          minHeight: 38,
         }}
       >
-        <span style={{ fontSize: 15, lineHeight: 1, filter: isLegacy ? 'grayscale(1)' : 'none' }}>{item.icon}</span>
-        <span style={{ textDecoration: isLegacy ? 'line-through' : 'none', textDecorationColor: 'rgba(100,116,139,0.3)' }}>{item.label}</span>
-        {!isLegacy && item.strategy && (
-          <span style={{
-            marginLeft: 'auto', fontSize: 7, fontFamily: 'IBM Plex Mono, monospace',
-            color: stratColor, letterSpacing: '0.06em',
-            border: `1px solid ${stratColor}44`, borderRadius: 2,
-            padding: '1px 3px', background: `${stratColor}11`,
-            whiteSpace: 'nowrap', flexShrink: 0,
-          }}>{item.strategy === 'Polymarket 5m' ? 'POLY' : item.strategy === 'Hyperliquid Perps' ? 'PERPS' : item.strategy === 'Both' ? 'POLY+PERPS' : 'SYS'}</span>
-        )}
-        {isLegacy && item.legacyStatus && (
-          <span style={{
-            marginLeft: 'auto',
-            fontSize: 7,
-            fontFamily: 'IBM Plex Mono, monospace',
-            color: 'rgba(100,116,139,0.85)',
-            letterSpacing: '0.08em',
-            border: '1px solid rgba(100,116,139,0.3)',
-            borderRadius: 3,
-            padding: '1px 4px',
-            background: 'rgba(100,116,139,0.1)',
-          }}>{item.legacyStatus}</span>
-        )}
-        {!isLegacy && item.highlight && !active && !item.strategy && (
-          <span style={{
-            marginLeft: 'auto',
-            fontSize: 8,
-            fontFamily: 'IBM Plex Mono, monospace',
-            color: item.isNew ? '#06b6d4' : 'rgba(6,182,212,0.4)',
-            letterSpacing: '0.06em',
-            border: `1px solid ${item.isNew ? 'rgba(6,182,212,0.5)' : 'rgba(6,182,212,0.2)'}`,
-            borderRadius: 3,
-            padding: '1px 4px',
-            background: item.isNew ? 'rgba(6,182,212,0.15)' : 'transparent',
-            animation: item.isNew ? 'pulse 2s infinite' : 'none',
-          }}>NEW</span>
-        )}
+        <span style={{
+          width: 20,
+          fontSize: 10,
+          fontFamily: 'IBM Plex Mono, monospace',
+          fontWeight: 700,
+          color: active ? sectionColor : (isLight ? 'rgba(100,116,139,0.6)' : 'rgba(255,255,255,0.2)'),
+          letterSpacing: '-0.02em',
+          textAlign: 'center',
+          flexShrink: 0,
+        }}>{item.icon}</span>
+        <span>{item.label}</span>
+      </Link>
+    );
+  };
+
+  const legacyLink = (item) => {
+    const active = isActive(item.path);
+    return (
+      <Link
+        key={item.path}
+        to={item.path}
+        style={{
+          display: 'block',
+          padding: '4px 14px 4px 26px',
+          borderRadius: 4,
+          textDecoration: 'none',
+          color: active
+            ? '#64748b'
+            : (isLight ? 'rgba(100,116,139,0.6)' : 'rgba(100,116,139,0.5)'),
+          fontSize: 11,
+          transition: 'color 150ms',
+          background: active ? 'rgba(100,116,139,0.08)' : 'transparent',
+        }}
+      >
+        {item.label}
       </Link>
     );
   };
@@ -776,8 +477,8 @@ export default function Layout() {
           justifyContent: 'space-between',
           padding: '0 16px',
           height: 52,
-          borderBottom: '1px solid rgba(255,255,255,0.05)',
-          background: 'rgba(0,0,0,0.2)',
+          borderBottom: `1px solid ${headerBorder}`,
+          background: headerBg,
           position: 'sticky',
           top: 0,
           zIndex: 200,
@@ -786,14 +487,14 @@ export default function Layout() {
       >
         {/* Left: hamburger (mobile) + logo */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {/* Hamburger — mobile only */}
+          {/* Hamburger -- mobile only */}
           <button
             onClick={() => setSidebarOpen(o => !o)}
             className="hamburger-btn"
             style={{
               background: 'none',
               border: 'none',
-              color: 'rgba(255,255,255,0.5)',
+              color: textColor,
               cursor: 'pointer',
               padding: '6px 4px',
               fontSize: 18,
@@ -805,14 +506,14 @@ export default function Layout() {
               justifyContent: 'center',
             }}
           >
-            {sidebarOpen ? '✕' : '☰'}
+            {sidebarOpen ? '\u2715' : '\u2630'}
           </button>
 
           <Link
-            to="/dashboard"
+            to="/polymarket/monitor"
             style={{ textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 6 }}
           >
-            <span style={{ color: '#a855f7', fontSize: 16 }}>₿</span>
+            <span style={{ color: '#a855f7', fontSize: 16 }}>\u20BF</span>
             <span
               className="logo-text"
               style={{
@@ -828,8 +529,9 @@ export default function Layout() {
           </Link>
         </div>
 
-        {/* Right: config pill + live toggle */}
+        {/* Right: theme toggle + config pill + live toggle */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <ThemeToggle />
           <div className="config-pill-wrapper">
             <ConfigPill />
           </div>
@@ -861,18 +563,18 @@ export default function Layout() {
           style={{
             width: 220,
             flexShrink: 0,
-            background: 'rgba(0,0,0,0.18)',
-            borderRight: '1px solid rgba(255,255,255,0.05)',
+            background: sidebarBg,
+            borderRight: `1px solid ${sidebarBorder}`,
             display: 'flex',
             flexDirection: 'column',
             padding: '12px 8px',
             overflowY: 'auto',
           }}
         >
-          {/* Main nav — grouped sections */}
+          {/* Main nav -- 3 primary sections */}
           <nav style={{ flex: 1 }}>
             {NAV_SECTIONS.map((section, idx) => (
-              <div key={section.title} style={{ marginTop: idx > 0 ? 8 : 0 }}>
+              <div key={section.id} style={{ marginTop: idx > 0 ? 12 : 0 }}>
                 <div style={{
                   display: 'flex', alignItems: 'center', gap: 6,
                   padding: '6px 14px 4px', marginBottom: 2,
@@ -883,18 +585,61 @@ export default function Layout() {
                     boxShadow: `0 0 6px ${section.color}44`,
                   }} />
                   <span style={{
-                    fontSize: 8, fontWeight: 800, letterSpacing: '0.12em',
+                    fontSize: 9, fontWeight: 800, letterSpacing: '0.12em',
                     color: section.color, fontFamily: 'IBM Plex Mono, monospace',
-                    opacity: 0.8,
+                    opacity: 0.9,
                   }}>{section.title}</span>
                 </div>
-                {section.items.map(navLink)}
+                {section.items.map(item => navLink(item, section.color))}
               </div>
             ))}
+
+            {/* ── LEGACY (collapsed by default) ──────────────────────────────── */}
+            <div style={{ marginTop: 16 }}>
+              <button
+                onClick={() => setLegacyExpanded(prev => !prev)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '6px 14px',
+                  marginBottom: 2,
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  width: '100%',
+                  textAlign: 'left',
+                }}
+              >
+                <div style={{
+                  width: 3, height: 10, borderRadius: 2,
+                  background: '#475569',
+                  opacity: 0.5,
+                }} />
+                <span style={{
+                  fontSize: 8, fontWeight: 700, letterSpacing: '0.1em',
+                  color: isLight ? 'rgba(100,116,139,0.6)' : 'rgba(100,116,139,0.5)',
+                  fontFamily: 'IBM Plex Mono, monospace',
+                }}>LEGACY</span>
+                <span style={{
+                  fontSize: 9,
+                  color: isLight ? 'rgba(100,116,139,0.4)' : 'rgba(100,116,139,0.3)',
+                  marginLeft: 'auto',
+                  transform: legacyExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                  transition: 'transform 150ms ease-out',
+                  lineHeight: 1,
+                }}>{'\u25B6'}</span>
+              </button>
+              {legacyExpanded && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 1, padding: '2px 0' }}>
+                  {LEGACY_ITEMS.map(legacyLink)}
+                </div>
+              )}
+            </div>
           </nav>
 
           {/* Bottom: setup + user + logout */}
-          <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: 8, marginTop: 8 }}>
+          <div style={{ borderTop: `1px solid ${sidebarBorder}`, paddingTop: 8, marginTop: 8 }}>
             <Link
               to="/setup"
               style={{
@@ -905,19 +650,19 @@ export default function Layout() {
                 borderRadius: 6,
                 textDecoration: 'none',
                 background: isActive('/setup') ? 'rgba(168,85,247,0.1)' : 'transparent',
-                color: isActive('/setup') ? '#a855f7' : 'rgba(255,255,255,0.35)',
+                color: isActive('/setup') ? '#a855f7' : textColor,
                 borderLeft: `2px solid ${isActive('/setup') ? '#a855f7' : 'transparent'}`,
                 fontSize: 13,
                 transition: 'all 150ms',
                 minHeight: 44,
               }}
             >
-              <span style={{ fontSize: 15 }}>🔧</span>
+              <span style={{ fontSize: 10, fontFamily: 'IBM Plex Mono, monospace', fontWeight: 700, color: isActive('/setup') ? '#a855f7' : (isLight ? 'rgba(100,116,139,0.6)' : 'rgba(255,255,255,0.2)'), width: 20, textAlign: 'center' }}>Se</span>
               <span>Setup</span>
             </Link>
 
             <div style={{ padding: '8px 14px' }}>
-              <div style={{ color: 'rgba(255,255,255,0.25)', fontSize: 11, marginBottom: 6 }}>
+              <div style={{ color: textMuted, fontSize: 11, marginBottom: 6 }}>
                 {user?.username}
               </div>
               <button
@@ -926,9 +671,9 @@ export default function Layout() {
                   width: '100%',
                   padding: '8px 0',
                   borderRadius: 5,
-                  border: '1px solid rgba(255,255,255,0.07)',
-                  background: 'rgba(255,255,255,0.04)',
-                  color: 'rgba(255,255,255,0.3)',
+                  border: `1px solid ${isLight ? 'rgba(203,213,225,0.4)' : 'rgba(255,255,255,0.07)'}`,
+                  background: isLight ? 'rgba(241,245,249,0.5)' : 'rgba(255,255,255,0.04)',
+                  color: isLight ? 'rgba(100,116,139,0.8)' : 'rgba(255,255,255,0.3)',
                   fontSize: 11,
                   cursor: 'pointer',
                   fontFamily: 'IBM Plex Mono, monospace',
@@ -967,8 +712,8 @@ export default function Layout() {
           left: 0,
           right: 0,
           height: 60,
-          background: 'rgba(7,7,12,0.97)',
-          borderTop: '1px solid rgba(255,255,255,0.06)',
+          background: isLight ? 'rgba(248,250,252,0.97)' : 'rgba(7,7,12,0.97)',
+          borderTop: `1px solid ${isLight ? 'rgba(203,213,225,0.4)' : 'rgba(255,255,255,0.06)'}`,
           zIndex: 100,
           backdropFilter: 'blur(12px)',
         }}
@@ -987,7 +732,7 @@ export default function Layout() {
                 justifyContent: 'center',
                 gap: 2,
                 textDecoration: 'none',
-                color: active ? '#a855f7' : 'rgba(255,255,255,0.35)',
+                color: active ? '#a855f7' : textColor,
                 fontSize: 9,
                 fontFamily: 'IBM Plex Mono, monospace',
                 letterSpacing: '0.04em',
@@ -995,7 +740,12 @@ export default function Layout() {
                 minHeight: 60,
               }}
             >
-              <span style={{ fontSize: 18, lineHeight: 1, filter: active ? 'none' : 'grayscale(0.6)' }}>
+              <span style={{
+                fontSize: 13,
+                lineHeight: 1,
+                fontWeight: 700,
+                color: active ? '#a855f7' : (isLight ? 'rgba(100,116,139,0.5)' : 'rgba(255,255,255,0.3)'),
+              }}>
                 {item.icon}
               </span>
               <span>{item.label}</span>
@@ -1077,7 +827,6 @@ export default function Layout() {
         /* Very narrow screens */
         @media (max-width: 360px) {
           .bottom-tab-bar a { font-size: 8px !important; }
-          .bottom-tab-bar span[style*="font-size: 18px"] { font-size: 16px !important; }
         }
 
         /* Scrollbar */
@@ -1087,6 +836,10 @@ export default function Layout() {
         .main-content::-webkit-scrollbar { width: 4px; }
         .main-content::-webkit-scrollbar-track { background: transparent; }
         .main-content::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 2px; }
+
+        /* Light theme scrollbar */
+        body.theme-light .main-sidebar::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); }
+        body.theme-light .main-content::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); }
       `}</style>
     </div>
   );
