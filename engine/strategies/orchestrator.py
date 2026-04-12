@@ -1574,14 +1574,24 @@ class Orchestrator:
                         if self._five_min_strategy:
                             self._five_min_strategy._pending_strategy_decisions = _sp_for_alert
                         if result.live_decision and result.live_decision.action == "TRADE":
+                            live = result.live_decision
                             log.info(
                                 "strategy_port.live_trade",
-                                strategy=result.live_decision.strategy_id,
-                                direction=result.live_decision.direction,
-                                entry_cap=result.live_decision.entry_cap,
+                                strategy=live.strategy_id,
+                                direction=live.direction,
+                                entry_cap=live.entry_cap,
                             )
-                            # Delegate execution to legacy strategy for now
-                            # (full execution extraction is a future phase)
+                            # Pass the port's decision directly to execution.
+                            # We set _sp_trade_decision on five_min_strategy so
+                            # _evaluate_window() sees it and skips re-evaluation,
+                            # going straight to _execute_trade().
+                            if self._five_min_strategy:
+                                self._five_min_strategy._sp_trade_decision = {
+                                    "direction": live.direction,
+                                    "entry_cap": live.entry_cap or 0.65,
+                                    "confidence_score": live.confidence_score,
+                                    "strategy_id": live.strategy_id,
+                                }
                             await self._five_min_strategy.evaluate_window(window, state)
                         else:
                             log.info(

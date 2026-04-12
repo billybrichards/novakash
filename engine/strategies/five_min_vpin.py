@@ -259,7 +259,40 @@ class FiveMinVPINStrategy(BaseStrategy):
         self._tick_recorder = recorder
 
     async def evaluate_window(self, window, state) -> None:
-        """Public entry point for window evaluation. Delegates to _evaluate_window."""
+        """Public entry point for window evaluation.
+
+        When called from the StrategyPort path (ENGINE_USE_STRATEGY_PORT=true),
+        the orchestrator may set _sp_trade_decision to pass the port's trade
+        decision directly, bypassing the V10 gate re-evaluation.
+        """
+        sp_decision = getattr(self, "_sp_trade_decision", None)
+        if sp_decision is not None:
+            # StrategyPort already decided to TRADE — skip gate re-evaluation,
+            # build a minimal signal and go straight to execution.
+            self._sp_trade_decision = None  # consume once
+            try:
+                direction = sp_decision.get("direction", "UP")
+                entry_cap = sp_decision.get("entry_cap", 0.65)
+                # Build a FiveMinSignal compatible with _execute_trade()
+                signal = FiveMinSignal(
+                    window=window,
+                    current_price=float(getattr(state, "btc_price", 0) or 0),
+                    current_vpin=float(getattr(state, "vpin", 0) or 0),
+                    delta_pct=0.0,  # gates already passed, value irrelevant
+                    confidence="MODERATE",
+                    direction=direction,
+                    v81_entry_cap=entry_cap,
+                    entry_reason=f"strategy_port_{sp_decision.get('strategy_id','?')}",
+                )
+                await self._execute_trade(state, signal)
+                return
+            except Exception as exc:
+                import structlog
+                structlog.get_logger(__name__).warning(
+                    "strategy_port.direct_exec_failed",
+                    error=str(exc)[:200],
+                )
+                # Fall through to normal evaluate_window on error
         await self._evaluate_window(window, state)
 
     def append_pending_window(self, window) -> None:
