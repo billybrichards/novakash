@@ -15,7 +15,7 @@ from typing import Optional
 
 import structlog
 
-from engine.domain.value_objects import StrategyContext, StrategyDecision
+from domain.value_objects import StrategyContext, StrategyDecision
 from signals.gates import (
     GateContext,
     GatePipeline,

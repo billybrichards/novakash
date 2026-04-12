@@ -363,7 +363,7 @@ class Orchestrator:
         ).lower() == "true"
         self._evaluate_strategies_uc = None
         if self._use_strategy_port:
-            from engine.domain.value_objects import StrategyRegistration
+            from domain.value_objects import StrategyRegistration
             from use_cases.evaluate_strategies import EvaluateStrategiesUseCase
             from adapters.strategies.v10_gate_strategy import V10GateStrategy
 

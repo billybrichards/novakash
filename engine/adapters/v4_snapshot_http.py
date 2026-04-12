@@ -12,7 +12,7 @@ from typing import Optional
 
 import structlog
 
-from engine.domain.value_objects import V4Snapshot
+from domain.value_objects import V4Snapshot
 
 log = structlog.get_logger(__name__)
 

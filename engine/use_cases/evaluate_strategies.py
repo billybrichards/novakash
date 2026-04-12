@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 import structlog
 
-from engine.domain.value_objects import (
+from domain.value_objects import (
     EvaluateStrategiesResult,
     StrategyContext,
     StrategyDecision,

@@ -14,8 +14,8 @@ from typing import Optional
 import asyncpg
 import structlog
 
-from engine.domain.ports import StrategyDecisionRepository
-from engine.domain.value_objects import StrategyDecisionRecord
+from domain.ports import StrategyDecisionRepository
+from domain.value_objects import StrategyDecisionRecord
 
 log = structlog.get_logger(__name__)
 
