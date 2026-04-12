@@ -434,6 +434,30 @@ Coordinated with the novakash blitz. 15 PRs merged to main:
 
 **New audit entries:** DEP-02-CUTOVER, SCHEMA-FIX, SQ-01-PR1, REGIME-HMM, S3-FIX, S5-FIX, S4-FIX, FE-REDESIGN-MONITOR
 
+### 2026-04-12 — Session 4: V4 paper trading + window analysis + data capture
+
+**V4 flipped to LIVE paper at ~13:00 UTC.** `V4_FUSION_MODE=LIVE`, `V10_GATE_MODE=GHOST` activated on the Montreal engine. V4 now makes LIVE paper trade decisions; V10 continues as a ghost (no execution, decisions recorded only). Strategy flip documented in `~/.claude/projects/.../memory/project_strategy_flip_apr12.md`.
+
+**Dual-strategy decision writing.** `EvaluateStrategiesUseCase` now writes both V10 and V4 decisions to the `strategy_decisions` table on every 2s eval cycle. Full `_ctx` JSON is persisted for both, including all signal surfaces (VPIN, deltas, CLOB prices, Sequoia quantiles, HMM regime, macro bias). This gives the complete operator-vs-engine ground-truth record needed to evaluate V4 performance against V10 shadow results.
+
+**Window analysis deep dive.** Extended analysis of `signal_evaluations` (865 windows) surface findings:
+- **T-120 to T-150 sweet spot**: highest accuracy offsets by out-of-sample validation. T-90 to T-120 also strong; T-60 is noisier.
+- **confidence_distance >= 0.12 required**: below this threshold the V10 gate pass rate drops sharply. Calibration threshold for V4 adoption.
+- **CLOB ask asymmetry (DOWN + cheap NO)**: when CLOB ask for NO side is anomalously cheap coinciding with a DOWN signal, observed WR ~82% in the backtest set — but flagged as a bearish-dataset caveat (sessions 1-4 data are skewed toward down-trending BTC).
+- Analysis script committed to `docs/analysis/run_window_analysis.py`.
+
+**`ticks_v4_decision` table created + persist loop activated.** New DB table captures the full V4 snapshot every 5s from the timesfm-service V4DBWriter: HMM regime, conviction score, quantile bands, macro bias, and `sub_signals` JSONB. Schema mirrors `ticks_v3_composite` pattern. Persist loop wired into the timesfm-service main loop; writing confirmed in Railway DB.
+
+**Paper trade exposure bug fixed (PR #128).** Stale `OPEN` paper trades were not being resolved against the oracle price on engine restart — they stayed open indefinitely and blocked the `MAX_OPEN_EXPOSURE_PCT` gate, preventing new trades from being placed. Fix: on restart, `OrderManager` now auto-resolves all stale `OPEN` paper trades against the Chainlink oracle price before entering the main eval loop. Also added auto-expiry for trades with no oracle match after a TTL.
+
+**Sitrep updated to show both strategies per window.** The sitrep log line (emitted every window change) now shows the V4 LIVE paper decision AND the V10 GHOST decision side-by-side, making it easy to compare signal agreement at a glance without querying the DB.
+
+**DB config wired to engine for hot-reload (PR #128).** Strategy port now reads `V4_FUSION_MODE` and `V10_GATE_MODE` from the `trading_configs` DB table (not just `.env`), enabling hot-reload via the frontend Config page without an engine restart. Modes: `LIVE` (places paper/live trades), `GHOST` (records decisions, no execution), `OFF`.
+
+**New audit items seeded:**
+- **WINDOW-ANALYSIS-01 (MEDIUM INFO)** — T-120–T-150 sweet spot confirmed in 865-window analysis. CLOB ask asymmetry WR 82% flagged with bearish-dataset caveat. Needs revalidation once V4 LIVE paper accumulates 200+ windows in mixed-regime sessions.
+- **CA-EXEC-INDEPENDENCE (MEDIUM OPEN)** — `EvaluateStrategiesUseCase` currently calls V10 and V4 evaluation in sequence in the same 2s tick. Should be independent `asyncio.gather` tasks so a slow V4 snapshot fetch doesn't delay V10 gate decisions.
+
 ## Next up (ordered, updated 2026-04-12 session 2)
 
 0. **Polymarket Evaluate page** — signal-vs-outcome analysis, per-gate accuracy breakdown, P&L charts. Design in spec §3.
