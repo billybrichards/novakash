@@ -394,7 +394,11 @@ class Orchestrator:
                 v4_snapshot_port = V4SnapshotHttpAdapter()
 
             from adapters.persistence.pg_strategy_decisions import PgStrategyDecisionRepository
-            _decision_repo = PgStrategyDecisionRepository(db_client=self._db)
+            # PgStrategyDecisionRepository needs the asyncpg pool directly
+            # self._db is the DBClient wrapper — the pool is available after start()
+            # We pass db_client and the repo will use its pool property
+            _pool = getattr(self._db, "_pool", None) or getattr(self._db, "pool", None)
+            _decision_repo = PgStrategyDecisionRepository(pool=_pool) if _pool else None
 
             self._evaluate_strategies_uc = EvaluateStrategiesUseCase(
                 strategies=strategy_pairs,
