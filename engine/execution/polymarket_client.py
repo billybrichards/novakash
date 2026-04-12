@@ -183,17 +183,14 @@ class PolymarketClient:
 
         def _fetch_book():
             book = self._clob_client.get_order_book(token_id)
-            bids = (
-                [(float(b.price), float(b.size)) for b in book.bids[:5]]
-                if book.bids
-                else []
+            # Best bid = highest bid price (bids sorted descending)
+            best_bid = float(book.bids[0].price) if book.bids else None
+            # Best ask = lowest ask price (sort ascending and take first)
+            best_ask = (
+                float(sorted(book.asks, key=lambda x: float(x.price))[0].price)
+                if book.asks else None
             )
-            asks = (
-                [(float(a.price), float(a.size)) for a in book.asks[:5]]
-                if book.asks
-                else []
-            )
-            return {"bids": bids, "asks": asks}
+            return {"best_bid": best_bid, "best_ask": best_ask}
 
         return await asyncio.to_thread(_fetch_book)
 
