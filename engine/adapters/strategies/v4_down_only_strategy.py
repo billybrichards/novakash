@@ -32,6 +32,11 @@ _CLOB_SIZING: list[tuple[float, float, str]] = [
 
 _MAX_COLLATERAL_PCT = 0.10   # cap: never bet more than 10% per trade
 
+# Confidence threshold — relaxed from V4's default 0.12 to 0.10.
+# 897K-sample analysis: DOWN WR at dist>=0.10 = 90.5% vs dist>=0.12 = 90.6%.
+# Adds ~50K more trades at same WR. Validated 2026-04-12.
+_MIN_CONFIDENCE_DIST = 0.10
+
 # Timing window validated from 897K-sample analysis — T-90 to T-150 has 90.3% WR.
 # Outside this band accuracy degrades to ~50-65%.
 _MIN_EVAL_OFFSET = 90
@@ -50,9 +55,40 @@ class V4DownOnlyStrategy(V4FusionStrategy):
         return "1.0.0"
 
     async def evaluate(self, ctx: StrategyContext) -> StrategyDecision:
-        """Run V4 evaluation then apply DOWN-only filter + CLOB sizing."""
+        """Run V4 evaluation with relaxed confidence (0.10 vs parent's 0.12)."""
         try:
             decision = await super().evaluate(ctx)
+
+            # If parent SKIPped on confidence < 0.12, re-check at our lower 0.10.
+            # Parent skip format: "polymarket: p_up=X.XXX dist=X.XXX < 0.12 threshold"
+            if (
+                decision.action == "SKIP"
+                and decision.skip_reason
+                and "< 0.12 threshold" in decision.skip_reason
+            ):
+                snap = ctx.v4_snapshot
+                if snap and snap.probability_up is not None:
+                    dist = abs(snap.probability_up - 0.5)
+                    if dist >= _MIN_CONFIDENCE_DIST:
+                        # Re-derive direction and build TRADE decision
+                        poly = snap.polymarket_outcome or {}
+                        direction = poly.get("direction") or (
+                            "DOWN" if snap.probability_up < 0.5 else "UP"
+                        )
+                        decision = StrategyDecision(
+                            action="TRADE",
+                            direction=direction,
+                            confidence=snap.conviction or f"dist_{dist:.2f}",
+                            confidence_score=dist * 2.0,
+                            entry_cap=poly.get("max_entry_price"),
+                            collateral_pct=snap.recommended_collateral_pct,
+                            strategy_id=self.strategy_id,
+                            strategy_version=self.version,
+                            entry_reason=f"polymarket_down_only_dist{dist:.2f}_T{ctx.eval_offset}",
+                            skip_reason=None,
+                            metadata=self._build_metadata(snap) if hasattr(self, '_build_metadata') else {},
+                        )
+
             return self._apply_down_only(decision, ctx)
         except Exception as exc:
             log.warning("v4_down_only.evaluate_error", error=str(exc)[:200])
