@@ -1,0 +1,208 @@
+- generic [ref=e112]:
+  - banner [ref=e113]:
+    - link "\\u20BF BTC Trader" [ref=e115] [cursor=pointer]:
+      - /url: /polymarket/monitor
+      - generic [ref=e116]: \u20BF
+      - generic [ref=e117]: BTC Trader
+    - generic [ref=e118]:
+      - button "☀" [ref=e119] [cursor=pointer]
+      - 'button "⚙ VPIN: 0.70 | Casc: 0.70 | Arb: 1.5% | $25 ▼" [ref=e122] [cursor=pointer]':
+        - generic [ref=e123]: ⚙
+        - generic [ref=e124]:
+          - text: "VPIN: 0.70 | Casc: 0.70 | Arb:"
+          - generic [ref=e125]: 1.5%
+          - text: "|"
+          - generic [ref=e126]: $25
+        - generic [ref=e127]: ▼
+      - generic [ref=e128]:
+        - button "📄 PAPER" [ref=e129] [cursor=pointer]:
+          - generic [ref=e130]: 📄
+          - generic [ref=e131]: PAPER
+        - button "💰 LIVE" [ref=e134] [cursor=pointer]:
+          - generic [ref=e135]: 💰
+          - generic [ref=e136]: LIVE
+        - generic [ref=e141]: "ENGINE: PAPER"
+  - generic [ref=e142]:
+    - complementary [ref=e143]:
+      - navigation [ref=e144]:
+        - generic [ref=e145]:
+          - generic [ref=e148]: POLYMARKET
+          - link "M Monitor" [ref=e149] [cursor=pointer]:
+            - /url: /polymarket/monitor
+            - generic [ref=e150]: M
+            - generic [ref=e151]: Monitor
+          - link "E Evaluate" [ref=e152] [cursor=pointer]:
+            - /url: /polymarket/evaluate
+            - generic [ref=e153]: E
+            - generic [ref=e154]: Evaluate
+          - link "S Strategy Lab" [ref=e155] [cursor=pointer]:
+            - /url: /polymarket/strategy-lab
+            - generic [ref=e156]: S
+            - generic [ref=e157]: Strategy Lab
+          - link "C Configure" [ref=e158] [cursor=pointer]:
+            - /url: /config
+            - generic [ref=e159]: C
+            - generic [ref=e160]: Configure
+        - generic [ref=e161]:
+          - generic [ref=e164]: MARGIN ENGINE
+          - link "M Monitor" [ref=e165] [cursor=pointer]:
+            - /url: /margin
+            - generic [ref=e166]: M
+            - generic [ref=e167]: Monitor
+          - link "C Configure" [ref=e168] [cursor=pointer]:
+            - /url: /config?service=margin_engine
+            - generic [ref=e169]: C
+            - generic [ref=e170]: Configure
+        - generic [ref=e171]:
+          - generic [ref=e174]: SYSTEM
+          - link "St Status" [ref=e175] [cursor=pointer]:
+            - /url: /system
+            - generic [ref=e176]: St
+            - generic [ref=e177]: Status
+          - link "Sc Schema" [ref=e178] [cursor=pointer]:
+            - /url: /schema
+            - generic [ref=e179]: Sc
+            - generic [ref=e180]: Schema
+          - link "D Deploys" [ref=e181] [cursor=pointer]:
+            - /url: /deployments
+            - generic [ref=e182]: D
+            - generic [ref=e183]: Deploys
+          - link "Cf Config" [ref=e184] [cursor=pointer]:
+            - /url: /config
+            - generic [ref=e185]: Cf
+            - generic [ref=e186]: Config
+          - link "A Audit" [ref=e187] [cursor=pointer]:
+            - /url: /audit
+            - generic [ref=e188]: A
+            - generic [ref=e189]: Audit
+          - link "N Notes" [ref=e190] [cursor=pointer]:
+            - /url: /notes
+            - generic [ref=e191]: "N"
+            - generic [ref=e192]: Notes
+        - button "LEGACY ▶" [ref=e194] [cursor=pointer]:
+          - generic [ref=e196]: LEGACY
+          - generic [ref=e197]: ▶
+      - generic [ref=e198]:
+        - link "Se Setup" [ref=e199] [cursor=pointer]:
+          - /url: /setup
+          - generic [ref=e200]: Se
+          - generic [ref=e201]: Setup
+        - generic [ref=e202]:
+          - generic [ref=e203]: billy
+          - button "Logout" [ref=e204] [cursor=pointer]
+    - main [ref=e205]:
+      - generic [ref=e206]:
+        - generic [ref=e207]:
+          - generic [ref=e208]: ◈ NOVAKASH
+          - generic [ref=e209]: POLYMARKET 5m
+          - generic [ref=e210]:
+            - generic [ref=e211]: Balance
+            - generic [ref=e212]: —
+          - generic [ref=e213]:
+            - generic [ref=e214]: Poly Wallet
+            - generic [ref=e215]: 📄 Paper
+          - generic [ref=e216]:
+            - generic [ref=e217]: Today P&L
+            - generic [ref=e218]: +$0.00
+          - generic [ref=e219]:
+            - generic [ref=e220]: Win Rate
+            - generic [ref=e221]: 42.2%
+          - generic [ref=e222]:
+            - generic [ref=e223]: Trades
+            - generic [ref=e224]: "1786"
+          - generic [ref=e225]:
+            - generic [ref=e226]: Engine
+            - generic [ref=e229]: STALE
+        - generic [ref=e230]: "Polymarket 5m binary options dashboard. VPIN, cascade state, arb spread, equity curve, win-rate and P&L charts.Data: hub /api/v58/dashboard (signal_evaluations + trades)"
+        - generic [ref=e231]:
+          - generic [ref=e232]:
+            - generic [ref=e233]: § REAL-TIME SIGNALS
+            - generic [ref=e234]:
+              - generic [ref=e236]: VPIN — Volume-Synchronised Informed Trading Probability
+              - generic [ref=e238]:
+                - generic [ref=e239]: Cascade State Machine
+                - generic [ref=e240]:
+                  - img [ref=e241]:
+                    - generic [ref=e243]: OI spike
+                    - generic [ref=e245]: OI fade
+                    - generic [ref=e247]: threshold
+                    - generic [ref=e249]: bet placed
+                    - generic [ref=e251]: timeout
+                    - generic [ref=e255]: IDLE
+                    - generic [ref=e258]: DETECTED
+                    - generic [ref=e261]: EXHAUSTING
+                    - generic [ref=e264]: BET SIGNAL
+                    - generic [ref=e267]: COOLDOWN
+                  - generic [ref=e268]:
+                    - generic [ref=e269]:
+                      - generic [ref=e270]: State
+                      - generic [ref=e271]: IDLE
+                    - generic [ref=e272]:
+                      - generic [ref=e273]: Direction
+                      - generic [ref=e274]: —
+                    - generic [ref=e275]:
+                      - generic [ref=e276]: OI Δ
+                      - generic [ref=e277]: 0.00M
+          - generic [ref=e278]:
+            - generic [ref=e280]: Arb Spread Monitor — YES+NO Combined Price
+            - generic [ref=e283]: Equity Curve
+          - generic [ref=e285]:
+            - generic [ref=e286]: § STRATEGY ANALYSIS
+            - generic [ref=e287]:
+              - generic [ref=e289]: Win Rate by VPIN Bucket
+              - generic [ref=e292]: Hourly Performance Heatmap — 24h × 7 days
+          - generic [ref=e296]: Daily P&L — Last 60 Days
+          - generic [ref=e298]:
+            - generic [ref=e299]: § MONITORING SYSTEM
+            - generic [ref=e300]:
+              - generic [ref=e302]: ⏱ Entry Timing — seconds to close vs confidence
+              - generic [ref=e305]: 📊 Confidence → Win Rate
+            - generic [ref=e307]:
+              - generic [ref=e308]: 🎯 Performance by Entry Tier
+              - generic [ref=e309]:
+                - generic [ref=e310]:
+                  - generic [ref=e312]: DECISIVE
+                  - generic [ref=e313]: "0"
+                  - generic [ref=e314]: trades
+                  - generic [ref=e315]: "0.0"
+                  - generic [ref=e316]: win rate
+                  - generic [ref=e317]: —
+                  - generic [ref=e318]: total P&L
+                  - generic [ref=e319]: "avg entry: —"
+                - generic [ref=e320]:
+                  - generic [ref=e322]: HIGH
+                  - generic [ref=e323]: "0"
+                  - generic [ref=e324]: trades
+                  - generic [ref=e325]: "0.0"
+                  - generic [ref=e326]: win rate
+                  - generic [ref=e327]: —
+                  - generic [ref=e328]: total P&L
+                  - generic [ref=e329]: "avg entry: —"
+                - generic [ref=e330]:
+                  - generic [ref=e332]: MODERATE
+                  - generic [ref=e333]: "0"
+                  - generic [ref=e334]: trades
+                  - generic [ref=e335]: "0.0"
+                  - generic [ref=e336]: win rate
+                  - generic [ref=e337]: —
+                  - generic [ref=e338]: total P&L
+                  - generic [ref=e339]: "avg entry: —"
+                - generic [ref=e340]:
+                  - generic [ref=e342]: DEADLINE
+                  - generic [ref=e343]: "0"
+                  - generic [ref=e344]: trades
+                  - generic [ref=e345]: "0.0"
+                  - generic [ref=e346]: win rate
+                  - generic [ref=e347]: —
+                  - generic [ref=e348]: total P&L
+                  - generic [ref=e349]: "avg entry: —"
+                - generic [ref=e350]:
+                  - generic [ref=e352]: SPIKE
+                  - generic [ref=e353]: "0"
+                  - generic [ref=e354]: trades
+                  - generic [ref=e355]: "0.0"
+                  - generic [ref=e356]: win rate
+                  - generic [ref=e357]: —
+                  - generic [ref=e358]: total P&L
+                  - generic [ref=e359]: "avg entry: —"
+            - generic [ref=e362]: 🔬 Signal Breakdown — last 10 trades

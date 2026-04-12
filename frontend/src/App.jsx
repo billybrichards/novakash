@@ -46,6 +46,7 @@ import LegacyConfig from './pages/LegacyConfig.jsx';
 import PolymarketMonitor from './pages/polymarket/Monitor.jsx';
 import PolymarketEvaluate from './pages/polymarket/Evaluate.jsx';
 import StrategyLab from './pages/polymarket/StrategyLab.jsx';
+import LiveFloor from './pages/polymarket/LiveFloor.jsx';
 import PolymarketOverview from './pages/polymarket/Overview.jsx';
 
 export default function App() {
@@ -115,6 +116,7 @@ export default function App() {
             <Route path="polymarket" element={<Navigate to="/polymarket/monitor" replace />} />
             <Route path="polymarket/overview" element={<PolymarketOverview />} />
             <Route path="polymarket/monitor" element={<PolymarketMonitor />} />
+            <Route path="polymarket/floor" element={<LiveFloor />} />
             <Route path="polymarket/evaluate" element={<PolymarketEvaluate />} />
             <Route path="polymarket/strategy-lab" element={<StrategyLab />} />
           </Route>

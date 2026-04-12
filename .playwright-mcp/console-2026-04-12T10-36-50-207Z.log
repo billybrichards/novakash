@@ -1,0 +1,36 @@
+[    1030ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://3.98.114.0:8091/api/v58/execution-hq?limit=200&asset=btc&timeframe=5m:0
+[    1102ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://3.98.114.0:8091/api/v4/snapshot?asset=btc:0
+[    1102ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://3.98.114.0:8091/api/v3/snapshot?asset=btc:0
+[    1103ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://3.98.114.0:8091/api/dashboard/stats:0
+[    1125ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://3.98.114.0:8091/api/v58/accuracy?limit=20:0
+[    1138ms] [VERBOSE] [DOM] Input elements should have autocomplete attributes (suggested: "current-password"): (More info: https://goo.gl/9p2vKq) %o @ http://99.79.41.246/login:0
+[    1198ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://3.98.114.0:8091/api/v58/outcomes?limit=20:0
+[    1198ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://3.98.114.0:8091/api/v58/stats?days=7:0
+[   85787ms] [ERROR] TypeError: m.filter is not a function
+    at f1 (http://99.79.41.246/assets/index-CMRhV6e0.js:538:67114)
+    at Li (http://99.79.41.246/assets/vendor-CrU7WNX_.js:30:16959)
+    at Sc (http://99.79.41.246/assets/vendor-CrU7WNX_.js:32:43712)
+    at yc (http://99.79.41.246/assets/vendor-CrU7WNX_.js:32:39513)
+    at Kd (http://99.79.41.246/assets/vendor-CrU7WNX_.js:32:39444)
+    at ol (http://99.79.41.246/assets/vendor-CrU7WNX_.js:32:39302)
+    at Ku (http://99.79.41.246/assets/vendor-CrU7WNX_.js:32:35719)
+    at hc (http://99.79.41.246/assets/vendor-CrU7WNX_.js:32:34675)
+    at k (http://99.79.41.246/assets/vendor-CrU7WNX_.js:17:1562)
+    at MessagePort.hn (http://99.79.41.246/assets/vendor-CrU7WNX_.js:17:1930) @ http://99.79.41.246/assets/vendor-CrU7WNX_.js:31
+[   85789ms] TypeError: m.filter is not a function
+    at f1 (http://99.79.41.246/assets/index-CMRhV6e0.js:538:67114)
+    at Li (http://99.79.41.246/assets/vendor-CrU7WNX_.js:30:16959)
+    at Sc (http://99.79.41.246/assets/vendor-CrU7WNX_.js:32:43712)
+    at yc (http://99.79.41.246/assets/vendor-CrU7WNX_.js:32:39513)
+    at Kd (http://99.79.41.246/assets/vendor-CrU7WNX_.js:32:39444)
+    at ol (http://99.79.41.246/assets/vendor-CrU7WNX_.js:32:39302)
+    at Ku (http://99.79.41.246/assets/vendor-CrU7WNX_.js:32:35719)
+    at hc (http://99.79.41.246/assets/vendor-CrU7WNX_.js:32:34675)
+    at k (http://99.79.41.246/assets/vendor-CrU7WNX_.js:17:1562)
+    at MessagePort.hn (http://99.79.41.246/assets/vendor-CrU7WNX_.js:17:1930)
+[  966643ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://3.98.114.0:8091/api/v58/stats?days=30:0
+[  966646ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://3.98.114.0:8091/api/v58/accuracy?limit=100:0
+[  966657ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://3.98.114.0:8091/api/v58/outcomes?limit=100:0
+[  966657ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://3.98.114.0:8091/api/v58/execution-hq?asset=btc&timeframe=5m:0
+[  966657ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://3.98.114.0:8091/api/pnl/daily:0
+[  966762ms] [VERBOSE] [DOM] Input elements should have autocomplete attributes (suggested: "current-password"): (More info: https://goo.gl/9p2vKq) %o @ http://99.79.41.246/login:0
