@@ -38,6 +38,7 @@ const NAV_SECTIONS = [
     color: '#a855f7', // purple accent
     items: [
       { path: '/margin', label: 'Monitor', icon: 'M' },
+      { path: '/margin-strategies', label: 'Strategies', icon: 'S' },
       { path: '/config?service=margin_engine', label: 'Configure', icon: 'C' },
     ],
   },
@@ -47,6 +48,7 @@ const NAV_SECTIONS = [
     color: '#64748b', // grey accent
     items: [
       { path: '/system', label: 'Status', icon: 'St' },
+      { path: '/signal-comparison', label: 'Signals', icon: 'Si' },
       { path: '/schema', label: 'Schema', icon: 'Sc' },
       { path: '/deployments', label: 'Deploys', icon: 'D' },
       { path: '/config', label: 'Config', icon: 'Cf', sectionDedupe: 'system' },
@@ -74,7 +76,7 @@ const TAB_ITEMS = [
   { path: '/polymarket/monitor', label: 'Monitor', icon: 'M' },
   { path: '/polymarket/evaluate', label: 'Eval', icon: 'E' },
   { path: '/margin', label: 'Margin', icon: 'P' },
-  { path: '/system', label: 'System', icon: 'S' },
+  { path: '/margin-strategies', label: 'Strategies', icon: 'St' },
   { path: '/config', label: 'Config', icon: 'C' },
 ];
 

@@ -92,6 +92,18 @@ class MarginSettings(BaseSettings):
     v4_allow_mean_reverting: bool = False            # opt-in per strategy
     v4_event_exit_seconds: int = 120                 # force exit within 2 min of HIGH/EXTREME
 
+    # ── Fee-aware continuation (NEW) ──
+    fee_aware_continuation_enabled: bool = False
+    fee_aware_partial_tp_threshold: float = 0.5
+    fee_aware_partial_tp_size: float = 0.5
+    continuation_alignment_enabled: bool = False
+    continuation_min_timescales: int = 2
+    continuation_hold_extension_max: float = 2.0
+    continuation_conviction_min: float = 0.10
+    continuation_regime_bonus: bool = True
+    max_partial_closes: int = 3
+    partial_close_cooldown_s: float = 300.0
+
     # ── Phase A (2026-04-11): macro gate demotion ──
     # 24h audit of margin engine paper-mode behaviour showed Qwen's BEAR
     # calls at 20-30% directional hit rate across 15m/1h/4h horizons —
@@ -122,7 +134,7 @@ class MarginSettings(BaseSettings):
     # suspiciously clean and needs a 7-day replay before activation. This
     # flag ships the code in Phase A but leaves it OFF (None) by default.
     # Flip via MARGIN_V4_ALLOW_NO_EDGE_IF_EXP_MOVE_BPS_GTE=3.0 after replay.
-    v4_allow_no_edge_if_exp_move_bps_gte: Optional[float] = None
+   v4_allow_no_edge_if_exp_move_bps_gte: Optional[float] = None
 
     # DQ-07: defensive mark_divergence gate. When v4.last_price (which is
     # Binance spot from the assembler) diverges from the exchange's actual
@@ -132,13 +144,51 @@ class MarginSettings(BaseSettings):
     # (gate returns passed unconditionally), so the merge is zero-behavior-
     # change in production. Operator enables by setting
     # MARGIN_V4_MAX_MARK_DIVERGENCE_BPS=20 in /opt/margin-engine/.env.
-    #
-    # Recommended by Agent D during the DQ-05 investigation: the SL/TP
-    # ratio math is mathematically consistent regardless of venue because
-    # only the ratio matters, but a stale v4.last_price vs a live exchange
-    # mark can still produce entries off a bad anchor if the divergence is
-    # large enough. This gate is a regression safety rail, not a hot fix.
     v4_max_mark_divergence_bps: float = 0.0
+
+    # ── Regime-adaptive strategy (ME-STRAT-04) ──
+    # Feature flag to enable regime-based strategy selection.
+    # When True, routes to different strategies based on V4 regime classification.
+    # Default False for safe rollout.
+    regime_adaptive_enabled: bool = False
+
+    # Trend strategy defaults (for TRENDING_UP/TRENDING_DOWN regimes)
+    regime_trend_min_prob: float = 0.55
+    regime_trend_size_mult: float = 1.2
+    regime_trend_stop_bps: int = 150
+    regime_trend_tp_bps: int = 200
+    regime_trend_hold_minutes: int = 60
+    regime_trend_min_expected_move_bps: float = 30.0
+
+    # Mean-reversion strategy defaults (for MEAN_REVERTING regime)
+    regime_mr_entry_threshold: float = 0.70
+    regime_mr_size_mult: float = 0.8
+    regime_mr_stop_bps: int = 80
+    regime_mr_tp_bps: int = 50
+    regime_mr_hold_minutes: int = 15
+    regime_mr_min_fade_conviction: float = 0.55
+
+    # No-trade strategy (for CHOPPY/NO_EDGE regimes)
+    regime_no_trade_allow: bool = False
+    regime_no_trade_size_mult: float = 0.1
+
+    # ── ME-STRAT-05: Cascade Fade Strategy ──
+    # Feature flag to enable cascade fade strategy
+    cascade_fade_enabled: bool = False
+
+    # Minimum cascade strength to consider fading
+    cascade_min_strength: float = 0.5
+
+    # Position sizing for cascade fades (half size due to higher risk)
+    cascade_fade_size_mult: float = 0.5
+
+    # Stop loss and take profit (basis points) - wider stops for cascades
+    cascade_fade_stop_bps: int = 300  # 3% stop
+    cascade_fade_tp_bps: int = 100  # 1% target
+
+    # Holding period and cooldown
+    cascade_fade_hold_minutes: int = 10  # Very short hold
+    cascade_cooldown_seconds: int = 900  # 15 min cooldown after cascade
 
     @property
     def v4_timescales_tuple(self) -> tuple[str, ...]:
