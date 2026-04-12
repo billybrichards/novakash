@@ -1,0 +1,94 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - link "\\u20BF BTC Trader" [ref=e6] [cursor=pointer]:
+      - /url: /polymarket/monitor
+      - generic [ref=e7]: \u20BF
+      - generic [ref=e8]: BTC Trader
+    - generic [ref=e9]:
+      - button "☀" [ref=e10] [cursor=pointer]
+      - 'button "⚙ VPIN: 0.85 | Casc: 0.70 | Arb: 1.5% | $25 ▼" [ref=e13] [cursor=pointer]':
+        - generic [ref=e14]: ⚙
+        - generic [ref=e15]:
+          - text: "VPIN: 0.85 | Casc: 0.70 | Arb:"
+          - generic [ref=e16]: 1.5%
+          - text: "|"
+          - generic [ref=e17]: $25
+        - generic [ref=e18]: ▼
+      - generic [ref=e19]:
+        - button "📄 PAPER" [ref=e20] [cursor=pointer]:
+          - generic [ref=e21]: 📄
+          - generic [ref=e22]: PAPER
+        - button "💰 LIVE" [ref=e25] [cursor=pointer]:
+          - generic [ref=e26]: 💰
+          - generic [ref=e27]: LIVE
+        - generic [ref=e32]: "ENGINE: PAPER"
+  - generic [ref=e33]:
+    - complementary [ref=e34]:
+      - navigation [ref=e35]:
+        - generic [ref=e36]:
+          - generic [ref=e39]: POLYMARKET
+          - link "M Monitor" [ref=e40] [cursor=pointer]:
+            - /url: /polymarket/monitor
+            - generic [ref=e41]: M
+            - generic [ref=e42]: Monitor
+          - link "E Evaluate" [ref=e43] [cursor=pointer]:
+            - /url: /polymarket/evaluate
+            - generic [ref=e44]: E
+            - generic [ref=e45]: Evaluate
+          - link "S Strategy Lab" [ref=e46] [cursor=pointer]:
+            - /url: /polymarket/strategy-lab
+            - generic [ref=e47]: S
+            - generic [ref=e48]: Strategy Lab
+          - link "C Configure" [ref=e49] [cursor=pointer]:
+            - /url: /config
+            - generic [ref=e50]: C
+            - generic [ref=e51]: Configure
+        - generic [ref=e52]:
+          - generic [ref=e55]: MARGIN ENGINE
+          - link "M Monitor" [ref=e56] [cursor=pointer]:
+            - /url: /margin
+            - generic [ref=e57]: M
+            - generic [ref=e58]: Monitor
+          - link "C Configure" [ref=e59] [cursor=pointer]:
+            - /url: /config?service=margin_engine
+            - generic [ref=e60]: C
+            - generic [ref=e61]: Configure
+        - generic [ref=e62]:
+          - generic [ref=e65]: SYSTEM
+          - link "St Status" [ref=e66] [cursor=pointer]:
+            - /url: /system
+            - generic [ref=e67]: St
+            - generic [ref=e68]: Status
+          - link "Sc Schema" [ref=e69] [cursor=pointer]:
+            - /url: /schema
+            - generic [ref=e70]: Sc
+            - generic [ref=e71]: Schema
+          - link "D Deploys" [ref=e72] [cursor=pointer]:
+            - /url: /deployments
+            - generic [ref=e73]: D
+            - generic [ref=e74]: Deploys
+          - link "Cf Config" [ref=e75] [cursor=pointer]:
+            - /url: /config
+            - generic [ref=e76]: Cf
+            - generic [ref=e77]: Config
+          - link "A Audit" [ref=e78] [cursor=pointer]:
+            - /url: /audit
+            - generic [ref=e79]: A
+            - generic [ref=e80]: Audit
+          - link "N Notes" [ref=e81] [cursor=pointer]:
+            - /url: /notes
+            - generic [ref=e82]: "N"
+            - generic [ref=e83]: Notes
+        - button "LEGACY ▶" [ref=e85] [cursor=pointer]:
+          - generic [ref=e87]: LEGACY
+          - generic [ref=e88]: ▶
+      - generic [ref=e89]:
+        - link "Se Setup" [ref=e90] [cursor=pointer]:
+          - /url: /setup
+          - generic [ref=e91]: Se
+          - generic [ref=e92]: Setup
+        - generic [ref=e93]:
+          - generic [ref=e94]: billy
+          - button "Logout" [ref=e95] [cursor=pointer]
+    - main [ref=e96]:
+      - generic [ref=e98]: Loading Polymarket Monitor...

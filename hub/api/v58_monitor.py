@@ -4181,3 +4181,304 @@ async def window_analysis(
         "best_entry": best_entry,
         "summary": summary,
     }
+
+
+# ─── Prediction Surface (Overview dashboard) ────────────────────────────────
+
+
+@router.get("/v58/prediction-surface")
+async def prediction_surface(
+    days: int = Query(default=7, ge=1, le=90),
+    asset: str = Query(default="btc"),
+    timeframe: str = Query(default="5m"),
+    db: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+):
+    """Prediction accuracy surface by eval_offset, plus per-strategy decision data.
+
+    For each resolved window in the period, buckets signal_evaluations by
+    eval_offset (10s groups from T-180 to T-10) and computes:
+      - How often the predicted direction matched the actual outcome
+      - How many windows each strategy would trade at each offset
+      - Per-strategy W/L at each offset
+
+    Used by the Overview dashboard to show where strategies have edge.
+    """
+    asset_upper = asset.strip().upper()
+    tf = timeframe.strip().lower()
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    try:
+        # ── 1. Signal prediction accuracy by eval_offset bucket ──────────
+        # Join signal_evaluations with window_snapshots to get actual_direction.
+        # Bucket eval_offset into 10s groups. A prediction is "correct" when
+        # v2_direction matches actual_direction.
+        accuracy_q = text("""
+            WITH resolved_windows AS (
+                SELECT window_ts, actual_direction
+                FROM window_snapshots
+                WHERE asset = :asset
+                  AND timeframe = :tf
+                  AND actual_direction IS NOT NULL
+                  AND window_ts >= EXTRACT(EPOCH FROM :cutoff::timestamptz)
+            ),
+            bucketed AS (
+                SELECT
+                    FLOOR(se.eval_offset / 10) * 10 AS offset_bucket,
+                    se.window_ts,
+                    se.v2_direction,
+                    se.v2_probability_up,
+                    rw.actual_direction,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY se.window_ts, FLOOR(se.eval_offset / 10) * 10
+                        ORDER BY se.eval_offset ASC
+                    ) AS rn
+                FROM signal_evaluations se
+                JOIN resolved_windows rw ON se.window_ts = rw.window_ts
+                WHERE se.asset = :asset
+                  AND se.timeframe = :tf
+            )
+            SELECT
+                offset_bucket,
+                COUNT(*) AS evaluations,
+                COUNT(*) FILTER (
+                    WHERE UPPER(v2_direction) = UPPER(actual_direction)
+                ) AS correct_predictions,
+                ROUND(AVG(
+                    CASE
+                        WHEN UPPER(v2_direction) = 'UP' THEN v2_probability_up
+                        WHEN UPPER(v2_direction) = 'DOWN' THEN 1.0 - v2_probability_up
+                        ELSE NULL
+                    END
+                )::numeric, 4) AS avg_confidence
+            FROM bucketed
+            WHERE rn = 1
+            GROUP BY offset_bucket
+            ORDER BY offset_bucket DESC
+        """)
+        acc_rows = (
+            await db.execute(accuracy_q, {
+                "asset": asset_upper,
+                "tf": tf,
+                "cutoff": cutoff,
+            })
+        ).mappings().all()
+
+        # Total resolved windows count
+        total_q = text("""
+            SELECT COUNT(*) AS cnt
+            FROM window_snapshots
+            WHERE asset = :asset
+              AND timeframe = :tf
+              AND actual_direction IS NOT NULL
+              AND window_ts >= EXTRACT(EPOCH FROM :cutoff::timestamptz)
+        """)
+        total_row = (await db.execute(total_q, {
+            "asset": asset_upper, "tf": tf, "cutoff": cutoff,
+        })).mappings().first()
+        total_windows = int(total_row["cnt"]) if total_row else 0
+
+        # Build offsets array
+        offsets = []
+        for r in acc_rows:
+            evals = int(r["evaluations"])
+            correct = int(r["correct_predictions"])
+            offsets.append({
+                "offset": int(r["offset_bucket"]),
+                "evaluations": evals,
+                "correct_predictions": correct,
+                "accuracy_pct": round(correct / max(evals, 1) * 100, 1),
+                "avg_confidence": float(r["avg_confidence"]) if r["avg_confidence"] else None,
+            })
+
+        # ── 2. Per-strategy decisions by offset bucket ───────────────────
+        strat_q = text("""
+            WITH resolved_windows AS (
+                SELECT window_ts, actual_direction
+                FROM window_snapshots
+                WHERE asset = :asset
+                  AND timeframe = :tf
+                  AND actual_direction IS NOT NULL
+                  AND window_ts >= EXTRACT(EPOCH FROM :cutoff::timestamptz)
+            )
+            SELECT
+                sd.strategy_id,
+                FLOOR(sd.eval_offset / 10) * 10 AS offset_bucket,
+                sd.action,
+                sd.direction,
+                rw.actual_direction
+            FROM strategy_decisions sd
+            JOIN resolved_windows rw ON sd.window_ts = rw.window_ts
+            WHERE sd.asset = :asset
+              AND sd.timeframe = :tf
+              AND sd.evaluated_at >= :cutoff
+        """)
+        strat_rows = (
+            await db.execute(strat_q, {
+                "asset": asset_upper, "tf": tf, "cutoff": cutoff,
+            })
+        ).mappings().all()
+
+        # Aggregate per (strategy, offset)
+        strat_offset: dict = {}  # (strategy_id, offset) -> {trades, wins, losses, skips}
+        strat_summary: dict = {}  # strategy_id -> {total_trades, wins, losses}
+        for r in strat_rows:
+            sid = r["strategy_id"]
+            offset = int(r["offset_bucket"]) if r["offset_bucket"] is not None else 0
+            key = (sid, offset)
+            if key not in strat_offset:
+                strat_offset[key] = {"trades": 0, "wins": 0, "losses": 0, "skips": 0}
+            if sid not in strat_summary:
+                strat_summary[sid] = {"total_trades": 0, "wins": 0, "losses": 0, "wr_pct": 0}
+
+            action = (r["action"] or "").upper()
+            if action == "TRADE":
+                strat_offset[key]["trades"] += 1
+                strat_summary[sid]["total_trades"] += 1
+                actual = (r["actual_direction"] or "").upper()
+                predicted = (r["direction"] or "").upper()
+                if actual and predicted:
+                    if predicted == actual:
+                        strat_offset[key]["wins"] += 1
+                        strat_summary[sid]["wins"] += 1
+                    else:
+                        strat_offset[key]["losses"] += 1
+                        strat_summary[sid]["losses"] += 1
+            elif action == "SKIP":
+                strat_offset[key]["skips"] += 1
+
+        # Merge strategy data into offsets
+        for o in offsets:
+            ofs = o["offset"]
+            for sid in strat_summary:
+                key = (sid, ofs)
+                data = strat_offset.get(key, {"trades": 0, "wins": 0, "losses": 0, "skips": 0})
+                prefix = sid.replace("-", "_")
+                o[f"{prefix}_trades"] = data["trades"]
+                o[f"{prefix}_wins"] = data["wins"]
+                o[f"{prefix}_wr_pct"] = round(
+                    data["wins"] / max(data["trades"], 1) * 100, 1
+                ) if data["trades"] > 0 else 0
+
+        # Finalize strategy summary
+        for sid, s in strat_summary.items():
+            total = s["wins"] + s["losses"]
+            s["wr_pct"] = round(s["wins"] / max(total, 1) * 100, 1) if total > 0 else 0
+
+        # ── 3. Recent windows (last 10 resolved) ────────────────────────
+        recent_q = text("""
+            SELECT
+                ws.window_ts,
+                ws.actual_direction,
+                ws.direction AS signal_direction,
+                ws.confidence
+            FROM window_snapshots ws
+            WHERE ws.asset = :asset
+              AND ws.timeframe = :tf
+              AND ws.actual_direction IS NOT NULL
+            ORDER BY ws.window_ts DESC
+            LIMIT 10
+        """)
+        recent_rows = (
+            await db.execute(recent_q, {"asset": asset_upper, "tf": tf})
+        ).mappings().all()
+
+        # For each recent window, get the signal direction at ~T-120
+        recent_windows = []
+        for rw in recent_rows:
+            wts = int(rw["window_ts"])
+            actual = rw["actual_direction"]
+            sig_dir = rw["signal_direction"]
+            conf = _safe_float(rw["confidence"])
+
+            # Get signal at T-120 (nearest eval)
+            dir_at_120 = None
+            try:
+                t120_q = text("""
+                    SELECT v2_direction
+                    FROM signal_evaluations
+                    WHERE asset = :asset AND timeframe = :tf AND window_ts = :wts
+                      AND eval_offset BETWEEN 110 AND 130
+                    ORDER BY ABS(eval_offset - 120)
+                    LIMIT 1
+                """)
+                t120_row = (await db.execute(t120_q, {
+                    "asset": asset_upper, "tf": tf, "wts": wts,
+                })).mappings().first()
+                if t120_row:
+                    dir_at_120 = t120_row["v2_direction"]
+            except Exception:
+                pass
+
+            # Get strategy decisions for this window
+            v10_decision = None
+            v4_decision = None
+            try:
+                sd_q = text("""
+                    SELECT strategy_id, action, direction
+                    FROM strategy_decisions
+                    WHERE asset = :asset AND window_ts = :wts
+                    ORDER BY eval_offset ASC
+                """)
+                sd_rows = (await db.execute(sd_q, {
+                    "asset": asset_upper, "wts": wts,
+                })).mappings().all()
+                for sdr in sd_rows:
+                    sid = sdr["strategy_id"]
+                    act = (sdr["action"] or "SKIP").upper()
+                    if "v10" in sid.lower():
+                        v10_decision = act
+                    elif "v4" in sid.lower():
+                        v4_decision = act
+            except Exception:
+                pass
+
+            # Find best accuracy offset for this window
+            best_offset = None
+            try:
+                best_q = text("""
+                    SELECT eval_offset
+                    FROM signal_evaluations
+                    WHERE asset = :asset AND timeframe = :tf AND window_ts = :wts
+                      AND UPPER(v2_direction) = UPPER(:actual)
+                    ORDER BY eval_offset DESC
+                    LIMIT 1
+                """)
+                best_row = (await db.execute(best_q, {
+                    "asset": asset_upper, "tf": tf, "wts": wts,
+                    "actual": actual or "",
+                })).mappings().first()
+                if best_row:
+                    best_offset = int(best_row["eval_offset"])
+            except Exception:
+                pass
+
+            recent_windows.append({
+                "window_ts": wts,
+                "outcome": "WIN" if sig_dir and actual and sig_dir.upper() == actual.upper() else "LOSS",
+                "actual_direction": actual,
+                "direction_at_t120": dir_at_120,
+                "v10_decision": v10_decision or "N/A",
+                "v4_decision": v4_decision or "N/A",
+                "best_accuracy_offset": best_offset,
+            })
+
+        return {
+            "period_days": days,
+            "total_windows": total_windows,
+            "asset": asset_upper,
+            "timeframe": tf,
+            "offsets": offsets,
+            "strategy_summary": strat_summary,
+            "recent_windows": recent_windows,
+        }
+    except Exception as exc:
+        log.warning("v58.prediction_surface_error", error=str(exc)[:300])
+        return {
+            "period_days": days,
+            "total_windows": 0,
+            "offsets": [],
+            "strategy_summary": {},
+            "recent_windows": [],
+            "error": str(exc)[:300],
+        }
