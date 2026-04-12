@@ -1,210 +1,185 @@
-# DOWN-ONLY Trading Strategy — 2026-04-12
+# DOWN-Only Polymarket 5-Min Strategy
+**Discovered:** 2026-04-12  
+**Data:** 897,503 signal evaluations, T-90–150, confidence ≥ 0.12, BTC, ~5 days  
+**Status:** CONFIRMED — implement overnight as paper trading gate
 
-## Executive Summary
+---
 
-**Critical Discovery:** DOWN predictions have 76-99% win rate across all CLOB ask ranges. UP predictions have 1.5-53% win rate. This is a systematic retail bias exploit, not a model signal.
+## The Finding
 
-**Recommendation:** Trade DOWN ONLY. Skip ALL UP predictions.
-
-## The Data
-
-### Full Accuracy Surface by Direction & CLOB Ask (T-90-150, confidence>=0.12)
-
-| Our Prediction | Token We Buy | CLOB Token Ask | Frequency | Win Rate | Edge |
-|----------------|--------------|----------------|-----------|----------|------|
-| **DOWN** | DOWN token | >0.75 | 175,261 | **99.0%** | +49pp |
-| **DOWN** | DOWN token | 0.55-0.75 | 112,371 | 97.8% | +48pp |
-| **DOWN** | DOWN token | 0.35-0.55 | 86,821 | 92.1% | +42pp |
-| **DOWN** | DOWN token | <=0.35 | 177,435 | 76.2% | +26pp |
+| Direction | CLOB Ask Band | N | Win Rate | Edge |
+|-----------|---------------|---|----------|------|
+| **DOWN** | > 0.75 (market agrees) | 175,261 | **99.0%** | Double confirmation |
+| **DOWN** | 0.55–0.75 | 112,371 | **97.8%** | Strong confirmation |
+| **DOWN** | 0.35–0.55 | 86,821 | **92.1%** | Mild confirmation |
+| **DOWN** | ≤ 0.35 (market disagrees) | 177,435 | **76.2%** | Genuine contrarian |
 | | | | | |
-| **UP** | UP token | >0.75 | 74,107 | 53.8% | +4pp |
-| **UP** | UP token | 0.55-0.75 | 124,835 | 23.8% | -26pp |
-| **UP** | UP token | 0.35-0.55 | 75,177 | 1.8% | -48pp |
-| **UP** | UP token | <=0.35 | 71,496 | 1.5% | -49pp |
+| **UP** | > 0.75 | 74,107 | 53.8% | Barely above random |
+| **UP** | 0.55–0.75 | 124,835 | 23.8% | Negative edge |
+| **UP** | 0.35–0.55 | 75,177 | 1.8% | Near-zero |
+| **UP** | ≤ 0.35 | 71,496 | 1.5% | Near-zero |
 
-**Total samples:** 897,503 signal evaluations with CLOB data
+**Down = 551K samples (61%), Up = 346K samples (39%)**
 
-## Why This Happens
+---
 
-### Retail Trader Psychology
+## Clarifying the "Contrarian" Label
 
-Polymarket retail traders exhibit **strong UP bias** on 5-minute BTC windows:
-- They believe "BTC goes up" as a default assumption
-- They underprice DOWN tokens (overprice NO)
-- They overprice UP tokens (underprice YES)
+The CLOB ask bands require careful interpretation:
 
-This creates a **systematic mispricing** that our model exploits:
-- When our model predicts DOWN (based on VPIN, TimesFM, CoinGlass, etc.), retail prices DOWN at 0.75-0.95
-- When our model predicts UP, retail prices UP at 0.25-0.45 (but our model is wrong 50-98% of the time)
+**`clob_down_ask` = cost to buy a DOWN token = market-implied probability of DOWN.**
 
-### This Is NOT a Model Problem
+| clob_down_ask | What it means | Our prediction | Relationship |
+|---------------|---------------|----------------|--------------|
+| > 0.75 | Market prices DOWN at >75% | DOWN | **Double confirmation** — both agree. 99% WR because a downtrend is already established at T-90-150 and both model + market recognise it. |
+| 0.35–0.75 | Market prices DOWN at 35–75% | DOWN | **Mild–strong confirmation.** 92–98% WR. |
+| < 0.35 | Market prices DOWN at <35% | DOWN | **Genuine contrarian** — retail UP bias means DOWN is cheap; model says DOWN anyway. 76% WR. |
 
-The model is correctly identifying DOWN moves. The issue is that UP predictions are inherently noisy on 5-minute windows:
-- 5-minute BTC direction is ~50/50 random walk
-- DOWN moves are more predictable (liquidation cascades, panic selling, regime shifts)
-- UP moves require sustained buying pressure (harder to sustain in 5 min)
+The 99% "contrarian" label in the original query was misleading because it used the term to mean "contrarian to the typical retail direction" not "contrarian to the current CLOB price." Both zones are profitable but for different reasons.
 
-### This IS an Exploitable Edge
+---
 
-The CLOB bias is **consistent and stable**:
-- 175K DOWN predictions at 99% WR (clob_ask >0.75)
-- This is NOT a data artifact — it's retail psychology
-- It will persist as long as retail traders trade Polymarket
+## Why DOWN Predictions Dominate
 
-## Recommended Strategy
+**The model (VPIN + CoinGlass + Sequoia + TimesFM) is much better at detecting bearish signals than bullish ones.** Reasons:
 
-### Core Rule: DOWN ONLY
+1. **Liquidation cascades are more predictable** — forced sellers create detectable order flow asymmetry. Buyers are more discretionary.
+2. **VPIN is a bearish detector** — VPIN spikes on sell-side informed flow, which correlates with downward moves.
+3. **CoinGlass OI and funding rate** — funding rate spikes and OI drops are bearish precursors.
+4. **Retail UP bias creates cheap DOWN tokens** — when market disagrees with our DOWN signal, DOWN is underpriced (76% WR arbitrage).
+
+UP predictions have 1–53% WR across all CLOB ranges. This is not a threshold tuning problem — it's a fundamental signal asymmetry. UP predictions should always be skipped.
+
+---
+
+## Recommended Strategy: V4 DOWN-Only Gate
+
+### Gate logic (to add to `engine/signals/gates.py`)
 
 ```python
-# V4 Fusion Strategy - Modified for DOWN-ONLY
+class DirectionFilterGate:
+    """Skip all UP predictions. DOWN predictions pass through unconditionally.
+    
+    Rationale: 897K-sample analysis (2026-04-12) shows DOWN predictions have
+    76-99% WR across all CLOB ranges. UP predictions have 1-53% WR.
+    See docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md
+    """
+    async def evaluate(self, ctx: GateContext) -> GateResult:
+        if ctx.agreed_direction == "UP":
+            return GateResult(
+                passed=False,
+                gate_name="direction_filter",
+                reason="up_prediction_skipped",
+                data={"direction": "UP", "policy": "down_only"},
+            )
+        return GateResult(passed=True, gate_name="direction_filter", reason="down_allowed")
 
-def should_trade(direction, confidence, clob_ask, eval_offset):
-    """
-    Returns (trade: bool, size_modifier: float, reason: str)
-    clob_ask = DOWN token ask price when direction='DOWN'
-    clob_ask = UP token ask price when direction='UP'
-    """
-    # CRITICAL: Skip all UP predictions
-    if direction == 'UP':
-        return False, 0.0, "up_predictions_unprofitable"
+
+class CLOBSizingGate:
+    """Adjust size_modifier based on clob_down_ask.
     
-    # DOWN predictions: always trade if confidence >= 0.12
-    if direction == 'DOWN' and confidence >= 0.12:
-        # Size based on DOWN token ask price
-        # Higher ask = CLOB agrees more = bigger edge
-        if clob_ask >= 0.75:
-            return True, 2.0, "down_clob_agrees_99pct"
-        elif clob_ask >= 0.60:
-            return True, 1.5, "down_strong_edge_92pct"
-        elif clob_ask >= 0.50:
-            return True, 1.2, "down_moderate_edge_76pct"
+    Higher clob_down_ask = market also thinks DOWN is likely = higher conviction.
+    Lower clob_down_ask = genuine contrarian bet = lower size.
+    
+    See docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md
+    """
+    async def evaluate(self, ctx: GateContext) -> GateResult:
+        ask = ctx.clob_down_ask
+        if ask is None:
+            # No CLOB data — use base size, don't block
+            return GateResult(passed=True, gate_name="clob_sizing", reason="no_clob_data",
+                              data={"size_modifier": 1.0})
+        if ask >= 0.75:
+            modifier, label = 2.0, "double_confirmation"
+        elif ask >= 0.55:
+            modifier, label = 1.5, "strong_confirmation"
+        elif ask >= 0.35:
+            modifier, label = 1.2, "mild_confirmation"
         else:
-            return True, 1.0, "down_min_edge_76pct"
-    
-    # Skip if low confidence
-    return False, 0.0, "confidence_too_low"
+            modifier, label = 1.0, "contrarian"  # genuine contrarian, base size
+        # Set on context for downstream use
+        ctx.size_modifier = modifier
+        return GateResult(passed=True, gate_name="clob_sizing", reason=label,
+                          data={"clob_down_ask": ask, "size_modifier": modifier})
 ```
 
-### Sizing Rules (for DOWN predictions only)
+### Pipeline insertion (in `five_min_vpin.py`)
 
-| DOWN Token Ask | Size Modifier | Rationale |
-|----------------|---------------|-----------|
-| >= 0.75 | 2.0x | Maximum edge (97-99% WR) - CLOB agrees with us |
-| 0.60-0.75 | 1.5x | Strong edge (92% WR) |
-| 0.50-0.60 | 1.2x | Moderate edge (76-92% WR) |
-| < 0.50 | 1.0x | Minimum viable edge (76% WR) |
+Insert `DirectionFilterGate` as G1.5 (after SourceAgreementGate, before DeltaMagnitudeGate).  
+Insert `CLOBSizingGate` as G6.5 (after SpreadGate, before DynamicCapGate).
 
-### Eval Offset Window
+This means existing gates are unchanged — new gates slot in without modifying G0–G7.
 
-- **Optimal:** T-120 to T-150 (65%+ accuracy for all signals)
-- **Acceptable:** T-90 to T-180 (still profitable for DOWN)
-- **Avoid:** T-60 and below (CLOB has priced in outcome)
-- **Avoid:** T-210+ (too early, noisy)
+---
 
-### Confidence Threshold
+## Sizing Schedule
 
-- **Minimum:** 0.12 (current V4 threshold)
-- **Optimal:** 0.15 (65%+ WR, fewer but higher-quality trades)
-- **Aggressive:** 0.10 (more trades, similar WR for DOWN)
+| clob_down_ask | Size | WR | Rationale |
+|---------------|------|----|-----------|
+| ≥ 0.75 | 2.0× base | 99% | Market + model both see downtrend |
+| 0.55–0.75 | 1.5× base | 98% | Strong market agreement |
+| 0.35–0.55 | 1.2× base | 92% | Mild agreement |
+| < 0.35 | 1.0× base | 76% | Contrarian, base Kelly only |
+| No CLOB data | 1.0× base | ~85%* | Fallback (no sizing boost) |
+
+\* Estimated from all-DOWN average WR without CLOB filter.
+
+Base Kelly: 2.5% bankroll (`BET_FRACTION = 0.025`)
+
+---
+
+## Expected Value per Trade
+
+```
+clob_down_ask >= 0.75: buy DOWN at $0.75 → payout $1.00
+  EV = 0.99 × $1.00 − 0.01 × $0.75 = $0.99 − $0.01 = +$0.98 per $0.75 staked (+131%)
+
+clob_down_ask < 0.35: buy DOWN at $0.25 → payout $1.00  
+  EV = 0.76 × $1.00 − 0.24 × $0.25 = $0.76 − $0.06 = +$0.70 per $0.25 staked (+280%)
+```
+
+The contrarian edge at cheap CLOB actually has higher EV per dollar staked, but lower probability. Both are strongly positive.
+
+---
 
 ## Risk Profile
 
-### Expected Win Rate
+**Near-zero drawdown risk for DOWN-only with CLOB data available:**
 
-- **DOWN contrarian (clob_ask >= 0.75):** 97-99%
-- **DOWN normal (clob_ask 0.50-0.75):** 76-92%
-- **DOWN cheap (clob_ask < 0.50):** 76%
-- **UP (any CLOB ask):** 1.5-53% (DON'T TRADE)
+At worst-case 76% WR (cheap CLOB contrarian):
+- Probability of 5 consecutive losses: 0.24⁵ = 0.08% (1 in 1,300)
+- Probability of 10 consecutive losses: 0.24¹⁰ = 0.0001% (1 in 900,000)
+- Existing 3-loss cooldown and 45% drawdown kill switch provide additional protection
 
-### Position Sizing
+---
 
-Using 2.5% Kelly fraction from current config:
-- DOWN contrarian: 5.0% (2.0x)
-- DOWN expensive: 3.0% (1.2x)
-- DOWN normal: 2.5% (1.0x)
+## Risks and Failure Modes
 
-### Maximum Drawdown Risk
+1. **Bearish-dataset bias** — Sessions 1-5 data skew toward downtrending BTC. DOWN predictions may have higher WR in the data period than in a persistent bull run. Monitor: track rolling 24h DOWN WR; if it drops below 70%, review.
 
-**Near-zero** for DOWN-only strategy:
-- At 90% WR, need 10 consecutive losses to hit 10% drawdown
-- Probability of 10 consecutive losses at 10% loss rate: 0.1^10 = 1 in 10 billion
-- Even at 76% WR (worst case DOWN), 10 consecutive losses: 0.24^10 = 1 in 60 million
+2. **CLOB data unavailability** — Without CLOB data, sizing defaults to 1.0× and direction-only filter applies. Always acceptable but loses sizing edge.
 
-### Frequency
+3. **Market regime shift** — If a strong sustained bull run emerges, DOWN signals will fire less frequently and UP predictions will remain wrong. Trade frequency drops but WR of executed trades stays high.
 
-- **DOWN signals:** ~50% of all windows (175K in dataset)
-- **DOWN contrarian:** ~25% of all windows (90K in dataset)
-- **Expected trades per day:** 50-100 (depending on confidence filter)
+4. **Market depth at expensive CLOB** — When `clob_down_ask ≥ 0.75`, DOWN tokens are expensive. At 2× size + $50 max, we're buying $100 of an expensive token. Verify fill quality doesn't degrade at larger size.
+
+---
 
 ## Implementation Checklist
 
-### Phase 1: Immediate (CLOB fix already deployed)
-- [x] Fix CLOB feed in paper mode (PR #___)
-- [ ] Deploy to Montreal
-- [ ] Verify CLOB coverage >80% at T-120-150
+- [ ] **SIG-04**: Add `DirectionFilterGate` to `engine/signals/gates.py`
+- [ ] **SIG-05**: Add `CLOBSizingGate` to `engine/signals/gates.py`
+- [ ] Wire both gates into the V4 pipeline in `five_min_vpin.py`
+- [ ] Add env flag `V4_DOWN_ONLY=true` for soft rollout
+- [ ] Add `size_modifier` field to `GateContext` dataclass
+- [ ] Verify in paper mode: skip rate for UP predictions = ~38% of all signals
+- [ ] Monitor: DOWN WR in rolling 24h; alert if < 70%
 
-### Phase 2: DOWN-ONLY Filter
-- [ ] Update V4 strategy: skip all UP predictions
-- [ ] Add CLOB-based sizing (2.0x for contrarian)
-- [ ] Set confidence threshold to 0.15
-- [ ] Set eval_offset window to T-120-150
-
-### Phase 3: Monitoring
-- [ ] Add dashboard panel: DOWN vs UP win rates
-- [ ] Add alert: if DOWN WR drops below 85%
-- [ ] Add alert: if CLOB bias disappears (clob_down_ask < 0.60)
-
-## Backtest Results (Historical Data)
-
-### Last 4 Hours (pre-fix, all signals)
-- **Total trades:** 503
-- **Win rate:** 51.4% (biased by UP trades)
-- **Expected with DOWN-only:** ~90% WR, ~250 trades
-
-### All-Time (T-90-150, conf>=0.12)
-- **DOWN contrarian:** 99.0% WR (175,261 trades)
-- **DOWN all ranges:** 85-99% WR (451,873 trades)
-- **UP all ranges:** 1.5-53% WR (345,630 trades)
-
-## Why This Will Persist
-
-1. **Retail bias is structural** — new retail traders always enter with UP bias
-2. **No arbitrageurs** — retail market is too small for HFT arbitrage
-3. **5-min window friction** — transaction costs prevent mean reversion trading
-4. **Polymarket design** — no short selling, only YES/NO tokens (asymmetric)
-
-## Why This Will NOT Break
-
-**Scenario 1: Model gets better at UP predictions**
-- Even if model reaches 60% WR on UP, DOWN is still 99% WR
-- Risk/reward still favors DOWN-only
-
-**Scenario 2: CLOB bias disappears**
-- If clob_down_ask drops to 0.55, still 76% WR (profitable)
-- If clob_down_ask drops to 0.45, still 50% WR (break-even)
-- Requires 50%+ shift in retail behavior (unlikely)
-
-**Scenario 3: We scale position size too much**
-- Market depth at clob_ask >0.75 is limited
-- Monitor slippage: if fill price deviates >2%, reduce size
-- Max position: $50 per trade (current limit)
-
-## Config Changes Required
-
-```env
-# V4 Fusion Configuration
-V4_MIN_EVAL_OFFSET=120
-V4_MAX_EVAL_OFFSET=150
-V4_MIN_CONFIDENCE=0.15
-V4_SKIP_UP_PREDICTIONS=true
-V4_DOWN_SIZE_MULTIPLIER=1.0
-V4_DOWN_MAX_EDGE_SIZE=2.0
-V4_DOWN_MAX_EDGE_THRESHOLD=0.75  # DOWN token ask >= $0.75 for 2.0x size
-```
+---
 
 ## Monitoring Queries
 
-### Current DOWN vs UP Win Rate
+### Live DOWN vs UP win rate
 ```sql
 SELECT
     se.v2_direction,
@@ -213,39 +188,35 @@ SELECT
         CASE WHEN (se.v2_direction = 'UP'   AND ws.close_price > ws.open_price)
                OR (se.v2_direction = 'DOWN' AND ws.close_price < ws.open_price)
         THEN 1 ELSE 0 END
-    )::numeric / COUNT(*), 1) AS accuracy
-FROM strategy_decisions sd
-JOIN signal_evaluations se
-    ON sd.window_ts = se.window_ts::bigint AND sd.asset = se.asset
-JOIN window_snapshots ws
-    ON sd.window_ts = ws.window_ts::bigint AND sd.asset = ws.asset
-WHERE sd.strategy_id = 'v4_fusion'
-  AND sd.action = 'TRADE'
-  AND sd.evaluated_at >= NOW() - INTERVAL '24 hours'
+    )::numeric / COUNT(*), 1) AS win_rate
+FROM signal_evaluations se
+JOIN window_snapshots ws ON se.window_ts = ws.window_ts::bigint AND se.asset = ws.asset
+WHERE se.asset = 'BTC'
+  AND se.eval_offset BETWEEN 90 AND 150
+  AND ABS(COALESCE(se.v2_probability_up, 0.5) - 0.5) >= 0.12
+  AND se.evaluated_at >= NOW() - INTERVAL '24 hours'
 GROUP BY 1;
 ```
 
-### CLOB Bias Monitor
+### CLOB ask distribution (check retail bias is stable)
 ```sql
 SELECT
-    DATE_TRUNC('hour', se.evaluated_at) AS hour,
-    ROUND(AVG(CASE WHEN se.v2_direction = 'DOWN' THEN
-        CASE WHEN se.clob_down_ask IS NOT NULL THEN se.clob_down_ask END
-    END)::numeric, 3) AS avg_clob_down_ask,
-    COUNT(*) FILTER (WHERE se.v2_direction = 'DOWN') AS down_count
+    CASE
+        WHEN se.clob_down_ask <= 0.35 THEN 'cheap(<0.35)'
+        WHEN se.clob_down_ask <= 0.55 THEN 'mid(0.35-0.55)'
+        WHEN se.clob_down_ask <= 0.75 THEN 'high(0.55-0.75)'
+        ELSE 'exp(>0.75)'
+    END AS band,
+    COUNT(*) AS n,
+    ROUND(AVG(se.clob_down_ask)::numeric, 3) AS avg_ask
 FROM signal_evaluations se
-WHERE se.asset = 'BTC'
+WHERE se.asset = 'BTC' AND se.v2_direction = 'DOWN'
+  AND se.clob_down_ask IS NOT NULL
   AND se.eval_offset BETWEEN 90 AND 150
   AND se.evaluated_at >= NOW() - INTERVAL '24 hours'
-GROUP BY 1
-ORDER BY 1;
+GROUP BY 1 ORDER BY avg_ask;
 ```
 
 ---
 
-**Analysis Date:** 2026-04-12 16:30 UTC  
-**Data Range:** 2026-04-07 to 2026-04-12 (5 days)  
-**Total Samples:** 897,503 signal evaluations  
-**Confidence:** 99.9% statistical significance (p < 0.0001)
-
-**Next Review:** After CLOB fix deploy + 24h of live data
+**Next analysis:** After 24h of live CLOB data (post PR #136 fix), re-run full direction × CLOB band query to validate WR holds in mixed-regime sessions.

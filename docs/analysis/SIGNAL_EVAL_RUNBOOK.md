@@ -564,6 +564,86 @@ If `chop` or `risk_off` accuracy >= 60%: consider removing regime block. If < 50
 
 ---
 
+---
+
+## Section 8: DOWN-Only Strategy — Key Finding (2026-04-12)
+
+**Discovery date:** 2026-04-12  
+**Data:** 897,503 signal evaluations, T-90–150, confidence ≥ 0.12  
+**Full doc:** `docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md`
+
+### The finding
+
+| Direction | CLOB Token Ask | N | WR |
+|-----------|----------------|---|----|
+| **DOWN** | > 0.75 | 175,261 | **99.0%** |
+| **DOWN** | 0.55–0.75 | 112,371 | **97.8%** |
+| **DOWN** | 0.35–0.55 | 86,821 | **92.1%** |
+| **DOWN** | < 0.35 | 177,435 | **76.2%** |
+| **UP** | > 0.75 | 74,107 | 53.8% |
+| **UP** | 0.55–0.75 | 124,835 | 23.8% |
+| **UP** | 0.35–0.55 | 75,177 | 1.8% |
+| **UP** | < 0.35 | 71,496 | 1.5% |
+
+**CLOB ask interpretation:** For DOWN predictions, `clob_ask = clob_down_ask` = cost to buy a DOWN token = market-implied probability that BTC goes down. For UP predictions, `clob_ask = clob_up_ask`.
+
+When `clob_down_ask > 0.75`: market AND model both say DOWN → double confirmation, 99% WR.  
+When `clob_down_ask < 0.35`: market disagrees (retail UP bias), model says DOWN → genuine contrarian, 76% WR.
+
+Both are profitable. UP predictions have no edge at any CLOB price range.
+
+### Monitoring query
+
+```sql
+-- Direction × CLOB band (full_signal_report.py Section 8 runs this automatically)
+SELECT
+    se.v2_direction,
+    CASE
+        WHEN (CASE WHEN se.v2_direction='UP' THEN se.clob_up_ask ELSE se.clob_down_ask END) <= 0.35
+          THEN '<0.35'
+        WHEN (CASE WHEN se.v2_direction='UP' THEN se.clob_up_ask ELSE se.clob_down_ask END) <= 0.55
+          THEN '0.35-0.55'
+        WHEN (CASE WHEN se.v2_direction='UP' THEN se.clob_up_ask ELSE se.clob_down_ask END) <= 0.75
+          THEN '0.55-0.75'
+        ELSE '>0.75'
+    END AS band,
+    COUNT(*) AS n,
+    ROUND(100.0 * SUM(
+        CASE WHEN (se.v2_direction='UP' AND ws.close_price > ws.open_price)
+               OR (se.v2_direction='DOWN' AND ws.close_price < ws.open_price)
+        THEN 1 ELSE 0 END
+    )::numeric / COUNT(*), 1) AS wr
+FROM signal_evaluations se
+JOIN window_snapshots ws ON se.window_ts = ws.window_ts::bigint AND se.asset = ws.asset
+WHERE se.asset = 'BTC'
+  AND se.eval_offset BETWEEN 90 AND 150
+  AND se.v2_direction IS NOT NULL
+  AND ws.close_price > 0 AND ws.open_price > 0
+  AND ABS(COALESCE(se.v2_probability_up, 0.5) - 0.5) >= 0.12
+  AND (se.clob_up_ask IS NOT NULL OR se.clob_down_ask IS NOT NULL)
+GROUP BY 1, 2 ORDER BY 1 DESC;
+```
+
+### Recommended config (when SIG-03/SIG-04 gates are implemented)
+
+```env
+V4_MIN_EVAL_OFFSET=120
+V4_MAX_EVAL_OFFSET=150
+V4_MIN_CONFIDENCE=0.15
+V4_SKIP_UP_PREDICTIONS=true
+V4_DOWN_SIZE_MULTIPLIER=1.0
+V4_DOWN_CONTRARIAN_SIZE=2.0
+V4_DOWN_CONTRARIAN_THRESHOLD=0.75
+```
+
+### Next steps
+
+- Implement `DirectionFilterGate` and `CLOBSizingGate` (SIG-03, SIG-04 in audit checklist)
+- Re-run Section 8 after 24h of live CLOB data (post PR #136) to validate WR holds in mixed-regime sessions
+- Alert threshold: if rolling 24h DOWN WR drops below 70%, pause and investigate
+
+---
+
 ## Appendix: Quick Reference
 
 ### Key thresholds (current as of 2026-04-12)

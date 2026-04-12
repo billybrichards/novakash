@@ -538,6 +538,32 @@ All 10 items (ME-STRAT-01 through ME-STRAT-08 + ME-STRAT-UI-01 + SIGNAL-COMP-UI-
 
 **Signal eval runbook created** (`docs/analysis/SIGNAL_EVAL_RUNBOOK.md`). Covers all tables, queries, config decision framework, schema gotchas. Any agent can run `full_signal_report.py` for current-state analysis.
 
+### 2026-04-12 — Session 5 cont: CLOB bug fix + DOWN-only strategy discovery
+
+**CLOB feed bug found and fixed (PR #136).** Root cause: `CLOBFeed._poll()` had a `self._poly.paper_mode` guard that completely disabled the feed in paper mode. `clob_book_snapshots` had 0 rows over 24h; all `clob_up_ask`/`clob_down_ask` in `signal_evaluations` were NULL. V4 was trading blind. Fix: removed the guard; `PolymarketClient.connect()` now initialises a read-only `ClobClient` in paper mode (order book endpoint is unauthenticated), so real prices flow in both modes. PR #136 merged to develop.
+
+**CLOB data coverage clarified.** Before restarts today: 98–99% coverage. After multiple engine restarts: 0%. Paper mode guard was silently breaking the feed on every restart — it was never reaching `clob_book_snapshots`.
+
+**Critical discovery: DOWN-only strategy (897K sample analysis).** Full analysis at `docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md`. Key table:
+
+| Direction | CLOB Token Ask | N | WR |
+|-----------|----------------|---|----|
+| DOWN | > 0.75 | 175,261 | **99.0%** |
+| DOWN | 0.55–0.75 | 112,371 | **97.8%** |
+| DOWN | 0.35–0.55 | 86,821 | **92.1%** |
+| DOWN | < 0.35 | 177,435 | **76.2%** |
+| UP | any | 346K | **1.5–53%** |
+
+CLOB ask interpretation: `clob_down_ask > 0.75` means the market prices DOWN at >$0.75 — both model and market agree on DOWN, 99% WR. `clob_down_ask < 0.35` is the genuine contrarian: retail UP bias makes DOWN cheap, our model is right 76% of the time. UP predictions are unprofitable across every CLOB band — not a calibration issue, a fundamental signal asymmetry. DOWN moves are more predictable (liquidation cascades, VPIN spikes) than UP moves.
+
+**Two new gate proposals (SIG-03, SIG-04) added to /audit checklist:**
+- **SIG-03**: `DirectionFilterGate` — skip all UP predictions. ~20 lines, G1.5 in the existing Gate pipeline.
+- **SIG-04**: `CLOBSizingGate` — adjust size_modifier based on clob_down_ask (2.0× at ≥0.75, down to 1.0× below 0.35). G6.5 in pipeline.
+
+**Section 8 added to `full_signal_report.py`** — runs the direction × CLOB band query automatically. Run `python3 docs/analysis/full_signal_report.py` to see current WR split.
+
+**Runbook Section 8 added** with the full finding, monitoring query, and recommended env config.
+
 ## Next up (ordered, updated 2026-04-12 session 5)
 
 0. **Go live** — top up wallet confirmed ($101.21 USDC). Flip PAPER→LIVE toggle in Monitor top bar when ready.

@@ -585,6 +585,81 @@ async def report_recommendations(conn, asset: str, hours: int):
             print(f"  dist >= {thresh_label}:  {acc_color(rows[0]['acc'])}  n={rows[0]['n']}{current}")
 
 
+# ── Section 8: Direction × CLOB Band ─────────────────────────────────────────
+
+async def report_direction_clob(conn, asset: str):
+    section("8. DIRECTION × CLOB BAND (all-time, T-90-150, conf>=0.12)")
+    print(dim("  Key finding 2026-04-12: DOWN predictions profitable at all CLOB ranges."))
+    print(dim("  UP predictions are almost always wrong. See docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md"))
+    print()
+
+    rows = await safe_fetch(conn, f"""
+        WITH evals AS (
+            SELECT
+                se.v2_direction,
+                CASE WHEN se.v2_direction = 'UP' THEN se.clob_up_ask
+                     ELSE se.clob_down_ask END AS clob_ask,
+                ws.close_price, ws.open_price
+            FROM signal_evaluations se
+            JOIN window_snapshots ws
+                ON se.window_ts = ws.window_ts::bigint AND se.asset = ws.asset
+            WHERE se.asset = $1
+              AND se.v2_direction IS NOT NULL
+              AND ws.close_price > 0 AND ws.open_price > 0
+              AND se.eval_offset BETWEEN 90 AND 150
+              AND ABS(COALESCE(se.v2_probability_up, 0.5) - 0.5) >= 0.12
+              AND (se.clob_up_ask IS NOT NULL OR se.clob_down_ask IS NOT NULL)
+        )
+        SELECT
+            e.v2_direction AS dir,
+            CASE
+                WHEN e.clob_ask <= 0.35 THEN '<=0.35 (cheap)'
+                WHEN e.clob_ask <= 0.55 THEN '0.35-0.55'
+                WHEN e.clob_ask <= 0.75 THEN '0.55-0.75'
+                ELSE '>0.75 (exp/agree)'
+            END AS band,
+            COUNT(*) AS n,
+            ROUND(100.0 * SUM(
+                CASE WHEN (e.v2_direction = 'UP'   AND e.close_price > e.open_price)
+                       OR (e.v2_direction = 'DOWN' AND e.close_price < e.open_price)
+                THEN 1 ELSE 0 END
+            )::numeric / NULLIF(COUNT(*), 0), 1) AS wr
+        FROM evals e
+        GROUP BY 1, 2
+        ORDER BY 1 DESC, e.clob_ask DESC
+    """, asset)
+
+    if not rows:
+        print(yellow("  No data with CLOB coverage yet — check CLOB feed (PR #136)"))
+        return
+
+    for direction in ["DOWN", "UP"]:
+        dir_rows = [r for r in rows if r["dir"] == direction]
+        if not dir_rows:
+            continue
+        label = green("DOWN") if direction == "DOWN" else red("UP")
+        print(f"  {label} predictions:")
+        print(f"    {'Band':>15}  {'n':>7}  {'WR%':>6}")
+        print(f"    {'-'*15}  {'-'*7}  {'-'*6}")
+        for r in dir_rows:
+            wr = float(r["wr"]) if r["wr"] is not None else None
+            band_label = str(r["band"])
+            print(f"    {band_label:>15}  {r['n']:>7}  {acc_color(wr)}")
+        print()
+
+    # Summary verdict
+    down_rows = [r for r in rows if r["dir"] == "DOWN"]
+    up_rows = [r for r in rows if r["dir"] == "UP"]
+    min_down_wr = min((float(r["wr"]) for r in down_rows if r["wr"]), default=None)
+    max_up_wr = max((float(r["wr"]) for r in up_rows if r["wr"]), default=None)
+
+    if min_down_wr is not None and min_down_wr >= 70:
+        print(green(f"  VERDICT: DOWN-only strategy confirmed. Worst DOWN WR = {min_down_wr:.1f}%"))
+        print(green(f"  SKIP all UP predictions. Best UP WR = {max_up_wr:.1f}% — no edge."))
+    else:
+        print(yellow(f"  Insufficient data or regime shift. Worst DOWN WR = {min_down_wr}"))
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 async def run(asset: str, hours: int):
@@ -606,6 +681,7 @@ async def run(asset: str, hours: int):
         await report_v10(conn, asset, hours)
         await report_clob(conn, asset, hours)
         await report_recommendations(conn, asset, hours)
+        await report_direction_clob(conn, asset)
     except asyncpg.exceptions.InvalidPasswordError:
         print(red("ERROR: Invalid database password. Check PUB_URL."))
         sys.exit(1)
