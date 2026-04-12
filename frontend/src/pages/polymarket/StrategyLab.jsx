@@ -873,6 +873,369 @@ function GateImpactAnalysis({ windows }) {
   );
 }
 
+// ── Tab C: Live Shadow Comparison ──────────────────────────────────────────
+
+function ShadowComparison({ api }) {
+  const [decisions, setDecisions] = useState([]);
+  const [comparison, setComparison] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [days, setDays] = useState(7);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const [decRes, cmpRes] = await Promise.all([
+          api('GET', `/v58/strategy-decisions?limit=200`),
+          api('GET', `/v58/strategy-comparison?days=${days}`),
+        ]);
+        if (cancelled) return;
+        setDecisions(decRes.data?.decisions || []);
+        setComparison(cmpRes.data || { strategies: [] });
+      } catch (err) {
+        if (!cancelled) setError(err.message || 'Failed to fetch strategy data');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [api, days]);
+
+  if (loading) return <div style={S.loadingBox}>Loading strategy decisions...</div>;
+  if (error) return <div style={S.errorBox}>{error}</div>;
+
+  const strategies = comparison?.strategies || [];
+  const v10 = strategies.find(s => s.strategy_id === 'v10_gate');
+  const v4 = strategies.find(s => s.strategy_id === 'v4_fusion');
+
+  // Group decisions by window_ts for side-by-side timeline
+  const windowMap = {};
+  for (const d of decisions) {
+    const key = d.window_ts;
+    if (!windowMap[key]) windowMap[key] = {};
+    windowMap[key][d.strategy_id] = d;
+  }
+  const windowKeys = Object.keys(windowMap).sort((a, b) => b - a);
+
+  // Find disagreements
+  const disagreements = windowKeys.filter(k => {
+    const m = windowMap[k];
+    const v10d = m['v10_gate'];
+    const v4d = m['v4_fusion'];
+    if (!v10d || !v4d) return false;
+    return v10d.action !== v4d.action;
+  });
+
+  // Build equity curves from daily data
+  const v10Daily = v10?.daily || [];
+  const v4Daily = v4?.daily || [];
+  const allDates = [...new Set([...v10Daily.map(d => d.date), ...v4Daily.map(d => d.date)])].sort();
+  const v10Curve = [];
+  const v4Curve = [];
+  let v10Cum = 0, v4Cum = 0;
+  for (const date of allDates) {
+    const v10Day = v10Daily.find(d => d.date === date);
+    const v4Day = v4Daily.find(d => d.date === date);
+    v10Cum += v10Day?.pnl || 0;
+    v4Cum += v4Day?.pnl || 0;
+    v10Curve.push(v10Cum);
+    v4Curve.push(v4Cum);
+  }
+
+  const tblCell = {
+    padding: '5px 8px',
+    fontSize: 10,
+    borderBottom: `1px solid ${T.border}`,
+    whiteSpace: 'nowrap',
+  };
+  const tblHead = {
+    ...tblCell,
+    color: T.textMuted,
+    fontSize: 9,
+    letterSpacing: '0.06em',
+    fontWeight: 700,
+    textTransform: 'uppercase',
+    position: 'sticky',
+    top: 0,
+    background: T.headerBg,
+  };
+
+  const actionColor = (a) => {
+    if (a === 'TRADE') return T.cyan;
+    if (a === 'SKIP') return T.textMuted;
+    if (a === 'ERROR') return T.red;
+    return T.textDim;
+  };
+
+  return (
+    <div>
+      {/* Days selector */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center' }}>
+        <span style={{ fontSize: 9, color: T.textMuted, letterSpacing: '0.06em' }}>LOOKBACK:</span>
+        {[3, 7, 14, 30].map(d => (
+          <button
+            key={d}
+            onClick={() => setDays(d)}
+            style={{
+              background: days === d ? T.cyan : T.headerBg,
+              color: days === d ? '#000' : T.text,
+              border: `1px solid ${days === d ? T.cyan : T.border}`,
+              borderRadius: 4,
+              padding: '4px 10px',
+              fontSize: 10,
+              fontFamily: T.mono,
+              cursor: 'pointer',
+              fontWeight: days === d ? 700 : 400,
+            }}
+          >
+            {d}d
+          </button>
+        ))}
+      </div>
+
+      {/* Summary cards: V10 vs V4 side by side */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+        {[
+          { strat: v10, label: 'V10 GATE', sublabel: 'LIVE', borderColor: T.cyan },
+          { strat: v4, label: 'V4 FUSION', sublabel: 'GHOST', borderColor: T.purple },
+        ].map(({ strat, label, sublabel, borderColor }) => (
+          <div key={label} style={{
+            ...S.card,
+            borderColor,
+            borderWidth: 2,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: borderColor }}>{label}</span>
+              <span style={{
+                fontSize: 8,
+                padding: '1px 6px',
+                borderRadius: 3,
+                background: borderColor === T.cyan ? 'rgba(6,182,212,0.15)' : 'rgba(168,85,247,0.15)',
+                color: borderColor,
+                fontWeight: 600,
+                letterSpacing: '0.08em',
+              }}>
+                {sublabel}
+              </span>
+            </div>
+            {strat ? (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+                <div style={S.summaryCard}>
+                  <div style={{ ...S.summaryValue, fontSize: 18 }}>{strat.trades}</div>
+                  <div style={S.summaryLabel}>TRADES</div>
+                </div>
+                <div style={S.summaryCard}>
+                  <div style={{
+                    ...S.summaryValue,
+                    fontSize: 18,
+                    color: (strat.accuracy || 0) >= 55 ? T.green : (strat.accuracy || 0) >= 45 ? T.amber : T.red,
+                  }}>
+                    {strat.wins}W/{strat.losses}L
+                  </div>
+                  <div style={S.summaryLabel}>
+                    {strat.accuracy != null ? `${strat.accuracy}%` : '--'}
+                  </div>
+                </div>
+                <div style={S.summaryCard}>
+                  <div style={{
+                    ...S.summaryValue,
+                    fontSize: 18,
+                    color: strat.cum_pnl >= 0 ? T.green : T.red,
+                  }}>
+                    ${strat.cum_pnl >= 0 ? '+' : ''}{strat.cum_pnl.toFixed(2)}
+                  </div>
+                  <div style={S.summaryLabel}>{sublabel === 'GHOST' ? 'WOULD-BE P&L' : 'ACTUAL P&L'}</div>
+                </div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 10, color: T.textDim, padding: 12, textAlign: 'center' }}>
+                No data for {label}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Equity curve comparison */}
+      {allDates.length > 1 && (
+        <div style={S.card}>
+          <div style={S.cardTitle}>Equity Curve: V10 (actual) vs V4 (would-be)</div>
+          {(() => {
+            const all = [...v10Curve, ...v4Curve];
+            const minVal = Math.min(...all, 0);
+            const maxVal = Math.max(...all, 0);
+            const range = maxVal - minVal || 1;
+            const W = 700, H = 180;
+            const padL = 50, padR = 10, padT = 10, padB = 20;
+            const plotW = W - padL - padR;
+            const plotH = H - padT - padB;
+            const toPath = (curve, color) => {
+              if (!curve.length) return null;
+              const step = plotW / Math.max(curve.length - 1, 1);
+              const d = curve.map((v, i) => {
+                const x = padL + i * step;
+                const y = padT + plotH - ((v - minVal) / range) * plotH;
+                return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+              }).join(' ');
+              return <path d={d} fill="none" stroke={color} strokeWidth={2} />;
+            };
+            const zeroY = padT + plotH - ((0 - minVal) / range) * plotH;
+            return (
+              <svg width={W} height={H} style={{ display: 'block', maxWidth: '100%' }}>
+                <line x1={padL} y1={zeroY} x2={W - padR} y2={zeroY}
+                  stroke={T.textDim} strokeWidth={0.5} strokeDasharray="4,3" />
+                {[minVal, 0, maxVal].filter((v, i, a) => a.indexOf(v) === i).map((v, i) => {
+                  const y = padT + plotH - ((v - minVal) / range) * plotH;
+                  return (
+                    <text key={i} x={padL - 4} y={y + 3}
+                      fill={T.textDim} fontSize={8} textAnchor="end" fontFamily={T.mono}>
+                      ${v.toFixed(0)}
+                    </text>
+                  );
+                })}
+                {toPath(v10Curve, T.cyan)}
+                {toPath(v4Curve, T.purple)}
+              </svg>
+            );
+          })()}
+          <div style={{ display: 'flex', gap: 16, marginTop: 6 }}>
+            {[
+              { color: T.cyan, label: 'V10 Gate (LIVE)' },
+              { color: T.purple, label: 'V4 Fusion (GHOST)' },
+            ].map((l, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <svg width={20} height={8}>
+                  <line x1={0} y1={4} x2={20} y2={4} stroke={l.color} strokeWidth={2} />
+                </svg>
+                <span style={{ fontSize: 9, color: T.textMuted }}>{l.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Disagreement highlight */}
+      {disagreements.length > 0 && (
+        <div style={{
+          ...S.card,
+          borderColor: T.amber,
+          borderWidth: 2,
+        }}>
+          <div style={{ ...S.cardTitle, color: T.amber }}>
+            Disagreements ({disagreements.length} windows)
+          </div>
+          <div style={{ fontSize: 9, color: T.textMuted, marginBottom: 8 }}>
+            Windows where V10 and V4 made different decisions.
+          </div>
+          <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  <th style={tblHead}>Window</th>
+                  <th style={{ ...tblHead, textAlign: 'center' }}>V10 Action</th>
+                  <th style={{ ...tblHead, textAlign: 'center' }}>V10 Dir</th>
+                  <th style={{ ...tblHead, textAlign: 'center' }}>V4 Action</th>
+                  <th style={{ ...tblHead, textAlign: 'center' }}>V4 Dir</th>
+                  <th style={tblHead}>V10 Reason</th>
+                  <th style={tblHead}>V4 Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {disagreements.slice(0, 50).map(k => {
+                  const v10d = windowMap[k]['v10_gate'] || {};
+                  const v4d = windowMap[k]['v4_fusion'] || {};
+                  const ts = new Date(parseInt(k) * 1000);
+                  return (
+                    <tr key={k}>
+                      <td style={{ ...tblCell, color: T.text }}>
+                        {ts.toLocaleDateString()} {ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </td>
+                      <td style={{ ...tblCell, textAlign: 'center', color: actionColor(v10d.action), fontWeight: 600 }}>
+                        {v10d.action || '--'}
+                      </td>
+                      <td style={{ ...tblCell, textAlign: 'center', color: v10d.direction === 'UP' ? T.green : T.red }}>
+                        {v10d.direction || '--'}
+                      </td>
+                      <td style={{ ...tblCell, textAlign: 'center', color: actionColor(v4d.action), fontWeight: 600 }}>
+                        {v4d.action || '--'}
+                      </td>
+                      <td style={{ ...tblCell, textAlign: 'center', color: v4d.direction === 'UP' ? T.green : T.red }}>
+                        {v4d.direction || '--'}
+                      </td>
+                      <td style={{ ...tblCell, color: T.textDim, fontSize: 9, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {v10d.action === 'SKIP' ? v10d.skip_reason : v10d.entry_reason || '--'}
+                      </td>
+                      <td style={{ ...tblCell, color: T.textDim, fontSize: 9, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {v4d.action === 'SKIP' ? v4d.skip_reason : v4d.entry_reason || '--'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Decision timeline */}
+      <div style={S.card}>
+        <div style={S.cardTitle}>Decision Timeline (latest {Math.min(windowKeys.length, 100)} windows)</div>
+        <div style={{ maxHeight: 500, overflowY: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                <th style={tblHead}>Window</th>
+                <th style={{ ...tblHead, textAlign: 'center' }}>Offset</th>
+                <th style={{ ...tblHead, textAlign: 'center' }}>V10</th>
+                <th style={{ ...tblHead, textAlign: 'center' }}>V10 Dir</th>
+                <th style={{ ...tblHead, textAlign: 'center' }}>V4</th>
+                <th style={{ ...tblHead, textAlign: 'center' }}>V4 Dir</th>
+                <th style={tblHead}>Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {windowKeys.slice(0, 100).map(k => {
+                const v10d = windowMap[k]['v10_gate'] || {};
+                const v4d = windowMap[k]['v4_fusion'] || {};
+                const ts = new Date(parseInt(k) * 1000);
+                const isDisagree = v10d.action && v4d.action && v10d.action !== v4d.action;
+                return (
+                  <tr key={k} style={isDisagree ? { background: 'rgba(245,158,11,0.08)' } : undefined}>
+                    <td style={{ ...tblCell, color: T.text }}>
+                      {ts.toLocaleDateString()} {ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </td>
+                    <td style={{ ...tblCell, textAlign: 'center', color: T.textMuted }}>
+                      {v10d.eval_offset ?? v4d.eval_offset ?? '--'}s
+                    </td>
+                    <td style={{ ...tblCell, textAlign: 'center', color: actionColor(v10d.action), fontWeight: 600 }}>
+                      {v10d.action || '--'}
+                    </td>
+                    <td style={{ ...tblCell, textAlign: 'center', color: v10d.direction === 'UP' ? T.green : v10d.direction === 'DOWN' ? T.red : T.textDim }}>
+                      {v10d.direction || '--'}
+                    </td>
+                    <td style={{ ...tblCell, textAlign: 'center', color: actionColor(v4d.action), fontWeight: 600 }}>
+                      {v4d.action || '--'}
+                    </td>
+                    <td style={{ ...tblCell, textAlign: 'center', color: v4d.direction === 'UP' ? T.green : v4d.direction === 'DOWN' ? T.red : T.textDim }}>
+                      {v4d.direction || '--'}
+                    </td>
+                    <td style={{ ...tblCell, color: T.textDim, fontSize: 9, maxWidth: 250, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {v10d.skip_reason || v4d.skip_reason || v10d.entry_reason || '--'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ──────────────────────────────────────────────────────────
 
 const LIMIT_OPTIONS = [
@@ -997,6 +1360,9 @@ export default function StrategyLab() {
         <button style={S.tab(activeTab === 'impact')} onClick={() => setActiveTab('impact')}>
           Gate Impact Analysis
         </button>
+        <button style={S.tab(activeTab === 'shadow')} onClick={() => setActiveTab('shadow')}>
+          Live Shadow Comparison
+        </button>
       </div>
 
       {/* Error */}
@@ -1099,6 +1465,11 @@ export default function StrategyLab() {
       {/* Tab B: Gate Impact Analysis */}
       {!loading && activeTab === 'impact' && (
         <GateImpactAnalysis windows={resolvedWindows} />
+      )}
+
+      {/* Tab C: Live Shadow Comparison */}
+      {activeTab === 'shadow' && (
+        <ShadowComparison api={api} />
       )}
     </div>
   );

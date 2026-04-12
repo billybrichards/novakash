@@ -125,6 +125,47 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 log.info("hub.config_seed_done", per_service=counts)
             except Exception as cfg_exc:
                 log.warning("hub.config_schema_migration_error", error=str(cfg_exc))
+            # SP-05: ensure strategy_decisions table exists
+            try:
+                await session.execute(text("""
+                    CREATE TABLE IF NOT EXISTS strategy_decisions (
+                        id              BIGSERIAL PRIMARY KEY,
+                        strategy_id     TEXT NOT NULL,
+                        strategy_version TEXT NOT NULL,
+                        asset           TEXT NOT NULL,
+                        window_ts       BIGINT NOT NULL,
+                        timeframe       TEXT NOT NULL DEFAULT '5m',
+                        eval_offset     INTEGER,
+                        mode            TEXT NOT NULL,
+                        action          TEXT NOT NULL,
+                        direction       TEXT,
+                        confidence      TEXT,
+                        confidence_score DOUBLE PRECISION,
+                        entry_cap       DOUBLE PRECISION,
+                        collateral_pct  DOUBLE PRECISION,
+                        entry_reason    TEXT NOT NULL DEFAULT '',
+                        skip_reason     TEXT,
+                        executed        BOOLEAN NOT NULL DEFAULT false,
+                        order_id        TEXT,
+                        fill_price      DOUBLE PRECISION,
+                        fill_size       DOUBLE PRECISION,
+                        metadata_json   JSONB NOT NULL DEFAULT '{}',
+                        evaluated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        UNIQUE (strategy_id, asset, window_ts, eval_offset)
+                    )
+                """))
+                await session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_sd_window "
+                    "ON strategy_decisions (asset, window_ts)"
+                ))
+                await session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_sd_strategy "
+                    "ON strategy_decisions (strategy_id, evaluated_at)"
+                ))
+                await session.commit()
+                log.info("hub.strategy_decisions_table_ensured")
+            except Exception as sd_exc:
+                log.warning("hub.strategy_decisions_migration_error", error=str(sd_exc))
             break
     except Exception as exc:
         log.warning("hub.migration_error", error=str(exc))
