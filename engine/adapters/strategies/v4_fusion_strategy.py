@@ -179,6 +179,14 @@ class V4FusionStrategy:
         timing = poly.get("timing", "unknown")
         max_entry = poly.get("max_entry_price")
 
+        # Timing gate: only trade in the T-90 to T-150 sweet spot ("optimal")
+        if timing in ("late", "expired", "early"):
+            return self._skip(f"polymarket: timing={timing} — outside sweet spot T-90 to T-150")
+
+        # Confidence gate: mod/weak bands are anti-predictive below 0.12
+        if distance < 0.12:
+            return self._skip(f"polymarket: confidence_distance={distance:.3f} < 0.12 threshold")
+
         if not trade_advised:
             return self._skip(f"polymarket: {reason} (timing={timing}, dist={distance:.3f})")
 
