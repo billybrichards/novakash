@@ -35,6 +35,10 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    extra_hosts:
+      # Allow the hub container to reach host-network services (timesfm on 8080,
+      # Postgres on 5432, engine on localhost) via host.docker.internal.
+      - "host.docker.internal:host-gateway"
     ports:
       # Bind explicitly to all interfaces so the frontend nginx upstream
       # can reach it across the box's internal network once the cutover

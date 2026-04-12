@@ -71,7 +71,7 @@ jobs:
       # the timesfm URL collapses to localhost:8080; the margin engine
       # stays in eu-west-2 so its URL still needs the MARGIN_ENGINE_HOST
       # secret (same one deploy-margin-engine.yml reads).
-      DEPLOY_TIMESFM_URL: http://localhost:8080
+      DEPLOY_TIMESFM_URL: http://host.docker.internal:8080
       DEPLOY_MARGIN_ENGINE_HOST: ${{ secrets.MARGIN_ENGINE_HOST }}
 
     steps:
