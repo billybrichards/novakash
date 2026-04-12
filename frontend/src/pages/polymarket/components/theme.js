@@ -1,6 +1,7 @@
 // Theme tokens — shared across all Polymarket Monitor sub-components.
-// Matches existing dark-theme palette from execution-hq/constants.js and FactoryFloor.jsx.
-export const T = {
+// Supports dark (default) and light modes via getTheme(mode).
+
+const DARK = {
   bg: '#050914',
   card: 'rgba(15, 23, 42, 0.8)',
   cardBorder: 'rgba(51, 65, 85, 1)',
@@ -18,6 +19,32 @@ export const T = {
   mono: "'JetBrains Mono', 'IBM Plex Mono', monospace",
   border: 'rgba(51, 65, 85, 0.6)',
 };
+
+const LIGHT = {
+  bg: '#f8fafc',
+  card: 'rgba(255, 255, 255, 0.95)',
+  cardBorder: 'rgba(203, 213, 225, 1)',
+  headerBg: '#ffffff',
+  text: 'rgba(15, 23, 42, 1)',
+  textMuted: 'rgba(100, 116, 139, 1)',
+  textDim: 'rgba(148, 163, 184, 1)',
+  cyan: '#0891b2',
+  cyanDim: 'rgba(8, 145, 178, 0.12)',
+  green: '#059669',
+  red: '#dc2626',
+  amber: '#d97706',
+  purple: '#9333ea',
+  white: '#0f172a',
+  mono: "'JetBrains Mono', 'IBM Plex Mono', monospace",
+  border: 'rgba(203, 213, 225, 0.8)',
+};
+
+export function getTheme(mode) {
+  return mode === 'light' ? LIGHT : DARK;
+}
+
+// Backward compat — existing imports of `T` continue to work unchanged.
+export const T = DARK;
 
 // Signal display names (SQ-01 / Section 6 of design spec)
 export const SIGNAL_NAMES = {
