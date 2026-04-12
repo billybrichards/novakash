@@ -545,6 +545,70 @@ where you think.
 
 ---
 
+## Data Tables Reference
+
+Full tick save system — every table the engine and timesfm-service write to, with cadence and
+content. Use this when writing a new analysis script, wiring a new consumer, or checking why a
+table is empty.
+
+| Table | Written by | Frequency | Contains |
+|---|---|---|---|
+| `signal_evaluations` | Engine (`EvaluateStrategiesUseCase`) | Every 2s per eval | V10 gate results, VPIN, deltas, Sequoia p_up, CLOB prices |
+| `strategy_decisions` | Engine (`EvaluateStrategiesUseCase`) | Every 2s per eval | V10+V4 LIVE/GHOST decisions, full `_ctx` JSON with all signals |
+| `window_snapshots` | Engine (reconciler) | Per 5-min window close | Window outcome, prices, V10 decision, regime |
+| `trades` | Engine (`OrderManager`) | Per trade placed | Paper + live trade records, paper resolved against Chainlink oracle |
+| `ticks_v3_composite` | timesfm-service (`V3DBWriter`) | Every 5s | V3 composite score × 9 timescales × 4 assets |
+| `ticks_v4_decision` | timesfm-service (`V4DBWriter`) | Every 5s | Full V4 snapshot: HMM regime, conviction, quantiles, macro bias, `sub_signals` JSONB |
+| `ticks_elm_predictions` | Engine (`PredictionRecorder`) | Every 30s | Sequoia v5.2 probability + quantiles (legacy table name — rename tracked as SQ-01 PR4, deferred forever) |
+| `ticks_chainlink` | Engine | Every 5s | Chainlink oracle prices BTC/ETH/SOL/XRP on Polygon |
+| `ticks_tiingo` | Engine | Every 2s | Top-of-book bid/ask with exchange attribution — BTC/ETH/SOL/XRP |
+| `ticks_clob` | Engine (`clob_feed.py`) | Every 10s | Ground-truth Polymarket CLOB bid/ask prices per active window |
+| `clob_book_snapshots` | Engine (`clob_feed.py`) | Every 10s | Full order-book snapshot (bids+asks array) — PE-01 was a silent 4-day gap here |
+| `macro_signals` | macro-observer | ~Every 60s | Qwen/LightGBM macro bias classification per timescale |
+| `market_snapshots` | data-collector | ~2-3 writes/sec | Gamma API Polymarket token prices per active window |
+| `manual_trade_snapshots` | Engine (`execute_manual_trade`) | Per manual trade | v4_snapshot, v3_snapshot, last-5 resolved windows, engine decision, operator rationale |
+
+**Write-rate sanity checks** (run from the hub DB or locally with `$DATABASE_URL`):
+
+```sql
+-- V4 decision ticks (should be ~12/min)
+SELECT COUNT(*), MAX(created_at) FROM ticks_v4_decision WHERE created_at > now() - interval '5 minutes';
+
+-- Strategy decisions (should be ~60/min when engine is running)
+SELECT COUNT(*), MAX(created_at) FROM strategy_decisions WHERE created_at > now() - interval '5 minutes';
+
+-- Chainlink oracle ticks (should be ~60/min = 4 assets × 15/min)
+SELECT COUNT(*), MAX(ts) FROM ticks_chainlink WHERE ts > now() - interval '1 minute';
+
+-- Paper trades OPEN for > 10 minutes (should be 0 after the stale-trade fix in PR #128)
+SELECT COUNT(*) FROM trades WHERE status = 'OPEN' AND is_live = false AND created_at < now() - interval '10 minutes';
+```
+
+---
+
+## Analysis Scripts
+
+`docs/analysis/run_window_analysis.py` — window-level accuracy surface analysis.
+
+Queries `signal_evaluations` (865+ windows) and produces:
+- Accuracy-by-eval-offset table (T-60, T-90, T-120, T-150, T-180)
+- Confidence-distance threshold sweep (WR at each `confidence_distance` cut)
+- CLOB ask asymmetry check (DOWN + cheap NO cross-tab)
+- Session-level regime breakdown
+
+Run locally against `$DATABASE_URL`:
+
+```bash
+python docs/analysis/run_window_analysis.py
+```
+
+Key findings as of 2026-04-12 Session 4:
+- **T-120–T-150 sweet spot** for eval offset (highest out-of-sample accuracy).
+- **confidence_distance >= 0.12** is the practical gate floor — below this the signal is noise.
+- **CLOB ask asymmetry WR ~82%** (DOWN + cheap NO) but bearish-dataset caveat applies — revalidate once 200+ mixed-regime V4 windows accumulate.
+
+---
+
 ## Appendix A — Canonical commands
 
 ### EC2 Instance Connect one-liner (Montreal engine)
