@@ -375,10 +375,19 @@ class Orchestrator:
             log.info("orchestrator.fifteen_min_enabled", assets=fifteen_min_assets)
 
         # ── Feeds (wired after all components exist) ────────────────────────────
+        # Futures feed: aggTrades → VPIN calculator, forceOrder → cascade detector
         self._binance_feed = BinanceWebSocketFeed(
             symbol="btcusdt",
+            venue="futures",
             on_trade=self._on_binance_trade,
             on_liquidation=self._aggregator.on_liquidation,
+        )
+        # Spot feed: aggTrades → btc_spot_price for oracle-aligned delta calculation
+        # (Polymarket resolves via Chainlink oracle on SPOT, not futures)
+        self._binance_spot_feed = BinanceWebSocketFeed(
+            symbol="btcusdt",
+            venue="spot",
+            on_trade=self._on_binance_spot_trade,
         )
         # Optional feeds — only create if API keys are configured
         self._coinglass_feed = None
@@ -615,7 +624,10 @@ class Orchestrator:
 
         # 4. Start feed tasks
         self._tasks.append(
-            asyncio.create_task(self._binance_feed.start(), name="feed:binance")
+            asyncio.create_task(self._binance_feed.start(), name="feed:binance_futures")
+        )
+        self._tasks.append(
+            asyncio.create_task(self._binance_spot_feed.start(), name="feed:binance_spot")
         )
         if self._coinglass_feed:
             self._tasks.append(
@@ -926,6 +938,7 @@ class Orchestrator:
 
         # Stop feeds
         await self._binance_feed.stop()
+        await self._binance_spot_feed.stop()
         if self._coinglass_feed:
             await self._coinglass_feed.stop()
         if self._chainlink_feed:
@@ -1008,6 +1021,10 @@ class Orchestrator:
                         self._twap_tracker.add_tick("BTC", wts, float(trade.price), ts)
                     except (ValueError, TypeError):
                         pass
+
+    async def _on_binance_spot_trade(self, trade: AggTrade) -> None:
+        """Binance SPOT aggTrade → aggregator (btc_spot_price for delta)."""
+        await self._aggregator.on_spot_trade(trade)
 
     async def _start_cg_staggered(self, feed: CoinGlassEnhancedFeed, symbol: str):
         """Start CG feed with stagger to spread API load."""
@@ -1857,7 +1874,8 @@ class Orchestrator:
                     log.debug("mode_sync.failed", error=str(exc)[:80])
 
                 await self._db.update_feed_status(
-                    binance=self._binance_feed.connected,
+                    # Both futures + spot feeds must be connected for "binance" healthy
+                    binance=self._binance_feed.connected and self._binance_spot_feed.connected,
                     coinglass=self._coinglass_feed.connected if self._coinglass_feed else False,
                     chainlink=self._chainlink_feed.connected if self._chainlink_feed else False,
                     polymarket=self._polymarket_feed.connected,

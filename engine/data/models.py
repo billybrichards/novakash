@@ -104,7 +104,8 @@ class ArbOpportunity(BaseModel):
 
 class MarketState(BaseModel):
     """Unified snapshot of all market data."""
-    btc_price: Optional[Decimal] = None
+    btc_price: Optional[Decimal] = None           # Futures price (for VPIN)
+    btc_spot_price: Optional[Decimal] = None       # Spot price (for delta — oracle-aligned)
     chainlink_price: Optional[Decimal] = None
     open_interest_usd: Optional[Decimal] = None
     oi_delta_pct: Optional[float] = None
