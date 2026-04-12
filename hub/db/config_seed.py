@@ -418,6 +418,31 @@ _ENGINE_KEYS: list[tuple] = [
      "Fixed entry price cap (per share) used when V10_DYNAMIC_CAP_MODE=false. "
      "Valid range: 0.30 – 0.90.",
      "thresholds", False),
+
+    # ── SP-04 / SP-05: Multi-Strategy Port settings ───────────────────────────
+    # restart_required=TRUE for ENGINE_USE_STRATEGY_PORT (structural wiring at __init__).
+    # restart_required=FALSE for mode flags — hot-reloaded per-window.
+    ("engine", "ENGINE_USE_STRATEGY_PORT", "bool", "true",
+     "Enable multi-strategy evaluation port. "
+     "When true, strategies are evaluated via EvaluateStrategiesUseCase.",
+     "thresholds", True),
+    ("engine", "V4_FUSION_MODE", "enum", "GHOST",
+     "V4 fusion strategy mode: GHOST=shadow only, LIVE=executes trades.",
+     "thresholds", False),
+    ("engine", "V10_GATE_MODE", "enum", "LIVE",
+     "V10 gate strategy mode: LIVE=executes trades, GHOST=shadow only.",
+     "thresholds", False),
+    ("engine", "V10_6_MIN_EVAL_OFFSET_STRATEGY", "int", "90",
+     "V10.6 minimum eval offset (seconds before close). "
+     "Below this = too late. Used by EvaluateStrategiesUseCase hot-reload path.",
+     "thresholds", False),
+    ("engine", "V10_6_MAX_EVAL_OFFSET_STRATEGY", "int", "120",
+     "V10.6 maximum eval offset (seconds before close). "
+     "Above this = too early. Used by EvaluateStrategiesUseCase hot-reload path.",
+     "thresholds", False),
+    ("engine", "V4_FUSION_ENABLED", "bool", "true",
+     "Enable V4 fusion strategy evaluation.",
+     "thresholds", False),
 ]
 
 

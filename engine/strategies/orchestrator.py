@@ -361,16 +361,21 @@ class Orchestrator:
             log.info("orchestrator.v2_early_entry_disabled")
 
         # ── SP-04: Multi-Strategy Port (behind ENGINE_USE_STRATEGY_PORT flag) ──
-        self._use_strategy_port = os.environ.get(
-            "ENGINE_USE_STRATEGY_PORT", "false"
-        ).lower() == "true"
+        # Priority: runtime (DB-synced) > env var > code default.
+        # runtime.use_strategy_port is initialised from env in RuntimeConfig.__init__,
+        # so at __init__ time this is effectively env-var driven (DB sync hasn't run yet).
+        self._use_strategy_port = runtime.use_strategy_port
         self._evaluate_strategies_uc = None
         if self._use_strategy_port:
             from domain.value_objects import StrategyRegistration
             from use_cases.evaluate_strategies import EvaluateStrategiesUseCase
             from adapters.strategies.v10_gate_strategy import V10GateStrategy
 
-            v10_mode = os.environ.get("V10_GATE_MODE", "LIVE")
+            # runtime.v10_gate_mode / v4_fusion_mode are hot-reloaded each sync(),
+            # but StrategyRegistration is structural so we read at init time.
+            # The per-window evaluate() path in EvaluateStrategiesUseCase re-checks
+            # the live registration mode via runtime on each call.
+            v10_mode = runtime.v10_gate_mode
             v10_reg = StrategyRegistration(
                 strategy_id="v10_gate", mode=v10_mode, enabled=True, priority=1,
             )
@@ -379,13 +384,13 @@ class Orchestrator:
             strategy_pairs = [(v10_reg, v10_strat)]
 
             # V4 Fusion (optional, GHOST by default)
-            v4_enabled = os.environ.get("V4_FUSION_ENABLED", "false").lower() == "true"
+            v4_enabled = runtime.v4_fusion_enabled
             v4_snapshot_port = None
             if v4_enabled:
                 from adapters.strategies.v4_fusion_strategy import V4FusionStrategy
                 from adapters.v4_snapshot_http import V4SnapshotHttpAdapter
 
-                v4_mode = os.environ.get("V4_FUSION_MODE", "GHOST")
+                v4_mode = runtime.v4_fusion_mode
                 v4_reg = StrategyRegistration(
                     strategy_id="v4_fusion", mode=v4_mode, enabled=True, priority=2,
                 )
