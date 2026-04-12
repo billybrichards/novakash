@@ -96,6 +96,91 @@ actually `DONE`. This created a stale audit that required a catch-up PR the next
 
 ---
 
+## Accessing everything — GitHub + AWS CLI
+
+Assume you have `gh` (GitHub CLI) and `aws` CLI available.
+
+### Frontend (http://99.79.41.246)
+```bash
+# Check if latest frontend is deployed
+gh run list --repo billybrichards/novakash --workflow deploy-frontend.yml --limit 3
+
+# Login at http://99.79.41.246 — credentials: billy / novakash2026
+# JWT expires — re-login if API calls return 401
+```
+
+### Hub API (AWS Montreal, port 8091)
+```bash
+# Get fresh JWT
+TOKEN=$(curl -s -X POST http://3.98.114.0:8091/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"billy","password":"novakash2026"}' | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))")
+
+# Key endpoints
+curl -s "http://3.98.114.0:8091/api/v58/execution-hq?asset=btc&timeframe=5m" -H "Authorization: Bearer $TOKEN"
+curl -s "http://3.98.114.0:8091/api/v58/strategy-decisions?limit=10" -H "Authorization: Bearer $TOKEN"
+curl -s "http://3.98.114.0:8091/api/v58/accuracy?limit=100" -H "Authorization: Bearer $TOKEN"
+curl -s "http://3.98.114.0:8091/api/v58/prediction-surface?days=7" -H "Authorization: Bearer $TOKEN"
+```
+
+### TimesFM service (Montreal, port 8080) — no auth
+```bash
+curl -s "http://3.98.114.0:8080/v4/snapshot?asset=btc&timescales=5m"
+curl -s "http://3.98.114.0:8080/v3/snapshot?asset=btc"
+curl -s "http://3.98.114.0:8080/health"
+```
+
+### Database (Railway PostgreSQL) — public URL
+```bash
+# Get from Railway dashboard: DATABASE_PUBLIC_URL
+export PUB_URL="postgresql://postgres:PASSWORD@hopper.proxy.rlwy.net:35772/railway"
+python3 docs/analysis/full_signal_report.py   # full current-state report
+python3 docs/analysis/run_window_analysis.py  # window accuracy surface
+```
+
+### Engine on Montreal (EC2 Instance Connect — key expires in 60s)
+```bash
+# Generate temp key and push it
+ssh-keygen -t ed25519 -f /tmp/montreal_key -N "" -q 2>/dev/null
+aws ec2-instance-connect send-ssh-public-key \
+  --region ca-central-1 \
+  --instance-id i-0785ed930423ae9fd \
+  --instance-os-user ubuntu \
+  --ssh-public-key "$(cat /tmp/montreal_key.pub)"
+ssh -i /tmp/montreal_key -o StrictHostKeyChecking=no ubuntu@15.223.247.178 "COMMAND"
+
+# Useful commands via SSH:
+# sudo tail -50 /home/novakash/engine.log | grep 'strategy\.'     # recent strategy decisions
+# sudo grep -E 'V4_FUSION|V10_GATE|PAPER_MODE|LIVE_TRADING' /home/novakash/novakash/engine/.env
+# sudo pgrep -a 'python3 main.py'                                  # check engine running
+# sudo bash /home/novakash/novakash/scripts/restart_engine.sh </dev/null &  # restart
+```
+
+### EC2 instances (key services)
+```bash
+aws ec2 describe-instances --region ca-central-1 \
+  --filters "Name=instance-state-name,Values=running" \
+  --query 'Reservations[*].Instances[*].[Tags[?Key==`Name`].Value|[0],PublicIpAddress,InstanceId]' \
+  --output table
+
+# Key IPs:
+# novakash-montreal-vnc  15.223.247.178  i-0785ed930423ae9fd  (engine + hub + timesfm)
+# novakash-frontend-v3   99.79.41.246    i-0fe72a610900b5cca  (nginx, React)
+# novakash-margin-engine 18.169.244.162  eu-west-2             (margin engine)
+```
+
+### Deploying
+```bash
+# Frontend + Hub auto-deploy on push to develop
+git push origin develop
+
+# Engine requires SSH restart (CI deploys code but restart hangs):
+# SSH to Montreal and run restart_engine.sh
+# OR the CI deploy-engine.yml workflow does it (when ENGINE_SSH_KEY secret works)
+```
+
+---
+
 ## Two repos, one system
 
 | Repo | Deploy branch | Contains | Who reads it |
@@ -588,19 +673,65 @@ SELECT COUNT(*) FROM trades WHERE status = 'OPEN' AND is_live = false AND create
 
 ## Analysis Scripts
 
+**Full reference:** `docs/analysis/SIGNAL_EVAL_RUNBOOK.md` — complete agent guide for signal evaluation analysis. Read this before running any analysis.
+
+### Quick start (any agent can run this)
+
+```bash
+# Get DB URL from Railway dashboard (DATABASE_PUBLIC_URL) or Montreal SSH:
+# sudo grep '^DATABASE_URL=' /home/novakash/novakash/engine/.env | sed 's/postgresql+asyncpg/postgresql/'
+export PUB_URL="postgresql://postgres:PASSWORD@hopper.proxy.rlwy.net:35772/railway"
+
+# Full current-state report — all signals, all strategies, config recommendations:
+python3 docs/analysis/full_signal_report.py
+
+# Window accuracy surface (magic window analysis):
+python3 docs/analysis/run_window_analysis.py
+```
+
+### What `full_signal_report.py` covers
+
+1. **Data coverage** — windows available, date range, SE eval count
+2. **Current regime** — last 4h UP% vs DOWN%, VPIN, HMM regime
+3. **Ungated signal accuracy** — by eval_offset bucket (T-30 to T-240), by confidence band
+4. **V4 paper trade performance** — TRADE count, W/L, skip reason distribution
+5. **V10 ghost performance** — gate failure breakdown, would-have W/L
+6. **CLOB divergence check** — was Sequoia ahead of CLOB at trade points?
+7. **Config recommendations** — threshold changes, regime filters, timing adjustments
+
+### Key schema gotchas (always check these)
+
+- `window_snapshots.actual_direction` **DOESN'T EXIST** — use `CASE WHEN close_price > open_price THEN 'UP' WHEN close_price < open_price THEN 'DOWN' END`
+- `window_snapshots.oracle_outcome` is NULL — not populated by reconciler
+- `strategy_decisions.metadata_json::jsonb->'_ctx'` holds the full signal vector (VPIN, regime, V4 surface, CLOB ask etc)
+- `ROUND(double precision, int)` fails in PostgreSQL — cast to `::numeric` first
+- `text()` with `::timestamptz` SQL cast confuses SQLAlchemy — use `CAST(:param AS timestamptz)` instead
+- `ticks_v3_composite` joins to `window_snapshots` by time bucket, not exact match
+
+### Config decision framework
+
+| Last 4h ungated accuracy | Action |
+|--------------------------|--------|
+| > 65% | Keep config, can increase position size |
+| 55-65% | Keep config, reduce position size |
+| 45-55% | Tighten confidence threshold |
+| < 45% | Pause, investigate regime change |
+
+### Analysis script: `run_window_analysis.py`
+
 `docs/analysis/run_window_analysis.py` — window-level accuracy surface analysis.
 
-Queries `signal_evaluations` (865+ windows) and produces:
+Queries `signal_evaluations` and produces:
 - Accuracy-by-eval-offset table (T-60, T-90, T-120, T-150, T-180)
 - Confidence-distance threshold sweep (WR at each `confidence_distance` cut)
 - CLOB ask asymmetry check (DOWN + cheap NO cross-tab)
 - Session-level regime breakdown
 
-Run locally against `$DATABASE_URL`:
-
-```bash
-python docs/analysis/run_window_analysis.py
-```
+**Confirmed findings (70,272 windows, 2026-04-12):**
+- Sweet spot: **T-120 to T-150** (55.5% accuracy, peaks at T-135)
+- Cliff at T-90: drops to **48.7%** — CLOB has priced outcome, signal lags
+- Only trade: `confidence_distance >= 0.12` (strong/high bands = 64-65% WR)
+- CLOB asymmetry: DOWN + NO ask <= $0.58 = 90%+ WR (but 84% DOWN dataset — bearish bias caveat)
 
 Key findings as of 2026-04-12 Session 4:
 - **T-120–T-150 sweet spot** for eval offset (highest out-of-sample accuracy).
