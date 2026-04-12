@@ -407,6 +407,17 @@ _ENGINE_KEYS: list[tuple] = [
     ("engine", "TELEGRAM_ALERTS_LIVE", "bool", "false",
      "Route live-mode trade alerts to Telegram.",
      "infrastructure", False),
+
+    # ── v10 dynamic/manual cap mode ────────────────────────────────────────────
+    # restart_required=FALSE — the cap gate reads live from config on every tick.
+    ("engine", "V10_DYNAMIC_CAP_MODE", "bool", "true",
+     "When true, use confidence-distance scaling for the entry price cap. "
+     "When false, use V10_MANUAL_CAP as a fixed override.",
+     "thresholds", False),
+    ("engine", "V10_MANUAL_CAP", "float", "0.65",
+     "Fixed entry price cap (per share) used when V10_DYNAMIC_CAP_MODE=false. "
+     "Valid range: 0.30 – 0.90.",
+     "thresholds", False),
 ]
 
 
