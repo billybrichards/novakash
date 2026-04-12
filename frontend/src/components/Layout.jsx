@@ -61,6 +61,15 @@ const HQ_CHILDREN = HQ_ASSET_ORDER.flatMap(asset =>
 // bottom under the LEGACY section header.
 const NAV_SECTIONS = [
   {
+    title: 'POLYMARKET',
+    color: '#a855f7',
+    items: [
+      { path: '/polymarket/monitor', label: 'Monitor', icon: '\u{1F4E1}', highlight: true, isNew: true,
+        strategy: 'Polymarket 5m',
+        dataSource: 'v58/execution-hq + v4/snapshot + v3/snapshot + v58/accuracy + v58/outcomes' },
+    ],
+  },
+  {
     title: 'LIVE TRADING',
     color: '#a855f7',
     items: [
