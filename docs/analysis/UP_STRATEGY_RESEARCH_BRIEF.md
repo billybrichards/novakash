@@ -6,6 +6,66 @@
 
 ---
 
+## Agent Directive
+
+**Primary focus: mine pre-computed signals that already exist in the DB.** The V1/V2/V3/V4 surfaces, VPIN Phase 1, and CoinGlass snapshots all produce rich signal vectors that are already stored. Look for value ranges, combinations, and thresholds within those existing columns that correlate with UP outcomes.
+
+**Do not build new models or compute new indicators as a first step.** The research question is: *what combinations of values already in the DB reliably predict UP?* Deriving new metrics from raw data (e.g. custom VPIN from `ticks_binance`) is a bonus if existing signals yield nothing — not the primary approach.
+
+**Preferred workflow:**
+1. Start with existing pre-computed columns in `signal_evaluations`, `ticks_v3_composite`, `ticks_coinglass`, `ticks_timesfm`, `ticks_v2_probability`
+2. Scan value distributions and threshold combinations for UP WR lift
+3. If existing signals find nothing at ≥62% WR, then consider computing new ones from raw tick data
+
+---
+
+## Confirmed Baseline (2026-04-12 live data)
+
+### UP predictions are coin flips in a ranging market
+
+22 UP predictions observed 16:35–18:20 UTC today (dist≥0.08, T-90–150):
+
+| Time | Open | Close | Move | Result |
+|------|------|-------|------|--------|
+| 16:35 | 70,962 | 70,920 | -42 | ✗LOSS |
+| 16:40 | 70,920 | 70,907 | -13 | ✗LOSS |
+| 16:45 | 70,907 | 70,862 | -45 | ✗LOSS |
+| 16:50 | 70,862 | 70,912 | +50 | ✓WIN |
+| 16:55 | 70,912 | 70,936 | +24 | ✓WIN |
+| 17:00 | 70,936 | 71,015 | +79 | ✓WIN |
+| 17:05 | 71,015 | 70,996 | -19 | ✗LOSS |
+| 17:10 | 70,996 | 70,957 | -39 | ✗LOSS |
+| 17:15 | 70,957 | 70,968 | +11 | ✓WIN |
+| 17:25 | 70,992 | 71,022 | +29 | ✓WIN |
+| 17:30 | 71,022 | 71,043 | +21 | ✓WIN |
+| 17:35 | 71,043 | 71,005 | -37 | ✗LOSS |
+| 17:40 | 71,005 | 71,024 | +18 | ✓WIN |
+| 17:45 | 71,024 | 70,984 | -39 | ✗LOSS |
+| 17:50 | 70,984 | 71,190 | +206 | ✓WIN |
+| 17:55 | 71,190 | 71,134 | -57 | ✗LOSS |
+| 18:00 | 71,134 | 71,085 | -49 | ✗LOSS |
+| 18:05 | 71,085 | 71,127 | +42 | ✓WIN |
+| 18:10 | 71,127 | 71,157 | +30 | ✓WIN |
+| 18:15 | 71,157 | 71,122 | -35 | ✗LOSS |
+| 18:20 | 71,122 | 71,098 | -24 | ✗LOSS |
+
+**Result: 11 WIN / 11 LOSS = 50% WR. Exactly random.** The model was predicting UP with dist=0.102–0.106 (barely above 10%) throughout a flat/choppy $70,900–$71,200 range. No edge with current gates.
+
+**The pattern**: when BTC chops, UP predictions are coin flips. The signal needs an additional discriminator. The question is: what was different about the 11 times it went up vs the 11 times it didn't? That's what the agent should find.
+
+### Cross-CLOB-band summary (all-time, 897K samples)
+
+| Direction | CLOB Ask | WR |
+|-----------|----------|----|
+| UP | > 0.75 | 53.8% |
+| UP | 0.55–0.75 | 23.8% |
+| UP | 0.35–0.55 | 1.8% |
+| UP | < 0.35 | 1.5% |
+
+Even the "best" UP band (expensive CLOB > 0.75) barely breaks 54%. Something additional must discriminate within that band.
+
+---
+
 ## Background
 
 The DOWN-only strategy (v4_down_only) has a 90.3% WR (897K samples, T-90–150, dist≥0.12).  
@@ -13,13 +73,132 @@ UP predictions with the same filter: **1.5–53.8% WR** — no exploitable edge 
 
 The current Sequoia v5.2 model was trained on an 84% DOWN-biased dataset (bearish BTC period, April 2026). UP predictions may be systematically wrong at current confidence levels, OR the right filter combination hasn't been found yet.
 
-**This brief tasks an analysis agent to search all available data for an UP edge.**
+**This brief tasks an analysis agent to search all available pre-computed signal surfaces for an UP edge.**
+
+---
+
+## Pre-Computed Signal Surfaces (start here)
+
+These are the richest data sources to mine first. All values already exist in the DB — no computation needed beyond SQL queries.
+
+### V1 — TimesFM Forecast (`ticks_timesfm`)
+~65K rows. The TimesFM model produces a full quantile band, not just a direction.
+
+Key columns to mine:
+- `direction` — independent direction call (may agree or disagree with Sequoia)
+- `confidence` — forecast confidence 0–1
+- `p10`, `p50`, `p90` — quantile forecast prices
+- `predicted_close` — point forecast
+- `spread` — p90 - p10 (uncertainty band width)
+
+**Actionable patterns:**
+- `direction='UP'` AND `confidence > 0.80` → UP WR?
+- `predicted_close > current_price` by ≥ X% → UP WR?
+- `p90 - current_price > current_price - p10` (asymmetric upside) → UP WR?
+- TimesFM agrees with Sequoia (both say UP) → does agreement lift WR?
+
+```sql
+SELECT MIN(ts), MAX(ts), COUNT(*), ROUND(AVG(confidence)::numeric,3),
+       ROUND(AVG(p90-p10)::numeric,2) AS avg_spread
+FROM ticks_timesfm WHERE asset='BTC';
+```
+
+### V2 — Sequoia Probability Surface (`ticks_v2_probability`)
+~2.8M rows. Sequoia probability at multiple timescales, not just the 5m evaluation.
+
+Key columns:
+- `probability_up` — raw probability 0–1
+- `direction`, `confidence_dist`
+- Multiple timescale rows per timestamp
+
+**Actionable patterns:**
+- `probability_up > 0.65` (high conviction) → UP WR vs 0.55–0.65?
+- Multi-timescale agreement: 5m + 15m + 1h all > 0.5 at window open?
+- Probability *increasing* over last 3 ticks (momentum signal)?
+
+```sql
+SELECT MIN(ts), MAX(ts), COUNT(*), AVG(probability_up)
+FROM ticks_v2_probability WHERE asset='BTC';
+-- Note: join to window_ts by matching ts to window_ts ± 5s
+```
+
+### V3 — Composite Signal (`ticks_v3_composite`)
+~501K rows. 7-signal weighted ensemble across 9 timescales.
+
+Key columns:
+- `composite_score` — weighted aggregate [-1, +1]
+- `timescale` — '5m', '15m', '1h', '4h', etc.
+- `elm_signal`, `cascade_signal`, `vpin_signal` — sub-signals
+- `ts`
+
+**Actionable patterns:**
+- `composite_score > 0.3` at 5m AND 15m timescale at window open → UP WR?
+- `cascade_signal = 0` (no cascade in progress) AND `composite_score > 0` → UP WR?
+- `vpin_signal < 0.5` (low informed flow) AND `composite_score > 0.2` → UP WR?
+- Multi-timescale alignment: 5m + 15m + 1h all positive → UP WR?
+
+```sql
+-- Check timescales available
+SELECT DISTINCT timescale, COUNT(*) FROM ticks_v3_composite
+WHERE asset='BTC' GROUP BY 1 ORDER BY 1;
+```
+
+### V4 — Fusion Surface (`strategy_decisions.metadata_json`)
+~14K rows. The `metadata_json` JSONB column on `strategy_decisions` contains the full `_ctx` dict including: `v4_p_up`, `v4_regime`, `v4_conviction`, `v4_conviction_score`, `v4_sub_signals`, `v4_consensus_safe`, `v4_macro_bias`, `poly_direction`, `poly_timing`.
+
+Key patterns to check:
+- `v4_conviction = 'HIGH'` AND `v2_direction = 'UP'` → UP WR?
+- `v4_regime IN ('calm_trend', 'volatile_trend')` AND UP → WR?
+- `v4_consensus_safe = true` AND UP → WR?
+- `poly_direction = 'UP'` (V4 polymarket-specific recommendation) → WR?
+
+```sql
+-- Extract V4 fields from metadata
+SELECT
+    metadata_json->'_ctx'->>'v4_conviction' AS conviction,
+    metadata_json->'_ctx'->>'v4_regime' AS regime,
+    metadata_json->'_ctx'->>'v4_consensus_safe' AS consensus_safe,
+    metadata_json->'_ctx'->>'poly_direction' AS poly_direction,
+    direction, action
+FROM strategy_decisions
+WHERE strategy_id IN ('v4_fusion','v4_down_only')
+  AND asset='BTC' LIMIT 5;
+```
+
+### VPIN Phase 1 (`signal_evaluations.vpin` + `window_snapshots.vpin`)
+VPIN is already computed and stored on every evaluation tick.
+
+Key columns in `signal_evaluations`: `vpin`, `regime`  
+Key columns in `window_snapshots`: `vpin` (at window close)
+
+**Actionable patterns:**
+- `vpin < 0.4` (very low informed flow = no selling pressure) AND `v2_direction='UP'` → WR?
+- `vpin` *decreasing* over last 3 evaluation ticks within a window?
+- `regime = 'calm_trend'` AND `v2_direction='UP'` → WR? (calm trends should sustain)
+- `vpin < 0.45` AND `composite_score > 0` → UP WR?
+
+```sql
+SELECT regime, COUNT(*) n,
+       ROUND(AVG(vpin)::numeric,3) avg_vpin,
+       ROUND(100.0*SUM(CASE WHEN v2_direction='UP' THEN 1 ELSE 0 END)::numeric/COUNT(*),1) pct_up
+FROM signal_evaluations WHERE asset='BTC' AND eval_offset BETWEEN 90 AND 150
+GROUP BY 1 ORDER BY avg_vpin;
+```
+
+### CoinGlass Snapshot (`ticks_coinglass`)
+~279K rows. Already joined to window analysis via lateral join. Rich structural data.
+
+Key columns: `oi_usd`, `oi_delta_pct`, `liq_long_usd`, `liq_short_usd`, `taker_buy_usd`, `taker_sell_usd`, `funding_rate`, `long_short_ratio`, `top_position_ratio`
+
+**High-priority patterns:**
+- `taker_buy_usd / (taker_buy_usd + taker_sell_usd)` > 0.58 (buy dominance) → UP WR?
+- `funding_rate < -0.0005` (negative funding = short squeeze pressure) → UP WR?
+- `oi_delta_pct > 0.5` AND taker buy dominant (organic accumulation) → UP WR?
+- `liq_long_usd < liq_short_usd` (more shorts being liquidated) → UP WR?
 
 ---
 
 ## Hypothesis Space
-
-### H1 — Post-Cascade Bounce
 After a forced liquidation cascade (large DOWN move + VPIN spike), the market tends to bounce. The next 1-3 windows after a big DROP are historically bullish.
 
 **Signals to check:** `liq_long_usd` spike + `oi_delta_pct` drop + subsequent window direction.
