@@ -239,8 +239,8 @@ jobs:
         #   price_source_disagreement         -> 30  (pre-DQ-01; tighten to 5 after flag on)
         #   evaluate.no_current_price         -> 2   (cold-start tolerated)
         #   reconciler.no_trade_match         -> 5   (orphan reconciler noise)
-        #   elm_recorder.write_error          -> 0   (PE-06 JSON quoting fix)
-        #   elm_recorder.query_error          -> 0   (PE-06 sibling bug-class)
+        #   prediction_recorder.write_error    -> 0   (PE-06 JSON quoting fix)
+        #   prediction_recorder.query_error   -> 0   (PE-06 sibling bug-class)
         #
         # The PE-06 signatures fire 16x per 30s sweep if the dict-str bug
         # regresses, so any non-zero count in a 10k-line scan is a loud
@@ -279,8 +279,8 @@ jobs:
           check_signature "evaluate.no_current_price"          2  || failed=1
           check_signature "reconciler.no_trade_match"          5  || failed=1
           # CI-02 additions — Sequoia recorder JSON / asyncpg regression signatures.
-          check_signature "elm_recorder.write_error"           0  || failed=1
-          check_signature "elm_recorder.query_error"           0  || failed=1
+          check_signature "prediction_recorder.write_error"    0  || failed=1
+          check_signature "prediction_recorder.query_error"    0  || failed=1
           if [ $failed -eq 1 ]; then
             echo "::error::engine log error-signature gate failed"
             exit 1

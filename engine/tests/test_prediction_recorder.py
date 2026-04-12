@@ -1,5 +1,5 @@
 """
-Tests for ELMPredictionRecorder (PE-06).
+Tests for PredictionRecorder (PE-06).
 
 The prediction recorder writes a row per (asset, delta) to
 `ticks_elm_predictions`, whose `feature_age_ms` column is JSONB. The
@@ -11,7 +11,7 @@ JSONB parser rejects that with:
     DETAIL: Token "'" is invalid.
 
 The handler in `_record_sweep` catches the exception and logs
-`elm_recorder.write_error`, so the failure is silent and drops every
+`prediction_recorder.write_error`, so the failure is silent and drops every
 row in the batch. That silently biases the V10.6 backtest evidence
 base (865 outcomes) — this is an observability-path bug with model
 evaluation consequences.
@@ -51,10 +51,10 @@ _RECORDER_PATH = (
     pathlib.Path(__file__).resolve().parent.parent
     / "data"
     / "feeds"
-    / "elm_prediction_recorder.py"
+    / "prediction_recorder.py"
 )
 _spec = importlib.util.spec_from_file_location(
-    "_elm_prediction_recorder_under_test", _RECORDER_PATH
+    "_prediction_recorder_under_test", _RECORDER_PATH
 )
 assert _spec is not None and _spec.loader is not None
 _recorder_mod = importlib.util.module_from_spec(_spec)
@@ -63,7 +63,7 @@ _spec.loader.exec_module(_recorder_mod)
 
 ASSETS = _recorder_mod.ASSETS
 DELTAS = _recorder_mod.DELTAS
-ELMPredictionRecorder = _recorder_mod.ELMPredictionRecorder
+PredictionRecorder = _recorder_mod.PredictionRecorder
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -112,7 +112,7 @@ class _AcquireCtx:
 
 
 class _StubClient:
-    """Canned ELM client: returns a fixed payload for every call."""
+    """Canned ML client: returns a fixed payload for every call."""
 
     def __init__(self, payload: Dict[str, Any]) -> None:
         self._payload = payload
@@ -128,11 +128,11 @@ class _StubClient:
 # ────────────────────────────────────────────────────────────────────
 
 
-def _make_recorder(payload: Dict[str, Any]) -> tuple[ELMPredictionRecorder, _MockPool]:
+def _make_recorder(payload: Dict[str, Any]) -> tuple[PredictionRecorder, _MockPool]:
     pool = _MockPool()
     client = _StubClient(payload)
     shutdown = asyncio.Event()
-    rec = ELMPredictionRecorder(
+    rec = PredictionRecorder(
         elm_client=client, db_pool=pool, shutdown_event=shutdown
     )
     # Skip the CREATE TABLE round-trip — not under test here.

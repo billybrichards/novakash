@@ -1,8 +1,12 @@
 """
-ELM v3 Prediction Recorder — saves ML model predictions for all assets.
+Prediction Recorder — saves ML model predictions for all assets.
 
-Polls the ELM v3 model every 30s for BTC, ETH, SOL, XRP across multiple
+Polls the ML model every 30s for BTC, ETH, SOL, XRP across multiple
 delta buckets (T-60, T-120, T-180). Writes to ticks_elm_predictions table.
+
+NOTE: The DB table is still called ``ticks_elm_predictions`` deliberately.
+It is created lazily at runtime and renaming would orphan existing data.
+The table rename is out of scope for SQ-01 PR 1 (cosmetic Python rename).
 
 This is READ-ONLY from trading perspective — it never places orders.
 Purpose: build training dataset for future model improvements.
@@ -25,14 +29,14 @@ DELTAS = [60, 90, 120, 180]  # seconds to close
 POLL_INTERVAL = 30  # seconds between full sweeps
 
 
-class ELMPredictionRecorder:
-    """Records ELM v3 predictions for all assets and delta buckets."""
+class PredictionRecorder:
+    """Records ML model predictions for all assets and delta buckets."""
 
     def __init__(self, elm_client, db_pool, shutdown_event: asyncio.Event):
         self._client = elm_client
         self._pool = db_pool
         self._shutdown = shutdown_event
-        self._log = log.bind(component="elm_recorder")
+        self._log = log.bind(component="prediction_recorder")
         self._table_ensured = False
 
     async def _ensure_table(self):
@@ -60,13 +64,13 @@ class ELMPredictionRecorder:
                     ON ticks_elm_predictions (asset, ts DESC)
                 """)
             self._table_ensured = True
-            self._log.info("elm_recorder.table_ensured")
+            self._log.info("prediction_recorder.table_ensured")
         except Exception as exc:
-            self._log.warning("elm_recorder.table_create_error", error=str(exc)[:100])
+            self._log.warning("prediction_recorder.table_create_error", error=str(exc)[:100])
 
     async def run(self):
-        """Main loop: poll ELM for all assets/deltas every 30s."""
-        self._log.info("elm_recorder.started", assets=ASSETS, deltas=DELTAS,
+        """Main loop: poll ML model for all assets/deltas every 30s."""
+        self._log.info("prediction_recorder.started", assets=ASSETS, deltas=DELTAS,
                         interval=POLL_INTERVAL)
         await self._ensure_table()
 
@@ -74,7 +78,7 @@ class ELMPredictionRecorder:
             try:
                 await self._record_sweep()
             except Exception as exc:
-                self._log.warning("elm_recorder.sweep_error", error=str(exc)[:100])
+                self._log.warning("prediction_recorder.sweep_error", error=str(exc)[:100])
 
             try:
                 await asyncio.wait_for(self._shutdown.wait(), timeout=POLL_INTERVAL)
@@ -82,10 +86,10 @@ class ELMPredictionRecorder:
             except asyncio.TimeoutError:
                 pass
 
-        self._log.info("elm_recorder.stopped")
+        self._log.info("prediction_recorder.stopped")
 
     async def _record_sweep(self):
-        """Query ELM for all asset/delta combos and write to DB.
+        """Query ML model for all asset/delta combos and write to DB.
 
         NOTE: this recorder intentionally uses the legacy GET (pull-mode)
         path on `get_probability`, NOT `score_with_features` / POST.
@@ -137,7 +141,7 @@ class ELMPredictionRecorder:
                             json.dumps(freshness),
                         ))
                 except Exception as exc:
-                    self._log.debug("elm_recorder.query_error",
+                    self._log.debug("prediction_recorder.query_error",
                                     asset=asset, delta=delta, error=str(exc)[:50])
 
         if not rows:
@@ -152,6 +156,6 @@ class ELMPredictionRecorder:
                        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)""",
                     rows,
                 )
-            self._log.info("elm_recorder.wrote", count=len(rows))
+            self._log.info("prediction_recorder.wrote", count=len(rows))
         except Exception as exc:
-            self._log.warning("elm_recorder.write_error", error=str(exc)[:100])
+            self._log.warning("prediction_recorder.write_error", error=str(exc)[:100])
