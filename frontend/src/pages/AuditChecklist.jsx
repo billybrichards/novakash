@@ -2005,6 +2005,50 @@ const TASKS = [
     fix: 'SHIPPED in PRs #122 + #123. Prediction surface at /polymarket/overview. Window modal accessible from Evaluate + Strategy Lab.',
     progressNotes: [{ date: '2026-04-12', note: 'PRs #122-#123 merged. Design doc at docs/superpowers/specs/2026-04-12-window-analysis-design.md.' }],
   },
+  // ── 2026-04-12 session 4: window analysis deep dive + go-live findings ─────
+  {
+    id: 'WINDOW-ANALYSIS-01',
+    category: 'data-quality',
+    severity: 'HIGH',
+    status: 'OPEN',
+    title: 'CLOB ask asymmetry: DOWN + cheap NO → 82% WR. Need neutral-period validation.',
+    files: [
+      { path: 'docs/analysis/trading_window_analysis_2026-04-12.md', line: 1, repo: 'novakash' },
+      { path: 'docs/analysis/run_window_analysis.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      '71,540 windows analysed. Ground truth = close_price vs open_price.',
+      'Signal accuracy peaks T-120 to T-135 (55.6%). Collapses below T-90 — CLOB efficient in last 90s.',
+      'DOWN predictions + NO ask <= $0.58 → 82.5% WR, EV=+0.265.',
+      'UP predictions when YES is cheap → 1.4% WR (anti-predictive — market says no).',
+      'CRITICAL CAVEAT: 86% of windows ended DOWN in this dataset (bearish BTC period). High WR partly reflects trend bias, not pure signal edge.',
+      'Need to test on neutral/bullish BTC period to separate true edge from trend.',
+      'Macro/regime data should confirm: do HMM chop/risk_off regimes correlate with DOWN windows?',
+    ],
+    fix: 'TODO: (1) Re-run analysis on a neutral/bullish BTC period (use ticks_chainlink to identify). (2) Add ClobAskGate to V4FusionStrategy (max_ask <= 0.58 for the predicted direction). (3) Check HMM/V3 regime correlation with actual_direction. See docs/analysis/run_window_analysis.py.',
+    progressNotes: [
+      { date: '2026-04-12', note: 'Analysis complete. Key finding: CLOB ask is the biggest filter. Dataset was 86% DOWN so bearish bias caveat applies. V4 paper trading activated to gather neutral-period data.' },
+    ],
+  },
+  {
+    id: 'CA-EXEC-INDEPENDENCE',
+    category: 'clean-architect',
+    severity: 'MEDIUM',
+    status: 'OPEN',
+    title: 'V4FusionStrategy still uses five_min_vpin._execute_trade (CA-01 Phase 4)',
+    files: [
+      { path: 'engine/strategies/five_min_vpin.py', line: 261, repo: 'novakash' },
+      { path: 'engine/adapters/strategies/v4_fusion_strategy.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'V4 strategy decision goes through _sp_trade_decision shortcut into five_min_vpin._execute_trade.',
+      'Execution is functional but architecturally coupled — V4 cannot have its own execution behaviour.',
+      'ExecuteTradeUseCase needs to be extracted from five_min_vpin (CA-01 Phase 4 in design doc).',
+      'ClobAskGate not yet a first-class V4 gate — needs to be added to V4FusionStrategy.',
+    ],
+    fix: 'Extract _execute_trade into ExecuteTradeUseCase (CA-01 Phase 4). Add ClobAskGate and ConfidenceDistanceGate to V4FusionStrategy. See docs/superpowers/specs/2026-04-12-strategy-port-design.md Phase 4.',
+    progressNotes: [{ date: '2026-04-12', note: '_sp_trade_decision shortcut makes V4 functional for live trading but not fully independent.' }],
+  },
 ];
 
 // ─── Components ───────────────────────────────────────────────────────────
