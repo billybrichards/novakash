@@ -42,6 +42,7 @@ import structlog
 # matched. The reconciler treats them identically when comparing against
 # engine state.
 
+
 @dataclass(frozen=True)
 class PolyOrderStatus:
     """Normalised Polymarket CLOB order status used by the SOT reconciler.
@@ -51,6 +52,7 @@ class PolyOrderStatus:
     already exported from ``execution.__init__`` and represents the engine's
     own per-trade lifecycle (OPEN/FILLED/RESOLVED_WIN/RESOLVED_LOSS).
     """
+
     order_id: str
     status: str  # 'pending'|'matched'|'filled'|'cancelled'|'rejected'|'unknown'
     fill_price: Optional[float]
@@ -69,6 +71,7 @@ class PolyOrderStatus:
         return self.status in {"matched", "filled"} or (
             self.fill_size is not None and self.fill_size > 0
         )
+
 
 logger = structlog.get_logger(__name__)
 
@@ -138,6 +141,7 @@ class PolymarketClient:
             if live_enabled != "true":
                 # Fallback: check .env file
                 from pathlib import Path
+
                 _env_file = Path(__file__).parent.parent / ".env"
                 if _env_file.exists():
                     with open(_env_file) as f:
@@ -156,11 +160,53 @@ class PolymarketClient:
         """Public read-only accessor for the underlying ClobClient handle.
 
         Returns None in paper mode or before connect() is called.
-        Prefer high-level methods (place_order, get_order_book_spread, etc.)
-        when possible; this accessor exists for callers like CLOBFeed that
-        need direct book queries.
+        Prefer get_clob_order_book() for order book queries — it works in both
+        paper and live mode. This accessor exists for legacy callers that
+        need direct ClobClient access.
         """
         return self._clob_client
+
+    async def get_clob_order_book(self, token_id: str):
+        """Fetch CLOB order book for a token — works in paper AND live mode.
+
+        Args:
+            token_id: Polymarket token ID (UP or DOWN token)
+
+        Returns:
+            {"up_best_bid": float, "up_best_ask": float, ...} or None if no liquidity
+        """
+        # Paper mode: simulate realistic but random order book
+        if self.paper_mode:
+            import random
+
+            base = random.uniform(0.45, 0.55)
+            spread = random.uniform(0.02, 0.08)
+            return {
+                "up_best_bid": round(base - spread / 2, 4),
+                "up_best_ask": round(base + spread / 2, 4),
+                "down_best_bid": round(1.0 - base - spread / 2, 4),
+                "down_best_ask": round(1.0 - base + spread / 2, 4),
+            }
+
+        # Live mode: use ClobClient
+        if not self._clob_client:
+            raise RuntimeError("CLOB client not connected — call connect() first")
+
+        def _fetch_book():
+            book = self._clob_client.get_order_book(token_id)
+            bids = (
+                [(float(b.price), float(b.size)) for b in book.bids[:5]]
+                if book.bids
+                else []
+            )
+            asks = (
+                [(float(a.price), float(a.size)) for a in book.asks[:5]]
+                if book.asks
+                else []
+            )
+            return {"bids": bids, "asks": asks}
+
+        return await asyncio.to_thread(_fetch_book)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -245,9 +291,13 @@ class PolymarketClient:
         )
 
         if self.paper_mode:
-            return await self._paper_place_order(market_slug, direction, price, stake_usd)
+            return await self._paper_place_order(
+                market_slug, direction, price, stake_usd
+            )
 
-        return await self._live_place_order(market_slug, direction, price, stake_usd, token_id)
+        return await self._live_place_order(
+            market_slug, direction, price, stake_usd, token_id
+        )
 
     async def _paper_place_order(
         self,
@@ -283,7 +333,7 @@ class PolymarketClient:
             "place_order.paper_filled",
             order_id=order_id,
             fill_price=str(fill_price),
-            slippage_pct=f"{float(slippage)*100:.3f}%",
+            slippage_pct=f"{float(slippage) * 100:.3f}%",
             shares=f"{shares:.4f}",
         )
         return order_id
@@ -368,7 +418,11 @@ class PolymarketClient:
         # The strategy already caps at FIVE_MIN_MAX_ENTRY_PRICE but we double-check here
         token_price_f = float(price)
         is_15m = "15m" in market_slug
-        max_price = float(os.environ.get("FIFTEEN_MIN_MAX_ENTRY_PRICE", "0.80")) if is_15m else float(os.environ.get("FIVE_MIN_MAX_ENTRY_PRICE", "0.80"))
+        max_price = (
+            float(os.environ.get("FIFTEEN_MIN_MAX_ENTRY_PRICE", "0.80"))
+            if is_15m
+            else float(os.environ.get("FIVE_MIN_MAX_ENTRY_PRICE", "0.80"))
+        )
         if token_price_f > max_price:
             self._log.warning(
                 "place_order.price_too_high",
@@ -376,7 +430,9 @@ class PolymarketClient:
                 max_price=max_price,
                 market_slug=market_slug,
             )
-            raise ValueError(f"Token price {price} exceeds {int(max_price*100)}¢ cap — skipping")
+            raise ValueError(
+                f"Token price {price} exceeds {int(max_price * 100)}¢ cap — skipping"
+            )
         if token_price_f < 0.30:
             self._log.warning(
                 "place_order.price_too_low",
@@ -395,7 +451,9 @@ class PolymarketClient:
             parts = market_slug.split("-")
             window_ts = int(parts[-1])
             duration = 900 if is_15m else 300
-            expiration = window_ts + duration + 120  # +2min buffer for Polymarket 1min threshold
+            expiration = (
+                window_ts + duration + 120
+            )  # +2min buffer for Polymarket 1min threshold
         except (ValueError, IndexError):
             pass  # Fallback to no expiry (GTC)
 
@@ -418,7 +476,7 @@ class PolymarketClient:
         # (which comes from v81_entry_cap). We use that directly as our limit.
         # This replaces the old env-var-based pricing modes.
         PRICE_FLOOR = float(os.environ.get("PRICE_FLOOR", "0.30"))
-        
+
         # The price from strategy is the CLOB best ask or Gamma price.
         # We submit a GTC at the window's dynamic cap so we fill at market
         # price (which will be ≤ cap). The cap is passed via FIVE_MIN_MAX_ENTRY_PRICE
@@ -435,7 +493,7 @@ class PolymarketClient:
             order_size -= 0.01
         # Enforce Polymarket minimum order size (5 shares)
         order_size = max(order_size, 5.0)
-        
+
         _order_type = OrderType.GTD if expiration > 0 else OrderType.GTC
 
         order_args = OrderArgs(
@@ -458,16 +516,26 @@ class PolymarketClient:
             floor=f"${PRICE_FLOOR:.2f}",
             size=f"{order_size:.2f}",
             order_type=str(_order_type),
-            seconds_to_expiry=expiration - int(time.time()) if expiration > 0 else "none",
+            seconds_to_expiry=expiration - int(time.time())
+            if expiration > 0
+            else "none",
         )
 
         response = await asyncio.to_thread(_sign_and_submit)
 
         # Response can be a dict or an object — handle both
         if isinstance(response, dict):
-            order_id = response.get("orderID") or response.get("id") or f"live-{uuid.uuid4().hex[:12]}"
+            order_id = (
+                response.get("orderID")
+                or response.get("id")
+                or f"live-{uuid.uuid4().hex[:12]}"
+            )
         else:
-            order_id = getattr(response, "orderID", None) or getattr(response, "id", None) or f"live-{uuid.uuid4().hex[:12]}"
+            order_id = (
+                getattr(response, "orderID", None)
+                or getattr(response, "id", None)
+                or f"live-{uuid.uuid4().hex[:12]}"
+            )
 
         self._log.info(
             "place_order.live_submitted",
@@ -505,6 +573,7 @@ class PolymarketClient:
         """
         if self.paper_mode:
             import random
+
             simulated = round(random.uniform(0.40, 0.65), 4)
             self._log.debug(
                 "get_clob_best_ask.paper",
@@ -534,10 +603,25 @@ class PolymarketClient:
 
         # Sort ascending by price to reliably get the lowest ask
         try:
-            sorted_asks = sorted(asks, key=lambda x: float(getattr(x, "price", x.get("price", 0) if isinstance(x, dict) else 0)))
-            best_ask = float(getattr(sorted_asks[0], "price", sorted_asks[0].get("price") if isinstance(sorted_asks[0], dict) else sorted_asks[0]))
+            sorted_asks = sorted(
+                asks,
+                key=lambda x: float(
+                    getattr(x, "price", x.get("price", 0) if isinstance(x, dict) else 0)
+                ),
+            )
+            best_ask = float(
+                getattr(
+                    sorted_asks[0],
+                    "price",
+                    sorted_asks[0].get("price")
+                    if isinstance(sorted_asks[0], dict)
+                    else sorted_asks[0],
+                )
+            )
         except (TypeError, AttributeError, IndexError) as exc:
-            raise ValueError(f"Could not parse ask prices from order book: {exc}") from exc
+            raise ValueError(
+                f"Could not parse ask prices from order book: {exc}"
+            ) from exc
 
         self._log.debug(
             "get_clob_best_ask.live",
@@ -602,6 +686,7 @@ class PolymarketClient:
         if not self._live_first_trade_warned:
             self._live_first_trade_warned = True
             import warnings
+
             warnings.warn(
                 "First live Polymarket FOK trade being placed — verify manually on "
                 "polymarket.com/portfolio",
@@ -623,6 +708,7 @@ class PolymarketClient:
         # CLOB requires: price max 4 decimals, size (maker) max 2 decimals
         # Floor size to avoid taker amount exceeding 4 decimal precision
         import math
+
         _price = round(price, 4)
         _size = math.floor(size * 100) / 100  # Floor to 2 decimals
         # CLOB requires maker_amount (price*size) to have ≤ 2 decimal places
@@ -670,8 +756,11 @@ class PolymarketClient:
                 return obj.get(key, default)
             return getattr(obj, key, default)
 
-        order_id = (_get(response, "orderID") or _get(response, "id")
-                    or f"fok-live-{uuid.uuid4().hex[:12]}")
+        order_id = (
+            _get(response, "orderID")
+            or _get(response, "id")
+            or f"fok-live-{uuid.uuid4().hex[:12]}"
+        )
         status_raw = _get(response, "status", "UNKNOWN") or "UNKNOWN"
         status = str(status_raw).lower()  # normalize: "matched" / "live" / "unmatched"
         success = bool(_get(response, "success", False))
@@ -746,6 +835,7 @@ class PolymarketClient:
         if self.paper_mode:
             # Paper mode: simulate fill at requested price
             import math
+
             _sim_size = math.floor(size * 100) / 100
             return {
                 "filled": True,
@@ -758,7 +848,9 @@ class PolymarketClient:
 
         stake_usd = price * size
         if stake_usd > LIVE_MAX_TRADE_USD:
-            raise ValueError(f"Trade stake ${stake_usd:.2f} exceeds cap ${LIVE_MAX_TRADE_USD:.2f}")
+            raise ValueError(
+                f"Trade stake ${stake_usd:.2f} exceeds cap ${LIVE_MAX_TRADE_USD:.2f}"
+            )
 
         from py_clob_client.clob_types import OrderArgs, OrderType
         from py_clob_client.order_builder.constants import BUY
@@ -766,6 +858,7 @@ class PolymarketClient:
         client = self._clob_client
 
         import math
+
         _price = round(price, 4)
         _size = math.floor(size * 100) / 100
         for _adj in range(100):
@@ -791,8 +884,9 @@ class PolymarketClient:
         elif ot == "FOK":
             sdk_type = OrderType.FOK
         else:
-            self._log.warning("place_market_order.unknown_order_type",
-                requested=ot, fallback="FOK")
+            self._log.warning(
+                "place_market_order.unknown_order_type", requested=ot, fallback="FOK"
+            )
             sdk_type = OrderType.FOK
 
         def _sign_and_submit():
@@ -818,8 +912,11 @@ class PolymarketClient:
                 return obj.get(key, default)
             return getattr(obj, key, default)
 
-        order_id = (_get(response, "orderID") or _get(response, "id")
-                    or f"{ot.lower()}-{uuid.uuid4().hex[:12]}")
+        order_id = (
+            _get(response, "orderID")
+            or _get(response, "id")
+            or f"{ot.lower()}-{uuid.uuid4().hex[:12]}"
+        )
         status_raw = _get(response, "status", "UNKNOWN") or "UNKNOWN"
         status = str(status_raw).lower()
         success = bool(_get(response, "success", False))
@@ -870,15 +967,15 @@ class PolymarketClient:
         """
         if self.paper_mode or not self._clob_client:
             return 0.02  # Default 2¢ spread assumption
-        
+
         try:
             client = self._clob_client
             book = await asyncio.to_thread(client.get_order_book, token_id)
-            
+
             best_bid = float(book.bids[0].price) if book.bids else 0.0
             best_ask = float(book.asks[0].price) if book.asks else 1.0
             spread = best_ask - best_bid
-            
+
             self._log.debug(
                 "order_book.spread",
                 token_id=token_id[:20] + "...",
@@ -893,14 +990,14 @@ class PolymarketClient:
 
     def calculate_dynamic_bump(self, base_price: float, spread: float) -> float:
         """Calculate dynamic price bump based on order book spread.
-        
+
         Strategy: bump by min(2¢, spread) — don't overpay more than the spread,
         but always bump at least 0.5¢ to cross the spread.
-        
+
         Args:
             base_price: Original order price
             spread: Current bid-ask spread from get_order_book_spread()
-            
+
         Returns:
             Bumped price (capped at 65¢ for 5m, safety enforced by caller)
         """
@@ -929,39 +1026,39 @@ class PolymarketClient:
     ) -> tuple[str | None, float | None]:
         """
         Place an order via RFQ (Request for Quote) system.
-        
+
         UpDown tokens have NO CLOB order book — market makers respond to RFQ only.
-        
+
         Flow:
         1. Create RFQ request at our target price
         2. Check for best quote from market makers
         3. If quote price <= max_price, accept it
         4. Return (order_id, fill_price) or (None, None)
-        
+
         Args:
             token_id: The conditional token ID
             direction: "YES" or "NO"
             price: Our target price
             size: Number of shares to buy
             max_price: Maximum acceptable price (cap)
-            
+
         Returns:
             (order_id, fill_price) if filled, (None, None) if not
         """
         if self.paper_mode:
             self._log.info("rfq.paper_mode", price=f"${price:.4f}", size=f"{size:.1f}")
             return (f"rfq-paper-{__import__('uuid').uuid4().hex[:12]}", price)
-        
+
         if not self._clob_client:
             self._log.error("rfq.no_clob_client")
             return (None, None)
-        
+
         try:
             from py_clob_client.rfq import RfqUserRequest
             from py_clob_client.order_builder.constants import BUY
-            
+
             side = BUY  # We always BUY tokens
-            
+
             self._log.info(
                 "rfq.creating_request",
                 token_id=token_id[:20] + "...",
@@ -970,7 +1067,7 @@ class PolymarketClient:
                 size=f"{size:.1f}",
                 max_price=f"${max_price:.2f}",
             )
-            
+
             # Create the RFQ request
             user_request = RfqUserRequest(
                 token_id=token_id,
@@ -978,34 +1075,40 @@ class PolymarketClient:
                 side=side,
                 size=size,
             )
-            
+
             response = await asyncio.to_thread(
                 self._clob_client.rfq.create_rfq_request,
                 user_request,
             )
-            
-            request_id = response.get("requestId") or response.get("request_id") or response.get("id")
+
+            request_id = (
+                response.get("requestId")
+                or response.get("request_id")
+                or response.get("id")
+            )
             if not request_id:
                 self._log.warning("rfq.no_request_id", response=str(response)[:200])
                 return (None, None)
-            
+
             self._log.info("rfq.request_created", request_id=str(request_id)[:20])
-            
+
             # Wait a moment for market makers to respond
             await asyncio.sleep(2)
-            
+
             # Get best quote
             from py_clob_client.rfq import GetRfqBestQuoteParams
+
             best_quote = await asyncio.to_thread(
                 self._clob_client.rfq.get_rfq_best_quote,
                 request_id,
             )
-            
+
             if not best_quote:
                 self._log.info("rfq.no_quotes", request_id=str(request_id)[:20])
                 # Cancel the request
                 try:
                     from py_clob_client.rfq import CancelRfqRequestParams
+
                     await asyncio.to_thread(
                         self._clob_client.rfq.cancel_rfq_request,
                         request_id,
@@ -1013,18 +1116,22 @@ class PolymarketClient:
                 except Exception:
                     pass
                 return (None, None)
-            
+
             # Check quote price
             quote_price = float(best_quote.get("price", 0))
-            quote_id = best_quote.get("quoteId") or best_quote.get("quote_id") or best_quote.get("id")
-            
+            quote_id = (
+                best_quote.get("quoteId")
+                or best_quote.get("quote_id")
+                or best_quote.get("id")
+            )
+
             self._log.info(
                 "rfq.quote_received",
                 quote_price=f"${quote_price:.4f}",
                 max_price=f"${max_price:.2f}",
                 quote_id=str(quote_id)[:20] if quote_id else "none",
             )
-            
+
             if quote_price > max_price:
                 self._log.warning(
                     "rfq.quote_too_expensive",
@@ -1039,27 +1146,31 @@ class PolymarketClient:
                 except Exception:
                     pass
                 return (None, None)
-            
+
             # Accept the quote
             result = await asyncio.to_thread(
                 self._clob_client.rfq.accept_rfq_quote,
                 quote_id,
             )
-            
-            order_id = result.get("orderID") or result.get("order_id") or result.get("id") or str(quote_id)
-            
+
+            order_id = (
+                result.get("orderID")
+                or result.get("order_id")
+                or result.get("id")
+                or str(quote_id)
+            )
+
             self._log.info(
                 "rfq.accepted",
                 order_id=str(order_id)[:20] if order_id else "none",
                 fill_price=f"${quote_price:.4f}",
             )
-            
+
             return (str(order_id), quote_price)
-            
+
         except Exception as exc:
             self._log.warning("rfq.failed", error=str(exc)[:200])
             return (None, None)
-
 
     # place_market_order_legacy DELETED in v10 cleanup (was duplicate of place_market_order)
 
@@ -1102,11 +1213,13 @@ class PolymarketClient:
         # Uses asyncio.to_thread() because py-clob-client is synchronous.
         client = self._clob_client
         try:
+
             def _fetch_prices():
                 # Search for specific market instead of fetching all markets
                 # py-clob-client get_market(condition_id) or get_markets() with next_cursor
                 # Fallback: iterate paginated results with a slug filter
                 import httpx as _httpx
+
                 resp = _httpx.get(
                     "https://clob.polymarket.com/markets",
                     params={"slug": market_slug},
@@ -1120,12 +1233,16 @@ class PolymarketClient:
                     markets = markets.get("data", [])
 
                 yes_token_id = None
-                for market in (markets or []):
+                for market in markets or []:
                     slug = market.get("market_slug", "") or market.get("slug", "")
                     if market_slug in slug:
                         tokens = market.get("clobTokenIds") or market.get("tokens", [])
                         if tokens and len(tokens) >= 1:
-                            yes_token_id = tokens[0] if isinstance(tokens[0], str) else tokens[0].get("token_id")
+                            yes_token_id = (
+                                tokens[0]
+                                if isinstance(tokens[0], str)
+                                else tokens[0].get("token_id")
+                            )
                         break
 
                 if not yes_token_id:
@@ -1139,7 +1256,9 @@ class PolymarketClient:
             yes_best_ask = await asyncio.to_thread(_fetch_prices)
 
             if yes_best_ask is None:
-                self._log.warning("get_market_prices.token_not_found", market_slug=market_slug)
+                self._log.warning(
+                    "get_market_prices.token_not_found", market_slug=market_slug
+                )
                 return {}
 
             no_price = Decimal("1") - yes_best_ask
@@ -1173,10 +1292,13 @@ class PolymarketClient:
             raise RuntimeError("CLOB client not connected — call connect() first")
 
         from py_clob_client.clob_types import BalanceAllowanceParams
+
         sig_type = int(os.environ.get("POLY_SIGNATURE_TYPE", "2"))
 
         def _fetch():
-            params = BalanceAllowanceParams(asset_type="COLLATERAL", signature_type=sig_type)
+            params = BalanceAllowanceParams(
+                asset_type="COLLATERAL", signature_type=sig_type
+            )
             ba = self._clob_client.get_balance_allowance(params)
             return int(ba.get("balance", "0")) / 1e6
 
@@ -1200,6 +1322,7 @@ class PolymarketClient:
             raise RuntimeError("CLOB client not connected — call connect() first")
 
         resp = await asyncio.to_thread(self._clob_client.get_order, order_id)
+
         # v11 fix: Normalize status to UPPERCASE for back-compat with
         # fill_check loops that compare `clob_status not in ("LIVE","UNKNOWN")`.
         # Polymarket returns lowercase: 'live'/'matched'/'unmatched'/'delayed'.
@@ -1235,34 +1358,37 @@ class PolymarketClient:
 
     async def get_portfolio_value(self) -> float:
         """Return total portfolio value: CLOB cash + open position value.
-        
+
         Fetches position value from Polymarket data API so unredeemed
         wins are included in the bankroll calculation.
         """
         cash = await self.get_balance()
-        
+
         if self.paper_mode:
             return cash
-        
+
         # Fetch position value from data API
         try:
             import aiohttp
+
             funder = self._funder_address.lower()
             url = f"https://data-api.polymarket.com/positions?user={funder}"
             headers = {"User-Agent": "Mozilla/5.0 NovakashEngine/1.0"}
-            
+
             async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
                     if resp.status != 200:
                         return cash
                     positions = await resp.json()
-            
+
             position_value = 0.0
             for p in positions:
                 sz = float(p.get("size", 0))
                 cur = float(p.get("curPrice", 0))
                 position_value += sz * cur
-            
+
             total = cash + position_value
             self._log.debug(
                 "portfolio.value",
@@ -1277,42 +1403,45 @@ class PolymarketClient:
 
     async def get_position_outcomes(self) -> dict:
         """Fetch real position outcomes from Polymarket data API.
-        
+
         Returns dict of conditionId → {size, avgPrice, curPrice, outcome}
         where outcome is 'WIN' (curPrice >= 0.99), 'LOSS' (curPrice <= 0.01),
         or 'OPEN' (still trading).
-        
+
         This is the SOURCE OF TRUTH for trade resolution — NOT internal logic.
         """
         if self.paper_mode:
             return {}
-        
+
         try:
             import aiohttp
+
             funder = self._funder_address.lower()
             url = f"https://data-api.polymarket.com/positions?user={funder}"
             headers = {"User-Agent": "Mozilla/5.0 NovakashEngine/1.0"}
-            
+
             async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
                     if resp.status != 200:
                         return {}
                     positions = await resp.json()
-            
+
             results = {}
             for p in positions:
                 cid = p.get("conditionId", "")
                 cur_price = float(p.get("curPrice", 0))
                 size = float(p.get("size", 0))
                 avg_price = float(p.get("avgPrice", 0))
-                
+
                 if cur_price <= 0.01:
                     outcome = "LOSS"
                 elif cur_price >= 0.99:
                     outcome = "WIN"
                 else:
                     outcome = "OPEN"
-                
+
                 results[cid] = {
                     "size": size,
                     "avgPrice": avg_price,
@@ -1324,7 +1453,7 @@ class PolymarketClient:
                     "tokenId": p.get("asset", "") or p.get("tokenId", ""),
                     "asset": p.get("asset", ""),
                 }
-            
+
             return results
         except Exception as exc:
             self._log.debug("positions.fetch_failed", error=str(exc))
@@ -1422,6 +1551,7 @@ class PolymarketClient:
     @classmethod
     def _parse_order_status(cls, order_id: str, resp: Any) -> PolyOrderStatus:
         """Coerce a raw CLOB get_order response into a typed OrderStatus."""
+
         def _get(obj, key, default=None):
             if obj is None:
                 return default
@@ -1458,7 +1588,14 @@ class PolymarketClient:
         # Timestamp of last status change. CLOB returns either match_time,
         # updated_at, or created_at depending on the lifecycle.
         ts: Optional[datetime] = None
-        for key in ("match_time", "matchTime", "updated_at", "updatedAt", "created_at", "createdAt"):
+        for key in (
+            "match_time",
+            "matchTime",
+            "updated_at",
+            "updatedAt",
+            "created_at",
+            "createdAt",
+        ):
             val = _get(resp, key)
             if val is None:
                 continue
@@ -1522,22 +1659,34 @@ class PolymarketClient:
                     )
                 return None
             try:
-                fill_price = float(paper.get("fill_price")) if paper.get("fill_price") is not None else None
+                fill_price = (
+                    float(paper.get("fill_price"))
+                    if paper.get("fill_price") is not None
+                    else None
+                )
             except (ValueError, TypeError):
                 fill_price = None
             try:
-                fill_size = float(paper.get("shares")) if paper.get("shares") is not None else None
+                fill_size = (
+                    float(paper.get("shares"))
+                    if paper.get("shares") is not None
+                    else None
+                )
             except (ValueError, TypeError):
                 fill_size = None
             ts: Optional[datetime] = None
             try:
                 if paper.get("filled_at"):
-                    ts = datetime.fromtimestamp(float(paper["filled_at"]), tz=timezone.utc)
+                    ts = datetime.fromtimestamp(
+                        float(paper["filled_at"]), tz=timezone.utc
+                    )
             except (ValueError, TypeError, OSError):
                 ts = None
             return PolyOrderStatus(
                 order_id=order_id,
-                status="filled" if str(paper.get("status", "")).upper() == "FILLED" else "pending",
+                status="filled"
+                if str(paper.get("status", "")).upper() == "FILLED"
+                else "pending",
                 fill_price=fill_price,
                 fill_size=fill_size,
                 timestamp=ts,
@@ -1571,7 +1720,9 @@ class PolymarketClient:
         return self._parse_order_status(order_id, resp)
 
     async def list_recent_orders(
-        self, since: Optional[datetime] = None, limit: int = 50,
+        self,
+        since: Optional[datetime] = None,
+        limit: int = 50,
     ) -> list[PolyOrderStatus]:
         """Bulk SOT helper — return parsed PolyOrderStatus for recent CLOB orders.
 
@@ -1589,13 +1740,19 @@ class PolymarketClient:
                 ts: Optional[datetime] = None
                 try:
                     if p.get("created_at"):
-                        ts = datetime.fromtimestamp(float(p["created_at"]), tz=timezone.utc)
+                        ts = datetime.fromtimestamp(
+                            float(p["created_at"]), tz=timezone.utc
+                        )
                 except (ValueError, TypeError, OSError):
                     ts = None
                 if since is not None and ts is not None and ts < since:
                     continue
                 try:
-                    fp = float(p.get("fill_price")) if p.get("fill_price") is not None else None
+                    fp = (
+                        float(p.get("fill_price"))
+                        if p.get("fill_price") is not None
+                        else None
+                    )
                 except (ValueError, TypeError):
                     fp = None
                 try:
@@ -1605,7 +1762,9 @@ class PolymarketClient:
                 results.append(
                     PolyOrderStatus(
                         order_id=oid,
-                        status="filled" if str(p.get("status", "")).upper() == "FILLED" else "pending",
+                        status="filled"
+                        if str(p.get("status", "")).upper() == "FILLED"
+                        else "pending",
                         fill_price=fp,
                         fill_size=fs,
                         timestamp=ts,
@@ -1643,7 +1802,11 @@ class PolymarketClient:
             if not oid:
                 continue
             parsed = self._parse_order_status(str(oid), entry)
-            if since is not None and parsed.timestamp is not None and parsed.timestamp < since:
+            if (
+                since is not None
+                and parsed.timestamp is not None
+                and parsed.timestamp < since
+            ):
                 continue
             results.append(parsed)
         return results
