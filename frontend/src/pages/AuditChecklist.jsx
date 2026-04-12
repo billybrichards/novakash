@@ -2049,6 +2049,30 @@ const TASKS = [
     fix: 'Extract _execute_trade into ExecuteTradeUseCase (CA-01 Phase 4). Add ClobAskGate and ConfidenceDistanceGate to V4FusionStrategy. See docs/superpowers/specs/2026-04-12-strategy-port-design.md Phase 4.',
     progressNotes: [{ date: '2026-04-12', note: '_sp_trade_decision shortcut makes V4 functional for live trading but not fully independent.' }],
   },
+  // ── FE-MONITOR-01: Monitor page 5 bugs diagnosed 2026-04-12 ──────────────
+  {
+    id: 'FE-MONITOR-01',
+    category: 'frontend',
+    severity: 'HIGH',
+    status: 'OPEN',
+    title: 'Monitor page: 5 bugs — no dual-strategy in timeline, NO DATA sub-signals, double gates, bankroll stale',
+    files: [
+      { path: 'frontend/src/pages/polymarket/components/RecentFlow.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/polymarket/components/SignalSurface.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/polymarket/components/GatePipeline.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/polymarket/components/DataHealthStrip.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/polymarket/components/StatusBar.jsx', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Bug 1: RecentFlow reads window_snapshots via /api/v58/outcomes — shows V10 only. strategy_decisions (dual V10+V4) never wired into RecentFlow.',
+      'Bug 2: Sequoia v5.2 NO DATA + sub-signals all "—". V4 snapshot nests sub_signals under timescales.5m.sub_signals but SignalSurface reads v4Snapshot.sub_signals directly — parse miss.',
+      'Bug 3: Gate pipeline shows 8 gates twice. GatePipeline.jsx renders hardcoded 8-gate strip AND dynamic gate_results from heartbeat — two loops both fire.',
+      'Bug 4: SRC Agreement NO DATA in Data Health Strip but PASS in gate pipeline. Health strip reads V4 consensus, gate pipeline reads V10 heartbeat — two different sources disagree.',
+      'Bug 5: Bankroll shows $93.06 but actual CLOB wallet = $19.37. StatusBar reads system_state.bankroll from DB (stale). Needs sync to on-chain USDC balance.',
+    ],
+    fix: 'FE-MONITOR-01a: Wire strategy_decisions into RecentFlow (add V4 column, show LIVE/GHOST side-by-side). FE-MONITOR-01b: Fix SignalSurface to read timescales.5m.sub_signals from V4 snapshot. FE-MONITOR-01c: Fix GatePipeline double render — deduplicate gate lists. FE-MONITOR-01d: Unify SRC Agreement source in DataHealthStrip. FE-MONITOR-01e: Sync bankroll to on-chain CLOB wallet balance via PolymarketClient.get_balance_allowance() on startup.',
+    progressNotes: [{ date: '2026-04-12', note: 'Diagnosed from screenshot. All 5 bugs identified with root cause. Not yet fixed.' }],
+  },
 ];
 
 // ─── Components ───────────────────────────────────────────────────────────
