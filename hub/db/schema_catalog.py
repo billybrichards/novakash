@@ -1356,6 +1356,21 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "queries against this table — it only documents its existence."
         ),
     },
+
+    "ticks_v4_decision": {
+        "name": "ticks_v4_decision",
+        "service": "timesfm-service",
+        "category": "data",
+        "status": "active",
+        "sot_class": "SOT",
+        "description": "Full V4 fusion surface per timescale — probability, HMM regime, V3 composite, consensus, macro, recommended action, sub_signals JSONB. Written by V4DBWriter every 5s.",
+        "writers": ["timesfm-service"],
+        "readers": ["hub/api/v58_monitor.py", "strategy lab"],
+        "recency_column": "ts",
+        "docs": "docs/DATA_FEEDS.md",
+        "notes": "Activated 2026-04-12. Contains full snapshot_full JSONB for ML retraining.",
+        "large": True,
+    },
 }
 
 
