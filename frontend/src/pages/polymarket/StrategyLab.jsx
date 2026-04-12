@@ -13,6 +13,146 @@ import WindowAnalysisModal from './components/WindowAnalysisModal.jsx';
  * All replay logic runs client-side in JavaScript.
  */
 
+// ── Strategy Config Panel ───────────────────────────────────────────────────
+
+function StrategyConfigPanel() {
+  const [expanded, setExpanded] = useState(false);
+
+  const row = (label, value, valueColor) => (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '3px 0' }}>
+      <span style={{ fontSize: 9, color: T.textMuted, letterSpacing: '0.06em', minWidth: 160, flexShrink: 0 }}>
+        {label}
+      </span>
+      <span style={{ fontSize: 10, color: valueColor || T.text, fontWeight: 600 }}>
+        {value}
+      </span>
+    </div>
+  );
+
+  const divider = () => (
+    <div style={{ height: 1, background: T.border, margin: '6px 0' }} />
+  );
+
+  return (
+    <div style={{
+      background: T.headerBg,
+      border: `1px solid ${T.cardBorder}`,
+      borderLeft: `3px solid ${T.cyan}`,
+      borderRadius: 6,
+      marginBottom: 14,
+      overflow: 'hidden',
+    }}>
+      {/* Collapsed bar — always visible */}
+      <div
+        onClick={() => setExpanded(e => !e)}
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          padding: '8px 14px',
+          cursor: 'pointer',
+          userSelect: 'none',
+        }}
+      >
+        <span style={{ fontSize: 9, color: T.cyan, letterSpacing: '0.1em', fontWeight: 700 }}>
+          STRATEGY CONFIG
+        </span>
+        <span style={{
+          fontSize: 9,
+          padding: '1px 7px',
+          borderRadius: 3,
+          background: 'rgba(6,182,212,0.15)',
+          color: T.cyan,
+          fontWeight: 700,
+          letterSpacing: '0.08em',
+        }}>
+          V4 LIVE (paper)
+        </span>
+        <span style={{
+          fontSize: 9,
+          padding: '1px 7px',
+          borderRadius: 3,
+          background: 'rgba(168,85,247,0.15)',
+          color: T.purple,
+          fontWeight: 700,
+          letterSpacing: '0.08em',
+        }}>
+          V10 GHOST
+        </span>
+        <span style={{
+          fontSize: 9,
+          padding: '1px 7px',
+          borderRadius: 3,
+          background: 'rgba(245,158,11,0.12)',
+          color: T.amber,
+          fontWeight: 600,
+          letterSpacing: '0.07em',
+        }}>
+          timing: T-30 to T-180
+        </span>
+        <span style={{
+          fontSize: 9,
+          padding: '1px 7px',
+          borderRadius: 3,
+          background: 'rgba(245,158,11,0.12)',
+          color: T.amber,
+          fontWeight: 600,
+          letterSpacing: '0.07em',
+        }}>
+          conf_dist ≥ 0.12
+        </span>
+        <span style={{ marginLeft: 'auto', fontSize: 10, color: T.textMuted }}>
+          {expanded ? '▲' : '▼'}
+        </span>
+      </div>
+
+      {/* Expanded detail */}
+      {expanded && (
+        <div style={{ padding: '0 14px 12px' }}>
+          {divider()}
+
+          {/* Strategy modes */}
+          <div style={{ fontSize: 9, color: T.textDim, letterSpacing: '0.08em', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>
+            Active Strategies
+          </div>
+          {row('V4 Fusion', 'LIVE — paper trading (executes real orders)', T.cyan)}
+          {row('V10 Gate', 'GHOST — shadow mode, no execution', T.purple)}
+
+          {divider()}
+
+          {/* Gates */}
+          <div style={{ fontSize: 9, color: T.textDim, letterSpacing: '0.08em', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>
+            Active Gates
+          </div>
+          {row('Timing window', 'optimal — T-30 to T-180 (seconds before window close)', T.amber)}
+          {row('Confidence distance', '≥ 0.12 (|P(direction) - 0.5|)', T.amber)}
+          {row('CLOB divergence (late)', 'late window T-5 to T-30: (Sequoia − CLOB implied) > 0.04', T.amber)}
+
+          {divider()}
+
+          {/* Model status */}
+          <div style={{ fontSize: 9, color: T.textDim, letterSpacing: '0.08em', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>
+            Model Status
+          </div>
+          {row('Current model', 'Sequoia v5.2 (trained 2026-04-10)', T.green)}
+          {row('Retrain outcome', 'New model NOT promoted — ECE worse. Current model stays.', T.amber)}
+
+          {divider()}
+
+          {/* Dataset caveat */}
+          <div style={{ fontSize: 9, color: T.textDim, letterSpacing: '0.08em', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>
+            Dataset Caveat
+          </div>
+          {row('Training set bias', '84% DOWN dataset — DOWN signals inflated by bearish period bias', T.red)}
+          <div style={{ fontSize: 9, color: T.textDim, marginTop: 4, lineHeight: 1.5 }}>
+            Interpret DOWN confidence scores with caution. UP signals are relatively underconfident vs actual accuracy.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Gate definitions ────────────────────────────────────────────────────────
 
 const GATE_DEFS = [
@@ -1182,6 +1322,72 @@ function ShadowComparison({ api }) {
         </div>
       )}
 
+      {/* Strategy Notes */}
+      <div style={{ ...S.card, borderColor: T.purple, borderWidth: 2, marginBottom: 16 }}>
+        <div style={{ ...S.cardTitle, color: T.purple }}>Strategy Notes — Window Analysis Findings</div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          {/* Magic window */}
+          <div>
+            <div style={{ fontSize: 9, color: T.cyan, letterSpacing: '0.08em', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>
+              Magic Window
+            </div>
+            <div style={{ fontSize: 11, color: T.white, fontWeight: 700, marginBottom: 4 }}>
+              T-120 to T-150
+            </div>
+            <div style={{ fontSize: 10, color: T.text, lineHeight: 1.6 }}>
+              Highest accuracy zone. Price signal has formed but market has not yet corrected.
+              Both Sequoia confidence and source agreement peak here. Optimal entry timing.
+            </div>
+          </div>
+
+          {/* T-90 cliff */}
+          <div>
+            <div style={{ fontSize: 9, color: T.amber, letterSpacing: '0.08em', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>
+              T-90 Cliff
+            </div>
+            <div style={{ fontSize: 11, color: T.white, fontWeight: 700, marginBottom: 4 }}>
+              Accuracy drops sharply inside T-90
+            </div>
+            <div style={{ fontSize: 10, color: T.text, lineHeight: 1.6 }}>
+              Inside T-90s, informed traders have already repositioned. CLOB prices converge toward
+              resolution, eliminating the edge. Sequoia confidence frequently disagrees with CLOB
+              implied probability — this divergence is the CLOB divergence gate.
+            </div>
+          </div>
+
+          {/* Confidence threshold */}
+          <div>
+            <div style={{ fontSize: 9, color: T.green, letterSpacing: '0.08em', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>
+              Confidence Threshold Rationale
+            </div>
+            <div style={{ fontSize: 11, color: T.white, fontWeight: 700, marginBottom: 4 }}>
+              confidence_distance ≥ 0.12 (not raw P ≥ 0.62)
+            </div>
+            <div style={{ fontSize: 10, color: T.text, lineHeight: 1.6 }}>
+              Using distance from 0.5 rather than absolute probability corrects for the 84% DOWN
+              bias in the training set. At conf_dist 0.12, backtested accuracy is ~68% vs 54% for
+              all signals. Below 0.08, win rate collapses to near 50%.
+            </div>
+          </div>
+
+          {/* V4 vs V10 rationale */}
+          <div>
+            <div style={{ fontSize: 9, color: T.textMuted, letterSpacing: '0.08em', fontWeight: 700, textTransform: 'uppercase', marginBottom: 6 }}>
+              V4 LIVE / V10 GHOST Rationale
+            </div>
+            <div style={{ fontSize: 11, color: T.white, fontWeight: 700, marginBottom: 4 }}>
+              Flipped 2026-04-12 after window analysis
+            </div>
+            <div style={{ fontSize: 10, color: T.text, lineHeight: 1.6 }}>
+              V10 uses tighter T-90 to T-120 window — good on backtests but insufficient live sample.
+              V4 runs T-30 to T-180 with confidence_distance gate as primary filter, giving more
+              trade opportunities while preserving edge. V10 runs ghost to build comparison data.
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Decision timeline */}
       <div style={S.card}>
         <div style={S.cardTitle}>Decision Timeline (latest {Math.min(windowKeys.length, 100)} windows)</div>
@@ -1356,6 +1562,9 @@ export default function StrategyLab() {
           </span>
         )}
       </div>
+
+      {/* Strategy Config Panel */}
+      <StrategyConfigPanel />
 
       {/* Tabs */}
       <div style={S.tabs}>
