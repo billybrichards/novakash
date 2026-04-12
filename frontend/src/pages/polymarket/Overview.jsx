@@ -618,9 +618,9 @@ export default function Overview() {
                 accuracy by eval_offset (10s buckets)
               </span>
             }>
-            <AccuracyChart offsets={data.offsets} theme={theme} />
+            <AccuracyChart offsets={Array.isArray(data.offsets) ? data.offsets : []} theme={theme} />
             <div style={{ marginTop: 12 }}>
-              <PredictionTable offsets={data.offsets} theme={theme} />
+              <PredictionTable offsets={Array.isArray(data.offsets) ? data.offsets : []} theme={theme} />
             </div>
           </Card>
 
@@ -635,7 +635,7 @@ export default function Overview() {
                 </span>
               }>
               <StrategyDecisionChart
-                offsets={data.offsets}
+                offsets={Array.isArray(data.offsets) ? data.offsets : []}
                 strategyIds={strategyIds}
                 theme={theme}
               />
