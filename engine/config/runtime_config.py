@@ -72,6 +72,12 @@ _DB_KEY_MAP: dict[str, tuple[str, type]] = {
     "five_min_min_delta_pct":   ("five_min_min_delta_pct", float),
     "five_min_cascade_min_delta_pct": ("five_min_cascade_min_delta_pct", float),
     "vpin_cascade_direction_threshold": ("vpin_cascade_direction_threshold", float),
+    # SP-04 / SP-05: Strategy port settings (hot-reloadable)
+    "V4_FUSION_MODE":            ("v4_fusion_mode", str),
+    "V10_GATE_MODE":             ("v10_gate_mode", str),
+    "V4_FUSION_ENABLED":         ("v4_fusion_enabled", bool),
+    "V10_6_MIN_EVAL_OFFSET_STRATEGY": ("v10_6_min_eval_offset", int),
+    "V10_6_MAX_EVAL_OFFSET_STRATEGY": ("v10_6_max_eval_offset", int),
 }
 
 
@@ -225,6 +231,15 @@ class RuntimeConfig:
         #  180 = refuse to trade further than T-180 from window close
         self.v10_6_min_eval_offset: int = int(os.environ.get("V10_6_MIN_EVAL_OFFSET", "90"))
         self.v10_6_max_eval_offset: int = int(os.environ.get("V10_6_MAX_EVAL_OFFSET", "180"))
+
+        # ── SP-04 / SP-05: Strategy port settings (DB-synced, hot-reloadable) ──
+        # These default to env vars and are overridden by DB config on each sync().
+        # V10_GATE_MODE / V4_FUSION_MODE: per-window mode for LIVE vs GHOST execution.
+        # V4_FUSION_ENABLED: whether V4 fusion strategy is included in evaluation.
+        self.use_strategy_port: bool = os.environ.get("ENGINE_USE_STRATEGY_PORT", "false").lower() == "true"
+        self.v10_gate_mode: str = os.environ.get("V10_GATE_MODE", "LIVE").upper()
+        self.v4_fusion_mode: str = os.environ.get("V4_FUSION_MODE", "GHOST").upper()
+        self.v4_fusion_enabled: bool = os.environ.get("V4_FUSION_ENABLED", "false").lower() == "true"
 
         # ── Sync metadata ─────────────────────────────────────────────────
         self._active_config_id: Optional[int] = None

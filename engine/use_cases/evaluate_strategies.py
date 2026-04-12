@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 import structlog
 
+from config.runtime_config import runtime as _runtime
 from domain.value_objects import (
     EvaluateStrategiesResult,
     StrategyContext,
@@ -66,7 +67,9 @@ class EvaluateStrategiesUseCase:
         self._write_enabled = os.environ.get(
             "STRATEGY_DECISION_WRITES", "true"
         ).lower() == "true"
-        self._v4_enabled = os.environ.get(
+        # _v4_enabled: checked per-call against runtime for hot-reload support.
+        # Stored as a fallback default only; runtime.v4_fusion_enabled takes precedence.
+        self._v4_enabled_default = os.environ.get(
             "V4_FUSION_ENABLED", "false"
         ).lower() == "true"
 
@@ -243,8 +246,15 @@ class EvaluateStrategiesUseCase:
                         error=str(exc)[:200],
                     )
 
-            # Find LIVE decision
-            if reg.mode == "LIVE" and decision.action == "TRADE":
+            # Find LIVE decision — check runtime for hot-reloaded mode overrides.
+            # For v10_gate: runtime.v10_gate_mode takes precedence over reg.mode.
+            # For v4_fusion: runtime.v4_fusion_mode takes precedence over reg.mode.
+            effective_mode = reg.mode
+            if reg.strategy_id == "v10_gate":
+                effective_mode = _runtime.v10_gate_mode
+            elif reg.strategy_id == "v4_fusion":
+                effective_mode = _runtime.v4_fusion_mode
+            if effective_mode == "LIVE" and decision.action == "TRADE":
                 live_decision = decision
 
             log.info(
@@ -466,9 +476,10 @@ class EvaluateStrategiesUseCase:
             except Exception:
                 pass
 
-        # V4 snapshot
+        # V4 snapshot — check runtime each call so mode changes are hot-reloaded.
+        _v4_enabled = _runtime.v4_fusion_enabled or self._v4_enabled_default
         v4_snapshot = None
-        if self._v4_enabled and self._v4_port:
+        if _v4_enabled and self._v4_port:
             try:
                 timeframe = "5m"
                 if hasattr(window, "duration_secs"):
