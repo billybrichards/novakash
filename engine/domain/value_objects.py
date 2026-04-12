@@ -384,8 +384,6 @@ class V4Snapshot:
     Immutable -- V4FusionStrategy reads fields but never mutates.
     """
     probability_up: float
-    probability_raw: Optional[float] = None  # uncalibrated LightGBM score
-    conviction: str = "NONE"           # "NONE" | "LOW" | "MEDIUM" | "HIGH"
     conviction_score: float             # 0.0-1.0
     regime: str                         # "calm_trend" | "volatile_trend" | "chop" | "risk_off"
     regime_confidence: float
@@ -405,6 +403,10 @@ class V4Snapshot:
     consensus: dict                     # 6 source consensus + safe_to_trade
     macro: dict                         # Qwen/LightGBM bias, direction_gate, size_modifier
     quantiles: dict                     # p10-p90
+
+    # Fields with defaults (must come after non-default fields)
+    probability_raw: Optional[float] = None  # uncalibrated LightGBM score
+    conviction: str = "NONE"           # "NONE" | "LOW" | "MEDIUM" | "HIGH"
 
     # Polymarket live recommended outcome (clean venue-specific block)
     polymarket_outcome: Optional[dict] = None  # direction, trade_advised, confidence, extras
