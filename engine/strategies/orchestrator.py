@@ -1622,6 +1622,29 @@ class Orchestrator:
                                 "strategy_port.no_live_trade",
                                 decisions=len(result.all_decisions),
                             )
+                            # Write window_snapshot so close_price is tracked for analysis.
+                            # Without this, strategy_port skips evaluate_window entirely on
+                            # no-trade ticks, leaving window_snapshots empty.
+                            _ctx = result.context
+                            if self._db and _ctx:
+                                asyncio.create_task(self._db.write_window_snapshot({
+                                    "window_ts": getattr(window, "window_ts", 0),
+                                    "asset": getattr(window, "asset", "BTC"),
+                                    "timeframe": "5m",
+                                    "open_price": getattr(window, "open_price", 0),
+                                    "close_price": _ctx.current_price or 0,
+                                    "btc_price": _ctx.current_price or 0,
+                                    "eval_offset": getattr(window, "eval_offset", None),
+                                    "vpin": _ctx.vpin,
+                                    "regime": _ctx.regime,
+                                    "delta_pct": _ctx.delta_pct,
+                                    "delta_source": _ctx.delta_source,
+                                    "v2_probability_up": (_ctx.v4_snapshot.probability_up
+                                                          if _ctx.v4_snapshot else None),
+                                    "v2_direction": ("DOWN" if (_ctx.v4_snapshot and
+                                                    (_ctx.v4_snapshot.probability_up or 0.5) < 0.5)
+                                                    else "UP") if _ctx.v4_snapshot else None,
+                                }))
                             # v12: Send strategy comparison alert ONCE per window at window close.
                             # Only fire when eval_offset is low (window ending) to avoid
                             # spamming Telegram on every 2-second evaluation tick.
