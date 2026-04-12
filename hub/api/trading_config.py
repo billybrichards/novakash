@@ -448,7 +448,7 @@ async def get_live_status(session: AsyncSession = Depends(get_session)):
     # Also check engine's actual runtime state from heartbeat data
     engine_state = state.get("state", {}) or {}
     engine_config = engine_state.get("config", {}) or {}
-    engine_paper_mode = engine_config.get("paper_mode", True)
+    engine_paper_mode = paper_enabled  # use system_state.paper_enabled, not engine heartbeat
     runtime_config = engine_config.get("runtime_config", {})
 
     # Check live config approval
