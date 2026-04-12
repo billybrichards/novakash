@@ -2034,6 +2034,31 @@ const TASKS = [
     ],
   },
   {
+    id: 'SIGNAL-CLOB-EDGE-GATE',
+    category: 'data-quality',
+    severity: 'HIGH',
+    status: 'OPEN',
+    title: 'Improved accuracy: gate on (Sequoia confidence - CLOB implied probability) = true edge',
+    files: [
+      { path: 'engine/adapters/strategies/v4_fusion_strategy.py', line: 1, repo: 'novakash' },
+      { path: 'engine/signals/gates.py', line: 1, repo: 'novakash' },
+      { path: 'docs/analysis/run_window_analysis.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Both Sequoia confidence AND CLOB ask converge toward outcome as window closes — but CLOB moves faster (order flow real-time, Sequoia lags).',
+      'True edge = gap between what Sequoia knows vs what CLOB has already priced: (p_up - clob_implied_prob) where clob_implied = 1 - clob_up_ask.',
+      'At T-60: Sequoia dist=0.213 (more confident) but CLOB ask=0.454 (already priced DOWN). CLOB is AHEAD of signal — no edge.',
+      'At T-120: Sequoia 65% UP confidence, CLOB ask=0.58 (implies 58% UP) → 7pp edge → real trade opportunity.',
+      'This single gate would filter most T-60 losses: if CLOB implies same/stronger direction than Sequoia, market already knows. Skip.',
+      'Gate formula: if predicting UP, only trade when p_up > (1 - clob_up_ask) + threshold. If predicting DOWN, only trade when (1-p_up) > (1 - clob_down_ask) + threshold.',
+      'Threshold of 0.03-0.05 (3-5pp) would filter late-window CLOB-efficient entries while keeping T-120-T-150 trades intact.',
+    ],
+    fix: 'TODO: (1) Analyse historical data: compute (p_up - clob_implied) at each eval. Find threshold that maximises accuracy. (2) Add ClobEdgeGate to V4FusionStrategy: skip when Sequoia edge over CLOB < threshold. (3) Optionally add to V10 gate stack as replacement/supplement for current cap gate. Run run_window_analysis.py with new column.',
+    progressNotes: [
+      { date: '2026-04-12', note: 'Insight: edge = Sequoia confidence vs CLOB implied prob gap. Both converge toward close but CLOB faster. Gate on the gap not absolute confidence. Proposed as TODO.' },
+    ],
+  },
+  {
     id: 'V4-TIMING-BUG',
     category: 'production-errors',
     severity: 'CRITICAL',
