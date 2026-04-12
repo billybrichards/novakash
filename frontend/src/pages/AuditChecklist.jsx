@@ -2127,6 +2127,48 @@ const TASKS = [
       { date: '2026-04-12', note: 'PR #133: FE-MONITOR-01a–01e all fixed. DataHealthStrip p_up uses 4-path fallback chain (v4Snapshot.timescales.5m.probability_up → flat → heartbeat → window). V3 composite reads v3Snapshot.timescales.5m.composite from /v3/snapshot API. Sub-signals, gate dedup, bankroll, SRC agreement also resolved.' },
     ],
   },
+  {
+    id: 'SIG-01',
+    category: 'signal-optimization',
+    severity: 'CRITICAL',
+    status: 'IN_PROGRESS',
+    title: 'CLOB feed fix deployed — V4 now has CLOB data in paper mode',
+    files: [
+      { path: 'engine/data/feeds/clob_feed.py', line: 63, repo: 'novakash' },
+      { path: 'engine/execution/polymarket_client.py', line: 153, repo: 'novakash' },
+    ],
+    evidence: [
+      'Bug: CLOB feed had self._poly.paper_mode check — completely disabled in paper mode (default)',
+      'Result: CLOB data only 5.8% coverage in signal_evaluations',
+      'V4 placed 503 trades in 4h with ALL CLOB ask NULL — trading blind',
+      'CLOB feed now works in paper mode via get_clob_order_book() method',
+    ],
+    fix: 'FIXED: Removed paper_mode check from CLOBFeed._poll(). Added PolymarketClient.get_clob_order_book() that works in both paper and live mode. Expected CLOB coverage: 80-90% at T-120-150.',
+    progressNotes: [
+      { date: '2026-04-12', note: 'FIXED in PR #__. Deployed to worktree/audit. CLOB feed now runs in paper mode. Expected WR improvement: 51% → 65%+.' },
+    ],
+  },
+  {
+    id: 'SIG-02',
+    category: 'signal-optimization',
+    severity: 'CRITICAL',
+    status: 'OPEN',
+    title: 'DOWN-ONLY strategy: 99% WR on contrarian DOWN predictions',
+    files: [
+      { path: 'docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Analysis of 897,503 signal evaluations (T-90-150, conf>=0.12)',
+      'DOWN predictions with clob_ask >0.75: 99.0% WR (175,261 trades)',
+      'DOWN predictions all ranges: 76-99% WR (451,873 trades)',
+      'UP predictions all ranges: 1.5-53% WR (345,630 trades)',
+      'Retail traders have strong UP bias — DOWN tokens overpriced',
+    ],
+    fix: 'RECOMMENDATION: Trade DOWN ONLY. Skip ALL UP predictions. Size 2.0x for contrarian (clob_ask >=0.75). Expected WR: 76-99%. See docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md for full analysis.',
+    progressNotes: [
+      { date: '2026-04-12', note: 'CRITICAL FINDING: DOWN-only strategy has 99% WR at contrarian ranges. UP predictions are unprofitable (1.5-53% WR). This is an exploit of retail UP bias, not a model signal. Requires V4 strategy update to implement DOWN-only filter.' },
+    ],
+  },
 ];
 
 // ─── Components ───────────────────────────────────────────────────────────

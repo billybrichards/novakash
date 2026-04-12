@@ -591,6 +591,13 @@ function FilterStrip({ statusFilter, setStatusFilter, tagFilter, setTagFilter, s
 
 // ─── Page ─────────────────────────────────────────────────────────────────
 
+// Default seed note for critical findings (shown if no notes exist)
+const SEED_NOTS = {
+  title: 'CRITICAL: DOWN-ONLY Trading Strategy — 99% Win Rate',
+  body: '=== CRITICAL FINDING: DOWN-ONLY TRADING ===\n\nDate: 2026-04-12\nData: 897,503 signal evaluations (T-90-150, conf>=0.12)\n\nWIN RATES BY DIRECTION:\n\nDOWN predictions:\n  CLOB ask >0.75 (contrarian): 99.0% WR (175,261 trades)\n  CLOB ask 0.55-0.75: 97.8% WR (112,371 trades)\n  CLOB ask 0.35-0.55: 92.1% WR (86,821 trades)\n  CLOB ask <=0.35: 76.2% WR (177,435 trades)\n\nUP predictions:\n  CLOB ask >0.75: 53.8% WR (74,107 trades)\n  CLOB ask 0.55-0.75: 23.8% WR (124,835 trades)\n  CLOB ask 0.35-0.55: 1.8% WR (75,177 trades)\n  CLOB ask <=0.35: 1.5% WR (71,496 trades)\n\nWHY: Retail traders have strong UP bias on 5-min BTC windows\n\nRECOMMENDATION:\n  - Trade DOWN ONLY\n  - Skip ALL UP predictions\n  - Size: 2.0x for contrarian (clob_ask >=0.75)\n  - Expected WR: 76-99%\n\nSee: docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md',
+  tags: 'critical,down-only,strategy',
+};
+
 export default function Notes() {
   const api = useApi();
   const [notes, setNotes] = useState([]);
