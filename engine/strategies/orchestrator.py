@@ -357,6 +357,54 @@ class Orchestrator:
         else:
             log.info("orchestrator.v2_early_entry_disabled")
 
+        # ── SP-04: Multi-Strategy Port (behind ENGINE_USE_STRATEGY_PORT flag) ──
+        self._use_strategy_port = os.environ.get(
+            "ENGINE_USE_STRATEGY_PORT", "false"
+        ).lower() == "true"
+        self._evaluate_strategies_uc = None
+        if self._use_strategy_port:
+            from engine.domain.value_objects import StrategyRegistration
+            from use_cases.evaluate_strategies import EvaluateStrategiesUseCase
+            from adapters.strategies.v10_gate_strategy import V10GateStrategy
+
+            v10_mode = os.environ.get("V10_GATE_MODE", "LIVE")
+            v10_reg = StrategyRegistration(
+                strategy_id="v10_gate", mode=v10_mode, enabled=True, priority=1,
+            )
+            v10_strat = V10GateStrategy(dune_client=self._timesfm_client)
+
+            strategy_pairs = [(v10_reg, v10_strat)]
+
+            # V4 Fusion (optional, GHOST by default)
+            v4_enabled = os.environ.get("V4_FUSION_ENABLED", "false").lower() == "true"
+            v4_snapshot_port = None
+            if v4_enabled:
+                from adapters.strategies.v4_fusion_strategy import V4FusionStrategy
+                from adapters.v4_snapshot_http import V4SnapshotHttpAdapter
+
+                v4_mode = os.environ.get("V4_FUSION_MODE", "GHOST")
+                v4_reg = StrategyRegistration(
+                    strategy_id="v4_fusion", mode=v4_mode, enabled=True, priority=2,
+                )
+                v4_strat = V4FusionStrategy()
+                strategy_pairs.append((v4_reg, v4_strat))
+                v4_snapshot_port = V4SnapshotHttpAdapter()
+
+            self._evaluate_strategies_uc = EvaluateStrategiesUseCase(
+                strategies=strategy_pairs,
+                v4_snapshot_port=v4_snapshot_port,
+                vpin_calculator=self._vpin_calc,
+                cg_feeds=self._cg_feeds,
+                twap_tracker=self._twap_tracker,
+                db_client=self._db,
+            )
+            log.info(
+                "orchestrator.strategy_port_enabled",
+                strategies=[f"{r.strategy_id}({r.mode})" for r, _ in strategy_pairs],
+            )
+        else:
+            log.info("orchestrator.strategy_port_disabled")
+
         # TickRecorder is not yet available at __init__ (pool not connected)
         # It is injected in start() after pool is live.
 
@@ -1476,7 +1524,27 @@ class Orchestrator:
                 # BTC-only: evaluate immediately for fastest FOK execution.
                 try:
                     state = await self._aggregator.get_state()
-                    await self._five_min_strategy.evaluate_window(window, state)
+                    if self._use_strategy_port and self._evaluate_strategies_uc:
+                        # SP-04: Multi-strategy path
+                        result = await self._evaluate_strategies_uc.execute(window, state)
+                        if result.live_decision and result.live_decision.action == "TRADE":
+                            log.info(
+                                "strategy_port.live_trade",
+                                strategy=result.live_decision.strategy_id,
+                                direction=result.live_decision.direction,
+                                entry_cap=result.live_decision.entry_cap,
+                            )
+                            # Delegate execution to legacy strategy for now
+                            # (full execution extraction is a future phase)
+                            await self._five_min_strategy.evaluate_window(window, state)
+                        else:
+                            log.info(
+                                "strategy_port.no_live_trade",
+                                decisions=len(result.all_decisions),
+                            )
+                    else:
+                        # Legacy path
+                        await self._five_min_strategy.evaluate_window(window, state)
                 except Exception as exc:
                     log.warning("five_min.direct_eval_error", asset=window.asset, error=str(exc)[:200])
             elif state_value != "ACTIVE":

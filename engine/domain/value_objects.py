@@ -286,3 +286,180 @@ class WalletSnapshot:
     """Point-in-time wallet balance snapshot."""
     balance_usdc: float
     timestamp: float
+
+
+# ---------------------------------------------------------------------------
+# Strategy Port types (SP-01 through SP-05)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class StrategyContext:
+    """Immutable snapshot of all data a strategy might need.
+
+    Constructed once per (window, eval_offset) by the
+    EvaluateStrategiesUseCase.  Strategies pick the fields they need;
+    unused fields are None.  This is the SINGLE input contract --
+    strategies never reach outside this object for data.
+    """
+    # Identity
+    asset: str
+    window_ts: int
+    timeframe: str
+    eval_offset: Optional[int]
+
+    # Price deltas (from ConsensusPricePort)
+    delta_chainlink: Optional[float]
+    delta_tiingo: Optional[float]
+    delta_binance: Optional[float]
+    delta_pct: float                    # Primary delta (source-selected)
+    delta_source: str                   # "tiingo_rest_candle" | "chainlink" | etc.
+
+    # Market state
+    current_price: float
+    open_price: float
+    vpin: float
+    regime: str                         # "CALM" | "NORMAL" | "TRANSITION" | "CASCADE"
+
+    # CoinGlass
+    cg_snapshot: Optional[object]       # CoinGlassEnhancedFeed.snapshot
+
+    # TWAP
+    twap_delta: Optional[float]
+
+    # Tiingo detail
+    tiingo_close: Optional[float]
+
+    # Gamma / CLOB prices
+    gamma_up_price: Optional[float]
+    gamma_down_price: Optional[float]
+    clob_up_bid: Optional[float]
+    clob_up_ask: Optional[float]
+    clob_down_bid: Optional[float]
+    clob_down_ask: Optional[float]
+
+    # V4 fusion snapshot (populated by V4SnapshotPort before strategies run)
+    v4_snapshot: Optional["V4Snapshot"] = None
+
+    # Prior DUNE probability (for v2_logit feature)
+    prev_dune_probability_up: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class StrategyDecision:
+    """What a strategy decided for this window evaluation.
+
+    Every strategy returns exactly one of these per evaluate() call.
+    The use case uses ``action`` to determine what happens next.
+    """
+    action: str                         # "TRADE" | "SKIP" | "ERROR"
+    direction: Optional[str]            # "UP" | "DOWN" | None (if SKIP/ERROR)
+    confidence: Optional[str]           # "DECISIVE" | "HIGH" | "MODERATE" | "LOW" | None
+    confidence_score: Optional[float]   # 0.0-1.0 numeric confidence
+
+    # Entry pricing
+    entry_cap: Optional[float]          # Max acceptable CLOB price (e.g. 0.65)
+    collateral_pct: Optional[float]     # Fraction of bankroll to risk (V4 sizing)
+
+    # Audit trail
+    strategy_id: str
+    strategy_version: str
+    entry_reason: str                   # Human-readable, e.g. "v10_DUNE_TRANSITION_T120_FAK"
+    skip_reason: Optional[str]          # Why SKIP/ERROR, None if TRADE
+
+    # Strategy-specific metadata (JSON-serializable dict)
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class V4Snapshot:
+    """Parsed response from /v4/snapshot endpoint.
+
+    Immutable -- V4FusionStrategy reads fields but never mutates.
+    """
+    probability_up: float
+    conviction: str                     # "NONE" | "LOW" | "MEDIUM" | "HIGH"
+    conviction_score: float             # 0.0-1.0
+    regime: str                         # "calm_trend" | "volatile_trend" | "chop" | "risk_off"
+    regime_confidence: float
+    regime_persistence: float
+    regime_transition: Optional[dict]   # Transition probability matrix
+
+    # Recommended action
+    recommended_side: Optional[str]     # "UP" | "DOWN" | None
+    recommended_collateral_pct: Optional[float]
+    recommended_sl_pct: Optional[float]
+    recommended_tp_pct: Optional[float]
+    recommended_reason: Optional[str]
+    recommended_conviction_score: Optional[float]
+
+    # Sub-signals
+    sub_signals: dict                   # 7 sub-signal values
+    consensus: dict                     # 6 source consensus + safe_to_trade
+    macro: dict                         # Qwen/LightGBM bias, direction_gate, size_modifier
+    quantiles: dict                     # p10-p90
+
+    # Metadata
+    timescale: str                      # "5m" | "15m"
+    timestamp: float                    # When snapshot was generated
+
+
+@dataclass(frozen=True)
+class StrategyRegistration:
+    """Runtime config for a registered strategy.
+
+    The orchestrator holds a list of these.  Exactly one has
+    mode='LIVE'; the rest are 'GHOST'.  Switchable at runtime
+    via ConfigPort or env var.
+    """
+    strategy_id: str
+    mode: str                           # "LIVE" | "GHOST"
+    enabled: bool                       # False = don't even evaluate
+    priority: int                       # Tie-breaking for display order
+
+
+@dataclass(frozen=True)
+class StrategyDecisionRecord:
+    """One row in the strategy_decisions table.
+
+    Written for EVERY evaluation (TRADE, SKIP, ERROR) of EVERY
+    enabled strategy (LIVE and GHOST).  This is the Strategy Lab's
+    source of truth.
+    """
+    # Identity
+    strategy_id: str
+    strategy_version: str
+    asset: str
+    window_ts: int
+    timeframe: str
+    eval_offset: Optional[int]
+    mode: str                           # "LIVE" | "GHOST"
+
+    # Decision
+    action: str                         # "TRADE" | "SKIP" | "ERROR"
+    direction: Optional[str]
+    confidence: Optional[str]
+    confidence_score: Optional[float]
+    entry_cap: Optional[float]
+    collateral_pct: Optional[float]
+    entry_reason: str
+    skip_reason: Optional[str]
+
+    # Execution outcome (filled ONLY for LIVE + TRADE, after execution)
+    executed: bool = False
+    order_id: Optional[str] = None
+    fill_price: Optional[float] = None
+    fill_size: Optional[float] = None
+
+    # Audit
+    metadata_json: str = "{}"           # JSON-serialized strategy metadata
+    evaluated_at: float = 0.0           # Unix epoch
+
+
+@dataclass
+class EvaluateStrategiesResult:
+    """Output of EvaluateStrategiesUseCase.execute()."""
+    live_decision: Optional[StrategyDecision]   # None if LIVE strategy skipped
+    all_decisions: list                          # All strategies' outputs
+    context: Optional[StrategyContext]           # Shared input (for audit)
+    window_key: str                             # "{asset}-{window_ts}"
+    already_traded: bool                        # True if was_traded check hit

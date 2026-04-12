@@ -42,8 +42,12 @@ from engine.domain.value_objects import (
     SignalEvaluation,
     SitrepPayload,
     SkipSummary,
+    StrategyContext,
+    StrategyDecision,
+    StrategyDecisionRecord,
     Tick,
     TradeDecision,
+    V4Snapshot,
     WindowClose,
     WindowKey,
     WindowMarket,
@@ -534,4 +538,111 @@ class ManualTradeRepository(abc.ABC):
         Returns a dict with ``up_token_id`` and ``down_token_id``, or
         ``None`` if no row exists.
         """
+        ...
+
+
+# =====================================================================
+# 4.13  StrategyPort  (SP-01 -- Pluggable multi-strategy architecture)
+# =====================================================================
+
+
+class StrategyPort(abc.ABC):
+    """Evaluates a window and returns a structured decision.
+
+    Each implementation encapsulates one trading strategy's decision
+    logic.  The port is PURELY EVALUATIVE -- it never places orders.
+    Execution is the caller's responsibility (EvaluateStrategiesUseCase).
+
+    Implementations:
+      - V10GateStrategy   (wraps GatePipeline from signals/gates.py)
+      - V4FusionStrategy  (wraps /v4/snapshot from timesfm service)
+    """
+
+    @property
+    @abc.abstractmethod
+    def strategy_id(self) -> str:
+        """Unique identifier, e.g. 'v10_gate', 'v4_fusion'."""
+        ...
+
+    @property
+    @abc.abstractmethod
+    def version(self) -> str:
+        """Semantic version string for audit trail, e.g. '10.5.3'."""
+        ...
+
+    @abc.abstractmethod
+    async def evaluate(
+        self,
+        ctx: StrategyContext,
+    ) -> StrategyDecision:
+        """Evaluate the window and return a decision.
+
+        MUST be side-effect-free (no DB writes, no HTTP calls that
+        mutate state).  Network reads (fetching V4 snapshot) are
+        allowed because they are idempotent.
+
+        MUST NOT raise -- implementation swallows all exceptions and
+        returns a StrategyDecision with action='ERROR' and the
+        exception message in skip_reason.
+
+        Timeout: caller enforces a 5-second asyncio.wait_for around
+        this call.  If the strategy needs longer (V4 HTTP), it should
+        use its own internal timeout and return ERROR on timeout.
+        """
+        ...
+
+
+# =====================================================================
+# 4.14  V4SnapshotPort  (SP-03 -- V4 fusion snapshot fetch)
+# =====================================================================
+
+
+class V4SnapshotPort(abc.ABC):
+    """Fetches a V4 fusion snapshot from the timesfm service.
+
+    Separated from StrategyPort because multiple strategies or analysis
+    tools might consume V4 data.  The adapter wraps HTTP to /v4/snapshot.
+    """
+
+    @abc.abstractmethod
+    async def get_snapshot(
+        self,
+        asset: str,
+        timescale: str,
+    ) -> Optional[V4Snapshot]:
+        """Fetch the latest V4 snapshot for (asset, timescale).
+
+        Returns None on timeout, HTTP error, or missing data.
+        MUST NOT raise.
+        """
+        ...
+
+
+# =====================================================================
+# 4.15  StrategyDecisionRepository  (SP-05 -- Strategy Lab persistence)
+# =====================================================================
+
+
+class StrategyDecisionRepository(abc.ABC):
+    """Persists strategy decisions for the Strategy Lab.
+
+    One row per (strategy_id, window_key, eval_offset) tuple.
+    Both LIVE and GHOST decisions are written.
+    """
+
+    @abc.abstractmethod
+    async def write_decision(self, decision: StrategyDecisionRecord) -> None:
+        """Persist one strategy decision row.
+
+        Idempotent by (strategy_id, asset, window_ts, eval_offset).
+        """
+        ...
+
+    @abc.abstractmethod
+    async def get_decisions_for_window(
+        self,
+        asset: str,
+        window_ts: int,
+    ) -> list[StrategyDecisionRecord]:
+        """Read all strategy decisions for a window (for Strategy Lab)."""
         ...
