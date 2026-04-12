@@ -1835,6 +1835,65 @@ const TASKS = [
     fix: 'SHIPPED in PR #107. 9 new files, 1430 lines. Route /polymarket/monitor. No existing pages modified.',
     progressNotes: [{ date: '2026-04-12', note: 'PR #107 merged. New POLYMARKET section in sidebar. Polls 7 API endpoints every 10s.' }],
   },
+
+  // ── clean-architect: dead code removal ──────────────────────────────────
+  {
+    id: 'CLEANUP-01',
+    category: 'clean-architect',
+    severity: 'LOW',
+    status: 'OPEN',
+    title: 'Dead code removal -- legacy pages, stale version strings, unused imports',
+    files: [
+      { path: 'frontend/src/pages/Indicators.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/Recommendations.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/Learn.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/AnalysisLibrary.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/Changelog.jsx', line: 1, repo: 'novakash' },
+      { path: 'engine/alerts/telegram_v2.py', line: 1, repo: 'novakash' },
+      { path: 'engine/strategies/orchestrator.py', line: 680, repo: 'novakash' },
+      { path: 'engine/use_cases/evaluate_window.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Pages to retire: /indicators, /recommendations, /learn, /analysis, /changelog -- all folded into Notes page or superseded by Polymarket Monitor + Strategy Lab.',
+      'engine/alerts/telegram_v2.py (stale formatters) -- zero imports from any engine/*.py module. Referenced only in docs/CLAUDE.md and docs/ARCHITECTURE.md.',
+      'Stale import in orchestrator.py line 680: `elm_client=self._five_min_strategy.timesfm_v2_client` -- uses the old "elm" name after the SQ-01 rename to "prediction_recorder" (PR #105).',
+      'engine/use_cases/evaluate_window.py -- the old EvaluateWindowUseCase can be removed once ENGINE_USE_STRATEGY_PORT lands and StrategyPort is stable. Currently behind ENGINE_USE_CLEAN_EVALUATE_WINDOW flag.',
+      'Old config pages (frontend/src/pages/Config.jsx or similar) can be retired once CFG-06 (DB-backed config UI) ships.',
+      'Layout.jsx sidebar still links /indicators (line 202), /recommendations (line 209), /changelog (line 223) -- routes exist but pages are vestigial.',
+      'TWAP_OVERRIDE_ENABLED, TWAP_GAMMA_GATE_ENABLED, TIMESFM_AGREEMENT_ENABLED are permanently disabled -- runtime_config.py still reads them. Consider removing after 30 days of inactivity.',
+      'V9_CAPS_ENABLED / V9_SOURCE_AGREEMENT code paths in five_min_vpin.py are dead when V10_DUNE_ENABLED=true (v10 pipeline supersedes). Keep for rollback but mark as legacy.',
+    ],
+    fix: 'Batch cleanup PR: (1) delete 5 vestigial pages + remove routes from Layout.jsx, (2) delete telegram_v2.py, (3) fix elm_client naming in orchestrator.py, (4) remove permanently-disabled gate flag reads after 30-day grace period.',
+    progressNotes: [{ date: '2026-04-12', note: 'Inventory complete. See docs/FEATURE_FLAG_ACTIVATION_GUIDE.md section 3 for the full "do not activate" list.' }],
+  },
+
+  // ── ci-cd: feature flag activation ──────────────────────────────────────
+  {
+    id: 'FLAG-ACTIVATE-01',
+    category: 'ci-cd',
+    severity: 'HIGH',
+    status: 'OPEN',
+    title: 'Activate feature flags for 2026-04-11/12 session work',
+    files: [
+      { path: 'docs/FEATURE_FLAG_ACTIVATION_GUIDE.md', line: 1, repo: 'novakash' },
+      { path: '.github/workflows/deploy-engine.yml', line: 206, repo: 'novakash' },
+      { path: '.github/workflows/deploy-margin-engine.yml', line: 79, repo: 'novakash' },
+      { path: 'engine/config/runtime_config.py', line: 201, repo: 'novakash' },
+      { path: 'engine/signals/gates.py', line: 248, repo: 'novakash' },
+      { path: 'margin_engine/infrastructure/config/settings.py', line: 69, repo: 'novakash' },
+    ],
+    evidence: [
+      'deploy-engine.yml already templates V10_6_ENABLED=true, V11_POLY_SPOT_ONLY_CONSENSUS=true, ENGINE_USE_CLEAN_EVALUATE_WINDOW=true -- but these need 48h paper-mode validation before live activation.',
+      'V10_6_ENABLED (EvalOffsetBoundsGate): blocks trades outside T-90..180 band. 865-outcome evidence shows T-180-240 = 47.62% WR / -33.96% ROI. Gate defaults OFF, operator flips to ON.',
+      'V11_POLY_SPOT_ONLY_CONSENSUS (SourceAgreementGate): drops Binance from consensus vote, requires unanimous CL+TI. Eliminates systematic DOWN bias from Binance futures.',
+      'ENGINE_USE_CLEAN_EVALUATE_WINDOW (EvaluateWindowUseCase): routes _evaluate_window through the clean-arch use case. 13 unit tests pass. Zero behavior change when flag is off.',
+      'MARGIN_V4_MAX_MARK_DIVERGENCE_BPS: DQ-07 mark divergence gate. Default 0.0 = no-op. Set to 20 bps after validation.',
+      'MARGIN_V4_MACRO_MODE already safe at "advisory" (default). No action needed unless reverting to "veto".',
+      'Full activation guide with interaction matrix: docs/FEATURE_FLAG_ACTIVATION_GUIDE.md',
+    ],
+    fix: '(1) Confirm deploy-engine.yml templates are landing on Montreal .env via SSH grep. (2) Monitor engine.log for 48h in paper mode. (3) If no regressions, confirm PAPER_MODE=false + LIVE_TRADING_ENABLED=true for live activation. (4) Set MARGIN_V4_MAX_MARK_DIVERGENCE_BPS=20 on margin engine host after 48h observation.',
+    progressNotes: [{ date: '2026-04-12', note: 'Feature flag activation guide written (docs/FEATURE_FLAG_ACTIVATION_GUIDE.md). deploy-engine.yml already templates all "activate after validation" flags. Next step: run 48h paper-mode observation and check telemetry.' }],
+  },
 ];
 
 // ─── Components ───────────────────────────────────────────────────────────
