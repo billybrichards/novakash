@@ -1582,10 +1582,12 @@ class Orchestrator:
                                 "strategy_port.no_live_trade",
                                 decisions=len(result.all_decisions),
                             )
-                            # v12: Send strategy comparison alert when all strategies skip.
-                            # The legacy evaluate_window is NOT called (strategy port replaces it),
-                            # so we send the alert directly from here with context from the SP result.
-                            if self._alerter and _sp_for_alert:
+                            # v12: Send strategy comparison alert ONCE per window at window close.
+                            # Only fire when eval_offset is low (window ending) to avoid
+                            # spamming Telegram on every 2-second evaluation tick.
+                            _eval_offset = getattr(window, 'eval_offset', 300) or 300
+                            _is_closing = _eval_offset <= 30  # last 30 seconds of window
+                            if self._alerter and _sp_for_alert and _is_closing:
                                 _window_key = f"{window.asset}-{window.window_ts}"
                                 _ctx = result.context
                                 _skip_reasons = "; ".join(
@@ -1596,7 +1598,7 @@ class Orchestrator:
                                     await self._alerter.send_window_summary(
                                         window_id=_window_key,
                                         eval_history=[{
-                                            "offset": getattr(window, 'eval_offset', 60) or 60,
+                                            "offset": _eval_offset,
                                             "skip_reason": _skip_reasons[:120],
                                             "vpin": _ctx.vpin if _ctx else 0,
                                             "delta_pct": _ctx.delta_pct if _ctx else 0,
