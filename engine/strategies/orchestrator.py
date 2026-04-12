@@ -2169,31 +2169,68 @@ class Orchestrator:
                                             _lines.append(f"{_out}{_dir} `{_wid}` {_cap} {_rsn} {_pstr}")
                                         _recent_block = "\n📝 *Recent trades:*\n" + "\n".join(_lines) + "\n"
                                     
-                                    # Recent skips — deduplicated by window_ts (v9.0 has 19 evals per window)
-                                    # Show the LAST skip reason per window (lowest offset = closest to close)
-                                    _skips = await conn.fetch(
-                                        """SELECT DISTINCT ON (window_ts) direction, skip_reason,
-                                           window_ts, ROUND(vpin::numeric, 3) as vpin
-                                        FROM window_snapshots
-                                        WHERE trade_placed = false AND skip_reason IS NOT NULL
-                                          AND window_ts > EXTRACT(EPOCH FROM NOW() - INTERVAL '15 minutes')
-                                        ORDER BY window_ts DESC, id DESC
-                                        LIMIT 3"""
+                                    # Recent strategy decisions — show BOTH LIVE and GHOST
+                                    # per window so operator sees V4 (paper) vs V10 (ghost) side-by-side
+                                    _sp_rows = await conn.fetch(
+                                        """SELECT DISTINCT ON (window_ts, strategy_id)
+                                               strategy_id, mode, action, direction,
+                                               skip_reason, eval_offset, window_ts,
+                                               metadata_json::jsonb->'_ctx'->>'v4_regime' AS regime
+                                           FROM strategy_decisions
+                                           WHERE window_ts > EXTRACT(EPOCH FROM NOW() - INTERVAL '15 minutes')::bigint
+                                           ORDER BY window_ts DESC, strategy_id, eval_offset ASC
+                                           LIMIT 10"""
                                     )
-                                    if _skips:
+                                    if _sp_rows:
+                                        from datetime import datetime, timezone as _tz
+                                        _by_window: dict = {}
+                                        for _r in _sp_rows:
+                                            _wts = _r['window_ts']
+                                            if _wts not in _by_window:
+                                                _by_window[_wts] = {}
+                                            _by_window[_wts][_r['strategy_id']] = _r
+
                                         _slines = []
-                                        for s in _skips:
-                                            _dir = "⬆️" if s['direction'] == 'UP' else "⬇️"
-                                            _wid = ""
+                                        for _wts, _strats in sorted(_by_window.items(), reverse=True)[:3]:
                                             try:
-                                                from datetime import datetime, timezone
-                                                _wts = int(s['window_ts']) + 300
-                                                _wid = datetime.fromtimestamp(_wts, tz=timezone.utc).strftime("%H:%M")
+                                                _wid = datetime.fromtimestamp(int(_wts)+300, tz=_tz.utc).strftime("%H:%M")
                                             except Exception:
-                                                pass
-                                            _sr = (s['skip_reason'] or '?')[:45]
-                                            _slines.append(f"🚫{_dir} `{_wid}` {_sr}")
-                                        _recent_block += "📝 *Recent skips:*\n" + "\n".join(_slines) + "\n"
+                                                _wid = "?"
+                                            _parts = []
+                                            for _sid, _sr in sorted(_strats.items()):
+                                                _label = "📄" if _sr['mode'] == 'LIVE' else "👻"
+                                                _action = "✅" if _sr['action'] == 'TRADE' else "🚫"
+                                                _dir = "⬆️" if _sr.get('direction') == 'UP' else ("⬇️" if _sr.get('direction') == 'DOWN' else "")
+                                                _reason = (_sr.get('skip_reason') or '?')[:40]
+                                                _regime = (_sr.get('regime') or '')[:8]
+                                                _parts.append(f"{_label}{_action}{_dir} {_sid[:4]}: {_reason}" + (f" [{_regime}]" if _regime else ""))
+                                            _slines.append(f"`{_wid}` " + " | ".join(_parts))
+
+                                        _recent_block += "📝 *Recent decisions (📄=live paper, 👻=ghost):*\n" + "\n".join(_slines) + "\n"
+                                    else:
+                                        # Fall back to legacy window_snapshots skip display
+                                        _skips = await conn.fetch(
+                                            """SELECT DISTINCT ON (window_ts) direction, skip_reason,
+                                               window_ts, ROUND(vpin::numeric, 3) as vpin
+                                            FROM window_snapshots
+                                            WHERE trade_placed = false AND skip_reason IS NOT NULL
+                                              AND window_ts > EXTRACT(EPOCH FROM NOW() - INTERVAL '15 minutes')
+                                            ORDER BY window_ts DESC, id DESC
+                                            LIMIT 3"""
+                                        )
+                                        if _skips:
+                                            _slines = []
+                                            for s in _skips:
+                                                _dir = "⬆️" if s['direction'] == 'UP' else "⬇️"
+                                                try:
+                                                    from datetime import datetime, timezone as _tz2
+                                                    _wts = int(s['window_ts']) + 300
+                                                    _wid = datetime.fromtimestamp(_wts, tz=_tz2.utc).strftime("%H:%M")
+                                                except Exception:
+                                                    _wid = "?"
+                                                _sr = (s['skip_reason'] or '?')[:45]
+                                                _slines.append(f"🚫{_dir} `{_wid}` {_sr}")
+                                            _recent_block += "📝 *Recent skips:*\n" + "\n".join(_slines) + "\n"
 
                                     # ── Recent wins and losses from trade_bible (source of truth) ──
                                     #
