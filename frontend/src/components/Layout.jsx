@@ -70,6 +70,9 @@ const NAV_SECTIONS = [
       { path: '/polymarket/evaluate', label: 'Evaluate', icon: '\u{1F4CA}', highlight: true, isNew: true,
         strategy: 'Polymarket 5m',
         dataSource: 'v58/stats + v58/accuracy + v58/outcomes + v58/execution-hq + pnl/daily' },
+      { path: '/polymarket/strategy-lab', label: 'Strategy Lab', icon: '\u{1F9EA}', highlight: true, isNew: true,
+        strategy: 'Polymarket 5m',
+        dataSource: 'v58/outcomes (client-side replay simulator)' },
     ],
   },
   {

@@ -44,6 +44,7 @@ import Config from './pages/Config.jsx';
 import LegacyConfig from './pages/LegacyConfig.jsx';
 import PolymarketMonitor from './pages/polymarket/Monitor.jsx';
 import PolymarketEvaluate from './pages/polymarket/Evaluate.jsx';
+import StrategyLab from './pages/polymarket/StrategyLab.jsx';
 
 export default function App() {
   return (
@@ -111,6 +112,7 @@ export default function App() {
             <Route path="polymarket" element={<Navigate to="/polymarket/monitor" replace />} />
             <Route path="polymarket/monitor" element={<PolymarketMonitor />} />
             <Route path="polymarket/evaluate" element={<PolymarketEvaluate />} />
+            <Route path="polymarket/strategy-lab" element={<StrategyLab />} />
           </Route>
 
           {/* 404 fallback */}
