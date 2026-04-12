@@ -243,9 +243,11 @@ class RuntimeConfig:
         self.v10_gate_mode: str = os.environ.get("V10_GATE_MODE", "LIVE").upper()
         self.v4_fusion_mode: str = os.environ.get("V4_FUSION_MODE", "GHOST").upper()
         self.v4_fusion_enabled: bool = os.environ.get("V4_FUSION_ENABLED", "false").lower() == "true"
-        # SIG-03/SIG-04: V4 DOWN-only strategy (DOWN filter + CLOB sizing)
+        # SIG-03/SIG-04: V4 DOWN-only strategy (DOWN filter + CLOB sizing).
+        # Default enabled=false (matches v4_fusion_enabled pattern — explicit opt-in via DB seed).
+        # DB config_seed.py seeds V4_DOWN_ONLY_ENABLED=true so live envs enable it on first sync.
         self.v4_down_only_mode: str = os.environ.get("V4_DOWN_ONLY_MODE", "LIVE").upper()
-        self.v4_down_only_enabled: bool = os.environ.get("V4_DOWN_ONLY_ENABLED", "true").lower() == "true"
+        self.v4_down_only_enabled: bool = os.environ.get("V4_DOWN_ONLY_ENABLED", "false").lower() == "true"
 
         # ── Sync metadata ─────────────────────────────────────────────────
         self._active_config_id: Optional[int] = None
