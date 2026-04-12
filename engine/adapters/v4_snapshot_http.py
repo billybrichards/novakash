@@ -56,37 +56,55 @@ class V4SnapshotHttpAdapter:
                         return None
                     data = await resp.json()
 
-            return self._parse(data)
+            return self._parse(data, timescale=timescale)
         except Exception as exc:
             log.warning("v4_snapshot.fetch_error", error=str(exc)[:200])
             return None
 
     @staticmethod
-    def _parse(data: dict) -> Optional[V4Snapshot]:
-        """Parse JSON response into V4Snapshot VO."""
+    def _parse(data: dict, timescale: str = "5m") -> Optional[V4Snapshot]:
+        """Parse JSON response into V4Snapshot VO.
+
+        The V4 /v4/snapshot response nests per-timescale data under
+        data["timescales"]["5m"] etc.  We extract the requested timescale
+        and merge top-level fields (consensus, macro, ts).
+        """
         try:
-            # Extract recommended_action sub-dict
-            rec = data.get("recommended_action") or {}
+            # V4 response structure: {asset, ts, consensus, macro, timescales: {5m: {...}, 15m: {...}}}
+            ts_data = data.get("timescales", {}).get(timescale)
+            if ts_data is None:
+                log.warning("v4_snapshot.timescale_missing", timescale=timescale, available=list(data.get("timescales", {}).keys()))
+                return None
+
+            # Extract recommended_action from the timescale block
+            rec = ts_data.get("recommended_action") or {}
+
+            # probability_up lives in the timescale block
+            p_up = ts_data.get("probability_up")
+            if p_up is None:
+                log.warning("v4_snapshot.no_probability", timescale=timescale)
+                return None
+
             return V4Snapshot(
-                probability_up=float(data["probability_up"]),
-                conviction=data.get("conviction", "NONE"),
-                conviction_score=float(data.get("conviction_score", 0.0)),
-                regime=data.get("regime", "chop"),
-                regime_confidence=float(data.get("regime_confidence", 0.0)),
-                regime_persistence=float(data.get("regime_persistence", 0.0)),
-                regime_transition=data.get("regime_transition"),
+                probability_up=float(p_up),
+                conviction=ts_data.get("conviction", "NONE"),
+                conviction_score=float(ts_data.get("conviction_score", 0.0)),
+                regime=ts_data.get("regime", "chop"),
+                regime_confidence=float(ts_data.get("regime_confidence", 0.0)),
+                regime_persistence=float(ts_data.get("regime_persistence", 0.0)),
+                regime_transition=ts_data.get("regime_transition"),
                 recommended_side=rec.get("side"),
                 recommended_collateral_pct=rec.get("collateral_pct"),
                 recommended_sl_pct=rec.get("sl_pct"),
                 recommended_tp_pct=rec.get("tp_pct"),
                 recommended_reason=rec.get("reason"),
                 recommended_conviction_score=rec.get("conviction_score"),
-                sub_signals=data.get("sub_signals", {}),
-                consensus=data.get("consensus", {}),
-                macro=data.get("macro", {}),
-                quantiles=data.get("quantiles", {}),
-                timescale=data.get("timescale", "5m"),
-                timestamp=float(data.get("timestamp", 0.0)),
+                sub_signals=ts_data.get("sub_signals", {}),
+                consensus=data.get("consensus", {}),  # top-level
+                macro=data.get("macro", {}),            # top-level
+                quantiles=ts_data.get("quantiles_at_close") or ts_data.get("quantiles_full", {}),
+                timescale=timescale,
+                timestamp=float(data.get("ts", 0.0)),
             )
         except (KeyError, TypeError, ValueError) as exc:
             log.warning("v4_snapshot.parse_error", error=str(exc)[:200])
