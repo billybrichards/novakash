@@ -47,6 +47,8 @@ Adding a new table
 Status definitions
 ------------------
   active     — Currently written + read by live services. The default.
+  planned    — Aspirational / not yet created in the DB. Listed in the
+               catalog for completeness but the table does not exist yet.
   legacy     — Still has data + may still be read for analysis, but the
                canonical source has moved elsewhere. New code should NOT
                write here.
@@ -342,7 +344,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "clob_execution_log": {
         "service": "engine",
         "category": "exec",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "clob_executor -> clob_execution_log -> fok_ladder_attempts",
         "purpose": (
@@ -367,7 +369,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "fok_ladder_attempts": {
         "service": "engine",
         "category": "exec",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "clob_executor -> fok_ladder_attempts (child of clob_execution_log)",
         "purpose": (
@@ -390,7 +392,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "order_audit_log": {
         "service": "engine",
         "category": "exec",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "order_router -> order_audit_log",
         "purpose": (
@@ -415,7 +417,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "poly_fills": {
         "service": "engine",
         "category": "exec",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "data-api reconciler -> poly_fills -> pnl (ground truth)",
         "purpose": (
@@ -448,7 +450,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "poly_trade_history": {
         "service": "engine",
         "category": "polymarket",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "polymarket public API -> poly_trade_history -> pnl reconciliation",
         "purpose": (
@@ -471,7 +473,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "post_resolution_analyses": {
         "service": "engine",
         "category": "polymarket",
-        "status": "active",
+        "status": "planned",
         "sot_class": "DERIVED",
         "data_flow": "signal_evaluations + window_snapshots -> post_resolution_analyses",
         "purpose": (
@@ -496,7 +498,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "window_predictions": {
         "service": "engine",
         "category": "polymarket",
-        "status": "active",
+        "status": "planned",
         "sot_class": "DERIVED",
         "data_flow": "ticks_* -> window_predictions (cross-source accuracy)",
         "purpose": (
@@ -547,7 +549,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "trade_bible": {
         "service": "engine",
         "category": "polymarket",
-        "status": "active",
+        "status": "planned",
         "sot_class": "DERIVED",
         "data_flow": "trades INSERT trigger -> trade_bible (auto-populated)",
         "purpose": (
@@ -580,7 +582,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "ticks_binance": {
         "service": "engine",
         "category": "data",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "binance WS -> tick_recorder -> ticks_binance -> vpin calc",
         "purpose": (
@@ -606,7 +608,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "ticks_coinglass": {
         "service": "engine",
         "category": "data",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "coinglass API -> tick_recorder -> ticks_coinglass -> cg features",
         "purpose": (
@@ -630,7 +632,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "ticks_gamma": {
         "service": "engine",
         "category": "data",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "gamma API -> tick_recorder -> ticks_gamma -> price discovery",
         "purpose": (
@@ -652,7 +654,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "ticks_timesfm": {
         "service": "engine",
         "category": "data",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "timesfm-service HTTP -> tick_recorder -> ticks_timesfm -> gate_timesfm",
         "purpose": (
@@ -682,7 +684,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "playwright_state": {
         "service": "engine",
         "category": "polymarket",
-        "status": "active",
+        "status": "planned",
         "sot_class": "OPERATIONAL",
         "data_flow": "playwright session -> playwright_state -> hub dashboard",
         "purpose": (
@@ -707,7 +709,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "redeem_events": {
         "service": "engine",
         "category": "polymarket",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "playwright redeem sweep -> redeem_events (append-only log)",
         "purpose": (
@@ -728,7 +730,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "wallet_snapshots": {
         "service": "engine",
         "category": "polymarket",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "clob_reconciler -> wallet_snapshots -> pnl wallet curve",
         "purpose": (
@@ -756,7 +758,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "margin_positions": {
         "service": "margin_engine",
         "category": "margin",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "margin_engine gates -> margin_positions (open/close lifecycle)",
         "purpose": (
@@ -788,7 +790,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "margin_signals": {
         "service": "margin_engine",
         "category": "margin",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "margin_engine -> margin_signals (composite score recording)",
         "purpose": (
@@ -813,7 +815,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "margin_logs": {
         "service": "margin_engine",
         "category": "margin",
-        "status": "active",
+        "status": "planned",
         "sot_class": "OPERATIONAL",
         "data_flow": "margin_engine -> margin_logs (structured log sink)",
         "purpose": (
@@ -840,7 +842,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "macro_signals": {
         "service": "macro-observer",
         "category": "macro",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "macro-observer LLM -> macro_signals -> engine macro veto + margin gate",
         "purpose": (
@@ -874,7 +876,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "macro_events": {
         "service": "macro-observer",
         "category": "macro",
-        "status": "active",
+        "status": "planned",
         "sot_class": "OPERATIONAL",
         "data_flow": "macro-observer calendar refresh -> macro_events -> event-proximity check",
         "purpose": (
@@ -1115,7 +1117,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "backtest_runs": {
         "service": "hub",
         "category": "hub",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "backtest API + scripts -> backtest_runs",
         "purpose": (
@@ -1225,7 +1227,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "countdown_evaluations": {
         "service": "engine",
         "category": "polymarket",
-        "status": "active",
+        "status": "planned",
         "sot_class": "DERIVED",
         "data_flow": "gate_pipeline -> countdown_evaluations (T-180/T-120/T-90/T-60 snapshots)",
         "purpose": (
@@ -1252,7 +1254,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "telegram_notifications": {
         "service": "engine",
         "category": "polymarket",
-        "status": "active",
+        "status": "planned",
         "sot_class": "OPERATIONAL",
         "data_flow": "engine alerts + macro-observer -> telegram_notifications (dedup + audit)",
         "purpose": (
@@ -1274,7 +1276,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "analysis_docs": {
         "service": "hub",
         "category": "hub",
-        "status": "active",
+        "status": "planned",
         "sot_class": "OPERATIONAL",
         "data_flow": "hub analysis API -> analysis_docs (doc library)",
         "purpose": (
@@ -1291,7 +1293,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "timesfm_forecasts": {
         "service": "timesfm-service",
         "category": "external",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "timesfm-service -> timesfm_forecasts -> hub forecast page",
         "purpose": (
@@ -1334,7 +1336,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "ticks_v3_composite": {
         "service": "timesfm-service",
         "category": "external",
-        "status": "active",
+        "status": "planned",
         "sot_class": "SOT",
         "data_flow": "timesfm-service -> ticks_v3_composite (external DB)",
         "purpose": (
@@ -1381,7 +1383,7 @@ def list_services() -> list[str]:
 
 def status_breakdown() -> dict[str, int]:
     """Counts of tables by status."""
-    out: dict[str, int] = {"active": 0, "legacy": 0, "deprecated": 0}
+    out: dict[str, int] = {"active": 0, "planned": 0, "legacy": 0, "deprecated": 0}
     for entry in SCHEMA_CATALOG.values():
         s = entry.get("status", "active")
         out[s] = out.get(s, 0) + 1
@@ -1393,7 +1395,7 @@ def status_breakdown() -> dict[str, int]:
 # {
 #     "service": str            — owning service name
 #     "category": str           — polymarket | margin | macro | data | hub | exec | external
-#     "status": str             — active | legacy | deprecated
+#     "status": str             — active | planned | legacy | deprecated
 #     "sot_class": str          — SOT | DERIVED | CACHE | LEGACY | OPERATIONAL
 #     "data_flow": str          — position in the data pipeline (e.g. "ticks_* -> signal_evaluations -> trades")
 #     "purpose": str            — one-paragraph human-readable purpose
