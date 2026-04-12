@@ -6,6 +6,7 @@ State transitions: PENDING_ENTRY → OPEN → PENDING_EXIT → CLOSED.
 The entity enforces invariants: you can't close an unopened position,
 you can't open a position twice, P&L is only computed on CLOSED state.
 """
+
 from __future__ import annotations
 
 import time
@@ -33,6 +34,7 @@ class Position:
       request_exit()  → PENDING_EXIT
       confirm_exit()  → CLOSED
     """
+
     id: str = field(default_factory=lambda: str(uuid.uuid4())[:12])
     asset: str = "BTC"
     side: TradeSide = TradeSide.LONG
@@ -71,8 +73,8 @@ class Position:
     # When commission_is_actual is True, _compute_pnl uses these instead of the
     # fallback 0.1% fee estimate — this is the difference between "we know what
     # we paid" and "we're guessing". Stays 0.0 in legacy code paths (DB restore).
-    entry_commission: float = 0.0       # USDT-equivalent, paid at entry
-    exit_commission: float = 0.0        # USDT-equivalent, paid at exit
+    entry_commission: float = 0.0  # USDT-equivalent, paid at entry
+    exit_commission: float = 0.0  # USDT-equivalent, paid at exit
     entry_commission_is_actual: bool = False
     exit_commission_is_actual: bool = False
 
@@ -100,6 +102,12 @@ class Position:
     last_continuation_ts: float = 0.0
     last_continuation_p_up: float = 0.0
 
+    # ── Fee-aware continuation state (NEW) ──
+    # Track partial closes for fee-aware continuation logic
+    partial_close_count: int = 0
+    last_partial_close_ts: float = 0.0
+    original_notional: Optional[Money] = None  # Track original size for audit
+
     # ── v4 audit snapshot at entry (PR B) ──
     # Frozen copy of the v4 fields that drove the entry decision. Enables
     # post-trade analysis: "did regime actually change during the hold?"
@@ -115,6 +123,14 @@ class Position:
     v4_entry_consensus_safe: Optional[bool] = None
     v4_entry_window_close_ts: Optional[int] = None
     v4_snapshot_ts_at_entry: Optional[float] = None
+
+    # ── ME-STRAT-04: regime strategy audit at entry ──
+    # When regime-adaptive strategy is enabled, these fields capture the
+    # strategy-specific decision (regime routing, size_mult, hold_minutes).
+    # NULL in legacy positions or when regime_adaptive_enabled=False.
+    v4_entry_strategy_decision: Optional[str] = None
+    v4_entry_strategy_size_mult: Optional[float] = None
+    v4_entry_strategy_hold_minutes: Optional[int] = None
 
     # ─── State transitions ───────────────────────────────────────────────
 
@@ -167,6 +183,44 @@ class Position:
         self.closed_at = time.time()
         self.realised_pnl = self._compute_pnl()
 
+    def confirm_partial_close(
+        self,
+        price: Price,
+        order_id: str,
+        close_pct: float,
+        commission: float = 0.0,
+        commission_is_actual: bool = False,
+    ) -> None:
+        """Apply partial close to position, reducing notional.
+
+        Args:
+            price: Price at which partial close was executed
+            order_id: Order ID for the partial close
+            close_pct: Percentage of position to close (0.0-1.0)
+            commission: Commission paid for partial close
+            commission_is_actual: Whether commission is from exchange or estimated
+        """
+        if self.state != PositionState.OPEN:
+            raise ValueError(f"Cannot partial close in state {self.state}")
+        if not 0.0 < close_pct < 1.0:
+            raise ValueError(f"close_pct must be in (0, 1): {close_pct}")
+
+        # Reduce notional
+        if self.notional:
+            close_amount = self.notional.amount * close_pct
+            self.notional = Money(
+                self.notional.amount - close_amount, self.notional.currency
+            )
+
+        # Track partial close
+        self.partial_close_count += 1
+        self.last_partial_close_ts = time.time()
+
+        # Record exit info for audit
+        self.exit_order_id = order_id
+        self.exit_commission = commission
+        self.exit_commission_is_actual = commission_is_actual
+
     # ─── P&L ─────────────────────────────────────────────────────────────
 
     # Fallback fee rate when exchange ground truth is unavailable.
@@ -210,7 +264,9 @@ class Position:
 
         # Borrow interest (estimated — see class comment)
         hold_seconds = max(0.0, self.closed_at - self.opened_at)
-        borrow_cost = notional_usd * self._ESTIMATED_DAILY_BORROW_RATE * (hold_seconds / 86400)
+        borrow_cost = (
+            notional_usd * self._ESTIMATED_DAILY_BORROW_RATE * (hold_seconds / 86400)
+        )
 
         return raw_pnl - total_fees - borrow_cost
 
@@ -220,7 +276,11 @@ class Position:
         This is the gross move. For stop-loss / take-profit decisions you
         almost always want unrealised_pnl_net() instead.
         """
-        if self.state != PositionState.OPEN or not self.entry_price or not self.notional:
+        if (
+            self.state != PositionState.OPEN
+            or not self.entry_price
+            or not self.notional
+        ):
             return 0.0
 
         entry = self.entry_price.value
@@ -242,7 +302,11 @@ class Position:
         Pass it the mark from ExchangePort.get_mark() (bid for LONG, ask for SHORT)
         to get a number that matches what closing would actually realise.
         """
-        if self.state != PositionState.OPEN or not self.entry_price or not self.notional:
+        if (
+            self.state != PositionState.OPEN
+            or not self.entry_price
+            or not self.notional
+        ):
             return 0.0
 
         raw = self.unrealised_pnl(mark_price)
@@ -259,7 +323,9 @@ class Position:
 
         # Borrow interest accrued so far
         hold_seconds = max(0.0, time.time() - self.opened_at)
-        borrow_so_far = notional_usd * self._ESTIMATED_DAILY_BORROW_RATE * (hold_seconds / 86400)
+        borrow_so_far = (
+            notional_usd * self._ESTIMATED_DAILY_BORROW_RATE * (hold_seconds / 86400)
+        )
 
         return raw - entry_fee - exit_fee_est - borrow_so_far
 
@@ -295,7 +361,9 @@ class Position:
         """
         if self.state != PositionState.OPEN:
             return False
-        anchor = self.hold_clock_anchor if self.hold_clock_anchor > 0 else self.opened_at
+        anchor = (
+            self.hold_clock_anchor if self.hold_clock_anchor > 0 else self.opened_at
+        )
         return (time.time() - anchor) > self.max_hold_seconds
 
     @property

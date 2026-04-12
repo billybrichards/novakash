@@ -29,6 +29,7 @@ import FactoryFloor from './pages/FactoryFloor.jsx';
 import Recommendations from './pages/Recommendations.jsx';
 import ExecutionHQ from './pages/execution-hq/ExecutionHQ.jsx';
 import MarginEngine from './pages/margin-engine/MarginEngine.jsx';
+import MarginStrategies from './pages/MarginStrategies.jsx';
 import CompositeSignals from './pages/CompositeSignals.jsx';
 import AuditChecklist from './pages/AuditChecklist.jsx';
 import V1Surface from './pages/data-surfaces/V1Surface.jsx';
@@ -48,6 +49,7 @@ import PolymarketEvaluate from './pages/polymarket/Evaluate.jsx';
 import StrategyLab from './pages/polymarket/StrategyLab.jsx';
 import LiveFloor from './pages/polymarket/LiveFloor.jsx';
 import PolymarketOverview from './pages/polymarket/Overview.jsx';
+import SignalComparison from './pages/SignalComparison.jsx';
 
 export default function App() {
   return (
@@ -101,6 +103,7 @@ export default function App() {
             <Route path="execution-hq" element={<Navigate to="/execution-hq/btc/5m" replace />} />
             <Route path="execution-hq/:asset/:timeframe" element={<ExecutionHQ />} />
             <Route path="margin" element={<MarginEngine />} />
+            <Route path="margin-strategies" element={<MarginStrategies />} />
             <Route path="composite" element={<CompositeSignals />} />
             <Route path="recommendations" element={<Recommendations />} />
             <Route path="audit" element={<AuditChecklist />} />
@@ -119,6 +122,7 @@ export default function App() {
             <Route path="polymarket/floor" element={<LiveFloor />} />
             <Route path="polymarket/evaluate" element={<PolymarketEvaluate />} />
             <Route path="polymarket/strategy-lab" element={<StrategyLab />} />
+            <Route path="signal-comparison" element={<SignalComparison />} />
           </Route>
 
           {/* 404 fallback */}

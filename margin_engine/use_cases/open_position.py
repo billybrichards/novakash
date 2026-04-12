@@ -48,6 +48,7 @@ Legacy v2 path (unchanged from PR #10)
   4. Portfolio risk gate
   5. Market order + fill
 """
+
 from __future__ import annotations
 
 import logging
@@ -73,6 +74,7 @@ from margin_engine.domain.value_objects import (
     TradeSide,
     V4Snapshot,
 )
+from margin_engine.services.regime_adaptive import RegimeAdaptiveRouter
 
 logger = logging.getLogger(__name__)
 
@@ -114,14 +116,30 @@ class OpenPositionUseCase:
         # safety rail — see settings.py for full rationale.
         v4_max_mark_divergence_bps: float = 0.0,
         fee_rate_per_side: float = 0.00045,  # Hyperliquid taker, for the reward/risk floor
+        # ── ME-STRAT-04: regime-adaptive strategy (default OFF) ──
+        regime_adaptive_enabled: bool = False,
+        regime_trend_min_prob: float = 0.55,
+        regime_trend_size_mult: float = 1.2,
+        regime_trend_stop_bps: int = 150,
+        regime_trend_tp_bps: int = 200,
+        regime_trend_hold_minutes: int = 60,
+        regime_trend_min_expected_move_bps: float = 30.0,
+        regime_mr_entry_threshold: float = 0.70,
+        regime_mr_size_mult: float = 0.8,
+        regime_mr_stop_bps: int = 80,
+        regime_mr_tp_bps: int = 50,
+        regime_mr_hold_minutes: int = 15,
+        regime_mr_min_fade_conviction: float = 0.55,
+        regime_no_trade_allow: bool = False,
+        regime_no_trade_size_mult: float = 0.1,
         # ── legacy v2 path (unchanged from PR #10) ──
-        min_conviction: float = 0.20,       # |p-0.5| >= 0.20 → p>0.70 or p<0.30
-        regime_threshold: float = 0.50,     # |composite_1h| >= 0.50 to trade
-        regime_timescale: str = "1h",       # composite horizon for regime gate
+        min_conviction: float = 0.20,  # |p-0.5| >= 0.20 → p>0.70 or p<0.30
+        regime_threshold: float = 0.50,  # |composite_1h| >= 0.50 to trade
+        regime_timescale: str = "1h",  # composite horizon for regime gate
         bet_fraction: float = 0.02,
-        stop_loss_pct: float = 0.006,       # 0.6% — 3x fee cost
-        take_profit_pct: float = 0.005,     # 0.5% — 2.7x fee cost
-        venue: str = "binance",             # tag every position with execution venue
+        stop_loss_pct: float = 0.006,  # 0.6% — 3x fee cost
+        take_profit_pct: float = 0.005,  # 0.5% — 2.7x fee cost
+        venue: str = "binance",  # tag every position with execution venue
         strategy_version: str = "v2-probability",  # tag every position with strategy
     ) -> None:
         self._exchange = exchange
@@ -150,6 +168,34 @@ class OpenPositionUseCase:
         # DQ-07 defensive gate — 0.0 / negative = no-op
         self._v4_max_mark_divergence_bps = v4_max_mark_divergence_bps
         self._fee_rate_per_side = fee_rate_per_side
+        # ME-STRAT-04: regime-adaptive strategy
+        self._regime_adaptive_enabled = regime_adaptive_enabled
+        if regime_adaptive_enabled:
+            from margin_engine.services.regime_trend import TrendStrategyConfig
+            from margin_engine.services.regime_mean_reversion import MeanReversionConfig
+
+            self._regime_router = RegimeAdaptiveRouter(
+                trend_config=TrendStrategyConfig(
+                    min_probability=regime_trend_min_prob,
+                    size_mult=regime_trend_size_mult,
+                    stop_loss_bps=regime_trend_stop_bps,
+                    take_profit_bps=regime_trend_tp_bps,
+                    hold_minutes=regime_trend_hold_minutes,
+                    min_expected_move_bps=regime_trend_min_expected_move_bps,
+                ),
+                mean_reversion_config=MeanReversionConfig(
+                    entry_threshold=regime_mr_entry_threshold,
+                    size_mult=regime_mr_size_mult,
+                    stop_loss_bps=regime_mr_stop_bps,
+                    take_profit_bps=regime_mr_tp_bps,
+                    hold_minutes=regime_mr_hold_minutes,
+                    min_fade_conviction=regime_mr_min_fade_conviction,
+                ),
+                no_trade_allow=regime_no_trade_allow,
+                no_trade_size_mult=regime_no_trade_size_mult,
+            )
+        else:
+            self._regime_router = None
         # legacy
         self._min_conviction = min_conviction
         self._regime_threshold = regime_threshold
@@ -180,14 +226,13 @@ class OpenPositionUseCase:
         # ── v4 path (flag-gated, fresh snapshot required) ──
         if self._engine_use_v4_actions and self._v4_port is not None:
             v4 = await self._v4_port.get_latest(
-                asset="BTC", timescales=list(self._v4_timescales),
+                asset="BTC",
+                timescales=list(self._v4_timescales),
             )
             if v4 is not None:
                 return await self._execute_v4(v4)
             else:
-                logger.debug(
-                    "v4 snapshot unavailable — falling back to legacy v2 path"
-                )
+                logger.debug("v4 snapshot unavailable — falling back to legacy v2 path")
                 # fall through
 
         # ── Legacy v2 path (PR #10) ──
@@ -219,7 +264,9 @@ class OpenPositionUseCase:
             logger.info(
                 "Probability below conviction threshold: p_up=%.3f "
                 "conviction=%.3f < %.3f",
-                prob.probability_up, prob.conviction, self._min_conviction,
+                prob.probability_up,
+                prob.conviction,
+                self._min_conviction,
             )
             return None
 
@@ -228,7 +275,9 @@ class OpenPositionUseCase:
         # reading for post-hoc analysis; it does not block trading. Once
         # we have more regime-diverse data and can prove the gate adds
         # edge, bump regime_threshold above 0.0 to activate it.
-        regime_signal = await self._signal_port.get_latest_signal(self._regime_timescale)
+        regime_signal = await self._signal_port.get_latest_signal(
+            self._regime_timescale
+        )
         regime_strength = regime_signal.strength if regime_signal else None
         if self._regime_threshold > 0.0:
             if regime_signal is None:
@@ -241,8 +290,10 @@ class OpenPositionUseCase:
                 logger.info(
                     "Regime filter blocked: |composite_%s|=%.3f < %.3f "
                     "(p_up=%.3f would have traded)",
-                    self._regime_timescale, regime_signal.strength,
-                    self._regime_threshold, prob.probability_up,
+                    self._regime_timescale,
+                    regime_signal.strength,
+                    self._regime_threshold,
+                    prob.probability_up,
                 )
                 return None
 
@@ -311,8 +362,12 @@ class OpenPositionUseCase:
             logger.info(
                 "Position opened (v2 ML): %s %s @ %.2f notional=%.2f "
                 "commission=%.4f p_up=%.3f regime=%s",
-                side.value, prob.asset, fill.fill_price.value,
-                actual_notional.amount, fill.commission, prob.probability_up,
+                side.value,
+                prob.asset,
+                fill.fill_price.value,
+                actual_notional.amount,
+                fill.commission,
+                prob.probability_up,
                 f"{regime_strength:.3f}" if regime_strength is not None else "n/a",
             )
             return position
@@ -379,7 +434,8 @@ class OpenPositionUseCase:
             is_tradeable = True
             logger.info(
                 "v4 entry: NO_EDGE override applied (exp_move=%.1f bps >= thr=%.1f)",
-                payload.expected_move_bps, self._allow_no_edge_exp_move_override,
+                payload.expected_move_bps,
+                self._allow_no_edge_exp_move_override,
             )
         if not is_tradeable:
             self._log_skip("not_tradeable", v4, payload)
@@ -439,6 +495,33 @@ class OpenPositionUseCase:
             self._log_skip("mean_reverting_not_allowed", v4, payload)
             return None
 
+        # ── ⑤.5 ME-STRAT-04: regime-adaptive strategy decision ──
+        # When enabled, route to strategy-specific parameters (size_mult, SL, TP, hold_time).
+        # If the strategy returns no trade, skip with a specific reason.
+        # This adds TO existing gates, not replaces them.
+        _regime_decision = None
+        if self._regime_adaptive_enabled and self._regime_router is not None:
+            regime_decision = self._regime_router.decide(v4)
+            if not regime_decision.is_trade:
+                self._log_skip(
+                    f"regime_strategy_no_trade:{regime_decision.reason}",
+                    v4,
+                    payload,
+                )
+                return None
+            # Log the regime strategy decision for audit
+            logger.info(
+                "v4 entry: regime strategy decision — %s size_mult=%.2f "
+                "stop=%.1fbp tp=%.1fbp hold=%dm",
+                regime_decision.reason,
+                regime_decision.size_mult,
+                regime_decision.stop_loss_bps,
+                regime_decision.take_profit_bps,
+                regime_decision.hold_minutes,
+            )
+            # Store decision for later use (size_mult, SL/TP override)
+            _regime_decision = regime_decision
+
         # ── ⑥ conviction threshold ──
         if not payload.meets_threshold(self._v4_entry_edge):
             self._log_skip("conviction_below_threshold", v4, payload)
@@ -462,16 +545,32 @@ class OpenPositionUseCase:
         # at gate ③ (macro opposes side at confidence >= floor), apply
         # the advisory haircut on top of whatever size_modifier Qwen
         # returned. This reduces exposure without blocking the trade.
+        # Start with macro size modifier
         size_mult = v4.macro.size_modifier if v4.macro.status == "ok" else 1.0
         if macro_conflict:
             size_mult *= self._macro_advisory_conflict_mult
             logger.info(
                 "v4 entry: macro advisory conflict — size_mult *= %.2f "
                 "(final %.3f, macro=%s/%d/%s, side=%s)",
-                self._macro_advisory_conflict_mult, size_mult,
-                v4.macro.bias, v4.macro.confidence, v4.macro.direction_gate,
+                self._macro_advisory_conflict_mult,
+                size_mult,
+                v4.macro.bias,
+                v4.macro.confidence,
+                v4.macro.direction_gate,
                 side.value,
             )
+
+        # Apply regime strategy size multiplier (if enabled and decision exists)
+        if _regime_decision is not None:
+            size_mult *= _regime_decision.size_mult
+            logger.info(
+                "v4 entry: regime size mult applied — total size_mult=%.3f "
+                "(macro=%.3f × regime=%.2f)",
+                size_mult,
+                v4.macro.size_modifier if v4.macro.status == "ok" else 1.0,
+                _regime_decision.size_mult,
+            )
+
         preliminary_collateral = Money.usd(
             self._portfolio.starting_capital.amount * self._bet_fraction * size_mult
         )
@@ -505,7 +604,8 @@ class OpenPositionUseCase:
                 # get_mark returns a Price value object with a .value float.
                 exchange_mark = (
                     float(mark_price.value)
-                    if hasattr(mark_price, "value") else float(mark_price)
+                    if hasattr(mark_price, "value")
+                    else float(mark_price)
                 )
             except Exception as exc:
                 # Graceful degradation: a transient exchange error must not
@@ -529,7 +629,8 @@ class OpenPositionUseCase:
                         "dq07.mark_divergence_gate_failed: "
                         "v4_last_price=%.4f exchange_mark=%.4f "
                         "divergence_bps=%.2f threshold_bps=%.2f side=%s",
-                        v4.last_price, exchange_mark,
+                        v4.last_price,
+                        exchange_mark,
                         round(divergence_bps, 2),
                         self._v4_max_mark_divergence_bps,
                         side.value,
@@ -544,8 +645,19 @@ class OpenPositionUseCase:
                     self._v4_max_mark_divergence_bps,
                 )
 
-        # ── ⑩ quantile-derived SL/TP + reward/risk floor ──
-        sl_pct, tp_pct = self._sl_tp_from_quantiles(side, payload, v4.last_price)
+        # ── ⑩ SL/TP from regime strategy or quantiles + reward/risk floor ──
+        # If regime strategy is enabled, use its SL/TP; otherwise use quantiles
+        if _regime_decision is not None:
+            sl_pct = _regime_decision.stop_loss_pct
+            tp_pct = _regime_decision.take_profit_pct
+            logger.info(
+                "v4 entry: regime SL/TP used — stop=%.1fbp tp=%.1fbp rr=%.2f",
+                _regime_decision.stop_loss_bps,
+                _regime_decision.take_profit_bps,
+                _regime_decision.reward_risk_ratio,
+            )
+        else:
+            sl_pct, tp_pct = self._sl_tp_from_quantiles(side, payload, v4.last_price)
 
         # Fee wall: round-trip cost × safety factor
         fee_budget_pct = self._fee_rate_per_side * 2
@@ -568,13 +680,26 @@ class OpenPositionUseCase:
             # v4 audit snapshot — frozen at entry for post-trade analysis
             v4_entry_regime=payload.regime,
             v4_entry_macro_bias=v4.macro.bias if v4.macro.status == "ok" else None,
-            v4_entry_macro_confidence=v4.macro.confidence if v4.macro.status == "ok" else None,
+            v4_entry_macro_confidence=v4.macro.confidence
+            if v4.macro.status == "ok"
+            else None,
             v4_entry_expected_move_bps=payload.expected_move_bps,
             v4_entry_composite_v3=payload.composite_v3,
             v4_entry_consensus_safe=v4.consensus.safe_to_trade,
             v4_entry_window_close_ts=payload.window_close_ts
-            if payload.window_close_ts > 0 else None,
+            if payload.window_close_ts > 0
+            else None,
             v4_snapshot_ts_at_entry=v4.ts,
+            # ME-STRAT-04: regime strategy audit fields
+            v4_entry_strategy_decision=(
+                _regime_decision.reason if _regime_decision else None
+            ),
+            v4_entry_strategy_size_mult=(
+                _regime_decision.size_mult if _regime_decision else None
+            ),
+            v4_entry_strategy_hold_minutes=(
+                _regime_decision.hold_minutes if _regime_decision else None
+            ),
         )
         self._portfolio.add_position(position)
 
@@ -603,14 +728,12 @@ class OpenPositionUseCase:
             # Quantile-derived stops applied to the ACTUAL fill price, not the
             # snapshot's last_price (slippage may have moved us a few bps).
             position.stop_loss = StopLevel(
-                price=fill.fill_price.value * (
-                    (1 - sl_pct) if side == TradeSide.LONG else (1 + sl_pct)
-                )
+                price=fill.fill_price.value
+                * ((1 - sl_pct) if side == TradeSide.LONG else (1 + sl_pct))
             )
             position.take_profit = StopLevel(
-                price=fill.fill_price.value * (
-                    (1 + tp_pct) if side == TradeSide.LONG else (1 - tp_pct)
-                )
+                price=fill.fill_price.value
+                * ((1 + tp_pct) if side == TradeSide.LONG else (1 - tp_pct))
             )
 
             await self._repo.save(position)
@@ -623,10 +746,17 @@ class OpenPositionUseCase:
             logger.info(
                 "Position opened (v4): %s %s @ %.2f notional=%.2f p_up=%.3f "
                 "regime=%s macro=%s/%d sl=%.2fbp tp=%.2fbp rr=%.2f",
-                side.value, v4.asset, fill.fill_price.value,
-                actual_notional.amount, payload.probability_up or 0.0,
-                payload.regime, v4.macro.bias, v4.macro.confidence,
-                sl_pct * 10000, tp_pct * 10000, tp_pct / sl_pct if sl_pct > 0 else 0.0,
+                side.value,
+                v4.asset,
+                fill.fill_price.value,
+                actual_notional.amount,
+                payload.probability_up or 0.0,
+                payload.regime,
+                v4.macro.bias,
+                v4.macro.confidence,
+                sl_pct * 10000,
+                tp_pct * 10000,
+                tp_pct / sl_pct if sl_pct > 0 else 0.0,
             )
             return position
 
@@ -670,8 +800,8 @@ class OpenPositionUseCase:
             sl_abs = (p90 - last_price) * 1.25
             tp_abs = (last_price - p10) * 0.85
 
-        sl_pct = max(0.002, sl_abs / last_price)   # floor 20 bps
-        tp_pct = max(0.003, tp_abs / last_price)   # floor 30 bps
+        sl_pct = max(0.002, sl_abs / last_price)  # floor 20 bps
+        tp_pct = max(0.003, tp_abs / last_price)  # floor 30 bps
         return sl_pct, tp_pct
 
     def _log_skip(
@@ -695,12 +825,16 @@ class OpenPositionUseCase:
             reason,
             self._v4_primary_timescale,
             f"{payload.probability_up:.3f}"
-            if payload and payload.probability_up is not None else "?",
+            if payload and payload.probability_up is not None
+            else "?",
             payload.regime if payload else "?",
             payload.status if payload else "?",
-            v4.macro.bias, v4.macro.direction_gate, v4.macro.confidence,
+            v4.macro.bias,
+            v4.macro.direction_gate,
+            v4.macro.confidence,
             v4.consensus.safe_to_trade,
             f"{payload.expected_move_bps:.1f}"
-            if payload and payload.expected_move_bps is not None else "?",
+            if payload and payload.expected_move_bps is not None
+            else "?",
             v4.max_impact_in_window,
         )
