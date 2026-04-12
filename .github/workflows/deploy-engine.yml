@@ -202,6 +202,14 @@ jobs:
           set_env POLY_BTC_TOKEN_IDS "$DEPLOY_POLY_BTC_TOKEN_IDS"
           set_env TELEGRAM_BOT_TOKEN "$DEPLOY_TELEGRAM_BOT_TOKEN"
           set_env TELEGRAM_CHAT_ID "$DEPLOY_TELEGRAM_CHAT_ID"
+
+          # ── Gate threshold overrides (v10.5 tuning) ──
+          # Lower delta floor for low-vol markets: ungated signal accuracy
+          # is 90% (9W/1L) but delta_magnitude gate blocks at 0.005% when
+          # current delta is ~0.0006%. Drop to 0.001% to let trades through.
+          set_env FIVE_MIN_MIN_DELTA_PCT "0.0010"
+          set_env V10_MIN_DELTA_PCT "0.001"
+
           ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'sudo wc -l /home/novakash/novakash/engine/.env'
 
       - name: Restart engine via scripts/restart_engine.sh

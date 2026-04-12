@@ -41,7 +41,7 @@ class V4SnapshotHttpAdapter:
             import aiohttp
 
             url = f"{self.base_url}/v4/snapshot"
-            params = {"asset": asset, "timescale": timescale}
+            params = {"asset": asset, "timescale": timescale, "strategy": "polymarket_5m"}
             timeout = aiohttp.ClientTimeout(total=_TIMEOUT_S)
 
             async with aiohttp.ClientSession(timeout=timeout) as session:
