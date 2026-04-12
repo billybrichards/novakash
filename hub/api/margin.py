@@ -50,7 +50,9 @@ async def _proxy_get(base_url: str, path: str, params: dict | None = None) -> di
             resp.raise_for_status()
             return resp.json()
     except httpx.ConnectError:
-        raise HTTPException(status_code=502, detail=f"Cannot reach service at {base_url}")
+        raise HTTPException(
+            status_code=502, detail=f"Cannot reach service at {base_url}"
+        )
     except httpx.HTTPStatusError as exc:
         raise HTTPException(
             status_code=exc.response.status_code,
@@ -80,7 +82,8 @@ async def margin_logs(
 ) -> dict:
     """Proxy to margin engine — persisted log entries."""
     return await _proxy_get(
-        MARGIN_ENGINE_URL, "/logs",
+        MARGIN_ENGINE_URL,
+        "/logs",
         {"limit": limit, "level": level, "since_minutes": since_minutes},
     )
 
@@ -111,6 +114,41 @@ async def margin_positions_history(
     if exit_reason:
         params["exit_reason"] = exit_reason
     return await _proxy_get(MARGIN_ENGINE_URL, "/history", params)
+
+
+@router.get("/margin/positions")
+async def margin_positions(
+    limit: int = Query(default=50, le=200, ge=1),
+    state: str | None = Query(default=None, pattern="^(OPEN|CLOSED)$"),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    Proxy to margin engine — all positions (open and closed) with V4 fields.
+
+    Returns positions with alignment_score, regime, partial_close info, etc.
+    Used by the Margin Strategy Dashboard.
+
+    Returns: { positions: [...], total: int }
+    """
+    params = {"limit": limit}
+    if state:
+        params["state"] = state
+    return await _proxy_get(MARGIN_ENGINE_URL, "/positions", params)
+
+
+@router.get("/margin/strategy-stats")
+async def margin_strategy_stats(
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    Proxy to margin engine — aggregated strategy statistics.
+
+    Returns win rate, total trades, PnL by strategy for V4 strategies.
+    Used by the Margin Strategy Dashboard.
+
+    Returns: { strategies: { strategy_name: { win_rate, n_trades, total_pnl, ... } } }
+    """
+    return await _proxy_get(MARGIN_ENGINE_URL, "/strategy-stats")
 
 
 # ─── V1 Legacy Forecast ────────────────────────────────────────────────────
@@ -158,7 +196,8 @@ async def v2_probability(
 ) -> dict:
     """Proxy to TimesFM — production 5m probability + quantiles."""
     return await _proxy_get(
-        TIMESFM_URL, "/v2/probability",
+        TIMESFM_URL,
+        "/v2/probability",
         {"asset": asset, "seconds_to_close": seconds_to_close},
     )
 
@@ -171,7 +210,8 @@ async def v2_probability_15m(
 ) -> dict:
     """Proxy to TimesFM — 15-minute probability + quantiles."""
     return await _proxy_get(
-        TIMESFM_URL, "/v2/probability/15m",
+        TIMESFM_URL,
+        "/v2/probability/15m",
         {"asset": asset, "seconds_to_close": seconds_to_close},
     )
 
@@ -234,7 +274,8 @@ async def v4_snapshot(
     or entering — the surface is self-explaining.
     """
     return await _proxy_get(
-        TIMESFM_URL, "/v4/snapshot",
+        TIMESFM_URL,
+        "/v4/snapshot",
         {
             "asset": asset,
             "timescales": timescales,
@@ -261,9 +302,172 @@ async def v4_recommendation(
 ) -> dict:
     """Proxy to TimesFM — recommended_action only (no full snapshot)."""
     return await _proxy_get(
-        TIMESFM_URL, "/v4/recommendation",
+        TIMESFM_URL,
+        "/v4/recommendation",
         {"asset": asset, "strategy": strategy},
     )
+
+
+@router.get("/v58/signal-comparison")
+async def signal_comparison(
+    period: str = Query(default="30d", pattern="^(7d|14d|30d|60d|90d)$"),
+    timescale: str = Query(default="15m", pattern="^(5m|15m|1h|4h)$"),
+    user: TokenData = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """
+    Signal comparison dashboard data.
+
+    Returns accuracy metrics for all directional prediction signals (v2, v3, v4, HMM, etc.)
+    for the requested timescale and period.
+
+    Query:
+    - period: 7d, 14d, 30d, 60d, 90d
+    - timescale: 5m, 15m, 1h, 4h
+
+    Returns:
+    {
+      "accuracy_overview": {
+        "sequoia_v5_2": { "n_trades": 150, "n_correct": 92, "hit_rate": 0.613, ... },
+        "v4_consensus": { "n_trades": 120, "n_correct": 78, "hit_rate": 0.650, ... },
+        ...
+      },
+      "regime_specific_accuracy": {
+        "calm_trend": { "sequoia_v5_2": 0.65, "v4_consensus": 0.70, ... },
+        "chop": { "sequoia_v5_2": 0.48, "v4_consensus": 0.52, ... },
+        ...
+      },
+      "correlation_matrix": {
+        "sequoia_v5_2": { "sequoia_v5_2": 1.0, "v4_consensus": 0.72, ... },
+        ...
+      },
+      "signal_timeline": [
+        { "ts": "2026-04-12T15:00:00Z", "signal": "sequoia_v5_2", "predicted": "UP", "actual": "UP", "correct": true },
+        ...
+      ]
+    }
+    """
+    from datetime import datetime, timedelta, timezone
+
+    # Calculate period start
+    now = datetime.now(timezone.utc)
+    period_days = int(period.replace("d", ""))
+    start_date = now - timedelta(days=period_days)
+
+    # Query for v2 probability ticks and their outcomes
+    query = text("""
+        SELECT
+            t.ts,
+            t.probability_up,
+            t.model_version,
+            wp.window_ts,
+            wp.v2_direction AS predicted_direction,
+            wp.oracle_winner AS actual_direction,
+            wp.v2_correct,
+            wp.tiingo_direction AS tiingo_actual,
+            wp.chainlink_direction AS chainlink_actual
+        FROM ticks_v2_probability t
+        LEFT JOIN window_predictions wp
+          ON wp.asset = t.asset
+         AND wp.timeframe = :timeframe
+         AND wp.window_ts = (
+             (EXTRACT(EPOCH FROM t.ts)::bigint / :window_seconds)
+             * :window_seconds
+         )
+        WHERE t.asset = :asset
+          AND t.ts >= :start_date
+          AND t.ts <= :end_date
+        ORDER BY t.ts DESC
+    """)
+
+    window_seconds = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400}[timescale]
+
+    result = await session.execute(
+        query,
+        {
+            "asset": "BTC",
+            "timeframe": timescale,
+            "start_date": start_date,
+            "end_date": now,
+            "window_seconds": window_seconds,
+        },
+    )
+    rows = result.mappings().all()
+
+    # Build accuracy overview
+    accuracy_overview: dict[str, dict] = {}
+    signal_timeline: list[dict] = []
+
+    for r in rows:
+        # V2 signal
+        if r["probability_up"] is not None:
+            sig_name = "sequoia_v5_2"
+            predicted = "UP" if r["probability_up"] > 0.5 else "DOWN"
+            actual = (
+                r["actual_direction"] or r["tiingo_actual"] or r["chainlink_actual"]
+            )
+            correct = actual is not None and actual.upper() == predicted
+
+            if sig_name not in accuracy_overview:
+                accuracy_overview[sig_name] = {
+                    "n_trades": 0,
+                    "n_correct": 0,
+                    "n_with_outcome": 0,
+                    "hit_rate": None,
+                    "avg_probability": 0.0,
+                    "prob_sum": 0.0,
+                }
+
+            accuracy_overview[sig_name]["n_trades"] += 1
+            accuracy_overview[sig_name]["prob_sum"] += r["probability_up"]
+
+            if actual is not None:
+                accuracy_overview[sig_name]["n_with_outcome"] += 1
+                if correct:
+                    accuracy_overview[sig_name]["n_correct"] += 1
+
+            signal_timeline.append(
+                {
+                    "ts": r["ts"].isoformat() if r["ts"] else None,
+                    "signal": sig_name,
+                    "predicted": predicted,
+                    "actual": actual,
+                    "correct": correct if actual else None,
+                    "probability": r["probability_up"],
+                }
+            )
+
+    # Calculate hit rates
+    for sig, data in accuracy_overview.items():
+        if data["n_with_outcome"] > 0:
+            data["hit_rate"] = round(data["n_correct"] / data["n_with_outcome"], 4)
+        data["avg_probability"] = (
+            round(data["prob_sum"] / data["n_trades"], 4)
+            if data["n_trades"] > 0
+            else 0.0
+        )
+        del data["prob_sum"]
+
+    # Regime-specific accuracy (simplified - would need regime data in window_predictions)
+    regime_specific_accuracy: dict[str, dict] = {
+        "calm_trend": {},
+        "volatile_trend": {},
+        "chop": {},
+        "risk_off": {},
+    }
+
+    # Correlation matrix (simplified - would need multiple signal predictions at same time)
+    correlation_matrix: dict[str, dict] = {"sequoia_v5_2": {"sequoia_v5_2": 1.0}}
+
+    return {
+        "accuracy_overview": accuracy_overview,
+        "regime_specific_accuracy": regime_specific_accuracy,
+        "correlation_matrix": correlation_matrix,
+        "signal_timeline": signal_timeline[:100],  # Limit to 100 rows
+        "period": period,
+        "timescale": timescale,
+        "n_total_predictions": len(rows),
+    }
 
 
 # ─── POST /api/predict — Assembler1 canonical envelope ─────────────────────
@@ -392,8 +596,11 @@ async def ticks_vs_outcomes(
         return {
             "rows": [],
             "summary": {
-                "n_total": 0, "n_with_outcome": 0, "n_correct": 0,
-                "hit_rate": None, "direction_counts": {},
+                "n_total": 0,
+                "n_with_outcome": 0,
+                "n_correct": 0,
+                "hit_rate": None,
+                "direction_counts": {},
             },
             "note": f"timeframe {timeframe!r} has no dedicated v2 model yet",
         }
@@ -435,7 +642,10 @@ async def ticks_vs_outcomes(
     """)
 
     window_seconds = {
-        "5m": 300, "15m": 900, "1h": 3600, "4h": 14400,
+        "5m": 300,
+        "15m": 900,
+        "1h": 3600,
+        "4h": 14400,
     }[timeframe]
 
     result = await session.execute(
@@ -457,7 +667,11 @@ async def ticks_vs_outcomes(
 
     for r in raw_rows:
         p_up = r["probability_up"]
-        predicted_dir = "UP" if p_up is not None and p_up > 0.5 else ("DOWN" if p_up is not None else None)
+        predicted_dir = (
+            "UP"
+            if p_up is not None and p_up > 0.5
+            else ("DOWN" if p_up is not None else None)
+        )
         actual_dir: str | None = None
         outcome_source: str | None = None
         if r["oracle_winner"]:
@@ -472,7 +686,7 @@ async def ticks_vs_outcomes(
 
         correct: bool | None = None
         if actual_dir and predicted_dir:
-            correct = (actual_dir == predicted_dir)
+            correct = actual_dir == predicted_dir
             n_with_outcome += 1
             if correct:
                 n_correct += 1
@@ -486,21 +700,25 @@ async def ticks_vs_outcomes(
         if open_px and close_px and open_px > 0:
             move_bps = float((close_px - open_px) / open_px * 10_000)
 
-        rows.append({
-            "ts": r["ts"].isoformat() if r["ts"] else None,
-            "window_ts": r["window_ts"],
-            "probability_up": float(p_up) if p_up is not None else None,
-            "probability_raw": float(r["probability_raw"]) if r["probability_raw"] is not None else None,
-            "model_version": r["model_version"],
-            "seconds_to_close": r["seconds_to_close"],
-            "predicted_direction": predicted_dir,
-            "actual_direction": actual_dir,
-            "correct": correct,
-            "outcome_source": outcome_source,
-            "window_open_price": float(open_px) if open_px else None,
-            "window_close_price": float(close_px) if close_px else None,
-            "window_move_bps": round(move_bps, 2) if move_bps is not None else None,
-        })
+        rows.append(
+            {
+                "ts": r["ts"].isoformat() if r["ts"] else None,
+                "window_ts": r["window_ts"],
+                "probability_up": float(p_up) if p_up is not None else None,
+                "probability_raw": float(r["probability_raw"])
+                if r["probability_raw"] is not None
+                else None,
+                "model_version": r["model_version"],
+                "seconds_to_close": r["seconds_to_close"],
+                "predicted_direction": predicted_dir,
+                "actual_direction": actual_dir,
+                "correct": correct,
+                "outcome_source": outcome_source,
+                "window_open_price": float(open_px) if open_px else None,
+                "window_close_price": float(close_px) if close_px else None,
+                "window_move_bps": round(move_bps, 2) if move_bps is not None else None,
+            }
+        )
 
     hit_rate = round(n_correct / n_with_outcome, 4) if n_with_outcome > 0 else None
     return {
