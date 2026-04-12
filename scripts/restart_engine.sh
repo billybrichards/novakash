@@ -81,7 +81,7 @@ fi
 
 # ─── Step 5: Start engine (APPEND to log — never truncate) ────────────────
 log_info "Starting engine in $ENGINE_DIR"
-sudo -u novakash bash -c "cd $ENGINE_DIR && nohup python3 main.py >> $CURRENT_LOG 2>&1 & disown"
+sudo -u novakash bash -c "cd $ENGINE_DIR && nohup python3 main.py >> $CURRENT_LOG 2>&1 </dev/null & disown"
 sleep 6
 
 # ─── Step 6: Verify ────────────────────────────────────────────────────────
