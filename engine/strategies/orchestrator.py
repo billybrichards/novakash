@@ -2378,9 +2378,14 @@ class Orchestrator:
 
                         # v12: Build strategy port summary
                         _sp_block = ""
+                        _v4_mode_label = ""
                         if self._last_sp_result and self._last_sp_result.all_decisions:
                             try:
                                 _regs_map = {r.strategy_id: r for r, _ in self._evaluate_strategies_uc._strategies} if self._evaluate_strategies_uc else {}
+                                # Build V4 mode label for header (LIVE vs GHOST)
+                                _v4_reg = _regs_map.get("v4_fusion")
+                                if _v4_reg:
+                                    _v4_mode_label = " | V4:🎯LIVE" if _v4_reg.mode == "LIVE" else " | V4:👻GHOST"
                                 _sp_lines = []
                                 for _sd in self._last_sp_result.all_decisions:
                                     _sid = getattr(_sd, 'strategy_id', '?')
@@ -2392,7 +2397,7 @@ class Orchestrator:
                                     if _action == "TRADE":
                                         _sp_lines.append(f"{_icon}`{_sid}`: TRADE `{_dir}`")
                                     elif _action == "SKIP":
-                                        _sp_lines.append(f"{_icon}`{_sid}`: SKIP _{(_skip or '?')[:35]}_")
+                                        _sp_lines.append(f"{_icon}`{_sid}`: SKIP _{(_skip or '?')[:40]}_")
                                     else:
                                         _sp_lines.append(f"{_icon}`{_sid}`: `{_action}`")
                                 _sp_block = "🔬 *Last window:* " + " | ".join(_sp_lines) + "\n"
@@ -2400,7 +2405,7 @@ class Orchestrator:
                                 pass
 
                         sitrep = (
-                            f"📋 *5-MIN SITREP* ({status_emoji} {'KILLED' if killed else 'ACTIVE'}) {mode_label}\n"
+                            f"📋 *5-MIN SITREP* ({status_emoji} {'KILLED' if killed else 'ACTIVE'}) {mode_label}{_v4_mode_label}\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━\n"
                             + (
                                 f"🏦 Wallet: `${wallet:.2f}` USDC _(CLOB verified)_\n"

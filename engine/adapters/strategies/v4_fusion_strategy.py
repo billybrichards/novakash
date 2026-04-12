@@ -212,7 +212,7 @@ class V4FusionStrategy:
 
         # Confidence gate: mod/weak bands are anti-predictive below 0.12
         if distance < 0.12:
-            return self._skip(f"polymarket: confidence_distance={distance:.3f} < 0.12 threshold")
+            return self._skip(f"polymarket: p_up={confidence:.3f} dist={distance:.3f} < 0.12 threshold")
 
         if not trade_advised:
             return self._skip(f"polymarket: {reason} (timing={timing}, dist={distance:.3f})")
