@@ -47,6 +47,7 @@ import LegacyConfig from './pages/LegacyConfig.jsx';
 import PolymarketMonitor from './pages/polymarket/Monitor.jsx';
 import PolymarketEvaluate from './pages/polymarket/Evaluate.jsx';
 import StrategyLab from './pages/polymarket/StrategyLab.jsx';
+import StrategyHistory from './pages/polymarket/StrategyHistory.jsx';
 import LiveFloor from './pages/polymarket/LiveFloor.jsx';
 import PolymarketOverview from './pages/polymarket/Overview.jsx';
 import SignalComparison from './pages/SignalComparison.jsx';
@@ -122,6 +123,7 @@ export default function App() {
             <Route path="polymarket/floor" element={<LiveFloor />} />
             <Route path="polymarket/evaluate" element={<PolymarketEvaluate />} />
             <Route path="polymarket/strategy-lab" element={<StrategyLab />} />
+          <Route path="polymarket/strategy-history" element={<StrategyHistory />} />
             <Route path="signal-comparison" element={<SignalComparison />} />
           </Route>
 
