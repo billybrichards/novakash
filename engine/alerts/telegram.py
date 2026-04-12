@@ -208,8 +208,19 @@ class TelegramAlerter:
         reason: str = "",
         gamma_up: float = None,
         gamma_down: float = None,
+        consensus_live: Optional[int] = None,
+        consensus_total: Optional[int] = None,
+        macro_status: Optional[str] = None,
+        sequoia_ok: Optional[bool] = None,
     ) -> tuple:
-        """v8.0 Window Evaluation Card — TRADE or SKIP with full source attribution."""
+        """v11.2 Window Evaluation Card — TRADE or SKIP with full source attribution.
+
+        Optional data health params (added v11.2):
+            consensus_live: Number of live consensus sources
+            consensus_total: Total configured consensus sources
+            macro_status: "OK" or "FALLBACK"
+            sequoia_ok: Whether Sequoia model is responding
+        """
         from datetime import datetime, timezone
         
         window_time = "?"
@@ -321,6 +332,16 @@ class TelegramAlerter:
 
         _version_tag = "v10.3" if v103_block else self._engine_version
 
+        # v11.2: data health line
+        health_line = ""
+        if consensus_live is not None and consensus_total is not None:
+            _macro_tag = f"Macro: `{macro_status or 'OK'}`"
+            _seq_tag = f"Sequoia: {'✓' if sequoia_ok else '✗'}" if sequoia_ok is not None else ""
+            _health_parts = [f"Consensus `{consensus_live}/{consensus_total}`", _macro_tag]
+            if _seq_tag:
+                _health_parts.append(_seq_tag)
+            health_line = f"📊 Health: {' | '.join(_health_parts)}\n"
+
         decision_text = (
             f"{emoji} *{decision}* — BTC 5m | {window_time} | {_version_tag}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -331,6 +352,7 @@ class TelegramAlerter:
             f"{v103_section}"
             f"{v81_line}"
             f"{offset_line}"
+            f"{health_line}"
             f"\n⚡ Gates: {gate_icons}\n"
             f"🎖 Confidence: `{confidence_tier}`\n"
         )
@@ -586,6 +608,9 @@ class TelegramAlerter:
         window_id: str,
         data: dict,
         ai_text: Optional[str] = None,
+        sequoia_p_up: Optional[float] = None,
+        regime_hmm: Optional[str] = None,
+        regime_hmm_confidence: Optional[float] = None,
     ) -> Optional[int]:
         """
         ① 📊 SIGNAL (T-90) — Combined market snapshot + AI analysis.
@@ -593,6 +618,11 @@ class TelegramAlerter:
         data keys: vpin, delta_pct, regime, gamma_up, gamma_down,
                    timesfm_direction, timesfm_confidence,
                    twap_direction, twap_agreement, btc_price, window_time
+
+        Optional V4 surface params (added v11.2):
+            sequoia_p_up: Sequoia v5.2 P(UP) probability
+            regime_hmm: HMM regime state (calm_trend/volatile_trend/chop/risk_off)
+            regime_hmm_confidence: HMM regime confidence [0-1]
         """
         try:
             window_time = data.get("window_time", "?")
@@ -630,6 +660,14 @@ class TelegramAlerter:
             ]
             if btc:
                 lines.append(f"BTC: `${btc:,.2f}`")
+            # v11.2: Sequoia + HMM regime
+            if sequoia_p_up is not None:
+                _seq_dir = "UP" if sequoia_p_up >= 0.5 else "DOWN"
+                lines.append(f"🔮 Sequoia v5.2: P(UP)=`{sequoia_p_up:.3f}` → `{_seq_dir}`")
+            if regime_hmm:
+                _hmm_display = regime_hmm.replace("_", " ").title()
+                _hmm_conf = f" `{regime_hmm_confidence:.0%}`" if regime_hmm_confidence is not None else ""
+                lines.append(f"🧠 HMM: `{_hmm_display}`{_hmm_conf}")
             if ai_text:
                 lines += ["", f"🤖 _{ai_text}_"]
             lines += ["", self._footer(window_id)]
@@ -929,6 +967,8 @@ class TelegramAlerter:
         shadow_pnl: float,
         skip_reason: str,
         confidence_tier: str,
+        sequoia_p_up: Optional[float] = None,
+        regime_hmm: Optional[str] = None,
     ) -> Optional[int]:
         """
         👻 SHADOW — notify when a skipped window's oracle outcome is resolved.
@@ -966,12 +1006,22 @@ class TelegramAlerter:
             pnl_sign = "+" if shadow_pnl >= 0 else ""
             pnl_label = "missed profit" if shadow_pnl > 0 else "avoided loss"
 
+            # v11.2: Sequoia + HMM context at skip time
+            _shadow_ctx = ""
+            if sequoia_p_up is not None:
+                _seq_dir = "UP" if sequoia_p_up >= 0.5 else "DOWN"
+                _shadow_ctx += f"🔮 Sequoia v5.2: P(UP)=`{sequoia_p_up:.3f}` → `{_seq_dir}`\n"
+            if regime_hmm:
+                _hmm_display = regime_hmm.replace("_", " ").title()
+                _shadow_ctx += f"🧠 HMM: `{_hmm_display}`\n"
+
             text = (
                 f"👻 *SHADOW — BTC 5m | {window_time} | {self._engine_version}*\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"Signal was: `{direction}` @ `${entry_price:.2f}` (`{confidence_tier}`)\n"
                 f"Oracle resolved: `{oracle_direction}` {oracle_emoji}\n"
                 f"Shadow P&L: `{pnl_sign}${shadow_pnl:.2f}` ({pnl_label})\n"
+                f"{_shadow_ctx}"
                 f"Skip reason: _{skip_reason[:100]}_\n"
             )
 
@@ -1018,12 +1068,16 @@ class TelegramAlerter:
         outcome: str,
         pnl_usd: float,
         window_data: dict = None,
+        regime_hmm: Optional[str] = None,
     ) -> tuple:
         """Send MANDATORY outcome + comprehensive AI analysis (separated).
-        
+
         window_data can include: vpin, delta_pct, regime, timesfm_direction,
         timesfm_confidence, twap_direction, twap_agreement, gamma_up, gamma_down,
         cg_snapshot, open_price, close_price, skip_reason, actual_direction
+
+        Optional (added v11.2):
+            regime_hmm: HMM regime active at trade time (calm_trend/volatile_trend/chop/risk_off)
         """
         from datetime import datetime, timezone
         
@@ -1119,6 +1173,12 @@ class TelegramAlerter:
 
         _version_tag = "v10.3" if _v103_taker else self._engine_version
 
+        # v11.2: HMM regime at trade time
+        _hmm_line = ""
+        if regime_hmm:
+            _hmm_display = regime_hmm.replace("_", " ").title()
+            _hmm_line = f"🧠 HMM at trade: `{_hmm_display}`\n"
+
         outcome_text = (
             f"{emoji} *{outcome}* — BTC 5m | {window_time} | {_version_tag}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1126,6 +1186,7 @@ class TelegramAlerter:
             f"{_fill_line} | P&L: `{pnl_sign}${pnl_usd:.2f}`{_reason_tag}"
             f"{oracle_note}\n"
             f"📊 Session: `{self._session_wins}W/{self._session_losses}L ({wr:.1f}%)` | `{'+' if self._session_pnl >= 0 else ''}${self._session_pnl:.2f}`\n"
+            f"{_hmm_line}"
             f"{v103_retro}"
         )
         
@@ -1167,11 +1228,22 @@ class TelegramAlerter:
     # ── Location / identity ────────────────────────────────────────────────────
 
     _location: str = "MTL"
-    _engine_version: str = "v8.0"
+    _engine_version: str = "v11.2"
     _db_client = None  # injected after construction
 
-    async def send_session_summary(self) -> Optional[int]:
-        """v8.0 Session Summary Card — call periodically or on demand."""
+    async def send_session_summary(
+        self,
+        delta_source: Optional[str] = None,
+        features: Optional[dict] = None,
+    ) -> Optional[int]:
+        """v11.2 Session Summary Card — call periodically or on demand.
+
+        Args:
+            delta_source: Primary delta source name (e.g. "tiingo", "chainlink").
+                          Falls back to "consensus" if not provided.
+            features: Dict of feature flags, e.g. {"FOK": True, "TWAP": False, "Sequoia": True}.
+                      Falls back to sensible defaults if not provided.
+        """
         try:
             w = getattr(self, '_session_wins', 0)
             l = getattr(self, '_session_losses', 0)
@@ -1179,14 +1251,23 @@ class TelegramAlerter:
             total = w + l
             wr = (w / total * 100) if total > 0 else 0
             pnl_sign = "+" if pnl >= 0 else ""
+
+            _src = delta_source or "consensus"
+            _feats = features or {}
+            feat_parts = []
+            for k, v in _feats.items():
+                feat_parts.append(f"{k}: `{'on' if v else 'off'}`")
+            feat_line = " | ".join(feat_parts) if feat_parts else ""
+
             text = (
                 f"📋 *Session Summary* | {self._engine_version}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"Trades: `{total}` | `{w}W/{l}L` (`{wr:.1f}%`)\n"
                 f"P&L: `{pnl_sign}${pnl:.2f}`\n"
-                f"Delta source: `tiingo`\n"
-                f"FOK: `enabled` | TWAP: `off` | TimesFM: `off`\n"
+                f"Delta source: `{_src}`\n"
             )
+            if feat_line:
+                text += f"{feat_line}\n"
             return await self._send_with_id(text)
         except Exception as exc:
             self._log.warning("telegram.session_summary_failed", error=str(exc)[:100])
@@ -1227,7 +1308,7 @@ class TelegramAlerter:
             self._log.warning("telegram.fok_exhausted_failed", error=str(exc)[:100])
             return None
 
-    def set_location(self, location: str, version: str = "v8.0") -> None:
+    def set_location(self, location: str, version: str = "v11.2") -> None:
         self._location = location
         self._engine_version = version
 
