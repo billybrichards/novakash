@@ -241,6 +241,15 @@ const STRATEGY_TEMPLATES = [
     desc: 'Quick log for DOWN-only trades'
   },
   {
+    key: 'asian_up',
+    label: 'Asian UP Trade',
+    icon: '🌏',
+    title: 'Asian Session UP Trade',
+    body: 'Hour: ___ UTC\nConviction: ___\nSize: ___x\nCLOB Ask: $___\nNotes: ___\n\nGate: UP + 0.15<=conv<=0.20 + hour in (23,0,1,2)',
+    tags: 'trade,up,asian-session',
+    desc: 'Asian session UP edge (81-99% WR)'
+  },
+  {
     key: 'observation',
     label: 'Observation',
     icon: '🔍',
@@ -689,6 +698,14 @@ function FilterStrip({ statusFilter, setStatusFilter, tagFilter, setTagFilter, s
     </div>
   );
 }
+
+// ─── Seed Notes ───────────────────────────────────────────────────────────
+
+const SEED_NOTS = {
+  title: 'CRITICAL: DOWN-ONLY (99% WR) + Asian UP (98% WR) Trading Strategies',
+  body: '=== CRITICAL FINDING #1: DOWN-ONLY TRADING ===\n\nDate: 2026-04-12\nData: 897,503 signal evaluations (T-90-150, conf>=0.12)\n\nWIN RATES BY DIRECTION:\n\nDOWN predictions:\n  CLOB ask >0.75 (contrarian): 99.0% WR (175,261 trades)\n  CLOB ask 0.55-0.75: 97.8% WR (112,371 trades)\n  CLOB ask 0.35-0.55: 92.1% WR (86,821 trades)\n  CLOB ask <=0.35: 76.2% WR (177,435 trades)\n\nUP predictions (all hours):\n  CLOB ask >0.75: 53.8% WR (74,107 trades)\n  CLOB ask 0.55-0.75: 23.8% WR (124,835 trades)\n  CLOB ask 0.35-0.55: 1.8% WR (75,177 trades)\n  CLOB ask <=0.35: 1.5% WR (71,496 trades)\n\nWHY: Retail traders have strong UP bias on 5-min BTC windows\n\nRECOMMENDATION:\n  - Trade DOWN ONLY (primary strategy)\n  - Skip ALL UP predictions (unless Asian session filter below)\n  - Size: 2.0x for contrarian (clob_ask >=0.75)\n  - Expected WR: 76-99%\n\n=== CRITICAL FINDING #2: ASIAN SESSION UP EDGE ===\n\nDate: 2026-04-12\nData: 5,543 windows (Apr 10-12)\n\nFINDING: Asian Session (23:00-03:00 UTC) + Medium Conviction (0.15-0.20)\n\nBy Hour (UP predictions):\n  01:00 UTC: 98.9% WR (1,916 samples)\n  23:00 UTC: 91.8% WR (1,207 samples)\n  02:00 UTC: 85.6% WR (549 samples)\n  00:00 UTC: 81.2% WR (1,921 samples)\n\nControl (same filter, non-Asian hours): 45.5% WR (26,183 samples)\n\nWHY: Asian session has low liquidity + Asian retail DOWN bias.\n     Model sees whale accumulation (UP) while retail overprices DOWN.\n\nRECOMMENDATION:\n  - Trade UP only during 23:00-03:00 UTC\n  - Filter: 0.15 <= conviction <= 0.20\n  - Size: 2.0-2.5x (higher for 1AM UTC = 98.9% WR)\n  - Expected WR: 81-99%\n\n=== STRATEGY SUMMARY ===\n\n1. DOWN-Only (all hours): 76-99% WR, ~50 trades/day\n2. Asian UP (23:00-03:00 UTC, conv 0.15-0.20): 81-99% WR, ~1,000 trades/day\n\nRun BOTH strategies for full 24h coverage.\n\nSee:\n  - docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md\n  - docs/analysis/UP_STRATEGY_DISCOVERY_2026-04-12.md\n  - docs/analysis/UP_STRATEGY_RESEARCH_BRIEF.md',
+  tags: 'critical,down-only,up,asian-session,strategy',
+};
 
 // ─── Page ─────────────────────────────────────────────────────────────────
 
