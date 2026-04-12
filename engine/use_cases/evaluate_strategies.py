@@ -188,11 +188,20 @@ class EvaluateStrategiesUseCase:
                                 "gamma_up": ctx.gamma_up_price if ctx else None,
                                 "gamma_down": ctx.gamma_down_price if ctx else None,
 
-                                # CoinGlass snapshot (OI, funding, taker)
+                                # CoinGlass snapshot — field names match CoinGlassSnapshot dataclass
                                 "cg_oi": getattr(ctx.cg_snapshot, "oi_usd", None) if ctx and ctx.cg_snapshot else None,
                                 "cg_funding": getattr(ctx.cg_snapshot, "funding_rate", None) if ctx and ctx.cg_snapshot else None,
-                                "cg_taker_buy_ratio": getattr(ctx.cg_snapshot, "taker_buy_sell_ratio", None) if ctx and ctx.cg_snapshot else None,
-                                "cg_liq_vol": getattr(ctx.cg_snapshot, "liq_volume_usd", None) if ctx and ctx.cg_snapshot else None,
+                                "cg_taker_buy_vol": getattr(ctx.cg_snapshot, "taker_buy_volume_1m", None) if ctx and ctx.cg_snapshot else None,
+                                "cg_taker_sell_vol": getattr(ctx.cg_snapshot, "taker_sell_volume_1m", None) if ctx and ctx.cg_snapshot else None,
+                                "cg_taker_buy_ratio": (
+                                    (getattr(ctx.cg_snapshot, "taker_buy_volume_1m", 0) or 0) /
+                                    max((getattr(ctx.cg_snapshot, "taker_buy_volume_1m", 0) or 0) + (getattr(ctx.cg_snapshot, "taker_sell_volume_1m", 0) or 0), 1)
+                                ) if ctx and ctx.cg_snapshot else None,
+                                "cg_liq_total": getattr(ctx.cg_snapshot, "liq_total_usd_1m", None) if ctx and ctx.cg_snapshot else None,
+                                "cg_liq_long": getattr(ctx.cg_snapshot, "liq_long_usd_1m", None) if ctx and ctx.cg_snapshot else None,
+                                "cg_liq_short": getattr(ctx.cg_snapshot, "liq_short_usd_1m", None) if ctx and ctx.cg_snapshot else None,
+                                "cg_long_short_ratio": getattr(ctx.cg_snapshot, "long_short_ratio", None) if ctx and ctx.cg_snapshot else None,
+                                "cg_funding_annual": getattr(ctx.cg_snapshot, "funding_rate_annual", None) if ctx and ctx.cg_snapshot else None,
 
                                 # V4 Sequoia + fusion surface
                                 "v4_p_up": ctx.v4_snapshot.probability_up if ctx and ctx.v4_snapshot else None,
@@ -209,6 +218,12 @@ class EvaluateStrategiesUseCase:
                                 "v4_macro_gate": (ctx.v4_snapshot.macro or {}).get("direction_gate") if ctx and ctx.v4_snapshot else None,
                                 "v4_consensus_safe": (ctx.v4_snapshot.consensus or {}).get("safe_to_trade") if ctx and ctx.v4_snapshot else None,
                                 "v4_consensus_divergence_bps": (ctx.v4_snapshot.consensus or {}).get("max_divergence_bps") if ctx and ctx.v4_snapshot else None,
+
+                                # V3 composite per timescale (from ticks_v3_composite in shared DB)
+                                # These are written by the timesfm service every ~5s
+                                "v3_composite_5m": None,   # populated by _enrich_with_v3 if available
+                                "v3_composite_15m": None,
+                                "v3_composite_1h": None,
 
                                 # Polymarket venue-specific outcome
                                 "poly_direction": (ctx.v4_snapshot.polymarket_outcome or {}).get("direction") if ctx and ctx.v4_snapshot and ctx.v4_snapshot.polymarket_outcome else None,
