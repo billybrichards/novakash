@@ -87,6 +87,7 @@ class V4SnapshotHttpAdapter:
 
             return V4Snapshot(
                 probability_up=float(p_up),
+                probability_raw=float(ts_data["probability_raw"]) if ts_data.get("probability_raw") is not None else None,
                 conviction=ts_data.get("conviction", "NONE"),
                 conviction_score=float(ts_data.get("conviction_score", 0.0)),
                 regime=ts_data.get("regime", "chop"),

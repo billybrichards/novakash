@@ -384,7 +384,8 @@ class V4Snapshot:
     Immutable -- V4FusionStrategy reads fields but never mutates.
     """
     probability_up: float
-    conviction: str                     # "NONE" | "LOW" | "MEDIUM" | "HIGH"
+    probability_raw: Optional[float] = None  # uncalibrated LightGBM score
+    conviction: str = "NONE"           # "NONE" | "LOW" | "MEDIUM" | "HIGH"
     conviction_score: float             # 0.0-1.0
     regime: str                         # "calm_trend" | "volatile_trend" | "chop" | "risk_off"
     regime_confidence: float

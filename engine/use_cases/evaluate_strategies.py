@@ -162,22 +162,60 @@ class EvaluateStrategiesUseCase:
                             # Shared context injected at the use case level
                             # so every strategy record has the full signal vector
                             "_ctx": {
-                                "delta_pct": ctx.delta_pct if ctx else None,
-                                "vpin": ctx.vpin if ctx else None,
-                                "regime": ctx.regime if ctx and hasattr(ctx, "regime") else None,
+                                # Window / eval identity
                                 "eval_offset": eval_offset,
-                                "delta_source": getattr(ctx, "delta_source", None) if ctx else None,
-                                "delta_tiingo": getattr(ctx, "delta_tiingo", None) if ctx else None,
-                                "delta_chainlink": getattr(ctx, "delta_chainlink", None) if ctx else None,
-                                "delta_binance": getattr(ctx, "delta_binance", None) if ctx else None,
+                                "current_price": ctx.current_price if ctx else None,
+                                "open_price": ctx.open_price if ctx else None,
+
+                                # Price deltas (all sources)
+                                "delta_pct": ctx.delta_pct if ctx else None,
+                                "delta_source": ctx.delta_source if ctx else None,
+                                "delta_tiingo": ctx.delta_tiingo if ctx else None,
+                                "delta_chainlink": ctx.delta_chainlink if ctx else None,
+                                "delta_binance": ctx.delta_binance if ctx else None,
+                                "tiingo_close": ctx.tiingo_close if ctx else None,
+                                "twap_delta": ctx.twap_delta if ctx else None,
+
+                                # Market microstructure
+                                "vpin": ctx.vpin if ctx else None,
+                                "regime": ctx.regime if ctx else None,
+
+                                # CLOB prices (Polymarket order book)
+                                "clob_up_bid": ctx.clob_up_bid if ctx else None,
+                                "clob_up_ask": ctx.clob_up_ask if ctx else None,
+                                "clob_down_bid": ctx.clob_down_bid if ctx else None,
+                                "clob_down_ask": ctx.clob_down_ask if ctx else None,
+                                "gamma_up": ctx.gamma_up_price if ctx else None,
+                                "gamma_down": ctx.gamma_down_price if ctx else None,
+
+                                # CoinGlass snapshot (OI, funding, taker)
+                                "cg_oi": getattr(ctx.cg_snapshot, "oi_usd", None) if ctx and ctx.cg_snapshot else None,
+                                "cg_funding": getattr(ctx.cg_snapshot, "funding_rate", None) if ctx and ctx.cg_snapshot else None,
+                                "cg_taker_buy_ratio": getattr(ctx.cg_snapshot, "taker_buy_sell_ratio", None) if ctx and ctx.cg_snapshot else None,
+                                "cg_liq_vol": getattr(ctx.cg_snapshot, "liq_volume_usd", None) if ctx and ctx.cg_snapshot else None,
+
+                                # V4 Sequoia + fusion surface
                                 "v4_p_up": ctx.v4_snapshot.probability_up if ctx and ctx.v4_snapshot else None,
+                                "v4_p_raw": ctx.v4_snapshot.probability_raw if ctx and ctx.v4_snapshot else None,
                                 "v4_regime": ctx.v4_snapshot.regime if ctx and ctx.v4_snapshot else None,
                                 "v4_regime_conf": ctx.v4_snapshot.regime_confidence if ctx and ctx.v4_snapshot else None,
+                                "v4_regime_persist": ctx.v4_snapshot.regime_persistence if ctx and ctx.v4_snapshot else None,
                                 "v4_conviction": ctx.v4_snapshot.conviction if ctx and ctx.v4_snapshot else None,
+                                "v4_conviction_score": ctx.v4_snapshot.conviction_score if ctx and ctx.v4_snapshot else None,
                                 "v4_sub_signals": ctx.v4_snapshot.sub_signals if ctx and ctx.v4_snapshot else None,
+                                "v4_quantiles": ctx.v4_snapshot.quantiles if ctx and ctx.v4_snapshot else None,
                                 "v4_macro_bias": (ctx.v4_snapshot.macro or {}).get("bias") if ctx and ctx.v4_snapshot else None,
+                                "v4_macro_source": (ctx.v4_snapshot.macro or {}).get("macro_source") if ctx and ctx.v4_snapshot else None,
+                                "v4_macro_gate": (ctx.v4_snapshot.macro or {}).get("direction_gate") if ctx and ctx.v4_snapshot else None,
+                                "v4_consensus_safe": (ctx.v4_snapshot.consensus or {}).get("safe_to_trade") if ctx and ctx.v4_snapshot else None,
+                                "v4_consensus_divergence_bps": (ctx.v4_snapshot.consensus or {}).get("max_divergence_bps") if ctx and ctx.v4_snapshot else None,
+
+                                # Polymarket venue-specific outcome
+                                "poly_direction": (ctx.v4_snapshot.polymarket_outcome or {}).get("direction") if ctx and ctx.v4_snapshot and ctx.v4_snapshot.polymarket_outcome else None,
                                 "poly_trade_advised": (ctx.v4_snapshot.polymarket_outcome or {}).get("trade_advised") if ctx and ctx.v4_snapshot and ctx.v4_snapshot.polymarket_outcome else None,
+                                "poly_confidence_distance": (ctx.v4_snapshot.polymarket_outcome or {}).get("confidence_distance") if ctx and ctx.v4_snapshot and ctx.v4_snapshot.polymarket_outcome else None,
                                 "poly_timing": (ctx.v4_snapshot.polymarket_outcome or {}).get("timing") if ctx and ctx.v4_snapshot and ctx.v4_snapshot.polymarket_outcome else None,
+                                "poly_reason": (ctx.v4_snapshot.polymarket_outcome or {}).get("reason") if ctx and ctx.v4_snapshot and ctx.v4_snapshot.polymarket_outcome else None,
                             },
                         }),
                         evaluated_at=now,
