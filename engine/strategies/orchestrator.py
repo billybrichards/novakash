@@ -393,8 +393,12 @@ class Orchestrator:
                 strategy_pairs.append((v4_reg, v4_strat))
                 v4_snapshot_port = V4SnapshotHttpAdapter()
 
+            from adapters.persistence.pg_strategy_decisions import PgStrategyDecisionRepository
+            _decision_repo = PgStrategyDecisionRepository(db_client=self._db)
+
             self._evaluate_strategies_uc = EvaluateStrategiesUseCase(
                 strategies=strategy_pairs,
+                decision_repo=_decision_repo,
                 v4_snapshot_port=v4_snapshot_port,
                 vpin_calculator=self._vpin_calc,
                 cg_feeds=self._cg_feeds,
