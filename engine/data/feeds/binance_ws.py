@@ -1,10 +1,11 @@
 """
-Binance Futures WebSocket Feed
+Binance WebSocket Feed (Spot + Futures)
 
-Subscribes to three streams for BTC/USDT perpetual:
-  - aggTrade   — aggregated trades for VPIN volume accumulation
-  - depth20    — top-20 order book for microstructure
-  - forceOrder — forced liquidations for cascade detection
+Supports two venues:
+  - "futures" (default) — wss://fstream.binance.com, subscribes to aggTrade,
+    depth20, and forceOrder for VPIN volume accumulation and cascade detection.
+  - "spot" — wss://stream.binance.com:9443, subscribes to aggTrade only,
+    providing spot BTC price for oracle-aligned delta calculation.
 
 Reconnects automatically with exponential back-off.
 """
@@ -23,28 +24,38 @@ from data.models import AggTrade, OrderBookSnapshot, ForcedLiquidation
 
 log = structlog.get_logger(__name__)
 
-BINANCE_WSS_BASE = "wss://fstream.binance.com/stream"
+BINANCE_SPOT_WSS = "wss://stream.binance.com:9443/stream"
+BINANCE_FUTURES_WSS = "wss://fstream.binance.com/stream"
 RECONNECT_DELAY_MAX = 60  # seconds
 
 
 class BinanceWebSocketFeed:
     """
-    Connects to Binance Futures combined stream and dispatches
+    Connects to Binance combined stream and dispatches
     typed events to registered handlers.
+
+    Parameters:
+        venue: "futures" (default) for fstream.binance.com (VPIN + liquidations),
+               "spot" for stream.binance.com (oracle-aligned BTC price).
 
     Attributes:
         connected: True while the WebSocket is open and receiving messages.
         last_message_at: Timestamp of the most recently processed message.
+        venue: "spot" or "futures".
     """
 
     def __init__(
         self,
         symbol: str = "btcusdt",
+        venue: str = "futures",
         on_trade: Callable[[AggTrade], Awaitable[None]] | None = None,
         on_book: Callable[[OrderBookSnapshot], Awaitable[None]] | None = None,
         on_liquidation: Callable[[ForcedLiquidation], Awaitable[None]] | None = None,
     ) -> None:
+        if venue not in ("spot", "futures"):
+            raise ValueError(f"venue must be 'spot' or 'futures', got {venue!r}")
         self.symbol = symbol.lower()
+        self.venue = venue
         self._on_trade = on_trade
         self._on_book = on_book
         self._on_liquidation = on_liquidation
@@ -67,12 +78,19 @@ class BinanceWebSocketFeed:
 
     @property
     def _stream_url(self) -> str:
-        streams = [
-            f"{self.symbol}@aggTrade",
-            f"{self.symbol}@depth20@100ms",
-            f"{self.symbol}@forceOrder",
-        ]
-        return f"{BINANCE_WSS_BASE}?streams={'/'.join(streams)}"
+        if self.venue == "spot":
+            # Spot: aggTrade only (for BTC spot price)
+            streams = [f"{self.symbol}@aggTrade"]
+            base = BINANCE_SPOT_WSS
+        else:
+            # Futures: aggTrade + depth + forceOrder (for VPIN + cascades)
+            streams = [
+                f"{self.symbol}@aggTrade",
+                f"{self.symbol}@depth20@100ms",
+                f"{self.symbol}@forceOrder",
+            ]
+            base = BINANCE_FUTURES_WSS
+        return f"{base}?streams={'/'.join(streams)}"
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -87,6 +105,7 @@ class BinanceWebSocketFeed:
                 self._connected = False
                 log.warning(
                     "binance_ws.disconnected",
+                    venue=self.venue,
                     error=str(exc),
                     retry_in=self._reconnect_delay,
                 )
@@ -97,16 +116,16 @@ class BinanceWebSocketFeed:
         """Signal the feed to stop reconnecting."""
         self._running = False
         self._connected = False
-        log.info("binance_ws.stopped")
+        log.info("binance_ws.stopped", venue=self.venue)
 
     # ─── Internal ─────────────────────────────────────────────────────────────
 
     async def _connect(self) -> None:
         """Open WebSocket connection and dispatch messages."""
-        log.info("binance_ws.connecting", url=self._stream_url)
+        log.info("binance_ws.connecting", venue=self.venue, url=self._stream_url)
         async with websockets.connect(self._stream_url) as ws:
             self._connected = True
-            log.info("binance_ws.connected", symbol=self.symbol)
+            log.info("binance_ws.connected", venue=self.venue, symbol=self.symbol)
             async for raw in ws:
                 if not self._running:
                     break
@@ -119,7 +138,7 @@ class BinanceWebSocketFeed:
                 except Exception as exc:
                     log.error("binance_ws.parse_error", error=str(exc))
         self._connected = False
-        log.info("binance_ws.connection_closed", symbol=self.symbol)
+        log.info("binance_ws.connection_closed", venue=self.venue, symbol=self.symbol)
 
     async def _dispatch(self, stream: str, data: dict) -> None:
         """Route raw message to the correct typed handler."""

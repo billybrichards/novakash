@@ -65,8 +65,15 @@ class MarketAggregator:
 
     # ─── Feed Handlers ────────────────────────────────────────────────────────
 
+    async def on_spot_trade(self, trade: AggTrade) -> None:
+        """Handle incoming Binance SPOT aggTrade — updates btc_spot_price for delta calculation."""
+        async with self._lock:
+            self._state.btc_spot_price = trade.price
+            self._state.last_updated = datetime.utcnow()
+        self._update_event.set()
+
     async def on_agg_trade(self, trade: AggTrade) -> None:
-        """Handle incoming Binance aggTrade — updates BTC price and price history."""
+        """Handle incoming Binance FUTURES aggTrade — updates BTC price and price history."""
         async with self._lock:
             now = datetime.utcnow()
             self._state.btc_price = trade.price

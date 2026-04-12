@@ -412,17 +412,22 @@ class FiveMinVPINStrategy(BaseStrategy):
             return
         
         # Get current price for this asset
-        # BTC comes from the live Binance websocket via state.btc_price
+        # BTC futures price from Binance futures websocket (for VPIN / fallback)
+        # BTC spot price from Binance spot websocket (for delta — oracle-aligned)
         # Other assets: fetch spot price from Binance REST API
         if window.asset == "BTC":
             current_price = float(state.btc_price) if state.btc_price else None
+            # Prefer spot price for delta_binance (Polymarket resolves via Chainlink
+            # oracle on SPOT, not futures — futures has systematic basis skew)
+            spot_price = float(state.btc_spot_price) if state.btc_spot_price else current_price
         else:
             current_price = await self._fetch_current_price(window.asset)
-        
+            spot_price = current_price
+
         if current_price is None:
             self._log.warning("evaluate.no_current_price", asset=window.asset)
             return
-        
+
         # Get window open price
         open_price = window.open_price
         if open_price is None:
@@ -439,8 +444,9 @@ class FiveMinVPINStrategy(BaseStrategy):
         from config.runtime_config import runtime as _rt_cfg
         _delta_source = _rt_cfg.delta_price_source  # env-only, not DB-synced
 
-        # Binance delta (always computed — VPIN baseline, not direction driver in v8.0)
-        binance_price = current_price
+        # delta_binance uses SPOT price (oracle-aligned), not futures.
+        # Futures aggTrades are still used for VPIN volume accumulation separately.
+        binance_price = spot_price if spot_price is not None else current_price
         delta_binance = (binance_price - open_price) / open_price * 100
 
         # -- Tiingo 5m candle delta (v8.0, CA-02 adapter extraction) --------
@@ -583,10 +589,12 @@ class FiveMinVPINStrategy(BaseStrategy):
                     delta_tiingo=f"{delta_tiingo:+.4f}%" if delta_tiingo is not None else "N/A",
                 )
                 return
+            # delta_binance is now SPOT (via binance_spot_feed), not futures.
+            # Tiingo and Chainlink are still preferred as they're oracle-aligned.
             delta_pct = delta_tiingo if delta_tiingo is not None else (delta_chainlink if delta_chainlink is not None else delta_binance)
             _price_source_used = "consensus"
         else:
-            # Fallback: tiingo → chainlink → binance
+            # Fallback: tiingo → chainlink → binance (all oracle-aligned)
             if delta_tiingo is not None:
                 delta_pct = delta_tiingo
                 _price_source_used = f"tiingo_{_tiingo_candle_source}"
