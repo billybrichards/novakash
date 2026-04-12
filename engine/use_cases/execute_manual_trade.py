@@ -27,14 +27,14 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from engine.domain.ports import (
+from domain.ports import (
     AlerterPort,
     Clock,
     ManualTradeRepository,
     PolymarketClientPort,
     WindowStateRepository,
 )
-from engine.domain.value_objects import (
+from domain.value_objects import (
     FillResult,
     ManualTradeOutcome,
     PendingTrade,

@@ -32,13 +32,13 @@ from __future__ import annotations
 import logging
 from typing import Optional, Protocol
 
-from engine.domain.ports import (
+from domain.ports import (
     AlerterPort,
     Clock,
     RiskManagerPort,
     SystemStateRepository,
 )
-from engine.domain.value_objects import (
+from domain.value_objects import (
     HeartbeatRow,
     RiskStatus,
     SitrepPayload,

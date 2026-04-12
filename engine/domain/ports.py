@@ -30,7 +30,7 @@ import abc
 from collections.abc import AsyncIterator
 from typing import Optional
 
-from engine.domain.value_objects import (
+from domain.value_objects import (
     ClobSnapshot,
     DeltaSet,
     FillResult,
