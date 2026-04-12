@@ -42,6 +42,7 @@ import Schema from './pages/Schema.jsx';
 // /legacy-config so any in-flight bookmarks survive.
 import Config from './pages/Config.jsx';
 import LegacyConfig from './pages/LegacyConfig.jsx';
+import PolymarketMonitor from './pages/polymarket/Monitor.jsx';
 
 export default function App() {
   return (
@@ -105,6 +106,9 @@ export default function App() {
             <Route path="deployments" element={<Deployments />} />
             <Route path="notes" element={<Notes />} />
             <Route path="schema" element={<Schema />} />
+            {/* Polymarket Monitor — new unified trading dashboard */}
+            <Route path="polymarket" element={<Navigate to="/polymarket/monitor" replace />} />
+            <Route path="polymarket/monitor" element={<PolymarketMonitor />} />
           </Route>
 
           {/* 404 fallback */}
