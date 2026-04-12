@@ -203,18 +203,46 @@ class OrderManager:
 
             age_secs = now - created_ts
 
-            # ── Auto-expire stale paper trades on restart ──────────────
-            # Paper trade IDs are synthetic (paper-fak-*, manual-paper-*) and
-            # have no CLOB presence. They cannot be reconciled against the chain
-            # so we expire them immediately on restart if they're > 10 minutes old
-            # (their 5-min window is guaranteed to have closed by then).
+            # ── Resolve stale paper trades on restart ──────────────────
+            # Paper trade IDs (paper-fak-*, manual-paper-*) have no CLOB presence.
+            # Instead of expiring them blind, try to resolve against window_snapshots:
+            # if the oracle outcome is known, record WIN/LOSS properly so the data
+            # is available for strategy analysis. Fall back to EXPIRED only if no
+            # oracle data is available.
             if age_secs > 600 and not order_id.startswith("0x"):
-                await db.mark_trade_expired(order_id)
-                self._log.info(
-                    "order_manager.recover.paper_expired",
-                    order_id=order_id[:32],
-                    age_secs=int(age_secs),
-                )
+                try:
+                    direction = row.get("direction") or row.get("side") or "UP"
+                    oracle_outcome = await db.get_oracle_outcome_for_trade(row)
+                    if oracle_outcome:
+                        pnl = row.get("stake_usd", 0) or 0
+                        won = oracle_outcome.upper() == direction.upper()
+                        await db.resolve_paper_trade(
+                            order_id=order_id,
+                            outcome="WIN" if won else "LOSS",
+                            pnl_usd=float(pnl) * 0.95 if won else -float(pnl),
+                            resolved_direction=oracle_outcome,
+                        )
+                        self._log.info(
+                            "order_manager.recover.paper_resolved",
+                            order_id=order_id[:32],
+                            outcome="WIN" if won else "LOSS",
+                            direction=direction,
+                            oracle=oracle_outcome,
+                        )
+                    else:
+                        await db.mark_trade_expired(order_id)
+                        self._log.info(
+                            "order_manager.recover.paper_expired_no_oracle",
+                            order_id=order_id[:32],
+                            age_secs=int(age_secs),
+                        )
+                except Exception as exc:
+                    self._log.warning(
+                        "order_manager.recover.paper_resolve_error",
+                        order_id=order_id[:32],
+                        error=str(exc)[:100],
+                    )
+                    await db.mark_trade_expired(order_id)
                 continue
 
             # ── Reconcile stale live trades (> 10 minutes old) against CLOB ──

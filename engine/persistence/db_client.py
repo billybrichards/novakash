@@ -1232,6 +1232,91 @@ class DBClient:
         except Exception as exc:
             log.error("db.mark_trade_expired_failed", order_id=order_id, error=str(exc))
 
+    async def get_oracle_outcome_for_trade(self, trade_row: dict) -> Optional[str]:
+        """Look up oracle outcome for a paper trade from window_snapshots.
+
+        Returns "UP" or "DOWN" if the window has resolved, None otherwise.
+        Used by startup reconciliation to record paper trade WIN/LOSS.
+        """
+        if not self._pool:
+            return None
+        try:
+            # Try to get window_ts from the trade metadata or related fields
+            meta = trade_row.get("metadata") or {}
+            if isinstance(meta, str):
+                import json as _j
+                try:
+                    meta = _j.loads(meta)
+                except Exception:
+                    meta = {}
+
+            window_ts = (
+                meta.get("window_ts")
+                or trade_row.get("window_ts")
+                or trade_row.get("created_at")
+            )
+            asset = trade_row.get("asset", "BTC")
+
+            if not window_ts:
+                return None
+
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """SELECT actual_direction FROM window_snapshots
+                       WHERE window_ts::text LIKE $1 AND asset = $2
+                         AND actual_direction IS NOT NULL
+                       LIMIT 1""",
+                    f"{str(window_ts)[:10]}%",
+                    asset,
+                )
+                return row["actual_direction"] if row else None
+        except Exception as exc:
+            log.warning("db.get_oracle_outcome_failed", error=str(exc)[:100])
+            return None
+
+    async def resolve_paper_trade(
+        self,
+        order_id: str,
+        outcome: str,
+        pnl_usd: float,
+        resolved_direction: str,
+    ) -> None:
+        """Resolve a paper trade with WIN/LOSS outcome from oracle data.
+
+        Used by startup reconciliation to properly record paper trade results
+        instead of just expiring them — preserving W/L data for strategy analysis.
+        """
+        if not self._pool:
+            return
+        try:
+            from datetime import timezone
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """UPDATE trades
+                       SET status = $1,
+                           outcome = $2,
+                           pnl_usd = $3,
+                           resolved_at = NOW() + (id * INTERVAL '1 millisecond'),
+                           metadata = jsonb_set(
+                               COALESCE(metadata::jsonb, '{}'::jsonb),
+                               '{resolved_direction}', $4::jsonb
+                           )
+                       WHERE order_id = $5 AND status = 'OPEN'""",
+                    f"RESOLVED_{outcome}",
+                    outcome,
+                    pnl_usd,
+                    f'"{resolved_direction}"',
+                    order_id,
+                )
+            log.info(
+                "db.paper_trade_resolved",
+                order_id=order_id[:32],
+                outcome=outcome,
+                pnl_usd=round(pnl_usd, 2),
+            )
+        except Exception as exc:
+            log.error("db.paper_trade_resolve_failed", order_id=order_id[:32], error=str(exc)[:100])
+
     # ─── Manual Trade Queue (v5.8 Dashboard) ─────────────────────────────
 
     async def poll_pending_live_trades(self) -> list:
