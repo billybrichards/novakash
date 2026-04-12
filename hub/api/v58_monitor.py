@@ -3867,7 +3867,11 @@ async def strategy_comparison(
                         sd.fill_size,
                         sd.window_ts,
                         sd.evaluated_at,
-                        ws.actual_direction,
+                        CASE
+                            WHEN ws.close_price > ws.open_price THEN 'UP'
+                            WHEN ws.close_price < ws.open_price THEN 'DOWN'
+                            ELSE NULL
+                        END AS actual_direction,
                         ws.gamma_up_price,
                         ws.gamma_down_price
                     FROM strategy_decisions sd
