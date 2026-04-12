@@ -413,24 +413,38 @@ Coordinated with the novakash blitz. 15 PRs merged to main:
 - PR #63 — SPARTA doc sync (POLY-SOT-b/c shipped)
 - PRs #61, #65 — VPIN Section 1 (binance trades feed + volume-clock BVC + BTC calibration)
 
-## Next up (ordered, updated 2026-04-12)
+### 2026-04-12 — Frontend redesign + signal infra + HMM regime classifier
 
-0. **POLY-SOT-c backfill run** — operator must run the one-shot historical
-   backfill on Montreal so legacy rows get non-NULL `sot_reconciliation_state`:
-   ```
-   cd /home/novakash/novakash/engine
-   python3 scripts/backfill_sot_reconciliation.py --table both --dry-run
-   # review the output, then for real:
-   python3 scripts/backfill_sot_reconciliation.py --table both
-   ```
-1. **CA-01 Phase 4** — wire use-case calls into five_min_vpin.py behind feature
-   flag, replacing direct method calls with the extracted use cases. This is the
-   big integration step.
-2. **CFG-04** — hub config POST endpoints (upsert/rollback/reset + history).
-3. **CFG-06** — frontend /config editable with admin claim.
-4. **V4-01** — port v4 fusion surface into the Polymarket engine (the big one).
-5. **DQ-01 activation** — operator flips V11_POLY_SPOT_ONLY_CONSENSUS=true.
-6. **CI-01 completion** — ENGINE_SSH_KEY still needed for first live deploy.
+10 PRs merged across both repos. Three workstreams executed in parallel.
+
+**Workstream 1: Frontend redesign**
+- PR novakash#104 — audit catch-up for PRs #82-103 + SPARTA discipline + DEP-02 hub cutover (nginx Railway → AWS Montreal)
+- PR novakash#106 — schema page honest labels (26 tables flipped ACTIVE→PLANNED, new AMBER/BLUE/GREY chips)
+- PR novakash#107 — **Polymarket Monitor page**: 5-band trading dashboard (StatusBar, DataHealthStrip, SignalSurface, GatePipeline, RecentFlow). 9 new files, 1430 lines. Route /polymarket/monitor.
+- Design spec committed: `docs/superpowers/specs/2026-04-12-frontend-redesign-design.md`
+
+**Workstream 2: Signal infrastructure fixes**
+- PR timesfm#68 — S3 (alt-coin consensus gated to BTC-only) + S5 (V4 quantile propagation fallback)
+- PR timesfm#69 — S4 (Tiingo + Chainlink API keys wired into deploy .env). BTC consensus 3/6 → 5/6.
+- PR novakash#105 — SQ-01 PR1 (elm_prediction_recorder → prediction_recorder cosmetic rename + CI gate)
+
+**Workstream 3: Macro/Regime classifier**
+- PR timesfm#67 — **HMM regime classifier**: 4-state Gaussian HMM (calm_trend, volatile_trend, chop, risk_off) with transition matrix + persistence + confidence. Replaces hardcoded if/else that returned CHOPPY 100%. 702 lines, 24 tests.
+- PR timesfm#66 — SPARTA audit-update discipline section (synced both repos)
+
+**New audit entries:** DEP-02-CUTOVER, SCHEMA-FIX, SQ-01-PR1, REGIME-HMM, S3-FIX, S5-FIX, S4-FIX, FE-REDESIGN-MONITOR
+
+## Next up (ordered, updated 2026-04-12 session 2)
+
+0. **Polymarket Evaluate page** — signal-vs-outcome analysis, per-gate accuracy breakdown, P&L charts. Design in spec §3.
+1. **Polymarket Strategy Lab** — historical replay simulator, shadow configs, gate impact analysis. Design in spec §4.
+2. **Macro Phase C** — replace Qwen with per-horizon LightGBM MacroV2Classifier. Plan at ~/.claude/plans/sleepy-forging-cerf.md.
+3. **SQ-01 PR 3** — wire-format dual-emit "elm" + "sequoia" in V3/V4 JSON.
+4. **S6** — 1h/4h model training (no trained models exist for these timescales).
+5. **V4-01** — port V4 fusion surface into the Polymarket engine.
+6. **CA-01 Phase 4** — wire use-case calls behind feature flag.
+7. **POLY-SOT-c backfill** — operator runs on Montreal.
+8. **DQ-01 activation** — flip V11_POLY_SPOT_ONLY_CONSENSUS=true.
 
 ## Conventions
 
