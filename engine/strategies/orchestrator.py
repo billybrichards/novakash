@@ -106,6 +106,9 @@ class Orchestrator:
         # _position_monitor_loop skips any condition_id already in this set.
         self._resolved_by_order_manager: set = set()
 
+        # ── v12: Cache latest strategy port result for sitrep + alerts ─────
+        self._last_sp_result = None  # EvaluateStrategiesResult from last window
+
         # ── CLOB Reconciler (v10.2: definitive source of truth) ─────
         self._reconciler = None
 
@@ -1544,6 +1547,26 @@ class Orchestrator:
                     if self._use_strategy_port and self._evaluate_strategies_uc:
                         # SP-04: Multi-strategy path
                         result = await self._evaluate_strategies_uc.execute(window, state)
+                        # v12: Cache for sitrep + pass decisions to alerter
+                        self._last_sp_result = result
+                        # Build enriched decision dicts with mode info for Telegram
+                        _sp_for_alert = []
+                        _regs = {r.strategy_id: r for r, _ in self._evaluate_strategies_uc._strategies}
+                        for _d in result.all_decisions:
+                            _reg = _regs.get(_d.strategy_id)
+                            _sp_for_alert.append({
+                                "strategy_id": _d.strategy_id,
+                                "mode": _reg.mode if _reg else "?",
+                                "action": _d.action,
+                                "direction": _d.direction,
+                                "confidence": _d.confidence,
+                                "skip_reason": _d.skip_reason,
+                                "entry_cap": _d.entry_cap,
+                            })
+                        # Inject strategy decisions into five_min_strategy for
+                        # Telegram alerts (send_trade_decision_detailed / send_window_summary)
+                        if self._five_min_strategy:
+                            self._five_min_strategy._pending_strategy_decisions = _sp_for_alert
                         if result.live_decision and result.live_decision.action == "TRADE":
                             log.info(
                                 "strategy_port.live_trade",
@@ -1559,6 +1582,31 @@ class Orchestrator:
                                 "strategy_port.no_live_trade",
                                 decisions=len(result.all_decisions),
                             )
+                            # v12: Send strategy comparison alert when all strategies skip.
+                            # The legacy evaluate_window is NOT called (strategy port replaces it),
+                            # so we send the alert directly from here with context from the SP result.
+                            if self._alerter and _sp_for_alert:
+                                _window_key = f"{window.asset}-{window.window_ts}"
+                                _ctx = result.context
+                                _skip_reasons = "; ".join(
+                                    f"{d['strategy_id']}: {d.get('skip_reason', '?')[:50]}"
+                                    for d in _sp_for_alert if d.get('action') != 'TRADE'
+                                )
+                                try:
+                                    await self._alerter.send_window_summary(
+                                        window_id=_window_key,
+                                        eval_history=[{
+                                            "offset": getattr(window, 'eval_offset', 60) or 60,
+                                            "skip_reason": _skip_reasons[:120],
+                                            "vpin": _ctx.vpin if _ctx else 0,
+                                            "delta_pct": _ctx.delta_pct if _ctx else 0,
+                                            "regime": _ctx.regime if _ctx else "?",
+                                        }],
+                                        traded=False,
+                                        strategy_decisions=_sp_for_alert,
+                                    )
+                                except Exception as _se:
+                                    log.warning("strategy_port.skip_alert_failed", error=str(_se)[:100])
                     else:
                         # Legacy path
                         await self._five_min_strategy.evaluate_window(window, state)
@@ -1993,11 +2041,13 @@ class Orchestrator:
                             if self._db._pool:
                                 async with self._db._pool.acquire() as conn:
                                     # Use trade_bible as source of truth (includes reconciler-resolved orphans)
+                                    # v12: Include paper trades when in paper mode (was filtering them out)
+                                    _live_filter = "AND is_live = true" if not self._settings.paper_mode else ""
                                     row = await conn.fetchrow(
                                         "SELECT "
                                         "  COUNT(*) FILTER (WHERE trade_outcome='WIN') as w, "
                                         "  COUNT(*) FILTER (WHERE trade_outcome='LOSS') as l "
-                                        "FROM trade_bible WHERE is_live = true "
+                                        f"FROM trade_bible WHERE 1=1 {_live_filter} "
                                         "AND resolved_at > DATE_TRUNC('day', NOW())"
                                     )
                                     if row:
@@ -2029,13 +2079,21 @@ class Orchestrator:
                         if not self._settings.paper_mode and wallet and wallet > 0:
                             portfolio = wallet + open_positions_val
 
-                        # ── Regime label (use VPIN thresholds from runtime) ──
+                        # ── Regime label (prefer HMM from V4 snapshot when available) ──
                         vpin_regime = (
                             "CASCADE" if vpin >= runtime.vpin_cascade_direction_threshold
                             else "TRANSITION" if vpin >= runtime.vpin_informed_threshold
                             else "NORMAL" if vpin >= runtime.five_min_vpin_gate
                             else "CALM"
                         )
+                        # v12: HMM regime from latest strategy port context
+                        _hmm_regime = None
+                        _hmm_confidence = None
+                        if self._last_sp_result and self._last_sp_result.context:
+                            _v4s = getattr(self._last_sp_result.context, 'v4_snapshot', None)
+                            if _v4s:
+                                _hmm_regime = getattr(_v4s, 'regime', None)
+                                _hmm_confidence = getattr(_v4s, 'regime_confidence', None)
 
                         # v8.1: Enhanced SITREP with recent trades + pending positions
                         _recent_block = ""
@@ -2233,6 +2291,54 @@ class Orchestrator:
 
                         _wr = (real_wins/(real_wins+real_losses)*100) if (real_wins+real_losses)>0 else 0
                         
+                        # v12: Build HMM regime line
+                        _hmm_line = ""
+                        if _hmm_regime:
+                            _hmm_display = _hmm_regime.replace("_", " ").title()
+                            _hmm_conf_s = f" `{_hmm_confidence:.0%}`" if _hmm_confidence is not None else ""
+                            _hmm_line = f"🧠 HMM: `{_hmm_display}`{_hmm_conf_s}\n"
+
+                        # v12: Build feed health line
+                        _feeds = []
+                        try:
+                            _feeds.append(f"BN-F:{'✓' if self._binance_feed.connected else '✗'}")
+                            _feeds.append(f"BN-S:{'✓' if self._binance_spot_feed.connected else '✗'}")
+                            if self._chainlink_feed:
+                                _feeds.append(f"CL:{'✓' if self._chainlink_feed.connected else '✗'}")
+                            if self._tiingo_feed:
+                                _feeds.append(f"TI:{'✓' if self._tiingo_feed.connected else '✗'}")
+                            if self._coinglass_feed:
+                                _feeds.append(f"CG:{'✓' if self._coinglass_feed.connected else '✗'}")
+                            _feeds.append(f"PM:{'✓' if self._polymarket_feed.connected else '✗'}")
+                            if self._clob_feed:
+                                _feeds.append(f"CLOB:{'✓' if self._clob_feed.connected else '✗'}")
+                        except Exception:
+                            pass
+                        _feed_line = f"📡 Feeds: `{' '.join(_feeds)}`\n" if _feeds else ""
+
+                        # v12: Build strategy port summary
+                        _sp_block = ""
+                        if self._last_sp_result and self._last_sp_result.all_decisions:
+                            try:
+                                _regs_map = {r.strategy_id: r for r, _ in self._evaluate_strategies_uc._strategies} if self._evaluate_strategies_uc else {}
+                                _sp_lines = []
+                                for _sd in self._last_sp_result.all_decisions:
+                                    _sid = getattr(_sd, 'strategy_id', '?')
+                                    _action = getattr(_sd, 'action', '?')
+                                    _dir = getattr(_sd, 'direction', None)
+                                    _skip = getattr(_sd, 'skip_reason', None)
+                                    _mode = _regs_map[_sid].mode if _sid in _regs_map else "?"
+                                    _icon = "🎯" if _mode == "LIVE" else "👻"
+                                    if _action == "TRADE":
+                                        _sp_lines.append(f"{_icon}`{_sid}`: TRADE `{_dir}`")
+                                    elif _action == "SKIP":
+                                        _sp_lines.append(f"{_icon}`{_sid}`: SKIP _{(_skip or '?')[:35]}_")
+                                    else:
+                                        _sp_lines.append(f"{_icon}`{_sid}`: `{_action}`")
+                                _sp_block = "🔬 *Last window:* " + " | ".join(_sp_lines) + "\n"
+                            except Exception:
+                                pass
+
                         sitrep = (
                             f"📋 *5-MIN SITREP* ({status_emoji} {'KILLED' if killed else 'ACTIVE'}) {mode_label}\n"
                             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -2248,6 +2354,9 @@ class Orchestrator:
                             + _pending_block +
                             f"\n"
                             f"🔬 VPIN: `{vpin:.4f}` | `{vpin_regime}`\n"
+                            + _hmm_line
+                            + _feed_line
+                            + _sp_block
                             + cg_block +
                             f"BTC: `${self._order_manager._current_btc_price:,.2f}`\n"
                         )

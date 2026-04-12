@@ -212,6 +212,7 @@ class TelegramAlerter:
         consensus_total: Optional[int] = None,
         macro_status: Optional[str] = None,
         sequoia_ok: Optional[bool] = None,
+        strategy_decisions: Optional[list] = None,
     ) -> tuple:
         """v11.2 Window Evaluation Card — TRADE or SKIP with full source attribution.
 
@@ -220,6 +221,7 @@ class TelegramAlerter:
             consensus_total: Total configured consensus sources
             macro_status: "OK" or "FALLBACK"
             sequoia_ok: Whether Sequoia model is responding
+            strategy_decisions: List of StrategyDecision from StrategyPort evaluation
         """
         from datetime import datetime, timezone
         
@@ -357,9 +359,29 @@ class TelegramAlerter:
             f"🎖 Confidence: `{confidence_tier}`\n"
         )
         
+        # v12: Strategy Port comparison (V10 LIVE vs V4 GHOST)
+        if strategy_decisions:
+            decision_text += "\n"
+            for sd in strategy_decisions:
+                _mode = getattr(sd, 'mode', None) or sd.get('mode', '?') if isinstance(sd, dict) else '?'
+                _sid = getattr(sd, 'strategy_id', None) or (sd.get('strategy_id', '?') if isinstance(sd, dict) else '?')
+                _action = getattr(sd, 'action', None) or (sd.get('action', '?') if isinstance(sd, dict) else '?')
+                _skip = getattr(sd, 'skip_reason', None) or (sd.get('skip_reason') if isinstance(sd, dict) else None)
+                _dir = getattr(sd, 'direction', None) or (sd.get('direction') if isinstance(sd, dict) else None)
+                _conf = getattr(sd, 'confidence', None) or (sd.get('confidence') if isinstance(sd, dict) else None)
+                _icon = "🎯" if _mode == "LIVE" else "👻"
+                _label = _sid.upper().replace("_", " ")
+                if _action == "TRADE":
+                    _detail = f"`{_dir}` ({_conf or '?'})"
+                elif _action == "SKIP":
+                    _detail = f"SKIP — _{(_skip or 'no reason')[:60]}_"
+                else:
+                    _detail = f"`{_action}` — _{(_skip or '')[:60]}_"
+                decision_text += f"{_icon} {_label} ({_mode}): {_detail}\n"
+
         if decision == "SKIP" and reason:
             decision_text += f"\n❌ _{reason[:200]}_\n"
-        
+
         if not self._paper_mode and decision == "TRADE":
             decision_text += f"\n🟢 *ORDER SENT → awaiting fill*  {mode}\n"
         
@@ -390,12 +412,16 @@ class TelegramAlerter:
         eval_history: list,
         traded: bool = False,
         trade_offset: int = None,
+        strategy_decisions: Optional[list] = None,
     ) -> Optional[int]:
         """
         Send one consolidated summary card per window instead of one alert per eval tick.
 
         If traded=False: shows ALL SKIPPED with grouped skip reasons.
         If traded=True:  shows TRADE at trade_offset with condensed skip summary.
+
+        Optional (added v12):
+            strategy_decisions: List of StrategyDecision objects from StrategyPort.
         """
         if not eval_history:
             return None
@@ -596,6 +622,26 @@ class TelegramAlerter:
                 f"📈 VPIN: `{vpin:.3f}` {regime_emoji} `{regime}` | Δ `{delta_str}`\n"
                 f"\n_Prior skips: {skip_reasons_compact}_\n"
             )
+
+        # v12: Strategy Port comparison block (V10 LIVE vs V4 GHOST)
+        if strategy_decisions:
+            msg += "\n"
+            for sd in strategy_decisions:
+                _mode = getattr(sd, 'mode', None) or (sd.get('mode', '?') if isinstance(sd, dict) else '?')
+                _sid = getattr(sd, 'strategy_id', None) or (sd.get('strategy_id', '?') if isinstance(sd, dict) else '?')
+                _action = getattr(sd, 'action', None) or (sd.get('action', '?') if isinstance(sd, dict) else '?')
+                _skip = getattr(sd, 'skip_reason', None) or (sd.get('skip_reason') if isinstance(sd, dict) else None)
+                _dir = getattr(sd, 'direction', None) or (sd.get('direction') if isinstance(sd, dict) else None)
+                _conf = getattr(sd, 'confidence', None) or (sd.get('confidence') if isinstance(sd, dict) else None)
+                _icon = "🎯" if _mode == "LIVE" else "👻"
+                _label = _sid.upper().replace("_", " ")
+                if _action == "TRADE":
+                    _detail = f"`{_dir}` ({_conf or '?'})"
+                elif _action == "SKIP":
+                    _detail = f"SKIP — _{(_skip or 'no reason')[:60]}_"
+                else:
+                    _detail = f"`{_action}` — _{(_skip or '')[:60]}_"
+                msg += f"{_icon} {_label} ({_mode}): {_detail}\n"
 
         msg_id = await self._send_with_id(msg)
         await self._log_notification("window_summary", msg, window_id, telegram_message_id=msg_id)
