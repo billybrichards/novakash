@@ -70,16 +70,29 @@ export default function RecentFlow({ outcomes }) {
   const api = useApi();
   const rows = outcomes || [];
 
-  // Fetch V4 strategy decisions and index by window_ts
+  // Fetch V4 strategy decisions and index by window_ts.
+  // strategy-decisions returns window_ts as integer epoch seconds.
+  // outcomes returns window_ts as ISO string from _row_to_window.
+  // We index by both the raw int and ISO string to handle both formats.
   const [v4Decisions, setV4Decisions] = useState({});
   const fetchV4Decisions = useCallback(async () => {
     try {
-      const res = await api('GET', '/v58/strategy-decisions?limit=50');
+      const res = await api('GET', '/v58/strategy-decisions?strategy_id=v4_fusion&limit=50');
       const data = res?.data || res;
       const list = Array.isArray(data) ? data : (data?.decisions ?? []);
       const byTs = {};
       list.forEach(d => {
-        if (d.window_ts) byTs[d.window_ts] = d;
+        if (d.window_ts == null) return;
+        const raw = d.window_ts;
+        // Index by raw integer
+        byTs[raw] = d;
+        // Also index by ISO string (what _row_to_window produces)
+        try {
+          const iso = new Date(raw * 1000).toISOString().replace('.000Z', '+00:00');
+          byTs[iso] = d;
+          // Also try without milliseconds offset format
+          byTs[new Date(raw * 1000).toISOString()] = d;
+        } catch (_) {}
       });
       setV4Decisions(byTs);
     } catch (_) {
@@ -120,11 +133,11 @@ export default function RecentFlow({ outcomes }) {
         <span style={{ fontWeight: 600, color: T.textMuted }}>V4</span> = V4 strategy decision
       </div>
 
-      {/* Header */}
+      {/* Header — prioritise TIME, SIGNAL, ACTUAL, RESULT; truncate REASON */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: '52px 50px 50px 34px 1fr 90px 100px 50px',
-        gap: 6, padding: '4px 0 5px',
+        gridTemplateColumns: '52px 46px 46px 30px 70px 70px 110px 46px',
+        gap: 4, padding: '4px 0 5px',
         borderBottom: `1px solid ${T.cardBorder}`,
         fontSize: 8, color: T.textDim, letterSpacing: '0.08em',
       }}>
@@ -133,7 +146,7 @@ export default function RecentFlow({ outcomes }) {
         <span>ACTUAL</span>
         <span>SRC</span>
         <span>GATES</span>
-        <span>REASON</span>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>REASON</span>
         <span>V4</span>
         <span style={{ textAlign: 'right' }}>RESULT</span>
       </div>
@@ -143,6 +156,7 @@ export default function RecentFlow({ outcomes }) {
         const result = outcomeLabel(o);
         const gateStr = outcomeGateString(o);
         const actual = actualDirection(o);
+        // Try all plausible window_ts key formats
         const v4Decision = v4Decisions[o.window_ts] || null;
         const rowBg = result.text === 'WIN'
           ? 'rgba(16,185,129,0.03)'
@@ -153,8 +167,8 @@ export default function RecentFlow({ outcomes }) {
         return (
           <div key={i} style={{
             display: 'grid',
-            gridTemplateColumns: '52px 50px 50px 34px 1fr 90px 100px 50px',
-            gap: 6, padding: '4px 0',
+            gridTemplateColumns: '52px 46px 46px 30px 70px 70px 110px 46px',
+            gap: 4, padding: '4px 0',
             borderBottom: `1px solid rgba(51,65,85,0.3)`,
             fontSize: 10, background: rowBg,
           }}>
@@ -171,7 +185,7 @@ export default function RecentFlow({ outcomes }) {
             }}>
               {actual || '\u2014'}
             </span>
-            <span style={{ fontSize: 9, color: T.textMuted }}>
+            <span style={{ fontSize: 9, color: T.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {o.delta_source || '\u2014'}
             </span>
             <span style={{ fontSize: 9, letterSpacing: '0.02em' }}>{gateStr}</span>
@@ -179,11 +193,12 @@ export default function RecentFlow({ outcomes }) {
               fontSize: 8, color: T.textMuted, overflow: 'hidden',
               textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }} title={o.skip_reason || 'traded'}>
-              {o.skip_reason || (o.trade_placed ? 'traded' : '\u2014')}
+              {o.skip_reason ? o.skip_reason.slice(0, 18) : (o.trade_placed ? 'traded' : '\u2014')}
             </span>
             <V4Chip decision={v4Decision} />
             <span style={{
-              textAlign: 'right', fontWeight: 700, color: result.color,
+              textAlign: 'right', fontWeight: 700, fontSize: 10, color: result.color,
+              whiteSpace: 'nowrap',
             }}>
               {result.text}
             </span>

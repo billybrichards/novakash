@@ -4219,11 +4219,14 @@ async def prediction_surface(
         # v2_direction matches actual_direction.
         accuracy_q = text("""
             WITH resolved_windows AS (
-                SELECT window_ts, actual_direction
+                SELECT window_ts,
+                  CASE WHEN close_price > open_price THEN 'UP'
+                       WHEN close_price < open_price THEN 'DOWN' END AS actual_direction
                 FROM window_snapshots
                 WHERE asset = :asset
                   AND timeframe = :tf
-                  AND actual_direction IS NOT NULL
+                  AND close_price IS NOT NULL AND close_price > 0
+                  AND open_price IS NOT NULL AND open_price > 0
                   AND window_ts >= EXTRACT(EPOCH FROM :cutoff::timestamptz)
             ),
             bucketed AS (
@@ -4274,7 +4277,8 @@ async def prediction_surface(
             FROM window_snapshots
             WHERE asset = :asset
               AND timeframe = :tf
-              AND actual_direction IS NOT NULL
+              AND close_price IS NOT NULL AND close_price > 0
+              AND open_price IS NOT NULL AND open_price > 0
               AND window_ts >= EXTRACT(EPOCH FROM :cutoff::timestamptz)
         """)
         total_row = (await db.execute(total_q, {
@@ -4298,11 +4302,14 @@ async def prediction_surface(
         # ── 2. Per-strategy decisions by offset bucket ───────────────────
         strat_q = text("""
             WITH resolved_windows AS (
-                SELECT window_ts, actual_direction
+                SELECT window_ts,
+                  CASE WHEN close_price > open_price THEN 'UP'
+                       WHEN close_price < open_price THEN 'DOWN' END AS actual_direction
                 FROM window_snapshots
                 WHERE asset = :asset
                   AND timeframe = :tf
-                  AND actual_direction IS NOT NULL
+                  AND close_price IS NOT NULL AND close_price > 0
+                  AND open_price IS NOT NULL AND open_price > 0
                   AND window_ts >= EXTRACT(EPOCH FROM :cutoff::timestamptz)
             )
             SELECT
@@ -4373,13 +4380,15 @@ async def prediction_surface(
         recent_q = text("""
             SELECT
                 ws.window_ts,
-                ws.actual_direction,
+                CASE WHEN ws.close_price > ws.open_price THEN 'UP'
+                     WHEN ws.close_price < ws.open_price THEN 'DOWN' END AS actual_direction,
                 ws.direction AS signal_direction,
                 ws.confidence
             FROM window_snapshots ws
             WHERE ws.asset = :asset
               AND ws.timeframe = :tf
-              AND ws.actual_direction IS NOT NULL
+              AND ws.close_price IS NOT NULL AND ws.close_price > 0
+              AND ws.open_price IS NOT NULL AND ws.open_price > 0
             ORDER BY ws.window_ts DESC
             LIMIT 10
         """)

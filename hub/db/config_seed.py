@@ -443,6 +443,14 @@ _ENGINE_KEYS: list[tuple] = [
     ("engine", "V4_FUSION_ENABLED", "bool", "true",
      "Enable V4 fusion strategy evaluation.",
      "thresholds", False),
+
+    # ── Operational mode flags ─────────────────────────────────────────────────
+    ("engine", "PAPER_MODE", "bool", "true",
+     "Paper trading mode — true=paper (simulated fills), false=live USDC trades.",
+     "execution", True),
+    ("engine", "LIVE_TRADING_ENABLED", "bool", "false",
+     "Enable live trading. Must be false when PAPER_MODE=true.",
+     "execution", True),
 ]
 
 

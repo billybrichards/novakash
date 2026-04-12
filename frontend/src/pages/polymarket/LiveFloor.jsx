@@ -135,10 +135,13 @@ function PriceChart({ hqData, v4Snapshot }) {
   // Extract price history from hq data
   const prices = [];
 
-  // Use the gate_heartbeat's recent prices if available
-  const gh = hqData?.gate_heartbeat;
-  const currentPrice = gh?.binance_price || v4Snapshot?.timescales?.['5m']?.binance_price;
-  const openPrice = gh?.window_open_price || hqData?.current_window?.open_price;
+  // Use the most recent window's open/close prices.
+  // gate_heartbeat is an array (not an object) so avoid accessing .binance_price on it.
+  const latestWindow = hqData?.windows?.[0];
+  const currentPrice = latestWindow?.close_price
+    || v4Snapshot?.timescales?.['5m']?.binance_price;
+  const openPrice = latestWindow?.open_price
+    || hqData?.current_window?.open_price;
 
   // Build price array from recent evaluations if available
   const recentEvals = hqData?.recent_evaluations || [];

@@ -165,11 +165,18 @@ function ManualTradePanel({ hqData }) {
   const [executing, setExecuting] = useState(false);
   const [result, setResult] = useState(null);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [tradeDir, setTradeDir] = useState(null); // null = follow signal
 
   const w = hqData?.windows?.[0] || {};
   const system = hqData?.system || {};
-  const direction = w.direction || 'UP';
+  const signalDirection = w.direction || 'UP';
+  const direction = tradeDir || signalDirection;
   const isPaper = system.paper_mode !== false;
+
+  // Reset override when signal direction changes
+  React.useEffect(() => {
+    setTradeDir(null);
+  }, [signalDirection]);
 
   // Auto-build rationale from current snapshot
   const hb = hqData?.gate_heartbeat?.[0] || {};
@@ -206,7 +213,48 @@ function ManualTradePanel({ hqData }) {
         background: T.card, border: `1px solid ${T.cardBorder}`,
         borderRadius: 6, padding: '8px 10px', fontFamily: T.mono,
       }}>
-        {/* Direction badge */}
+        {/* Direction toggle */}
+        <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
+          <button
+            onClick={() => setTradeDir('UP')}
+            style={{
+              flex: 1, padding: '4px 0', borderRadius: 3, border: 'none',
+              cursor: 'pointer', fontFamily: T.mono, fontSize: 11, fontWeight: 800,
+              background: direction === 'UP' ? 'rgba(16,185,129,0.25)' : 'rgba(16,185,129,0.07)',
+              color: T.green,
+              outline: direction === 'UP' ? `1px solid ${T.green}` : 'none',
+            }}
+          >
+            &#9650; UP
+          </button>
+          <button
+            onClick={() => setTradeDir('DOWN')}
+            style={{
+              flex: 1, padding: '4px 0', borderRadius: 3, border: 'none',
+              cursor: 'pointer', fontFamily: T.mono, fontSize: 11, fontWeight: 800,
+              background: direction === 'DOWN' ? 'rgba(239,68,68,0.25)' : 'rgba(239,68,68,0.07)',
+              color: T.red,
+              outline: direction === 'DOWN' ? `1px solid ${T.red}` : 'none',
+            }}
+          >
+            &#9660; DOWN
+          </button>
+          {tradeDir && (
+            <button
+              onClick={() => setTradeDir(null)}
+              title="Reset to signal direction"
+              style={{
+                padding: '4px 6px', borderRadius: 3, border: 'none',
+                cursor: 'pointer', fontFamily: T.mono, fontSize: 9,
+                background: 'rgba(71,85,105,0.2)', color: T.textMuted,
+              }}
+            >
+              SIG
+            </button>
+          )}
+        </div>
+
+        {/* Direction + mode badge */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
           <span style={{
             fontSize: 12, fontWeight: 800,
@@ -214,6 +262,14 @@ function ManualTradePanel({ hqData }) {
           }}>
             {direction === 'UP' ? '\u25B2 UP' : '\u25BC DOWN'}
           </span>
+          {tradeDir && tradeDir !== signalDirection && (
+            <span style={{
+              fontSize: 8, padding: '2px 5px', borderRadius: 3,
+              background: 'rgba(245,158,11,0.15)', color: T.amber, fontWeight: 700,
+            }}>
+              OVERRIDE
+            </span>
+          )}
           <span style={{
             fontSize: 8, padding: '2px 6px', borderRadius: 3,
             background: isPaper ? 'rgba(245,158,11,0.1)' : 'rgba(239,68,68,0.1)',

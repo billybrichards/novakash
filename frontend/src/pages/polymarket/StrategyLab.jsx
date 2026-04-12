@@ -1140,9 +1140,14 @@ function ShadowComparison({ api }) {
       {/* Summary cards: V10 vs V4 side by side */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
         {[
-          { strat: v10, label: 'V10 GATE', sublabel: 'LIVE', borderColor: T.cyan },
-          { strat: v4, label: 'V4 FUSION', sublabel: 'GHOST', borderColor: T.purple },
-        ].map(({ strat, label, sublabel, borderColor }) => (
+          { strat: v10, label: 'V10 GATE', currentMode: 'GHOST', borderColor: T.purple },
+          { strat: v4, label: 'V4 FUSION', currentMode: 'LIVE', borderColor: T.cyan },
+        ].map(({ strat, label, currentMode, borderColor }) => {
+          // historical mode stored in DB rows (may differ from current config)
+          const histMode = strat?.mode?.toUpperCase() || currentMode;
+          const modeColor = currentMode === 'LIVE' ? T.cyan : T.purple;
+          const pnlLabel = currentMode === 'LIVE' ? 'ACTUAL P&L' : 'WOULD-BE P&L';
+          return (
           <div key={label} style={{
             ...S.card,
             borderColor,
@@ -1150,17 +1155,24 @@ function ShadowComparison({ api }) {
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
               <span style={{ fontSize: 12, fontWeight: 700, color: borderColor }}>{label}</span>
+              {/* Current mode badge */}
               <span style={{
-                fontSize: 8,
-                padding: '1px 6px',
-                borderRadius: 3,
-                background: borderColor === T.cyan ? 'rgba(6,182,212,0.15)' : 'rgba(168,85,247,0.15)',
-                color: borderColor,
-                fontWeight: 600,
-                letterSpacing: '0.08em',
+                fontSize: 8, padding: '1px 6px', borderRadius: 3,
+                background: currentMode === 'LIVE' ? 'rgba(6,182,212,0.15)' : 'rgba(168,85,247,0.15)',
+                color: modeColor, fontWeight: 700, letterSpacing: '0.08em',
               }}>
-                {sublabel}
+                {currentMode}
               </span>
+              {/* Note if historical data was recorded under a different mode */}
+              {histMode && histMode !== currentMode && (
+                <span style={{
+                  fontSize: 7, padding: '1px 5px', borderRadius: 3,
+                  background: 'rgba(245,158,11,0.12)', color: T.amber,
+                  fontWeight: 600, letterSpacing: '0.05em',
+                }} title={`Historical rows were written when strategy was ${histMode}`}>
+                  hist: {histMode}
+                </span>
+              )}
             </div>
             {strat ? (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
@@ -1188,7 +1200,7 @@ function ShadowComparison({ api }) {
                   }}>
                     ${strat.cum_pnl >= 0 ? '+' : ''}{strat.cum_pnl.toFixed(2)}
                   </div>
-                  <div style={S.summaryLabel}>{sublabel === 'GHOST' ? 'WOULD-BE P&L' : 'ACTUAL P&L'}</div>
+                  <div style={S.summaryLabel}>{pnlLabel}</div>
                 </div>
               </div>
             ) : (
@@ -1197,13 +1209,14 @@ function ShadowComparison({ api }) {
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Equity curve comparison */}
       {allDates.length > 1 && (
         <div style={S.card}>
-          <div style={S.cardTitle}>Equity Curve: V10 (actual) vs V4 (would-be)</div>
+          <div style={S.cardTitle}>Equity Curve: V4 LIVE (actual) vs V10 GHOST (would-be)</div>
           {(() => {
             const all = [...v10Curve, ...v4Curve];
             const minVal = Math.min(...all, 0);
@@ -1237,15 +1250,15 @@ function ShadowComparison({ api }) {
                     </text>
                   );
                 })}
-                {toPath(v10Curve, T.cyan)}
-                {toPath(v4Curve, T.purple)}
+                {toPath(v4Curve, T.cyan)}
+                {toPath(v10Curve, T.purple)}
               </svg>
             );
           })()}
           <div style={{ display: 'flex', gap: 16, marginTop: 6 }}>
             {[
-              { color: T.cyan, label: 'V10 Gate (LIVE)' },
-              { color: T.purple, label: 'V4 Fusion (GHOST)' },
+              { color: T.cyan, label: 'V4 Fusion (LIVE)' },
+              { color: T.purple, label: 'V10 Gate (GHOST)' },
             ].map((l, i) => (
               <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                 <svg width={20} height={8}>
