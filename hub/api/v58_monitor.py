@@ -4227,7 +4227,7 @@ async def prediction_surface(
                   AND timeframe = :tf
                   AND close_price IS NOT NULL AND close_price > 0
                   AND open_price IS NOT NULL AND open_price > 0
-                  AND window_ts >= EXTRACT(EPOCH FROM :cutoff::timestamptz)
+                  AND window_ts >= EXTRACT(EPOCH FROM CAST(:cutoff AS timestamptz))
             ),
             bucketed AS (
                 SELECT
@@ -4279,7 +4279,7 @@ async def prediction_surface(
               AND timeframe = :tf
               AND close_price IS NOT NULL AND close_price > 0
               AND open_price IS NOT NULL AND open_price > 0
-              AND window_ts >= EXTRACT(EPOCH FROM :cutoff::timestamptz)
+              AND window_ts >= EXTRACT(EPOCH FROM CAST(:cutoff AS timestamptz))
         """)
         total_row = (await db.execute(total_q, {
             "asset": asset_upper, "tf": tf, "cutoff": cutoff,
@@ -4310,7 +4310,7 @@ async def prediction_surface(
                   AND timeframe = :tf
                   AND close_price IS NOT NULL AND close_price > 0
                   AND open_price IS NOT NULL AND open_price > 0
-                  AND window_ts >= EXTRACT(EPOCH FROM :cutoff::timestamptz)
+                  AND window_ts >= EXTRACT(EPOCH FROM CAST(:cutoff AS timestamptz))
             )
             SELECT
                 sd.strategy_id,
