@@ -2031,6 +2031,7 @@ const TASKS = [
     progressNotes: [
       { date: '2026-04-12', note: 'First analysis run: sweet spot T-120-T-150 found, bearish dataset caveat flagged.' },
       { date: '2026-04-12', note: '⚡ CONFIRMED x2 on 70,272 windows. V4 paper 0W/20L proves T-60 is wrong. Critical fix: V4FusionStrategy must respect poly_timing=late gate. Run run_window_analysis.py to re-verify after neutral-period data accumulates.' },
+      { date: '2026-04-12', note: 'PR #133: V3 composite timestamp issue noted — workaround applied using /v3/snapshot API endpoint instead of ticks_v3_composite join (avoids ts vs window_ts alignment bug).' },
     ],
   },
   {
@@ -2056,6 +2057,7 @@ const TASKS = [
     fix: 'TODO: (1) Analyse historical data: compute (p_up - clob_implied) at each eval. Find threshold that maximises accuracy. (2) Add ClobEdgeGate to V4FusionStrategy: skip when Sequoia edge over CLOB < threshold. (3) Optionally add to V10 gate stack as replacement/supplement for current cap gate. Run run_window_analysis.py with new column.',
     progressNotes: [
       { date: '2026-04-12', note: 'Insight: edge = Sequoia confidence vs CLOB implied prob gap. Both converge toward close but CLOB faster. Gate on the gap not absolute confidence. Proposed as TODO.' },
+      { date: '2026-04-12', note: 'PR #133: V3 timestamp alignment issue addressed — V3 composite now reads from /v3/snapshot API endpoint (timescales.5m.composite) instead of ticks_v3_composite join. Avoids ts/window_ts mismatch.' },
     ],
   },
   {
@@ -2120,7 +2122,10 @@ const TASKS = [
       'Bug 5: Bankroll shows $93.06 but actual CLOB wallet = $19.37. StatusBar reads system_state.bankroll from DB (stale). Needs sync to on-chain USDC balance.',
     ],
     fix: 'FE-MONITOR-01a: Wire strategy_decisions into RecentFlow (add V4 column, show LIVE/GHOST side-by-side). FE-MONITOR-01b: Fix SignalSurface to read timescales.5m.sub_signals from V4 snapshot. FE-MONITOR-01c: Fix GatePipeline double render — deduplicate gate lists. FE-MONITOR-01d: Unify SRC Agreement source in DataHealthStrip. FE-MONITOR-01e: Sync bankroll to on-chain CLOB wallet balance via PolymarketClient.get_balance_allowance() on startup.',
-    progressNotes: [{ date: '2026-04-12', note: 'Diagnosed from screenshot. All 5 bugs identified with root cause. Not yet fixed.' }],
+    progressNotes: [
+      { date: '2026-04-12', note: 'Diagnosed from screenshot. All 5 bugs identified with root cause. Not yet fixed.' },
+      { date: '2026-04-12', note: 'PR #133: FE-MONITOR-01a–01e all fixed. DataHealthStrip p_up uses 4-path fallback chain (v4Snapshot.timescales.5m.probability_up → flat → heartbeat → window). V3 composite reads v3Snapshot.timescales.5m.composite from /v3/snapshot API. Sub-signals, gate dedup, bankroll, SRC agreement also resolved.' },
+    ],
   },
 ];
 

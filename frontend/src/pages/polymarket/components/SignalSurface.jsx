@@ -88,9 +88,13 @@ function DirectionColumn({ hqData, v4Snapshot, v3Snapshot }) {
   // Sequoia p_up — check timescale-level first (v4Snapshot?.timescales?.["5m"]?.probability_up)
   const pUp = v4Snapshot?.timescales?.['5m']?.probability_up ?? w.v2_probability_up ?? null;
 
-  // V3 composite
+  // V3 composite — use /v3/snapshot API path (timescales.5m.composite) as primary
   const v3 = v3Snapshot || {};
-  const compositeScore = v3.composite_score ?? v3.score ?? null;
+  const compositeScore =
+    v3.timescales?.['5m']?.composite  // primary: /v3/snapshot endpoint
+    ?? v3.composite_score             // old flat path
+    ?? v3.score                       // further fallback
+    ?? null;
   const timescales = v3.timescales || v3.components || {};
 
   return (

@@ -51,7 +51,12 @@ export default function DataHealthStrip({ hqData, v4Snapshot, v3Snapshot }) {
   // --- Sequoia v5.2 ---
   const hb = hqData?.gate_heartbeat?.[0] || {};
   const gateResults = hb.gate_results || {};
-  const probUp = hqData?.windows?.[0]?.v2_probability_up ?? null;
+  const probUp =
+    v4Snapshot?.timescales?.['5m']?.probability_up    // primary: V4 snapshot timescale path
+    ?? v4Snapshot?.probability_up                      // old flat path fallback
+    ?? hb.v2_probability_up                            // heartbeat fallback (signal_evaluations fix)
+    ?? hqData?.windows?.[0]?.v2_probability_up         // window fallback
+    ?? null;
   const sequoiaStatus = probUp != null ? 'green' : 'red';
   const sequoiaValue = probUp != null ? `p_up: ${fmt(probUp, 3)}` : 'NO DATA';
 
@@ -124,7 +129,11 @@ export default function DataHealthStrip({ hqData, v4Snapshot, v3Snapshot }) {
 
   // --- V3 Composite ---
   const v3 = v3Snapshot || {};
-  const v3Score = v3.composite_score ?? v3.score ?? null;
+  const v3Score =
+    v3.timescales?.['5m']?.composite   // primary: /v3/snapshot API path
+    ?? v3.composite_score              // old flat path
+    ?? v3.score                        // further fallback
+    ?? null;
   let v3Status = v3Score != null ? 'green' : 'red';
   const v3Value = v3Score != null ? fmt(v3Score, 3) : 'NO DATA';
 
