@@ -256,6 +256,8 @@ class EvaluateStrategiesUseCase:
                 effective_mode = _runtime.v4_fusion_mode
             elif reg.strategy_id == "v4_down_only":
                 effective_mode = _runtime.v4_down_only_mode
+            elif reg.strategy_id == "v4_up_asian":
+                effective_mode = _runtime.v4_up_asian_mode
             if effective_mode == "LIVE" and decision.action == "TRADE":
                 live_decision = decision
 

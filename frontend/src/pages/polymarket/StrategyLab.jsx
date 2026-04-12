@@ -22,28 +22,41 @@ const STRATEGIES_META = [
     id: 'v4_down_only',
     label: 'V4 DOWN-ONLY',
     configKey: 'V4_DOWN_ONLY_MODE',
-    description: 'DOWN filter + CLOB sizing. 76–99% WR. PRIMARY strategy.',
-    color: '#10b981',    // green — this is the recommended primary
-    badge: 'PRIMARY',
+    description: 'DOWN filter + CLOB sizing. 76–99% WR. All hours.',
+    color: '#10b981',
+    badge: 'LIVE',
     defaultMode: 'LIVE',
+    direction: 'DOWN',
+  },
+  {
+    id: 'v4_up_asian',
+    label: 'V4 UP ASIAN',
+    configKey: 'V4_UP_ASIAN_MODE',
+    description: 'UP-only. Asian session 23:00-02:59 UTC. dist 0.15-0.20. 81-99% WR.',
+    color: '#f59e0b',    // amber
+    badge: 'LIVE',
+    defaultMode: 'LIVE',
+    direction: 'UP',
   },
   {
     id: 'v4_fusion',
     label: 'V4 FUSION',
     configKey: 'V4_FUSION_MODE',
-    description: 'Full V4 surface (UP+DOWN). Baseline comparison.',
-    color: '#06b6d4',    // cyan
+    description: 'Full V4 surface (UP+DOWN). Baseline reference.',
+    color: '#06b6d4',
     badge: null,
     defaultMode: 'GHOST',
+    direction: null,
   },
   {
     id: 'v10_gate',
     label: 'V10 GATE',
     configKey: 'V10_GATE_MODE',
     description: 'Legacy 8-gate pipeline. Shadow reference.',
-    color: '#a855f7',    // purple
+    color: '#a855f7',
     badge: null,
     defaultMode: 'GHOST',
+    direction: null,
   },
 ];
 
@@ -83,16 +96,23 @@ function StrategyConfigPanel({ api }) {
   const setMode = async (configKey, newMode) => {
     if (saving) return;
 
-    // Enforce: only 1 LIVE strategy per Polymarket account (single execution path).
-    // Multiple LIVE strategies would both place real orders on the same account.
-    // TODO (MULTI-ACCOUNT-01): support multiple Polymarket accounts for parallel LIVE strategies.
+    // Enforce: direction-exclusive strategies can both be LIVE (they never fire in the
+    // same window). Non-directional strategies still require single-LIVE per account.
+    // v4_down_only (DOWN) + v4_up_asian (UP) = safe together — mutually exclusive signals.
     if (newMode === 'LIVE') {
+      const thisMeta = STRATEGIES_META.find(s => s.configKey === configKey);
       const otherLive = STRATEGIES_META.find(
         s => s.configKey !== configKey && modes[s.configKey] === 'LIVE'
       );
       if (otherLive) {
-        setError(`Only 1 LIVE strategy allowed per account. Set ${otherLive.label} to GHOST first.`);
-        return;
+        // Allow if both strategies are direction-exclusive (one UP, one DOWN)
+        const thisDir = thisMeta?.direction;
+        const otherDir = otherLive.direction;
+        const directionExclusive = thisDir && otherDir && thisDir !== otherDir;
+        if (!directionExclusive) {
+          setError(`${otherLive.label} is already LIVE. Set it to GHOST first, or use direction-exclusive strategies (UP+DOWN can both be LIVE).`);
+          return;
+        }
       }
     }
 
@@ -200,10 +220,10 @@ function StrategyConfigPanel({ api }) {
       <div style={{ marginTop: 8, fontSize: 9, color: T.textDim, lineHeight: 1.5 }}>
         LIVE = executes paper/real trades · GHOST = evaluates only, no execution · OFF = disabled.
         Engine picks up mode change within 10s (hot-reload via DB config sync).{' '}
-        <span style={{ color: T.amber }}>
-          Only 1 strategy may be LIVE per Polymarket account (prevents duplicate order placement).
+        <span style={{ color: '#10b981' }}>
+          Direction-exclusive strategies (DOWN + UP) can both be LIVE simultaneously — they never fire in the same window.
         </span>
-        {' '}To run multiple strategies LIVE, configure separate Polymarket accounts (MULTI-ACCOUNT-01).
+        {' '}Non-directional strategies require single-LIVE per account (MULTI-ACCOUNT-01).
       </div>
     </div>
   );

@@ -451,6 +451,15 @@ _ENGINE_KEYS: list[tuple] = [
     ("engine", "V4_DOWN_ONLY_ENABLED", "bool", "true",
      "Enable V4 DOWN-only strategy evaluation (SIG-03/SIG-04).",
      "thresholds", False),
+    ("engine", "V4_UP_ASIAN_MODE", "enum", "LIVE",
+     "V4 Asian UP strategy mode: LIVE=paper trading, GHOST=shadow, OFF=disabled. "
+     "UP-only, Asian session (23:00-02:59 UTC), dist 0.15-0.20. "
+     "81-99% WR (5,543 samples). Safe alongside v4_down_only — direction-exclusive. "
+     "See docs/analysis/UP_STRATEGY_RESEARCH_BRIEF.md.",
+     "thresholds", False),
+    ("engine", "V4_UP_ASIAN_ENABLED", "bool", "true",
+     "Enable V4 Asian UP strategy evaluation (SIG-05).",
+     "thresholds", False),
 
     # ── Operational mode flags ─────────────────────────────────────────────────
     ("engine", "PAPER_MODE", "bool", "true",

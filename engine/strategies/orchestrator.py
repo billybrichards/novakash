@@ -417,6 +417,21 @@ class Orchestrator:
                     hint="set V4_DOWN_ONLY_ENABLED=true in DB config or .env to enable primary DOWN strategy",
                 )
 
+            # V4 Asian UP: UP-only, Asian session (23:00-02:59 UTC), medium conviction.
+            # Discovered 2026-04-12: 81-99% WR (5,543 samples, dist 0.15-0.20, hrs 23,0,1,2).
+            # Safe to run simultaneously with v4_down_only — they're direction-exclusive
+            # (UP vs DOWN) so they never both fire in the same window.
+            if runtime.v4_up_asian_enabled:
+                from adapters.strategies.v4_up_asian_strategy import V4UpAsianStrategy
+                if v4_snapshot_port is None:
+                    from adapters.v4_snapshot_http import V4SnapshotHttpAdapter
+                    v4_snapshot_port = V4SnapshotHttpAdapter()
+                v4_up_mode = runtime.v4_up_asian_mode
+                v4_up_reg = StrategyRegistration(
+                    strategy_id="v4_up_asian", mode=v4_up_mode, enabled=True, priority=4,
+                )
+                strategy_pairs.append((v4_up_reg, V4UpAsianStrategy()))
+
             from adapters.persistence.pg_strategy_decisions import PgStrategyDecisionRepository
             # Pass the db_client — the repo extracts the pool lazily via _get_pool()
             # so it works even though the pool isn't connected at __init__ time
