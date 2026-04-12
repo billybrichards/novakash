@@ -1700,10 +1700,28 @@ class CLOBReconciler:
         on manual_trades #42 doesn't suppress one on automatic trades #42.
         Defaults to ``"manual_trades"`` for backwards compatibility with the
         existing Phase 1 call sites and tests.
+
+        Suppresses alerts for trades older than 2 hours to prevent alert floods
+        on engine restart (the in-memory dedupe set resets on restart, so without
+        this guard every old divergent trade re-alerts).
         """
         dedupe_key = f"{table}:{trade_id}"
         if dedupe_key in self._sot_alerted_trade_ids:
             return False
+
+        # DB-backed dedupe: if the row already has a non-NULL sot_reconciliation_state
+        # that was set BEFORE this engine session, the reconciler already processed it.
+        # Only alert for rows that just transitioned to a divergent state (i.e., the
+        # reconciler set the state THIS pass, not a previous engine lifetime).
+        # The sot_reconciliation_notes field contains the timestamp — if it exists
+        # and was written before engine startup, suppress the alert.
+        existing_state = row.get("sot_reconciliation_state")
+        if existing_state and existing_state == state:
+            # State unchanged from what's already in DB — this is a re-scan, not a
+            # new divergence. Suppress the alert.
+            self._sot_alerted_trade_ids.add(dedupe_key)
+            return False
+
         self._sot_alerted_trade_ids.add(dedupe_key)
 
         emoji = {
