@@ -560,16 +560,22 @@ function TableDetail({ entry, detail }) {
           <div
             style={{
               padding: '8px 10px',
-              background: 'rgba(245,158,11,0.08)',
-              border: '1px solid rgba(245,158,11,0.25)',
+              background: entry.status === 'planned'
+                ? 'rgba(245,158,11,0.08)'
+                : 'rgba(100,116,139,0.08)',
+              border: `1px solid ${entry.status === 'planned'
+                ? 'rgba(245,158,11,0.25)'
+                : 'rgba(100,116,139,0.25)'}`,
               borderRadius: 4,
-              color: T.amber,
+              color: entry.status === 'planned' ? T.amber : T.textMuted,
               fontFamily: T.mono,
               fontSize: 10,
               marginBottom: 8,
             }}
           >
-            Table is not present in the hub's DB. Likely a planned table or one that lives in a different service's DB. See the catalog notes below.
+            {entry.status === 'planned'
+              ? 'This table is planned but has not been created in the database yet. See the catalog notes below for context.'
+              : "Table is not present in the hub's DB. It may live in a different service's database. See the catalog notes below."}
           </div>
         )}
         {detail.columns && detail.columns.length > 0 ? (
@@ -1368,6 +1374,9 @@ export default function Schema() {
             </FilterButton>
             <FilterButton active={statusFilter === 'active'} onClick={() => setStatusFilter('active')}>
               active
+            </FilterButton>
+            <FilterButton active={statusFilter === 'planned'} onClick={() => setStatusFilter('planned')}>
+              planned
             </FilterButton>
             <FilterButton active={statusFilter === 'legacy'} onClick={() => setStatusFilter('legacy')}>
               legacy
