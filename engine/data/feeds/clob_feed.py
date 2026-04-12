@@ -76,10 +76,10 @@ class CLOBFeed:
             down_book = await self._poly.get_clob_order_book(window.down_token_id)
 
             # Extract best bid/ask from the book structure
-            up_best_bid = up_book.get("up_best_bid") if up_book else None
-            up_best_ask = up_book.get("up_best_ask") if up_book else None
-            down_best_bid = down_book.get("down_best_bid") if down_book else None
-            down_best_ask = down_book.get("down_best_ask") if down_book else None
+            up_best_bid = up_book.get("best_bid") if up_book else None
+            up_best_ask = up_book.get("best_ask") if up_book else None
+            down_best_bid = down_book.get("best_bid") if down_book else None
+            down_best_ask = down_book.get("best_ask") if down_book else None
 
             up_spread = (
                 (up_best_ask - up_best_bid) if (up_best_ask and up_best_bid) else None
