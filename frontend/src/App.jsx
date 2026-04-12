@@ -46,6 +46,7 @@ import LegacyConfig from './pages/LegacyConfig.jsx';
 import PolymarketMonitor from './pages/polymarket/Monitor.jsx';
 import PolymarketEvaluate from './pages/polymarket/Evaluate.jsx';
 import StrategyLab from './pages/polymarket/StrategyLab.jsx';
+import LiveFloor from './pages/polymarket/LiveFloor.jsx';
 
 export default function App() {
   return (
@@ -113,6 +114,7 @@ export default function App() {
             {/* Polymarket Monitor — new unified trading dashboard */}
             <Route path="polymarket" element={<Navigate to="/polymarket/monitor" replace />} />
             <Route path="polymarket/monitor" element={<PolymarketMonitor />} />
+            <Route path="polymarket/floor" element={<LiveFloor />} />
             <Route path="polymarket/evaluate" element={<PolymarketEvaluate />} />
             <Route path="polymarket/strategy-lab" element={<StrategyLab />} />
           </Route>

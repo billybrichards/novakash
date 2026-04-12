@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useApi } from '../../hooks/useApi.js';
 import { T, GATE_NAMES, fmt, utcHHMM, pct } from './components/theme.js';
+import WindowAnalysisModal from './components/WindowAnalysisModal.jsx';
 
 /**
  * Polymarket Evaluate — "How Am I Doing?"
@@ -313,7 +314,15 @@ function OutcomeTable({ outcomes, gateMap }) {
             return (
               <tr key={o.window_ts || i} style={{
                 background: i % 2 === 0 ? 'transparent' : 'rgba(15,23,42,0.3)',
-              }}>
+                cursor: 'pointer',
+              }} onClick={() => {
+                const epoch = o.window_ts_epoch || (() => {
+                  if (!o.window_ts) return 0;
+                  const d = new Date(o.window_ts);
+                  return isNaN(d) ? 0 : Math.floor(d.getTime() / 1000);
+                })();
+                if (epoch) setAnalysisWindow(epoch);
+              }} title="Click to analyze window">
                 <td style={S.td}>{windowTime(o.window_ts)}</td>
                 <td style={{ ...S.td, color: dirColor(o.direction), fontWeight: 600 }}>
                   {o.direction || '\u2014'}
@@ -708,6 +717,9 @@ export default function Evaluate() {
   const [outcome, setOutcome] = useState('all');
   const [gateFilter, setGateFilter] = useState('all');
 
+  // Window analysis modal
+  const [analysisWindow, setAnalysisWindow] = useState(null);
+
   // Browser tab title
   useEffect(() => {
     const prev = document.title;
@@ -892,6 +904,12 @@ export default function Evaluate() {
           <DailyPnlBars dailyPnl={dailyPnl} />
         </div>
       </div>
+
+      {/* Window Analysis Modal */}
+      <WindowAnalysisModal
+        windowTs={analysisWindow}
+        onClose={() => setAnalysisWindow(null)}
+      />
     </div>
   );
 }

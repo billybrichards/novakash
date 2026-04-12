@@ -3950,3 +3950,234 @@ async def strategy_comparison(
     except Exception as exc:
         log.warning("v58.strategy_comparison_error", error=str(exc)[:200])
         return {"strategies": [], "days": days, "error": str(exc)[:200]}
+
+
+# ─── Window Analysis — per-window evaluation timeline ────────────────────────
+
+@router.get("/v58/window-analysis/{window_ts}")
+async def window_analysis(
+    window_ts: int,
+    asset: str = Query(default="btc", regex="^(btc|eth|sol|xrp)$"),
+    timeframe: str = Query(default="5m", regex="^(5m|15m)$"),
+    db: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+):
+    """Per-window evaluation timeline: all signal_evaluations + strategy_decisions
+    merged into a single timeline for drilldown analysis."""
+    import asyncio
+
+    # Auto-detect milliseconds vs seconds
+    if window_ts > 9_999_999_999:
+        window_ts = window_ts // 1000
+
+    asset_upper = asset.upper()
+    params = {"asset": asset_upper, "window_ts": window_ts, "timeframe": timeframe}
+
+    # Three parallel queries
+    async def q_signals():
+        return (await db.execute(text("""
+            SELECT eval_offset,
+                   delta_pct, delta_tiingo, delta_binance, delta_chainlink, delta_source,
+                   vpin, regime,
+                   clob_spread, clob_mid,
+                   clob_up_bid, clob_up_ask, clob_down_bid, clob_down_ask,
+                   v2_probability_up, v2_direction, v2_agrees, v2_high_conf,
+                   gate_vpin_passed, gate_delta_passed, gate_cg_passed,
+                   gate_twap_passed, gate_timesfm_passed, gate_passed, gate_failed,
+                   decision,
+                   twap_delta, twap_direction, twap_gamma_agree
+            FROM signal_evaluations
+            WHERE asset = :asset AND window_ts = :window_ts AND timeframe = :timeframe
+            ORDER BY eval_offset DESC
+        """), params)).mappings().all()
+
+    async def q_strategies():
+        return (await db.execute(text("""
+            SELECT strategy_id, strategy_version, mode, eval_offset,
+                   action, direction, confidence, confidence_score,
+                   entry_cap, collateral_pct, entry_reason, skip_reason,
+                   metadata_json::text AS metadata_json
+            FROM strategy_decisions
+            WHERE asset = :asset AND window_ts = :window_ts
+            ORDER BY eval_offset DESC, strategy_id
+        """), params)).mappings().all()
+
+    async def q_outcome():
+        return (await db.execute(text("""
+            SELECT outcome, open_price, close_price, resolved
+            FROM market_data
+            WHERE asset = :asset AND window_ts = :window_ts AND timeframe = :timeframe
+            LIMIT 1
+        """), params)).mappings().first()
+
+    try:
+        sig_rows, strat_rows, mkt_row = await asyncio.gather(
+            q_signals(), q_strategies(), q_outcome()
+        )
+    except Exception as exc:
+        log.warning("v58.window_analysis_query_error", error=str(exc)[:200])
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(exc)[:200]}")
+
+    if not sig_rows:
+        return {
+            "window_ts": window_ts,
+            "asset": asset_upper,
+            "timeframe": timeframe,
+            "eval_count": 0,
+            "timeline": [],
+            "outcome": None,
+            "best_entry": None,
+            "summary": None,
+            "error": "No signal evaluations found for this window",
+        }
+
+    # Index strategy decisions by (eval_offset, strategy_id)
+    strat_map: dict[tuple, dict] = {}
+    for r in strat_rows:
+        key = (r["eval_offset"], r["strategy_id"])
+        strat_map[key] = {
+            "action": r["action"],
+            "direction": r["direction"],
+            "confidence_score": _safe_float(r["confidence_score"]),
+            "entry_reason": r["entry_reason"],
+            "skip_reason": r["skip_reason"],
+            "mode": r["mode"],
+        }
+
+    # Outcome
+    outcome_dir = None
+    outcome_info = None
+    if mkt_row:
+        open_p = _safe_float(mkt_row["open_price"])
+        close_p = _safe_float(mkt_row["close_price"])
+        delta_pct = None
+        if open_p and close_p and open_p > 0:
+            delta_pct = round((close_p - open_p) / open_p, 6)
+        outcome_dir = (mkt_row["outcome"] or "").upper()
+        outcome_info = {
+            "direction": outcome_dir,
+            "open_price": open_p,
+            "close_price": close_p,
+            "resolved": bool(mkt_row.get("resolved", True)),
+            "delta_pct": delta_pct,
+        }
+
+    # Build timeline + track best entry
+    timeline = []
+    best_entry = None
+    best_conf = 0.0
+    direction_flips = 0
+    correct_count = 0
+    prev_dir = None
+    v10_trade_offsets = []
+    v4_trade_offsets = []
+
+    for r in sig_rows:
+        offset = r["eval_offset"]
+        p_up = _safe_float(r["v2_probability_up"])
+        pred_dir = "UP" if (p_up or 0.5) >= 0.5 else "DOWN"
+        high_conf = bool(r.get("v2_high_conf"))
+
+        # Direction flips
+        if prev_dir is not None and pred_dir != prev_dir:
+            direction_flips += 1
+        prev_dir = pred_dir
+
+        # Correct direction?
+        is_correct = outcome_dir and pred_dir == outcome_dir
+        if is_correct:
+            correct_count += 1
+
+        # Gates
+        gates_v10 = {
+            "vpin": r.get("gate_vpin_passed"),
+            "delta": r.get("gate_delta_passed"),
+            "cg": r.get("gate_cg_passed"),
+            "twap": r.get("gate_twap_passed"),
+            "timesfm": r.get("gate_timesfm_passed"),
+            "all_passed": bool(r.get("gate_passed")),
+            "blocking_gate": r.get("gate_failed"),
+        }
+
+        # Strategy decisions at this offset
+        strategies = {}
+        for sid in ["v10_gate", "v4_fusion"]:
+            sd = strat_map.get((offset, sid))
+            if sd:
+                strategies[sid] = sd
+                if sd["action"] == "TRADE":
+                    if sid == "v10_gate":
+                        v10_trade_offsets.append(offset)
+                    else:
+                        v4_trade_offsets.append(offset)
+
+        decision_v10 = (r.get("decision") or "SKIP").upper()
+
+        entry = {
+            "eval_offset": offset,
+            "seconds_to_close": offset,
+            "prediction": {
+                "direction": pred_dir,
+                "p_up": p_up,
+                "confidence": r.get("v2_direction") or ("HIGH" if high_conf else "MEDIUM" if (p_up or 0.5) > 0.6 or (p_up or 0.5) < 0.4 else "LOW"),
+                "high_conf": high_conf,
+            },
+            "signals": {
+                "delta_pct": _safe_float(r.get("delta_pct")),
+                "delta_source": r.get("delta_source"),
+                "delta_chainlink": _safe_float(r.get("delta_chainlink")),
+                "delta_tiingo": _safe_float(r.get("delta_tiingo")),
+                "delta_binance": _safe_float(r.get("delta_binance")),
+                "vpin": _safe_float(r.get("vpin")),
+                "regime": r.get("regime"),
+                "clob_spread": _safe_float(r.get("clob_spread")),
+                "clob_mid": _safe_float(r.get("clob_mid")),
+            },
+            "gates_v10": gates_v10,
+            "decision_v10": decision_v10,
+            "strategies": strategies,
+        }
+        timeline.append(entry)
+
+        # Best entry: highest directionally-correct confidence
+        if is_correct and p_up is not None:
+            conf = max(p_up, 1 - p_up)
+            if conf > best_conf or (conf == best_conf and (best_entry is None or offset < best_entry["eval_offset"])):
+                best_conf = conf
+                any_trading = bool(strategies.get("v10_gate", {}).get("action") == "TRADE" or
+                                   strategies.get("v4_fusion", {}).get("action") == "TRADE")
+                trading_strats = [sid for sid in ["v10_gate", "v4_fusion"]
+                                  if strategies.get(sid, {}).get("action") == "TRADE"]
+                best_entry = {
+                    "eval_offset": offset,
+                    "seconds_to_close": offset,
+                    "direction": pred_dir,
+                    "p_up": p_up,
+                    "correct": True,
+                    "any_strategy_would_trade": any_trading,
+                    "strategies_trading": trading_strats,
+                }
+
+    total_evals = len(timeline)
+
+    summary = {
+        "direction_flips": direction_flips,
+        "peak_confidence": round(best_conf, 4) if best_entry else None,
+        "peak_confidence_offset": best_entry["eval_offset"] if best_entry else None,
+        "pct_time_correct_direction": round(correct_count / total_evals, 4) if total_evals > 0 else None,
+        "v10_trade_offsets": sorted(v10_trade_offsets, reverse=True),
+        "v4_trade_offsets": sorted(v4_trade_offsets, reverse=True),
+        "first_trade_offset_v10": max(v10_trade_offsets) if v10_trade_offsets else None,
+        "first_trade_offset_v4": max(v4_trade_offsets) if v4_trade_offsets else None,
+    }
+
+    return {
+        "window_ts": window_ts,
+        "asset": asset_upper,
+        "timeframe": timeframe,
+        "outcome": outcome_info,
+        "eval_count": total_evals,
+        "timeline": timeline,
+        "best_entry": best_entry,
+        "summary": summary,
+    }

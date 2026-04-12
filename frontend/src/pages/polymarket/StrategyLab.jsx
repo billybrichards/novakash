@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useApi } from '../../hooks/useApi.js';
 import { T, fmt, pct } from './components/theme.js';
+import WindowAnalysisModal from './components/WindowAnalysisModal.jsx';
 
 /**
  * Strategy Lab — Historical replay and gate impact analysis.
@@ -1149,7 +1150,8 @@ function ShadowComparison({ api }) {
                   const v4d = windowMap[k]['v4_fusion'] || {};
                   const ts = new Date(parseInt(k) * 1000);
                   return (
-                    <tr key={k}>
+                    <tr key={k} onClick={() => setAnalysisWindow(parseInt(k))}
+                      style={{ cursor: 'pointer' }} title="Click to analyze window">
                       <td style={{ ...tblCell, color: T.text }}>
                         {ts.toLocaleDateString()} {ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </td>
@@ -1251,6 +1253,9 @@ export default function StrategyLab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [limit, setLimit] = useState(500);
+
+  // Window analysis modal
+  const [analysisWindow, setAnalysisWindow] = useState(null);
 
   // Gate config: { [key]: { enabled: boolean, threshold: number } }
   const [gateConfig, setGateConfig] = useState(() => {
@@ -1471,6 +1476,12 @@ export default function StrategyLab() {
       {activeTab === 'shadow' && (
         <ShadowComparison api={api} />
       )}
+
+      {/* Window Analysis Modal */}
+      <WindowAnalysisModal
+        windowTs={analysisWindow}
+        onClose={() => setAnalysisWindow(null)}
+      />
     </div>
   );
 }
