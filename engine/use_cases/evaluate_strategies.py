@@ -180,6 +180,21 @@ class EvaluateStrategiesUseCase:
                 skip_reason=decision.skip_reason,
             )
 
+        # Write signal_evaluations for the V10 strategy's context.
+        # This feeds the V2 probability endpoint (breaks cold_start loop)
+        # and the Strategy Lab replay data.
+        if self._db_client and ctx:
+            try:
+                v10_decision = next(
+                    (d for d in all_decisions if d.strategy_id == "v10_gate"), None
+                )
+                if v10_decision:
+                    asyncio.create_task(self._write_signal_evaluation(
+                        ctx, v10_decision, asset, window_ts, eval_offset,
+                    ))
+            except Exception as exc:
+                log.warning("strategy.signal_eval_error", error=str(exc)[:200])
+
         return EvaluateStrategiesResult(
             live_decision=live_decision,
             all_decisions=all_decisions,
@@ -188,12 +203,57 @@ class EvaluateStrategiesUseCase:
             already_traded=False,
         )
 
+    @property
+    def _db_client(self):
+        return self._db
+
     async def _safe_write(self, record: StrategyDecisionRecord) -> None:
         """Write decision record, swallowing errors."""
         try:
             await self._decision_repo.write_decision(record)
         except Exception as exc:
             log.warning("strategy.write_error", error=str(exc)[:200])
+
+    async def _write_signal_evaluation(
+        self,
+        ctx: StrategyContext,
+        decision: StrategyDecision,
+        asset: str,
+        window_ts: int,
+        eval_offset: int,
+    ) -> None:
+        """Write a signal_evaluations row from the strategy context.
+
+        This breaks the V2 probability cold_start loop: the timesfm service
+        needs fresh signal_evaluations rows to compute probabilities, and
+        the engine needs probabilities for the DUNE gate.  Writing here
+        ensures signal_evaluations stay fresh regardless of which strategy
+        path is active.
+        """
+        try:
+            v4 = ctx.v4_snapshot
+            await self._db.write_signal_evaluation({
+                "window_ts": window_ts,
+                "asset": asset,
+                "timeframe": "5m",
+                "eval_offset": eval_offset,
+                "delta_pct": ctx.delta_pct,
+                "vpin": ctx.vpin,
+                "regime": ctx.regime if hasattr(ctx, "regime") else None,
+                "decision": decision.action,
+                "gate_passed": decision.action == "TRADE",
+                "gate_failed": decision.skip_reason if decision.action == "SKIP" else None,
+                "v2_probability_up": v4.probability_up if v4 else None,
+                "v2_direction": decision.direction,
+                "direction": decision.direction or ("UP" if (v4 and v4.probability_up and v4.probability_up > 0.5) else "DOWN"),
+                "binance_price": getattr(ctx, "binance_price", None),
+                "delta_binance": getattr(ctx, "delta_binance", None),
+                "delta_tiingo": getattr(ctx, "delta_tiingo", None),
+                "delta_chainlink": getattr(ctx, "delta_chainlink", None),
+                "delta_source": getattr(ctx, "delta_source", None),
+            })
+        except Exception as exc:
+            log.warning("strategy.signal_eval_write_error", error=str(exc)[:200])
 
     async def _build_context(self, window: Any, state: Any) -> StrategyContext:
         """Build a StrategyContext from window + market state + feeds."""
