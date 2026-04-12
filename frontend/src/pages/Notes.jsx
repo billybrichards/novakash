@@ -228,9 +228,59 @@ function TextArea({ value, onChange, placeholder, onKeyDown, inputRef, minHeight
   );
 }
 
+// ─── Quick-add templates ─────────────────────────────────────────────────
+
+const STRATEGY_TEMPLATES = [
+  {
+    key: 'down_only',
+    label: 'DOWN-ONLY Trade',
+    icon: '📉',
+    title: 'DOWN-ONLY Trade',
+    body: 'Direction: DOWN\nCLOB Ask: $___\nSize: ___x\nConfidence: ___\nOffset: T-___\nNotes: ___',
+    tags: 'trade,down-only',
+    desc: 'Quick log for DOWN-only trades'
+  },
+  {
+    key: 'observation',
+    label: 'Observation',
+    icon: '🔍',
+    title: 'Observation',
+    body: 'What: ___\nWhy: ___\nImpact: ___\nAction: ___',
+    tags: 'observation',
+    desc: 'General observation'
+  },
+  {
+    key: 'todo',
+    label: 'TODO',
+    icon: '✅',
+    title: 'TODO',
+    body: 'Task: ___\nPriority: ___\nDue: ___\nStatus: ___',
+    tags: 'todo',
+    desc: 'Quick todo item'
+  },
+  {
+    key: 'bug',
+    label: 'Bug',
+    icon: '🐛',
+    title: 'Bug Report',
+    body: 'What: ___\nRepro: ___\nExpected: ___\nActual: ___\nSeverity: ___',
+    tags: 'bug',
+    desc: 'Bug tracking'
+  },
+  {
+    key: 'idea',
+    label: 'Idea',
+    icon: '💡',
+    title: 'Idea',
+    body: 'What: ___\nWhy: ___\nEffort: ___\nImpact: ___',
+    tags: 'idea',
+    desc: 'Quick idea capture'
+  },
+];
+
 // ─── Compose area ────────────────────────────────────────────────────────
 
-function ComposeArea({ onSave, onCancel, initial, autoFocus }) {
+function ComposeArea({ onSave, onCancel, initial, autoFocus, onTemplate }) {
   const [title, setTitle] = useState(initial?.title || '');
   const [tags, setTags] = useState(initial?.tags || '');
   const [body, setBody] = useState(initial?.body || '');
@@ -245,6 +295,16 @@ function ComposeArea({ onSave, onCancel, initial, autoFocus }) {
   }, [autoFocus]);
 
   const canSave = body.trim().length > 0 && !saving;
+
+  const handleTemplate = (tpl) => {
+    if (onTemplate) {
+      onTemplate(tpl);
+    } else {
+      setTitle(tpl.title);
+      setBody(tpl.body);
+      setTags(tpl.tags);
+    }
+  };
 
   const handleSave = useCallback(async () => {
     if (!canSave) return;
@@ -280,6 +340,47 @@ function ComposeArea({ onSave, onCancel, initial, autoFocus }) {
         marginBottom: 14,
       }}
     >
+      {/* Template picker */}
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 9, color: T.textDim, fontFamily: T.mono, marginBottom: 6 }}>
+          QUICK TEMPLATES
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {STRATEGY_TEMPLATES.map((tpl) => (
+            <button
+              key={tpl.key}
+              onClick={() => handleTemplate(tpl)}
+              title={tpl.desc}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                padding: '5px 10px',
+                borderRadius: 4,
+                background: 'rgba(255,255,255,0.05)',
+                border: '1px solid rgba(255,255,255,0.12)',
+                color: T.text,
+                fontFamily: T.mono,
+                fontSize: 10,
+                fontWeight: 700,
+                cursor: 'pointer',
+                transition: 'all 140ms',
+              }}
+              onMouseEnter={(e) => {
+                e.target.style.background = 'rgba(168,85,247,0.12)';
+                e.target.style.borderColor = 'rgba(168,85,247,0.35)';
+              }}
+              onMouseLeave={(e) => {
+                e.target.style.background = 'rgba(255,255,255,0.05)';
+                e.target.style.borderColor = 'rgba(255,255,255,0.12)';
+              }}
+            >
+              <span>{tpl.icon}</span>
+              <span>{tpl.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
         <div style={{ flex: 1 }}>
           <TextInput
