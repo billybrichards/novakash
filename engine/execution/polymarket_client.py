@@ -175,20 +175,9 @@ class PolymarketClient:
         Returns:
             {"up_best_bid": float, "up_best_ask": float, ...} or None if no liquidity
         """
-        # Paper mode: simulate realistic but random order book
-        if self.paper_mode:
-            import random
-
-            base = random.uniform(0.45, 0.55)
-            spread = random.uniform(0.02, 0.08)
-            return {
-                "up_best_bid": round(base - spread / 2, 4),
-                "up_best_ask": round(base + spread / 2, 4),
-                "down_best_bid": round(1.0 - base - spread / 2, 4),
-                "down_best_ask": round(1.0 - base + spread / 2, 4),
-            }
-
-        # Live mode: use ClobClient
+        # Both paper and live mode use the real CLOB API — order book is public,
+        # no auth required. Paper mode = fake money, real market data.
+        # Montreal rule: this method is only called from the Montreal engine.
         if not self._clob_client:
             raise RuntimeError("CLOB client not connected — call connect() first")
 
@@ -218,12 +207,19 @@ class PolymarketClient:
         Paper mode just logs the startup.
         Live mode constructs and authenticates the py-clob-client.
         """
-        if self.paper_mode:
-            self._log.info("polymarket_client.connected", mode="paper")
-            return
-
         from py_clob_client.client import ClobClient
         from py_clob_client.clob_types import ApiCreds
+
+        if self.paper_mode:
+            # Paper mode: init read-only CLOB client for real market data.
+            # Order book reads are unauthenticated — no creds needed.
+            self._clob_client = ClobClient(
+                host="https://clob.polymarket.com",
+                key=self._private_key,
+                chain_id=137,
+            )
+            self._log.info("polymarket_client.connected", mode="paper", clob="read_only")
+            return
 
         # Build base client args
         client_kwargs = dict(
