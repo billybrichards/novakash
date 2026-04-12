@@ -1,30 +1,27 @@
 /**
- * Config.jsx — CFG-02/03/05 read-only DB-config browser.
+ * Config.jsx -- CFG-02/03/04/05 DB-config browser with inline editing.
  *
  * Surfaces all 142+ DB-managed config keys across services (engine,
  * margin_engine, hub, data-collector, macro-observer) in one
- * sidebar-tabbed page. Read-only in this PR; write access ships in CFG-04
- * (which adds the POST /api/v58/config/upsert endpoint and the
- * "edit mode" toggle).
+ * sidebar-tabbed page. CFG-04 added write support: inline edit per key,
+ * reset to default, and success/error feedback.
  *
  * Backend: hub/api/config_v2.py
- *   GET /api/v58/config/services
- *   GET /api/v58/config?service=engine
- *   GET /api/v58/config/schema?service=engine
- *   GET /api/v58/config/history?service=engine&key=V10_6_ENABLED
+ *   GET  /api/v58/config/services
+ *   GET  /api/v58/config?service=engine
+ *   POST /api/v58/config/upsert
+ *   POST /api/v58/config/reset
+ *   POST /api/v58/config/rollback
  *
  * Sister pages:
- *   /trading-config        — legacy 25-key bundle editor (TradingConfig.jsx)
- *   /legacy-config         — old 13-key minimal page (LegacyConfig.jsx)
- *
- * The legacy /config-name nav entry now points HERE; bookmarks for the
- * 13-key page are still reachable at /legacy-config.
+ *   /trading-config        -- legacy 25-key bundle editor (TradingConfig.jsx)
+ *   /legacy-config         -- old 13-key minimal page (LegacyConfig.jsx)
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useApi } from '../hooks/useApi.js';
 
-// ─── Theme ────────────────────────────────────────────────────────────────
+// ---- Theme ----
 const T = {
   bg: '#050914',
   card: 'rgba(15, 23, 42, 0.8)',
@@ -61,7 +58,7 @@ const TYPE_COLOR = {
   csv: T.green,
 };
 
-// ─── Small primitives ─────────────────────────────────────────────────────
+// ---- Small primitives ----
 
 function Chip({ color, children, title }) {
   return (
@@ -109,19 +106,190 @@ function NotEditableChip() {
 }
 
 function fmtCurrentValue(v, type) {
-  if (v === null || v === undefined || v === '') return '—';
+  if (v === null || v === undefined || v === '') return '\u2014';
   if (type === 'bool') return v ? 'true' : 'false';
   return String(v);
 }
 
-// ─── Banner ───────────────────────────────────────────────────────────────
+// ---- Feedback toast ----
+
+function FeedbackMessage({ message, isError }) {
+  if (!message) return null;
+  return (
+    <div
+      style={{
+        fontSize: 10,
+        fontFamily: T.mono,
+        padding: '4px 8px',
+        borderRadius: 4,
+        marginTop: 6,
+        background: isError ? 'rgba(239, 68, 68, 0.1)' : 'rgba(16, 185, 129, 0.1)',
+        border: `1px solid ${isError ? T.red : T.green}55`,
+        color: isError ? T.red : T.green,
+      }}
+    >
+      {message}
+    </div>
+  );
+}
+
+// ---- Inline edit form ----
+
+function InlineEditForm({ keyData, api, onSaved }) {
+  const isBool = keyData.type === 'bool';
+  const isNumber = keyData.type === 'int' || keyData.type === 'float';
+  const isEnum = keyData.type === 'enum';
+
+  const effectiveValue = keyData.current_value_raw != null
+    ? String(keyData.current_value_raw)
+    : (keyData.default_value_raw != null ? String(keyData.default_value_raw) : '');
+
+  const [editValue, setEditValue] = useState(effectiveValue);
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [feedback, setFeedback] = useState(null);
+
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    setFeedback(null);
+    try {
+      await api.post('/api/v58/config/upsert', {
+        service: keyData.service,
+        key: keyData.key,
+        value: editValue,
+        reason: reason || `set via UI`,
+      });
+      setFeedback({ message: 'saved', isError: false });
+      onSaved();
+    } catch (err) {
+      const detail = err.response?.data?.detail || err.message || 'save failed';
+      setFeedback({ message: detail, isError: true });
+    } finally {
+      setSaving(false);
+    }
+  }, [api, keyData.service, keyData.key, editValue, reason, onSaved]);
+
+  const handleReset = useCallback(async () => {
+    setSaving(true);
+    setFeedback(null);
+    try {
+      await api.post('/api/v58/config/reset', {
+        service: keyData.service,
+        key: keyData.key,
+      });
+      setFeedback({ message: 'reset to default', isError: false });
+      onSaved();
+    } catch (err) {
+      const detail = err.response?.data?.detail || err.message || 'reset failed';
+      setFeedback({ message: detail, isError: true });
+    } finally {
+      setSaving(false);
+    }
+  }, [api, keyData.service, keyData.key, onSaved]);
+
+  const inputStyle = {
+    background: 'rgba(255, 255, 255, 0.06)',
+    border: `1px solid ${T.cardBorder}`,
+    borderRadius: 4,
+    padding: '5px 8px',
+    color: T.text,
+    fontFamily: T.mono,
+    fontSize: 11,
+    outline: 'none',
+    minWidth: 120,
+  };
+
+  const btnStyle = (color) => ({
+    background: `${color}18`,
+    border: `1px solid ${color}55`,
+    borderRadius: 4,
+    padding: '4px 10px',
+    color,
+    fontFamily: T.mono,
+    fontSize: 10,
+    fontWeight: 700,
+    cursor: saving ? 'wait' : 'pointer',
+    opacity: saving ? 0.6 : 1,
+  });
+
+  // Enum options from config_keys.enum_values
+  const enumOptions = useMemo(() => {
+    if (!isEnum) return [];
+    const ev = keyData.enum_values;
+    if (Array.isArray(ev)) return ev;
+    if (typeof ev === 'string') return ev.split(',').map((s) => s.trim());
+    return [];
+  }, [isEnum, keyData.enum_values]);
+
+  return (
+    <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px solid ${T.cardBorder}` }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        {isBool ? (
+          <button
+            type="button"
+            onClick={() => setEditValue((v) => (v === 'true' ? 'false' : 'true'))}
+            style={{
+              ...inputStyle,
+              cursor: 'pointer',
+              color: editValue === 'true' ? T.green : T.red,
+              fontWeight: 700,
+            }}
+          >
+            {editValue}
+          </button>
+        ) : isEnum ? (
+          <select
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            style={inputStyle}
+          >
+            {enumOptions.map((opt) => (
+              <option key={opt} value={opt}>
+                {opt}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            type={isNumber ? 'number' : 'text'}
+            value={editValue}
+            onChange={(e) => setEditValue(e.target.value)}
+            step={keyData.type === 'float' ? 'any' : undefined}
+            style={inputStyle}
+          />
+        )}
+
+        <input
+          type="text"
+          placeholder="reason (optional)"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          style={{ ...inputStyle, flex: '1 1 160px', minWidth: 140 }}
+        />
+
+        <button type="button" disabled={saving} onClick={handleSave} style={btnStyle(T.cyan)}>
+          {saving ? 'saving...' : 'save'}
+        </button>
+
+        {!keyData.is_at_default && (
+          <button type="button" disabled={saving} onClick={handleReset} style={btnStyle(T.amber)}>
+            reset to default
+          </button>
+        )}
+      </div>
+      {feedback && <FeedbackMessage message={feedback.message} isError={feedback.isError} />}
+    </div>
+  );
+}
+
+// ---- Banner ----
 
 function PhaseBanner() {
   return (
     <div
       style={{
-        background: 'rgba(168, 85, 247, 0.08)',
-        border: '1px solid rgba(168, 85, 247, 0.35)',
+        background: 'rgba(6, 182, 212, 0.08)',
+        border: '1px solid rgba(6, 182, 212, 0.35)',
         borderRadius: 6,
         padding: '10px 14px',
         marginBottom: 16,
@@ -131,17 +299,15 @@ function PhaseBanner() {
         fontFamily: T.mono,
       }}
     >
-      <span style={{ color: T.purple, fontWeight: 700 }}>CFG-02 / CFG-03 / CFG-05</span>{' '}
-      — read-only schema view. Write access ships in <strong>CFG-04</strong> (next PR).
-      Every key shown here is a row in the new <code>config_keys</code> +{' '}
-      <code>config_values</code> tables. Edits via this page will land once the write
-      endpoints + admin claim are wired. See{' '}
-      <code>docs/CONFIG_MIGRATION_PLAN.md §10</code> for the phasing.
+      <span style={{ color: T.cyan, fontWeight: 700 }}>CFG-04</span>{' '}
+      -- config writes are live. Click any editable key to expand, then use the inline
+      form to set a new value or reset to default. All changes are audited in{' '}
+      <code>config_history</code>.
     </div>
   );
 }
 
-// ─── Sidebar ──────────────────────────────────────────────────────────────
+// ---- Sidebar ----
 
 function ServiceSidebar({ services, activeService, onSelect, loading }) {
   return (
@@ -168,11 +334,11 @@ function ServiceSidebar({ services, activeService, onSelect, loading }) {
         SERVICES
       </div>
       {loading && (
-        <div style={{ color: T.textMuted, fontSize: 11, padding: 8 }}>loading…</div>
+        <div style={{ color: T.textMuted, fontSize: 11, padding: 8 }}>loading...</div>
       )}
       {!loading && services.length === 0 && (
         <div style={{ color: T.textMuted, fontSize: 11, padding: 8 }}>
-          no services found — has the hub seeded the config_keys table?
+          no services found -- has the hub seeded the config_keys table?
         </div>
       )}
       {services.map((svc) => {
@@ -219,7 +385,7 @@ function ServiceSidebar({ services, activeService, onSelect, loading }) {
   );
 }
 
-// ─── Filters ──────────────────────────────────────────────────────────────
+// ---- Filters ----
 
 function FilterBar({
   searchText,
@@ -246,7 +412,7 @@ function FilterBar({
     >
       <input
         type="text"
-        placeholder="filter by key name or description…"
+        placeholder="filter by key name or description..."
         value={searchText}
         onChange={(e) => setSearchText(e.target.value)}
         style={{
@@ -297,13 +463,20 @@ function FilterBar({
   );
 }
 
-// ─── Per-key row ──────────────────────────────────────────────────────────
+// ---- Per-key row ----
 
-function KeyRow({ keyData }) {
+function KeyRow({ keyData, api, onSaved }) {
   const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
   const isAtDefault = keyData.is_at_default;
   const currentDisplay = fmtCurrentValue(keyData.current_value, keyData.type);
   const defaultDisplay = fmtCurrentValue(keyData.default_value, keyData.type);
+  const canEdit = keyData.editable_via_ui;
+
+  const handleSaved = useCallback(() => {
+    setEditing(false);
+    onSaved();
+  }, [onSaved]);
 
   return (
     <div
@@ -338,7 +511,33 @@ function KeyRow({ keyData }) {
         </code>
         <TypeBadge type={keyData.type} />
         {keyData.restart_required && <RestartChip />}
-        {!keyData.editable_via_ui && <NotEditableChip />}
+        {!canEdit && <NotEditableChip />}
+
+        {canEdit && (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setEditing((v) => !v);
+              if (!expanded) setExpanded(true);
+            }}
+            style={{
+              background: editing ? `${T.cyan}18` : 'transparent',
+              border: `1px solid ${editing ? T.cyan : T.cardBorder}`,
+              borderRadius: 3,
+              padding: '2px 7px',
+              color: editing ? T.cyan : T.textMuted,
+              fontFamily: T.mono,
+              fontSize: 9,
+              fontWeight: 700,
+              cursor: 'pointer',
+              letterSpacing: '0.04em',
+            }}
+          >
+            {editing ? 'CANCEL' : 'EDIT'}
+          </button>
+        )}
+
         <span
           style={{
             marginLeft: 'auto',
@@ -397,13 +596,16 @@ function KeyRow({ keyData }) {
           </div>
         </div>
       )}
+      {editing && canEdit && (
+        <InlineEditForm keyData={keyData} api={api} onSaved={handleSaved} />
+      )}
     </div>
   );
 }
 
-// ─── Category section ─────────────────────────────────────────────────────
+// ---- Category section ----
 
-function CategorySection({ category, keys }) {
+function CategorySection({ category, keys, api, onSaved }) {
   const [collapsed, setCollapsed] = useState(false);
   return (
     <div style={{ marginBottom: 18 }}>
@@ -430,15 +632,17 @@ function CategorySection({ category, keys }) {
           alignItems: 'center',
         }}
       >
-        <span>{collapsed ? '▸' : '▾'} {category}</span>
+        <span>{collapsed ? '\u25b8' : '\u25be'} {category}</span>
         <span style={{ color: T.textMuted, fontWeight: 600 }}>{keys.length}</span>
       </button>
-      {!collapsed && keys.map((k) => <KeyRow key={k.key} keyData={k} />)}
+      {!collapsed && keys.map((k) => (
+        <KeyRow key={k.key} keyData={k} api={api} onSaved={onSaved} />
+      ))}
     </div>
   );
 }
 
-// ─── Main Config page ─────────────────────────────────────────────────────
+// ---- Main Config page ----
 
 export default function Config() {
   const api = useApi();
@@ -453,6 +657,13 @@ export default function Config() {
 
   const [searchText, setSearchText] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+
+  // Monotonically increasing counter to trigger re-fetches after writes
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  const triggerRefresh = useCallback(() => {
+    setRefreshTick((t) => t + 1);
+  }, []);
 
   // Fetch the list of services on mount
   useEffect(() => {
@@ -481,11 +692,11 @@ export default function Config() {
     return () => {
       cancelled = true;
     };
-    // activeService intentionally omitted — only re-fetch services on first mount
+    // activeService intentionally omitted -- only re-fetch services on first mount
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-fetch service data whenever the active service changes
+  // Re-fetch service data whenever the active service changes or a write occurs
   useEffect(() => {
     if (!activeService) return;
     let cancelled = false;
@@ -510,7 +721,7 @@ export default function Config() {
     return () => {
       cancelled = true;
     };
-  }, [api, activeService]);
+  }, [api, activeService, refreshTick]);
 
   // Compute filtered categories + keys
   const filteredCategories = useMemo(() => {
@@ -575,14 +786,14 @@ export default function Config() {
               fontFamily: T.mono,
             }}
           >
-            CFG-02/03/05 — DB-backed config schema, read-only frontend.
+            CFG-04 -- DB-backed config with inline editing.
             Covers all services: Engine (Polymarket 5m), Margin Engine (Hyperliquid Perps), Hub, Data Collector, Macro Observer.
             <span style={{ color: T.textDim, marginLeft: 6 }}>Data: GET /api/v58/config (175 keys)</span>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <Chip color={T.cyan}>READ-ONLY</Chip>
-          <Chip color={T.purple}>v1</Chip>
+          <Chip color={T.green}>READ/WRITE</Chip>
+          <Chip color={T.purple}>v2</Chip>
           <Chip color={T.cyan} title="Config spans both Polymarket and Hyperliquid trading strategies">POLY + PERPS</Chip>
         </div>
       </div>
@@ -642,7 +853,7 @@ export default function Config() {
                 textAlign: 'center',
               }}
             >
-              loading config keys for {activeService}…
+              loading config keys for {activeService}...
             </div>
           )}
 
@@ -657,13 +868,19 @@ export default function Config() {
               }}
             >
               no keys match the current filter
-              {totalKeys === 0 && ' — service has no DB-managed keys yet'}
+              {totalKeys === 0 && ' -- service has no DB-managed keys yet'}
             </div>
           )}
 
           {!dataLoading &&
             filteredCategories.map((cat) => (
-              <CategorySection key={cat.id} category={cat.id} keys={cat.keys} />
+              <CategorySection
+                key={cat.id}
+                category={cat.id}
+                keys={cat.keys}
+                api={api}
+                onSaved={triggerRefresh}
+              />
             ))}
         </div>
       </div>

@@ -1,26 +1,27 @@
 """
-CFG-03 — Hub read-only API for the new DB-backed config tables.
+CFG-03/04 — Hub API for the new DB-backed config tables.
 
-Mounts under /api/v58/config/*. Read-only in this PR; write endpoints
-land in CFG-04.
+Mounts under /api/v58/config/*. CFG-03 shipped the read endpoints;
+CFG-04 adds the write surface (upsert / rollback / reset).
 
-Endpoints:
+Read endpoints (CFG-03):
   GET  /api/v58/config/services             list of services + key counts
   GET  /api/v58/config?service=engine       all keys for a service with values
   GET  /api/v58/config/schema?service=...   key metadata only (no values)
   GET  /api/v58/config/history?service=...&key=...
                                             last N changes for a key
 
-  POST /api/v58/config*                     all return 501 — pointer to CFG-04
+Write endpoints (CFG-04):
+  POST /api/v58/config/upsert               set a config value
+  POST /api/v58/config/rollback             roll back to a history entry
+  POST /api/v58/config/reset                reset to default (delete override)
 
 The router lives in a new file (config_v2.py) to keep it isolated from the
 existing hub/api/config.py mini-API, which will be retired in CFG-11.
-v58_monitor.py was the alternative landing site but it's already focused
-on trade monitoring; a dedicated router keeps the surface clean.
 
 Auth: every endpoint takes Depends(get_current_user) — same JWT auth wall
 the rest of the hub uses. CFG-06 will add an admin-claim check on the
-write endpoints; v1 read-only is open to any authenticated user.
+write endpoints; v1 is open to any authenticated user.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from typing import Any, Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -67,7 +69,7 @@ def _coerce_value(raw: Optional[str], value_type: str) -> Any:
             return int(raw)
         if vt == "float":
             return float(raw)
-        # enum / string / csv → leave as the source string
+        # enum / string / csv -> leave as the source string
         return raw
     except (ValueError, TypeError):
         log.warning("config_v2.coerce_failed", raw=raw, type=value_type)
@@ -191,7 +193,7 @@ async def get_config_for_service(
     rows = [dict(r) for r in result.mappings().all()]
 
     if not rows:
-        # Don't 404 — return an empty service so the UI can render a blank
+        # Don't 404 -- return an empty service so the UI can render a blank
         # tab without erroring out. The /services endpoint is the source of
         # truth for which services exist.
         return {"service": service, "key_count": 0, "categories": []}
@@ -276,12 +278,7 @@ async def get_history_for_key(
     session: AsyncSession = Depends(get_session),
     user: TokenData = Depends(get_current_user),
 ) -> dict:
-    """Return the last N rows from config_history for a specific key.
-
-    Empty in this PR — nothing has written to config_values yet (writes
-    ship in CFG-04). Returns the resolved key metadata even if history
-    is empty so the frontend drawer can render the header.
-    """
+    """Return the last N rows from config_history for a specific key."""
     # First look up the key id + metadata
     key_sql = text("""
         SELECT id, service, key, type, default_value, description,
@@ -332,25 +329,343 @@ async def get_history_for_key(
     }
 
 
-# ─── POST /v58/config — placeholder, returns 501 ─────────────────────────────
+# ─── Write helpers ───────────────────────────────────────────────────────────
+
+
+# Type-validation map.  DB stores everything as TEXT; we validate the
+# *incoming* string can be parsed as the declared type before persisting.
+_VALID_BOOL_STRINGS = {"true", "false", "1", "0", "yes", "no", "on", "off"}
+
+
+def _validate_value_for_type(value: str, value_type: str, enum_values: Any = None) -> str:
+    """Validate *value* against *value_type* and return the normalised TEXT
+    representation to persist.  Raises ValueError on mismatch."""
+    vt = (value_type or "string").lower()
+    if vt == "bool":
+        if value.strip().lower() not in _VALID_BOOL_STRINGS:
+            raise ValueError(f"expected bool, got {value!r}")
+        return value.strip().lower()
+    if vt == "int":
+        int(value)  # raises ValueError on bad input
+        return value.strip()
+    if vt == "float":
+        float(value)  # raises ValueError on bad input
+        return value.strip()
+    if vt == "enum":
+        allowed = enum_values or []
+        if isinstance(allowed, str):
+            allowed = [s.strip() for s in allowed.split(",")]
+        if value not in allowed:
+            raise ValueError(f"expected one of {allowed}, got {value!r}")
+        return value
+    # string / csv / anything else -- pass through
+    return value
+
+
+async def _resolve_config_key(
+    session: AsyncSession, service: str, key: str,
+) -> dict:
+    """Look up a config_keys row.  Raises HTTPException(404) if not found."""
+    sql = text("""
+        SELECT id, service, key, type, default_value, description,
+               category, restart_required, editable_via_ui, enum_values
+        FROM config_keys
+        WHERE service = :service AND key = :key
+    """)
+    result = await session.execute(sql, {"service": service, "key": key})
+    row = result.mappings().first()
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown config key: {service}.{key}",
+        )
+    return dict(row)
+
+
+async def _get_current_value(session: AsyncSession, key_id: int) -> Optional[str]:
+    """Return the current active value for a key, or None if unset."""
+    sql = text("""
+        SELECT value FROM config_values
+        WHERE config_key_id = :key_id AND is_active = TRUE
+    """)
+    result = await session.execute(sql, {"key_id": key_id})
+    row = result.mappings().first()
+    return row["value"] if row else None
+
+
+async def _write_config_value(
+    session: AsyncSession,
+    key_id: int,
+    new_value: Optional[str],
+    previous_value: Optional[str],
+    set_by: str,
+    comment: str,
+    *,
+    delete: bool = False,
+) -> dict:
+    """Atomically update config_values and append to config_history.
+
+    When delete=True, removes the active row (reset to default).
+    Otherwise, upserts the active row.
+
+    Returns the newly inserted config_history row as a dict.
+    """
+    if delete:
+        await session.execute(
+            text("DELETE FROM config_values WHERE config_key_id = :key_id AND is_active = TRUE"),
+            {"key_id": key_id},
+        )
+    else:
+        # Deactivate any existing active row, then insert a new one.
+        # The DEFERRABLE UNIQUE constraint on (config_key_id, is_active)
+        # allows this within a single transaction.
+        await session.execute(
+            text("UPDATE config_values SET is_active = FALSE WHERE config_key_id = :key_id AND is_active = TRUE"),
+            {"key_id": key_id},
+        )
+        await session.execute(
+            text("""
+                INSERT INTO config_values (config_key_id, value, set_by, set_at, is_active)
+                VALUES (:key_id, :value, :set_by, NOW(), TRUE)
+            """),
+            {"key_id": key_id, "value": new_value, "set_by": set_by},
+        )
+
+    # Append history -- always, even for deletes/resets.
+    history_sql = text("""
+        INSERT INTO config_history (config_key_id, previous_value, new_value, changed_by, changed_at, comment)
+        VALUES (:key_id, :prev, :new, :changed_by, NOW(), :comment)
+        RETURNING id, previous_value, new_value, changed_by, changed_at, comment
+    """)
+    h_result = await session.execute(history_sql, {
+        "key_id": key_id,
+        "prev": previous_value,
+        "new": new_value,
+        "changed_by": set_by,
+        "comment": comment,
+    })
+    h_row = h_result.mappings().first()
+
+    await session.commit()
+
+    return {
+        "id": int(h_row["id"]),
+        "previous_value": h_row["previous_value"],
+        "new_value": h_row["new_value"],
+        "changed_by": h_row["changed_by"],
+        "changed_at": h_row["changed_at"].isoformat() if h_row["changed_at"] else None,
+        "comment": h_row["comment"],
+    }
+
+
+# ─── Request models ──────────────────────────────────────────────────────────
+
+
+class UpsertRequest(BaseModel):
+    service: str = Field(..., description="service id (engine, margin_engine, ...)")
+    key: str = Field(..., description="config key name")
+    value: str = Field(..., description="new value as a string")
+    reason: str = Field("", description="human-readable reason for the change")
+
+
+class RollbackRequest(BaseModel):
+    service: str = Field(..., description="service id")
+    key: str = Field(..., description="config key name")
+    history_id: int = Field(..., description="config_history.id to roll back to")
+
+
+class ResetRequest(BaseModel):
+    service: str = Field(..., description="service id")
+    key: str = Field(..., description="config key name")
+
+
+# ─── POST /v58/config/upsert ────────────────────────────────────────────────
+
+
+@router.post("/upsert")
+async def upsert_config(
+    body: UpsertRequest,
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """Set (or update) a config value.
+
+    1. Validates the key exists in config_keys.
+    2. Validates the value type matches config_keys.type.
+    3. Upserts config_values (deactivate old, insert new active row).
+    4. Appends to config_history.
+    5. Returns the updated value + history entry.
+    """
+    key_row = await _resolve_config_key(session, body.service, body.key)
+    key_id = key_row["id"]
+
+    # Type validation
+    try:
+        normalised = _validate_value_for_type(body.value, key_row["type"], key_row.get("enum_values"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"type validation failed for {body.service}.{body.key}: {exc}",
+        )
+
+    previous = await _get_current_value(session, key_id)
+
+    history_entry = await _write_config_value(
+        session,
+        key_id=key_id,
+        new_value=normalised,
+        previous_value=previous,
+        set_by=user.username,
+        comment=body.reason or f"set via API by {user.username}",
+    )
+
+    return {
+        "service": body.service,
+        "key": body.key,
+        "previous_value": _coerce_value(previous, key_row["type"]),
+        "current_value": _coerce_value(normalised, key_row["type"]),
+        "current_value_raw": normalised,
+        "default_value": _coerce_value(key_row["default_value"], key_row["type"]),
+        "type": key_row["type"],
+        "history_entry": history_entry,
+    }
+
+
+# ─── POST /v58/config/rollback ──────────────────────────────────────────────
+
+
+@router.post("/rollback")
+async def rollback_config(
+    body: RollbackRequest,
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """Roll back a config value to a previous state from config_history.
+
+    1. Finds the history entry by ID.
+    2. Sets config_values.current_value to the history entry's previous_value.
+    3. Appends a new history entry with reason "rollback to history_id=N".
+    4. Returns the rolled-back value.
+    """
+    key_row = await _resolve_config_key(session, body.service, body.key)
+    key_id = key_row["id"]
+
+    # Look up the target history entry
+    h_sql = text("""
+        SELECT id, previous_value, new_value, config_key_id
+        FROM config_history
+        WHERE id = :history_id
+    """)
+    h_result = await session.execute(h_sql, {"history_id": body.history_id})
+    h_row = h_result.mappings().first()
+
+    if not h_row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"config_history entry id={body.history_id} not found",
+        )
+    if h_row["config_key_id"] != key_id:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"history entry id={body.history_id} belongs to a different key "
+                f"(key_id={h_row['config_key_id']}), not {body.service}.{body.key}"
+            ),
+        )
+
+    rollback_to = h_row["previous_value"]
+    current = await _get_current_value(session, key_id)
+    comment = f"rollback to history_id={body.history_id}"
+
+    if rollback_to is None:
+        # Rolling back to "no override" state -- delete the active row
+        history_entry = await _write_config_value(
+            session,
+            key_id=key_id,
+            new_value=None,
+            previous_value=current,
+            set_by=user.username,
+            comment=comment,
+            delete=True,
+        )
+    else:
+        history_entry = await _write_config_value(
+            session,
+            key_id=key_id,
+            new_value=rollback_to,
+            previous_value=current,
+            set_by=user.username,
+            comment=comment,
+        )
+
+    effective = rollback_to if rollback_to is not None else key_row["default_value"]
+    return {
+        "service": body.service,
+        "key": body.key,
+        "rolled_back_to_value": _coerce_value(effective, key_row["type"]),
+        "rolled_back_to_value_raw": effective,
+        "default_value": _coerce_value(key_row["default_value"], key_row["type"]),
+        "type": key_row["type"],
+        "history_entry": history_entry,
+    }
+
+
+# ─── POST /v58/config/reset ─────────────────────────────────────────────────
+
+
+@router.post("/reset")
+async def reset_config(
+    body: ResetRequest,
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """Reset a config value to its default by deleting the config_values row.
+
+    1. Deletes the active row from config_values.
+    2. Appends a history entry with reason "reset to default".
+    3. Returns the default value from config_keys.
+    """
+    key_row = await _resolve_config_key(session, body.service, body.key)
+    key_id = key_row["id"]
+
+    current = await _get_current_value(session, key_id)
+
+    history_entry = await _write_config_value(
+        session,
+        key_id=key_id,
+        new_value=None,
+        previous_value=current,
+        set_by=user.username,
+        comment="reset to default",
+        delete=True,
+    )
+
+    return {
+        "service": body.service,
+        "key": body.key,
+        "current_value": _coerce_value(key_row["default_value"], key_row["type"]),
+        "current_value_raw": key_row["default_value"],
+        "is_default": True,
+        "type": key_row["type"],
+        "history_entry": history_entry,
+    }
+
+
+# ─── POST /v58/config -- legacy stub, redirects to specific endpoints ───────
 
 
 @router.post("")
-async def post_config_not_implemented(
+async def post_config_redirect(
     user: TokenData = Depends(get_current_user),
 ):
-    """Write endpoints are not implemented in this PR.
-
-    Returns 501 Not Implemented with a message pointing at CFG-04 (which
-    will ship POST /v58/config/upsert, /rollback, /reset). The route is
-    defined here so any operator who reads the OpenAPI doc sees a clear
-    'coming soon' instead of a 404.
-    """
+    """The generic POST endpoint now redirects callers to the specific
+    write endpoints added in CFG-04."""
     raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        status_code=status.HTTP_400_BAD_REQUEST,
         detail=(
-            "config write endpoints are not implemented in CFG-02/03. "
-            "Writes ship in CFG-04 (POST /api/v58/config/upsert, /rollback, /reset). "
-            "See docs/CONFIG_MIGRATION_PLAN.md §7.2 for the planned write API surface."
+            "Use the specific write endpoints: "
+            "POST /api/v58/config/upsert, "
+            "POST /api/v58/config/rollback, or "
+            "POST /api/v58/config/reset."
         ),
     )
