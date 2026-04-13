@@ -140,7 +140,8 @@ jobs:
             echo "ssh key written as raw PEM"
           fi
           chmod 600 ~/.ssh/deploy_key
-          echo "$HOST ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKhKZhAevqXVQs1lH1C8X6YH8C8sXJvXW4TJ3b6V5j3R5M7Z0N8K5m2X8P7R9T6V5X3Y8Z5" >> ~/.ssh/known_hosts
+          echo "StrictHostKeyChecking no" >> ~/.ssh/config
+          echo "UserKnownHostsFile=/dev/null" >> ~/.ssh/config
 
       - name: Ensure host directories exist
         run: |
