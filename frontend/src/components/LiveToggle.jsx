@@ -67,10 +67,11 @@ export default function LiveToggle({ compact = false }) {
     } catch (e) { console.error('Failed to toggle paper mode', e); }
   };
 
-  const handleLiveClick = () => {
+  const handleLiveClick = async () => {
     if (status.live_enabled) {
       disableLive();
     } else {
+      await fetchStatus();
       setConfirmText('');
       setError('');
       setShowLiveModal(true);
