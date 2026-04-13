@@ -218,7 +218,7 @@ jobs:
       - name: Restart engine via scripts/restart_engine.sh
         run: |
           # Use the canonical restart script (rsynced earlier)
-          timeout 90 ssh -i ~/.ssh/deploy_key novakash@"$HOST" \
+          timeout 120 ssh -i ~/.ssh/deploy_key novakash@"$HOST" \
             'cd /home/novakash/novakash && ./scripts/restart_engine.sh'
 
       - name: Wait for engine startup
