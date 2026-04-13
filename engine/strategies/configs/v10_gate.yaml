@@ -1,0 +1,31 @@
+name: v10_gate
+version: "10.6.0"
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+gates:
+  - type: timing
+    params: { min_offset: 5, max_offset: 300 }
+  - type: source_agreement
+    params: { min_sources: 2, spot_only: false }
+  - type: delta_magnitude
+    params: { min_threshold: 0.0005 }
+  - type: taker_flow
+    params: {}
+  - type: cg_confirmation
+    params: { oi_threshold: 0.01, liq_threshold: 1000000 }
+  - type: confidence
+    params: { min_dist: 0.12 }
+  - type: spread
+    params: { max_spread_bps: 100 }
+  - type: dynamic_cap
+    params: { default_cap: 0.65 }
+
+hooks_file: v10_gate.py
+post_gate_hook: classify_confidence
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.10

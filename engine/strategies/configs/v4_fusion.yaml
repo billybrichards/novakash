@@ -1,0 +1,17 @@
+name: v4_fusion
+version: "4.1.0"
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+# V4 fusion uses custom evaluation -- the polymarket_v2 path has
+# complex timing/CLOB-divergence logic that doesn't reduce to gates.
+gates: []
+
+hooks_file: v4_fusion.py
+pre_gate_hook: evaluate_polymarket_v2
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.10
