@@ -320,12 +320,25 @@ export default function LiveFloor() {
   const gh = hqData?.gate_heartbeat;
   const countdown = gh?.seconds_remaining ?? cw?.seconds_remaining;
 
-  // Group decisions by window_ts
+  // Group decisions by window_ts — prefer sweet-spot eval_offset (90-150)
   const decisionMap = {};
   for (const d of decisions) {
     const key = d.window_ts;
     if (!decisionMap[key]) decisionMap[key] = {};
-    decisionMap[key][d.strategy_id] = d;
+    const existing = decisionMap[key][d.strategy_id];
+    if (!existing) {
+      decisionMap[key][d.strategy_id] = d;
+    } else {
+      // Prefer offset in sweet spot (90-150), then closest to 120
+      const inSweet = (o) => o >= 90 && o <= 150;
+      const eNew = d.eval_offset || 0;
+      const eOld = existing.eval_offset || 0;
+      if (inSweet(eNew) && !inSweet(eOld)) {
+        decisionMap[key][d.strategy_id] = d;
+      } else if (inSweet(eNew) && inSweet(eOld) && Math.abs(eNew - 120) < Math.abs(eOld - 120)) {
+        decisionMap[key][d.strategy_id] = d;
+      }
+    }
   }
 
   // Latest V10 + V4 decisions (most recent window with data)
