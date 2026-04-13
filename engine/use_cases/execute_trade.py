@@ -179,7 +179,21 @@ class ExecuteTradeUseCase:
         stake = self._calculate_stake(decision)
 
         # ── Step 3: Risk check ─────────────────────────────────────────
-        risk_status = self._risk.get_status()
+        raw_status = self._risk.get_status()
+        # Adapt dict→RiskStatus if the risk manager returns a dict (legacy)
+        if isinstance(raw_status, dict):
+            from domain.value_objects import RiskStatus
+            risk_status = RiskStatus(
+                current_bankroll=raw_status.get("current_bankroll", 500),
+                peak_bankroll=raw_status.get("peak_bankroll", 500),
+                drawdown_pct=raw_status.get("drawdown_pct", 0),
+                daily_pnl=raw_status.get("daily_pnl", 0),
+                consecutive_losses=raw_status.get("consecutive_losses", 0),
+                paper_mode=raw_status.get("paper_mode", True),
+                kill_switch_active=raw_status.get("kill_switch_active", False),
+            )
+        else:
+            risk_status = raw_status
         approved, reason = self._check_risk(risk_status, stake)
         if not approved:
             logger.info(
@@ -388,7 +402,7 @@ class ExecuteTradeUseCase:
           - 65c token -> 0.7x multiplier (worse R/R, bet less)
         """
         risk = self._risk.get_status()
-        bankroll = risk.current_bankroll
+        bankroll = risk.get("current_bankroll", 500) if isinstance(risk, dict) else risk.current_bankroll
         bet_fraction = decision.collateral_pct or DEFAULT_BET_FRACTION
 
         base_stake = bankroll * bet_fraction
