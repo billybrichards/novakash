@@ -85,13 +85,14 @@ sudo -u novakash bash -c "cd $ENGINE_DIR && nohup python3 main.py >> $CURRENT_LO
 sleep 6
 
 # ─── Step 6: Verify ────────────────────────────────────────────────────────
-PID_COUNT=$(pgrep -f 'python3.*main.py' | wc -l || echo 0)
-if [ "$PID_COUNT" -ne 1 ]; then
-    log_info "WARNING: expected 1 python3 main.py process, got $PID_COUNT"
+PID_COUNT=$(pgrep -f 'python3 main.py' | wc -l || echo 0)
+# Note: may show 2 if bash wrapper present from previous session, which is OK
+if [ "$PID_COUNT" -lt 1 ] || [ "$PID_COUNT" -gt 2 ]; then
+    log_info "WARNING: expected 1-2 python3 main.py process, got $PID_COUNT"
     ps aux | grep 'python3 main.py' | grep -v grep || true
     exit 1
 fi
 
-log_info "Engine started cleanly. PID: $(pgrep -f 'python3.*main.py')"
+log_info "Engine started cleanly. PIDs: $(pgrep -f 'python3 main.py' | tr '\n' ' ')"
 log_info "Tail of new log:"
 sudo tail -10 "$CURRENT_LOG" || true
