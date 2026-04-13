@@ -128,6 +128,13 @@ const CATEGORIES = [
     description:
       'Full migration of runtime configuration from .env files to a DB-backed store with hot-reload, audit trail, and a /config UI. Tracked in docs/CONFIG_MIGRATION_PLAN.md (CFG-01). Phase 0/1 (CFG-02/03/05) ships read-only schema + read API + read UI. Phase 1 (CFG-04/06) adds writes + admin claim. Phase 2 (CFG-07/08/10) wires per-service loaders + flips SKIP_DB_CONFIG_SYNC. Phase 3 (CFG-11) cleans up legacy .env reads.',
   },
+  {
+    id: 'ml-training-data',
+    title: 'ML Training Data Audit · 2026-04-13',
+    color: '#f472b6',
+    description:
+      'Full inventory of every data asset, database table, prediction surface, signal, and Polymarket outcome available for ML training. Covers v1 (TimesFM), v2 (LightGBM), v3 (composite), v4 (decision surface), gate audit trail, and reconciled outcome labels. Target: 500+ labeled window-outcome pairs per Δ bucket for reliable model retraining. Explored via automated agent across novakash/develop + novakash-timesfm-repo/main.',
+  },
 ];
 
 const TASKS = [
@@ -2473,6 +2480,139 @@ const TASKS = [
       'Regime gate decisions degraded without V3 data',
     ],
     fix: 'Set V3_ENABLED=true on timesfm service environment. Monitor for stability. V3 data will flow into FullDataSurface via V4 snapshot.',
+    progressNotes: [],
+  },
+
+  // ── ml-training-data ─────────────────────────────────────────────────────
+
+  {
+    id: 'ML-01',
+    category: 'ml-training-data',
+    title: 'Primary label source: window_snapshots + trades',
+    severity: 'INFO',
+    status: 'OPEN',
+    file: 'engine/persistence/db_client.py',
+    summary:
+      'window_snapshots is the core ML table (~80+ columns). outcome, poly_winner, pnl_usd are the label columns. trades.outcome (WIN/LOSS) is the trade-level label. Both join on (asset, window_ts). Resolution lag: 1h–24h depending on Polymarket market type.',
+    symptoms: [
+      'window_snapshots: delta_pct, vpin, regime, confidence, gate columns + resolved outcome',
+      'trades: entry_price, stake_usd, fill_price, pnl_usd, outcome, execution_mode',
+      'gate_audit: per-gate pass/fail, skip_reason, decision — per window',
+      'strategy_decisions: per-strategy action, direction, confidence, skip_reason (v2 lab)',
+    ],
+    fix: 'Join window_snapshots + gate_audit on (asset, window_ts) → parquet. Filter outcome IS NOT NULL. Target 500+ rows per Δ bucket.',
+    progressNotes: ['Explored 2026-04-13. ~53 usable labeled rows as of Apr 5. Need ~500+ for LightGBM retraining.'],
+  },
+  {
+    id: 'ML-02',
+    category: 'ml-training-data',
+    title: 'Feature corpus: 43+ columns across 6 tick sources',
+    severity: 'INFO',
+    status: 'OPEN',
+    file: 'engine/data/',
+    summary:
+      'Training features come from 6 tick tables polled at different cadences. All stored in Railway PostgreSQL. Main sources: ticks_binance (1s, VPIN), ticks_coinglass (10s, OI/liq/funding), ticks_tiingo (2s, bid/ask), ticks_chainlink (5s, oracle price), ticks_gamma (5m, Polymarket implied), ticks_timesfm (1s, v1 forecast).',
+    symptoms: [
+      'ticks_binance: price, quantity, is_buyer_maker, vpin — 1Hz',
+      'ticks_coinglass: oi_usd, liq_long_usd, liq_short_usd, taker_buy_usd, funding_rate, long_short_ratio — 10s',
+      'ticks_tiingo: bid_price, ask_price, last_price — 2s per asset',
+      'ticks_chainlink: price (oracle, Polygon) — 5s',
+      'ticks_gamma: up_price, down_price, token_ids — per window',
+      'ticks_timesfm: direction, confidence, p10/p50/p90, spread — 1s (v1 model output)',
+    ],
+    fix: 'Feature engineering: align all tick sources to window_ts by backward-looking window join. Use feature_freshness_ms to filter stale features.',
+    progressNotes: [],
+  },
+  {
+    id: 'ML-03',
+    category: 'ml-training-data',
+    title: 'Prediction surfaces: v1→v4 all recorded',
+    severity: 'INFO',
+    status: 'OPEN',
+    file: 'engine/data/feeds/prediction_recorder.py',
+    summary:
+      'v1 (TimesFM 2.5, 1s): ticks_timesfm. v2 (LightGBM per-Δ-bucket, 30s): ticks_elm_predictions + ticks_v2_probability. v3 (composite 9-timescale): ticks_v3_composite. v4 (full decision surface 96+ cols): ticks_v4_decision. All keyed on (asset, window_ts, seconds_to_close). v2 artifacts in S3 as diffable LightGBM .txt + isotonic .json.',
+    symptoms: [
+      'v1 output: direction, confidence, predicted_close, p10/p50/p90, spread',
+      'v2 output: probability_up (calibrated), probability_raw, model_version, features JSONB',
+      'v3 output: composite_score, elm/cascade/taker/oi/funding/vpin/momentum signals',
+      'v4 output: action_side, action_conviction, edge_bps, macro_bias, poly_implied_prob_up, liq_pressure',
+      'S3 artifacts: s3://bbrnovakash-models-do-not-delete/v2/btc/current.json + per-Δ booster + isotonic',
+    ],
+    fix: 'v2 retraining pipeline ready (training/build_dataset.py → train_lgb.py → calibration.py → upload). Run when 500+ labeled rows available.',
+    progressNotes: ['v4 decision surface has 96+ columns. Full audit in docs/DATA_ARCHITECTURE_AUDIT_2026-04-11.md'],
+  },
+  {
+    id: 'ML-04',
+    category: 'ml-training-data',
+    title: 'Training gap: ~53 labeled rows (need 500+)',
+    severity: 'HIGH',
+    status: 'OPEN',
+    file: 'training/build_dataset.py',
+    summary:
+      'As of 2026-04-05, only ~53 usable window-outcome pairs exist (smoke-test threshold). LightGBM walk-forward training requires 500+ per Δ bucket (30/60/90/120/180/240s) for statistical significance. At ~288 windows/day × 30 days = ~8,640 windows/month, full training corpus expected late Apr / early May 2026.',
+    symptoms: [
+      'Current training: smoke-test mode only (meta_*.json has warning field)',
+      'Walk-forward splits need 60% train / 20% val / 20% test (chronological)',
+      'Base rate computed on train split only — no peeking',
+      'Gate: accuracy > base_rate + margin before --promote allowed',
+    ],
+    fix: 'Continue live data collection. Run training/build_dataset.py --dry-run weekly to track row count. Trigger full retrain at 500+ rows.',
+    progressNotes: ['Estimated date: late April 2026 for initial reliable v2 retrain.'],
+  },
+  {
+    id: 'ML-05',
+    category: 'ml-training-data',
+    title: 'Gate audit trail: per-gate pass/fail available for feature engineering',
+    severity: 'INFO',
+    status: 'OPEN',
+    file: 'engine/persistence/db_client.py',
+    summary:
+      'gate_audit table records which of 5 gates passed/failed per window: gate_vpin, gate_delta, gate_cg, gate_floor, gate_cap. gate_failed gives first blocking gate name. skip_reason gives text reason. This is a rich training signal: skip_reason is predictable from pre-trade features and can improve gate threshold tuning.',
+    symptoms: [
+      'gate_audit: gate_vpin, gate_delta, gate_cg, gate_floor, gate_cap (BOOL each)',
+      'gate_failed: name of first failed gate (categorical label)',
+      'decision: TRADE / SKIP',
+      'skip_reason: text description',
+      'window_ts + asset + timeframe: join key',
+    ],
+    fix: 'Train multi-class classifier: features → skip_reason. Analyze: which gate blocks most trades? Which features predict gate failure? Use for threshold tuning.',
+    progressNotes: [],
+  },
+  {
+    id: 'ML-06',
+    category: 'ml-training-data',
+    title: 'Outcome reconciliation: paper trades now resolved via oracle (PR #162)',
+    severity: 'INFO',
+    status: 'DONE',
+    file: 'engine/use_cases/reconcile_positions.py',
+    summary:
+      'Paper trades previously sat in OPEN status with no WIN/LOSS outcome — contaminating win rate calculations. PR #162 (merged 2026-04-13) wires ReconcilePositionsUseCase: paper trades resolve via window_snapshots.actual_direction (Chainlink oracle). Live trades resolve via Polymarket CLOB positions API (ENGINE_USE_RECONCILE_UC=true). Outcome data from paper trading is now clean and usable as ML labels.',
+    symptoms: [
+      'engine/use_cases/reconcile_positions.py: execute() + _resolve_paper_batch()',
+      'Paper path: actual_direction (oracle) → WIN if trade.direction matches',
+      'Live path: PositionOutcome from Polymarket API → resolve_one()',
+      'Cadence: every 2 minutes via _sot_reconciler_loop',
+    ],
+    fix: 'Already fixed. Monitor reconcile_uc.complete log events on Montreal. Paper trade outcomes now flow into trades.outcome for ML label collection.',
+    progressNotes: ['PR #162 merged 2026-04-13. ENGINE_USE_RECONCILE_UC=true in deploy-engine.yml.'],
+  },
+  {
+    id: 'ML-07',
+    category: 'ml-training-data',
+    title: 'Missing: cross-market alignment, Deribit/Bybit liquidations, feature SLAs',
+    severity: 'MEDIUM',
+    status: 'OPEN',
+    file: 'engine/data/',
+    summary:
+      'Three data gaps limit ML feature quality: (1) Margin venue orderflow not in ticks_* tables. (2) Deribit/Bybit liquidations only partial — CoinGlass Binance-only. (3) No explicit feature freshness SLA tracking beyond ad-hoc feature_freshness_ms JSONB. Also: ticks_coinglass 10s cadence may be too coarse for T-30 Δ-bucket predictions.',
+    symptoms: [
+      'No ticks_margin or ticks_hyperliquid tables',
+      'CoinGlass limited to Binance perpetuals',
+      'feature_freshness_ms exists in some tables but not standardized across all',
+      'Chainlink oracle lag not explicitly measured',
+    ],
+    fix: 'Phase 3b: add Hyperliquid orderflow adapter. Phase 4: add Deribit/Bybit via CoinGlass multi-exchange API. Standardize feature_freshness_ms across all tick tables.',
     progressNotes: [],
   },
 ];
