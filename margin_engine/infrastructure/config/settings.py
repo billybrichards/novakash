@@ -134,7 +134,7 @@ class MarginSettings(BaseSettings):
     # suspiciously clean and needs a 7-day replay before activation. This
     # flag ships the code in Phase A but leaves it OFF (None) by default.
     # Flip via MARGIN_V4_ALLOW_NO_EDGE_IF_EXP_MOVE_BPS_GTE=3.0 after replay.
-   v4_allow_no_edge_if_exp_move_bps_gte: Optional[float] = None
+    v4_allow_no_edge_if_exp_move_bps_gte: Optional[float] = None
 
     # DQ-07: defensive mark_divergence gate. When v4.last_price (which is
     # Binance spot from the assembler) diverges from the exchange's actual
