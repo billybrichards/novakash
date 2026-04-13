@@ -87,7 +87,9 @@ class Orchestrator:
         self._tasks: list[asyncio.Task] = []
 
         # ── G1 & G3: Staggered execution + single best signal ─────────────────
-        self._execution_queue: asyncio.Queue = asyncio.Queue()  # Pending window evaluations
+        self._execution_queue: asyncio.Queue = (
+            asyncio.Queue()
+        )  # Pending window evaluations
         self._geoblock_active: bool = False  # G6: Geoblock flag
 
         # ── LT-04: manual trade fast path (hybrid LISTEN/NOTIFY + poll) ──────
@@ -111,9 +113,9 @@ class Orchestrator:
 
         # ── CLOB Reconciler (v10.2: definitive source of truth) ─────
         self._reconciler = None
-        self._reconcile_uc = None          # ReconcilePositionsUseCase — wired in start()
-        self._window_state_repo = None     # PgWindowRepository — wired in start()
-        self._trade_repo_adapter = None    # PgTradeRepository — wired in start()
+        self._reconcile_uc = None  # ReconcilePositionsUseCase — wired in start()
+        self._window_state_repo = None  # PgWindowRepository — wired in start()
+        self._trade_repo_adapter = None  # PgTradeRepository — wired in start()
 
         # ── TWAP Tracker (v5.7: time-weighted delta for direction) ─────────
         self._twap_tracker = TWAPTracker(max_windows=50)
@@ -186,10 +188,14 @@ class Orchestrator:
             on_resolution=self._on_order_resolution,
             poly_client=self._poly_client,
         )
-        
+
         # Determine effective starting bankroll (paper override if set)
-        effective_bankroll = settings.paper_bankroll if settings.paper_mode and settings.paper_bankroll > 0 else settings.starting_bankroll
-        
+        effective_bankroll = (
+            settings.paper_bankroll
+            if settings.paper_mode and settings.paper_bankroll > 0
+            else settings.starting_bankroll
+        )
+
         self._risk_manager = RiskManager(
             order_manager=self._order_manager,
             starting_bankroll=effective_bankroll,
@@ -203,6 +209,7 @@ class Orchestrator:
 
         # ── Builder Relayer Redeemer ──────────────────────────────────────────
         from execution.redeemer import PositionRedeemer
+
         self._redeemer = PositionRedeemer(
             rpc_url=settings.polygon_rpc_url,
             private_key=settings.poly_private_key,
@@ -233,7 +240,9 @@ class Orchestrator:
                 self._cg_feeds[_cg_sym] = _feed
                 if _cg_sym == "BTC":
                     self._cg_enhanced = _feed  # backward compat
-            log.info("orchestrator.coinglass_multi_asset", assets=list(self._cg_feeds.keys()))
+            log.info(
+                "orchestrator.coinglass_multi_asset", assets=list(self._cg_feeds.keys())
+            )
 
         # ── Claude Opus 4.6 AI Evaluator ─────────────────────────────────────
         self._claude_evaluator = None
@@ -267,7 +276,7 @@ class Orchestrator:
             poly_client=self._poly_client,
             opinion_client=self._opinion_client,
         )
-        
+
         # 5-minute Polymarket strategy (optional)
         self._five_min_strategy = None
         if settings.five_min_enabled:
@@ -306,9 +315,11 @@ class Orchestrator:
                 with open(env_file) as f:
                     for line in f:
                         if line.startswith("TIMESFM_ENABLED="):
-                            timesfm_enabled = line.split("=", 1)[1].strip().lower() == "true"
+                            timesfm_enabled = (
+                                line.split("=", 1)[1].strip().lower() == "true"
+                            )
                             break
-        
+
         timesfm_url = os.environ.get("TIMESFM_URL")
         if not timesfm_url:
             env_file = Path(__file__).parent.parent / ".env"
@@ -319,7 +330,7 @@ class Orchestrator:
                             timesfm_url = line.split("=", 1)[1].strip()
                             break
         timesfm_url = timesfm_url or "http://3.98.114.0:8080"
-        
+
         timesfm_min_conf_str = os.environ.get("TIMESFM_MIN_CONFIDENCE")
         if not timesfm_min_conf_str:
             env_file = Path(__file__).parent.parent / ".env"
@@ -357,8 +368,11 @@ class Orchestrator:
         _v2_enabled = os.environ.get("V2_EARLY_ENTRY_ENABLED", "true").lower() == "true"
         if _v2_enabled and self._five_min_strategy:
             from signals.timesfm_v2_client import TimesFMV2Client
+
             _v2_url = os.environ.get("TIMESFM_V2_URL", "http://3.98.114.0:8080")
-            self._five_min_strategy.set_timesfm_v2_client(TimesFMV2Client(base_url=_v2_url))
+            self._five_min_strategy.set_timesfm_v2_client(
+                TimesFMV2Client(base_url=_v2_url)
+            )
             log.info("orchestrator.v2_early_entry_enabled", url=_v2_url)
         else:
             log.info("orchestrator.v2_early_entry_disabled")
@@ -380,7 +394,10 @@ class Orchestrator:
             # the live registration mode via runtime on each call.
             v10_mode = runtime.v10_gate_mode
             v10_reg = StrategyRegistration(
-                strategy_id="v10_gate", mode=v10_mode, enabled=True, priority=1,
+                strategy_id="v10_gate",
+                mode=v10_mode,
+                enabled=True,
+                priority=1,
             )
             v10_strat = V10GateStrategy(dune_client=self._timesfm_client)
 
@@ -395,7 +412,10 @@ class Orchestrator:
 
                 v4_mode = runtime.v4_fusion_mode
                 v4_reg = StrategyRegistration(
-                    strategy_id="v4_fusion", mode=v4_mode, enabled=True, priority=2,
+                    strategy_id="v4_fusion",
+                    mode=v4_mode,
+                    enabled=True,
+                    priority=2,
                 )
                 v4_strat = V4FusionStrategy()
                 strategy_pairs.append((v4_reg, v4_strat))
@@ -406,12 +426,17 @@ class Orchestrator:
             # if V4 Fusion isn't enabled. Both share the same port if it exists.
             if runtime.v4_down_only_enabled:
                 from adapters.strategies.v4_down_only_strategy import V4DownOnlyStrategy
+
                 if v4_snapshot_port is None:
                     from adapters.v4_snapshot_http import V4SnapshotHttpAdapter
+
                     v4_snapshot_port = V4SnapshotHttpAdapter()
                 v4_down_mode = runtime.v4_down_only_mode
                 v4_down_reg = StrategyRegistration(
-                    strategy_id="v4_down_only", mode=v4_down_mode, enabled=True, priority=3,
+                    strategy_id="v4_down_only",
+                    mode=v4_down_mode,
+                    enabled=True,
+                    priority=3,
                 )
                 strategy_pairs.append((v4_down_reg, V4DownOnlyStrategy()))
             elif not v4_enabled:
@@ -426,16 +451,24 @@ class Orchestrator:
             # (UP vs DOWN) so they never both fire in the same window.
             if runtime.v4_up_asian_enabled:
                 from adapters.strategies.v4_up_asian_strategy import V4UpAsianStrategy
+
                 if v4_snapshot_port is None:
                     from adapters.v4_snapshot_http import V4SnapshotHttpAdapter
+
                     v4_snapshot_port = V4SnapshotHttpAdapter()
                 v4_up_mode = runtime.v4_up_asian_mode
                 v4_up_reg = StrategyRegistration(
-                    strategy_id="v4_up_asian", mode=v4_up_mode, enabled=True, priority=4,
+                    strategy_id="v4_up_asian",
+                    mode=v4_up_mode,
+                    enabled=True,
+                    priority=4,
                 )
                 strategy_pairs.append((v4_up_reg, V4UpAsianStrategy()))
 
-            from adapters.persistence.pg_strategy_decisions import PgStrategyDecisionRepository
+            from adapters.persistence.pg_strategy_decisions import (
+                PgStrategyDecisionRepository,
+            )
+
             # Pass the db_client — the repo extracts the pool lazily via _get_pool()
             # so it works even though the pool isn't connected at __init__ time
             _decision_repo = PgStrategyDecisionRepository(db_client=self._db)
@@ -460,9 +493,9 @@ class Orchestrator:
         # When enabled, runs the new YAML-config-based registry in parallel
         # with the existing EvaluateStrategiesUseCase for decision comparison.
         self._strategy_registry = None
-        self._use_strategy_registry = os.environ.get(
-            "ENGINE_USE_STRATEGY_REGISTRY", "false"
-        ).lower() == "true"
+        self._use_strategy_registry = (
+            os.environ.get("ENGINE_USE_STRATEGY_REGISTRY", "false").lower() == "true"
+        )
         if self._use_strategy_registry:
             try:
                 from strategies.data_surface import DataSurfaceManager
@@ -479,7 +512,9 @@ class Orchestrator:
                     vpin_calculator=self._vpin_calc,
                     cg_feeds=self._cg_feeds,
                     twap_tracker=self._twap_tracker,
-                    binance_state=self._aggregator if hasattr(self, "_aggregator") else None,
+                    binance_state=self._aggregator
+                    if hasattr(self, "_aggregator")
+                    else None,
                 )
                 # Wire ExecuteTradeUseCase if execution is enabled
                 _execute_uc = None
@@ -487,17 +522,29 @@ class Orchestrator:
                     try:
                         from use_cases.execute_trade import ExecuteTradeUseCase
                         from adapters.execution.paper_executor import PaperExecutor
-                        from adapters.execution.fak_ladder_executor import FAKLadderExecutor
-                        from adapters.execution.trade_recorder import DBTradeRecorder as TradeRecorder
+                        from adapters.execution.fak_ladder_executor import (
+                            FAKLadderExecutor,
+                        )
+                        from adapters.execution.trade_recorder import (
+                            DBTradeRecorder as TradeRecorder,
+                        )
 
                         _paper = os.environ.get("PAPER_MODE", "true").lower() == "true"
-                        _executor = PaperExecutor() if _paper else FAKLadderExecutor(
-                            poly_client=self._poly_client,
+                        _executor = (
+                            PaperExecutor()
+                            if _paper
+                            else FAKLadderExecutor(
+                                poly_client=self._poly_client,
+                            )
                         )
-                        _recorder = TradeRecorder(
-                            db_client=self._db,
-                            order_manager=self._order_manager,
-                        ) if self._db else None
+                        _recorder = (
+                            TradeRecorder(
+                                db_client=self._db,
+                                order_manager=self._order_manager,
+                            )
+                            if self._db
+                            else None
+                        )
 
                         from adapters.clock.system_clock import SystemClock
 
@@ -511,9 +558,13 @@ class Orchestrator:
                             clock=SystemClock(),
                             paper_mode=_paper,
                         )
-                        log.info("orchestrator.execute_trade_uc_wired", paper_mode=_paper)
+                        log.info(
+                            "orchestrator.execute_trade_uc_wired", paper_mode=_paper
+                        )
                     except Exception as exc:
-                        log.warning("orchestrator.execute_trade_uc_error", error=str(exc)[:200])
+                        log.warning(
+                            "orchestrator.execute_trade_uc_error", error=str(exc)[:200]
+                        )
 
                 # Wire decision repo for per-eval strategy_decisions writes
                 _decision_repo = None
@@ -521,6 +572,7 @@ class Orchestrator:
                     from adapters.persistence.pg_strategy_decisions import (
                         PgStrategyDecisionRepository,
                     )
+
                     _decision_repo = PgStrategyDecisionRepository(
                         db_client=self._db,
                     )
@@ -531,7 +583,8 @@ class Orchestrator:
                     )
 
                 self._strategy_registry = StrategyRegistry(
-                    config_dir, self._data_surface_mgr,
+                    config_dir,
+                    self._data_surface_mgr,
                     execute_trade_uc=_execute_uc,
                     alerter=self._alerter,
                     decision_repo=_decision_repo,
@@ -542,7 +595,9 @@ class Orchestrator:
                     strategies=self._strategy_registry.strategy_names,
                 )
             except Exception as exc:
-                log.error("orchestrator.strategy_registry_init_error", error=str(exc)[:200])
+                log.error(
+                    "orchestrator.strategy_registry_init_error", error=str(exc)[:200]
+                )
                 self._strategy_registry = None
 
         # TickRecorder is not yet available at __init__ (pool not connected)
@@ -550,8 +605,12 @@ class Orchestrator:
 
         # 15-minute Polymarket strategy (uses same strategy, different feed)
         self._fifteen_min_feed = None
-        fifteen_min_enabled = os.environ.get("FIFTEEN_MIN_ENABLED", "false").lower() == "true"
-        fifteen_min_assets = os.environ.get("FIFTEEN_MIN_ASSETS", "BTC,ETH,SOL").split(",")
+        fifteen_min_enabled = (
+            os.environ.get("FIFTEEN_MIN_ENABLED", "false").lower() == "true"
+        )
+        fifteen_min_assets = os.environ.get("FIFTEEN_MIN_ASSETS", "BTC,ETH,SOL").split(
+            ","
+        )
         if fifteen_min_enabled:
             self._fifteen_min_feed = Polymarket5MinFeed(
                 assets=fifteen_min_assets,
@@ -613,9 +672,7 @@ class Orchestrator:
 
         # Polymarket token IDs from settings
         token_ids = [
-            tid.strip()
-            for tid in settings.poly_btc_token_ids.split(",")
-            if tid.strip()
+            tid.strip() for tid in settings.poly_btc_token_ids.split(",") if tid.strip()
         ]
         self._polymarket_feed = PolymarketWebSocketFeed(
             token_ids=token_ids,
@@ -644,6 +701,7 @@ class Orchestrator:
         if not self._settings.paper_mode:
             try:
                 import aiohttp
+
                 async with aiohttp.ClientSession() as session:
                     async with session.get(
                         "https://polymarket.com/api/geoblock",
@@ -667,7 +725,7 @@ class Orchestrator:
             except Exception as exc:
                 # Geoblock check failed — log but don't block startup
                 log.warning("guardrail.geoblock.check_failed", error=str(exc))
-        
+
         # ── Startup continues ──────────────────────────────────────────────────
 
         # 1. Connect DB
@@ -702,9 +760,7 @@ class Orchestrator:
             )
             log.info("orchestrator.reconcile_uc_wired")
         except Exception as exc:
-            log.warning(
-                "orchestrator.reconcile_uc_failed", error=str(exc)[:200]
-            )
+            log.warning("orchestrator.reconcile_uc_failed", error=str(exc)[:200])
             self._reconcile_uc = None
 
         # ── TickRecorder: initialise now that pool is live ──────────────────
@@ -768,8 +824,8 @@ class Orchestrator:
         # ── CLOB Book Feed (real Polymarket bid/ask, every 10s) ──────────────
         try:
             if self._order_manager and self._db and self._db._pool:
-                _poly_client = getattr(self._order_manager, '_poly_client', None)
-                _five_min_feed = getattr(self, '_strategy', None)
+                _poly_client = getattr(self._order_manager, "_poly_client", None)
+                _five_min_feed = getattr(self, "_strategy", None)
                 if _poly_client:
                     self._clob_feed = CLOBFeed(
                         poly_client=_poly_client,
@@ -788,7 +844,11 @@ class Orchestrator:
             if self._db and self._db._pool:
                 ticks = await self._vpin_calc.warm_start(self._db._pool)
                 if ticks > 0:
-                    log.info("orchestrator.vpin_warm_start", ticks=ticks, vpin=f"{self._vpin_calc.current_vpin:.4f}")
+                    log.info(
+                        "orchestrator.vpin_warm_start",
+                        ticks=ticks,
+                        vpin=f"{self._vpin_calc.current_vpin:.4f}",
+                    )
         except Exception as exc:
             log.warning("orchestrator.vpin_warm_start_failed", error=str(exc))
 
@@ -810,7 +870,7 @@ class Orchestrator:
         # 3. Start strategies
         await self._arb_strategy.start()
         await self._cascade_strategy.start()
-        
+
         # Start 5-min feed and strategy if enabled
         if self._five_min_feed and self._five_min_strategy:
             await self._five_min_strategy.start()
@@ -821,7 +881,7 @@ class Orchestrator:
         # Start v6.0 TimesFM-only strategy if enabled
         if self._timesfm_strategy:
             await self._timesfm_strategy.start()
-        
+
         # Start multi-entry TimesFM strategy
         if self._timesfm_multi:
             self._timesfm_multi.set_aggregator(self._aggregator)
@@ -829,7 +889,9 @@ class Orchestrator:
 
         if self._fifteen_min_feed:
             self._tasks.append(
-                asyncio.create_task(self._fifteen_min_feed.start(), name="feed:fifteen_min")
+                asyncio.create_task(
+                    self._fifteen_min_feed.start(), name="feed:fifteen_min"
+                )
             )
 
         # 4. Start feed tasks
@@ -837,7 +899,9 @@ class Orchestrator:
             asyncio.create_task(self._binance_feed.start(), name="feed:binance_futures")
         )
         self._tasks.append(
-            asyncio.create_task(self._binance_spot_feed.start(), name="feed:binance_spot")
+            asyncio.create_task(
+                self._binance_spot_feed.start(), name="feed:binance_spot"
+            )
         )
         if self._coinglass_feed:
             self._tasks.append(
@@ -846,11 +910,16 @@ class Orchestrator:
         if self._cg_feeds:
             for _sym, _cgf in self._cg_feeds.items():
                 self._tasks.append(
-                    asyncio.create_task(self._start_cg_staggered(_cgf, _sym), name=f"feed:cg_{_sym.lower()}")
+                    asyncio.create_task(
+                        self._start_cg_staggered(_cgf, _sym),
+                        name=f"feed:cg_{_sym.lower()}",
+                    )
                 )
         elif self._cg_enhanced:
             self._tasks.append(
-                asyncio.create_task(self._cg_enhanced.start(), name="feed:coinglass_enhanced")
+                asyncio.create_task(
+                    self._cg_enhanced.start(), name="feed:coinglass_enhanced"
+                )
             )
         if self._chainlink_feed:
             self._tasks.append(
@@ -898,19 +967,26 @@ class Orchestrator:
         # 5c. Prediction recorder (all 4 assets, every 30s)
         if self._five_min_strategy and self._five_min_strategy.timesfm_v2_client:
             from data.feeds.prediction_recorder import PredictionRecorder
+
             _prediction_recorder = PredictionRecorder(
                 elm_client=self._five_min_strategy.timesfm_v2_client,
                 db_pool=self._db._pool if self._db else None,
                 shutdown_event=self._shutdown_event,
             )
             self._tasks.append(
-                asyncio.create_task(_prediction_recorder.run(), name="prediction_recorder")
+                asyncio.create_task(
+                    _prediction_recorder.run(), name="prediction_recorder"
+                )
             )
-            log.info("orchestrator.prediction_recorder_started", assets=["BTC", "ETH", "SOL", "XRP"])
+            log.info(
+                "orchestrator.prediction_recorder_started",
+                assets=["BTC", "ETH", "SOL", "XRP"],
+            )
 
         # 5d. Polymarket trade history reconciler (every 5 min)
         if self._poly_client and self._db and self._db._pool:
             from reconciliation.poly_trade_history import PolyTradeHistoryReconciler
+
             _poly_hist = PolyTradeHistoryReconciler(
                 poly_client=self._poly_client,
                 db_pool=self._db._pool,
@@ -928,6 +1004,7 @@ class Orchestrator:
         # This is the GROUND TRUTH table for post-hoc P&L analysis.
         if self._db and self._db._pool and self._settings.poly_funder_address:
             from reconciliation.poly_fills_reconciler import PolyFillsReconciler
+
             self._poly_fills_reconciler = PolyFillsReconciler(
                 pool=self._db._pool,
                 funder_address=self._settings.poly_funder_address,
@@ -969,12 +1046,16 @@ class Orchestrator:
         try:
             await self._db.ensure_post_resolution_table()
         except Exception as exc:
-            log.warning("orchestrator.ensure_post_resolution_table_failed", error=str(exc))
+            log.warning(
+                "orchestrator.ensure_post_resolution_table_failed", error=str(exc)
+            )
 
         try:
             await self._db.ensure_window_predictions_table()
         except Exception as exc:
-            log.warning("orchestrator.ensure_window_predictions_table_failed", error=str(exc))
+            log.warning(
+                "orchestrator.ensure_window_predictions_table_failed", error=str(exc)
+            )
 
         # 6d. Ensure v8.0 columns exist in trades table
         try:
@@ -989,7 +1070,9 @@ class Orchestrator:
         try:
             await self._db.ensure_manual_trades_sot_columns()
         except Exception as exc:
-            log.warning("orchestrator.ensure_manual_trades_sot_columns_failed", error=str(exc))
+            log.warning(
+                "orchestrator.ensure_manual_trades_sot_columns_failed", error=str(exc)
+            )
 
         # 6d3. POLY-SOT-b: same for the `trades` table — automatic engine
         # trades now get the same SOT treatment as operator manual trades.
@@ -1015,6 +1098,7 @@ class Orchestrator:
         if not self._settings.paper_mode and _use_reconciler:
             try:
                 from reconciliation.reconciler import CLOBReconciler
+
                 self._reconciler = CLOBReconciler(
                     poly_client=self._poly_client,
                     db_pool=self._db._pool,
@@ -1058,9 +1142,7 @@ class Orchestrator:
             try:
                 await self._redeemer.connect()
                 self._tasks.append(
-                    asyncio.create_task(
-                        self._redeemer_loop(), name="redeemer:sweep"
-                    )
+                    asyncio.create_task(self._redeemer_loop(), name="redeemer:sweep")
                 )
                 log.info("orchestrator.redeemer_started")
             except Exception as e:
@@ -1088,12 +1170,16 @@ class Orchestrator:
         if not self._settings.paper_mode and not _use_reconciler:
             # Legacy position monitor (disabled when CLOB reconciler is active)
             self._tasks.append(
-                asyncio.create_task(self._position_monitor_loop(), name="position_monitor")
+                asyncio.create_task(
+                    self._position_monitor_loop(), name="position_monitor"
+                )
             )
 
         # ── G1 & G3: Staggered execution + single best signal loop ──────────────
         self._tasks.append(
-            asyncio.create_task(self._staggered_execution_loop(), name="staggered_execution")
+            asyncio.create_task(
+                self._staggered_execution_loop(), name="staggered_execution"
+            )
         )
 
         # Register OS signal handlers
@@ -1116,12 +1202,16 @@ class Orchestrator:
                     vpin_calculator=self._vpin_calc,
                     cg_feeds=self._cg_feeds,
                     twap_tracker=self._twap_tracker,
-                    binance_state=self._aggregator if hasattr(self, "_aggregator") else None,
+                    binance_state=self._aggregator
+                    if hasattr(self, "_aggregator")
+                    else None,
                 )
                 await self._data_surface_mgr.start()
                 log.info("orchestrator.data_surface_manager_started")
             except Exception as exc:
-                log.warning("orchestrator.data_surface_start_error", error=str(exc)[:200])
+                log.warning(
+                    "orchestrator.data_surface_start_error", error=str(exc)[:200]
+                )
 
         await self._alerter.send_system_alert("Engine started", level="info")
         log.info("orchestrator.started", tasks=len(self._tasks))
@@ -1150,7 +1240,7 @@ class Orchestrator:
         # Stop strategies
         await self._arb_strategy.stop()
         await self._cascade_strategy.stop()
-        
+
         # Stop v6.0 TimesFM strategy
         if self._timesfm_strategy:
             await self._timesfm_strategy.stop()
@@ -1245,7 +1335,11 @@ class Orchestrator:
                     try:
                         wts = int(parts[1])
                         # Convert trade_time (datetime) to unix timestamp
-                        ts = trade.trade_time.timestamp() if hasattr(trade.trade_time, 'timestamp') else time.time()
+                        ts = (
+                            trade.trade_time.timestamp()
+                            if hasattr(trade.trade_time, "timestamp")
+                            else time.time()
+                        )
                         self._twap_tracker.add_tick("BTC", wts, float(trade.price), ts)
                     except (ValueError, TypeError):
                         pass
@@ -1257,6 +1351,7 @@ class Orchestrator:
     async def _start_cg_staggered(self, feed: CoinGlassEnhancedFeed, symbol: str):
         """Start CG feed with stagger to spread API load."""
         import random
+
         _delay = {"BTC": 0, "ETH": 2, "SOL": 4, "XRP": 6}.get(symbol, 0)
         _delay += random.uniform(0, 1)
         await asyncio.sleep(_delay)
@@ -1287,11 +1382,14 @@ class Orchestrator:
     async def _timesfm_forecast_recorder_loop(self) -> None:
         """Every 1s: fetch TimesFM forecast with window-relative horizon and record."""
         import math
+
         while not self._shutdown_event.is_set():
             try:
                 now = time.time()
                 # Calculate current 5-min window context
-                window_ts = int(now // 300) * 300  # current window open (aligned to 300s)
+                window_ts = (
+                    int(now // 300) * 300
+                )  # current window open (aligned to 300s)
                 window_close_ts = window_ts + 300
                 seconds_to_close = max(1, int(window_close_ts - now))
 
@@ -1343,7 +1441,7 @@ class Orchestrator:
 
     async def _on_polymarket_book(self, book: PolymarketOrderBook) -> None:
         """Polymarket order book → aggregator + arb scanner.
-        
+
         The book now contains both YES and NO sides (NO derived from YES complement).
         Feed the complete book to the arb scanner for scanning.
         """
@@ -1386,7 +1484,9 @@ class Orchestrator:
                     btc_price_5m_ago=float(state.btc_price_5m_ago),
                 )
             except Exception as exc:
-                log.error("orchestrator.cascade_update_from_vpin_failed", error=str(exc))
+                log.error(
+                    "orchestrator.cascade_update_from_vpin_failed", error=str(exc)
+                )
 
     async def _on_cascade_signal(self, signal: CascadeSignal) -> None:
         """Cascade FSM signal → aggregator + DB persistence + alert."""
@@ -1432,12 +1532,18 @@ class Orchestrator:
 
     async def _on_five_min_window(self, window) -> None:
         """Handle 5-minute window signal from the feed.
-        
+
         G1 & G3: Collect windows for staggered, single-best-signal execution.
         Logs for observability AND forwards to the strategy for evaluation.
         """
-        window_state = getattr(window, 'state', None)
-        state_value = window_state.value if hasattr(window_state, 'value') else str(window_state) if window_state else 'NO_STATE'
+        window_state = getattr(window, "state", None)
+        state_value = (
+            window_state.value
+            if hasattr(window_state, "value")
+            else str(window_state)
+            if window_state
+            else "NO_STATE"
+        )
         log.info(
             "five_min.window_signal",
             asset=window.asset,
@@ -1473,11 +1579,17 @@ class Orchestrator:
                 if window.up_price and window.down_price:
                     # Infer approximate current price from token prices
                     # This is an approximation — better than no ticks at all
-                    _up_ratio = window.up_price / (window.up_price + window.down_price) if (window.up_price + window.down_price) > 0 else 0.5
+                    _up_ratio = (
+                        window.up_price / (window.up_price + window.down_price)
+                        if (window.up_price + window.down_price) > 0
+                        else 0.5
+                    )
                     # Map token ratio to price delta: ratio 0.55 ≈ +0.05% delta
                     _implied_delta = (_up_ratio - 0.5) * 0.002  # Scale factor
                     _proxy_price = window.open_price * (1 + _implied_delta)
-                self._twap_tracker.add_tick(window.asset, window.window_ts, _proxy_price)
+                self._twap_tracker.add_tick(
+                    window.asset, window.window_ts, _proxy_price
+                )
 
             # ── Window-centric notification system (v7.2) ────────────────
             # Each window gets: OPEN card → T-240/180/120/90 snapshots →
@@ -1485,6 +1597,7 @@ class Orchestrator:
             # All messages tagged with window_id + location + version.
             if state_value == "ACTIVE" and window.open_price:
                 import time as _time
+
                 _elapsed = _time.time() - window.window_ts
                 _remaining = window.duration_secs - _elapsed
                 _wkey = f"{window.asset}-{window.window_ts}"
@@ -1492,38 +1605,65 @@ class Orchestrator:
                 _tf = "15m" if window.duration_secs == 900 else "5m"
 
                 # Track which stages we've sent for this window
-                if not hasattr(self, '_countdown_sent'):
+                if not hasattr(self, "_countdown_sent"):
                     self._countdown_sent = {}
                 if _wkey not in self._countdown_sent:
                     self._countdown_sent[_wkey] = set()
                     # WINDOW OPEN card — fires once at T-300 (window just opened)
                     if self._alerter and _remaining >= 270:
-                        asyncio.create_task(self._alerter.send_window_open(
-                            window_id=_window_id,
-                            asset=window.asset,
-                            timeframe=_tf,
-                            open_price=window.open_price,
-                            gamma_up=window.up_price or 0.50,
-                            gamma_down=window.down_price or 0.50,
-                        ))
+                        asyncio.create_task(
+                            self._alerter.send_window_open(
+                                window_id=_window_id,
+                                asset=window.asset,
+                                timeframe=_tf,
+                                open_price=window.open_price,
+                                gamma_up=window.up_price or 0.50,
+                                gamma_down=window.down_price or 0.50,
+                            )
+                        )
 
-                log.info("five_min.countdown_check", remaining=f"{_remaining:.1f}s",
-                         sent=str(self._countdown_sent.get(_wkey, set())))
+                log.info(
+                    "five_min.countdown_check",
+                    remaining=f"{_remaining:.1f}s",
+                    sent=str(self._countdown_sent.get(_wkey, set())),
+                )
 
                 # ── Helper: get full signal snapshot ────────────────────
                 async def _get_full_snapshot(t_label: str, elapsed: int):
                     _vpin = self._five_min_strategy.current_vpin
-                    _btc = float(self._aggregator._state.btc_price) if self._aggregator._state.btc_price else 0.0
-                    _d = (_btc - window.open_price) / window.open_price * 100 if window.open_price and _btc else 0.0
-                    _regime = ("CASCADE" if _vpin >= 0.65 else "TRANSITION" if _vpin >= 0.55
-                               else "NORMAL" if _vpin >= 0.45 else "CALM")
+                    _btc = (
+                        float(self._aggregator._state.btc_price)
+                        if self._aggregator._state.btc_price
+                        else 0.0
+                    )
+                    _d = (
+                        (_btc - window.open_price) / window.open_price * 100
+                        if window.open_price and _btc
+                        else 0.0
+                    )
+                    _regime = (
+                        "CASCADE"
+                        if _vpin >= 0.65
+                        else "TRANSITION"
+                        if _vpin >= 0.55
+                        else "NORMAL"
+                        if _vpin >= 0.45
+                        else "CALM"
+                    )
                     # TimesFM
                     _tsf_dir, _tsf_conf, _tsf_pred = None, 0.0, 0.0
                     if self._five_min_strategy.timesfm_client:
                         try:
-                            _secs = max(1, int((window.window_ts + window.duration_secs) - _time.time()))
+                            _secs = max(
+                                1,
+                                int(
+                                    (window.window_ts + window.duration_secs)
+                                    - _time.time()
+                                ),
+                            )
                             _tsf = await self._five_min_strategy.timesfm_client.get_forecast(
-                                open_price=window.open_price, seconds_to_close=_secs)
+                                open_price=window.open_price, seconds_to_close=_secs
+                            )
                             if _tsf and not _tsf.error:
                                 _tsf_dir = _tsf.direction
                                 _tsf_conf = _tsf.confidence
@@ -1534,9 +1674,11 @@ class Orchestrator:
                     _tw_dir, _tw_agree = None, 0
                     if self._twap_tracker:
                         _tw = self._twap_tracker.evaluate(
-                            asset=window.asset, window_ts=window.window_ts,
+                            asset=window.asset,
+                            window_ts=window.window_ts,
                             current_price=_btc,
-                            gamma_up_price=window.up_price, gamma_down_price=window.down_price,
+                            gamma_up_price=window.up_price,
+                            gamma_down_price=window.down_price,
                         )
                         if _tw:
                             _tw_dir = _tw.recommended_direction
@@ -1557,8 +1699,9 @@ class Orchestrator:
                     _ticks = []
                     try:
                         _tw_state = self._twap_tracker._windows.get(
-                            f"{window.asset}-{window.window_ts}", None)
-                        if _tw_state and hasattr(_tw_state, 'ticks'):
+                            f"{window.asset}-{window.window_ts}", None
+                        )
+                        if _tw_state and hasattr(_tw_state, "ticks"):
                             _ticks = [t[1] for t in _tw_state.ticks[-300:]]
                     except Exception:
                         _ticks = [window.open_price, _btc]
@@ -1577,22 +1720,48 @@ class Orchestrator:
                                 f"1 sentence: signal strength and key risk."
                             )
                             import aiohttp as _ah
+
                             async with _ah.ClientSession() as _sess:
                                 async with _sess.post(
                                     "https://api.anthropic.com/v1/messages",
-                                    json={"model": "claude-sonnet-4-6", "max_tokens": 150,
-                                          "system": "You are a crypto trading analyst for Polymarket 5-min prediction markets. Be concise. 1-2 sentences max.",
-                                          "messages": [{"role": "user", "content": _prompt}]},
-                                    headers={"x-api-key": self._alerter._anthropic_api_key,
-                                             "anthropic-version": "2023-06-01"},
+                                    json={
+                                        "model": "claude-sonnet-4-6",
+                                        "max_tokens": 150,
+                                        "system": "You are a crypto trading analyst for Polymarket 5-min prediction markets. Be concise. 1-2 sentences max.",
+                                        "messages": [
+                                            {"role": "user", "content": _prompt}
+                                        ],
+                                    },
+                                    headers={
+                                        "x-api-key": self._alerter._anthropic_api_key,
+                                        "anthropic-version": "2023-06-01",
+                                    },
                                     timeout=_ah.ClientTimeout(total=8),
                                 ) as _r:
                                     if _r.status == 200:
                                         _d2 = await _r.json()
-                                        _ai = _d2.get("content", [{}])[0].get("text", "").strip()
+                                        _ai = (
+                                            _d2.get("content", [{}])[0]
+                                            .get("text", "")
+                                            .strip()
+                                        )
                         except Exception:
                             pass
-                    return _vpin, _btc, _d, _regime, _tsf_dir, _tsf_conf, _tsf_pred, _tw_dir, _tw_agree, _cg_taker, _cg_fund, _ticks, _ai
+                    return (
+                        _vpin,
+                        _btc,
+                        _d,
+                        _regime,
+                        _tsf_dir,
+                        _tsf_conf,
+                        _tsf_pred,
+                        _tw_dir,
+                        _tw_agree,
+                        _cg_taker,
+                        _cg_fund,
+                        _ticks,
+                        _ai,
+                    )
 
                 # Snapshot windows: T-240, T-210, T-180, T-150, T-120, T-90, T-70
                 _snapshot_windows = [
@@ -1601,15 +1770,32 @@ class Orchestrator:
                     ("T-180", 182, 160),
                     ("T-150", 152, 130),
                     ("T-120", 122, 100),
-                    ("T-90",   92,  70),
-                    ("T-70",   72,  55),
+                    ("T-90", 92, 70),
+                    ("T-70", 72, 55),
                 ]
                 for _t_lbl, _hi, _lo in _snapshot_windows:
-                    if _remaining <= _hi and _remaining >= _lo and _t_lbl not in self._countdown_sent[_wkey]:
+                    if (
+                        _remaining <= _hi
+                        and _remaining >= _lo
+                        and _t_lbl not in self._countdown_sent[_wkey]
+                    ):
                         self._countdown_sent[_wkey].add(_t_lbl)
                         _elapsed_now = int(window.duration_secs - _remaining)
-                        (_vpin, _btc, _d, _regime, _tsf_dir, _tsf_conf, _tsf_pred,
-                         _tw_dir, _tw_agree, _cg_taker, _cg_fund, _ticks, _ai) = await _get_full_snapshot(_t_lbl, _elapsed_now)
+                        (
+                            _vpin,
+                            _btc,
+                            _d,
+                            _regime,
+                            _tsf_dir,
+                            _tsf_conf,
+                            _tsf_pred,
+                            _tw_dir,
+                            _tw_agree,
+                            _cg_taker,
+                            _cg_fund,
+                            _ticks,
+                            _ai,
+                        ) = await _get_full_snapshot(_t_lbl, _elapsed_now)
 
                         # ── Fetch fresh Gamma prices for this stage ──────────
                         _snap_gamma_up = window.up_price or 0.50
@@ -1617,35 +1803,52 @@ class Orchestrator:
                         try:
                             _slug = f"{window.asset.lower()}-updown-{_tf}-{window.window_ts}"
                             import aiohttp as _ah_gamma
-                            async with _ah_gamma.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as _gs:
+
+                            async with _ah_gamma.ClientSession(
+                                headers={"User-Agent": "Mozilla/5.0"}
+                            ) as _gs:
                                 async with _gs.get(
                                     f"https://gamma-api.polymarket.com/events?slug={_slug}",
                                     timeout=_ah_gamma.ClientTimeout(total=5),
                                 ) as _gr:
                                     if _gr.status == 200:
                                         _gd = await _gr.json()
-                                        if _gd and isinstance(_gd, list) and _gd[0].get("markets"):
+                                        if (
+                                            _gd
+                                            and isinstance(_gd, list)
+                                            and _gd[0].get("markets")
+                                        ):
                                             _gm = _gd[0]["markets"][0]
                                             _ba = _gm.get("bestAsk")
                                             if _ba is not None:
                                                 _snap_gamma_up = round(float(_ba), 4)
-                                                _snap_gamma_down = round(1.0 - _snap_gamma_up, 4)
+                                                _snap_gamma_down = round(
+                                                    1.0 - _snap_gamma_up, 4
+                                                )
                         except Exception:
                             pass
 
                         # ── Write snapshot to countdown_evaluations DB ───────
                         try:
-                            _twap_agree_bool = (_tw_agree >= 2) if _tw_agree is not None else None
+                            _twap_agree_bool = (
+                                (_tw_agree >= 2) if _tw_agree is not None else None
+                            )
                             # v7.2: fetch multi-source prices for countdown record
                             _cl_price = None
                             _ti_price = None
                             if self._db:
                                 try:
-                                    _cl_price = await self._db.get_latest_chainlink_price(window.asset)
+                                    _cl_price = (
+                                        await self._db.get_latest_chainlink_price(
+                                            window.asset
+                                        )
+                                    )
                                 except Exception:
                                     pass
                                 try:
-                                    _ti_price = await self._db.get_latest_tiingo_price(window.asset)
+                                    _ti_price = await self._db.get_latest_tiingo_price(
+                                        window.asset
+                                    )
                                 except Exception:
                                     pass
                             _cl_str = f"{_cl_price:.2f}" if _cl_price else "N/A"
@@ -1659,45 +1862,52 @@ class Orchestrator:
                                 f"chainlink={_cl_str},"
                                 f"tiingo={_ti_str}"
                             )
-                            asyncio.create_task(self._db.write_countdown_evaluation({
-                                "window_ts": window.window_ts,
-                                "stage": _t_lbl,
-                                "direction": _tsf_dir or ("UP" if _d > 0 else "DOWN"),
-                                "confidence": _tsf_conf,
-                                "agreement": _twap_agree_bool,
-                                "action": "SNAPSHOT",
-                                "notes": _eval_notes,
-                                # v7.2: multi-source prices
-                                "chainlink_price": _cl_price,
-                                "tiingo_price": _ti_price,
-                                "binance_price": _btc,
-                            }))
+                            asyncio.create_task(
+                                self._db.write_countdown_evaluation(
+                                    {
+                                        "window_ts": window.window_ts,
+                                        "stage": _t_lbl,
+                                        "direction": _tsf_dir
+                                        or ("UP" if _d > 0 else "DOWN"),
+                                        "confidence": _tsf_conf,
+                                        "agreement": _twap_agree_bool,
+                                        "action": "SNAPSHOT",
+                                        "notes": _eval_notes,
+                                        # v7.2: multi-source prices
+                                        "chainlink_price": _cl_price,
+                                        "tiingo_price": _ti_price,
+                                        "binance_price": _btc,
+                                    }
+                                )
+                            )
                         except Exception:
                             pass
 
                         if self._alerter:
-                            asyncio.create_task(self._alerter.send_window_snapshot(
-                                window_id=_window_id,
-                                t_label=_t_lbl,
-                                elapsed_s=_elapsed_now,
-                                price_ticks=_ticks or [window.open_price, _btc],
-                                open_price=window.open_price,
-                                current_price=_btc,
-                                delta_pct=_d,
-                                vpin=_vpin,
-                                vpin_regime=_regime,
-                                twap_direction=_tw_dir,
-                                twap_agreement=_tw_agree,
-                                timesfm_direction=_tsf_dir,
-                                timesfm_confidence=_tsf_conf,
-                                timesfm_predicted=_tsf_pred,
-                                gamma_up=_snap_gamma_up,
-                                gamma_down=_snap_gamma_down,
-                                cg_taker_buy_pct=_cg_taker,
-                                cg_funding_annual=_cg_fund,
-                                stake_usd=4.0,
-                                ai_commentary=_ai,
-                            ))
+                            asyncio.create_task(
+                                self._alerter.send_window_snapshot(
+                                    window_id=_window_id,
+                                    t_label=_t_lbl,
+                                    elapsed_s=_elapsed_now,
+                                    price_ticks=_ticks or [window.open_price, _btc],
+                                    open_price=window.open_price,
+                                    current_price=_btc,
+                                    delta_pct=_d,
+                                    vpin=_vpin,
+                                    vpin_regime=_regime,
+                                    twap_direction=_tw_dir,
+                                    twap_agreement=_tw_agree,
+                                    timesfm_direction=_tsf_dir,
+                                    timesfm_confidence=_tsf_conf,
+                                    timesfm_predicted=_tsf_pred,
+                                    gamma_up=_snap_gamma_up,
+                                    gamma_down=_snap_gamma_down,
+                                    cg_taker_buy_pct=_cg_taker,
+                                    cg_funding_annual=_cg_fund,
+                                    stake_usd=4.0,
+                                    ai_commentary=_ai,
+                                )
+                            )
 
                 # Clean up old window tracking
                 if len(self._countdown_sent) > 20:
@@ -1727,8 +1937,11 @@ class Orchestrator:
                         try:
                             # Build WindowMarket from window's token IDs if available
                             _v2_window_market = None
-                            if getattr(window, "up_token_id", None) and getattr(window, "down_token_id", None):
+                            if getattr(window, "up_token_id", None) and getattr(
+                                window, "down_token_id", None
+                            ):
                                 from domain.value_objects import WindowMarket
+
                                 _v2_window_market = WindowMarket(
                                     condition_id=f"{window.asset}-{window.window_ts}",
                                     up_token_id=window.up_token_id,
@@ -1737,9 +1950,12 @@ class Orchestrator:
                                 )
 
                             v2_decisions = await self._strategy_registry.evaluate_all(
-                                window, state,
+                                window,
+                                state,
                                 window_market=_v2_window_market,
-                                current_btc_price=float(getattr(state, "btc_price", 0) or 0),
+                                current_btc_price=float(
+                                    getattr(state, "btc_price", 0) or 0
+                                ),
                                 open_price=float(getattr(window, "open_price", 0) or 0),
                             )
                             for d in v2_decisions:
@@ -1751,32 +1967,46 @@ class Orchestrator:
                                     skip_reason=d.skip_reason,
                                 )
                         except Exception as exc:
-                            log.warning("strategy_registry_v2.eval_error", error=str(exc)[:200])
+                            log.warning(
+                                "strategy_registry_v2.eval_error", error=str(exc)[:200]
+                            )
 
                     if self._use_strategy_port and self._evaluate_strategies_uc:
                         # SP-04: Multi-strategy path
-                        result = await self._evaluate_strategies_uc.execute(window, state)
+                        result = await self._evaluate_strategies_uc.execute(
+                            window, state
+                        )
                         # v12: Cache for sitrep + pass decisions to alerter
                         self._last_sp_result = result
                         # Build enriched decision dicts with mode info for Telegram
                         _sp_for_alert = []
-                        _regs = {r.strategy_id: r for r, _ in self._evaluate_strategies_uc._strategies}
+                        _regs = {
+                            r.strategy_id: r
+                            for r, _ in self._evaluate_strategies_uc._strategies
+                        }
                         for _d in result.all_decisions:
                             _reg = _regs.get(_d.strategy_id)
-                            _sp_for_alert.append({
-                                "strategy_id": _d.strategy_id,
-                                "mode": _reg.mode if _reg else "?",
-                                "action": _d.action,
-                                "direction": _d.direction,
-                                "confidence": _d.confidence,
-                                "skip_reason": _d.skip_reason,
-                                "entry_cap": _d.entry_cap,
-                            })
+                            _sp_for_alert.append(
+                                {
+                                    "strategy_id": _d.strategy_id,
+                                    "mode": _reg.mode if _reg else "?",
+                                    "action": _d.action,
+                                    "direction": _d.direction,
+                                    "confidence": _d.confidence,
+                                    "skip_reason": _d.skip_reason,
+                                    "entry_cap": _d.entry_cap,
+                                }
+                            )
                         # Inject strategy decisions into five_min_strategy for
                         # Telegram alerts (send_trade_decision_detailed / send_window_summary)
                         if self._five_min_strategy:
-                            self._five_min_strategy._pending_strategy_decisions = _sp_for_alert
-                        if result.live_decision and result.live_decision.action == "TRADE":
+                            self._five_min_strategy._pending_strategy_decisions = (
+                                _sp_for_alert
+                            )
+                        if (
+                            result.live_decision
+                            and result.live_decision.action == "TRADE"
+                        ):
                             live = result.live_decision
                             log.info(
                                 "strategy_port.live_trade",
@@ -1806,67 +2036,115 @@ class Orchestrator:
                             # no-trade ticks, leaving window_snapshots empty.
                             _ctx = result.context
                             if self._db and _ctx:
-                                asyncio.create_task(self._db.write_window_snapshot({
-                                    "window_ts": getattr(window, "window_ts", 0),
-                                    "asset": getattr(window, "asset", "BTC"),
-                                    "timeframe": "5m",
-                                    "open_price": getattr(window, "open_price", 0),
-                                    "close_price": _ctx.current_price or 0,
-                                    "btc_price": _ctx.current_price or 0,
-                                    "eval_offset": getattr(window, "eval_offset", None),
-                                    "vpin": _ctx.vpin,
-                                    "regime": _ctx.regime,
-                                    "delta_pct": _ctx.delta_pct,
-                                    "delta_source": _ctx.delta_source,
-                                    "v2_probability_up": (_ctx.v4_snapshot.probability_up
-                                                          if _ctx.v4_snapshot else None),
-                                    "v2_direction": ("DOWN" if (_ctx.v4_snapshot and
-                                                    (_ctx.v4_snapshot.probability_up or 0.5) < 0.5)
-                                                    else "UP") if _ctx.v4_snapshot else None,
-                                }))
+                                asyncio.create_task(
+                                    self._db.write_window_snapshot(
+                                        {
+                                            "window_ts": getattr(
+                                                window, "window_ts", 0
+                                            ),
+                                            "asset": getattr(window, "asset", "BTC"),
+                                            "timeframe": "5m",
+                                            "open_price": getattr(
+                                                window, "open_price", 0
+                                            ),
+                                            "close_price": _ctx.current_price or 0,
+                                            "btc_price": _ctx.current_price or 0,
+                                            "eval_offset": getattr(
+                                                window, "eval_offset", None
+                                            ),
+                                            "vpin": _ctx.vpin,
+                                            "regime": _ctx.regime,
+                                            "delta_pct": _ctx.delta_pct,
+                                            "delta_source": _ctx.delta_source,
+                                            "v2_probability_up": (
+                                                _ctx.v4_snapshot.probability_up
+                                                if _ctx.v4_snapshot
+                                                else None
+                                            ),
+                                            "v2_direction": (
+                                                "DOWN"
+                                                if (
+                                                    _ctx.v4_snapshot
+                                                    and (
+                                                        _ctx.v4_snapshot.probability_up
+                                                        or 0.5
+                                                    )
+                                                    < 0.5
+                                                )
+                                                else "UP"
+                                            )
+                                            if _ctx.v4_snapshot
+                                            else None,
+                                        }
+                                    )
+                                )
                             # v12: Send strategy comparison alert ONCE per window at window close.
                             # Only fire when eval_offset is low (window ending) to avoid
                             # spamming Telegram on every 2-second evaluation tick.
-                            _eval_offset = getattr(window, 'eval_offset', 300) or 300
-                            _is_closing = _eval_offset <= 30  # last 30 seconds of window
+                            _eval_offset = getattr(window, "eval_offset", 300) or 300
+                            _is_closing = (
+                                _eval_offset <= 30
+                            )  # last 30 seconds of window
                             if self._alerter and _sp_for_alert and _is_closing:
                                 _window_key = f"{window.asset}-{window.window_ts}"
                                 _ctx = result.context
                                 _skip_reasons = "; ".join(
                                     f"{d['strategy_id']}: {d.get('skip_reason', '?')[:50]}"
-                                    for d in _sp_for_alert if d.get('action') != 'TRADE'
+                                    for d in _sp_for_alert
+                                    if d.get("action") != "TRADE"
                                 )
                                 try:
                                     await self._alerter.send_window_summary(
                                         window_id=_window_key,
-                                        eval_history=[{
-                                            "offset": _eval_offset,
-                                            "skip_reason": _skip_reasons[:120],
-                                            "vpin": _ctx.vpin if _ctx else 0,
-                                            "delta_pct": _ctx.delta_pct if _ctx else 0,
-                                            "regime": _ctx.regime if _ctx else "?",
-                                        }],
+                                        eval_history=[
+                                            {
+                                                "offset": _eval_offset,
+                                                "skip_reason": _skip_reasons[:120],
+                                                "vpin": _ctx.vpin if _ctx else 0,
+                                                "delta_pct": _ctx.delta_pct
+                                                if _ctx
+                                                else 0,
+                                                "regime": _ctx.regime if _ctx else "?",
+                                            }
+                                        ],
                                         traded=False,
                                         strategy_decisions=_sp_for_alert,
                                     )
                                 except Exception as _se:
-                                    log.warning("strategy_port.skip_alert_failed", error=str(_se)[:100])
+                                    log.warning(
+                                        "strategy_port.skip_alert_failed",
+                                        error=str(_se)[:100],
+                                    )
                     else:
                         # Legacy path
                         await self._five_min_strategy.evaluate_window(window, state)
                 except Exception as exc:
-                    log.warning("five_min.direct_eval_error", asset=window.asset, error=str(exc)[:200])
+                    log.warning(
+                        "five_min.direct_eval_error",
+                        asset=window.asset,
+                        error=str(exc)[:200],
+                    )
             elif state_value != "ACTIVE":
-                log.info("five_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
+                log.info(
+                    "five_min.skip_evaluation",
+                    reason="not_CLOSING_state",
+                    state=state_value,
+                )
             self._five_min_strategy.trim_recent_windows(20)
 
     async def _on_fifteen_min_window(self, window) -> None:
         """Handle 15-minute window signal — same strategy, different timeframe.
-        
+
         G1 & G3: Collect windows for staggered, single-best-signal execution.
         """
-        window_state = getattr(window, 'state', None)
-        state_value = window_state.value if hasattr(window_state, 'value') else str(window_state) if window_state else 'NO_STATE'
+        window_state = getattr(window, "state", None)
+        state_value = (
+            window_state.value
+            if hasattr(window_state, "value")
+            else str(window_state)
+            if window_state
+            else "NO_STATE"
+        )
         log.info(
             "fifteen_min.window_signal",
             asset=window.asset,
@@ -1898,10 +2176,16 @@ class Orchestrator:
             if window.open_price and window.asset != "BTC":
                 _proxy_price = window.open_price
                 if window.up_price and window.down_price:
-                    _up_ratio = window.up_price / (window.up_price + window.down_price) if (window.up_price + window.down_price) > 0 else 0.5
+                    _up_ratio = (
+                        window.up_price / (window.up_price + window.down_price)
+                        if (window.up_price + window.down_price) > 0
+                        else 0.5
+                    )
                     _implied_delta = (_up_ratio - 0.5) * 0.002
                     _proxy_price = window.open_price * (1 + _implied_delta)
-                self._twap_tracker.add_tick(window.asset, window.window_ts, _proxy_price)
+                self._twap_tracker.add_tick(
+                    window.asset, window.window_ts, _proxy_price
+                )
 
             # ONLY evaluate at T-60s (CLOSING state), NOT at window open
             if state_value == "CLOSING":
@@ -1910,7 +2194,11 @@ class Orchestrator:
 
                 # v5.8: TimesFM checked inside v5.7c agreement (no standalone)
             else:
-                log.info("fifteen_min.skip_evaluation", reason="not_CLOSING_state", state=state_value)
+                log.info(
+                    "fifteen_min.skip_evaluation",
+                    reason="not_CLOSING_state",
+                    state=state_value,
+                )
             self._five_min_strategy.trim_recent_windows(20)
 
     # ─── v6.0 TimesFM Window Evaluation ──────────────────────────────────────
@@ -1926,7 +2214,9 @@ class Orchestrator:
             if self._timesfm_strategy:
                 self._timesfm_strategy._recent_windows.append(window)
                 if len(self._timesfm_strategy._recent_windows) > 20:
-                    self._timesfm_strategy._recent_windows = self._timesfm_strategy._recent_windows[-20:]
+                    self._timesfm_strategy._recent_windows = (
+                        self._timesfm_strategy._recent_windows[-20:]
+                    )
                 await self._timesfm_strategy.evaluate_window(window, state)
         except Exception as exc:
             log.warning("timesfm.evaluate_error", asset=window.asset, error=str(exc))
@@ -1938,7 +2228,7 @@ class Orchestrator:
         if order.pnl_usd is not None:
             filled = order.metadata.get("filled", False) if order.metadata else False
             is_paper_mode = self._settings.paper_mode
-            
+
             log.info(
                 "resolution.callback",
                 order_id=order.order_id[:20],
@@ -1948,19 +2238,28 @@ class Orchestrator:
                 paper=is_paper_mode,
                 will_alert=filled or is_paper_mode,
             )
-            
+
             # Track this resolution so _position_monitor_loop skips duplicate notification
             meta_pre = order.metadata or {}
             _resolved_token = meta_pre.get("token_id")
             if _resolved_token:
                 self._resolved_by_order_manager.add(_resolved_token)
-                log.info("resolution.dedup_tracked", token_id=_resolved_token[:20] + "..." if len(_resolved_token) > 20 else _resolved_token)
+                log.info(
+                    "resolution.dedup_tracked",
+                    token_id=_resolved_token[:20] + "..."
+                    if len(_resolved_token) > 20
+                    else _resolved_token,
+                )
 
             # Update risk manager with PnL (bankroll, daily PnL, drawdown, consecutive losses)
             async def _record_and_alert():
                 try:
                     await self._risk_manager.record_outcome(order.pnl_usd)
-                    log.info("resolution.pnl_recorded", order_id=order.order_id[:20], pnl=f"${order.pnl_usd:.2f}")
+                    log.info(
+                        "resolution.pnl_recorded",
+                        order_id=order.order_id[:20],
+                        pnl=f"${order.pnl_usd:.2f}",
+                    )
                 except Exception as exc:
                     log.error("resolution.pnl_record_failed", error=str(exc))
 
@@ -1973,15 +2272,27 @@ class Orchestrator:
                         _close_p = float(self._order_manager._current_btc_price or 0)
                         # Determine actual direction from oracle outcome, not live price
                         if order.outcome == "WIN":
-                            _actual = _direction  # We won = oracle agreed with our direction
+                            _actual = (
+                                _direction  # We won = oracle agreed with our direction
+                            )
                         else:
-                            _actual = "DOWN" if _direction == "UP" else "UP"  # We lost = oracle went opposite
+                            _actual = (
+                                "DOWN" if _direction == "UP" else "UP"
+                            )  # We lost = oracle went opposite
                         _delta = (_close_p - _open_p) / _open_p * 100 if _open_p else 0
-                        _vpin = self._five_min_strategy.current_vpin if self._five_min_strategy else 0
+                        _vpin = (
+                            self._five_min_strategy.current_vpin
+                            if self._five_min_strategy
+                            else 0
+                        )
                         # Win streak from risk manager
                         _rs = self._risk_manager.get_status()
-                        _streak_w = _rs.get("win_streak", 0) if order.outcome == "WIN" else 0
-                        _streak_l = _rs.get("loss_streak", 0) if order.outcome != "WIN" else 0
+                        _streak_w = (
+                            _rs.get("win_streak", 0) if order.outcome == "WIN" else 0
+                        )
+                        _streak_l = (
+                            _rs.get("loss_streak", 0) if order.outcome != "WIN" else 0
+                        )
                         # Entry prices at each T- point (stored in window's countdown_sent data if available)
                         _entry_prices = meta.get("entry_prices_by_t", {})
                         if not _entry_prices:
@@ -2007,7 +2318,7 @@ class Orchestrator:
                             loss_streak=_streak_l,
                             entry_reason=meta.get("entry_reason"),
                         )
-                        
+
                         # Dual-AI outcome analysis with full window context (non-blocking)
                         if order.outcome in ("WIN", "LOSS") and self._alerter:
                             try:
@@ -2024,7 +2335,9 @@ class Orchestrator:
                                     "open_price": _open_p,
                                     "close_price": _close_p,
                                     "timesfm_direction": meta.get("timesfm_direction"),
-                                    "timesfm_confidence": meta.get("timesfm_confidence", 0),
+                                    "timesfm_confidence": meta.get(
+                                        "timesfm_confidence", 0
+                                    ),
                                     "twap_direction": meta.get("twap_direction"),
                                     "twap_agreement": meta.get("twap_agreement_score"),
                                     "gamma_up": meta.get("gamma_up_price"),
@@ -2035,24 +2348,51 @@ class Orchestrator:
                                     "delta_pct": meta.get("delta_pct", 0),
                                     "actual_direction": _oc,  # Oracle resolved direction
                                 }
-                                async def _send_outcome_ai(_wid=_wid, _dir=_dir, _ep=_ep, _oc=_oc, _pnl=_pnl, _oid=_oid, _wd=_wd):
+
+                                async def _send_outcome_ai(
+                                    _wid=_wid,
+                                    _dir=_dir,
+                                    _ep=_ep,
+                                    _oc=_oc,
+                                    _pnl=_pnl,
+                                    _oid=_oid,
+                                    _wd=_wd,
+                                ):
                                     try:
                                         result = await self._alerter.send_outcome_with_analysis(
-                                            window_id=_wid, decision=_dir,
-                                            entry_price=_ep, outcome=_oc, pnl_usd=_pnl,
+                                            window_id=_wid,
+                                            decision=_dir,
+                                            entry_price=_ep,
+                                            outcome=_oc,
+                                            pnl_usd=_pnl,
                                             window_data=_wd,
                                         )
-                                        log.debug("outcome_ai.sent", order_id=_oid, result_type=type(result).__name__)
+                                        log.debug(
+                                            "outcome_ai.sent",
+                                            order_id=_oid,
+                                            result_type=type(result).__name__,
+                                        )
                                     except Exception as exc:
-                                        log.error("outcome_analysis_failed", order_id=_oid, error=str(exc)[:100])
+                                        log.error(
+                                            "outcome_analysis_failed",
+                                            order_id=_oid,
+                                            error=str(exc)[:100],
+                                        )
+
                                 asyncio.create_task(_send_outcome_ai())
                             except Exception as exc:
-                                log.error("outcome_ai_spawn_failed", error=str(exc)[:100])
-                        
+                                log.error(
+                                    "outcome_ai_spawn_failed", error=str(exc)[:100]
+                                )
+
                         log.info("resolution.alert_sent", order_id=order.order_id[:20])
                     except Exception as exc:
-                        log.error("resolution.alert_failed", order_id=order.order_id[:20], error=str(exc))
-            
+                        log.error(
+                            "resolution.alert_failed",
+                            order_id=order.order_id[:20],
+                            error=str(exc),
+                        )
+
             asyncio.create_task(_record_and_alert())
 
     # ─── Background Tasks ─────────────────────────────────────────────────────
@@ -2087,9 +2427,7 @@ class Orchestrator:
                 log.warning("poly_fills_loop.sync_failed", error=str(exc)[:200])
 
             try:
-                await asyncio.wait_for(
-                    self._shutdown_event.wait(), timeout=interval
-                )
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval)
             except asyncio.TimeoutError:
                 continue
 
@@ -2126,8 +2464,12 @@ class Orchestrator:
                     if not self._settings.paper_mode:
                         # Live mode: sync from real Polymarket wallet (cash only)
                         try:
-                            _cached_wallet_balance = await self._poly_client.get_balance()
-                            await self._risk_manager.sync_bankroll(_cached_wallet_balance)
+                            _cached_wallet_balance = (
+                                await self._poly_client.get_balance()
+                            )
+                            await self._risk_manager.sync_bankroll(
+                                _cached_wallet_balance
+                            )
                         except Exception as exc:
                             log.debug("heartbeat.wallet_balance_error", error=str(exc))
                     else:
@@ -2163,16 +2505,16 @@ class Orchestrator:
                     if mode_row is not None:
                         db_paper = mode_row.get("paper_enabled", True)
                         db_live = mode_row.get("live_enabled", False)
-                        
+
                         # Determine target mode: if live_enabled and not paper_enabled → LIVE
                         # Otherwise → PAPER (safe default)
                         want_paper = not db_live or db_paper
                         current_paper = self._poly_client.paper_mode
-                        
+
                         if want_paper != current_paper:
                             old_mode = "PAPER" if current_paper else "LIVE"
                             new_mode = "PAPER" if want_paper else "LIVE"
-                            
+
                             log.warning(
                                 "mode_switch.detected",
                                 old_mode=old_mode,
@@ -2180,18 +2522,58 @@ class Orchestrator:
                                 db_paper=db_paper,
                                 db_live=db_live,
                             )
-                            
+
                             # Switch poly client mode
                             self._poly_client.paper_mode = want_paper
                             self._settings.paper_mode = want_paper
-                            
+
                             # Update risk manager
                             self._risk_manager._paper_mode = want_paper
-                            
+
+                            # Keep registry execution aligned with runtime mode.
+                            if (
+                                self._strategy_registry
+                                and getattr(
+                                    self._strategy_registry, "_execute_uc", None
+                                )
+                                is not None
+                            ):
+                                try:
+                                    from adapters.execution.paper_executor import (
+                                        PaperExecutor,
+                                    )
+                                    from adapters.execution.fak_ladder_executor import (
+                                        FAKLadderExecutor,
+                                    )
+
+                                    _execute_uc = self._strategy_registry._execute_uc
+                                    _execute_uc._paper_mode = want_paper
+                                    _execute_uc._executor = (
+                                        PaperExecutor()
+                                        if want_paper
+                                        else FAKLadderExecutor(
+                                            poly_client=self._poly_client
+                                        )
+                                    )
+                                    log.info(
+                                        "mode_switch.execute_uc_rewired",
+                                        paper_mode=want_paper,
+                                        executor=(
+                                            "PaperExecutor"
+                                            if want_paper
+                                            else "FAKLadderExecutor"
+                                        ),
+                                    )
+                                except Exception as exc:
+                                    log.error(
+                                        "mode_switch.execute_uc_rewire_failed",
+                                        error=str(exc)[:200],
+                                    )
+
                             # Update alerter mode tag
                             if self._alerter:
                                 self._alerter._paper_mode = want_paper
-                            
+
                             # Telegram notification
                             if self._alerter:
                                 mode_emoji = "📄 PAPER" if want_paper else "🔴 LIVE"
@@ -2202,21 +2584,24 @@ class Orchestrator:
                                     f"Config: v7.1 | Gate: 0.45 | Cap: $0.70 | Bet: 10%",
                                     level="critical" if not want_paper else "info",
                                 )
-                            
+
                             log.warning(
                                 "mode_switch.complete",
                                 new_mode=new_mode,
                                 paper_mode=want_paper,
                             )
-                            
+
                             # Connect CLOB client if switching TO live
                             if not want_paper:
                                 try:
                                     await self._poly_client.connect()
                                     log.info("mode_switch.clob_connected")
                                 except Exception as exc:
-                                    log.error("mode_switch.clob_connect_failed", error=str(exc)[:100])
-                            
+                                    log.error(
+                                        "mode_switch.clob_connect_failed",
+                                        error=str(exc)[:100],
+                                    )
+
                             # Start redeemer if switching TO live
                             if not want_paper and self._redeemer:
                                 try:
@@ -2227,17 +2612,27 @@ class Orchestrator:
                                             self._redeemer_loop(), name="redeemer:sweep"
                                         )
                                     )
-                                    log.info("orchestrator.redeemer_started_on_mode_switch")
+                                    log.info(
+                                        "orchestrator.redeemer_started_on_mode_switch"
+                                    )
                                 except Exception as exc:
-                                    log.error("orchestrator.redeemer_start_failed", error=str(exc))
+                                    log.error(
+                                        "orchestrator.redeemer_start_failed",
+                                        error=str(exc),
+                                    )
                 except Exception as exc:
                     log.debug("mode_sync.failed", error=str(exc)[:80])
 
                 await self._db.update_feed_status(
                     # Both futures + spot feeds must be connected for "binance" healthy
-                    binance=self._binance_feed.connected and self._binance_spot_feed.connected,
-                    coinglass=self._coinglass_feed.connected if self._coinglass_feed else False,
-                    chainlink=self._chainlink_feed.connected if self._chainlink_feed else False,
+                    binance=self._binance_feed.connected
+                    and self._binance_spot_feed.connected,
+                    coinglass=self._coinglass_feed.connected
+                    if self._coinglass_feed
+                    else False,
+                    chainlink=self._chainlink_feed.connected
+                    if self._chainlink_feed
+                    else False,
                     polymarket=self._polymarket_feed.connected,
                     opinion=self._opinion_client.connected,
                 )
@@ -2250,15 +2645,23 @@ class Orchestrator:
 
                 # ── 5-Minute Sitrep to Telegram ──────────────────────────
                 # Skip old SITREP when Strategy Engine v2 is active
-                _v2_sitrep_active = os.environ.get("LEGACY_EXECUTION_DISABLED", "").lower() == "true"
+                _v2_sitrep_active = (
+                    os.environ.get("LEGACY_EXECUTION_DISABLED", "").lower() == "true"
+                )
                 _sitrep_counter += 1
-                if _sitrep_counter >= 30 and not _v2_sitrep_active:  # 30 × 10s = 5 minutes
+                if (
+                    _sitrep_counter >= 30 and not _v2_sitrep_active
+                ):  # 30 × 10s = 5 minutes
                     _sitrep_counter = 0
                     try:
                         om_total = self._order_manager.total_orders
                         om_resolved = self._order_manager.resolved_orders
                         om_open = len(open_orders)
-                        wallet = _cached_wallet_balance or risk_status.get("current_bankroll", 0) or 0
+                        wallet = (
+                            _cached_wallet_balance
+                            or risk_status.get("current_bankroll", 0)
+                            or 0
+                        )
                         bankroll = risk_status.get("current_bankroll", 0)
                         daily_pnl = risk_status.get("daily_pnl", 0)
                         drawdown = risk_status.get("drawdown_pct", 0)
@@ -2288,7 +2691,11 @@ class Orchestrator:
                                 async with self._db._pool.acquire() as conn:
                                     # Use trade_bible as source of truth (includes reconciler-resolved orphans)
                                     # v12: Include paper trades when in paper mode (was filtering them out)
-                                    _live_filter = "AND is_live = true" if not self._settings.paper_mode else ""
+                                    _live_filter = (
+                                        "AND is_live = true"
+                                        if not self._settings.paper_mode
+                                        else ""
+                                    )
                                     row = await conn.fetchrow(
                                         "SELECT "
                                         "  COUNT(*) FILTER (WHERE trade_outcome='WIN') as w, "
@@ -2297,8 +2704,8 @@ class Orchestrator:
                                         "AND resolved_at > DATE_TRUNC('day', NOW())"
                                     )
                                     if row:
-                                        real_wins = int(row['w'] or 0)
-                                        real_losses = int(row['l'] or 0)
+                                        real_wins = int(row["w"] or 0)
+                                        real_losses = int(row["l"] or 0)
                             # Open positions from order manager
                             for oid, o in self._order_manager._orders.items():
                                 if o.status.value in ("OPEN", "FILLED"):
@@ -2306,13 +2713,21 @@ class Orchestrator:
                         except Exception:
                             pass
 
-                        mode_label = "📄 PAPER" if self._settings.paper_mode else "🔴 LIVE"
+                        mode_label = (
+                            "📄 PAPER" if self._settings.paper_mode else "🔴 LIVE"
+                        )
 
                         # Build CoinGlass block for sitrep
                         cg_block = ""
                         try:
-                            cg_snapshot = self._cg_enhanced.snapshot if self._cg_enhanced is not None else None
-                            cg_block = self._alerter.format_coinglass_block(cg_snapshot) + "\n"
+                            cg_snapshot = (
+                                self._cg_enhanced.snapshot
+                                if self._cg_enhanced is not None
+                                else None
+                            )
+                            cg_block = (
+                                self._alerter.format_coinglass_block(cg_snapshot) + "\n"
+                            )
                         except Exception:
                             pass
 
@@ -2320,26 +2735,33 @@ class Orchestrator:
                         baseline = self._settings.starting_bankroll
                         portfolio = bankroll + open_positions_val
                         real_pnl = daily_pnl  # Use today's tracked P&L, not lifetime
-                        
+
                         # Live mode: wallet is the real USDC balance
                         if not self._settings.paper_mode and wallet and wallet > 0:
                             portfolio = wallet + open_positions_val
 
                         # ── Regime label (prefer HMM from V4 snapshot when available) ──
                         vpin_regime = (
-                            "CASCADE" if vpin >= runtime.vpin_cascade_direction_threshold
-                            else "TRANSITION" if vpin >= runtime.vpin_informed_threshold
-                            else "NORMAL" if vpin >= runtime.five_min_vpin_gate
+                            "CASCADE"
+                            if vpin >= runtime.vpin_cascade_direction_threshold
+                            else "TRANSITION"
+                            if vpin >= runtime.vpin_informed_threshold
+                            else "NORMAL"
+                            if vpin >= runtime.five_min_vpin_gate
                             else "CALM"
                         )
                         # v12: HMM regime from latest strategy port context
                         _hmm_regime = None
                         _hmm_confidence = None
                         if self._last_sp_result and self._last_sp_result.context:
-                            _v4s = getattr(self._last_sp_result.context, 'v4_snapshot', None)
+                            _v4s = getattr(
+                                self._last_sp_result.context, "v4_snapshot", None
+                            )
                             if _v4s:
-                                _hmm_regime = getattr(_v4s, 'regime', None)
-                                _hmm_confidence = getattr(_v4s, 'regime_confidence', None)
+                                _hmm_regime = getattr(_v4s, "regime", None)
+                                _hmm_confidence = getattr(
+                                    _v4s, "regime_confidence", None
+                                )
 
                         # v8.1: Enhanced SITREP with recent trades + pending positions
                         _recent_block = ""
@@ -2363,35 +2785,54 @@ class Orchestrator:
                                     if _recent:
                                         _lines = []
                                         for r in _recent:
-                                            _dir = "⬆️" if r['direction'] == 'YES' else "⬇️"
-                                            _out = {"WIN": "✅", "LOSS": "❌"}.get(r['outcome'] or '', "⏳")
-                                            _cap = f"${float(r['cap']):.2f}" if r['cap'] else "?"
-                                            _rsn = (r['reason'] or '?')[-25:]
+                                            _dir = (
+                                                "⬆️" if r["direction"] == "YES" else "⬇️"
+                                            )
+                                            _out = {"WIN": "✅", "LOSS": "❌"}.get(
+                                                r["outcome"] or "", "⏳"
+                                            )
+                                            _cap = (
+                                                f"${float(r['cap']):.2f}"
+                                                if r["cap"]
+                                                else "?"
+                                            )
+                                            _rsn = (r["reason"] or "?")[-25:]
                                             # Window end time as ID (e.g. "14:10 BTC")
                                             _wid = ""
                                             try:
                                                 from datetime import datetime, timezone
-                                                _wts = int(r['wts']) + 300  # window_ts + 5min = close time
-                                                _wid = datetime.fromtimestamp(_wts, tz=timezone.utc).strftime("%H:%M")
+
+                                                _wts = (
+                                                    int(r["wts"]) + 300
+                                                )  # window_ts + 5min = close time
+                                                _wid = datetime.fromtimestamp(
+                                                    _wts, tz=timezone.utc
+                                                ).strftime("%H:%M")
                                             except Exception:
                                                 try:
-                                                    _wid = r['placed'].strftime("%H:%M")
+                                                    _wid = r["placed"].strftime("%H:%M")
                                                 except Exception:
                                                     pass
-                                            if r['outcome']:
-                                                _p = float(r['pnl'] or 0)
-                                                _pstr = f"`{'+' if _p>=0 else ''}${_p:.2f}`"
-                                            elif r['status'] == 'EXPIRED':
+                                            if r["outcome"]:
+                                                _p = float(r["pnl"] or 0)
+                                                _pstr = f"`{'+' if _p >= 0 else ''}${_p:.2f}`"
+                                            elif r["status"] == "EXPIRED":
                                                 _pstr = "unfilled"
                                                 _out = "⏭"
-                                            elif r['status'] == 'SKIPPED':
+                                            elif r["status"] == "SKIPPED":
                                                 _pstr = f"skip: {(r.get('skip_reason') or '?')[:30]}"
                                                 _out = "🚫"
                                             else:
                                                 _pstr = "⏳open"
-                                            _lines.append(f"{_out}{_dir} `{_wid}` {_cap} {_rsn} {_pstr}")
-                                        _recent_block = "\n📝 *Recent trades:*\n" + "\n".join(_lines) + "\n"
-                                    
+                                            _lines.append(
+                                                f"{_out}{_dir} `{_wid}` {_cap} {_rsn} {_pstr}"
+                                            )
+                                        _recent_block = (
+                                            "\n📝 *Recent trades:*\n"
+                                            + "\n".join(_lines)
+                                            + "\n"
+                                        )
+
                                     # Recent strategy decisions — show BOTH LIVE and GHOST
                                     # per window so operator sees V4 (paper) vs V10 (ghost) side-by-side
                                     _sp_rows = await conn.fetch(
@@ -2406,30 +2847,67 @@ class Orchestrator:
                                     )
                                     if _sp_rows:
                                         from datetime import datetime, timezone as _tz
+
                                         _by_window: dict = {}
                                         for _r in _sp_rows:
-                                            _wts = _r['window_ts']
+                                            _wts = _r["window_ts"]
                                             if _wts not in _by_window:
                                                 _by_window[_wts] = {}
-                                            _by_window[_wts][_r['strategy_id']] = _r
+                                            _by_window[_wts][_r["strategy_id"]] = _r
 
                                         _slines = []
-                                        for _wts, _strats in sorted(_by_window.items(), reverse=True)[:3]:
+                                        for _wts, _strats in sorted(
+                                            _by_window.items(), reverse=True
+                                        )[:3]:
                                             try:
-                                                _wid = datetime.fromtimestamp(int(_wts)+300, tz=_tz.utc).strftime("%H:%M")
+                                                _wid = datetime.fromtimestamp(
+                                                    int(_wts) + 300, tz=_tz.utc
+                                                ).strftime("%H:%M")
                                             except Exception:
                                                 _wid = "?"
                                             _parts = []
                                             for _sid, _sr in sorted(_strats.items()):
-                                                _label = "📄" if _sr['mode'] == 'LIVE' else "👻"
-                                                _action = "✅" if _sr['action'] == 'TRADE' else "🚫"
-                                                _dir = "⬆️" if _sr.get('direction') == 'UP' else ("⬇️" if _sr.get('direction') == 'DOWN' else "")
-                                                _reason = (_sr.get('skip_reason') or '?')[:40]
-                                                _regime = (_sr.get('regime') or '')[:8]
-                                                _parts.append(f"{_label}{_action}{_dir} {_sid[:4]}: {_reason}" + (f" [{_regime}]" if _regime else ""))
-                                            _slines.append(f"`{_wid}` " + " | ".join(_parts))
+                                                _label = (
+                                                    "📄"
+                                                    if _sr["mode"] == "LIVE"
+                                                    else "👻"
+                                                )
+                                                _action = (
+                                                    "✅"
+                                                    if _sr["action"] == "TRADE"
+                                                    else "🚫"
+                                                )
+                                                _dir = (
+                                                    "⬆️"
+                                                    if _sr.get("direction") == "UP"
+                                                    else (
+                                                        "⬇️"
+                                                        if _sr.get("direction")
+                                                        == "DOWN"
+                                                        else ""
+                                                    )
+                                                )
+                                                _reason = (
+                                                    _sr.get("skip_reason") or "?"
+                                                )[:40]
+                                                _regime = (_sr.get("regime") or "")[:8]
+                                                _parts.append(
+                                                    f"{_label}{_action}{_dir} {_sid[:4]}: {_reason}"
+                                                    + (
+                                                        f" [{_regime}]"
+                                                        if _regime
+                                                        else ""
+                                                    )
+                                                )
+                                            _slines.append(
+                                                f"`{_wid}` " + " | ".join(_parts)
+                                            )
 
-                                        _recent_block += "📝 *Recent decisions (📄=live paper, 👻=ghost):*\n" + "\n".join(_slines) + "\n"
+                                        _recent_block += (
+                                            "📝 *Recent decisions (📄=live paper, 👻=ghost):*\n"
+                                            + "\n".join(_slines)
+                                            + "\n"
+                                        )
                                     else:
                                         # Fall back to legacy window_snapshots skip display
                                         _skips = await conn.fetch(
@@ -2444,16 +2922,32 @@ class Orchestrator:
                                         if _skips:
                                             _slines = []
                                             for s in _skips:
-                                                _dir = "⬆️" if s['direction'] == 'UP' else "⬇️"
+                                                _dir = (
+                                                    "⬆️"
+                                                    if s["direction"] == "UP"
+                                                    else "⬇️"
+                                                )
                                                 try:
-                                                    from datetime import datetime, timezone as _tz2
-                                                    _wts = int(s['window_ts']) + 300
-                                                    _wid = datetime.fromtimestamp(_wts, tz=_tz2.utc).strftime("%H:%M")
+                                                    from datetime import (
+                                                        datetime,
+                                                        timezone as _tz2,
+                                                    )
+
+                                                    _wts = int(s["window_ts"]) + 300
+                                                    _wid = datetime.fromtimestamp(
+                                                        _wts, tz=_tz2.utc
+                                                    ).strftime("%H:%M")
                                                 except Exception:
                                                     _wid = "?"
-                                                _sr = (s['skip_reason'] or '?')[:45]
-                                                _slines.append(f"🚫{_dir} `{_wid}` {_sr}")
-                                            _recent_block += "📝 *Recent skips:*\n" + "\n".join(_slines) + "\n"
+                                                _sr = (s["skip_reason"] or "?")[:45]
+                                                _slines.append(
+                                                    f"🚫{_dir} `{_wid}` {_sr}"
+                                                )
+                                            _recent_block += (
+                                                "📝 *Recent skips:*\n"
+                                                + "\n".join(_slines)
+                                                + "\n"
+                                            )
 
                                     # ── Recent wins and losses from trade_bible (source of truth) ──
                                     #
@@ -2499,34 +2993,62 @@ class Orchestrator:
                                             """Visual marker so operators can tell at a glance
                                             whether a line came from a live-engine resolution or
                                             from the orphan reconciler catching up on a missing fill."""
-                                            return "⚙" if source == "orphan_resolved" else ""
+                                            return (
+                                                "⚙"
+                                                if source == "orphan_resolved"
+                                                else ""
+                                            )
 
                                         if _wins:
                                             _wlines = []
                                             for w in _wins:
-                                                _d = "⬆️" if w['direction'] == 'YES' else "⬇️"
+                                                _d = (
+                                                    "⬆️"
+                                                    if w["direction"] == "YES"
+                                                    else "⬇️"
+                                                )
                                                 _t = ""
                                                 try:
-                                                    _t = w['resolved_at'].strftime("%H:%M")
+                                                    _t = w["resolved_at"].strftime(
+                                                        "%H:%M"
+                                                    )
                                                 except Exception:
                                                     pass
-                                                _r = (w['reason'] or '?')[-20:]
-                                                _mark = _label_prefix(w['source'])
-                                                _wlines.append(f"✅{_d}{_mark} `{_t}` `+${float(w['pnl']):.2f}` {_r}")
-                                            _wl_block += "🏆 *Recent wins:*\n" + "\n".join(_wlines) + "\n"
+                                                _r = (w["reason"] or "?")[-20:]
+                                                _mark = _label_prefix(w["source"])
+                                                _wlines.append(
+                                                    f"✅{_d}{_mark} `{_t}` `+${float(w['pnl']):.2f}` {_r}"
+                                                )
+                                            _wl_block += (
+                                                "🏆 *Recent wins:*\n"
+                                                + "\n".join(_wlines)
+                                                + "\n"
+                                            )
                                         if _losses:
                                             _llines = []
                                             for l in _losses:
-                                                _d = "⬆️" if l['direction'] == 'YES' else "⬇️"
+                                                _d = (
+                                                    "⬆️"
+                                                    if l["direction"] == "YES"
+                                                    else "⬇️"
+                                                )
                                                 _t = ""
                                                 try:
-                                                    _t = l['resolved_at'].strftime("%H:%M")
+                                                    _t = l["resolved_at"].strftime(
+                                                        "%H:%M"
+                                                    )
                                                 except Exception:
                                                     pass
-                                                _r = (l['reason'] or '?')[-20:]
-                                                _mark = _label_prefix(l['source'])
-                                                _llines.append(f"❌{_d}{_mark} `{_t}` `-${abs(float(l['pnl'])):.2f}` {_r}")
-                                            _wl_block += "💀 *Recent losses:*\n" + "\n".join(_llines) + "\n"
+                                                _r = (l["reason"] or "?")[-20:]
+                                                _mark = _label_prefix(l["source"])
+                                                _llines.append(
+                                                    f"❌{_d}{_mark} `{_t}` `-${abs(float(l['pnl'])):.2f}` {_r}"
+                                                )
+                                            _wl_block += (
+                                                "💀 *Recent losses:*\n"
+                                                + "\n".join(_llines)
+                                                + "\n"
+                                            )
                                     except Exception:
                                         pass
                                     _recent_block += _wl_block
@@ -2547,20 +3069,27 @@ class Orchestrator:
                                         _total_risk = 0
                                         _total_upside = 0
                                         for p in _pending:
-                                            _dir = "⬆️" if p['direction'] == 'YES' else "⬇️"
-                                            _cap = float(p['cap']) if p['cap'] else 0.73
-                                            _stk = float(p['stake'])
+                                            _dir = (
+                                                "⬆️" if p["direction"] == "YES" else "⬇️"
+                                            )
+                                            _cap = float(p["cap"]) if p["cap"] else 0.73
+                                            _stk = float(p["stake"])
                                             _win_est = _stk * (1 - _cap) / _cap
                                             _total_risk += _stk
                                             _total_upside += _win_est
                                             _wid = ""
                                             try:
                                                 from datetime import datetime, timezone
-                                                _wts = int(p['wts']) + 300
-                                                _wid = datetime.fromtimestamp(_wts, tz=timezone.utc).strftime("%H:%M")
+
+                                                _wts = int(p["wts"]) + 300
+                                                _wid = datetime.fromtimestamp(
+                                                    _wts, tz=timezone.utc
+                                                ).strftime("%H:%M")
                                             except Exception:
                                                 pass
-                                            _plines.append(f"{_dir} `{_wid} BTC` ${_cap:.2f} risk `${_stk:.2f}` → win `+${_win_est:.2f}`")
+                                            _plines.append(
+                                                f"{_dir} `{_wid} BTC` ${_cap:.2f} risk `${_stk:.2f}` → win `+${_win_est:.2f}`"
+                                            )
                                         _pending_block = (
                                             f"\n⏳ *Pending ({len(_pending)}):*\n"
                                             + "\n".join(_plines)
@@ -2572,58 +3101,105 @@ class Orchestrator:
                         except Exception:
                             pass
 
-                        _wr = (real_wins/(real_wins+real_losses)*100) if (real_wins+real_losses)>0 else 0
-                        
+                        _wr = (
+                            (real_wins / (real_wins + real_losses) * 100)
+                            if (real_wins + real_losses) > 0
+                            else 0
+                        )
+
                         # v12: Build HMM regime line
                         _hmm_line = ""
                         if _hmm_regime:
                             _hmm_display = _hmm_regime.replace("_", " ").title()
-                            _hmm_conf_s = f" `{_hmm_confidence:.0%}`" if _hmm_confidence is not None else ""
+                            _hmm_conf_s = (
+                                f" `{_hmm_confidence:.0%}`"
+                                if _hmm_confidence is not None
+                                else ""
+                            )
                             _hmm_line = f"🧠 HMM: `{_hmm_display}`{_hmm_conf_s}\n"
 
                         # v12: Build feed health line
                         _feeds = []
                         try:
-                            _feeds.append(f"BN-F:{'✓' if self._binance_feed.connected else '✗'}")
-                            _feeds.append(f"BN-S:{'✓' if self._binance_spot_feed.connected else '✗'}")
+                            _feeds.append(
+                                f"BN-F:{'✓' if self._binance_feed.connected else '✗'}"
+                            )
+                            _feeds.append(
+                                f"BN-S:{'✓' if self._binance_spot_feed.connected else '✗'}"
+                            )
                             if self._chainlink_feed:
-                                _feeds.append(f"CL:{'✓' if self._chainlink_feed.connected else '✗'}")
+                                _feeds.append(
+                                    f"CL:{'✓' if self._chainlink_feed.connected else '✗'}"
+                                )
                             if self._tiingo_feed:
-                                _feeds.append(f"TI:{'✓' if self._tiingo_feed.connected else '✗'}")
+                                _feeds.append(
+                                    f"TI:{'✓' if self._tiingo_feed.connected else '✗'}"
+                                )
                             if self._coinglass_feed:
-                                _feeds.append(f"CG:{'✓' if self._coinglass_feed.connected else '✗'}")
-                            _feeds.append(f"PM:{'✓' if self._polymarket_feed.connected else '✗'}")
+                                _feeds.append(
+                                    f"CG:{'✓' if self._coinglass_feed.connected else '✗'}"
+                                )
+                            _feeds.append(
+                                f"PM:{'✓' if self._polymarket_feed.connected else '✗'}"
+                            )
                             if self._clob_feed:
-                                _feeds.append(f"CLOB:{'✓' if self._clob_feed.connected else '✗'}")
+                                _feeds.append(
+                                    f"CLOB:{'✓' if self._clob_feed.connected else '✗'}"
+                                )
                         except Exception:
                             pass
-                        _feed_line = f"📡 Feeds: `{' '.join(_feeds)}`\n" if _feeds else ""
+                        _feed_line = (
+                            f"📡 Feeds: `{' '.join(_feeds)}`\n" if _feeds else ""
+                        )
 
                         # v12: Build strategy port summary
                         _sp_block = ""
                         _v4_mode_label = ""
                         if self._last_sp_result and self._last_sp_result.all_decisions:
                             try:
-                                _regs_map = {r.strategy_id: r for r, _ in self._evaluate_strategies_uc._strategies} if self._evaluate_strategies_uc else {}
+                                _regs_map = (
+                                    {
+                                        r.strategy_id: r
+                                        for r, _ in self._evaluate_strategies_uc._strategies
+                                    }
+                                    if self._evaluate_strategies_uc
+                                    else {}
+                                )
                                 # Build V4 mode label for header (LIVE vs GHOST)
                                 _v4_reg = _regs_map.get("v4_fusion")
                                 if _v4_reg:
-                                    _v4_mode_label = " | V4:🎯LIVE" if _v4_reg.mode == "LIVE" else " | V4:👻GHOST"
+                                    _v4_mode_label = (
+                                        " | V4:🎯LIVE"
+                                        if _v4_reg.mode == "LIVE"
+                                        else " | V4:👻GHOST"
+                                    )
                                 _sp_lines = []
                                 for _sd in self._last_sp_result.all_decisions:
-                                    _sid = getattr(_sd, 'strategy_id', '?')
-                                    _action = getattr(_sd, 'action', '?')
-                                    _dir = getattr(_sd, 'direction', None)
-                                    _skip = getattr(_sd, 'skip_reason', None)
-                                    _mode = _regs_map[_sid].mode if _sid in _regs_map else "?"
+                                    _sid = getattr(_sd, "strategy_id", "?")
+                                    _action = getattr(_sd, "action", "?")
+                                    _dir = getattr(_sd, "direction", None)
+                                    _skip = getattr(_sd, "skip_reason", None)
+                                    _mode = (
+                                        _regs_map[_sid].mode
+                                        if _sid in _regs_map
+                                        else "?"
+                                    )
                                     _icon = "🎯" if _mode == "LIVE" else "👻"
                                     if _action == "TRADE":
-                                        _sp_lines.append(f"{_icon}`{_sid}`: TRADE `{_dir}`")
+                                        _sp_lines.append(
+                                            f"{_icon}`{_sid}`: TRADE `{_dir}`"
+                                        )
                                     elif _action == "SKIP":
-                                        _sp_lines.append(f"{_icon}`{_sid}`: SKIP _{(_skip or '?')[:40]}_")
+                                        _sp_lines.append(
+                                            f"{_icon}`{_sid}`: SKIP _{(_skip or '?')[:40]}_"
+                                        )
                                     else:
-                                        _sp_lines.append(f"{_icon}`{_sid}`: `{_action}`")
-                                _sp_block = "🔬 *Last window:* " + " | ".join(_sp_lines) + "\n"
+                                        _sp_lines.append(
+                                            f"{_icon}`{_sid}`: `{_action}`"
+                                        )
+                                _sp_block = (
+                                    "🔬 *Last window:* " + " | ".join(_sp_lines) + "\n"
+                                )
                             except Exception:
                                 pass
 
@@ -2633,20 +3209,20 @@ class Orchestrator:
                             + (
                                 f"🏦 Wallet: `${wallet:.2f}` USDC _(CLOB verified)_\n"
                                 f"📈 P&L: `${_pnl_from_wallet:+.2f}` from `${baseline:.0f}` start\n"
-                                if not self._settings.paper_mode else
-                                f"💰 Bankroll: `${bankroll:.2f}`\n"
-                            ) +
-                            f"\n"
+                                if not self._settings.paper_mode
+                                else f"💰 Bankroll: `${bankroll:.2f}`\n"
+                            )
+                            + f"\n"
                             f"📊 *24h Record:* `{real_wins}W/{real_losses}L` (`{_wr:.0f}%` WR)\n"
                             + _recent_block
-                            + _pending_block +
-                            f"\n"
+                            + _pending_block
+                            + f"\n"
                             f"🔬 VPIN: `{vpin:.4f}` | `{vpin_regime}`\n"
                             + _hmm_line
                             + _feed_line
                             + _sp_block
-                            + cg_block +
-                            f"BTC: `${self._order_manager._current_btc_price:,.2f}`\n"
+                            + cg_block
+                            + f"BTC: `${self._order_manager._current_btc_price:,.2f}`\n"
                         )
 
                         await self._alerter.send_raw_message(sitrep)
@@ -2694,9 +3270,7 @@ class Orchestrator:
                         timeout=aiohttp.ClientTimeout(total=15),
                     ) as resp:
                         if resp.status != 200:
-                            log.warning(
-                                "reconcile.api_error", status=resp.status
-                            )
+                            log.warning("reconcile.api_error", status=resp.status)
                             raise Exception(f"HTTP {resp.status}")
                         activity = await resp.json()
 
@@ -2739,10 +3313,15 @@ class Orchestrator:
                         meta = {}
                         try:
                             import json as _json
-                            meta = _json.loads(row["metadata"]) if row["metadata"] else {}
+
+                            meta = (
+                                _json.loads(row["metadata"]) if row["metadata"] else {}
+                            )
                         except Exception:
                             pass
-                        if meta.get("market_slug") == slug or slug in (meta.get("market_slug", "")):
+                        if meta.get("market_slug") == slug or slug in (
+                            meta.get("market_slug", "")
+                        ):
                             matched_row = row
                             matched_order_id = oid
                             break
@@ -2751,7 +3330,11 @@ class Orchestrator:
                         continue
 
                     # Check if fill price is wrong
-                    db_price = float(matched_row["entry_price"]) if matched_row["entry_price"] else None
+                    db_price = (
+                        float(matched_row["entry_price"])
+                        if matched_row["entry_price"]
+                        else None
+                    )
                     actual_price = float(price) if price else None
 
                     needs_update = False
@@ -2775,7 +3358,7 @@ class Orchestrator:
                     if needs_update and self._db._pool:
                         try:
                             set_clauses = ", ".join(
-                                f"{k} = ${i+2}"
+                                f"{k} = ${i + 2}"
                                 for i, k in enumerate(update_fields.keys())
                             )
                             values = list(update_fields.values())
@@ -2788,7 +3371,9 @@ class Orchestrator:
                             updates_made += 1
                             log.info(
                                 "reconcile.updated",
-                                order_id=matched_order_id[:20] if matched_order_id else "?",
+                                order_id=matched_order_id[:20]
+                                if matched_order_id
+                                else "?",
                                 fields=list(update_fields.keys()),
                             )
                         except Exception as upd_exc:
@@ -2807,9 +3392,7 @@ class Orchestrator:
                     log.debug("reconcile.no_mismatches", checked=len(activity))
 
             except Exception as exc:
-                log.warning(
-                    "orchestrator.reconcile_loop.error", error=str(exc)[:120]
-                )
+                log.warning("orchestrator.reconcile_loop.error", error=str(exc)[:120])
 
             try:
                 await asyncio.wait_for(
@@ -2863,7 +3446,7 @@ class Orchestrator:
                         losses = result.get("losses", 0)
                         pnl = result.get("total_pnl", 0)
                         usdc = result.get("usdc_change", 0)
-                        
+
                         if redeemed > 0 or failed > 0:
                             await self._alerter._send_with_id(
                                 f"🔄 *REDEMPTION SWEEP* 🔴 LIVE\n\n"
@@ -2911,10 +3494,7 @@ class Orchestrator:
 
                 if result["redeemed"] > 0:
                     await self._db.write_redeem_event(result)
-                    msg = (
-                        f"Redeemed {result['redeemed']} position(s) "
-                        f"via Playwright"
-                    )
+                    msg = f"Redeemed {result['redeemed']} position(s) via Playwright"
                     if result["failed"] > 0:
                         msg += f" ({result['failed']} failed)"
                     await self._alerter.send_system_alert(msg, level="info")
@@ -2996,7 +3576,7 @@ class Orchestrator:
         Strategies run concurrently per state update.
         """
         strategies = [self._arb_strategy, self._cascade_strategy]
-        
+
         # Add 5-min strategy if enabled
         if self._five_min_strategy:
             strategies.append(self._five_min_strategy)
@@ -3025,7 +3605,11 @@ class Orchestrator:
             log.error("orchestrator.market_state_loop_error", error=str(exc))
 
     def _on_manual_trade_notify(
-        self, conn, pid: int, channel: str, payload: str,
+        self,
+        conn,
+        pid: int,
+        channel: str,
+        payload: str,
     ) -> None:
         """LT-04: asyncpg callback fired when the hub emits pg_notify
         on 'manual_trade_pending'. The callback runs on the LISTEN
@@ -3075,6 +3659,7 @@ class Orchestrator:
         # non-fatal — the 1s fall-through poll still works.
         try:
             from persistence.db_client import MANUAL_TRADE_NOTIFY_CHANNEL
+
             await self._db.ensure_listening(
                 MANUAL_TRADE_NOTIFY_CHANNEL,
                 self._on_manual_trade_notify,
@@ -3110,6 +3695,7 @@ class Orchestrator:
                 # ensure_listening is a no-op if already connected.
                 try:
                     from persistence.db_client import MANUAL_TRADE_NOTIFY_CHANNEL
+
                     await self._db.ensure_listening(
                         MANUAL_TRADE_NOTIFY_CHANNEL,
                         self._on_manual_trade_notify,
@@ -3127,7 +3713,7 @@ class Orchestrator:
                     stake = trade["stake_usd"] or 4.0
                     window_ts = trade["window_ts"]
                     asset = trade.get("asset", "BTC")
-                    
+
                     log.info(
                         "manual_trade.executing",
                         trade_id=trade_id,
@@ -3135,10 +3721,10 @@ class Orchestrator:
                         entry_price=f"${entry_price:.4f}",
                         stake=f"${stake:.2f}",
                     )
-                    
+
                     # Update status to 'executing'
                     await self._db.update_manual_trade_status(trade_id, "executing")
-                    
+
                     try:
                         # Build market slug
                         tf = "5m"  # Manual trades default to 5m
@@ -3164,7 +3750,11 @@ class Orchestrator:
                         if self._five_min_strategy:
                             for w in reversed(self._five_min_strategy.recent_windows):
                                 if w.window_ts == window_ts:
-                                    token_id = w.up_token_id if direction == "YES" else w.down_token_id
+                                    token_id = (
+                                        w.up_token_id
+                                        if direction == "YES"
+                                        else w.down_token_id
+                                    )
                                     if token_id:
                                         token_source = "recent_windows"
                                     break
@@ -3179,16 +3769,24 @@ class Orchestrator:
                                 direction=direction,
                             )
                             md_row = await self._db.get_token_ids_from_market_data(
-                                asset=asset, window_ts=window_ts, timeframe=tf,
+                                asset=asset,
+                                window_ts=window_ts,
+                                timeframe=tf,
                             )
                             if md_row:
-                                token_id = md_row["up_token_id"] if direction == "YES" else md_row["down_token_id"]
+                                token_id = (
+                                    md_row["up_token_id"]
+                                    if direction == "YES"
+                                    else md_row["down_token_id"]
+                                )
                                 if token_id:
                                     token_source = "market_data_db"
                                     log.info(
                                         "manual_trade.token_id_from_db",
                                         trade_id=trade_id,
-                                        token_id_prefix=token_id[:20] if len(token_id) > 20 else token_id,
+                                        token_id_prefix=token_id[:20]
+                                        if len(token_id) > 20
+                                        else token_id,
                                     )
 
                         if not token_id:
@@ -3200,7 +3798,9 @@ class Orchestrator:
                                 direction=direction,
                                 tried_sources="recent_windows,market_data_db",
                             )
-                            await self._db.update_manual_trade_status(trade_id, "failed_no_token")
+                            await self._db.update_manual_trade_status(
+                                trade_id, "failed_no_token"
+                            )
                             # LT-02: alert on Telegram so the operator knows
                             # the trade didn't land — previously this failed
                             # silently and the user thought the button did
@@ -3226,7 +3826,7 @@ class Orchestrator:
                             trade_id=trade_id,
                             source=token_source,
                         )
-                        
+
                         if self._poly_client.paper_mode:
                             # Paper mode — simulate fill
                             clob_id = f"manual-paper-{trade_id[:12]}"
@@ -3237,16 +3837,25 @@ class Orchestrator:
                             # recognises `manual-paper-*` IDs as synthetic
                             # paper fills and returns a filled OrderStatus.
                             await self._db.update_manual_trade_status(
-                                trade_id, "open", clob_order_id=clob_id,
+                                trade_id,
+                                "open",
+                                clob_order_id=clob_id,
                             )
-                            log.info("manual_trade.paper_filled", trade_id=trade_id, clob_id=clob_id)
+                            log.info(
+                                "manual_trade.paper_filled",
+                                trade_id=trade_id,
+                                clob_id=clob_id,
+                            )
                         else:
                             # Live — submit FOK to CLOB
                             from decimal import Decimal
+
                             clob_id = await self._poly_client.place_order(
                                 market_slug=market_slug,
                                 direction=direction,
-                                price=Decimal(str(round(min(entry_price + 0.02, 0.65), 4))),  # Slight buffer above entry
+                                price=Decimal(
+                                    str(round(min(entry_price + 0.02, 0.65), 4))
+                                ),  # Slight buffer above entry
                                 stake_usd=stake,
                                 token_id=token_id,
                             )
@@ -3257,14 +3866,23 @@ class Orchestrator:
                             # reconciler will catch the gap on its next
                             # pass and tag the row engine_optimistic.
                             await self._db.update_manual_trade_status(
-                                trade_id, "open",
+                                trade_id,
+                                "open",
                                 clob_order_id=str(clob_id) if clob_id else None,
                             )
-                            log.info("manual_trade.live_submitted", trade_id=trade_id, clob_id=str(clob_id)[:20])
-                        
+                            log.info(
+                                "manual_trade.live_submitted",
+                                trade_id=trade_id,
+                                clob_id=str(clob_id)[:20],
+                            )
+
                         # Alert on Telegram
                         if self._alerter:
-                            _mode = "📄 PAPER" if self._poly_client.paper_mode else "🔴 LIVE"
+                            _mode = (
+                                "📄 PAPER"
+                                if self._poly_client.paper_mode
+                                else "🔴 LIVE"
+                            )
                             await self._alerter.send_system_alert(
                                 f"👆 Manual Trade Executed ({_mode})\n"
                                 f"Direction: {direction_raw}\n"
@@ -3273,11 +3891,17 @@ class Orchestrator:
                                 f"Trade ID: {trade_id[:16]}",
                                 level="info",
                             )
-                    
+
                     except Exception as exc:
-                        log.error("manual_trade.execution_failed", trade_id=trade_id, error=str(exc))
-                        await self._db.update_manual_trade_status(trade_id, f"failed: {str(exc)[:50]}")
-                        
+                        log.error(
+                            "manual_trade.execution_failed",
+                            trade_id=trade_id,
+                            error=str(exc),
+                        )
+                        await self._db.update_manual_trade_status(
+                            trade_id, f"failed: {str(exc)[:50]}"
+                        )
+
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -3357,7 +3981,9 @@ class Orchestrator:
             # asyncio surface area smaller and ensures the two passes don't
             # race against each other on shared CLOB rate limits.
             try:
-                manual_summary = await sot_reconciler.reconcile_manual_trades_sot(limit=100)
+                manual_summary = await sot_reconciler.reconcile_manual_trades_sot(
+                    limit=100
+                )
                 if manual_summary.checked > 0:
                     log.info(
                         "sot_reconciler_loop.manual_pass_complete",
@@ -3396,12 +4022,14 @@ class Orchestrator:
             if getattr(self, "_reconcile_uc", None):
                 try:
                     positions = []
-                    _use_live_uc = os.environ.get(
-                        "ENGINE_USE_RECONCILE_UC", "false"
-                    ).lower() == "true"
+                    _use_live_uc = (
+                        os.environ.get("ENGINE_USE_RECONCILE_UC", "false").lower()
+                        == "true"
+                    )
                     if _use_live_uc and not self._settings.paper_mode:
                         try:
                             from domain.value_objects import PositionOutcome
+
                             raw = await self._poly_client.get_position_outcomes()
                             positions = [
                                 PositionOutcome(
@@ -3426,7 +4054,11 @@ class Orchestrator:
                             )
 
                     result = await self._reconcile_uc.execute(positions)
-                    if result.paper_resolved or result.live_resolved or result.windows_labeled:
+                    if (
+                        result.paper_resolved
+                        or result.live_resolved
+                        or result.windows_labeled
+                    ):
                         log.info(
                             "reconcile_uc.complete",
                             live_resolved=result.live_resolved,
@@ -3441,9 +4073,7 @@ class Orchestrator:
                     log.error("reconcile_uc.loop_error", error=str(exc)[:200])
 
             try:
-                await asyncio.wait_for(
-                    self._shutdown_event.wait(), timeout=interval_s
-                )
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval_s)
                 break  # shutdown signalled
             except asyncio.TimeoutError:
                 pass  # normal — continue to next pass
@@ -3452,7 +4082,7 @@ class Orchestrator:
 
     async def _position_monitor_loop(self) -> None:
         """Every 30s: check Polymarket positions API for resolved trades.
-        
+
         SOURCE OF TRUTH for WIN/LOSS — uses Polymarket's oracle, not internal logic.
         Only alerts on NEW resolutions (ignores positions resolved before engine started).
         """
@@ -3460,11 +4090,11 @@ class Orchestrator:
         _resolved_conditions: set = set()
         _first_run = True
         _start_time = time.time()
-        
+
         while not self._shutdown_event.is_set():
             try:
                 outcomes = await self._poly_client.get_position_outcomes()
-                
+
                 if _first_run:
                     # On first run, mark ALL currently resolved positions as "known"
                     # so we don't spam alerts for old historical positions
@@ -3472,17 +4102,20 @@ class Orchestrator:
                         if data["outcome"] != "OPEN":
                             _resolved_conditions.add(cid)
                     _first_run = False
-                    log.info("position_monitor.started", known_resolved=len(_resolved_conditions))
+                    log.info(
+                        "position_monitor.started",
+                        known_resolved=len(_resolved_conditions),
+                    )
                     # Continue to next poll — don't alert on existing positions
                 else:
                     for cid, data in outcomes.items():
                         if cid in _resolved_conditions:
                             continue
-                        
+
                         outcome = data["outcome"]
                         if outcome == "OPEN":
                             continue
-                        
+
                         # NEW resolution detected
                         _resolved_conditions.add(cid)
 
@@ -3493,6 +4126,7 @@ class Orchestrator:
                         pnl = data["pnl"]
 
                         from datetime import datetime, timezone
+
                         now_str = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
 
                         if outcome == "WIN":
@@ -3535,34 +4169,50 @@ class Orchestrator:
                                             cost,
                                         )
                                     if _match:
-                                        _matched_trade_id = _match['id']
-                                        _matched_reason = _match['reason']
-                                        _matched_token_id = _match['token_id']
+                                        _matched_trade_id = _match["id"]
+                                        _matched_reason = _match["reason"]
+                                        _matched_token_id = _match["token_id"]
                                         # Update trade with resolution
-                                        _status = 'RESOLVED_WIN' if outcome == 'WIN' else 'RESOLVED_LOSS'
+                                        _status = (
+                                            "RESOLVED_WIN"
+                                            if outcome == "WIN"
+                                            else "RESOLVED_LOSS"
+                                        )
                                         await _conn.execute(
                                             """UPDATE trades SET outcome = $1, pnl_usd = $2,
                                                resolved_at = NOW(), status = $3
                                             WHERE id = $4 AND outcome IS NULL""",
-                                            outcome, pnl if outcome == 'WIN' else -cost,
-                                            _status, _matched_trade_id,
+                                            outcome,
+                                            pnl if outcome == "WIN" else -cost,
+                                            _status,
+                                            _matched_trade_id,
                                         )
-                                        log.info("position_monitor.trade_linked",
+                                        log.info(
+                                            "position_monitor.trade_linked",
                                             trade_id=_matched_trade_id,
                                             reason=_matched_reason,
                                             token_id=(_matched_token_id or "?")[:20],
-                                            outcome=outcome)
+                                            outcome=outcome,
+                                        )
                         except Exception as _link_exc:
-                            log.debug("position_monitor.trade_link_failed", error=str(_link_exc)[:100])
+                            log.debug(
+                                "position_monitor.trade_link_failed",
+                                error=str(_link_exc)[:100],
+                            )
 
                         # Dedup: skip notification if _on_order_resolution already sent it
-                        if _matched_token_id and _matched_token_id in self._resolved_by_order_manager:
-                            log.info("position_monitor.skip_duplicate",
+                        if (
+                            _matched_token_id
+                            and _matched_token_id in self._resolved_by_order_manager
+                        ):
+                            log.info(
+                                "position_monitor.skip_duplicate",
                                 condition_id=cid[:20] + "...",
                                 token_id=_matched_token_id[:20] + "...",
-                                reason="already_notified_by_order_manager")
+                                reason="already_notified_by_order_manager",
+                            )
                             continue
-                        
+
                         # Try to find matching trade in DB for signal details
                         # v10.1: Use matched trade ID from token_id match (precise) instead of fuzzy cost match
                         trade_info = ""
@@ -3579,17 +4229,27 @@ class Orchestrator:
                                             """SELECT metadata, created_at FROM trades
                                                WHERE mode = 'live' AND stake_usd BETWEEN $1 AND $2
                                                ORDER BY created_at DESC LIMIT 1""",
-                                            cost * 0.8, cost * 1.2,
+                                            cost * 0.8,
+                                            cost * 1.2,
                                         )
                                     if row and row["metadata"]:
                                         import json as _json
-                                        meta = _json.loads(row["metadata"]) if isinstance(row["metadata"], str) else row["metadata"]
+
+                                        meta = (
+                                            _json.loads(row["metadata"])
+                                            if isinstance(row["metadata"], str)
+                                            else row["metadata"]
+                                        )
                                         tier = meta.get("tier", "")
                                         conf = meta.get("confidence", "")
                                         delta = meta.get("delta_pct", "")
                                         entry_reason = meta.get("entry_reason", "")
                                         if tier or conf:
-                                            conf_str = f"{int(conf*100)}%" if isinstance(conf, float) else str(conf)
+                                            conf_str = (
+                                                f"{int(conf * 100)}%"
+                                                if isinstance(conf, float)
+                                                else str(conf)
+                                            )
                                             trade_info = (
                                                 f"\n📊 *Signal*\n"
                                                 f"Tier: `{tier}`\n"
@@ -3597,17 +4257,19 @@ class Orchestrator:
                                                 f"Delta: `{delta}`\n"
                                             )
                                             if entry_reason:
-                                                trade_info += f"Entry: `{entry_reason[:60]}`\n"
+                                                trade_info += (
+                                                    f"Entry: `{entry_reason[:60]}`\n"
+                                                )
                         except Exception:
                             pass
-                        
+
                         # Get wallet balance
                         try:
                             wallet = await self._poly_client.get_balance()
                             wallet_str = f"\n🏦 Wallet: `${wallet:.2f}` USDC"
                         except Exception:
                             wallet_str = ""
-                        
+
                         # v8.1: Show our engine's trade data from DB (not Polymarket aggregate)
                         _our_shares = ""
                         _our_fill = ""
@@ -3624,17 +4286,34 @@ class Orchestrator:
                                     )
                                     if _our_row:
                                         import json as _json2
-                                        _m = _json2.loads(_our_row["metadata"]) if isinstance(_our_row["metadata"], str) else _our_row["metadata"]
-                                        _our_shares = f"Shares: `{_m.get('size_matched', '?')}`\n"
-                                        _fp = _m.get('actual_fill_price')
-                                        _our_fill = f"Fill: `${float(_fp):.4f}`\n" if _fp else f"Entry: `${avg_price:.4f}`\n"
-                                        _our_cost = f"${float(_our_row['stake_usd']):.2f}"
-                                        if _our_row['pnl_usd']:
-                                            _p = float(_our_row['pnl_usd'])
-                                            _our_pnl = f"+${_p:.2f}" if _p >= 0 else f"-${abs(_p):.2f}"
+
+                                        _m = (
+                                            _json2.loads(_our_row["metadata"])
+                                            if isinstance(_our_row["metadata"], str)
+                                            else _our_row["metadata"]
+                                        )
+                                        _our_shares = (
+                                            f"Shares: `{_m.get('size_matched', '?')}`\n"
+                                        )
+                                        _fp = _m.get("actual_fill_price")
+                                        _our_fill = (
+                                            f"Fill: `${float(_fp):.4f}`\n"
+                                            if _fp
+                                            else f"Entry: `${avg_price:.4f}`\n"
+                                        )
+                                        _our_cost = (
+                                            f"${float(_our_row['stake_usd']):.2f}"
+                                        )
+                                        if _our_row["pnl_usd"]:
+                                            _p = float(_our_row["pnl_usd"])
+                                            _our_pnl = (
+                                                f"+${_p:.2f}"
+                                                if _p >= 0
+                                                else f"-${abs(_p):.2f}"
+                                            )
                         except Exception:
                             pass
-                        
+
                         # v9.0: Show entry reason in resolution notification
                         _reason_line = ""
                         if _matched_reason:
@@ -3666,10 +4345,10 @@ class Orchestrator:
                             outcome=outcome,
                             pnl=pnl,
                         )
-                
+
             except Exception as exc:
                 log.debug("position_monitor.error", error=str(exc))
-            
+
             try:
                 await asyncio.wait_for(
                     asyncio.shield(self._shutdown_event.wait()),
@@ -3698,16 +4377,18 @@ class Orchestrator:
         import aiohttp as _aiohttp
 
         POLL_INTERVAL = 30  # seconds between sweeps
-        API_DELAY = 0.5    # seconds between Gamma API calls (rate limit)
-        STAKE_USD = 5.0    # shadow stake for P&L calculation
-        FEE_MULT = 0.98    # 2% fee on winnings
+        API_DELAY = 0.5  # seconds between Gamma API calls (rate limit)
+        STAKE_USD = 5.0  # shadow stake for P&L calculation
+        FEE_MULT = 0.98  # 2% fee on winnings
 
         log.info("shadow_resolution_loop.started")
 
         while not self._shutdown_event.is_set():
             try:
                 # Fetch unresolved skipped windows from last 10 min
-                unresolved = await self._db.get_unresolved_shadow_windows(minutes_back=10)
+                unresolved = await self._db.get_unresolved_shadow_windows(
+                    minutes_back=10
+                )
 
                 if unresolved:
                     log.debug(
@@ -3771,7 +4452,11 @@ class Orchestrator:
 
                     # Parse response
                     try:
-                        if not data or not isinstance(data, list) or not data[0].get("markets"):
+                        if (
+                            not data
+                            or not isinstance(data, list)
+                            or not data[0].get("markets")
+                        ):
                             # Market not found yet — skip until next sweep
                             await asyncio.sleep(API_DELAY)
                             continue
@@ -3781,7 +4466,8 @@ class Orchestrator:
                         # Check if resolved — Gamma may not set resolved=true
                         # for 5-min markets, so also check outcomePrices directly
                         if not market.get("resolved") and not any(
-                            str(p) in ("0", "1", "1.0", "0.0") for p in market.get("outcomePrices", [])
+                            str(p) in ("0", "1", "1.0", "0.0")
+                            for p in market.get("outcomePrices", [])
                         ):
                             # Not settled yet — oracle hasn't closed
                             await asyncio.sleep(API_DELAY)
@@ -3812,10 +4498,12 @@ class Orchestrator:
                             continue
 
                         # Compute shadow P&L
-                        shadow_would_win = (shadow_dir == oracle_direction)
+                        shadow_would_win = shadow_dir == oracle_direction
                         if shadow_would_win:
                             # Win: (1 - entry_price) * stake * fee_mult
-                            shadow_pnl = (1.0 - float(entry_price)) * STAKE_USD * FEE_MULT
+                            shadow_pnl = (
+                                (1.0 - float(entry_price)) * STAKE_USD * FEE_MULT
+                            )
                         else:
                             # Loss: -entry_price * stake
                             shadow_pnl = -float(entry_price) * STAKE_USD
@@ -3877,10 +4565,12 @@ class Orchestrator:
                                     )
                                 # Fall back to DB gate_audit table
                                 if not _eval_ticks:
-                                    _eval_ticks = await self._db.get_eval_ticks_for_window(
-                                        window_ts=window_ts,
-                                        asset=asset,
-                                        timeframe=timeframe,
+                                    _eval_ticks = (
+                                        await self._db.get_eval_ticks_for_window(
+                                            window_ts=window_ts,
+                                            asset=asset,
+                                            timeframe=timeframe,
+                                        )
                                     )
                                 # Schedule analysis as a background task (non-blocking)
                                 asyncio.create_task(
@@ -3920,13 +4610,18 @@ class Orchestrator:
             try:
                 if self._db._pool:
                     import time as _time
+
                     _cutoff = int(_time.time()) - 1800  # last 30 min
                     async with self._db._pool.acquire() as _conn:
-                        _unresolved = await _conn.fetch("""
+                        _unresolved = await _conn.fetch(
+                            """
                             SELECT window_ts, asset FROM window_predictions
                             WHERE oracle_winner IS NULL AND window_ts > $1 AND window_ts < $2
                             LIMIT 5
-                        """, _cutoff, int(_time.time()) - 60)  # at least 60s old
+                        """,
+                            _cutoff,
+                            int(_time.time()) - 60,
+                        )  # at least 60s old
 
                     for _row in _unresolved:
                         _wts = _row["window_ts"]
@@ -3934,16 +4629,26 @@ class Orchestrator:
                         _slug = f"{_asset.lower()}-updown-5m-{_wts}"
                         try:
                             import aiohttp as _aio2
-                            async with _aio2.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as _s:
+
+                            async with _aio2.ClientSession(
+                                headers={"User-Agent": "Mozilla/5.0"}
+                            ) as _s:
                                 async with _s.get(
                                     f"https://gamma-api.polymarket.com/events?slug={_slug}",
-                                    timeout=_aio2.ClientTimeout(total=10)
+                                    timeout=_aio2.ClientTimeout(total=10),
                                 ) as _r:
                                     if _r.status == 200:
                                         _d = await _r.json()
-                                        if _d and isinstance(_d, list) and _d[0].get("markets"):
+                                        if (
+                                            _d
+                                            and isinstance(_d, list)
+                                            and _d[0].get("markets")
+                                        ):
                                             _m = _d[0]["markets"][0]
-                                            if _m.get("resolved") or any(str(p) in ("0", "1", "1.0", "0.0") for p in _m.get("outcomePrices", [])):
+                                            if _m.get("resolved") or any(
+                                                str(p) in ("0", "1", "1.0", "0.0")
+                                                for p in _m.get("outcomePrices", [])
+                                            ):
                                                 _op = _m.get("outcomePrices", [])
                                                 if len(_op) >= 2:
                                                     _up = float(_op[0])
@@ -3960,16 +4665,23 @@ class Orchestrator:
                                                     )
                                                     # Also update window_snapshots.poly_winner
                                                     try:
-                                                        async with self._db._pool.acquire() as _c2:
+                                                        async with (
+                                                            self._db._pool.acquire() as _c2
+                                                        ):
                                                             await _c2.execute(
                                                                 "UPDATE window_snapshots SET poly_winner=$1 "
                                                                 "WHERE window_ts=$2 AND asset=$3 AND poly_winner IS NULL",
-                                                                _winner.capitalize(), _wts, _asset
+                                                                _winner.capitalize(),
+                                                                _wts,
+                                                                _asset,
                                                             )
                                                     except Exception:
                                                         pass
-                                                    log.info("prediction_resolution.resolved",
-                                                             window_ts=_wts, winner=_winner)
+                                                    log.info(
+                                                        "prediction_resolution.resolved",
+                                                        window_ts=_wts,
+                                                        winner=_winner,
+                                                    )
                             await asyncio.sleep(0.5)
                         except Exception:
                             pass
@@ -3993,16 +4705,16 @@ class Orchestrator:
     async def _staggered_execution_loop(self) -> None:
         """
         G1 & G3: Process queued window signals with staggered execution.
-        
+
         - Collects all pending windows for the same time period
         - If G3 enabled (single_best_signal), picks only the highest-scoring asset
         - If G3 disabled, keeps all assets
         - Executes them sequentially with configurable gaps (G1)
-        
+
         Gap: ORDER_STAGGER_SECONDS (default 5) + 1-3s random jitter
         """
         import random
-        
+
         while not self._shutdown_event.is_set():
             try:
                 # Wait for first window, with timeout to avoid hanging
@@ -4014,11 +4726,11 @@ class Orchestrator:
                 except asyncio.TimeoutError:
                     # No pending windows — continue loop
                     continue
-                
+
                 # Collect all windows for the same period (within 2 seconds)
                 windows_batch = [(window, agg_ref)]
                 batch_start_time = time.time()
-                
+
                 while time.time() - batch_start_time < 2.0:
                     try:
                         next_window, next_agg_ref = await asyncio.wait_for(
@@ -4028,7 +4740,7 @@ class Orchestrator:
                         windows_batch.append((next_window, next_agg_ref))
                     except asyncio.TimeoutError:
                         break
-                
+
                 # G3: Single best signal mode — pick only the top-scoring window
                 if runtime.single_best_signal and len(windows_batch) > 1:
                     # Score each window: abs(delta_pct) * current_vpin
@@ -4036,16 +4748,20 @@ class Orchestrator:
                     for w, agg_ref in windows_batch:
                         try:
                             state = await agg_ref.get_state()
-                            current_price = float(state.btc_price) if state.btc_price else None
+                            current_price = (
+                                float(state.btc_price) if state.btc_price else None
+                            )
                             if current_price is None or w.open_price is None:
                                 continue
-                            delta_pct = (current_price - w.open_price) / w.open_price * 100
+                            delta_pct = (
+                                (current_price - w.open_price) / w.open_price * 100
+                            )
                             current_vpin = self._vpin_calc.current_vpin
                             score = abs(delta_pct) * current_vpin
                             scored_windows.append((score, w, agg_ref))
                         except Exception:
                             continue
-                    
+
                     if scored_windows:
                         # Sort by score descending, pick top
                         scored_windows.sort(key=lambda x: x[0], reverse=True)
@@ -4057,12 +4773,12 @@ class Orchestrator:
                             score=f"{top_score:.4f}",
                             skipped=len(scored_windows) - 1,
                         )
-                
+
                 # Execute windows sequentially with staggered gaps
                 for idx, (w, agg_ref) in enumerate(windows_batch):
                     if self._shutdown_event.is_set():
                         break
-                    
+
                     if idx > 0:
                         # G1: Stagger execution with jitter (reduced — FOK fills are instant)
                         stagger_delay = runtime.order_stagger_seconds
@@ -4077,7 +4793,7 @@ class Orchestrator:
                             jitter=f"{jitter:.2f}s",
                         )
                         await asyncio.sleep(total_delay)
-                    
+
                     # Evaluate and execute
                     try:
                         state = await agg_ref.get_state()
@@ -4094,9 +4810,9 @@ class Orchestrator:
                             asset=w.asset,
                             error=str(exc),
                         )
-            
+
             except Exception as exc:
                 log.error("orchestrator.staggered_execution_error", error=str(exc))
-            
+
             # Small yield to prevent busy loop
             await asyncio.sleep(0.1)
