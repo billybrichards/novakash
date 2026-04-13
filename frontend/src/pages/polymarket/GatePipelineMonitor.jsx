@@ -202,7 +202,7 @@ export default function GatePipelineMonitor() {
     for (const d of decisions) {
       const wts = d.window_ts || 0;
       if (!map[wts]) map[wts] = {};
-      const sid = d.strategy_id || d.strategy_name || 'unknown';
+      const sid = d.strategy_name || d.strategy_id || 'unknown';
       if (!map[wts][sid]) map[wts][sid] = [];
       map[wts][sid].push(d);
     }

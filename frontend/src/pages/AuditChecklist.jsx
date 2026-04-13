@@ -881,10 +881,11 @@ const TASKS = [
     id: 'FE-03',
     category: 'frontend',
     severity: 'LOW',
-    status: 'OPEN',
+    status: 'IN_PROGRESS',
     title: 'No observability surface for Polymarket (legacy) engine',
     files: [
       { path: 'frontend/src/pages/Dashboard.jsx', line: 1, repo: 'novakash' },
+      { path: 'frontend/src/pages/polymarket/Monitor.jsx', line: 1, repo: 'novakash' },
     ],
     evidence: [
       'margin_engine has rich /margin page with V4Panel',
@@ -893,6 +894,9 @@ const TASKS = [
       'Operator has to cross-check logs to understand why a trade was skipped',
     ],
     fix: 'After V4-01 lands, build a Polymarket mirror of V4Panel showing what the engine saw when it skipped/entered a window.',
+    progressNotes: [
+      { date: '2026-04-13', note: 'Clean-arch rewrite using strategy_decisions._ctx. Monitor.jsx now reads v4_snapshot, consensus, macro, gate_results from /api/v58/strategy-decisions._ctx. Tracked as FE-11.' },
+    ],
   },
   {
     id: 'FE-04',
@@ -1710,6 +1714,35 @@ const TASKS = [
     ],
     fix: 'SHIPPED in PR #90. Strategy badges and data source labels added to all frontend pages for clarity.',
     progressNotes: [{ date: '2026-04-11', note: 'PR #90 merged to develop. All pages now show which strategy and data source they correspond to.' }],
+  },
+  {
+    id: 'FE-10',
+    category: 'frontend',
+    severity: 'HIGH',
+    status: 'IN_PROGRESS',
+    title: 'Gate Pipeline Monitor — per-window strategy comparison table',
+    files: [{ path: 'frontend/src/pages/polymarket/GatePipelineMonitor.jsx', line: 1, repo: 'novakash' }],
+    evidence: [
+      'Previously empty page showing "No strategy decisions found"',
+      'Should show per-window table: all 5 strategies, gates, actual direction, WIN/LOSS',
+      'Data: /api/v58/strategy-decisions grouped by window_ts',
+    ],
+    fix: 'Rewrite as window history table with gate results per strategy per window.',
+    progressNotes: [{ date: '2026-04-13', note: 'Rewriting in fix/command-center-data-display branch. Per-window table with DN/ASIAN/V4F/V10 columns, filter pills, WIN/LOSS markers, sweet-spot best-decision picker.' }],
+  },
+  {
+    id: 'FE-11',
+    category: 'frontend',
+    severity: 'MEDIUM',
+    status: 'IN_PROGRESS',
+    title: 'Monitor page clean-arch update — replace pre-v2 signals with strategy_decisions._ctx',
+    files: [{ path: 'frontend/src/pages/polymarket/Monitor.jsx', line: 1, repo: 'novakash' }],
+    evidence: [
+      'Monitor showed Sequoia V5.2, SRC AGREEMENT etc — all NO DATA with Strategy Engine v2',
+      'FE-03 audit item called for this: engine_state + v4_snapshot + gate_failures panel',
+    ],
+    fix: 'Rewire Monitor to read from /api/v58/strategy-decisions._ctx for all signal display.',
+    progressNotes: [{ date: '2026-04-13', note: 'Fix in fix/command-center-data-display branch. Monitor.jsx now uses latestCtx from strategy-decisions._ctx for V4 Snapshot, Consensus, Macro sections.' }],
   },
   {
     id: 'SCHEMA-02',
