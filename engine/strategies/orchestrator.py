@@ -2249,8 +2249,10 @@ class Orchestrator:
                 )
 
                 # ── 5-Minute Sitrep to Telegram ──────────────────────────
+                # Skip old SITREP when Strategy Engine v2 is active
+                _v2_sitrep_active = os.environ.get("LEGACY_EXECUTION_DISABLED", "").lower() == "true"
                 _sitrep_counter += 1
-                if _sitrep_counter >= 30:  # 30 × 10s = 5 minutes
+                if _sitrep_counter >= 30 and not _v2_sitrep_active:  # 30 × 10s = 5 minutes
                     _sitrep_counter = 0
                     try:
                         om_total = self._order_manager.total_orders
