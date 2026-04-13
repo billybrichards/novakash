@@ -752,6 +752,30 @@ const TASKS = [
     ],
   },
   {
+    id: 'CI-03',
+    category: 'ci-cd',
+    severity: 'HIGH',
+    status: 'DONE',
+    title: 'Engine auto-deploy to Montreal via GitHub Actions (36 secrets configured)',
+    files: [
+      { path: '.github/workflows/deploy-engine.yml', line: 1, repo: 'novakash' },
+      { path: 'docs/CI_CD_SETUP.md', line: 1, repo: 'novakash' },
+      { path: 'docs/MONTREAL_DEPLOYMENT_TROUBLESHOOTING.md', line: 1, repo: 'novakash' },
+      { path: 'docs/v2-oak-integration-audit.md', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'docs/CI_CD.md (6816f86) explicitly flagged engine/ as the only major service without a GitHub Actions deploy workflow',
+      'Engine relied on Railway git-watcher auto-deploy with no smoke test, no secrets check, no post-deploy health probe, no rollback',
+      'Engine observed CRASHED in recent history (INC-01 network outage) requiring manual recovery',
+      'PR #18 (reconciler) and PE-01/PE-02 fixes had no automated deployment path — required manual SSH to Montreal',
+      '36 GitHub Actions secrets configured: ENGINE_SSH_KEY, ENGINE_HOST, DATABASE_URL, COINGLASS_API_KEY, TELEGRAM_*, POLY_*, BINANCE_*, BUILDER_*, RELAYER_*, TIINGO_API_KEY, CHAINLINK_BTC_USD, PAPER_MODE, ANTHROPIC_API_KEY, POLYGON_RPC_URL',
+    ],
+    fix: 'SHIPPED in PR #155 (commit 068478e). Workflow: (1) Python syntax check on PRs (engine/main.py, five_min_vpin.py, orchestrator.py), (2) Auto-deploy on push to develop, (3) SSH to novakash@15.223.247.178, (4) Rsync engine/ and scripts/, (5) Write .env from GitHub secrets, (6) Kill existing engine process, (7) Start new engine process, (8) Health probes: process count = 1 + error signature scan (last 10k lines of engine.log). Error thresholds: clob_feed.write_error=0, reconciler.resolve_db_error=0, prediction_recorder.write_error=0, etc. Documentation: docs/CI_CD_SETUP.md (secrets configuration guide), docs/MONTREAL_DEPLOYMENT_TROUBLESHOOTING.md (server troubleshooting). Workflow triggers on engine/** changes, scripts/restart_engine.sh, or .github/workflows/deploy-engine.yml changes.',
+    progressNotes: [
+      { date: '2026-04-13', note: 'SHIPPED via GitHub Actions secrets configuration (36 total) + deploy-engine.yml update. Workflow validates Python syntax on PRs, auto-deploys to Montreal on push to develop, runs post-deploy health checks. All secrets added via gh CLI: ENGINE_SSH_KEY (deploy key), ENGINE_HOST (15.223.247.178), and all environment variables from Montreal\'s .env. Deploy key retrieved from Montreal via EC2 Instance Connect. Workflow uses novakash user (not ubuntu) for all SSH operations. Future engine changes auto-deploy on push to develop.' },
+    ],
+  },
+  {
     id: 'DEP-02',
     category: 'ci-cd',
     severity: 'HIGH',
@@ -2195,6 +2219,28 @@ const TASKS = [
     fix: 'Add DirectionFilterGate to engine/signals/gates.py. Insert as G1.5 (after SourceAgreementGate, before DeltaMagnitudeGate). Add V4_DOWN_ONLY env flag for soft rollout. See docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md for implementation spec.',
     progressNotes: [
       { date: '2026-04-12', note: 'Gate design specified in DOWN_ONLY_STRATEGY_2026-04-12.md. Architecture: plugs into existing Gate protocol in gates.py, ~20 lines. TODO: implement and wire into V4 pipeline.' },
+    ],
+  },
+  {
+    id: 'SIG-03b',
+    category: 'signal-optimization',
+    severity: 'MEDIUM',
+    status: 'DONE',
+    title: 'v4_down_only timing override: trade T-90 to T-150 window (90.3% WR validated)',
+    files: [
+      { path: 'engine/adapters/strategies/v4_down_only_strategy.py', line: 70, repo: 'novakash' },
+      { path: 'engine/adapters/strategies/v4_fusion_strategy.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      '897K-sample analysis validated 90.3% WR for DOWN predictions at T-90 to T-150 eval_offset',
+      'V4FusionStrategy parent class has timing check that blocks at T-180 (timing="early" until T-180)',
+      'Polymarket API returns timing="early" until T-180, but v4_down_only wants to trade at T-150',
+      'Parent blocks before v4_down_only can apply its T-90 to T-150 window',
+      'Root cause: V4FusionStrategy._evaluate_polymarket_v2() checks timing field and skips "early"/"expired"',
+    ],
+    fix: 'SHIPPED — Created timing override in v4_down_only_strategy.py (commit d8b1856). Detects "timing=early" skip from parent, re-evaluates as TRADE when 90 <= eval_offset <= 150. Deployed to Montreal server (15.223.247.178) with V10_6_MAX_EVAL_OFFSET=150. Engine running in paper mode, evaluating at T-100 to T-92. Waiting for DOWN signal in T-90 to T-150 window to see actual TRADE.',
+    progressNotes: [
+      { date: '2026-04-13', note: 'SHIPPED via timing override in v4_down_only_strategy.py (lines 70-114). Parent V4FusionStrategy blocks at T-180 with timing="early", v4_down_only overrides to allow T-90 to T-150 trading. Committed to develop (d8b1856), deployed to Montreal. V10_6_MAX_EVAL_OFFSET updated from 120 to 150. Engine evaluating correctly at T-100 to T-92, waiting for DOWN signal to execute TRADE.' },
     ],
   },
   {
