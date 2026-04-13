@@ -109,13 +109,17 @@ class StrategyRegistry:
         config_dir: str,
         data_surface: DataSurfaceManager,
         execute_trade_uc: Any = None,
+        alerter: Any = None,
     ):
         self._config_dir = Path(config_dir)
         self._data_surface = data_surface
         self._execute_uc = execute_trade_uc
+        self._alerter = alerter
         self._configs: dict[str, StrategyConfig] = {}
         self._pipelines: dict[str, list[Gate]] = {}
         self._hooks: dict[str, dict[str, Callable]] = {}
+        # Track last window_ts to send summary once per window at final offset
+        self._last_summary_window: int = 0
 
     def load_all(self) -> None:
         """Scan config_dir for *.yaml, build pipelines, load hooks."""
@@ -320,7 +324,69 @@ class StrategyRegistry:
                         metadata={},
                     )
                 )
+        # Send per-window summary at final eval offset (T-60)
+        window_ts = getattr(window, "window_ts", 0)
+        eval_offset_val = getattr(window, "eval_offset", None)
+        if (
+            decisions
+            and eval_offset_val is not None
+            and eval_offset_val <= 62  # Near T-60, final eval offset
+            and window_ts != self._last_summary_window
+            and self._alerter is not None
+        ):
+            self._last_summary_window = window_ts
+            try:
+                import asyncio
+                asyncio.create_task(
+                    self._send_window_summary(window_ts, eval_offset_val, decisions, surface)
+                )
+            except Exception:
+                pass
+
         return decisions
+
+    async def _send_window_summary(
+        self,
+        window_ts: int,
+        eval_offset: int,
+        decisions: list[StrategyDecision],
+        surface: FullDataSurface,
+    ) -> None:
+        """Send consolidated window summary to Telegram — all 5 strategies."""
+        try:
+            lines = [
+                "📋 *Strategy Engine v2 — Window Summary*",
+                "━━━━━━━━━━━━━━━━━━━━━━━━━",
+                f"Window: {surface.asset} 5m | T-{eval_offset}s",
+                f"BTC: ${surface.current_price:,.2f} | Δ {surface.delta_pct*100:+.3f}%",
+                f"VPIN: {surface.vpin:.3f} | {surface.regime}",
+            ]
+
+            if surface.v2_probability_up is not None:
+                dist = abs(surface.v2_probability_up - 0.5)
+                dir_label = "UP" if surface.v2_probability_up > 0.5 else "DOWN"
+                lines.append(f"Model: P(UP)={surface.v2_probability_up:.3f} → *{dir_label}* (dist={dist:.3f})")
+
+            lines.append("")
+
+            for d in decisions:
+                cfg = self._configs.get(d.strategy_id)
+                mode_tag = f"[{cfg.mode}]" if cfg else "[?]"
+
+                if d.action == "TRADE":
+                    lines.append(f"✅ *{d.strategy_id}* {mode_tag} → TRADE {d.direction}")
+                elif d.action == "SKIP":
+                    reason_short = (d.skip_reason or "")[:60]
+                    lines.append(f"⏭ {d.strategy_id} {mode_tag} → SKIP: {reason_short}")
+                else:
+                    lines.append(f"❌ {d.strategy_id} {mode_tag} → ERROR")
+
+            if hasattr(self._alerter, "send_raw_message"):
+                await self._alerter.send_raw_message("\n".join(lines))
+            elif hasattr(self._alerter, "send_system_alert"):
+                await self._alerter.send_system_alert("\n".join(lines))
+        except Exception as exc:
+            log.warning("registry.summary_alert_error", error=str(exc)[:200])
 
     def _evaluate_one(
         self,

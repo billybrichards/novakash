@@ -478,7 +478,10 @@ class Orchestrator:
                     twap_tracker=self._twap_tracker,
                     binance_state=self._aggregator if hasattr(self, "_aggregator") else None,
                 )
-                self._strategy_registry = StrategyRegistry(config_dir, self._data_surface_mgr)
+                self._strategy_registry = StrategyRegistry(
+                    config_dir, self._data_surface_mgr,
+                    alerter=self._alerter,
+                )
                 self._strategy_registry.load_all()
                 log.info(
                     "orchestrator.strategy_registry_enabled",
