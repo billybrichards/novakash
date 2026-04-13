@@ -181,17 +181,29 @@ jobs:
         # set -e makes the step fail if either build or up fails, so we
         # do not silently ship a broken image.
         run: |
-          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'set -e; cd /home/ubuntu/hub && docker compose build --quiet && docker compose up -d --force-recreate --no-build 2>/dev/null || docker compose up -d --force-recreate'
+          # Build in background — avoids 60+ min SSH hang on docker compose build
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" bash -s <<'HUBEOF'
+          set -e
+          cd /home/ubuntu/hub
+          echo "Starting hub build at $(date)"
+          nohup bash -c "docker compose build --quiet 2>&1 && docker compose up -d --force-recreate 2>&1" > /tmp/hub-build.log 2>&1 &
+          echo "Build PID: $!"
+          HUBEOF
 
       - name: Wait for healthcheck
-        # Compose healthcheck has start_period=30s + 30s interval + 5s
-        # timeout. Give it 60s to definitively report healthy -- first
-        # boot runs the migrations block in main.py so the real first
-        # successful /health can land slightly later than start_period.
+        # Poll up to 10 minutes for hub to finish building and become healthy
         run: |
-          set -e
-          echo "waiting 30s for hub migrations + first healthcheck cycle..."
-          sleep 30
+          echo "Polling for hub healthy (up to 10 min)..."
+          for i in $(seq 1 20); do
+            sleep 30
+            STATUS=$(ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'docker inspect --format "{{.State.Health.Status}}" hub 2>/dev/null || echo starting' 2>/dev/null || echo "ssh_fail")
+            echo "[$i/20] hub status: $STATUS"
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Hub is healthy"
+              break
+            fi
+          done
+          echo "Final status check:"
 
           ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'docker ps --filter name=hub --format "{{.Names}} {{.Status}}"'
 
