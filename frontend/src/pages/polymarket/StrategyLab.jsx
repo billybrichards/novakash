@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useApi } from '../../hooks/useApi.js';
 import { T, fmt, pct } from './components/theme.js';
 import WindowAnalysisModal from './components/WindowAnalysisModal.jsx';
+import { STRATEGY_LIST } from '../../constants/strategies.js';
 
 /**
  * Strategy Lab — Historical replay and gate impact analysis.
@@ -16,49 +17,9 @@ import WindowAnalysisModal from './components/WindowAnalysisModal.jsx';
 // ── Strategy Config Panel ───────────────────────────────────────────────────
 // Dynamic strategy selector — reads live modes from config API, allows inline
 // LIVE / GHOST / OFF toggle per strategy without leaving the page.
+// Source of truth: constants/strategies.js
 
-const STRATEGIES_META = [
-  {
-    id: 'v4_down_only',
-    label: 'V4 DOWN-ONLY',
-    configKey: 'V4_DOWN_ONLY_MODE',
-    description: 'DOWN filter + CLOB sizing. 76–99% WR. All hours.',
-    color: '#10b981',
-    badge: 'LIVE',
-    defaultMode: 'LIVE',
-    direction: 'DOWN',
-  },
-  {
-    id: 'v4_up_asian',
-    label: 'V4 UP ASIAN',
-    configKey: 'V4_UP_ASIAN_MODE',
-    description: 'UP-only. Asian session 23:00-02:59 UTC. dist 0.15-0.20. 81-99% WR.',
-    color: '#f59e0b',    // amber
-    badge: 'LIVE',
-    defaultMode: 'LIVE',
-    direction: 'UP',
-  },
-  {
-    id: 'v4_fusion',
-    label: 'V4 FUSION',
-    configKey: 'V4_FUSION_MODE',
-    description: 'Full V4 surface (UP+DOWN). Baseline reference.',
-    color: '#06b6d4',
-    badge: null,
-    defaultMode: 'GHOST',
-    direction: null,
-  },
-  {
-    id: 'v10_gate',
-    label: 'V10 GATE',
-    configKey: 'V10_GATE_MODE',
-    description: 'Legacy 8-gate pipeline. Shadow reference.',
-    color: '#a855f7',
-    badge: null,
-    defaultMode: 'GHOST',
-    direction: null,
-  },
-];
+const STRATEGIES_META = STRATEGY_LIST;
 
 const MODE_COLORS = {
   LIVE: { bg: 'rgba(16,185,129,0.15)', color: '#10b981' },
@@ -182,7 +143,12 @@ function StrategyConfigPanel({ api }) {
                 {strat.description}
               </div>
 
-              {/* Mode toggle buttons */}
+              {/* Mode toggle buttons — disabled for strategies not yet deployed */}
+              {strat.deployed === false ? (
+                <div style={{ fontSize: 9, color: T.textMuted, fontStyle: 'italic', padding: '3px 0' }}>
+                  Not yet deployed — ships with CA-07
+                </div>
+              ) : (
               <div style={{ display: 'flex', gap: 4 }}>
                 {['LIVE', 'GHOST', 'OFF'].map(mode => {
                   const active = currentMode === mode;
@@ -212,6 +178,7 @@ function StrategyConfigPanel({ api }) {
                   );
                 })}
               </div>
+              )}
             </div>
           );
         })}

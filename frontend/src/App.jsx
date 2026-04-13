@@ -15,18 +15,14 @@ import PaperDashboard from './pages/PaperDashboard.jsx';
 import TradingConfig from './pages/TradingConfig.jsx';
 import Positions from './pages/Positions.jsx';
 import Risk from './pages/Risk.jsx';
-import Learn from './pages/Learn.jsx';
-import Changelog from './pages/Changelog.jsx';
+// CLEANUP-01: Learn, Changelog, Indicators, AnalysisLibrary, Recommendations removed (dead pages)
 import PlaywrightDashboard from './pages/PlaywrightDashboard.jsx';
 import TimesFM from './pages/TimesFM.jsx';
-import Indicators from './pages/Indicators.jsx';
 import V58Monitor from './pages/V58Monitor.jsx';
 import WindowResults from './pages/WindowResults.jsx';
 import StrategyAnalysis from './pages/StrategyAnalysis.jsx';
 import LiveTrading from './pages/LiveTrading.jsx';
-import AnalysisLibrary from './pages/AnalysisLibrary.jsx';
 import FactoryFloor from './pages/FactoryFloor.jsx';
-import Recommendations from './pages/Recommendations.jsx';
 import ExecutionHQ from './pages/execution-hq/ExecutionHQ.jsx';
 import MarginEngine from './pages/margin-engine/MarginEngine.jsx';
 import MarginStrategies from './pages/MarginStrategies.jsx';
@@ -51,6 +47,9 @@ import StrategyHistory from './pages/polymarket/StrategyHistory.jsx';
 import StrategyFloor from './pages/polymarket/StrategyFloor.jsx';
 import LiveFloor from './pages/polymarket/LiveFloor.jsx';
 import PolymarketOverview from './pages/polymarket/Overview.jsx';
+import StrategyConfigs from './pages/polymarket/StrategyConfigs.jsx';
+import GatePipelineMonitor from './pages/polymarket/GatePipelineMonitor.jsx';
+import DataHealth from './pages/polymarket/DataHealth.jsx';
 import SignalComparison from './pages/SignalComparison.jsx';
 
 export default function App() {
@@ -88,16 +87,12 @@ export default function App() {
             <Route path="legacy-config" element={<LegacyConfig />} />
             <Route path="trading-config" element={<TradingConfig />} />
             <Route path="setup" element={<Setup />} />
-            <Route path="learn" element={<Learn />} />
-            <Route path="changelog" element={<Changelog />} />
             <Route path="playwright" element={<PlaywrightDashboard />} />
             <Route path="timesfm" element={<TimesFM />} />
-            <Route path="indicators" element={<Indicators />} />
             <Route path="v58" element={<V58Monitor />} />
             <Route path="windows" element={<WindowResults />} />
             <Route path="strategy" element={<StrategyAnalysis />} />
             <Route path="live" element={<LiveTrading />} />
-            <Route path="analysis" element={<AnalysisLibrary />} />
             <Route path="factory" element={<FactoryFloor />} />
             {/* UI-02: Multi-market HQ monitors — 4 assets × 2 timeframes.
                 The legacy /execution-hq path redirects to the BTC 5m default
@@ -107,7 +102,6 @@ export default function App() {
             <Route path="margin" element={<MarginEngine />} />
             <Route path="margin-strategies" element={<MarginStrategies />} />
             <Route path="composite" element={<CompositeSignals />} />
-            <Route path="recommendations" element={<Recommendations />} />
             <Route path="audit" element={<AuditChecklist />} />
             <Route path="data/v1" element={<V1Surface />} />
             <Route path="data/v2" element={<V2Surface />} />
@@ -127,6 +121,9 @@ export default function App() {
           <Route path="polymarket/strategy-history" element={<StrategyHistory />} />
             <Route path="polymarket/down-only" element={<StrategyFloor strategyId="v4_down_only" />} />
             <Route path="polymarket/up-asian" element={<StrategyFloor strategyId="v4_up_asian" />} />
+            <Route path="polymarket/strategies" element={<StrategyConfigs />} />
+            <Route path="polymarket/gate-monitor" element={<GatePipelineMonitor />} />
+            <Route path="polymarket/data-health" element={<DataHealth />} />
             <Route path="signal-comparison" element={<SignalComparison />} />
           </Route>
 

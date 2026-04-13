@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useApi } from '../../hooks/useApi.js';
 import { T, fmt, utcHHMM } from './components/theme.js';
+import { STRATEGIES } from '../../constants/strategies.js';
 
 /**
  * StrategyFloor — Dedicated live dashboard for a single strategy.
@@ -16,41 +17,9 @@ import { T, fmt, utcHHMM } from './components/theme.js';
 
 const POLL_MS = 5000;
 
-// ── Strategy configs ─────────────────────────────────────────────────────────
+// ── Strategy configs — sourced from shared constants ─────────────────────────
 
-export const STRATEGY_CONFIGS = {
-  v4_down_only: {
-    id: 'v4_down_only',
-    label: 'V4 DOWN-ONLY',
-    color: '#10b981',
-    colorDim: 'rgba(16,185,129,0.12)',
-    direction: 'DOWN',
-    gateLabel: 'DOWN filter · CLOB sizing · T-90-150',
-    description: 'Trades DOWN signals at dist≥0.10 during T-90-150 window. CLOB-based sizing: 2.0x at ≥0.55, 1.2x at 0.35-0.55, skip <0.25.',
-    thresholds: {
-      minDist: 0.10,
-      minOffset: 90,
-      maxOffset: 150,
-      clobSkip: 0.25,
-    },
-  },
-  v4_up_asian: {
-    id: 'v4_up_asian',
-    label: 'V4 UP ASIAN',
-    color: '#f59e0b',
-    colorDim: 'rgba(245,158,11,0.12)',
-    direction: 'UP',
-    gateLabel: 'UP filter · Asian session · dist 0.15-0.20 · T-90-150',
-    description: 'Trades UP signals at dist 0.15-0.20 during Asian session (23:00-02:59 UTC) in T-90-150 window.',
-    thresholds: {
-      minDist: 0.15,
-      maxDist: 0.20,
-      minOffset: 90,
-      maxOffset: 150,
-      asianHours: [23, 0, 1, 2],
-    },
-  },
-};
+export const STRATEGY_CONFIGS = STRATEGIES;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

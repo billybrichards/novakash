@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useApi } from '../../hooks/useApi.js';
 import { T, GATE_NAMES, fmt, utcHHMM, pct } from './components/theme.js';
+import { getStrategyMeta } from '../../constants/strategies.js';
 
 /**
  * Polymarket Evaluate — "How Am I Doing?"
@@ -34,21 +35,10 @@ const DATE_RANGES = [
   { key: 'all', label: 'All', hours: Infinity },
 ];
 
-// ─── Strategy display metadata ───────────────────────────────────────────────
-const STRATEGY_META = {
-  v10_gate:     { label: 'V10 Gate',      color: '#a855f7' },
-  v4_fusion:    { label: 'V4 Fusion',     color: '#06b6d4' },
-  v4_down_only: { label: 'V4 Down-Only',  color: '#10b981' },
-  v4_up_asian:  { label: 'V4 Up Asian',   color: '#f59e0b' },
-};
-const FALLBACK_COLORS = ['#a855f7', '#06b6d4', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6'];
-
+// ─── Strategy display metadata — sourced from shared constants ───────────────
 function strategyMeta(key, index) {
-  if (STRATEGY_META[key]) return STRATEGY_META[key];
-  return {
-    label: key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-    color: FALLBACK_COLORS[(index || 0) % FALLBACK_COLORS.length],
-  };
+  const meta = getStrategyMeta(key, index);
+  return { label: meta.label, color: meta.color };
 }
 
 // ─── Inject keyframes once ──────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useApi } from '../../hooks/useApi.js';
 import { T, fmt } from './components/theme.js';
+import { STRATEGIES } from '../../constants/strategies.js';
 
 /**
  * Strategy History — changelog of strategy configuration changes.
@@ -88,11 +89,9 @@ const TYPE_COLORS = {
   fix: '#ef4444',
 };
 
+// Strategy colors — sourced from shared constants, plus 'all' fallback
 const STRAT_COLORS = {
-  v4_down_only: '#10b981',
-  v4_up_asian: '#f59e0b',
-  v4_fusion: '#06b6d4',
-  v10_gate: '#a855f7',
+  ...Object.fromEntries(Object.entries(STRATEGIES).map(([id, s]) => [id, s.color])),
   all: '#64748b',
 };
 
