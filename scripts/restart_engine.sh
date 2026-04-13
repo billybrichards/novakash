@@ -67,13 +67,13 @@ if [ "$KEEP_RUNNING" = true ]; then
 fi
 
 # ─── Step 4: Stop existing engine ──────────────────────────────────────────
-if pgrep -f 'python3 main.py' >/dev/null; then
+if pgrep -f 'python3.*main.py' >/dev/null; then
     log_info "Stopping existing python3 main.py processes"
     sudo pkill -9 -f 'python3 main.py' || true
     sleep 4
 fi
 
-if pgrep -f 'python3 main.py' >/dev/null; then
+if pgrep -f 'python3.*main.py' >/dev/null; then
     log_info "ERROR: processes still running after SIGKILL"
     ps aux | grep 'python3 main.py' | grep -v grep
     exit 1
@@ -85,13 +85,13 @@ sudo -u novakash bash -c "cd $ENGINE_DIR && nohup python3 main.py >> $CURRENT_LO
 sleep 6
 
 # ─── Step 6: Verify ────────────────────────────────────────────────────────
-PID_COUNT=$(pgrep -f 'python3 main.py' | wc -l || echo 0)
+PID_COUNT=$(pgrep -f 'python3.*main.py' | wc -l || echo 0)
 if [ "$PID_COUNT" -ne 1 ]; then
     log_info "WARNING: expected 1 python3 main.py process, got $PID_COUNT"
     ps aux | grep 'python3 main.py' | grep -v grep || true
     exit 1
 fi
 
-log_info "Engine started cleanly. PID: $(pgrep -f 'python3 main.py')"
+log_info "Engine started cleanly. PID: $(pgrep -f 'python3.*main.py')"
 log_info "Tail of new log:"
 sudo tail -10 "$CURRENT_LOG" || true
