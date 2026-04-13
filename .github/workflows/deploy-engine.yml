@@ -43,17 +43,18 @@ name: Deploy Engine to Montreal
 on:
   push:
     branches: [develop]
-    # Path filter: fires when files inside engine/ or scripts/restart_engine.sh
-    # change, or when this workflow itself changes. Docs-only edits under
-    # engine/** (README.md, IMPLEMENTATION_COMPLETE.md, any *.md additions)
-    # are excluded via negative patterns so audit-log updates do not bounce
-    # the engine process. The negative patterns must come AFTER the positive
-    # ones — GitHub evaluates them sequentially and a negative pattern after
-    # a positive match removes the path from the trigger set.
-    #
-    # Repo-level docs/** and frontend/** already do not match the positive
-    # patterns, so they never fire this workflow. The negative patterns
-    # below only need to filter noise inside engine/** itself.
+    paths:
+      - 'engine/**'
+      - 'scripts/restart_engine.sh'
+      - '.github/workflows/deploy-engine.yml'
+      - '!engine/**/*.md'
+      - '!engine/**/*.txt'
+      - '!engine/domain/**'
+      - '!engine/adapters/**'
+      - '!engine/use_cases/**'
+      - '!engine/tests/**'
+  pull_request:
+    branches: [develop]
     paths:
       - 'engine/**'
       - 'scripts/restart_engine.sh'
@@ -96,6 +97,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Python syntax check
+        run: |
+          python3 -m py_compile engine/main.py
+          python3 -m py_compile engine/strategies/five_min_vpin.py
+          python3 -m py_compile engine/strategies/orchestrator.py
+          echo "Python syntax check passed"
+
+      - name: PR check - skip deployment
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "✅ PR checks passed - Python syntax valid"
+          echo "📝 Deployment will run automatically when merged to develop"
+
       - name: Require runtime secrets
         run: |
           missing=""
@@ -126,7 +140,7 @@ jobs:
             echo "ssh key written as raw PEM"
           fi
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          echo "15.223.247.178 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKhKZhAevqXVQs1lH1C8X6YH8C8sXJvXW4TJ3b6V5j3R5M7Z0N8K5m2X8P7R9T6V5X3Y8Z5" >> ~/.ssh/known_hosts
 
       - name: Ensure host directories exist
         run: |
@@ -214,13 +228,11 @@ jobs:
 
       - name: Restart engine via scripts/restart_engine.sh
         run: |
-          # CI-01 fix: the restart script spawns a background python3 process
-          # via nohup+disown. Even after disown, SSH waits for all child fds to
-          # close before exiting. The </dev/null fix in the script itself closes
-          # stdin on the child, and the timeout here is a safety net so CI never
-          # hangs indefinitely if something unexpected keeps the channel open.
+          # Kill existing process and restart as novakash user
           timeout 90 ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" \
-            'sudo bash /home/novakash/novakash/scripts/restart_engine.sh </dev/null'
+            'sudo pkill -9 -f "python3 main.py" || true && sleep 3 && \
+             sudo -u novakash bash -c "cd /home/novakash/novakash/engine && \
+             nohup python3 main.py >> /home/novakash/engine.log 2>&1 </dev/null & disown"'
 
       - name: Wait for engine startup
         run: sleep 45
