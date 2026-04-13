@@ -203,7 +203,6 @@ class TestGetActualDirection:
     """Unit tests via a mock pool — verifies SQL and return value."""
 
     def _make_repo_with_pool(self, fetchrow_result):
-        import asyncpg
         conn = AsyncMock()
         conn.fetchrow = AsyncMock(return_value=fetchrow_result)
         pool = AsyncMock()
@@ -224,6 +223,10 @@ class TestGetActualDirection:
         key = WindowKey(asset="BTC", window_ts=1776109200)
         result = await repo.get_actual_direction(key)
         assert result == "UP"
+        conn.fetchrow.assert_called_once()
+        call_args = conn.fetchrow.call_args.args
+        assert call_args[1] == 1776109200  # window_ts
+        assert call_args[2] == "BTC"       # asset
 
     @pytest.mark.asyncio
     async def test_returns_none_when_no_row(self):
@@ -281,6 +284,9 @@ class TestFindUnresolvedPaperTrades:
         assert len(results) == 1
         assert results[0]["id"] == "abc123"
         assert results[0]["direction"] == "UP"
+        conn.fetch.assert_called_once()
+        call_args = conn.fetch.call_args.args
+        assert call_args[1] == 360  # min_age_seconds
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_pool_none(self):
