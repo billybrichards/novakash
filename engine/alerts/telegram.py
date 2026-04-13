@@ -2088,6 +2088,106 @@ class TelegramAlerter:
             # v11 fix: was silently swallowing all errors — now logs for diagnosability
             self._log.warning("telegram.system_alert_failed", level=level, error=str(exc)[:200])
 
+    async def send_strategy_trade_alert(
+        self,
+        *,
+        strategy_id: str,
+        strategy_version: str,
+        direction: str,
+        confidence: str = "?",
+        confidence_score: float = 0.0,
+        entry_reason: str = "",
+        gate_results: list = None,
+        sizing_modifier: float = 1.0,
+        sizing_label: str = "default",
+        fill_price: float = 0.0,
+        fill_size: float = 0.0,
+        stake_usd: float = 0.0,
+        order_type: str = "PAPER",
+        btc_price: float = 0.0,
+        vpin: float = 0.0,
+        regime: str = "?",
+        clob_up_ask: float = None,
+        clob_down_ask: float = None,
+        eval_offset: int = None,
+        paper_mode: bool = True,
+        success: bool = True,
+        failure_reason: str = "",
+        elapsed_s: float = 0.0,
+    ) -> None:
+        """Rich Telegram alert for Strategy Engine v2 trades.
+
+        Shows strategy name, gate pipeline, sizing, fill details.
+        """
+        try:
+            dir_emoji = "⬇" if direction == "DOWN" else "⬆"
+            mode_tag = "📝 PAPER" if paper_mode else "💰 LIVE"
+
+            # Header
+            lines = [
+                f"🎯 *TRADE — BTC 5m | {strategy_id} {strategy_version}*",
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━",
+            ]
+
+            # Signal
+            lines.append(f"{dir_emoji} Signal: *{direction}* | conf={confidence} ({confidence_score:.2f})")
+            if vpin > 0:
+                lines.append(f"📈 VPIN: {vpin:.3f} | {regime}")
+            if clob_up_ask or clob_down_ask:
+                up_str = f"${clob_up_ask:.3f}" if clob_up_ask else "?"
+                dn_str = f"${clob_down_ask:.3f}" if clob_down_ask else "?"
+                lines.append(f"📊 CLOB: ↑{up_str} ↓{dn_str}")
+            if eval_offset:
+                lines.append(f"⏱ Entry: T-{eval_offset}s")
+
+            # Gates
+            if gate_results:
+                checks = []
+                for g in (gate_results or []):
+                    icon = "✅" if g.get("passed") else "❌"
+                    checks.append(f"{icon}{g.get('gate', '?')}")
+                lines.append(f"\n⚡ Gates: {' '.join(checks)}")
+
+            # Sizing
+            if sizing_modifier != 1.0:
+                lines.append(f"💰 Sizing: {sizing_modifier:.1f}× ({sizing_label})")
+
+            lines.append("")
+
+            # Fill result
+            if success and fill_price > 0:
+                lines.append(f"✅ {order_type} FILLED")
+                lines.append(
+                    f"💵 Fill: ${fill_price:.3f} | "
+                    f"Size: {fill_size:.1f} shares | "
+                    f"Stake: ${stake_usd:.2f}"
+                )
+                if elapsed_s > 0:
+                    lines.append(f"⏱ Filled in {elapsed_s:.1f}s")
+            elif not success:
+                lines.append(f"❌ {order_type} FAILED: {failure_reason}")
+
+            if btc_price > 0:
+                lines.append(f"\nBTC: ${btc_price:,.2f}")
+
+            lines.append(f"\n{mode_tag}")
+
+            text = "\n".join(lines)
+            await self._send(text)
+            await self._log_notification(f"strategy_trade_{strategy_id}", text[:2000])
+            self._log.info(
+                "telegram.strategy_trade_sent",
+                strategy=strategy_id,
+                direction=direction,
+                success=success,
+            )
+        except Exception as exc:
+            self._log.warning(
+                "telegram.strategy_trade_alert_failed",
+                strategy=strategy_id,
+                error=str(exc)[:200],
+            )
+
     async def send_kill_switch_alert(self) -> None:
         try:
             await self._send("🛑 *KILL SWITCH*\nAll trading halted. Manual restart required.")

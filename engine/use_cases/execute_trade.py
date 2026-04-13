@@ -310,12 +310,42 @@ class ExecuteTradeUseCase:
                 extra={"error": str(exc)[:200]},
             )
 
-        # ── Step 9: Telegram alert ─────────────────────────────────────
+        # ── Step 9: Telegram alert (rich strategy-aware format) ─────────
         try:
-            alert_msg = self._format_trade_alert(
-                decision, result, stake, current_btc_price, open_price,
-            )
-            await self._alerter.send_system_alert(alert_msg)
+            gate_results = decision.metadata.get("gate_results", [])
+            sizing_meta = decision.metadata.get("sizing", {})
+            # Use rich strategy alert if available, fallback to plain text
+            if hasattr(self._alerter, "send_strategy_trade_alert"):
+                await self._alerter.send_strategy_trade_alert(
+                    strategy_id=sid,
+                    strategy_version=decision.strategy_version,
+                    direction=direction,
+                    confidence=decision.confidence or "?",
+                    confidence_score=decision.confidence_score or 0.0,
+                    entry_reason=decision.entry_reason,
+                    gate_results=gate_results,
+                    sizing_modifier=sizing_meta.get("modifier", 1.0),
+                    sizing_label=sizing_meta.get("label", "default"),
+                    fill_price=result.fill_price or 0.0,
+                    fill_size=result.fill_size or 0.0,
+                    stake_usd=result.stake_usd,
+                    order_type=result.order_type,
+                    btc_price=current_btc_price,
+                    vpin=getattr(self, "_last_vpin", 0.0),
+                    regime=getattr(self, "_last_regime", "?"),
+                    eval_offset=request.eval_offset,
+                    paper_mode=self._paper_mode,
+                    success=result.success,
+                    failure_reason=result.failure_reason or "",
+                    elapsed_s=(result.execution_end - result.execution_start)
+                    if result.execution_end > result.execution_start
+                    else 0.0,
+                )
+            else:
+                alert_msg = self._format_trade_alert(
+                    decision, result, stake, current_btc_price, open_price,
+                )
+                await self._alerter.send_system_alert(alert_msg)
         except Exception as exc:
             logger.warning(
                 "execute_trade.alert_error",
