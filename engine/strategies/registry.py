@@ -110,11 +110,13 @@ class StrategyRegistry:
         data_surface: DataSurfaceManager,
         execute_trade_uc: Any = None,
         alerter: Any = None,
+        decision_repo: Any = None,
     ):
         self._config_dir = Path(config_dir)
         self._data_surface = data_surface
         self._execute_uc = execute_trade_uc
         self._alerter = alerter
+        self._decision_repo = decision_repo  # PgStrategyDecisionRepository
         self._configs: dict[str, StrategyConfig] = {}
         self._pipelines: dict[str, list[Gate]] = {}
         self._hooks: dict[str, dict[str, Callable]] = {}
@@ -269,6 +271,39 @@ class StrategyRegistry:
             try:
                 decision = self._evaluate_one(name, config, surface)
                 decisions.append(decision)
+
+                # Write decision to strategy_decisions table (fire-and-forget)
+                # Writes EVERY decision (TRADE + SKIP + ERROR) so Command Center
+                # and Strategy Lab have full per-strategy per-offset history.
+                if self._decision_repo is not None:
+                    try:
+                        import asyncio, json, time
+                        from domain.value_objects import StrategyDecisionRecord
+                        record = StrategyDecisionRecord(
+                            strategy_id=name,
+                            strategy_version=config.version,
+                            asset=getattr(window, "asset", "BTC"),
+                            window_ts=window_ts,
+                            timeframe=getattr(window, "timeframe", "5m")
+                                if hasattr(window, "timeframe") else "5m",
+                            eval_offset=eval_offset,
+                            mode=config.mode,
+                            action=decision.action,
+                            direction=decision.direction,
+                            confidence=decision.confidence,
+                            confidence_score=decision.confidence_score,
+                            entry_cap=decision.entry_cap,
+                            collateral_pct=decision.collateral_pct,
+                            entry_reason=decision.entry_reason,
+                            skip_reason=decision.skip_reason,
+                            metadata_json=json.dumps(decision.metadata or {}),
+                            evaluated_at=time.time(),
+                        )
+                        asyncio.create_task(
+                            self._decision_repo.write_decision(record)
+                        )
+                    except Exception:
+                        pass  # Never block evaluation on DB write
 
                 # Execute LIVE trades when use case is wired
                 # In-memory dedup: only execute once per window per strategy

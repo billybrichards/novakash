@@ -515,10 +515,26 @@ class Orchestrator:
                     except Exception as exc:
                         log.warning("orchestrator.execute_trade_uc_error", error=str(exc)[:200])
 
+                # Wire decision repo for per-eval strategy_decisions writes
+                _decision_repo = None
+                try:
+                    from adapters.persistence.pg_strategy_decisions import (
+                        PgStrategyDecisionRepository,
+                    )
+                    _decision_repo = PgStrategyDecisionRepository(
+                        db_client=self._db,
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "orchestrator.decision_repo_init_error",
+                        error=str(exc)[:200],
+                    )
+
                 self._strategy_registry = StrategyRegistry(
                     config_dir, self._data_surface_mgr,
                     execute_trade_uc=_execute_uc,
                     alerter=self._alerter,
+                    decision_repo=_decision_repo,
                 )
                 self._strategy_registry.load_all()
                 log.info(
