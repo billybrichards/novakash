@@ -2569,6 +2569,17 @@ class Orchestrator:
 
                             # Update risk manager
                             self._risk_manager._paper_mode = want_paper
+                            if not want_paper:
+                                try:
+                                    _live_wallet = await self._poly_client.get_balance()
+                                    await self._risk_manager.rebaseline_live_bankroll(
+                                        _live_wallet
+                                    )
+                                except Exception as exc:
+                                    log.error(
+                                        "mode_switch.live_risk_rebaseline_failed",
+                                        error=str(exc)[:200],
+                                    )
 
                             # Keep registry execution aligned with runtime mode.
                             if (

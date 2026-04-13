@@ -58,7 +58,9 @@ class RiskManager:
         # Kill switch (manual + automatic) with v11 auto-resume
         self._kill_switch_active: bool = False
         self._kill_switch_triggered_at: Optional[datetime] = None
-        self._kill_auto_resume_minutes: int = int(os.environ.get("KILL_AUTO_RESUME_MINUTES", "0"))
+        self._kill_auto_resume_minutes: int = int(
+            os.environ.get("KILL_AUTO_RESUME_MINUTES", "0")
+        )
 
         # Venue connectivity
         self._polymarket_connected: bool = False
@@ -68,7 +70,9 @@ class RiskManager:
 
     # ─── Trade Approval ───────────────────────────────────────────────────────
 
-    async def approve(self, stake_usd: float, strategy: str = "unknown") -> tuple[bool, str]:
+    async def approve(
+        self, stake_usd: float, strategy: str = "unknown"
+    ) -> tuple[bool, str]:
         """Check all risk gates. Returns (approved, reason)."""
         async with self._lock:
             self._maybe_reset_daily()
@@ -82,17 +86,20 @@ class RiskManager:
             if not self._paper_mode:
                 max_daily_loss = self._day_start_bankroll * runtime.daily_loss_limit_pct
                 if self._daily_pnl <= -max_daily_loss:
-                    return False, f"daily_loss_limit: down ${abs(self._daily_pnl):.2f} today"
+                    return (
+                        False,
+                        f"daily_loss_limit: down ${abs(self._daily_pnl):.2f} today",
+                    )
 
             # 3. Position limit
             # Allow up to bankroll × bet_fraction × 1.5 (max price multiplier)
             # The stake calculator already applies its own 5% buffer internally
             max_stake = self._current_bankroll * runtime.bet_fraction * 1.5
-            
+
             # Apply hard max cap (from config)
             hard_max = runtime.max_position_usd
             max_stake = min(max_stake, hard_max)
-            
+
             if stake_usd > max_stake:
                 return False, f"position_limit: ${stake_usd:.2f} > max ${max_stake:.2f}"
 
@@ -101,18 +108,33 @@ class RiskManager:
                 open_exposure = await self._om.get_open_exposure_usd()
                 max_exposure = self._current_bankroll * runtime.max_open_exposure_pct
                 if open_exposure + stake_usd > max_exposure:
-                    return False, f"exposure_limit: ${open_exposure + stake_usd:.2f} > ${max_exposure:.2f}"
+                    return (
+                        False,
+                        f"exposure_limit: ${open_exposure + stake_usd:.2f} > ${max_exposure:.2f}",
+                    )
 
             # 5. Cooldown (skip in paper mode)
-            if not self._paper_mode and self._cooldown_until and datetime.utcnow() < self._cooldown_until:
+            if (
+                not self._paper_mode
+                and self._cooldown_until
+                and datetime.utcnow() < self._cooldown_until
+            ):
                 remaining = (self._cooldown_until - datetime.utcnow()).seconds
-                return False, f"cooldown: {remaining}s remaining after {runtime.consecutive_loss_cooldown} losses"
+                return (
+                    False,
+                    f"cooldown: {remaining}s remaining after {runtime.consecutive_loss_cooldown} losses",
+                )
 
             # 6. Venue connectivity
             if not self._polymarket_connected and not self._opinion_connected:
                 return False, "venue_connectivity: both venues offline"
 
-            log.info("risk.approved", strategy=strategy, stake=stake_usd, paper=self._paper_mode)
+            log.info(
+                "risk.approved",
+                strategy=strategy,
+                stake=stake_usd,
+                paper=self._paper_mode,
+            )
             return True, "paper_mode" if self._paper_mode else "ok"
 
     # ─── Outcome Recording ────────────────────────────────────────────────────
@@ -127,8 +149,12 @@ class RiskManager:
             if pnl_usd < 0:
                 self._consecutive_losses += 1
                 if self._consecutive_losses >= runtime.consecutive_loss_cooldown:
-                    self._cooldown_until = datetime.utcnow() + timedelta(seconds=runtime.cooldown_seconds)
-                    log.warning("risk.cooldown_triggered", losses=self._consecutive_losses)
+                    self._cooldown_until = datetime.utcnow() + timedelta(
+                        seconds=runtime.cooldown_seconds
+                    )
+                    log.warning(
+                        "risk.cooldown_triggered", losses=self._consecutive_losses
+                    )
             else:
                 self._consecutive_losses = 0
                 # Clear cooldown on win
@@ -173,6 +199,29 @@ class RiskManager:
                 peak=f"${self._peak_bankroll:.2f}",
             )
 
+    async def rebaseline_live_bankroll(self, wallet_balance: float) -> None:
+        """Reset live risk baselines from the current wallet balance.
+
+        Used on a paper -> live mode switch so paper-mode bankroll and peak
+        history do not immediately trigger a false live drawdown kill.
+        """
+        if wallet_balance is None or wallet_balance <= 0:
+            return
+
+        self._current_bankroll = wallet_balance
+        self._peak_bankroll = wallet_balance
+        self._day_start_bankroll = wallet_balance
+        self._daily_pnl = 0.0
+        self._consecutive_losses = 0
+        self._cooldown_until = None
+        self._kill_switch_active = False
+        self._kill_switch_triggered_at = None
+
+        log.warning(
+            "risk.live_bankroll_rebased",
+            bankroll=f"${wallet_balance:.2f}",
+        )
+
     async def force_kill(self, reason: str = "Manual kill") -> None:
         """Manually activate kill switch."""
         if not self._kill_switch_active:
@@ -194,11 +243,13 @@ class RiskManager:
         The drawdown check still gates if bankroll hasn't recovered,
         but the manual flag clears so force_kill doesn't persist forever.
         """
-        if (self._kill_switch_active
-                and self._kill_auto_resume_minutes > 0
-                and self._kill_switch_triggered_at
-                and (datetime.utcnow() - self._kill_switch_triggered_at).total_seconds()
-                    > self._kill_auto_resume_minutes * 60):
+        if (
+            self._kill_switch_active
+            and self._kill_auto_resume_minutes > 0
+            and self._kill_switch_triggered_at
+            and (datetime.utcnow() - self._kill_switch_triggered_at).total_seconds()
+            > self._kill_auto_resume_minutes * 60
+        ):
             log.warning(
                 "risk.kill_auto_resumed",
                 minutes=self._kill_auto_resume_minutes,
@@ -207,7 +258,9 @@ class RiskManager:
             self._kill_switch_active = False
             self._kill_switch_triggered_at = None
 
-        return self._kill_switch_active or self._drawdown_pct >= runtime.max_drawdown_kill
+        return (
+            self._kill_switch_active or self._drawdown_pct >= runtime.max_drawdown_kill
+        )
 
     # ─── Venue Status ─────────────────────────────────────────────────────────
 
@@ -226,7 +279,9 @@ class RiskManager:
             "drawdown_pct": self._drawdown_pct,
             "daily_pnl": self._daily_pnl,
             "consecutive_losses": self._consecutive_losses,
-            "cooldown_until": self._cooldown_until.isoformat() if self._cooldown_until else None,
+            "cooldown_until": self._cooldown_until.isoformat()
+            if self._cooldown_until
+            else None,
             "paper_mode": self._paper_mode,
             "kill_switch_active": self._kill_switch_active,
             "is_killed": self.is_killed,
@@ -245,7 +300,7 @@ class RiskManager:
 
     async def set_paper_bankroll(self, amount: float) -> None:
         """Set the paper trading bankroll explicitly.
-        
+
         In paper mode, the Polymarket wallet shows $0, so we need to
         track paper bankroll separately. Call this to initialize or
         adjust the paper bankroll (e.g., on engine start or deposit).
@@ -258,7 +313,7 @@ class RiskManager:
         self._current_bankroll = amount
         self._peak_bankroll = max(self._peak_bankroll, amount)
         self._day_start_bankroll = amount  # Reset daily tracking too
-        
+
         log.info(
             "risk.paper_bankroll_set",
             old=f"${old:.2f}",
