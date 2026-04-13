@@ -115,7 +115,8 @@ jobs:
             echo "ssh key written as raw PEM"
           fi
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          echo "StrictHostKeyChecking no" >> ~/.ssh/config
+          echo "UserKnownHostsFile=/dev/null" >> ~/.ssh/config
 
       - name: Ensure host directory exists
         # First-deploy bootstrap. mkdir -p is idempotent so this is safe

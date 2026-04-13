@@ -145,7 +145,9 @@ class PublishHeartbeatUseCase:
             self._tick_count += 1
             if self._tick_count >= self._sitrep_interval:
                 self._tick_count = 0
-                await self._send_sitrep(risk_status)
+                import os as _os
+                if _os.environ.get("LEGACY_EXECUTION_DISABLED", "").lower() != "true":
+                    await self._send_sitrep(risk_status)
 
         except Exception as exc:
             logger.error(
