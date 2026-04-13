@@ -25,14 +25,14 @@ const NAV_SECTIONS = [
     color: '#06b6d4', // cyan accent
     items: [
       { path: '/polymarket/command', label: 'Command', icon: '\u26A1' },
+      { path: '/polymarket/strategies', label: 'Configs', icon: '\u2699' },
       { path: '/polymarket/overview', label: 'Overview', icon: 'O' },
       { path: '/polymarket/monitor', label: 'Monitor', icon: 'M' },
       { path: '/polymarket/floor', label: 'Floor', icon: 'F' },
       { path: '/polymarket/evaluate', label: 'Evaluate', icon: 'E' },
       { path: '/polymarket/down-only', label: 'DOWN Floor', icon: '\u25BC' },
       { path: '/polymarket/up-asian', label: 'UP Floor', icon: '\u25B2' },
-      { path: '/polymarket/strategy-lab', label: 'Strategy Lab', icon: 'S' },
-      { path: '/polymarket/strategies', label: 'Strategies', icon: '\u2699' },
+      { path: '/polymarket/strategy-lab', label: 'Strategy Lab', icon: 'Sl' },
       { path: '/polymarket/gate-monitor', label: 'Gates', icon: 'G' },
       { path: '/polymarket/data-health', label: 'Data Health', icon: 'D' },
       { path: '/polymarket/strategy-history', label: 'History', icon: 'H' },

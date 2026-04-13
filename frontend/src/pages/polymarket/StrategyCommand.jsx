@@ -37,8 +37,8 @@ const DIR_COLORS = { UP: '#14b8a6', DOWN: '#f43f5e', ANY: '#06b6d4' };
 
 const TAB_KEYS = ['signal', 'gates', 'decisions', 'outcomes'];
 const TAB_LABELS = { signal: 'Signal Surface', gates: 'Gate Detail', decisions: 'Decisions', outcomes: 'Outcomes' };
-const BOTTOM_TABS = ['orders', 'positions', 'health'];
-const BOTTOM_LABELS = { orders: 'Orders', positions: 'Positions', health: 'Data Health' };
+const BOTTOM_TABS = ['orders', 'positions', 'windows', 'health'];
+const BOTTOM_LABELS = { orders: 'Orders', positions: 'Positions', windows: 'Windows', health: 'Data Health' };
 
 // ── Inject keyframes ────────────────────────────────────────────────────────
 
@@ -277,9 +277,14 @@ function ActionBadge({ action }) {
 
 // ── Live BTC Price Banner ───────────────────────────────────────────────────
 
-function LiveBtcBanner({ hqData }) {
-  const btcPrice = hqData?.btc_price ?? hqData?.current_price ?? null;
+function LiveBtcBanner({ hqData, latestCtxPrice }) {
+  // btc_price is close_price of current window — null while window is open.
+  // Fall back to current_price from latest decision _ctx, then open_price.
+  const rawBtcPrice = hqData?.btc_price ?? hqData?.current_price ?? null;
+  const ctxPrice = latestCtxPrice ?? null;
+  const btcPrice = rawBtcPrice ?? ctxPrice;
   const openPrice = hqData?.current_window?.open_price ?? hqData?.open_price ?? null;
+  const priceLabel = rawBtcPrice == null && ctxPrice != null ? '(live)' : null;
 
   const delta = (btcPrice != null && openPrice != null) ? btcPrice - openPrice : null;
   const deltaPct = (delta != null && openPrice) ? (delta / openPrice) * 100 : null;
@@ -302,8 +307,11 @@ function LiveBtcBanner({ hqData }) {
         }}>
           {btcPrice != null
             ? '$' + Number(btcPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-            : '—'}
+            : '\u2014'}
         </span>
+        {priceLabel && (
+          <span style={{ fontSize: 8, color: C.amber, fontFamily: C.mono }}>{priceLabel}</span>
+        )}
       </div>
       {delta != null && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -331,23 +339,36 @@ function LiveBtcBanner({ hqData }) {
 
 // ── Signal Surface Tab ──────────────────────────────────────────────────────
 
-function SignalSurfaceTab({ ctx, strategyId, hqData }) {
-  // Merge hqData fields into ctx so regime/vpin show even without full surface
+function SignalSurfaceTab({ ctx, strategyId, hqData, decisions }) {
+  // Merge hqData fields into ctx so regime/vpin show even without full surface.
+  // Also pull _ctx from latest decision (any strategy) when own ctx is missing.
   // Must be declared before any conditional returns (Rules of Hooks)
   const enrichedCtx = useMemo(() => {
-    const base = { ...(ctx || {}) };
+    // Start with provided ctx, then try to pull _ctx from latest decision
+    let base = { ...(ctx || {}) };
+
+    // If ctx is sparse, enrich from the most recent decision's _ctx
+    if (decisions?.length) {
+      const latestAny = decisions[0]; // decisions sorted newest-first
+      const latestCtxAny = extractCtx(latestAny);
+      if (Object.keys(base).length === 0 && latestCtxAny && Object.keys(latestCtxAny).length > 0) {
+        base = { ...latestCtxAny };
+      }
+    }
+
     if (hqData) {
       if (base.regime == null && (hqData.vpin_regime || hqData.regime)) {
         base.regime = hqData.vpin_regime || hqData.regime;
       }
       if (base.vpin == null && hqData.vpin != null) base.vpin = hqData.vpin;
       if (base.current_price == null && hqData.btc_price != null) base.current_price = hqData.btc_price;
+      if (base.current_price == null && hqData.open_price != null) base.current_price = hqData.open_price;
     }
     return base;
-  }, [ctx, hqData]);
+  }, [ctx, hqData, decisions]);
 
   // Build a live-data fallback surface from execution-hq when no ctx
-  const hasCtx = ctx && Object.keys(ctx).length > 0;
+  const hasCtx = enrichedCtx && Object.keys(enrichedCtx).length > 0;
 
   if (!hasCtx) {
     const btc = hqData?.btc_price ?? hqData?.current_price;
@@ -642,7 +663,7 @@ function GateDetailTab({ strategyId, gateResults, decisions }) {
     gates.forEach(gName => {
       let pass = 0, total = 0;
       decisions.forEach(d => {
-        if (d.strategy_name !== strategyId) return;
+        if ((d.strategy_id || d.strategy_name) !== strategyId) return;
         const gr = extractGateResults(d);
         const status = gr[gName];
         if (status === true || status === 'pass') { pass++; total++; }
@@ -717,9 +738,24 @@ function DecisionsTab({ decisions, strategyId }) {
   const filtered = useMemo(() => {
     if (!decisions?.length) return [];
     return decisions
-      .filter(d => d.strategy_name === strategyId)
+      .filter(d => (d.strategy_id || d.strategy_name) === strategyId)
       .slice(0, 30);
   }, [decisions, strategyId]);
+
+  // Group decisions by window_ts for header display (must be before early return)
+  const grouped = useMemo(() => {
+    const groups = [];
+    let lastWindow = null;
+    filtered.forEach((d, i) => {
+      const wts = d.window_ts ?? (d.metadata_json || d.metadata || {}).window_ts;
+      if (wts !== lastWindow) {
+        groups.push({ type: 'header', wts, key: `hdr-${wts || i}` });
+        lastWindow = wts;
+      }
+      groups.push({ type: 'decision', d, idx: i, key: d.id || i });
+    });
+    return groups;
+  }, [filtered]);
 
   if (!filtered.length) {
     return (
@@ -731,48 +767,98 @@ function DecisionsTab({ decisions, strategyId }) {
 
   return (
     <div className="cmd-scroll" style={{ maxHeight: 420, overflowY: 'auto' }}>
-      {filtered.map((d, i) => {
+      {grouped.map(item => {
+        if (item.type === 'header') {
+          return (
+            <div key={item.key} style={{
+              fontSize: 8, color: C.teal, fontFamily: C.mono, fontWeight: 700,
+              padding: '6px 8px 2px',
+              borderBottom: `1px solid rgba(20,184,166,0.2)`,
+              letterSpacing: '0.06em',
+              background: 'rgba(20,184,166,0.03)',
+            }}>
+              WINDOW {item.wts ? fmtTs(item.wts) : 'UNKNOWN'}
+            </div>
+          );
+        }
+
+        const { d, idx: i } = item;
         const meta = d.metadata_json || d.metadata || {};
         const gr = extractGateResults(d);
+        const grReasons = extractGateReasons(d);
         const action = d.action || (d.trade_placed ? 'TRADE' : 'SKIP');
         const dir = d.direction || meta.direction;
         const skipReason = d.skip_reason || meta.skip_reason;
         const offset = d.eval_offset ?? meta.eval_offset;
         const isOpen = expanded === i;
+        const gateEntries = Object.entries(gr);
 
         return (
-          <div key={d.id || i} style={{
+          <div key={item.key} style={{
             borderBottom: `1px solid ${C.panelBorder}`,
             animation: 'cmd-fade 0.2s ease-out',
           }}>
             <div
               onClick={() => setExpanded(isOpen ? null : i)}
               style={{
-                display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px',
+                display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 8px',
                 cursor: 'pointer',
                 background: action === 'TRADE' ? 'rgba(20,184,166,0.03)' : 'transparent',
               }}
             >
-              <span style={{ fontSize: 9, color: C.muted, fontFamily: C.mono, minWidth: 60 }}>
-                {fmtTs(d.created_at || d.evaluated_at)}
-              </span>
-              <ActionBadge action={action} />
-              {dir && <DirBadge dir={dir} />}
-              {offset != null && (
-                <span style={{ fontSize: 8, color: C.muted, fontFamily: C.mono }}>T-{offset}</span>
-              )}
-              {skipReason && (
-                <span style={{
-                  fontSize: 8, color: C.amber, fontFamily: C.mono,
-                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  maxWidth: 200,
-                }}>
-                  {skipReason}
+              {/* Row 1: timestamp, action, dir, offset, skip reason */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 9, color: C.muted, fontFamily: C.mono, minWidth: 60 }}>
+                  {fmtTs(d.created_at || d.evaluated_at)}
                 </span>
+                <ActionBadge action={action} />
+                {dir && <DirBadge dir={dir} />}
+                {offset != null && (
+                  <span style={{ fontSize: 8, color: C.muted, fontFamily: C.mono }}>T-{offset}</span>
+                )}
+                {skipReason && (
+                  <span style={{
+                    fontSize: 8, color: C.amber, fontFamily: C.mono,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    maxWidth: 160,
+                  }}>
+                    {skipReason}
+                  </span>
+                )}
+                <span style={{ marginLeft: 'auto', color: C.dim, fontSize: 10 }}>
+                  {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                </span>
+              </div>
+              {/* Row 2: inline gate chips */}
+              {gateEntries.length > 0 && (
+                <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', paddingLeft: 4 }}>
+                  {gateEntries.map(([g, val]) => {
+                    const status = val === true || val === 'pass' ? 'pass' : val === false || val === 'fail' ? 'fail' : 'skip';
+                    const gate = GATES[g] || { label: g, icon: '?' };
+                    const reason = grReasons[g];
+                    const colors = {
+                      pass: { text: C.teal, border: 'rgba(20,184,166,0.3)', bg: 'rgba(20,184,166,0.08)' },
+                      fail: { text: C.rose, border: 'rgba(244,63,94,0.3)', bg: 'rgba(244,63,94,0.08)' },
+                      skip: { text: C.dim, border: 'rgba(100,116,139,0.2)', bg: 'transparent' },
+                    };
+                    const c = colors[status];
+                    return (
+                      <span
+                        key={g}
+                        title={reason ? `${gate.label}: ${reason}` : gate.label}
+                        style={{
+                          fontSize: 7, fontFamily: C.mono, fontWeight: 700,
+                          padding: '1px 5px', borderRadius: 2,
+                          background: c.bg, border: `1px solid ${c.border}`, color: c.text,
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {status === 'pass' ? '\u2705' : status === 'fail' ? '\u274C' : '\u25CB'} {gate.label}
+                      </span>
+                    );
+                  })}
+                </div>
               )}
-              <span style={{ marginLeft: 'auto', color: C.dim, fontSize: 10 }}>
-                {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              </span>
             </div>
 
             {isOpen && (
@@ -780,20 +866,6 @@ function DecisionsTab({ decisions, strategyId }) {
                 padding: '6px 12px 10px', background: 'rgba(15,23,42,0.4)',
                 borderTop: `1px solid ${C.panelBorder}`,
               }}>
-                {Object.keys(gr).length > 0 && (
-                  <div style={{ marginBottom: 6 }}>
-                    <div style={{ fontSize: 7, color: C.muted, fontFamily: C.mono, marginBottom: 4 }}>GATE RESULTS</div>
-                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                      {Object.entries(gr).map(([g, val]) => (
-                        <GateChip
-                          key={g}
-                          name={g}
-                          status={val === true || val === 'pass' ? 'pass' : val === false || val === 'fail' ? 'fail' : 'skip'}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                )}
                 <div style={{ fontSize: 7, color: C.muted, fontFamily: C.mono, marginBottom: 2 }}>METADATA</div>
                 <pre style={{
                   fontSize: 8, color: C.dim, fontFamily: C.mono,
@@ -814,7 +886,7 @@ function DecisionsTab({ decisions, strategyId }) {
 
 // ── Outcomes Tab ────────────────────────────────────────────────────────────
 
-function OutcomesTab({ outcomes, decisions, strategyId }) {
+function OutcomesTab({ outcomes, decisions, strategyId, stratStats }) {
   const stratOutcomes = useMemo(() => {
     if (!outcomes?.length) return [];
     return outcomes.filter(o =>
@@ -825,7 +897,7 @@ function OutcomesTab({ outcomes, decisions, strategyId }) {
   const counterfactuals = useMemo(() => {
     if (!decisions?.length) return [];
     return decisions
-      .filter(d => d.strategy_name === strategyId && (d.action === 'SKIP' || !d.trade_placed))
+      .filter(d => (d.strategy_id || d.strategy_name) === strategyId && (d.action === 'SKIP' || !d.trade_placed))
       .slice(0, 10)
       .map(d => {
         const meta = d.metadata_json || d.metadata || {};
@@ -844,8 +916,51 @@ function OutcomesTab({ outcomes, decisions, strategyId }) {
       .filter(d => d.counterfactual);
   }, [decisions, strategyId]);
 
+  const stats = stratStats?.[strategyId] || null;
+
   return (
     <div>
+      {/* Strategy aggregate stats from comparison endpoint */}
+      {stats && (
+        <div style={{
+          background: 'rgba(15,23,42,0.5)', border: `1px solid ${C.panelBorder}`,
+          borderRadius: 4, padding: '10px 14px', marginBottom: 12,
+          display: 'flex', gap: 24, flexWrap: 'wrap',
+        }}>
+          {[
+            { label: 'TRADES', value: stats.total_trades ?? stats.trades ?? '\u2014' },
+            { label: 'WINS', value: stats.wins ?? '\u2014', color: C.teal },
+            { label: 'LOSSES', value: stats.losses ?? '\u2014', color: C.rose },
+            {
+              label: 'WIN RATE',
+              value: (stats.win_rate != null)
+                ? (stats.win_rate * 100).toFixed(1) + '%'
+                : '\u2014',
+              color: stats.win_rate >= 0.7 ? C.teal : stats.win_rate >= 0.5 ? C.amber : C.rose,
+            },
+            {
+              label: 'PNL',
+              value: stats.total_pnl != null
+                ? (stats.total_pnl >= 0 ? '+' : '') + fmtNum(stats.total_pnl, 2)
+                : '\u2014',
+              color: (stats.total_pnl || 0) >= 0 ? C.teal : C.rose,
+            },
+          ].map(item => (
+            <div key={item.label} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ fontSize: 7, color: C.muted, fontFamily: C.mono, letterSpacing: '0.08em' }}>
+                {item.label}
+              </span>
+              <span style={{
+                fontSize: 14, fontWeight: 800, fontFamily: C.mono,
+                color: item.color || C.text,
+              }}>
+                {String(item.value)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       <SectionLabel icon={Activity}>TRADE OUTCOMES</SectionLabel>
       {stratOutcomes.length === 0 ? (
         <div style={{ padding: 12, color: C.muted, fontSize: 10, fontFamily: C.mono }}>
@@ -916,6 +1031,156 @@ function OutcomesTab({ outcomes, decisions, strategyId }) {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// ── Data Health Strip ───────────────────────────────────────────────────────
+
+// ── Window History Tab ──────────────────────────────────────────────────────
+
+const STRATEGY_ORDER = ['v4_down_only', 'v4_up_basic', 'v4_up_asian', 'v4_fusion', 'v10_gate'];
+
+function WindowHistoryTab({ decisions }) {
+  // Group decisions by window_ts, build one row per window
+  const rows = useMemo(() => {
+    if (!decisions?.length) return [];
+
+    // Group by window_ts
+    const windowMap = {};
+    decisions.forEach(d => {
+      const wts = d.window_ts ?? (d.metadata_json || d.metadata || {}).window_ts ?? 'unknown';
+      if (!windowMap[wts]) windowMap[wts] = { wts, strategies: {} };
+      const sid = d.strategy_id || d.strategy_name;
+      // Keep the most definitive decision per strategy per window
+      const existing = windowMap[wts].strategies[sid];
+      if (!existing || d.action === 'TRADE') {
+        const meta = d.metadata_json || d.metadata || {};
+        const ctx = meta._ctx || meta.ctx || {};
+        windowMap[wts].strategies[sid] = {
+          action: d.action || (d.trade_placed ? 'TRADE' : 'SKIP'),
+          direction: d.direction || meta.direction,
+          skip_reason: d.skip_reason || meta.skip_reason,
+          outcome: d.outcome || meta.outcome || meta.resolution,
+          open_price: ctx.open_price,
+          close_price: ctx.close_price ?? ctx.current_price,
+          delta_pct: ctx.delta_pct,
+        };
+      }
+    });
+
+    return Object.values(windowMap)
+      .sort((a, b) => {
+        if (a.wts === 'unknown') return 1;
+        if (b.wts === 'unknown') return -1;
+        return b.wts - a.wts;
+      })
+      .slice(0, 20);
+  }, [decisions]);
+
+  if (!rows.length) {
+    return (
+      <div style={{ padding: '8px 16px', fontSize: 9, color: C.muted, fontFamily: C.mono }}>
+        No window history yet — waiting for decisions data
+      </div>
+    );
+  }
+
+  const thStyle = {
+    fontSize: 7, fontWeight: 700, color: C.muted, fontFamily: C.mono,
+    padding: '4px 8px', textAlign: 'left', letterSpacing: '0.06em',
+    borderBottom: `1px solid ${C.panelBorder}`, whiteSpace: 'nowrap',
+  };
+
+  return (
+    <div className="cmd-scroll" style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 220 }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 8, fontFamily: C.mono }}>
+        <thead>
+          <tr style={{ background: 'rgba(15,23,42,0.7)' }}>
+            <th style={thStyle}>TIME (UTC)</th>
+            <th style={thStyle}>BTC</th>
+            {STRATEGY_ORDER.map(sid => (
+              <th key={sid} style={{ ...thStyle, color: STRATEGIES[sid]?.color || C.muted }}>
+                {STRATEGIES[sid]?.shortLabel || sid}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, ri) => {
+            // Figure out oracle outcome from any strategy that resolved
+            let oracleOutcome = null;
+            STRATEGY_ORDER.forEach(sid => {
+              const sd = row.strategies[sid];
+              if (sd?.outcome && !oracleOutcome) oracleOutcome = sd.outcome;
+            });
+
+            // BTC delta from ctx
+            const anyStrat = Object.values(row.strategies)[0] || {};
+            const openP = anyStrat.open_price;
+            const closeP = anyStrat.close_price;
+            const dp = anyStrat.delta_pct;
+            const deltaDisplay = dp != null
+              ? (dp >= 0 ? '+' : '') + (dp * 100).toFixed(2) + '%'
+              : (openP && closeP)
+                ? ((closeP - openP) / openP * 100 >= 0 ? '+' : '') + ((closeP - openP) / openP * 100).toFixed(2) + '%'
+                : '\u2014';
+            const deltaColor = dp != null ? (dp >= 0 ? C.teal : C.rose) : C.muted;
+
+            return (
+              <tr key={row.wts} style={{
+                background: ri % 2 === 0 ? 'rgba(15,23,42,0.3)' : 'transparent',
+                borderBottom: `1px solid rgba(51,65,85,0.3)`,
+              }}>
+                <td style={{ padding: '3px 8px', color: C.muted, whiteSpace: 'nowrap' }}>
+                  {row.wts !== 'unknown' ? fmtTs(row.wts) : '\u2014'}
+                </td>
+                <td style={{ padding: '3px 8px', whiteSpace: 'nowrap' }}>
+                  {openP && (
+                    <span style={{ color: C.dim }}>
+                      ${Number(openP).toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                    </span>
+                  )}
+                  {' '}
+                  <span style={{ color: deltaColor, fontWeight: 700 }}>{deltaDisplay}</span>
+                </td>
+                {STRATEGY_ORDER.map(sid => {
+                  const sd = row.strategies[sid];
+                  if (!sd) {
+                    return <td key={sid} style={{ padding: '3px 8px', color: C.dim }}>—</td>;
+                  }
+                  const isT = sd.action === 'TRADE';
+                  const won = sd.outcome === 'WIN';
+                  const lost = sd.outcome === 'LOSS';
+                  const dirArrow = sd.direction === 'UP' ? '\u2191' : sd.direction === 'DOWN' ? '\u2193' : '';
+                  const chip = isT
+                    ? (won ? { bg: 'rgba(20,184,166,0.15)', color: C.teal, label: '\u2705' }
+                      : lost ? { bg: 'rgba(244,63,94,0.15)', color: C.rose, label: '\u274C' }
+                        : { bg: 'rgba(20,184,166,0.1)', color: C.teal, label: 'TRADE' })
+                    : { bg: 'rgba(244,63,94,0.08)', color: C.dim, label: 'SKIP' };
+
+                  return (
+                    <td key={sid} style={{ padding: '3px 8px', whiteSpace: 'nowrap' }}
+                      title={sd.skip_reason || sd.direction || ''}>
+                      <span style={{
+                        fontSize: 8, fontWeight: 700, padding: '1px 5px', borderRadius: 2,
+                        background: chip.bg, color: chip.color,
+                      }}>
+                        {chip.label}
+                      </span>
+                      {dirArrow && (
+                        <span style={{ marginLeft: 3, color: sd.direction === 'UP' ? C.teal : C.rose }}>
+                          {dirArrow}
+                        </span>
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1040,7 +1305,7 @@ export default function StrategyCommand() {
   }, [comparison]);
 
   const latestDecision = useMemo(() => {
-    return decisions.find(d => d.strategy_name === selectedStrategy) || null;
+    return decisions.find(d => (d.strategy_id || d.strategy_name) === selectedStrategy) || null;
   }, [decisions, selectedStrategy]);
 
   const latestGateResults = useMemo(() => extractGateResults(latestDecision), [latestDecision]);
@@ -1229,7 +1494,7 @@ export default function StrategyCommand() {
           display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden',
         }}>
           {/* Live BTC price — always visible */}
-          <LiveBtcBanner hqData={hqData} />
+          <LiveBtcBanner hqData={hqData} latestCtxPrice={latestCtx?.current_price ?? (decisions[0] ? extractCtx(decisions[0])?.current_price : null)} />
 
           <div style={{
             display: 'flex', gap: 0, borderBottom: `1px solid ${C.panelBorder}`,
@@ -1256,7 +1521,7 @@ export default function StrategyCommand() {
 
           <div className="cmd-scroll" style={{ flex: 1, padding: 12, overflowY: 'auto' }}>
             {centerTab === 'signal' && (
-              <SignalSurfaceTab ctx={latestCtx} strategyId={selectedStrategy} hqData={hqData} />
+              <SignalSurfaceTab ctx={latestCtx} strategyId={selectedStrategy} hqData={hqData} decisions={decisions} />
             )}
             {centerTab === 'gates' && (
               <GateDetailTab
@@ -1269,7 +1534,7 @@ export default function StrategyCommand() {
               <DecisionsTab decisions={decisions} strategyId={selectedStrategy} />
             )}
             {centerTab === 'outcomes' && (
-              <OutcomesTab outcomes={outcomes} decisions={decisions} strategyId={selectedStrategy} />
+              <OutcomesTab outcomes={outcomes} decisions={decisions} strategyId={selectedStrategy} stratStats={stratStats} />
             )}
           </div>
         </div>
@@ -1339,10 +1604,13 @@ export default function StrategyCommand() {
                         {fmtTs(fill.filled_at || fill.created_at || fill.resolved_at)}
                       </span>
                       <span style={{
-                        fontSize: 7, fontWeight: 700, color: STRATEGIES[fill.strategy_name]?.color || C.text,
+                        fontSize: 7, fontWeight: 700,
+                        color: STRATEGIES[fill.strategy_id || fill.strategy_name]?.color || C.text,
                         minWidth: 24,
                       }}>
-                        {STRATEGIES[fill.strategy_name]?.shortLabel || fill.strategy_name?.slice(0, 4) || '??'}
+                        {STRATEGIES[fill.strategy_id || fill.strategy_name]?.shortLabel
+                          || (fill.strategy_id || fill.strategy_name)?.slice(0, 4)?.toUpperCase()
+                          || '??'}
                       </span>
                       <span style={{ color: dirColor(dir), fontWeight: 600, fontSize: 8 }}>
                         {dir === 'UP' ? '\u25B2' : dir === 'DOWN' ? '\u25BC' : '\u25C6'}
@@ -1374,8 +1642,10 @@ export default function StrategyCommand() {
                 const meta = d.metadata_json || d.metadata || {};
                 const action = d.action || (d.trade_placed ? 'TRADE' : 'SKIP');
                 const dir = d.direction || meta.direction;
-                const stratColor = STRATEGIES[d.strategy_name]?.color || C.muted;
-                const stratShort = STRATEGIES[d.strategy_name]?.shortLabel || d.strategy_name?.slice(0, 4) || '??';
+                // Hub may return strategy_id or strategy_name — try both
+                const sid = d.strategy_id || d.strategy_name;
+                const stratColor = STRATEGIES[sid]?.color || C.muted;
+                const stratShort = STRATEGIES[sid]?.shortLabel || sid?.slice(0, 4)?.toUpperCase() || '??';
 
                 return (
                   <div key={d.id || i} style={{
@@ -1489,6 +1759,10 @@ export default function StrategyCommand() {
                 <span>No open positions</span>
               )}
             </div>
+          )}
+
+          {bottomTab === 'windows' && (
+            <WindowHistoryTab decisions={decisions} />
           )}
         </div>
       </div>
