@@ -478,8 +478,39 @@ class Orchestrator:
                     twap_tracker=self._twap_tracker,
                     binance_state=self._aggregator if hasattr(self, "_aggregator") else None,
                 )
+                # Wire ExecuteTradeUseCase if execution is enabled
+                _execute_uc = None
+                if os.environ.get("ENGINE_REGISTRY_EXECUTE", "false").lower() == "true":
+                    try:
+                        from use_cases.execute_trade import ExecuteTradeUseCase
+                        from adapters.execution.paper_executor import PaperExecutor
+                        from adapters.execution.fak_ladder_executor import FAKLadderExecutor
+                        from adapters.execution.trade_recorder import TradeRecorder
+
+                        _paper = os.environ.get("PAPER_MODE", "true").lower() == "true"
+                        _executor = PaperExecutor() if _paper else FAKLadderExecutor(
+                            poly_client=self._poly_client,
+                        )
+                        _recorder = TradeRecorder(
+                            db_client=self._db,
+                            order_manager=self._order_manager,
+                        ) if self._db else None
+
+                        _execute_uc = ExecuteTradeUseCase(
+                            order_executor=_executor,
+                            trade_recorder=_recorder,
+                            window_state=getattr(self, "_window_state_repo", None),
+                            risk_manager=self._risk_manager,
+                            alerter=self._alerter,
+                            paper_mode=_paper,
+                        )
+                        log.info("orchestrator.execute_trade_uc_wired", paper_mode=_paper)
+                    except Exception as exc:
+                        log.warning("orchestrator.execute_trade_uc_error", error=str(exc)[:200])
+
                 self._strategy_registry = StrategyRegistry(
                     config_dir, self._data_surface_mgr,
+                    execute_trade_uc=_execute_uc,
                     alerter=self._alerter,
                 )
                 self._strategy_registry.load_all()
@@ -1646,10 +1677,26 @@ class Orchestrator:
                 try:
                     state = await self._aggregator.get_state()
 
-                    # Strategy Engine v2: parallel evaluation for comparison
+                    # Strategy Engine v2: evaluate + execute for LIVE strategies
                     if self._strategy_registry:
                         try:
-                            v2_decisions = await self._strategy_registry.evaluate_all(window, state)
+                            # Build WindowMarket from window's token IDs if available
+                            _v2_window_market = None
+                            if getattr(window, "up_token_id", None) and getattr(window, "down_token_id", None):
+                                from domain.value_objects import WindowMarket
+                                _v2_window_market = WindowMarket(
+                                    condition_id=f"{window.asset}-{window.window_ts}",
+                                    up_token_id=window.up_token_id,
+                                    down_token_id=window.down_token_id,
+                                    market_slug=f"{window.asset.lower()}-updown-5m-{window.window_ts}",
+                                )
+
+                            v2_decisions = await self._strategy_registry.evaluate_all(
+                                window, state,
+                                window_market=_v2_window_market,
+                                current_btc_price=float(getattr(state, "btc_price", 0) or 0),
+                                open_price=float(getattr(window, "open_price", 0) or 0),
+                            )
                             for d in v2_decisions:
                                 log.info(
                                     "strategy_registry_v2.decision",
