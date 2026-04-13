@@ -221,4 +221,29 @@ app.include_router(config_v2_router, prefix="/api", tags=["config-v2"])
 async def health_check() -> dict:
     """Liveness probe."""
     return {"status": "ok"}
+
+
+# ── Internal TimesFM proxy (no auth) — for engine on Montreal which cannot
+# reach the timesfm service directly due to VPC routing constraints.
+# Engine sets TIMESFM_URL=http://<hub-host>:8091 and calls /v4/snapshot.
+# Hub forwards to localhost:8080 (co-located timesfm service).
+import httpx as _httpx
+import os as _os
+
+_TIMESFM_INTERNAL = _os.environ.get("TIMESFM_URL", "http://localhost:8080")
+
+
+@app.get("/v4/snapshot", tags=["internal-proxy"])
+async def proxy_v4_snapshot(asset: str = "btc", timescale: str = "5m", strategy: str = "polymarket_5m") -> dict:
+    """No-auth proxy to timesfm /v4/snapshot. Used by Strategy Engine v2 on Montreal."""
+    try:
+        async with _httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(
+                f"{_TIMESFM_INTERNAL}/v4/snapshot",
+                params={"asset": asset, "timescale": timescale, "strategy": strategy},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as exc:
+        return {"error": str(exc)[:200]}
 # Hub v10 — deployed 2026-04-08T14:44

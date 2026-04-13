@@ -347,7 +347,7 @@ class ExecuteTradeUseCase:
                     btc_price=current_btc_price,
                     vpin=getattr(self, "_last_vpin", 0.0),
                     regime=getattr(self, "_last_regime", "?"),
-                    eval_offset=request.eval_offset,
+                    eval_offset=getattr(decision, 'metadata', {}).get('eval_offset') if decision.metadata else None,
                     paper_mode=self._paper_mode,
                     success=result.success,
                     failure_reason=result.failure_reason or "",
