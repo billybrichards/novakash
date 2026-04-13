@@ -104,20 +104,36 @@ export default function RecentFlow({ outcomes }) {
       const res = await api('GET', '/v58/strategy-decisions?limit=200');
       const data = res?.data || res;
       const list = Array.isArray(data) ? data : (data?.decisions ?? []);
-      const byTs = {};
+      // Group by (window_ts, strategy_id) — keep best eval_offset per strategy
+      // Prefer sweet spot (90-150), then closest to T-120
+      const bestPerWindow = {}; // { window_ts: { strategy_id: decision } }
       list.forEach(d => {
         if (d.window_ts == null) return;
-        const raw = d.window_ts;
-        // Group by window_ts (all strategies for same window)
-        if (!byTs[raw]) byTs[raw] = [];
-        byTs[raw].push(d);
-        // Also index by ISO string for format matching
-        try {
-          const iso = new Date(raw * 1000).toISOString().replace('.000Z', '+00:00');
-          if (!byTs[iso]) byTs[iso] = byTs[raw]; // same array ref
-          byTs[new Date(raw * 1000).toISOString()] = byTs[raw];
-        } catch (_) {}
+        const wts = d.window_ts;
+        const sid = d.strategy_id;
+        if (!bestPerWindow[wts]) bestPerWindow[wts] = {};
+        const existing = bestPerWindow[wts][sid];
+        const inSweet = (o) => o >= 90 && o <= 150;
+        if (!existing) {
+          bestPerWindow[wts][sid] = d;
+        } else {
+          const eNew = d.eval_offset || 0;
+          const eOld = existing.eval_offset || 0;
+          if (inSweet(eNew) && !inSweet(eOld)) bestPerWindow[wts][sid] = d;
+          else if (inSweet(eNew) && inSweet(eOld) && Math.abs(eNew - 120) < Math.abs(eOld - 120)) bestPerWindow[wts][sid] = d;
+        }
       });
+      // Convert to array per window_ts
+      const byTs = {};
+      for (const [wts, strats] of Object.entries(bestPerWindow)) {
+        byTs[wts] = Object.values(strats);
+        // Also index by ISO string
+        try {
+          const iso = new Date(Number(wts) * 1000).toISOString().replace('.000Z', '+00:00');
+          byTs[iso] = byTs[wts];
+          byTs[new Date(Number(wts) * 1000).toISOString()] = byTs[wts];
+        } catch (_) {}
+      }
       setStratDecisions(byTs);
     } catch (_) {}
   }, [api]);
