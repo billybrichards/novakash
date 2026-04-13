@@ -5,8 +5,8 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 
-from engine.domain.value_objects import PositionOutcome, ResolutionResult, WindowKey
-from engine.use_cases.reconcile_positions import ReconcilePositionsUseCase
+from domain.value_objects import PositionOutcome, ResolutionResult, WindowKey
+from use_cases.reconcile_positions import ReconcilePositionsUseCase
 
 
 def _pos(
@@ -213,7 +213,7 @@ class TestGetActualDirection:
                 __aexit__=AsyncMock(return_value=False),
             )
         )
-        from engine.adapters.persistence.pg_window_repo import PgWindowRepository
+        from adapters.persistence.pg_window_repo import PgWindowRepository
         repo = PgWindowRepository(pool=pool)
         return repo, conn
 
@@ -234,7 +234,7 @@ class TestGetActualDirection:
 
     @pytest.mark.asyncio
     async def test_returns_none_when_pool_is_none(self):
-        from engine.adapters.persistence.pg_window_repo import PgWindowRepository
+        from adapters.persistence.pg_window_repo import PgWindowRepository
         repo = PgWindowRepository(pool=None)
         key = WindowKey(asset="BTC", window_ts=1776109200)
         result = await repo.get_actual_direction(key)
@@ -258,7 +258,7 @@ class TestFindUnresolvedPaperTrades:
                 __aexit__=AsyncMock(return_value=False),
             )
         )
-        from engine.adapters.persistence.pg_trade_repo import PgTradeRepository
+        from adapters.persistence.pg_trade_repo import PgTradeRepository
         repo = PgTradeRepository(pool=pool)
         return repo, conn
 
@@ -284,7 +284,7 @@ class TestFindUnresolvedPaperTrades:
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_pool_none(self):
-        from engine.adapters.persistence.pg_trade_repo import PgTradeRepository
+        from adapters.persistence.pg_trade_repo import PgTradeRepository
         repo = PgTradeRepository(pool=None)
         results = await repo.find_unresolved_paper_trades()
         assert results == []

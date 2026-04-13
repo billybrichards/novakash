@@ -211,6 +211,41 @@ class PgTradeRepository:
             log.error("db.get_open_trades_failed", error=str(exc))
             return []
 
+    async def find_unresolved_paper_trades(
+        self, min_age_seconds: int = 360
+    ) -> list[dict]:
+        """Return OPEN paper trades old enough for their window to have resolved.
+
+        Implements TradeRepository.find_unresolved_paper_trades.
+        ``window_ts`` is extracted from ``metadata->>'window_ts'`` and returned
+        as a string — callers cast to int.
+        """
+        if not self._pool:
+            return []
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT id, order_id, direction, stake_usd, entry_price,
+                              execution_mode, metadata,
+                              COALESCE(metadata->>'asset', 'BTC') AS asset,
+                              metadata->>'window_ts' AS window_ts,
+                              created_at
+                       FROM trades
+                       WHERE execution_mode = 'paper'
+                         AND outcome IS NULL
+                         AND status = 'OPEN'
+                         AND created_at < NOW() - ($1::int * INTERVAL '1 second')
+                       ORDER BY created_at ASC""",
+                    min_age_seconds,
+                )
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            log.warning(
+                "pg_trade_repo.find_unresolved_paper_failed",
+                error=str(exc)[:100],
+            )
+            return []
+
     async def mark_trade_expired(self, order_id: str) -> None:
         """Mark a trade as EXPIRED in the DB (used by startup reconciliation).
 
