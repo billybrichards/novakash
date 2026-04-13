@@ -99,15 +99,20 @@ class StrategyRegistry:
     - A YAML config defining its gate pipeline
     - Optional Python hooks for custom logic
     - A documentation .md file (not loaded, for humans)
+
+    When execute_trade_uc is provided, LIVE strategies with action=TRADE
+    will be executed automatically after evaluation.
     """
 
     def __init__(
         self,
         config_dir: str,
         data_surface: DataSurfaceManager,
+        execute_trade_uc: Any = None,
     ):
         self._config_dir = Path(config_dir)
         self._data_surface = data_surface
+        self._execute_uc = execute_trade_uc
         self._configs: dict[str, StrategyConfig] = {}
         self._pipelines: dict[str, list[Gate]] = {}
         self._hooks: dict[str, dict[str, Callable]] = {}
@@ -229,8 +234,24 @@ class StrategyRegistry:
         self,
         window: Any,
         state: Any,
+        *,
+        window_market: Any = None,
+        current_btc_price: float = 0.0,
+        open_price: float = 0.0,
     ) -> list[StrategyDecision]:
-        """Evaluate all enabled strategies on the current data surface."""
+        """Evaluate all enabled strategies on the current data surface.
+
+        When execute_trade_uc is wired and a LIVE strategy returns TRADE,
+        the trade is executed automatically. GHOST strategies are logged
+        but never executed.
+
+        Args:
+            window: Window object with asset, window_ts, eval_offset
+            state: Market state (for surface construction)
+            window_market: WindowMarket with token IDs (for execution)
+            current_btc_price: Live BTC price (for execution)
+            open_price: Window open price (for execution)
+        """
         eval_offset = getattr(window, "eval_offset", None)
         surface = self._data_surface.get_surface(window, eval_offset)
 
@@ -241,6 +262,43 @@ class StrategyRegistry:
             try:
                 decision = self._evaluate_one(name, config, surface)
                 decisions.append(decision)
+
+                # Execute LIVE trades when use case is wired
+                if (
+                    config.mode == "LIVE"
+                    and decision.action == "TRADE"
+                    and self._execute_uc is not None
+                    and window_market is not None
+                ):
+                    try:
+                        result = await self._execute_uc.execute(
+                            decision=decision,
+                            window_market=window_market,
+                            current_btc_price=current_btc_price,
+                            open_price=open_price,
+                        )
+                        log.info(
+                            "registry.executed",
+                            strategy=name,
+                            success=result.success,
+                            order_id=result.order_id,
+                            fill_price=result.fill_price,
+                            mode=result.execution_mode,
+                        )
+                    except Exception as exec_exc:
+                        log.error(
+                            "registry.execute_error",
+                            strategy=name,
+                            error=str(exec_exc)[:200],
+                        )
+                elif config.mode == "GHOST" and decision.action == "TRADE":
+                    log.info(
+                        "registry.ghost_decision",
+                        strategy=name,
+                        action=decision.action,
+                        direction=decision.direction,
+                    )
+
             except Exception as exc:
                 log.warning(
                     "registry.evaluate_error",
