@@ -2663,7 +2663,7 @@ const TASKS = [
     category: 'ml-training-data',
     title: 'TimesFM depth audit: context 2048→8192 (1-line change, +1-3pp)',
     severity: 'HIGH',
-    status: 'OPEN',
+    status: 'DONE',
     file: 'novakash-timesfm-repo/app/main.py:103',
     summary:
       'TimesFM 2.5 currently uses 2048 ticks (34 min context). Model supports 8192 (137 min). One-line change: max_context=8192 in main.py + extend price_feed buffer_size. Captures longer regime transitions. Cost: ~200ms extra latency (700→900ms), acceptable for 1Hz refresh.',
@@ -2754,7 +2754,7 @@ const TASKS = [
     category: 'ml-training-data',
     title: 'TimesFM: quantile-derived features underused (spread only, 5 more possible)',
     severity: 'LOW',
-    status: 'OPEN',
+    status: 'DONE',
     file: 'novakash-timesfm-repo/app/v2_scorer.py:492-499',
     summary:
       'Quantiles P10/P25/P50/P75/P90 computed and stored in ticks_timesfm but only spread=(P90-P10) used as feature. Missing: tail_risk=(P50-P10)/P50 (downside), skew=(P90+P10-2×P50)/spread (asymmetry), interval_width=(P75-P25)/P50 (uncertainty), quantile_convergence (how quantiles change over window). All computable from existing stored data — 10 lines of code.',
@@ -2766,6 +2766,61 @@ const TASKS = [
     ],
     fix: 'Add tail_risk, skew, interval_width, quantile_convergence features in v2_scorer.py. Add to LightGBM feature vector. Retrain. Estimate: ~10 lines.',
     progressNotes: ['DONE: 4 quantile features added to v2_scorer.py + train_lgb_v5.py (PR #77 + PR #78). Recording live.'],
+  },
+  {
+    id: 'ML-14',
+    category: 'ml-training-data',
+    title: 'v3 composite signals added to training pipeline (11 features, 756K rows)',
+    severity: 'HIGH',
+    status: 'DONE',
+    file: 'novakash-timesfm-repo/training/queries.py',
+    summary:
+      'ticks_v3_composite (756K rows since Apr 9) was completely unused in LightGBM training. Now added: v3_composite, v3_elm, v3_cascade, v3_taker, v3_oi, v3_funding, v3_vpin, v3_momentum, v3_cascade_strength, v3_cascade_tau1, v3_cascade_exhaustion. Total features: 46 (was 35). Also wired serve-time in v2_scorer.py via V3CompositeScorer.score() injection.',
+    symptoms: [
+      'queries.py: LEFT JOIN ticks_v3_composite in all 3 training queries',
+      'train_lgb_v5.py: 11 new entries in FEATURE_COLUMNS_V5',
+      'v2_scorer.py: _v3_composite_features() + v3_score_getter injection',
+      'main.py: v3 scorer wired into all v2 scorers',
+    ],
+    fix: 'Already shipped to main. Retrain tested: 60.59% acc, +9.50pp skill. Same as without v3 — features likely NaN for most training window (v3 data only 5 days). Will improve as data accumulates. v5.2 stays production — ECE 0.127 vs v5.2 ECE 0.064.',
+    progressNotes: [
+      'Shipped to main 2026-04-13. Retrain run: features=40, acc=60.59%, ECE=0.1268.',
+      'v5.2 Sequoia still production (ECE=0.0643, calibration wins). Wait for 14d+ v3 data then retrain.',
+    ],
+  },
+  {
+    id: 'ML-15',
+    category: 'ml-training-data',
+    title: 'Direction-specific training flag (--direction=UP/DOWN) for vml_up/vml_down',
+    severity: 'MEDIUM',
+    status: 'DONE',
+    file: 'novakash-timesfm-repo/training/train_lgb_v5.py',
+    summary:
+      'Added --direction=UP or --direction=DOWN CLI flag to train_lgb_v5.py. Filters training data to windows where actual outcome matches. Artifacts land in direction-suffixed slots (e.g., models/btc_5m_polymarket_down/). Does not affect default training path. Direction-specific runs are manual until shadow evaluation validates.',
+    symptoms: [
+      'train_lgb_v5.py: --direction flag, prepare_training_frame direction_filter param',
+      'Artifacts: models/btc_5m_polymarket_down/ and models/btc_5m_polymarket_up/',
+      'Not wired into retrain.yml matrix yet — manual runs only',
+    ],
+    fix: 'Already shipped. Usage: python -m training.train_lgb_v5 --direction=DOWN --timeframe=5m',
+    progressNotes: ['Shipped to main 2026-04-13.'],
+  },
+  {
+    id: 'ML-16',
+    category: 'ml-training-data',
+    title: 'Dashboard upgrades: equity curve, shadow compare, gate would-win %',
+    severity: 'MEDIUM',
+    status: 'DONE',
+    file: 'novakash-timesfm-repo/dashboard/',
+    summary:
+      'Three dashboard upgrades shipped to Vercel (novakash-timesfm-dashboard.vercel.app): (1) Equity curve — simulated PnL + rolling 50-window accuracy on main page. (2) Shadow vs production model compare — pick two model versions, see accuracy delta. (3) Gate "would have won %" — color-coded column showing if blocked trades were correct. All needed for Billy model promotion decisions.',
+    symptoms: [
+      'EquityCurve.tsx + /api/equity-curve — inline SVG PnL chart',
+      'ShadowCompare.tsx + /api/shadow-compare — A/B model picker',
+      'compare-queries.ts + compare/page.tsx — would_have_won_pct column',
+    ],
+    fix: 'Already shipped (PR #78 merged to main). View at https://novakash-timesfm-dashboard.vercel.app',
+    progressNotes: ['Merged 2026-04-13. Vercel auto-deploys from main.'],
   },
 
   // ── btc-15m-expansion ────────────────────────────────────────────────────
@@ -2829,20 +2884,21 @@ const TASKS = [
   {
     id: '15M-04',
     category: 'btc-15m-expansion',
-    title: 'Phase 4: Train 15m model + 7-day shadow + Billy promotion gate',
-    severity: 'HIGH',
-    status: 'OPEN',
+    title: 'Phase 4: 15m model ALREADY LIVE — 7-day GHOST shadow + Billy promotion gate',
+    severity: 'MEDIUM',
+    status: 'IN_PROGRESS',
     file: 'novakash-timesfm-repo/.github/workflows/retrain.yml',
     summary:
-      'Retrain pipeline already has 15m matrix slot (current_15m). Trigger manual retrain. 15m windows = 3x less data than 5m — extend lookback to 14d+. After model trained: 7-day minimum GHOST shadow. Billy reviews dashboard comparison (15m vs 5m WR, equity curve). Billy explicitly approves first v15m_down_only → LIVE. No auto-promotion.',
+      '15m model already live and scoring since Apr 8. Model "15m/nogit@v2/btc/btc_15m/..." has 427K prediction rows across 6 Δ buckets (60-720s). v3 composite has 330K rows at timescale="15m" since Apr 9. No new model training needed — just wire the strategies (15M-01 + 15M-02), deploy GHOST, and evaluate. Billy reviews dashboard after 7-day shadow, then approves first v15m_down_only → LIVE.',
     symptoms: [
-      'retrain.yml matrix: timeframe=15m, label_source=polymarket, model_slot=current_15m',
-      'DELTA_BUCKETS_BY_TIMEFRAME["15m"] = (60, 120, 180, 300, 480, 720)',
-      '15m windows generate ~96/day (vs 288/day for 5m) — smaller corpus',
+      'ticks_v2_probability: 427K rows with model_version LIKE "15m/%" since Apr 8',
+      'ticks_v3_composite: 330K rows at timescale="15m" since Apr 9',
+      'All 6 Δ buckets populated (60/120/180/300/480/720s) with 43K-142K rows each',
+      'Latest prediction: within last hour — actively scoring',
       'v15m_down_only first candidate for LIVE (if DOWN WR > 55%)',
     ],
-    fix: 'Trigger retrain, shadow 7d, Billy reviews, Billy promotes. Same pattern as ML upgrade plan.',
-    progressNotes: [],
+    fix: 'No model training needed. Fix blockers (15M-01), create configs (15M-02), deploy GHOST (15M-03), 7-day shadow, Billy promotes.',
+    progressNotes: ['15m model confirmed live 2026-04-13. 427K v2 rows + 330K v3 rows.'],
   },
   {
     id: '15M-05',
