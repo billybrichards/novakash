@@ -89,6 +89,7 @@ jobs:
 
       - name: YAML strategy config lint
         run: |
+          pip install -q pyyaml 2>/dev/null || true
           if find engine/ -name '*.yml' -o -name '*.yaml' | grep -q .; then
             python3 -c "
           import yaml, sys, pathlib
