@@ -264,6 +264,7 @@ jobs:
             echo "FIVE_MIN_ENABLED=true"
             echo "V4_FUSION_ENABLED=true"
             echo "TIMESFM_URL=http://3.98.114.0:8080"
+            echo "POLYGON_RPC_URL=https://polygon-bor-rpc.publicnode.com"
           } > .env.new
           ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'cat > /home/novakash/novakash/engine/.env' < .env.new
           ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'wc -l /home/novakash/novakash/engine/.env'

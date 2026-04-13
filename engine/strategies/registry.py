@@ -262,6 +262,7 @@ class StrategyRegistry:
             open_price: Window open price (for execution)
         """
         eval_offset = getattr(window, "eval_offset", None)
+        window_ts = getattr(window, "window_ts", 0)
         surface = self._data_surface.get_surface(window, eval_offset)
 
         decisions = []
