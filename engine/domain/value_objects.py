@@ -476,3 +476,86 @@ class EvaluateStrategiesResult:
     context: Optional[StrategyContext]           # Shared input (for audit)
     window_key: str                             # "{asset}-{window_ts}"
     already_traded: bool                        # True if was_traded check hit
+
+
+# ---------------------------------------------------------------------------
+# Execution types (consumed by ExecuteTradeUseCase -- SP-06 / CA-01 Phase 4)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ExecutionRequest:
+    """Input to ExecuteTradeUseCase. Built from StrategyDecision + market state."""
+    # Identity
+    asset: str
+    window_ts: int
+    timeframe: str
+
+    # Decision (from strategy)
+    strategy_id: str
+    strategy_version: str
+    direction: str              # "UP" | "DOWN"
+    confidence: Optional[str]   # "DECISIVE" | "HIGH" | "MODERATE" | "LOW"
+    confidence_score: Optional[float]
+    entry_reason: str
+
+    # Pricing
+    entry_cap: float            # Max acceptable CLOB price (e.g. 0.65)
+    price_floor: float = 0.30   # Min acceptable price
+
+    # Sizing (from strategy decision)
+    collateral_pct: Optional[float] = None
+
+    # Market context (for DB record)
+    current_btc_price: float = 0.0
+    open_price: float = 0.0
+    delta_pct: float = 0.0
+    vpin: float = 0.0
+
+    # Audit trail
+    gate_results: list = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
+
+    # Eval offset (seconds before window close)
+    eval_offset: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class StakeCalculation:
+    """Result of stake sizing calculation."""
+    base_stake: float
+    price_multiplier: float
+    adjusted_stake: float
+    bankroll: float
+    bet_fraction: float
+    hard_cap: float
+
+
+@dataclass(frozen=True)
+class ExecutionResult:
+    """Output of ExecuteTradeUseCase."""
+    success: bool
+    order_id: Optional[str] = None
+    fill_price: Optional[float] = None
+    fill_size: Optional[float] = None
+    stake_usd: float = 0.0
+    fee_usd: float = 0.0
+
+    # Execution metadata
+    execution_mode: str = "none"   # "fak" | "rfq" | "gtc" | "paper" | "none"
+    fak_attempts: int = 0
+    fak_prices: list = field(default_factory=list)
+
+    # Failure info
+    failure_reason: Optional[str] = None
+
+    # Token used
+    token_id: str = ""
+    market_slug: str = ""
+
+    # Timing
+    execution_start: float = 0.0
+    execution_end: float = 0.0
+
+    # Strategy identity (for logging/alerting)
+    strategy_id: str = ""
+    direction: str = ""
