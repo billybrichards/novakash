@@ -365,7 +365,7 @@ class TestResolvePaperBatch:
         uc, trade_repo, _ = self._make_uc(
             paper_trades=[trade], actual_direction="UP"
         )
-        resolved, skipped = asyncio.run(uc._resolve_paper_batch())
+        resolved, skipped, _ = asyncio.run(uc._resolve_paper_batch())
         assert resolved == 1
         assert skipped == 0
         trade_repo.resolve_trade.assert_awaited_once()
@@ -378,7 +378,7 @@ class TestResolvePaperBatch:
         uc, trade_repo, _ = self._make_uc(
             paper_trades=[trade], actual_direction="DOWN"
         )
-        resolved, skipped = asyncio.run(uc._resolve_paper_batch())
+        resolved, skipped, _ = asyncio.run(uc._resolve_paper_batch())
         assert resolved == 1
         call_kwargs = trade_repo.resolve_trade.call_args.kwargs
         assert call_kwargs["outcome"] == "LOSS"
@@ -389,7 +389,7 @@ class TestResolvePaperBatch:
         uc, trade_repo, _ = self._make_uc(
             paper_trades=[trade], actual_direction=None
         )
-        resolved, skipped = asyncio.run(uc._resolve_paper_batch())
+        resolved, skipped, _ = asyncio.run(uc._resolve_paper_batch())
         assert resolved == 0
         assert skipped == 1
         trade_repo.resolve_trade.assert_not_awaited()
@@ -398,7 +398,7 @@ class TestResolvePaperBatch:
         trade = self._paper_trade()
         trade["window_ts"] = None  # no window_ts
         uc, trade_repo, _ = self._make_uc(paper_trades=[trade])
-        resolved, skipped = asyncio.run(uc._resolve_paper_batch())
+        resolved, skipped, _ = asyncio.run(uc._resolve_paper_batch())
         assert resolved == 0
         assert skipped == 1
 
@@ -410,9 +410,10 @@ class TestResolvePaperBatch:
         )
         # Make first resolve fail
         trade_repo.resolve_trade.side_effect = [Exception("DB down"), None]
-        resolved, skipped = asyncio.run(uc._resolve_paper_batch())
+        resolved, skipped, errors = asyncio.run(uc._resolve_paper_batch())
         assert resolved == 1  # second trade resolved
         assert skipped == 0
+        assert errors == 1   # first trade errored
 
     def test_pnl_calculation_win(self):
         # stake=10, entry=0.5 → shares=20, pnl=20-10=10

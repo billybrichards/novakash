@@ -6,26 +6,31 @@ Replaces: ``engine/reconciliation/reconciler.py::_resolve_position``
 
 Responsibility
 --------------
-Given a single resolved position from Polymarket (condition_id + outcome
-data), match it to a trade row in the DB by token_id (exact -> prefix ->
-cost fallback), compute PnL from per-trade data, and update the trade's
-outcome/pnl_usd/resolved_at/status.
+Resolves both live and paper trades in a single pass via ``execute()``:
 
-This use case is **not** wired into the orchestrator or reconciler yet.
-It exists alongside the god class so the reconciler continues to call
-``_resolve_position`` unchanged.  The wiring will happen in Phase 3.
+  - Live trades: given a ``PositionOutcome`` from the Polymarket CLOB API,
+    match to a trade row by token_id (exact -> prefix -> cost fallback),
+    compute PnL, and update outcome/pnl_usd/resolved_at/status.
+
+  - Paper trades: scan unresolved paper trades older than 6 minutes,
+    look up ``window_snapshots.actual_direction`` (Chainlink oracle),
+    compare against trade direction to determine WIN/LOSS, update row.
+
+Wired into ``Orchestrator._sot_reconciler_loop`` as a third pass after
+the two SOT passes. Called every 2 minutes. Live path gated on
+``ENGINE_USE_RECONCILE_UC=true`` + ``not paper_mode``.
 
 Port dependencies (all from ``engine/domain/ports.py``):
   - TradeRepository -- find_by_token_id, find_by_token_prefix,
-                       find_by_approximate_cost, resolve_trade
-  - WindowStateRepository -- mark_resolved
+                       find_by_approximate_cost, resolve_trade,
+                       find_unresolved_paper_trades
+  - WindowStateRepository -- mark_resolved, get_actual_direction
   - AlerterPort -- resolution notifications
   - Clock -- deterministic time for testing
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Optional
 
@@ -100,24 +105,25 @@ class ReconcilePositionsUseCase:
                     },
                 )
 
-        paper_resolved, paper_skipped = await self._resolve_paper_batch()
+        paper_resolved, paper_skipped, paper_errors = await self._resolve_paper_batch()
 
         return ReconcileResult(
             live_resolved=live_resolved,
             paper_resolved=paper_resolved,
             paper_skipped=paper_skipped,
-            errors=errors,
+            errors=errors + paper_errors,
         )
 
-    async def _resolve_paper_batch(self) -> tuple[int, int]:
+    async def _resolve_paper_batch(self) -> tuple[int, int, int]:
         """Resolve all unresolved paper trades using oracle data.
 
-        Returns (resolved_count, skipped_count).
+        Returns (resolved_count, skipped_count, error_count).
         Skipped means the window hasn't resolved yet — will be retried next tick.
         """
         trades = await self._trade_repo.find_unresolved_paper_trades()
         resolved = 0
         skipped = 0
+        errors = 0
 
         for trade in trades:
             try:
@@ -177,6 +183,7 @@ class ReconcilePositionsUseCase:
                 resolved += 1
 
             except Exception as exc:
+                errors += 1
                 logger.warning(
                     "reconciler.paper_resolve_error",
                     extra={
@@ -185,7 +192,7 @@ class ReconcilePositionsUseCase:
                     },
                 )
 
-        return resolved, skipped
+        return resolved, skipped, errors
 
     async def resolve_one(
         self,
