@@ -467,7 +467,7 @@ class StrategyRegistry:
                     lines.append(f"❌ {d.strategy_id} {mode_tag} → ERROR")
 
                 if history_summary:
-                    lines.append(f"   window: {history_summary}")
+                    lines.append(f"   history: {history_summary}")
 
             if hasattr(self._alerter, "send_raw_message"):
                 await self._alerter.send_raw_message("\n".join(lines))
@@ -496,7 +496,7 @@ class StrategyRegistry:
             reverse=True,
         )
         if trade_offsets:
-            return f"traded earlier at T-{trade_offsets[0]}"
+            return f"earlier this window: TRADE at T-{trade_offsets[0]}"
 
         def _normalize_reason(reason: str) -> str:
             cleaned = (reason or "unknown").strip()
@@ -510,7 +510,9 @@ class StrategyRegistry:
         ]
         if skip_reasons:
             top_reason, top_count = Counter(skip_reasons).most_common(1)[0]
-            return f"{top_reason} ({top_count}/{len(skip_reasons)} evals)"
+            return (
+                f"dominant skip: {top_reason} ({top_count}/{len(skip_reasons)} evals)"
+            )
 
         if current_decision.action == "ERROR":
             return f"{len(history)} evals logged"
