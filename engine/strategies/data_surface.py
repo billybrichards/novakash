@@ -217,9 +217,14 @@ class DataSurfaceManager:
         """Start background V4 pre-fetch loop."""
         import aiohttp
 
-        self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=5)
-        )
+        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5))
+
+        # Prime the snapshot cache before the registry starts evaluating.
+        try:
+            await self._fetch_v4()
+        except Exception:
+            pass
+
         self._running = True
         self._task = asyncio.create_task(self._refresh_loop())
 
@@ -276,13 +281,12 @@ class DataSurfaceManager:
         # Current price from Binance state
         btc_price = 0.0
         if self._binance_state:
-            # Supports MarketAggregator (has get_state()) and MarketState directly
+            # Supports MarketAggregator (async get_state()) and MarketState directly.
+            # Use the live in-memory _state when the aggregator object is injected here,
+            # because get_surface() is intentionally synchronous.
             _state_obj = self._binance_state
-            if hasattr(self._binance_state, "get_state"):
-                try:
-                    _state_obj = self._binance_state.get_state()
-                except Exception:
-                    pass
+            if hasattr(self._binance_state, "_state"):
+                _state_obj = getattr(self._binance_state, "_state", _state_obj)
             btc_price = float(getattr(_state_obj, "btc_price", 0) or 0)
 
         # Deltas from feed in-memory caches
@@ -323,7 +327,14 @@ class DataSurfaceManager:
         regime = "UNKNOWN"
         if self._vpin:
             vpin_val = getattr(self._vpin, "current_vpin", 0.0) or 0.0
-            regime = getattr(self._vpin, "regime", "UNKNOWN") or "UNKNOWN"
+            if vpin_val >= 0.65:
+                regime = "CASCADE"
+            elif vpin_val >= 0.55:
+                regime = "TRANSITION"
+            elif vpin_val >= 0.45:
+                regime = "NORMAL"
+            else:
+                regime = "CALM"
 
         # TWAP
         twap_delta = None
@@ -361,7 +372,9 @@ class DataSurfaceManager:
         macro = v4.get("macro", {}) if v4 else {}
         consensus = v4.get("consensus", {}) if v4 else {}
         sub_signals = ts_data.get("sub_signals", {})
-        quantiles = ts_data.get("quantiles_at_close") or ts_data.get("quantiles_full", {})
+        quantiles = ts_data.get("quantiles_at_close") or ts_data.get(
+            "quantiles_full", {}
+        )
 
         # V3 composites from V4 snapshot
         v3 = (v4.get("timescales") or {}) if v4 else {}
@@ -457,7 +470,9 @@ class DataSurfaceManager:
             # Polymarket Outcome
             poly_direction=poly.get("direction"),
             poly_trade_advised=poly.get("trade_advised"),
-            poly_confidence=float(poly_confidence) if poly_confidence is not None else None,
+            poly_confidence=float(poly_confidence)
+            if poly_confidence is not None
+            else None,
             poly_confidence_distance=poly.get("confidence_distance"),
             poly_timing=poly.get("timing"),
             poly_max_entry_price=poly.get("max_entry_price"),
