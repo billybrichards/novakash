@@ -2515,6 +2515,46 @@ class Orchestrator:
                             old_mode = "PAPER" if current_paper else "LIVE"
                             new_mode = "PAPER" if want_paper else "LIVE"
 
+                            if not want_paper:
+                                _live_gate = (
+                                    os.environ.get("LIVE_TRADING_ENABLED", "")
+                                    .strip()
+                                    .lower()
+                                )
+                                if _live_gate != "true":
+                                    try:
+                                        _env_file = os.path.join(
+                                            os.path.dirname(os.path.dirname(__file__)),
+                                            ".env",
+                                        )
+                                        with open(
+                                            _env_file, "r", encoding="utf-8"
+                                        ) as fh:
+                                            for line in fh:
+                                                if line.startswith(
+                                                    "LIVE_TRADING_ENABLED="
+                                                ):
+                                                    _live_gate = (
+                                                        line.split("=", 1)[1]
+                                                        .strip()
+                                                        .lower()
+                                                    )
+                                                    break
+                                    except Exception:
+                                        pass
+                                if _live_gate != "true":
+                                    log.error(
+                                        "mode_switch.live_gate_disabled",
+                                        requested_mode=new_mode,
+                                    )
+                                    if self._alerter:
+                                        await self._alerter.send_system_alert(
+                                            "LIVE mode requested but LIVE_TRADING_ENABLED is not set. "
+                                            "Keeping engine in PAPER mode.",
+                                            level="critical",
+                                        )
+                                    continue
+
                             log.warning(
                                 "mode_switch.detected",
                                 old_mode=old_mode,
