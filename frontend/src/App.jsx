@@ -50,6 +50,7 @@ import PolymarketOverview from './pages/polymarket/Overview.jsx';
 import StrategyConfigs from './pages/polymarket/StrategyConfigs.jsx';
 import GatePipelineMonitor from './pages/polymarket/GatePipelineMonitor.jsx';
 import DataHealth from './pages/polymarket/DataHealth.jsx';
+import StrategyCommand from './pages/polymarket/StrategyCommand.jsx';
 import SignalComparison from './pages/SignalComparison.jsx';
 
 export default function App() {
@@ -124,6 +125,7 @@ export default function App() {
             <Route path="polymarket/strategies" element={<StrategyConfigs />} />
             <Route path="polymarket/gate-monitor" element={<GatePipelineMonitor />} />
             <Route path="polymarket/data-health" element={<DataHealth />} />
+            <Route path="polymarket/command" element={<StrategyCommand />} />
             <Route path="signal-comparison" element={<SignalComparison />} />
           </Route>
 

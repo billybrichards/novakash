@@ -24,6 +24,7 @@ const NAV_SECTIONS = [
     title: 'POLYMARKET',
     color: '#06b6d4', // cyan accent
     items: [
+      { path: '/polymarket/command', label: 'Command', icon: '\u26A1' },
       { path: '/polymarket/overview', label: 'Overview', icon: 'O' },
       { path: '/polymarket/monitor', label: 'Monitor', icon: 'M' },
       { path: '/polymarket/floor', label: 'Floor', icon: 'F' },
