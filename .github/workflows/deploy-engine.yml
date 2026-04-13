@@ -266,6 +266,12 @@ jobs:
             echo "TIMESFM_URL=http://3.98.114.0:8080"
             echo "POLYGON_RPC_URL=https://polygon-bor-rpc.publicnode.com"
             echo "TIINGO_API_KEY=${DEPLOY_TIINGO_API_KEY}"
+            echo ""
+            echo "# AI Analysis"
+            echo "QWEN_HOST=194.228.55.129"
+            echo "QWEN_PORT=39633"
+            echo "QWEN_API_KEY=${DEPLOY_QWEN_API_KEY}"
+            echo "QWEN_MODEL=qwen35-122b-abliterated"
           } > .env.new
           ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'cat > /home/novakash/novakash/engine/.env' < .env.new
           ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'wc -l /home/novakash/novakash/engine/.env'
@@ -284,6 +290,7 @@ jobs:
           DEPLOY_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           DEPLOY_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DEPLOY_TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
+          DEPLOY_QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
 
       - name: Restart engine via restart_engine.sh
         run: |

@@ -2440,21 +2440,48 @@ class DualAIAssessment:
                     return data["content"][0]["text"]
                 raise Exception(f"Status {resp.status}")
     
-    async def _qwen(self, prompt: str, timeout_s: int = 8) -> str:
-        """Call Qwen122b via Ollama (ssh6 node)."""
-        url = f"http://{self.qwen_host}:{self.qwen_port}/api/generate"
-        payload = {
-            "model": "qwen35-122b-abliterated:latest",
-            "prompt": prompt,
-            "stream": False,
-            "temperature": 0.3,
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload,
-                                   timeout=aiohttp.ClientTimeout(total=timeout_s)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data["response"][:200]
-                raise Exception(f"Status {resp.status}")
+    async def _qwen(self, prompt: str, timeout_s: int = 45) -> str:
+        """Call Qwen122b — supports both Ollama (/api/generate) and OpenAI (/v1) endpoints.
+
+        Vast.ai / OpenAI-compatible: set QWEN_HOST=194.228.55.129 QWEN_PORT=39633
+        Reasoning model needs up to 45s timeout.
+        """
+        host = self.qwen_host
+        port = self.qwen_port
+
+        # Detect OpenAI-compatible endpoint (not Ollama)
+        api_key = os.environ.get("QWEN_API_KEY", "")
+        if api_key:
+            # OpenAI-compatible (Vast.ai / vLLM)
+            url = f"http://{host}:{port}/v1/chat/completions"
+            payload = {
+                "model": os.environ.get("QWEN_MODEL", "qwen35-122b-abliterated"),
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 250,
+                "temperature": 0.3,
+            }
+            headers = {"Authorization": f"Bearer {api_key}"}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=headers,
+                                       timeout=aiohttp.ClientTimeout(total=timeout_s)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data["choices"][0]["message"]["content"][:300]
+                    raise Exception(f"Status {resp.status}")
+        else:
+            # Legacy Ollama endpoint
+            url = f"http://{host}:{port}/api/generate"
+            payload = {
+                "model": "qwen35-122b-abliterated:latest",
+                "prompt": prompt,
+                "stream": False,
+                "temperature": 0.3,
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload,
+                                       timeout=aiohttp.ClientTimeout(total=timeout_s)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data["response"][:300]
+                    raise Exception(f"Status {resp.status}")
 
