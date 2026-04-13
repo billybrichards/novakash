@@ -300,11 +300,19 @@ class StrategyRegistry:
                             metadata_json=json.dumps(decision.metadata or {}),
                             evaluated_at=time.time(),
                         )
-                        asyncio.create_task(
+                        def _on_write_error(task, _n=name):
+                            if not task.cancelled() and task.exception():
+                                log.warning(
+                                    "registry.decision_write_error",
+                                    strategy=_n,
+                                    error=str(task.exception())[:200],
+                                )
+                        t = asyncio.create_task(
                             self._decision_repo.write_decision(record)
                         )
-                    except Exception:
-                        pass  # Never block evaluation on DB write
+                        t.add_done_callback(_on_write_error)
+                    except Exception as _e:
+                        log.warning("registry.decision_record_error", error=str(_e)[:200])
 
                 # Execute LIVE trades when use case is wired
                 # In-memory dedup: only execute once per window per strategy
