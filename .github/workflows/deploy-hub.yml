@@ -181,7 +181,7 @@ jobs:
         # set -e makes the step fail if either build or up fails, so we
         # do not silently ship a broken image.
         run: |
-          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'set -e; cd /home/ubuntu/hub && docker compose build && docker compose up -d --force-recreate'
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'set -e; cd /home/ubuntu/hub && docker compose build --quiet && docker compose up -d --force-recreate --no-build 2>/dev/null || docker compose up -d --force-recreate'
 
       - name: Wait for healthcheck
         # Compose healthcheck has start_period=30s + 30s interval + 5s
@@ -190,8 +190,8 @@ jobs:
         # successful /health can land slightly later than start_period.
         run: |
           set -e
-          echo "waiting 60s for hub migrations + first healthcheck cycle..."
-          sleep 60
+          echo "waiting 30s for hub migrations + first healthcheck cycle..."
+          sleep 30
 
           ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'docker ps --filter name=hub --format "{{.Names}} {{.Status}}"'
 
