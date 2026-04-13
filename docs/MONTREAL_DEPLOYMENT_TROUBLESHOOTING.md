@@ -7,9 +7,39 @@
 
 ## Access Required
 - **Server:** Montreal EC2 instance
-- **Host:** 3.98.114.0 (or check `ENGINE_HOST` GitHub Actions secret)
-- **User:** `ubuntu` (SSH login) or `novakash` (engine process user)
-- **SSH Key:** `ENGINE_SSH_KEY` GitHub Actions secret
+- **Host:** 15.223.247.178 (Public IP), Instance ID: i-0785ed930423ae9fd
+- **Region:** ca-central-1 (Montreal)
+- **User:** `novakash` (engine process user, NOT ubuntu)
+- **SSH Key:** `ENGINE_SSH_KEY` GitHub Actions secret (ed25519 key stored at /home/novakash/.ssh/github_deploy)
+
+### SSH Connection Methods
+
+**Method 1: GitHub Actions Deploy Key (Recommended for CI/CD)**
+```bash
+# Decode the ENGINE_SSH_KEY secret and use it
+echo "$ENGINE_SSH_KEY" | base64 -d > /tmp/deploy_key
+chmod 600 /tmp/deploy_key
+ssh -i /tmp/deploy_key -o "StrictHostKeyChecking=no" novakash@15.223.247.178
+```
+
+**Method 2: EC2 Instance Connect (Manual Access)**
+```bash
+# Note: Defaults to ec2-user, not novakash
+aws ec2-instance-connect ssh --instance-id i-0785ed930423ae9fd --region ca-central-1
+# Then switch to novakash: sudo -u novakash -i
+```
+
+**Method 3: SSH Key Pair (If you have the private key)**
+```bash
+# If you have the novakash-montreal.pem key
+ssh -i ~/.ssh/novakash-montreal.pem novakash@15.223.247.178
+```
+
+**Current Status (2026-04-13):**
+- Local keys (~/.ssh/novakash-local-rsa.pem, ~/.ssh/novakash-margin-engine.pem) do NOT work
+- AWS key pair 'novakash-montreal' exists but private key not available locally
+- EC2 Instance Connect defaults to ec2-user, requires sudo to switch to novakash
+- GitHub Actions workflow configured with StrictHostKeyChecking=no
 
 ## Manual Investigation Steps
 

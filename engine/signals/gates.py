@@ -63,31 +63,210 @@ class PipelineResult:
 
 @dataclass
 class GateContext:
-    """All data needed by gates for evaluation."""
+    """
+    Complete data surface for gate evaluation - ALL v1/v2/v3/v4 data from
+    novakash-timesfm-repo v4_snapshot_assembler.py.
 
-    # Price deltas
+    This context captures the FULL decision surface so gates can access:
+      - v2: LightGBM predictions (probability, quantiles, model metadata)
+      - v3: Multi-horizon composite signals (all 9 timescales)
+      - v3: Sub-signals (ELM/Sequoia, cascade, taker, OI, funding, VPIN, momentum)
+      - v3: Regime classification with confidence + persistence
+      - v3: Cross-timescale alignment
+      - v4: Derived metrics (expected move, vol forecast, VaR)
+      - v4: Macro bias per timescale
+      - v4: Consensus across price sources
+      - v4: Upcoming events + impact
+      - v4: Polymarket CLOB data
+      - v4: Orderflow (liquidations, taker flow, funding)
+      - v4: Strategy recommendations
+    """
+
+    # ─── Window metadata ───────────────────────────────────────────────────
+    asset: str = "BTC"
+    timeframe: str = "5m"
+    window_ts: Optional[int] = None
+    eval_offset: Optional[int] = None  # Seconds to window close at evaluation
+
+    # ─── Price source data ─────────────────────────────────────────────────
+    # Multi-source deltas
     delta_chainlink: Optional[float] = None
     delta_tiingo: Optional[float] = None
     delta_binance: Optional[float] = None
-    delta_pct: float = 0.0
+    delta_pct: float = 0.0  # Primary delta used for decision
+    delta_source: Optional[str] = (
+        None  # "binance" | "chainlink" | "tiingo" | "consensus"
+    )
 
-    # VPIN / regime
-    vpin: float = 0.0
+    # Price consensus
+    consensus_safe_to_trade: bool = False
+    consensus_max_divergence_bps: Optional[float] = None
+    consensus_mean_divergence_bps: Optional[float] = None
+    consensus_agreement_score: Optional[float] = None
+    consensus_sources: Optional[dict] = None  # Full source details
+
+    # Price inputs
+    open_price: Optional[float] = None
+    close_price: Optional[float] = None
+    current_price: Optional[float] = None  # Binance last price at eval time
+    tiingo_close: Optional[float] = None
+    chainlink_price: Optional[float] = None
+
+    # TWAP data
+    twap_delta: Optional[float] = None
+
+    # ─── v2: LightGBM predictions ──────────────────────────────────────────
+    v2_probability_up: Optional[float] = None
+    v2_probability_raw: Optional[float] = None
+    v2_model_version: Optional[str] = None
+    v2_delta_bucket: Optional[int] = None
+    v2_quantiles_p10: Optional[float] = None
+    v2_quantiles_p25: Optional[float] = None
+    v2_quantiles_p50: Optional[float] = None
+    v2_quantiles_p75: Optional[float] = None
+    v2_quantiles_p90: Optional[float] = None
+    v2_feature_freshness_ms: Optional[dict] = None
+
+    # ─── v3: Current timescale composite + sub-signals ────────────────────
+    v3_composite: Optional[float] = None
+    v3_sub_signal_elm: Optional[float] = None
+    v3_sub_signal_cascade: Optional[float] = None
+    v3_sub_signal_taker: Optional[float] = None
+    v3_sub_signal_oi: Optional[float] = None
+    v3_sub_signal_funding: Optional[float] = None
+    v3_sub_signal_vpin: Optional[float] = None
+    v3_sub_signal_momentum: Optional[float] = None
+
+    # ─── v3: Multi-horizon data (all 9 timescales) ────────────────────────
+    # 5m horizon
+    v3_5m_composite: Optional[float] = None
+    v3_5m_elm: Optional[float] = None
+    v3_5m_cascade: Optional[float] = None
+    v3_5m_taker: Optional[float] = None
+    v3_5m_oi: Optional[float] = None
+    v3_5m_funding: Optional[float] = None
+    v3_5m_vpin: Optional[float] = None
+    v3_5m_momentum: Optional[float] = None
+
+    # 15m horizon
+    v3_15m_composite: Optional[float] = None
+    v3_15m_elm: Optional[float] = None
+    v3_15m_cascade: Optional[float] = None
+    v3_15m_taker: Optional[float] = None
+    v3_15m_oi: Optional[float] = None
+    v3_15m_funding: Optional[float] = None
+    v3_15m_vpin: Optional[float] = None
+    v3_15m_momentum: Optional[float] = None
+
+    # 1h horizon
+    v3_1h_composite: Optional[float] = None
+    v3_1h_elm: Optional[float] = None
+    v3_1h_cascade: Optional[float] = None
+    v3_1h_taker: Optional[float] = None
+    v3_1h_oi: Optional[float] = None
+    v3_1h_funding: Optional[float] = None
+    v3_1h_vpin: Optional[float] = None
+    v3_1h_momentum: Optional[float] = None
+
+    # 4h horizon
+    v3_4h_composite: Optional[float] = None
+    v3_4h_elm: Optional[float] = None
+    v3_4h_cascade: Optional[float] = None
+    v3_4h_taker: Optional[float] = None
+    v3_4h_oi: Optional[float] = None
+    v3_4h_funding: Optional[float] = None
+    v3_4h_vpin: Optional[float] = None
+    v3_4h_momentum: Optional[float] = None
+
+    # 24h+ horizons (abbreviated for space - all 9 timescales available)
+    v3_24h_composite: Optional[float] = None
+    v3_48h_composite: Optional[float] = None
+    v3_72h_composite: Optional[float] = None
+    v3_1w_composite: Optional[float] = None
+    v3_2w_composite: Optional[float] = None
+
+    # Cross-timescale alignment
+    v3_alignment_direction_agreement: Optional[float] = None
+    v3_alignment_num_aligned: Optional[int] = None
+    v3_alignment_details: Optional[dict] = None
+
+    # ─── v3: Regime classification ────────────────────────────────────────
     regime: str = "UNKNOWN"
+    regime_confidence: Optional[float] = None
+    regime_persistence: Optional[float] = None
+    regime_transition: Optional[dict] = None
 
-    # Window info
-    asset: str = "BTC"
-    eval_offset: Optional[int] = None
-    window_ts: Optional[int] = None
+    # Volatility state
+    vol_state_range_pct: Optional[float] = None
+    vol_state_std_pct: Optional[float] = None
+    vol_state_regime_band: Optional[str] = None
 
-    # DUNE model data (populated by DuneConfidenceGate)
-    dune_probability_up: Optional[float] = None
-    dune_direction: Optional[str] = None
-    dune_model_version: Optional[str] = None
+    # ─── v3: Cascade state ────────────────────────────────────────────────
+    cascade_strength: Optional[float] = None
+    cascade_signal: Optional[float] = None
 
-    # CoinGlass snapshot
+    # ─── v4: Derived metrics ──────────────────────────────────────────────
+    expected_move_bps: Optional[float] = None
+    vol_forecast_bps: Optional[float] = None
+    downside_var_bps_p10: Optional[float] = None
+    upside_var_bps_p90: Optional[float] = None
+    time_to_target_s: Optional[int] = None
+
+    # ─── v4: Macro (per-timescale) ────────────────────────────────────────
+    macro_bias: Optional[str] = None  # "BULL" | "BEAR" | "NEUTRAL"
+    macro_confidence: Optional[int] = None  # 0-100
+    macro_direction_gate: Optional[str] = (
+        None  # "ALLOW_ALL" | "SKIP_UP" | "SKIP_DOWN" | "SKIP_ALL"
+    )
+    macro_size_modifier: Optional[float] = None
+    macro_threshold_modifier: Optional[float] = None
+    macro_reasoning: Optional[str] = None
+
+    # ─── v4: Events ───────────────────────────────────────────────────────
+    events_max_impact: Optional[str] = None  # "LOW" | "MEDIUM" | "HIGH" | "EXTREME"
+    events_minutes_to_next_high_impact: Optional[float] = None
+    events_upcoming: Optional[list] = None  # Full event list
+
+    # ─── v4: Polymarket CLOB ──────────────────────────────────────────────
+    clob_implied_up: Optional[float] = None
+    clob_implied_down: Optional[float] = None
+    clob_vig: Optional[float] = None
+    clob_imbalance: Optional[float] = None
+    clob_up_spread: Optional[float] = None
+    clob_down_spread: Optional[float] = None
+
+    # Gamma prices (for spread gate)
+    gamma_up_price: Optional[float] = None
+    gamma_down_price: Optional[float] = None
+
+    # ─── v4: Orderflow ────────────────────────────────────────────────────
+    orderflow_liq_pressure: Optional[str] = (
+        None  # "QUIET" | "LONG_FLUSH" | "SHORT_SQUEEZE"
+    )
+    orderflow_forced_long_liq_usd: Optional[float] = None
+    orderflow_forced_short_liq_usd: Optional[float] = None
+    orderflow_taker_buy_volume: Optional[float] = None
+    orderflow_taker_sell_volume: Optional[float] = None
+    orderflow_taker_flow_imbalance: Optional[float] = None
+    orderflow_funding_rate: Optional[float] = None
+
+    # CoinGlass snapshot (legacy compatibility)
     cg_snapshot: Optional[object] = None
 
+    # ─── v4: Strategy recommendations ─────────────────────────────────────
+    strategy_conviction: Optional[str] = None
+    strategy_conviction_score: Optional[float] = None
+    strategy_action: Optional[str] = (
+        None  # "TRADE" | "SKIP" | "LONG" | "SHORT" | "UP" | "DOWN"
+    )
+    strategy_collateral_pct: Optional[float] = None
+    strategy_sl_pct: Optional[float] = None
+    strategy_tp_pct: Optional[float] = None
+    strategy_max_hold_s: Optional[int] = None
+    strategy_reason: Optional[str] = None
+    strategy_recommendation_json: Optional[dict] = None
+
+    # ─── Gate execution state ─────────────────────────────────────────────
     # Direction from agreement gate
     agreed_direction: Optional[str] = None
 
@@ -96,32 +275,16 @@ class GateContext:
     cg_confirms: int = 0  # 0-3 confirming CG signals
     cg_bonus: float = 0.0  # Confirmation bonus (subtracted from threshold)
 
-    # Gamma / Polymarket CLOB prices (for spread gate)
-    gamma_up_price: Optional[float] = None
-    gamma_down_price: Optional[float] = None
+    # DUNE model data (populated by DuneConfidenceGate)
+    dune_probability_up: Optional[float] = None
+    dune_direction: Optional[str] = None
+    dune_model_version: Optional[str] = None
 
-    # v11.1: extra scalars needed to build the v5 push-mode feature body
-    # from inside the DUNE gate. The strategy populates these at context
-    # construction time (near five_min_vpin.py:624) so that
-    # DuneConfidenceGate can build an identical V5FeatureBody to the one
-    # the strategy's own v8.1 fetch builds. Train/serve parity across
-    # both decision-path call sites depends on these being set.
-    twap_delta: Optional[float] = None  # TWAP delta percentage from twap_result
-    tiingo_close: Optional[float] = None  # Tiingo REST candle close price
-    current_price: Optional[float] = None  # Binance last price at eval time
-    chainlink_price: Optional[float] = None  # Chainlink spot (when available)
-    delta_source: Optional[str] = None  # "binance" | "chainlink" | "tiingo" raw string
-    prev_v2_probability_up: Optional[float] = None  # For v2_logit — prior scorer output
-
-    # v11.1: Pre-built V5 feature body, attached by the strategy. When
-    # set, DuneConfidenceGate calls the scorer with this body directly
-    # instead of rebuilding one from the scalar GateContext fields.
-    # None means "build it from scalars at gate time" as a fallback,
-    # which happens if the strategy didn't populate it (old callers,
-    # test harnesses, etc.). Typed as Any to avoid a circular import
-    # with signals.v2_feature_body — the DUNE gate type-checks it
-    # locally when it uses it.
+    # v11.1: Pre-built V5 feature body
     v5_features: Optional[object] = None
+
+    # Pre-computed prev v2 probability for v2_logit feature
+    prev_v2_probability_up: Optional[float] = None
 
 
 # -- Feature flag: immutable gate context (CA-03) -------------------------
@@ -137,6 +300,7 @@ class GateContextDelta:
     do not modify context return EMPTY_DELTA.
     """
 
+    # Legacy fields (always supported)
     agreed_direction: Optional[str] = None
     cg_threshold_modifier: Optional[float] = None
     cg_confirms: Optional[int] = None
@@ -144,6 +308,9 @@ class GateContextDelta:
     dune_probability_up: Optional[float] = None
     dune_direction: Optional[str] = None
     dune_model_version: Optional[str] = None
+
+    # v10.6+ gate-modifiable fields
+    # (future gates can add new fields here as needed)
 
 
 EMPTY_DELTA = GateContextDelta()

@@ -166,7 +166,8 @@ class V4DownOnlyStrategy(V4FusionStrategy):
 
         # Filter: skip all UP predictions
         if decision.direction == "UP":
-            return self._skip("down_only_filter_up_skipped")
+            offset_str = f"T-{offset}" if offset is not None else "T-?"
+            return self._skip(f"down_only_filter_up_skipped {offset_str}")
 
         # Apply CLOB-based sizing for DOWN trades
         size_mod, label = self._clob_size_modifier(ctx.clob_down_ask)

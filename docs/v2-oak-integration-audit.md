@@ -218,3 +218,56 @@ except Exception as e:
 - Without v2.2 data, the engine skips early entries incorrectly
 - The gate logic at line 992-995 works but doesn't persist to DB
 - Dashboard is showing stale/hardcoded data (0.009) because DB is empty
+
+---
+
+## CI/CD Pipeline Status (Apr 13, 2026)
+
+### GitHub Actions Auto-Deploy ✅
+
+**Workflow**: `.github/workflows/deploy-engine.yml`
+
+**Triggers**:
+- **PRs**: Python syntax check on `engine/**` changes
+- **Push to develop**: Auto-deploy to Montreal (15.223.247.178)
+- **Manual**: Can be triggered from GitHub Actions tab
+
+**GitHub Secrets Configured** (36 total):
+- `ENGINE_SSH_KEY` - Deploy key for SSH access
+- `ENGINE_HOST` - 15.223.247.178
+- `DATABASE_URL` - Railway PostgreSQL connection
+- `COINGLASS_API_KEY` - CoinGlass data feed
+- `BINANCE_API_KEY`, `BINANCE_API_SECRET` - Binance WebSocket (empty)
+- `POLY_*` - Polymarket API keys, private key, funder address
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` - Alerts
+- `BUILDER_*` - Polymarket Builder API
+- `RELAYER_*` - Polymarket Relayer
+- `TIINGO_API_KEY` - Tiingo price feed
+- `CHAINLINK_BTC_USD` - Chainlink oracle
+- `PAPER_MODE` - Paper trading flag
+- `ANTHROPIC_API_KEY` - Claude evaluator
+- `POLYGON_RPC_URL` - Polygon RPC endpoint
+
+**Deploy Process**:
+1. Python syntax check (engine/main.py, five_min_vpin.py, orchestrator.py)
+2. Rsync code to Montreal (`novakash@15.223.247.178:/home/novakash/novakash/engine/`)
+3. Rsync scripts directory
+4. Write `.env` from GitHub secrets
+5. Kill existing engine process
+6. Start new engine process
+7. Health checks:
+   - Process count = 1
+   - Error signature scan (last 10k lines of engine.log)
+   - Error thresholds: `clob_feed.write_error=0`, `reconciler.resolve_db_error=0`, etc.
+
+**Documentation**:
+- `docs/CI_CD_SETUP.md` - GitHub Actions secrets configuration guide
+- `docs/MONTREAL_DEPLOYMENT_TROUBLESHOOTING.md` - Server troubleshooting
+
+**Commit**: `068478e` - "CI/CD: Add GitHub Actions secrets for auto-deploy to Montreal"
+
+**Next Steps**:
+1. Trigger test deploy from GitHub Actions tab
+2. Verify engine starts and health checks pass
+3. Monitor engine.log for any new errors
+4. Future engine changes auto-deploy on push to develop
