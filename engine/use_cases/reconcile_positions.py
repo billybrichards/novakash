@@ -25,6 +25,7 @@ Port dependencies (all from ``engine/domain/ports.py``):
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Optional
 
@@ -36,6 +37,7 @@ from domain.ports import (
 )
 from domain.value_objects import (
     PositionOutcome,
+    ReconcileResult,
     ResolutionResult,
     WindowKey,
     WindowOutcome,
@@ -70,6 +72,120 @@ class ReconcilePositionsUseCase:
         self._window_state = window_state
         self._alerts = alerts
         self._clock = clock
+
+    async def execute(
+        self,
+        positions: list[PositionOutcome],
+    ) -> ReconcileResult:
+        """Run live (CLOB) and paper (oracle) resolution in a single pass.
+
+        ``positions`` — list of PositionOutcome from poly_client.get_position_outcomes().
+        Pass ``[]`` in paper mode (no real CLOB positions exist).
+        """
+        live_resolved = 0
+        errors = 0
+
+        for pos in positions:
+            try:
+                result = await self.resolve_one(pos)
+                if result:
+                    live_resolved += 1
+            except Exception as exc:
+                errors += 1
+                logger.warning(
+                    "reconciler.live_resolve_error",
+                    extra={
+                        "condition_id": pos.condition_id[:20],
+                        "error": str(exc)[:100],
+                    },
+                )
+
+        paper_resolved, paper_skipped = await self._resolve_paper_batch()
+
+        return ReconcileResult(
+            live_resolved=live_resolved,
+            paper_resolved=paper_resolved,
+            paper_skipped=paper_skipped,
+            errors=errors,
+        )
+
+    async def _resolve_paper_batch(self) -> tuple[int, int]:
+        """Resolve all unresolved paper trades using oracle data.
+
+        Returns (resolved_count, skipped_count).
+        Skipped means the window hasn't resolved yet — will be retried next tick.
+        """
+        trades = await self._trade_repo.find_unresolved_paper_trades()
+        resolved = 0
+        skipped = 0
+
+        for trade in trades:
+            try:
+                raw_ts = trade.get("window_ts")
+                asset = trade.get("asset") or "BTC"
+                direction = (trade.get("direction") or "").upper()
+
+                if not raw_ts or not direction:
+                    skipped += 1
+                    continue
+
+                key = WindowKey(asset=asset, window_ts=int(raw_ts))
+                actual_direction = await self._window_state.get_actual_direction(key)
+
+                if actual_direction is None:
+                    skipped += 1
+                    continue
+
+                outcome = "WIN" if direction == actual_direction.upper() else "LOSS"
+                status = "RESOLVED_WIN" if outcome == "WIN" else "RESOLVED_LOSS"
+
+                stake = float(trade.get("stake_usd") or 0)
+                entry = float(trade.get("entry_price") or 0)
+                shares = stake / entry if entry > 0 else 0.0
+                pnl = round(shares - stake, 4) if outcome == "WIN" else round(-stake, 4)
+
+                trade_id = trade["id"]
+                await self._trade_repo.resolve_trade(
+                    trade_id=trade_id,
+                    outcome=outcome,
+                    pnl_usd=pnl,
+                    status=status,
+                )
+
+                logger.info(
+                    "reconciler.paper_trade_resolved",
+                    extra={
+                        "trade_id": trade_id,
+                        "direction": direction,
+                        "actual_direction": actual_direction,
+                        "outcome": outcome,
+                        "pnl": f"${pnl:.2f}",
+                    },
+                )
+
+                try:
+                    pnl_str = f"+${pnl:.2f}" if outcome == "WIN" else f"${pnl:.2f}"
+                    await self._alerts.send_system_alert(
+                        f"{'WIN' if outcome == 'WIN' else 'LOSS'} -- Paper Trade Resolved\n"
+                        f"Direction: {direction} vs Oracle: {actual_direction}\n"
+                        f"Stake: ${stake:.2f} | P&L: {pnl_str}\n"
+                        f"Source: window_snapshots.actual_direction"
+                    )
+                except Exception:
+                    pass  # never let Telegram break reconciliation
+
+                resolved += 1
+
+            except Exception as exc:
+                logger.warning(
+                    "reconciler.paper_resolve_error",
+                    extra={
+                        "trade_id": trade.get("id"),
+                        "error": str(exc)[:100],
+                    },
+                )
+
+        return resolved, skipped
 
     async def resolve_one(
         self,
