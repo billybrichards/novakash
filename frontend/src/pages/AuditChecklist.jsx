@@ -135,6 +135,13 @@ const CATEGORIES = [
     description:
       'Full inventory of every data asset, database table, prediction surface, signal, and Polymarket outcome available for ML training. Covers v1 (TimesFM), v2 (LightGBM), v3 (composite), v4 (decision surface), gate audit trail, and reconciled outcome labels. Target: 500+ labeled window-outcome pairs per Δ bucket for reliable model retraining. Explored via automated agent across novakash/develop + novakash-timesfm-repo/main.',
   },
+  {
+    id: 'btc-15m-expansion',
+    title: 'BTC 15-Minute Trading Expansion · 2026-04-13',
+    color: '#818cf8',
+    description:
+      'Expand the 5-strategy clean architecture to BTC 15-minute Polymarket markets. 5 critical hardcoded "5m" blockers to fix, 5 new YAML strategy configs (v15m_down/up_asian/up_basic/fusion/gate), timing gates scaled 3x. Most infrastructure already exists (15m feed, model slot, V4 snapshot). Plan: docs/BTC_15M_EXPANSION_PLAN.md. All new strategies start GHOST — promotion only with Billy approval.',
+  },
 ];
 
 const TASKS = [
@@ -2758,7 +2765,102 @@ const TASKS = [
       'Could have 10+ features from same quantile data',
     ],
     fix: 'Add tail_risk, skew, interval_width, quantile_convergence features in v2_scorer.py. Add to LightGBM feature vector. Retrain. Estimate: ~10 lines.',
+    progressNotes: ['DONE: 4 quantile features added to v2_scorer.py + train_lgb_v5.py (PR #77 + PR #78). Recording live.'],
+  },
+
+  // ── btc-15m-expansion ────────────────────────────────────────────────────
+
+  {
+    id: '15M-01',
+    category: 'btc-15m-expansion',
+    title: 'Phase 1: Fix 5 hardcoded "5m" blockers in data surface + registry + orchestrator',
+    severity: 'CRITICAL',
+    status: 'OPEN',
+    file: 'engine/strategies/data_surface.py',
+    summary:
+      'DataSurfaceManager._fetch_v4() hardcodes timescale="5m" (line 253). get_surface() hardcodes ts_data from "5m" block (line 358). Registry has no timescale filter — 5m strategies fire on 15m windows. Orchestrator market_slug hardcodes "5m" (line 1736). WindowInfo has no .timeframe attribute. Full details in docs/BTC_15M_EXPANSION_PLAN.md §Blockers B1-B5.',
+    symptoms: [
+      'B1: data_surface.py:253 — _fetch_v4 hardcodes timescale="5m"',
+      'B2: data_surface.py:358 — get_surface reads only "5m" block from V4 snapshot',
+      'B3: registry.py evaluate_all() — no timescale filter, all strategies fire on all windows',
+      'B4: orchestrator.py:1736 — market_slug hardcodes "-5m-"',
+      'B5: WindowInfo has no .timeframe — strategy_decisions all stored as timeframe="5m"',
+    ],
+    fix: 'Multi-timeframe _cached_v4 dict, timeframe-aware get_surface(), timescale filter in evaluate_all(), dynamic market_slug, derive timeframe from duration_secs. See plan §Phase 1.',
     progressNotes: [],
+  },
+  {
+    id: '15M-02',
+    category: 'btc-15m-expansion',
+    title: 'Phase 2: Create 5 YAML strategy configs + hooks for 15m',
+    severity: 'HIGH',
+    status: 'OPEN',
+    file: 'engine/strategies/configs/',
+    summary:
+      '5 new strategies with timing gates scaled 3x: v15m_down_only (270-450s), v15m_up_asian (270-450s, session), v15m_up_basic (180-540s), v15m_fusion (custom hook), v15m_gate (15-900s, 8 gates). All start GHOST. Python hooks for down_only (CLOB sizing), fusion (timing bands), gate (confidence classifier). See plan §Proposed 15m Strategy Set.',
+    symptoms: [
+      'v15m_down_only.yaml — DOWN, timing 270-450, CLOB sizing hook',
+      'v15m_up_asian.yaml — UP, timing 270-450, session hours [23,0,1,2]',
+      'v15m_up_basic.yaml — UP, timing 180-540, global',
+      'v15m_fusion.yaml — Both, custom hook (early >540, optimal 90-540, late 15-90)',
+      'v15m_gate.yaml — Both, 8-gate DUNE pipeline, 15m thresholds',
+    ],
+    fix: 'Create 5 YAML + 3 Python hooks + 5 markdown specs in engine/strategies/configs/. Non-timing gates unchanged (delta 0.0005, confidence 0.10, spread 100bps).',
+    progressNotes: [],
+  },
+  {
+    id: '15M-03',
+    category: 'btc-15m-expansion',
+    title: 'Phase 3: Deploy GHOST + verify signal capture in strategy_decisions',
+    severity: 'MEDIUM',
+    status: 'OPEN',
+    file: 'engine/strategies/orchestrator.py',
+    summary:
+      'Deploy with FIFTEEN_MIN_ENABLED=true, all 5 strategies GHOST. Verify strategy_decisions table has rows with timeframe="15m". Check eval_offset values are in 270-450 range (not 90-150). Confirm v2_probability_up is non-null (15m model loaded). Fix registry _send_window_summary hardcoded "5m" text.',
+    symptoms: [
+      'Set FIFTEEN_MIN_ENABLED=true + FIFTEEN_MIN_ASSETS=BTC',
+      'Query: SELECT * FROM strategy_decisions WHERE timeframe = \'15m\' LIMIT 10',
+      'Verify eval_offset in expected range per strategy',
+      'Verify v2_probability_up non-null in 15m surface',
+    ],
+    fix: 'Deploy, monitor 24h, validate DB records. Fix cosmetic "5m" in alert text.',
+    progressNotes: [],
+  },
+  {
+    id: '15M-04',
+    category: 'btc-15m-expansion',
+    title: 'Phase 4: Train 15m model + 7-day shadow + Billy promotion gate',
+    severity: 'HIGH',
+    status: 'OPEN',
+    file: 'novakash-timesfm-repo/.github/workflows/retrain.yml',
+    summary:
+      'Retrain pipeline already has 15m matrix slot (current_15m). Trigger manual retrain. 15m windows = 3x less data than 5m — extend lookback to 14d+. After model trained: 7-day minimum GHOST shadow. Billy reviews dashboard comparison (15m vs 5m WR, equity curve). Billy explicitly approves first v15m_down_only → LIVE. No auto-promotion.',
+    symptoms: [
+      'retrain.yml matrix: timeframe=15m, label_source=polymarket, model_slot=current_15m',
+      'DELTA_BUCKETS_BY_TIMEFRAME["15m"] = (60, 120, 180, 300, 480, 720)',
+      '15m windows generate ~96/day (vs 288/day for 5m) — smaller corpus',
+      'v15m_down_only first candidate for LIVE (if DOWN WR > 55%)',
+    ],
+    fix: 'Trigger retrain, shadow 7d, Billy reviews, Billy promotes. Same pattern as ML upgrade plan.',
+    progressNotes: [],
+  },
+  {
+    id: '15M-05',
+    category: 'btc-15m-expansion',
+    title: 'Existing 15m infrastructure audit: feed + V4 snapshot + model slot all working',
+    severity: 'INFO',
+    status: 'DONE',
+    file: 'engine/data/feeds/polymarket_5min.py',
+    summary:
+      'Audit confirmed: Polymarket5MinFeed(duration_secs=900) generates correct btc-updown-15m-{ts} slugs. _on_fifteen_min_window handler exists. V4 snapshot assembler supports timescale="15m". 15m model registry loaded at startup. Retrain matrix includes 15m. strategy_decisions.timeframe is VARCHAR. FullDataSurface.timescale field exists. The plumbing is there — just not connected to the registry.',
+    symptoms: [
+      'Polymarket5MinFeed: _build_slug() correctly handles duration_secs=900',
+      'Orchestrator: _on_fifteen_min_window at lines 1863-1914',
+      'V4 assembler: _WINDOW_SECONDS and _LGB_TIMESCALES include "15m"',
+      'Model: _v2_15m_registry + _v2_15m_scorer loaded at startup',
+    ],
+    fix: 'No fix needed — infrastructure verified. Blockers are in the data surface + registry wiring (15M-01).',
+    progressNotes: ['Verified 2026-04-13 via automated codebase audit.'],
   },
 ];
 
