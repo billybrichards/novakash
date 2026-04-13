@@ -1027,8 +1027,18 @@ class Orchestrator:
                 pass
 
         # Start Strategy Engine v2 DataSurfaceManager background loop
+        # Inject live feed references NOW (they were None at __init__ time)
         if self._strategy_registry and hasattr(self, "_data_surface_mgr"):
             try:
+                self._data_surface_mgr.set_feeds(
+                    tiingo_feed=getattr(self, "_tiingo_feed", None),
+                    chainlink_feed=getattr(self, "_chainlink_feed", None),
+                    clob_feed=getattr(self, "_clob_feed", None),
+                    vpin_calculator=self._vpin_calc,
+                    cg_feeds=self._cg_feeds,
+                    twap_tracker=self._twap_tracker,
+                    binance_state=self._aggregator if hasattr(self, "_aggregator") else None,
+                )
                 await self._data_surface_mgr.start()
                 log.info("orchestrator.data_surface_manager_started")
             except Exception as exc:

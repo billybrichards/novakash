@@ -144,6 +144,12 @@ class StrategyRegistry:
         with open(path) as f:
             data = yaml.safe_load(f)
 
+        if not data:
+            raise ValueError(f"Empty or invalid YAML: {path}")
+        for required in ("name", "version"):
+            if not data.get(required):
+                raise ValueError(f"Missing required field '{required}' in {path}")
+
         return StrategyConfig(
             name=data["name"],
             version=data["version"],
@@ -176,8 +182,17 @@ class StrategyRegistry:
         return pipeline
 
     def _load_hooks(self, config: StrategyConfig) -> dict[str, Callable]:
-        """Load Python hooks from the strategy's .py file."""
-        hooks_path = self._config_dir / config.hooks_file
+        """Load Python hooks from the strategy's .py file.
+
+        Path is sandboxed to config_dir — no directory traversal allowed.
+        """
+        hooks_path = (self._config_dir / config.hooks_file).resolve()
+        config_root = self._config_dir.resolve()
+        if not hooks_path.is_relative_to(config_root):
+            raise ValueError(
+                f"hooks_file '{config.hooks_file}' escapes config dir "
+                f"(resolved to {hooks_path}, must be under {config_root})"
+            )
         if not hooks_path.exists():
             log.warning("registry.hooks_missing", file=str(hooks_path))
             return {}

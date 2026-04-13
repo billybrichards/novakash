@@ -182,6 +182,37 @@ class DataSurfaceManager:
         self._running = False
         self._task: Optional[asyncio.Task] = None
 
+    def set_feeds(
+        self,
+        *,
+        tiingo_feed: Any = None,
+        chainlink_feed: Any = None,
+        clob_feed: Any = None,
+        vpin_calculator: Any = None,
+        cg_feeds: Optional[dict] = None,
+        twap_tracker: Any = None,
+        binance_state: Any = None,
+    ) -> None:
+        """Inject feed references after they are initialized.
+
+        Called from orchestrator.start() where feeds are live, not __init__
+        where they are still None.
+        """
+        if tiingo_feed is not None:
+            self._tiingo = tiingo_feed
+        if chainlink_feed is not None:
+            self._chainlink = chainlink_feed
+        if clob_feed is not None:
+            self._clob = clob_feed
+        if vpin_calculator is not None:
+            self._vpin = vpin_calculator
+        if cg_feeds is not None:
+            self._cg_feeds = cg_feeds
+        if twap_tracker is not None:
+            self._twap = twap_tracker
+        if binance_state is not None:
+            self._binance_state = binance_state
+
     async def start(self) -> None:
         """Start background V4 pre-fetch loop."""
         import aiohttp

@@ -75,7 +75,8 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
     if timing == "late_window":
         clob_implied = surface.clob_implied_up
         if clob_implied is not None:
-            divergence = abs(confidence - 0.5) - abs(float(clob_implied) - 0.5)
+            # Sequoia's edge over CLOB: how much further from 0.5 is our model vs market
+            divergence = distance - abs(float(clob_implied) - 0.5)
             if divergence < 0.04:
                 return _skip(
                     f"polymarket: late_window but CLOB already priced (div={divergence:.3f} < 0.04)"
