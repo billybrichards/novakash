@@ -58,7 +58,7 @@ export const STRATEGIES = {
     direction: 'UP',
     description: 'Asian session UP strategy. dist 0.15-0.20, hours 23-02 UTC. SIG-06 proposes relaxing to 0.10.',
     configKey: 'V4_UP_ASIAN_MODE',
-    defaultMode: 'LIVE',
+    defaultMode: 'GHOST',
     timescale: '5m',
     asset: 'BTC',
     gateLabel: 'UP filter \u00b7 Asian session \u00b7 dist 0.15-0.20 \u00b7 T-90-150',
