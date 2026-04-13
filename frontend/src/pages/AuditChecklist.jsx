@@ -630,6 +630,7 @@ const TASKS = [
       { date: '2026-04-11', note: 'PR #99 — Phase 1 fill 22 value object stubs with real fields and validation.' },
       { date: '2026-04-11', note: 'PR #101 — 3 remaining use cases extracted (execute_manual_trade, publish_heartbeat, reconcile_positions) + 4 new ports + VO field updates. 36 tests.' },
       { date: '2026-04-11', note: 'PR #103 — Phase 3 EvaluateWindowUseCase extraction (flagged off, 13 tests). Core _evaluate_window logic now in engine/use_cases/evaluate_window.py behind feature flag. Biggest single shrink of the god class.' },
+      { date: '2026-04-13', note: 'Phase 4+ superseded by Strategy Engine v2 (CA-07). Config-first registry eliminates need for further god-class extraction. Design spec: docs/superpowers/specs/2026-04-13-strategy-engine-v2-design.md' },
     ],
   },
   {
@@ -2241,6 +2242,7 @@ const TASKS = [
     fix: 'SHIPPED — Created timing override in v4_down_only_strategy.py (commit d8b1856). Detects "timing=early" skip from parent, re-evaluates as TRADE when 90 <= eval_offset <= 150. Deployed to Montreal server (15.223.247.178) with V10_6_MAX_EVAL_OFFSET=150. Engine running in paper mode, evaluating at T-100 to T-92. Waiting for DOWN signal in T-90 to T-150 window to see actual TRADE.',
     progressNotes: [
       { date: '2026-04-13', note: 'SHIPPED via timing override in v4_down_only_strategy.py (lines 70-114). Parent V4FusionStrategy blocks at T-180 with timing="early", v4_down_only overrides to allow T-90 to T-150 trading. Committed to develop (d8b1856), deployed to Montreal. V10_6_MAX_EVAL_OFFSET updated from 120 to 150. Engine evaluating correctly at T-100 to T-92, waiting for DOWN signal to execute TRADE.' },
+      { date: '2026-04-13', note: 'Timing override hack will be eliminated by CA-07 — each strategy owns its TimingGate independently in the config-first system.' },
     ],
   },
   {
@@ -2263,6 +2265,7 @@ const TASKS = [
     fix: 'Add CLOBSizingGate to engine/signals/gates.py. Insert as G6.5 (after SpreadGate). Sets ctx.size_modifier: 2.0x at >=0.75, 1.5x at 0.55–0.75, 1.2x at 0.35–0.55, 1.0x below. Add size_modifier field to GateContext. See docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md.',
     progressNotes: [
       { date: '2026-04-12', note: 'Sizing schedule determined from 897K sample analysis. Gate design specified in DOWN_ONLY_STRATEGY_2026-04-12.md. Requires SIG-03 (DirectionFilterGate) to be implemented first — sizing only meaningful for DOWN predictions.' },
+      { date: '2026-04-13', note: 'CLOBSizingGate now part of reusable gate library in CA-07. Implemented as engine/strategies/gates/clob_sizing.py.' },
     ],
   },
   {
@@ -2286,6 +2289,145 @@ const TASKS = [
     progressNotes: [
       { date: '2026-04-12', note: 'Single-LIVE enforcement added to StrategyLab UI (StrategyConfigPanel). Tooltip explains the restriction. This task tracks the multi-account work needed to lift it.' },
     ],
+  },
+
+  // ── Strategy Engine v2 (2026-04-13) ─────────────────────────────────────
+
+  // CA-07: Strategy Engine v2
+  {
+    id: 'CA-07',
+    category: 'clean-architect',
+    severity: 'CRITICAL',
+    status: 'IN_PROGRESS',
+    title: 'Strategy Engine v2 — config-first registry replaces inheritance chain',
+    files: [
+      { path: 'engine/strategies/registry.py', line: 1, repo: 'novakash' },
+      { path: 'engine/strategies/data_surface.py', line: 1, repo: 'novakash' },
+      { path: 'engine/strategies/gates/', line: 1, repo: 'novakash' },
+      { path: 'engine/strategies/configs/', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'V4FusionStrategy inheritance chain causes timing override hacks (SIG-03b)',
+      'V4 snapshot fetched via new HTTP session per eval tick (100-5000ms blocking)',
+      'V3 composites not wired into StrategyContext (hardcoded None)',
+      'Adding new strategies requires Python class inheritance, not config',
+      'v4_up_asian broken (0 trades) — would be a YAML config fix with new system',
+    ],
+    fix: 'Config-first strategy registry with YAML definitions, reusable gate library (16 gates), FullDataSurface frozen dataclass, DataSurfaceManager background pre-fetch. Design spec: docs/superpowers/specs/2026-04-13-strategy-engine-v2-design.md',
+    progressNotes: [
+      { date: '2026-04-13', note: 'Design spec written. Implementation starting in feat/strategy-engine-v2 branch.' },
+    ],
+  },
+
+  // CA-08: Data Surface Layer
+  {
+    id: 'CA-08',
+    category: 'clean-architect',
+    severity: 'HIGH',
+    status: 'IN_PROGRESS',
+    title: 'Data Surface Layer — 1Hz fresh in-memory cache eliminates blocking I/O',
+    files: [
+      { path: 'engine/strategies/data_surface.py', line: 1, repo: 'novakash' },
+      { path: 'engine/data/feeds/tiingo_feed.py', line: 1, repo: 'novakash' },
+      { path: 'engine/data/feeds/chainlink_feed.py', line: 1, repo: 'novakash' },
+      { path: 'engine/data/feeds/clob_feed.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'V4 snapshot: 100-5000ms blocking HTTP per eval (new aiohttp session each call)',
+      'Tiingo delta: DB query per eval instead of in-memory read',
+      'Chainlink delta: DB query per eval (5-35s stale)',
+      'CLOB bid/ask: DB query per eval instead of in-memory read',
+      'V3 composites: missing entirely (hardcoded None in context)',
+      'Total _build_context latency: 200-5000ms → target <5ms',
+    ],
+    fix: 'Persistent HTTP session + 2s background V4 pre-fetch. In-memory caches on Tiingo/Chainlink/CLOB feeds. V3 composites extracted from V4 snapshot. Zero I/O at decision time.',
+    progressNotes: [
+      { date: '2026-04-13', note: 'Data freshness analysis complete. Implementation starting with feed in-memory caches.' },
+    ],
+  },
+
+  // CA-09: Domain layer reconciliation
+  {
+    id: 'CA-09',
+    category: 'clean-architect',
+    severity: 'HIGH',
+    status: 'OPEN',
+    title: 'Domain layer reconciliation — delete duplicates, merge worktree types',
+    files: [
+      { path: 'engine/domain/value_objects.py', line: 1, repo: 'novakash' },
+      { path: 'engine/application/ports/', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'domain/value_objects.py (root) and domain/value_objects/ (package) define same types differently',
+      'EvaluateStrategiesResult is mutable in root file, frozen in package — reconciliation hazard',
+      'application/ports/ (7 files) duplicates domain/ports.py and is imported by nothing',
+      '10 stub VOs with pass bodies need real fields',
+    ],
+    fix: 'Delete root value_objects.py (or convert to re-exports). Delete application/ports/. Merge worktree domain types with develop canonical types.',
+    progressNotes: [],
+  },
+
+  // SIG-05: v4_up_basic
+  {
+    id: 'SIG-05',
+    category: 'signal-optimization',
+    severity: 'HIGH',
+    status: 'IN_PROGRESS',
+    title: 'v4_up_basic strategy — global UP, dist>=0.10, T-60-180, all hours',
+    files: [
+      { path: 'engine/strategies/configs/v4_up_basic.yaml', line: 1, repo: 'novakash' },
+      { path: 'engine/strategies/configs/v4_up_basic.md', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'v4_up_asian has 0 trades from 19,490 decisions — thresholds too restrictive',
+      'All UP signals in 0.60-0.65 range, current threshold requires >= 0.62',
+      'Non-Asian hours have 5x more high-confidence UP signals than Asian session',
+      'Expected: 70-80% WR, 5-15 trades/day',
+    ],
+    fix: 'Config-defined strategy: UP direction, T-60 to T-180 timing, dist >= 0.10 confidence, all hours. Deploy as GHOST first for 3-5 days paper validation.',
+    progressNotes: [
+      { date: '2026-04-13', note: 'Spec in docs/V4_UP_BASIC_STRATEGY.md. Implementation via strategy engine v2 config system.' },
+    ],
+  },
+
+  // SIG-06: v4_up_asian fix
+  {
+    id: 'SIG-06',
+    category: 'signal-optimization',
+    severity: 'MEDIUM',
+    status: 'IN_PROGRESS',
+    title: 'v4_up_asian fix — relax thresholds via config (dist 0.10-0.20, was 0.15-0.20)',
+    files: [
+      { path: 'engine/strategies/configs/v4_up_asian.yaml', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Current dist >= 0.15 eliminates 100% of available signals (all in 0.60-0.65 range)',
+      'Relaxing to dist >= 0.10 captures 88.9% of signals',
+      'Strategy engine v2 makes this a YAML config change, no Python code needed',
+    ],
+    fix: 'Update v4_up_asian.yaml: min_dist from 0.15 to 0.10. Deploy as GHOST for validation.',
+    progressNotes: [
+      { date: '2026-04-13', note: 'Threshold analysis complete. Fix is a single YAML field change in strategy engine v2.' },
+    ],
+  },
+
+  // DATA-FRESH-01: V3 enablement
+  {
+    id: 'DATA-FRESH-01',
+    category: 'data-quality',
+    severity: 'HIGH',
+    status: 'OPEN',
+    title: 'Enable V3 on timesfm service — 7 sub-signals + 9 timescale composites currently zeroed',
+    files: [
+      { path: 'app/main.py', line: 142, repo: 'novakash-timesfm-repo' },
+    ],
+    evidence: [
+      'V3_ENABLED=false in production — all sub-signals, composite, cascade fields are zero/empty',
+      'HMM regime classifier running without its 7-signal input ensemble',
+      'Regime gate decisions degraded without V3 data',
+    ],
+    fix: 'Set V3_ENABLED=true on timesfm service environment. Monitor for stability. V3 data will flow into FullDataSurface via V4 snapshot.',
+    progressNotes: [],
   },
 ];
 
