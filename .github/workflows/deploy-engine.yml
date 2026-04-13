@@ -255,7 +255,7 @@ jobs:
             echo "LEGACY_EXECUTION_DISABLED=true"
             echo ""
             echo "# Reconciliation UC (CA-paper-live)"
-            echo "ENGINE_USE_RECONCILE_UC=false"
+            echo "ENGINE_USE_RECONCILE_UC=true"
             echo ""
             echo "# Feeds & Services"
             echo "FIVE_MIN_ENABLED=true"
