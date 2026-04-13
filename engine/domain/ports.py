@@ -372,6 +372,16 @@ class WindowStateRepository(abc.ABC):
         """
         ...
 
+    @abc.abstractmethod
+    async def label_resolved_windows(self, min_age_seconds: int = 360) -> int:
+        """Bulk-stamp ``actual_direction`` on windows that have close_price but
+        no label yet.  Uses ``close_price > open_price → UP, else DOWN``
+        (matches Chainlink oracle resolution used by Polymarket).
+
+        Returns count of newly labeled windows.
+        """
+        ...
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 4.8  ConfigPort  (deferred -- tracked as CFG-01)

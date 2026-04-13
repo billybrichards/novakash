@@ -3424,13 +3424,14 @@ class Orchestrator:
                             )
 
                     result = await self._reconcile_uc.execute(positions)
-                    if result.paper_resolved or result.live_resolved:
+                    if result.paper_resolved or result.live_resolved or result.windows_labeled:
                         log.info(
                             "reconcile_uc.complete",
                             live_resolved=result.live_resolved,
                             paper_resolved=result.paper_resolved,
                             paper_skipped=result.paper_skipped,
                             errors=result.errors,
+                            windows_labeled=result.windows_labeled,
                         )
                 except asyncio.CancelledError:
                     break
