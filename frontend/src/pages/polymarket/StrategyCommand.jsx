@@ -110,7 +110,31 @@ function freshness(secs) {
 function extractGateResults(decision) {
   if (!decision) return {};
   const meta = decision.metadata_json || decision.metadata || {};
-  return meta.gate_results || meta.gates || {};
+  const raw = meta.gate_results || meta.gates;
+  if (!raw) return {};
+  // Normalize array format: [{gate, passed, reason}, ...]
+  if (Array.isArray(raw)) {
+    const obj = {};
+    raw.forEach(item => {
+      if (item && item.gate) {
+        obj[item.gate] = item.passed === true ? true : item.passed === false ? false : item.passed;
+      }
+    });
+    return obj;
+  }
+  return raw;
+}
+
+function extractGateReasons(decision) {
+  if (!decision) return {};
+  const meta = decision.metadata_json || decision.metadata || {};
+  const raw = meta.gate_results || meta.gates;
+  if (!raw || !Array.isArray(raw)) return {};
+  const obj = {};
+  raw.forEach(item => {
+    if (item && item.gate && item.reason) obj[item.gate] = item.reason;
+  });
+  return obj;
 }
 
 function extractCtx(decision) {
@@ -168,7 +192,7 @@ function DirBadge({ dir }) {
   );
 }
 
-function GateChip({ name, status }) {
+function GateChip({ name, status, reason }) {
   const gate = GATES[name] || { label: name, icon: '?' };
   const colors = {
     pass: { bg: 'rgba(20,184,166,0.12)', text: C.teal, border: 'rgba(20,184,166,0.3)' },
@@ -176,23 +200,37 @@ function GateChip({ name, status }) {
     skip: { bg: 'rgba(100,116,139,0.1)', text: C.dim, border: 'rgba(100,116,139,0.15)' },
   };
   const c = colors[status] || colors.skip;
+  const statusIcon = status === 'pass' ? '\u2705' : status === 'fail' ? '\u274C' : null;
+  const tooltipText = reason ? `${gate.label}: ${reason}` : gate.label;
   return (
     <div
-      title={gate.label}
+      title={tooltipText}
       style={{
-        display: 'flex', alignItems: 'center', gap: 4,
+        display: 'flex', flexDirection: 'column', gap: 1,
         padding: '3px 8px', borderRadius: 3,
         background: c.bg, border: `1px solid ${c.border}`,
         fontSize: 8, fontWeight: 600, fontFamily: C.mono,
         color: c.text, whiteSpace: 'nowrap',
       }}
     >
-      <span style={{ fontSize: 10 }}>{gate.icon}</span>
-      <span>{gate.label}</span>
-      {status !== 'skip' && (
-        <span style={{ fontSize: 7, opacity: 0.8 }}>
-          {status === 'pass' ? 'PASS' : 'FAIL'}
-        </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        <span style={{ fontSize: 10 }}>{gate.icon}</span>
+        <span>{gate.label}</span>
+        {statusIcon && <span style={{ fontSize: 9 }}>{statusIcon}</span>}
+        {!statusIcon && status !== 'skip' && (
+          <span style={{ fontSize: 7, opacity: 0.8 }}>
+            {status === 'pass' ? 'PASS' : 'FAIL'}
+          </span>
+        )}
+      </div>
+      {reason && (
+        <div style={{
+          fontSize: 7, color: c.text, opacity: 0.75,
+          fontWeight: 400, whiteSpace: 'normal', lineHeight: 1.3,
+          maxWidth: 160,
+        }}>
+          {reason}
+        </div>
       )}
     </div>
   );
@@ -237,13 +275,194 @@ function ActionBadge({ action }) {
   );
 }
 
+// ── Live BTC Price Banner ───────────────────────────────────────────────────
+
+function LiveBtcBanner({ hqData }) {
+  const btcPrice = hqData?.btc_price ?? hqData?.current_price ?? null;
+  const openPrice = hqData?.current_window?.open_price ?? hqData?.open_price ?? null;
+
+  const delta = (btcPrice != null && openPrice != null) ? btcPrice - openPrice : null;
+  const deltaPct = (delta != null && openPrice) ? (delta / openPrice) * 100 : null;
+  const isUp = delta != null ? delta >= 0 : null;
+  const deltaColor = isUp === true ? C.teal : isUp === false ? C.rose : C.muted;
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 16,
+      padding: '8px 12px',
+      background: 'rgba(15,23,42,0.7)',
+      borderBottom: `1px solid ${C.panelBorder}`,
+      flexShrink: 0,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+        <span style={{ fontSize: 9, color: C.muted, fontFamily: C.mono }}>BTC</span>
+        <span style={{
+          fontSize: 18, fontWeight: 800, fontFamily: C.mono, color: C.text,
+          letterSpacing: '-0.02em',
+        }}>
+          {btcPrice != null
+            ? '$' + Number(btcPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            : '—'}
+        </span>
+      </div>
+      {delta != null && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: deltaColor, fontFamily: C.mono }}>
+            {isUp ? '+' : ''}{delta >= 0 ? '$' + delta.toFixed(2) : '-$' + Math.abs(delta).toFixed(2)}
+          </span>
+          <span style={{
+            fontSize: 9, color: deltaColor, fontFamily: C.mono,
+            background: isUp ? 'rgba(20,184,166,0.1)' : 'rgba(244,63,94,0.1)',
+            padding: '1px 6px', borderRadius: 2,
+          }}>
+            ({isUp ? '+' : ''}{deltaPct.toFixed(2)}%)
+          </span>
+          <span style={{ fontSize: 8, color: C.muted, fontFamily: C.mono }}>vs open</span>
+        </div>
+      )}
+      {openPrice != null && (
+        <span style={{ fontSize: 9, color: C.dim, fontFamily: C.mono }}>
+          Open: ${Number(openPrice).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ── Signal Surface Tab ──────────────────────────────────────────────────────
 
-function SignalSurfaceTab({ ctx, strategyId }) {
-  if (!ctx || Object.keys(ctx).length === 0) {
+function SignalSurfaceTab({ ctx, strategyId, hqData }) {
+  // Merge hqData fields into ctx so regime/vpin show even without full surface
+  // Must be declared before any conditional returns (Rules of Hooks)
+  const enrichedCtx = useMemo(() => {
+    const base = { ...(ctx || {}) };
+    if (hqData) {
+      if (base.regime == null && (hqData.vpin_regime || hqData.regime)) {
+        base.regime = hqData.vpin_regime || hqData.regime;
+      }
+      if (base.vpin == null && hqData.vpin != null) base.vpin = hqData.vpin;
+      if (base.current_price == null && hqData.btc_price != null) base.current_price = hqData.btc_price;
+    }
+    return base;
+  }, [ctx, hqData]);
+
+  // Build a live-data fallback surface from execution-hq when no ctx
+  const hasCtx = ctx && Object.keys(ctx).length > 0;
+
+  if (!hasCtx) {
+    const btc = hqData?.btc_price ?? hqData?.current_price;
+    const open = hqData?.current_window?.open_price ?? hqData?.open_price;
+    const delta = (btc != null && open != null) ? btc - open : null;
+    const deltaPct = (delta != null && open) ? (delta / open) * 100 : null;
+    const isUp = delta != null ? delta >= 0 : null;
+    const deltaColor = isUp === true ? C.teal : isUp === false ? C.rose : C.muted;
+
+    const vpin = hqData?.vpin;
+    const vpinRegime = hqData?.vpin_regime ?? hqData?.regime;
+    const clobUpAsk = hqData?.clob_up_ask;
+    const clobDownAsk = hqData?.clob_down_ask;
+    const gammaUp = hqData?.gamma_up;
+    const gammaDown = hqData?.gamma_down;
+
+    const clobImplied = (clobUpAsk != null && clobDownAsk != null)
+      ? (clobUpAsk + clobDownAsk) : null;
+    const clobBalance = clobImplied != null
+      ? Math.abs(clobImplied - 1.0) < 0.02 ? 'Balanced'
+        : clobUpAsk > clobDownAsk ? 'DN bias' : 'UP bias'
+      : null;
+
     return (
-      <div style={{ padding: 20, textAlign: 'center', color: C.muted, fontSize: 11, fontFamily: C.mono }}>
-        No data surface available. Waiting for strategy evaluation...
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{
+          fontSize: 8, color: C.amber, fontFamily: C.mono,
+          padding: '6px 10px', background: 'rgba(245,158,11,0.06)',
+          border: '1px solid rgba(245,158,11,0.15)', borderRadius: 3,
+        }}>
+          Live fallback — strategy_decisions table empty. Showing execution-hq data.
+        </div>
+
+        {(btc != null || vpin != null || clobUpAsk != null) && (
+          <div style={{
+            background: 'rgba(15,23,42,0.5)', border: `1px solid ${C.panelBorder}`,
+            borderRadius: 4, padding: '10px 12px',
+            display: 'flex', flexDirection: 'column', gap: 4,
+          }}>
+            <div style={{
+              fontSize: 7, fontWeight: 700, color: C.teal, letterSpacing: '0.08em',
+              marginBottom: 6, fontFamily: C.mono, borderBottom: `1px solid ${C.panelBorder}`,
+              paddingBottom: 4,
+            }}>
+              LIVE DATA SURFACE
+            </div>
+
+            {btc != null && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', fontFamily: C.mono, fontSize: 10 }}>
+                <span style={{ color: C.text }}>
+                  BTC: <span style={{ fontWeight: 700 }}>
+                    ${Number(btc).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </span>
+                {open != null && (
+                  <span style={{ color: C.muted }}>
+                    Open: ${Number(open).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                )}
+                {delta != null && (
+                  <span style={{ color: deltaColor, fontWeight: 700 }}>
+                    {'\u0394'} {isUp ? '+' : ''}{delta >= 0 ? '$' + delta.toFixed(2) : '-$' + Math.abs(delta).toFixed(2)}
+                    {' '}({isUp ? '+' : ''}{deltaPct.toFixed(2)}%)
+                  </span>
+                )}
+              </div>
+            )}
+
+            {(vpin != null || vpinRegime) && (
+              <div style={{ fontFamily: C.mono, fontSize: 10, color: C.text }}>
+                VPIN: <span style={{ fontWeight: 700, color: vpin > 0.7 ? C.rose : vpin > 0.55 ? C.amber : C.teal }}>
+                  {vpin != null ? Number(vpin).toFixed(3) : '\u2014'}
+                </span>
+                {vpinRegime && (
+                  <span style={{ marginLeft: 8, color: C.purple, fontWeight: 700 }}>| {vpinRegime}</span>
+                )}
+              </div>
+            )}
+
+            {(clobUpAsk != null || clobDownAsk != null) && (
+              <div style={{ fontFamily: C.mono, fontSize: 10, color: C.text }}>
+                CLOB:{' '}
+                {clobUpAsk != null && (
+                  <span>
+                    <span style={{ color: C.teal }}>
+                      {'\u2191'}${Number(clobUpAsk).toFixed(3)}
+                    </span>
+                    {' '}
+                  </span>
+                )}
+                {clobDownAsk != null && (
+                  <span>
+                    <span style={{ color: C.rose }}>
+                      {'\u2193'}${Number(clobDownAsk).toFixed(3)}
+                    </span>
+                    {' '}
+                  </span>
+                )}
+                {clobBalance && <span style={{ color: C.muted }}>{clobBalance}</span>}
+              </div>
+            )}
+
+            {(gammaUp != null || gammaDown != null) && (
+              <div style={{ fontFamily: C.mono, fontSize: 10, color: C.text }}>
+                Gamma:{' '}
+                {gammaUp != null && <span style={{ color: C.teal }}>UP {Number(gammaUp).toFixed(3)}{' '}</span>}
+                {gammaDown != null && <span style={{ color: C.rose }}>DN {Number(gammaDown).toFixed(3)}</span>}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ padding: 16, textAlign: 'center', color: C.muted, fontSize: 11, fontFamily: C.mono }}>
+          Full signal surface will populate once strategy evaluations begin.
+        </div>
       </div>
     );
   }
@@ -384,7 +603,7 @@ function SignalSurfaceTab({ ctx, strategyId }) {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             {sec.fields.map(f => {
-              const raw = ctx[f.key];
+              const raw = enrichedCtx[f.key];
               const formatted = f.fmt ? f.fmt(raw) : fmtNum(raw, 3);
               const hl = isHighlighted(f.key);
               return (
@@ -760,7 +979,7 @@ export default function StrategyCommand() {
     try {
       const [hqRes, decRes] = await Promise.allSettled([
         api('GET', '/v58/execution-hq?limit=200&asset=btc&timeframe=5m'),
-        api('GET', '/v58/strategy-decisions?limit=50'),
+        api('GET', `/v58/strategy-decisions?limit=20`),
       ]);
       if (hqRes.status === 'fulfilled') setHqData(hqRes.value?.data || hqRes.value);
       if (decRes.status === 'fulfilled') {
@@ -825,6 +1044,7 @@ export default function StrategyCommand() {
   }, [decisions, selectedStrategy]);
 
   const latestGateResults = useMemo(() => extractGateResults(latestDecision), [latestDecision]);
+  const latestGateReasons = useMemo(() => extractGateReasons(latestDecision), [latestDecision]);
   const latestCtx = useMemo(() => extractCtx(latestDecision), [latestDecision]);
 
   const currentWindow = hqData?.current_window || hqData?.window || {};
@@ -958,6 +1178,7 @@ export default function StrategyCommand() {
                   const passed = result === true || result === 'pass';
                   const failed = result === false || result === 'fail';
                   const status = passed ? 'pass' : failed ? 'fail' : 'skip';
+                  const reason = latestGateReasons[gName];
                   return (
                     <div key={gName} style={{
                       display: 'flex', alignItems: 'center', gap: 6,
@@ -970,7 +1191,7 @@ export default function StrategyCommand() {
                       }}>
                         G{i + 1}
                       </span>
-                      <GateChip name={gName} status={status} />
+                      <GateChip name={gName} status={status} reason={reason} />
                     </div>
                   );
                 })}
@@ -1007,6 +1228,9 @@ export default function StrategyCommand() {
         <div style={{
           display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden',
         }}>
+          {/* Live BTC price — always visible */}
+          <LiveBtcBanner hqData={hqData} />
+
           <div style={{
             display: 'flex', gap: 0, borderBottom: `1px solid ${C.panelBorder}`,
             background: C.header, flexShrink: 0,
@@ -1032,7 +1256,7 @@ export default function StrategyCommand() {
 
           <div className="cmd-scroll" style={{ flex: 1, padding: 12, overflowY: 'auto' }}>
             {centerTab === 'signal' && (
-              <SignalSurfaceTab ctx={latestCtx} strategyId={selectedStrategy} />
+              <SignalSurfaceTab ctx={latestCtx} strategyId={selectedStrategy} hqData={hqData} />
             )}
             {centerTab === 'gates' && (
               <GateDetailTab
@@ -1173,8 +1397,13 @@ export default function StrategyCommand() {
                 );
               })}
               {decisions.length === 0 && (
-                <div style={{ fontSize: 9, color: C.dim, padding: 8, textAlign: 'center' }}>
-                  Awaiting evaluations...
+                <div style={{ fontSize: 9, color: C.dim, padding: 8, textAlign: 'center', fontFamily: C.mono }}>
+                  <div style={{
+                    display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
+                    background: C.teal, marginRight: 6,
+                    animation: 'cmd-pulse 1.5s infinite', verticalAlign: 'middle',
+                  }} />
+                  Live — polling /v58/strategy-decisions every 5s
                 </div>
               )}
             </div>
