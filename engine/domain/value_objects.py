@@ -267,6 +267,18 @@ class ResolutionResult:
     match_method: Optional[str] = None  # "exact" | "prefix" | "cost_fallback"
 
 
+@dataclass(frozen=True)
+class ReconcileResult:
+    """Aggregate result from one ReconcilePositionsUseCase.execute() call.
+
+    Produced by ReconcilePositionsUseCase.execute().
+    """
+    live_resolved: int    # live positions resolved via CLOB API
+    paper_resolved: int   # paper trades resolved via oracle
+    paper_skipped: int    # paper trades skipped (window not resolved yet)
+    errors: int           # exceptions caught during resolution
+
+
 # ---------------------------------------------------------------------------
 # Risk / wallet types (consumed by PublishHeartbeatUseCase)
 # ---------------------------------------------------------------------------

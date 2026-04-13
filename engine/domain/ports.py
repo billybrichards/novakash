@@ -364,6 +364,14 @@ class WindowStateRepository(abc.ABC):
         """
         ...
 
+    @abc.abstractmethod
+    async def get_actual_direction(self, key: WindowKey) -> Optional[str]:
+        """Return ``'UP'`` or ``'DOWN'`` from ``window_snapshots.actual_direction``.
+
+        Returns ``None`` if the window hasn't resolved yet or is not in the DB.
+        """
+        ...
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 4.8  ConfigPort  (deferred -- tracked as CFG-01)
@@ -446,6 +454,22 @@ class TradeRepository(abc.ABC):
         """UPDATE trades SET outcome, pnl_usd, resolved_at, status WHERE id.
 
         Idempotent -- no-op if the trade already has an outcome.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def find_unresolved_paper_trades(
+        self, min_age_seconds: int = 360
+    ) -> list[dict]:
+        """Return paper trades with outcome IS NULL older than min_age_seconds.
+
+        Paper trades are identified by ``execution_mode = 'paper'``.
+        The returned dicts contain: ``id``, ``order_id``, ``direction``,
+        ``stake_usd``, ``entry_price``, ``asset``, ``window_ts``,
+        ``execution_mode``, ``metadata``.
+
+        ``window_ts`` is extracted from ``metadata->>'window_ts'`` — it is a
+        string in the returned dict; callers must cast to ``int``.
         """
         ...
 
