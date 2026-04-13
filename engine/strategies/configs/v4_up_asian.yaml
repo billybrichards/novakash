@@ -1,0 +1,20 @@
+name: v4_up_asian
+version: "2.0.0"
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+gates:
+  - type: timing
+    params: { min_offset: 90, max_offset: 150 }
+  - type: direction
+    params: { direction: UP }
+  - type: confidence
+    params: { min_dist: 0.10, max_dist: 0.20 }
+  - type: session_hours
+    params: { hours_utc: [23, 0, 1, 2] }
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.05

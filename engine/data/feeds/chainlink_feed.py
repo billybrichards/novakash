@@ -88,6 +88,9 @@ class ChainlinkFeed:
         self._last_message_at: Optional[datetime] = None
         self._w3 = None
         self._contracts: dict = {}
+        # In-memory cache: updated on EVERY poll tick. Keyed by asset name.
+        # Read by DataSurfaceManager for zero-I/O delta calculation.
+        self.latest_prices: dict[str, float] = {}
 
     # ─── Public Status ────────────────────────────────────────────────────────
 
@@ -165,6 +168,9 @@ class ChainlinkFeed:
                 continue
             if result is not None:
                 rows.append(result)
+                # Update in-memory cache on every poll tick
+                # result is (asset, price, round_id, updated_at)
+                self.latest_prices[result[0]] = result[1]
 
         log.debug("chainlink_feed.poll_complete", total_assets=len(self._contracts), rows=len(rows))
         if rows:

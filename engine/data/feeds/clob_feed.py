@@ -42,6 +42,9 @@ class CLOBFeed:
         self._feed = polymarket_feed
         self._running = False
         self._connected = False
+        # In-memory cache: updated on EVERY poll tick.
+        # Read by DataSurfaceManager for zero-I/O CLOB price access.
+        self.latest_clob: dict = {}
 
     async def start(self) -> None:
         """Begin polling loop."""
@@ -94,6 +97,15 @@ class CLOBFeed:
             mid = None
             if up_best_ask and down_best_ask:
                 mid = round((up_best_ask + (1.0 - down_best_ask)) / 2, 4)
+
+            # Update in-memory cache on every poll tick
+            self.latest_clob = {
+                "clob_up_bid": up_best_bid,
+                "clob_up_ask": up_best_ask,
+                "clob_down_bid": down_best_bid,
+                "clob_down_ask": down_best_ask,
+                "clob_implied_up": mid,
+            }
 
             log.info(
                 "clob_feed.prices",

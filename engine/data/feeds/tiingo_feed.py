@@ -61,6 +61,9 @@ class TiingoFeed:
         self._last_message_at: Optional[datetime] = None
         self._session = None
         self._tickers_param = ",".join(TICKERS.values())
+        # In-memory cache: updated on EVERY poll tick. Keyed by asset name.
+        # Read by DataSurfaceManager for zero-I/O delta calculation.
+        self.latest_prices: dict[str, float] = {}
 
     # ─── Public Status ────────────────────────────────────────────────────────
 
@@ -161,6 +164,10 @@ class TiingoFeed:
                 bid=f"{bid_price} @ {bid_exchange}",
                 ask=f"{ask_price} @ {ask_exchange}",
             )
+
+            # Update in-memory cache on every poll tick
+            if last_price is not None:
+                self.latest_prices[asset] = last_price
 
             rows.append((
                 asset,
