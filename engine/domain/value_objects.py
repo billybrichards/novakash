@@ -277,6 +277,7 @@ class ReconcileResult:
     paper_resolved: int   # paper trades resolved via oracle
     paper_skipped: int    # paper trades skipped (window not resolved yet)
     errors: int           # exceptions caught during resolution
+    windows_labeled: int = 0  # windows stamped with actual_direction for ML training
 
 
 # ---------------------------------------------------------------------------

@@ -869,3 +869,41 @@ class PgWindowRepository(WindowStateRepository):
                 error=str(exc)[:100],
             )
             return None
+
+    async def label_resolved_windows(self, min_age_seconds: int = 360) -> int:
+        """Bulk-stamp actual_direction on windows with close_price but no label.
+
+        Implements WindowStateRepository.label_resolved_windows.
+        Polymarket 5-min UP/DOWN resolves via Chainlink oracle:
+        close_price > open_price → UP, else DOWN.
+        """
+        if not self._pool:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """UPDATE window_snapshots
+                       SET actual_direction = CASE
+                           WHEN close_price > open_price THEN 'UP'
+                           ELSE 'DOWN'
+                       END
+                       WHERE actual_direction IS NULL
+                         AND close_price IS NOT NULL
+                         AND open_price IS NOT NULL
+                         AND close_price != open_price
+                         AND window_ts < EXTRACT(EPOCH FROM NOW())::bigint - $1""",
+                    min_age_seconds,
+                )
+                count = int(result.split()[-1]) if result else 0
+                if count > 0:
+                    log.info(
+                        "pg_window_repo.labeled_windows",
+                        count=count,
+                    )
+                return count
+        except Exception as exc:
+            log.warning(
+                "pg_window_repo.label_resolved_windows_failed",
+                error=str(exc)[:100],
+            )
+            return 0

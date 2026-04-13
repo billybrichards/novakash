@@ -107,11 +107,23 @@ class ReconcilePositionsUseCase:
 
         paper_resolved, paper_skipped, paper_errors = await self._resolve_paper_batch()
 
+        # Shadow-label pass: stamp actual_direction on ALL resolved windows
+        # (not just traded ones) so ML training has labels for every window.
+        windows_labeled = 0
+        try:
+            windows_labeled = await self._window_state.label_resolved_windows()
+        except Exception as exc:
+            logger.warning(
+                "reconciler.label_windows_error",
+                extra={"error": str(exc)[:100]},
+            )
+
         return ReconcileResult(
             live_resolved=live_resolved,
             paper_resolved=paper_resolved,
             paper_skipped=paper_skipped,
             errors=errors + paper_errors,
+            windows_labeled=windows_labeled,
         )
 
     async def _resolve_paper_batch(self) -> tuple[int, int, int]:
