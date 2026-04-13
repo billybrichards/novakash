@@ -485,7 +485,7 @@ class Orchestrator:
                         from use_cases.execute_trade import ExecuteTradeUseCase
                         from adapters.execution.paper_executor import PaperExecutor
                         from adapters.execution.fak_ladder_executor import FAKLadderExecutor
-                        from adapters.execution.trade_recorder import TradeRecorder
+                        from adapters.execution.trade_recorder import DBTradeRecorder as TradeRecorder
 
                         _paper = os.environ.get("PAPER_MODE", "true").lower() == "true"
                         _executor = PaperExecutor() if _paper else FAKLadderExecutor(
@@ -496,12 +496,16 @@ class Orchestrator:
                             order_manager=self._order_manager,
                         ) if self._db else None
 
+                        from adapters.clock.system_clock import SystemClock
+
                         _execute_uc = ExecuteTradeUseCase(
+                            polymarket=self._poly_client,
                             order_executor=_executor,
-                            trade_recorder=_recorder,
-                            window_state=getattr(self, "_window_state_repo", None),
                             risk_manager=self._risk_manager,
+                            window_state=getattr(self, "_window_state_repo", None),
                             alerter=self._alerter,
+                            trade_recorder=_recorder,
+                            clock=SystemClock(),
                             paper_mode=_paper,
                         )
                         log.info("orchestrator.execute_trade_uc_wired", paper_mode=_paper)
