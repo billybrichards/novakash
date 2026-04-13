@@ -140,17 +140,16 @@ jobs:
             echo "ssh key written as raw PEM"
           fi
           chmod 600 ~/.ssh/deploy_key
-          echo "15.223.247.178 ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKhKZhAevqXVQs1lH1C8X6YH8C8sXJvXW4TJ3b6V5j3R5M7Z0N8K5m2X8P7R9T6V5X3Y8Z5" >> ~/.ssh/known_hosts
+          echo "$HOST ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKhKZhAevqXVQs1lH1C8X6YH8C8sXJvXW4TJ3b6V5j3R5M7Z0N8K5m2X8P7R9T6V5X3Y8Z5" >> ~/.ssh/known_hosts
 
       - name: Ensure host directories exist
         run: |
-          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'set -e; sudo mkdir -p /home/novakash/novakash/engine /home/novakash/novakash/scripts; sudo chown -R novakash:novakash /home/novakash/novakash'
+          ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'set -e; mkdir -p /home/novakash/novakash/engine /home/novakash/novakash/scripts'
 
       - name: Rsync engine code to host
         run: |
           rsync -avz --delete \
             -e "ssh -i ~/.ssh/deploy_key" \
-            --rsync-path="sudo rsync" \
             --exclude '.git' \
             --exclude '__pycache__' \
             --exclude '.cache' \
@@ -159,87 +158,78 @@ jobs:
             --exclude '*.pyc' \
             --exclude '*.log' \
             --exclude '.DS_Store' \
-            engine/ ubuntu@"$HOST":/home/novakash/novakash/engine/
+            engine/ novakash@"$HOST":/home/novakash/novakash/engine/
 
       - name: Rsync scripts directory
         run: |
           rsync -avz --delete \
             -e "ssh -i ~/.ssh/deploy_key" \
-            --rsync-path="sudo rsync" \
             --exclude '__pycache__' \
             --exclude '*.pyc' \
-            scripts/ ubuntu@"$HOST":/home/novakash/novakash/scripts/
-          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'sudo chmod +x /home/novakash/novakash/scripts/restart_engine.sh; sudo chown -R novakash:novakash /home/novakash/novakash/scripts'
+            scripts/ novakash@"$HOST":/home/novakash/novakash/scripts/
+          ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'chmod +x /home/novakash/novakash/scripts/restart_engine.sh'
 
       - name: Reset host .env and prune old backups
         run: |
-          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" bash -s <<'REMOTE'
+          ssh -i ~/.ssh/deploy_key novakash@"$HOST" bash -s <<'REMOTE'
           set -e
           ENV_FILE=/home/novakash/novakash/engine/.env
-          sudo -u novakash touch "$ENV_FILE"
-          sudo chmod 600 "$ENV_FILE"
-          sudo chown novakash:novakash "$ENV_FILE"
-          sudo -u novakash cp "$ENV_FILE" "${ENV_FILE}.bak.$(date +%s)"
-          sudo -u novakash bash -c 'ls -1t /home/novakash/novakash/engine/.env.bak.* 2>/dev/null | tail -n +6 | xargs -r rm -f' || true
+          touch "$ENV_FILE"
+          chmod 600 "$ENV_FILE"
+          cp "$ENV_FILE" "${ENV_FILE}.bak.$(date +%s)"
+          bash -c 'ls -1t /home/novakash/novakash/engine/.env.bak.* 2>/dev/null | tail -n +6 | xargs -r rm -f' || true
           REMOTE
 
       - name: Template .env from GitHub Actions secrets
-        env:
-          SET_ENV_SCRIPT: |
-            set -e
-            ENV_FILE=/home/novakash/novakash/engine/.env
-            key="$1"
-            val="$2"
-            if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
-              sudo -u novakash sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
-            else
-              echo "${key}=${val}" | sudo -u novakash tee -a "$ENV_FILE" >/dev/null
-            fi
         run: |
-          # Helper: invoke the remote set_env script with a single key/val pair.
-          # We stream the script via stdin and pass key/val as positional args
-          # so the secret never appears on the remote command line or in ps.
-          set_env() {
-            local key="$1" val="$2"
-            ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" "sudo bash -s -- '$key' '$val'" <<< "$SET_ENV_SCRIPT"
-          }
-          set_env DATABASE_URL "$DEPLOY_DATABASE_URL"
-          set_env COINGLASS_API_KEY "$DEPLOY_COINGLASS_API_KEY"
-          set_env BINANCE_API_KEY "$DEPLOY_BINANCE_API_KEY"
-          set_env BINANCE_API_SECRET "$DEPLOY_BINANCE_API_SECRET"
-          set_env POLY_API_KEY "$DEPLOY_POLY_API_KEY"
-          set_env POLY_API_SECRET "$DEPLOY_POLY_API_SECRET"
-          set_env POLY_API_PASSPHRASE "$DEPLOY_POLY_API_PASSPHRASE"
-          set_env POLY_PRIVATE_KEY "$DEPLOY_POLY_PRIVATE_KEY"
-          set_env POLY_FUNDER_ADDRESS "$DEPLOY_POLY_FUNDER_ADDRESS"
-          set_env POLY_SIGNATURE_TYPE "$DEPLOY_POLY_SIGNATURE_TYPE"
-          set_env POLY_BTC_TOKEN_IDS "$DEPLOY_POLY_BTC_TOKEN_IDS"
-          set_env TELEGRAM_BOT_TOKEN "$DEPLOY_TELEGRAM_BOT_TOKEN"
-          set_env TELEGRAM_CHAT_ID "$DEPLOY_TELEGRAM_CHAT_ID"
-
-          # ── Gate threshold overrides (v10.5 tuning) ──
-          # Lower delta floor for low-vol markets: ungated signal accuracy
-          # is 90% (9W/1L) but delta_magnitude gate blocks at 0.005% when
-          # current delta is ~0.0006%. Drop to 0.001% to let trades through.
-          set_env FIVE_MIN_MIN_DELTA_PCT "0.0010"
-          set_env V10_MIN_DELTA_PCT "0.001"
-
-          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'sudo wc -l /home/novakash/novakash/engine/.env'
+          # Build .env file from GitHub secrets and upload
+          {
+            echo "DATABASE_URL=$DEPLOY_DATABASE_URL"
+            echo "COINGLASS_API_KEY=$DEPLOY_COINGLASS_API_KEY"
+            echo "BINANCE_API_KEY=$DEPLOY_BINANCE_API_KEY"
+            echo "BINANCE_API_SECRET=$DEPLOY_BINANCE_API_SECRET"
+            echo "POLY_API_KEY=$DEPLOY_POLY_API_KEY"
+            echo "POLY_API_SECRET=$DEPLOY_POLY_API_SECRET"
+            echo "POLY_API_PASSPHRASE=$DEPLOY_POLY_API_PASSPHRASE"
+            echo "POLY_PRIVATE_KEY=$DEPLOY_POLY_PRIVATE_KEY"
+            echo "POLY_FUNDER_ADDRESS=$DEPLOY_POLY_FUNDER_ADDRESS"
+            echo "POLY_SIGNATURE_TYPE=$DEPLOY_POLY_SIGNATURE_TYPE"
+            echo "POLY_BTC_TOKEN_IDS=$DEPLOY_POLY_BTC_TOKEN_IDS"
+            echo "TELEGRAM_BOT_TOKEN=$DEPLOY_TELEGRAM_BOT_TOKEN"
+            echo "TELEGRAM_CHAT_ID=$DEPLOY_TELEGRAM_CHAT_ID"
+            echo "FIVE_MIN_MIN_DELTA_PCT=0.0010"
+            echo "V10_MIN_DELTA_PCT=0.001"
+          } > .env.new
+          ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'cat > /home/novakash/novakash/engine/.env' < .env.new
+          ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'wc -l /home/novakash/novakash/engine/.env'
+        env:
+          DEPLOY_DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DEPLOY_COINGLASS_API_KEY: ${{ secrets.COINGLASS_API_KEY }}
+          DEPLOY_BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+          DEPLOY_BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+          DEPLOY_POLY_API_KEY: ${{ secrets.POLY_API_KEY }}
+          DEPLOY_POLY_API_SECRET: ${{ secrets.POLY_API_SECRET }}
+          DEPLOY_POLY_API_PASSPHRASE: ${{ secrets.POLY_API_PASSPHRASE }}
+          DEPLOY_POLY_PRIVATE_KEY: ${{ secrets.POLY_PRIVATE_KEY }}
+          DEPLOY_POLY_FUNDER_ADDRESS: ${{ secrets.POLY_FUNDER_ADDRESS }}
+          DEPLOY_POLY_SIGNATURE_TYPE: ${{ secrets.POLY_SIGNATURE_TYPE }}
+          DEPLOY_POLY_BTC_TOKEN_IDS: ${{ secrets.POLY_BTC_TOKEN_IDS }}
+          DEPLOY_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          DEPLOY_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
       - name: Restart engine via scripts/restart_engine.sh
         run: |
           # Kill existing process and restart as novakash user
-          timeout 90 ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" \
-            'sudo pkill -9 -f "python3 main.py" || true && sleep 3 && \
-             sudo -u novakash bash -c "cd /home/novakash/novakash/engine && \
-             nohup python3 main.py >> /home/novakash/engine.log 2>&1 </dev/null & disown"'
+          timeout 90 ssh -i ~/.ssh/deploy_key novakash@"$HOST" \
+            'pkill -9 -f "python3 main.py" || true && sleep 3 && \
+             nohup python3 main.py >> /home/novakash/engine.log 2>&1 </dev/null & disown'
 
       - name: Wait for engine startup
         run: sleep 45
 
       - name: Post-deploy health probe — process count
         run: |
-          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" bash -s <<'REMOTE'
+          ssh -i ~/.ssh/deploy_key novakash@"$HOST" bash -s <<'REMOTE'
           set -e
           count=$(pgrep -f "python3 main.py" | wc -l | tr -d " ")
           echo "engine process count: $count"
@@ -272,14 +262,14 @@ jobs:
         # regresses, so any non-zero count in a 10k-line scan is a loud
         # failure signal and the deploy should fail.
         run: |
-          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" bash -s <<'REMOTE'
+          ssh -i ~/.ssh/deploy_key novakash@"$HOST" bash -s <<'REMOTE'
           set -e
           LOG=/home/novakash/engine.log
           if [ ! -f "$LOG" ]; then
             echo "::error::$LOG not found -- engine did not start?"
             exit 1
           fi
-          recent=$(sudo tail -n 10000 "$LOG" 2>/dev/null || echo "")
+          recent=$(tail -n 10000 "$LOG" 2>/dev/null || echo "")
           if [ -z "$recent" ]; then
             echo "::error::could not read recent engine.log contents"
             exit 1
@@ -316,4 +306,4 @@ jobs:
 
       - name: Tail recent engine log (success diagnostics)
         run: |
-          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'sudo tail -30 /home/novakash/engine.log 2>/dev/null' || true
+          ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'tail -30 /home/novakash/engine.log 2>/dev/null' || true
