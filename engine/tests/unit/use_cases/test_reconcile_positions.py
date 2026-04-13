@@ -288,3 +288,181 @@ class TestFindUnresolvedPaperTrades:
         repo = PgTradeRepository(pool=None)
         results = await repo.find_unresolved_paper_trades()
         assert results == []
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers for TestResolvePaperBatch / TestExecute
+# ---------------------------------------------------------------------------
+
+def _make_trade_repo(paper_trades=None):
+    repo = AsyncMock()
+    repo.find_unresolved_paper_trades = AsyncMock(return_value=paper_trades or [])
+    repo.resolve_trade = AsyncMock(return_value=None)
+    # stubs for live resolution path
+    repo.find_by_token_id = AsyncMock(return_value=None)
+    repo.find_by_token_prefix = AsyncMock(return_value=None)
+    repo.find_by_approximate_cost = AsyncMock(return_value=None)
+    return repo
+
+
+def _make_window_repo(actual_direction=None):
+    repo = AsyncMock()
+    repo.get_actual_direction = AsyncMock(return_value=actual_direction)
+    repo.mark_resolved = AsyncMock(return_value=None)
+    return repo
+
+
+def _make_alerts():
+    alerts = AsyncMock()
+    alerts.send_system_alert = AsyncMock(return_value=None)
+    return alerts
+
+
+def _make_clock():
+    clock = MagicMock()
+    clock.now.return_value = 1700000100.0
+    return clock
+
+
+# ---------------------------------------------------------------------------
+# ReconcilePositionsUseCase._resolve_paper_batch
+# ---------------------------------------------------------------------------
+
+class TestResolvePaperBatch:
+
+    def _make_uc(self, paper_trades=None, actual_direction=None):
+        from use_cases.reconcile_positions import ReconcilePositionsUseCase
+        trade_repo = _make_trade_repo(paper_trades=paper_trades)
+        window_repo = _make_window_repo(actual_direction=actual_direction)
+        return (
+            ReconcilePositionsUseCase(
+                trade_repo=trade_repo,
+                window_state=window_repo,
+                alerts=_make_alerts(),
+                clock=_make_clock(),
+            ),
+            trade_repo,
+            window_repo,
+        )
+
+    def _paper_trade(self, direction="UP", stake=10.0, entry=0.65, window_ts="1776109200"):
+        return {
+            "id": "t001", "order_id": "5min-1234",
+            "direction": direction, "stake_usd": stake,
+            "entry_price": entry, "execution_mode": "paper",
+            "metadata": f'{{"window_ts": "{window_ts}"}}',
+            "asset": "BTC", "window_ts": window_ts, "created_at": None,
+        }
+
+    def test_win_when_direction_matches(self):
+        trade = self._paper_trade(direction="UP")
+        uc, trade_repo, _ = self._make_uc(
+            paper_trades=[trade], actual_direction="UP"
+        )
+        resolved, skipped = asyncio.run(uc._resolve_paper_batch())
+        assert resolved == 1
+        assert skipped == 0
+        trade_repo.resolve_trade.assert_awaited_once()
+        call_kwargs = trade_repo.resolve_trade.call_args.kwargs
+        assert call_kwargs["outcome"] == "WIN"
+        assert call_kwargs["status"] == "RESOLVED_WIN"
+
+    def test_loss_when_direction_mismatches(self):
+        trade = self._paper_trade(direction="UP")
+        uc, trade_repo, _ = self._make_uc(
+            paper_trades=[trade], actual_direction="DOWN"
+        )
+        resolved, skipped = asyncio.run(uc._resolve_paper_batch())
+        assert resolved == 1
+        call_kwargs = trade_repo.resolve_trade.call_args.kwargs
+        assert call_kwargs["outcome"] == "LOSS"
+        assert call_kwargs["pnl_usd"] == round(-10.0, 4)
+
+    def test_skips_when_oracle_not_resolved(self):
+        trade = self._paper_trade()
+        uc, trade_repo, _ = self._make_uc(
+            paper_trades=[trade], actual_direction=None
+        )
+        resolved, skipped = asyncio.run(uc._resolve_paper_batch())
+        assert resolved == 0
+        assert skipped == 1
+        trade_repo.resolve_trade.assert_not_awaited()
+
+    def test_skips_when_window_ts_missing(self):
+        trade = self._paper_trade()
+        trade["window_ts"] = None  # no window_ts
+        uc, trade_repo, _ = self._make_uc(paper_trades=[trade])
+        resolved, skipped = asyncio.run(uc._resolve_paper_batch())
+        assert resolved == 0
+        assert skipped == 1
+
+    def test_continues_after_individual_error(self):
+        trade1 = self._paper_trade()
+        trade2 = {**self._paper_trade(), "id": "t002"}
+        uc, trade_repo, window_repo = self._make_uc(
+            paper_trades=[trade1, trade2], actual_direction="UP"
+        )
+        # Make first resolve fail
+        trade_repo.resolve_trade.side_effect = [Exception("DB down"), None]
+        resolved, skipped = asyncio.run(uc._resolve_paper_batch())
+        assert resolved == 1  # second trade resolved
+        assert skipped == 0
+
+    def test_pnl_calculation_win(self):
+        # stake=10, entry=0.5 → shares=20, pnl=20-10=10
+        trade = self._paper_trade(direction="UP", stake=10.0, entry=0.5)
+        uc, trade_repo, _ = self._make_uc(
+            paper_trades=[trade], actual_direction="UP"
+        )
+        asyncio.run(uc._resolve_paper_batch())
+        call_kwargs = trade_repo.resolve_trade.call_args.kwargs
+        assert call_kwargs["pnl_usd"] == round(10.0, 4)
+
+    def test_pnl_calculation_loss(self):
+        # stake=10, loss → pnl=-10
+        trade = self._paper_trade(direction="UP", stake=10.0, entry=0.5)
+        uc, trade_repo, _ = self._make_uc(
+            paper_trades=[trade], actual_direction="DOWN"
+        )
+        asyncio.run(uc._resolve_paper_batch())
+        call_kwargs = trade_repo.resolve_trade.call_args.kwargs
+        assert call_kwargs["pnl_usd"] == round(-10.0, 4)
+
+
+# ---------------------------------------------------------------------------
+# ReconcilePositionsUseCase.execute()
+# ---------------------------------------------------------------------------
+
+class TestExecute:
+
+    def _make_uc(self, paper_trades=None, actual_direction="UP"):
+        from use_cases.reconcile_positions import ReconcilePositionsUseCase
+        trade_repo = _make_trade_repo(paper_trades=paper_trades or [])
+        window_repo = _make_window_repo(actual_direction=actual_direction)
+        uc = ReconcilePositionsUseCase(
+            trade_repo=trade_repo,
+            window_state=window_repo,
+            alerts=_make_alerts(),
+            clock=_make_clock(),
+        )
+        return uc, trade_repo
+
+    def test_empty_positions_still_runs_paper_batch(self):
+        from domain.value_objects import ReconcileResult
+        paper_trade = {
+            "id": "t001", "order_id": "5min-x", "direction": "DOWN",
+            "stake_usd": 5.0, "entry_price": 0.6, "execution_mode": "paper",
+            "metadata": '{"window_ts": "1776109200"}',
+            "asset": "BTC", "window_ts": "1776109200", "created_at": None,
+        }
+        uc, trade_repo = self._make_uc(paper_trades=[paper_trade], actual_direction="DOWN")
+        result = asyncio.run(uc.execute([]))
+        assert isinstance(result, ReconcileResult)
+        assert result.live_resolved == 0
+        assert result.paper_resolved == 1
+
+    def test_returns_reconcile_result_type(self):
+        from domain.value_objects import ReconcileResult
+        uc, _ = self._make_uc()
+        result = asyncio.run(uc.execute([]))
+        assert isinstance(result, ReconcileResult)
