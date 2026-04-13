@@ -453,6 +453,41 @@ class Orchestrator:
         else:
             log.info("orchestrator.strategy_port_disabled")
 
+        # ── Strategy Engine v2: Config-first registry (behind feature flag) ──
+        # When enabled, runs the new YAML-config-based registry in parallel
+        # with the existing EvaluateStrategiesUseCase for decision comparison.
+        self._strategy_registry = None
+        self._use_strategy_registry = os.environ.get(
+            "ENGINE_USE_STRATEGY_REGISTRY", "false"
+        ).lower() == "true"
+        if self._use_strategy_registry:
+            try:
+                from strategies.data_surface import DataSurfaceManager
+                from strategies.registry import StrategyRegistry
+
+                config_dir = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), "configs"
+                )
+                self._data_surface_mgr = DataSurfaceManager(
+                    v4_base_url=os.environ.get("TIMESFM_URL", "http://localhost:8001"),
+                    tiingo_feed=getattr(self, "_tiingo_feed", None),
+                    chainlink_feed=getattr(self, "_chainlink_feed", None),
+                    clob_feed=getattr(self, "_clob_feed", None),
+                    vpin_calculator=self._vpin_calc,
+                    cg_feeds=self._cg_feeds,
+                    twap_tracker=self._twap_tracker,
+                    binance_state=self._aggregator if hasattr(self, "_aggregator") else None,
+                )
+                self._strategy_registry = StrategyRegistry(config_dir, self._data_surface_mgr)
+                self._strategy_registry.load_all()
+                log.info(
+                    "orchestrator.strategy_registry_enabled",
+                    strategies=self._strategy_registry.strategy_names,
+                )
+            except Exception as exc:
+                log.error("orchestrator.strategy_registry_init_error", error=str(exc)[:200])
+                self._strategy_registry = None
+
         # TickRecorder is not yet available at __init__ (pool not connected)
         # It is injected in start() after pool is live.
 
@@ -990,6 +1025,14 @@ class Orchestrator:
             except NotImplementedError:
                 # Windows doesn't support add_signal_handler
                 pass
+
+        # Start Strategy Engine v2 DataSurfaceManager background loop
+        if self._strategy_registry and hasattr(self, "_data_surface_mgr"):
+            try:
+                await self._data_surface_mgr.start()
+                log.info("orchestrator.data_surface_manager_started")
+            except Exception as exc:
+                log.warning("orchestrator.data_surface_start_error", error=str(exc)[:200])
 
         await self._alerter.send_system_alert("Engine started", level="info")
         log.info("orchestrator.started", tasks=len(self._tasks))
@@ -1589,6 +1632,22 @@ class Orchestrator:
                 # BTC-only: evaluate immediately for fastest FOK execution.
                 try:
                     state = await self._aggregator.get_state()
+
+                    # Strategy Engine v2: parallel evaluation for comparison
+                    if self._strategy_registry:
+                        try:
+                            v2_decisions = await self._strategy_registry.evaluate_all(window, state)
+                            for d in v2_decisions:
+                                log.info(
+                                    "strategy_registry_v2.decision",
+                                    strategy=d.strategy_id,
+                                    action=d.action,
+                                    direction=d.direction,
+                                    skip_reason=d.skip_reason,
+                                )
+                        except Exception as exc:
+                            log.warning("strategy_registry_v2.eval_error", error=str(exc)[:200])
+
                     if self._use_strategy_port and self._evaluate_strategies_uc:
                         # SP-04: Multi-strategy path
                         result = await self._evaluate_strategies_uc.execute(window, state)
