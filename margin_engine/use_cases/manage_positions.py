@@ -14,11 +14,7 @@ Two phases of PR B layer on top of the PR #10 price/time exit logic:
    our position's side, exit pre-emptively — the cascade is about to
    reverse and take our profit with it.
 
-3. **Partial take-profit**. When position is at 75% of TP or at 50% of TP
-   with weakening signals, close 50% of position to lock in gains while
-   letting runner continue.
-
-4. **Re-prediction continuation at is_expired()**. Instead of hard-exiting
+3. **Re-prediction continuation at is_expired()**. Instead of hard-exiting
    on MAX_HOLD_TIME, re-walk the entry gate stack using the cached v4
    snapshot. If all gates still pass, reset hold_clock_anchor to now and
    let the position continue into the next window. Otherwise exit with
@@ -26,7 +22,7 @@ Two phases of PR B layer on top of the PR #10 price/time exit logic:
    trade (probability flip vs regime deterioration vs macro flip vs
    consensus failure vs stale-data safety).
 
-5. **Legacy v2 fallback**. When v4 snapshot is None (upstream hiccup,
+4. **Legacy v2 fallback**. When v4 snapshot is None (upstream hiccup,
    engine not running in v4 mode), fall back to the simpler force_refresh
    continuation on ProbabilityHttpAdapter. If even that fails, exit
    MAX_HOLD_TIME — the original PR #10 behaviour, fully recoverable.
@@ -34,18 +30,16 @@ Two phases of PR B layer on top of the PR #10 price/time exit logic:
 Exit precedence (evaluated in order, first match wins):
   1. STOP_LOSS                   (price-based, unchanged)
   2. TAKE_PROFIT                 (price-based, unchanged)
-  3. PARTIAL_TAKE_PROFIT         (NEW: fee-aware, signal-aware)
-  4. EVENT_GUARD                 (new, v4-aware)
-  5. CASCADE_EXHAUSTED           (new, v4-aware)
-  6. is_expired → _check_continuation:
-        ├─ v4 available    → _continuation_v4 (6 gates)
-        │                     ├─ all pass → extend hold clock, return None
-        │                     └─ any fail → specific reason code
-        └─ v4 unavailable  → _continuation_legacy_v2 (force_refresh + same-side check)
-                              ├─ pass → extend hold clock
-                              └─ fail → MAX_HOLD_TIME or PROBABILITY_REVERSAL
+  3. EVENT_GUARD                 (new, v4-aware)
+  4. CASCADE_EXHAUSTED           (new, v4-aware)
+  5. is_expired → _check_continuation:
+       ├─ v4 available    → _continuation_v4 (6 gates)
+       │                     ├─ all pass → extend hold clock, return None
+       │                     └─ any fail → specific reason code
+       └─ v4 unavailable  → _continuation_legacy_v2 (force_refresh + same-side check)
+                             ├─ pass → extend hold clock
+                             └─ fail → MAX_HOLD_TIME or PROBABILITY_REVERSAL
 """
-
 from __future__ import annotations
 
 import logging
@@ -69,15 +63,6 @@ from margin_engine.domain.value_objects import (
     StopLevel,
     TradeSide,
     V4Snapshot,
-)
-from margin_engine.services.fee_aware_continuation import (
-    fee_aware_continuation_decision,
-    ContinuationDecision,
-    calculate_fee_adjusted_pnl,
-)
-from margin_engine.services.continuation_alignment import (
-    check_continuation_alignment,
-    AlignmentResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -111,7 +96,7 @@ class ManagePositionsUseCase:
         v4_macro_mode: str = "advisory",
         v4_macro_hard_veto_confidence_floor: int = 80,
         # ── PR #10 ──
-        trailing_stop_pct: float = 0.003,  # 0.3%, matched to 0.6% SL
+        trailing_stop_pct: float = 0.003,   # 0.3%, matched to 0.6% SL
     ) -> None:
         self._exchange = exchange
         self._portfolio = portfolio
@@ -133,35 +118,6 @@ class ManagePositionsUseCase:
         self._macro_mode = v4_macro_mode
         self._macro_hard_veto_confidence_floor = v4_macro_hard_veto_confidence_floor
         self._trailing_pct = trailing_stop_pct
-        # Fee-aware continuation fields
-        self._fee_aware_enabled = getattr(
-            self._portfolio, "fee_aware_continuation_enabled", False
-        )
-        self._partial_tp_threshold = getattr(
-            self._portfolio, "fee_aware_partial_tp_threshold", 0.5
-        )
-        self._partial_tp_size = getattr(
-            self._portfolio, "fee_aware_partial_tp_size", 0.5
-        )
-        self._alignment_enabled = getattr(
-            self._portfolio, "continuation_alignment_enabled", False
-        )
-        self._alignment_min_timescales = getattr(
-            self._portfolio, "continuation_min_timescales", 2
-        )
-        self._hold_extension_max = getattr(
-            self._portfolio, "continuation_hold_extension_max", 2.0
-        )
-        self._continuation_conviction_min = getattr(
-            self._portfolio, "continuation_conviction_min", 0.10
-        )
-        self._continuation_regime_bonus = getattr(
-            self._portfolio, "continuation_regime_bonus", True
-        )
-        self._max_partial_closes = getattr(self._portfolio, "max_partial_closes", 3)
-        self._partial_close_cooldown_s = getattr(
-            self._portfolio, "partial_close_cooldown_s", 300.0
-        )
 
     async def tick(self) -> list[Position]:
         """
@@ -179,27 +135,16 @@ class ManagePositionsUseCase:
         if self._engine_use_v4_actions and self._v4_port is not None:
             try:
                 v4 = await self._v4_port.get_latest(
-                    asset="BTC",
-                    timescales=list(self._v4_timescales),
+                    asset="BTC", timescales=list(self._v4_timescales),
                 )
             except Exception as e:
                 logger.warning("manage_positions: v4 fetch failed: %s", e)
 
-       for position in self._portfolio.open_positions:
+        for position in self._portfolio.open_positions:
             # Real close-side mark for this position — not the last-trade ticker
             mark = await self._exchange.get_mark(
                 f"{position.asset}USDT", position.side,
             )
-            
-            # Check for partial take-profit before evaluating full exits
-            if self._fee_aware_enabled and v4 is not None:
-                partial_close = await self._check_partial_take_profit(position, mark, v4)
-                if partial_close:
-                    closed_pos = await self._execute_partial_close(position, mark, v4)
-                    if closed_pos:
-                        closed.append(closed_pos)
-                        continue
-            
             exit_reason = await self._evaluate_exit(position, mark, v4)
             if exit_reason is not None:
                 closed_pos = await self._close_position(position, exit_reason)
@@ -248,9 +193,7 @@ class ManagePositionsUseCase:
             if mtn is not None and (mtn * 60) < self._v4_event_exit_seconds:
                 logger.info(
                     "v4 exit: EVENT_GUARD (%s in %.1f min) for position %s",
-                    v4.max_impact_in_window,
-                    mtn,
-                    position.id,
+                    v4.max_impact_in_window, mtn, position.id,
                 )
                 return ExitReason.EVENT_GUARD
 
@@ -270,23 +213,20 @@ class ManagePositionsUseCase:
                 if cascade_side == position.side:
                     logger.info(
                         "v4 exit: CASCADE_EXHAUSTED (t=%.1fs signal=%.2f) position %s",
-                        p5m.cascade.exhaustion_t,
-                        cascade_sig,
-                        position.id,
+                        p5m.cascade.exhaustion_t, cascade_sig, position.id,
                     )
                     return ExitReason.CASCADE_EXHAUSTED
 
         # ── 5. is_expired → continuation check (or legacy MAX_HOLD exit) ──
         if position.is_expired():
-            return await self._check_continuation(position, v4, mark)
+            return await self._check_continuation(position, v4)
 
         return None
 
-  async def _check_continuation(
+    async def _check_continuation(
         self,
         position: Position,
         v4: Optional[V4Snapshot],
-        mark: Price,
     ) -> Optional[ExitReason]:
         """
         Dispatch the continuation decision based on what data is available.
@@ -306,17 +246,6 @@ class ManagePositionsUseCase:
             )
             return ExitReason.MAX_HOLD_TIME
 
-        # v4 path preferred — richer gate stack with fee-aware continuation
-        if v4 is not None and self._engine_use_v4_actions:
-            return await self._continuation_v4(position, v4, mark)
-
-        # Legacy v2 fallback — force_refresh on probability port
-        if self._probability_port is not None:
-            return await self._continuation_legacy_v2(position)
-
-        # Neither path available — original v2 hard-exit behavior
-        return ExitReason.MAX_HOLD_TIME
-
         # v4 path preferred — richer gate stack
         if v4 is not None and self._engine_use_v4_actions:
             return await self._continuation_v4(position, v4)
@@ -328,11 +257,10 @@ class ManagePositionsUseCase:
         # Neither path available — original v2 hard-exit behavior
         return ExitReason.MAX_HOLD_TIME
 
-async def _continuation_v4(
+    async def _continuation_v4(
         self,
         position: Position,
         v4: V4Snapshot,
-        mark: Price,
     ) -> Optional[ExitReason]:
         """
         Re-walk the entry gate stack at window close using the cached v4
@@ -345,16 +273,7 @@ async def _continuation_v4(
         but with a looser conviction threshold (continuation_min_conviction,
         default 0.10) so once we're in the trade, any signal above random
         keeps us in it.
-        
-        NEW: When fee_aware_continuation_enabled=True, this method uses
-        multi-timescale alignment and fee-adjusted PnL to make smarter
-        continuation decisions with hold time extensions.
         """
-        # Fee-aware continuation path (NEW)
-        if self._fee_aware_enabled:
-            return await self._continuation_v4_fee_aware(position, v4, mark)
-        
-        # Legacy v4 continuation path (original behavior)
         payload = v4.timescales.get(position.entry_timescale)
         if payload is None or not payload.is_tradeable:
             logger.info(
@@ -375,6 +294,17 @@ async def _continuation_v4(
             return ExitReason.CONSENSUS_FAIL
 
         # ── Macro gate ──
+        # Phase A (2026-04-11): demoted from hard force-close to advisory
+        # by default. 24h audit showed Qwen BEAR calls at 20-30% directional
+        # hit rate — force-closing a winning position because Qwen flipped is
+        # strictly worse than letting the trade continue. See
+        # docs/MACRO_AUDIT_2026-04-11.md.
+        #
+        # The force-close only fires when BOTH:
+        #   - macro.confidence >= v4_macro_hard_veto_confidence_floor
+        #   - v4_macro_mode == "veto"
+        # Otherwise the continuation walk continues — the position's own
+        # SL/TP/regime/probability gates decide whether to hold.
         if (
             v4.macro.status == "ok"
             and v4.macro.confidence >= self._macro_hard_veto_confidence_floor
@@ -426,7 +356,7 @@ async def _continuation_v4(
             )
             return ExitReason.REGIME_DETERIORATED
 
-        # ── Probability flipped ─—
+        # ── Probability flipped ──
         new_side = payload.suggested_side
         if new_side != position.side:
             logger.info(
@@ -437,6 +367,9 @@ async def _continuation_v4(
             return ExitReason.PROBABILITY_REVERSAL
 
         # ── Conviction too weak for continuation ──
+        # NB: this uses the looser continuation threshold (default 0.10)
+        # not the entry threshold (default 0.10 too, but configurable
+        # separately so they can diverge later).
         if not payload.meets_threshold(self._v4_continuation_min_conviction):
             logger.info(
                 "Position %s continuation: conviction too weak "
@@ -475,8 +408,7 @@ async def _continuation_v4(
         the hold clock; if not or if the refresh fails, exit.
         """
         prob = await self._probability_port.force_refresh(
-            asset="BTC",
-            timescale=position.entry_timescale,
+            asset="BTC", timescale=position.entry_timescale,
         )
         if prob is None:
             logger.info(
@@ -489,9 +421,7 @@ async def _continuation_v4(
         if prob.suggested_side != position.side:
             logger.info(
                 "Position %s legacy continuation: signal flipped %s → %s (p_up=%.3f)",
-                position.id,
-                position.side.value,
-                prob.suggested_side.value,
+                position.id, position.side.value, prob.suggested_side.value,
                 prob.probability_up,
             )
             return ExitReason.PROBABILITY_REVERSAL
@@ -500,8 +430,7 @@ async def _continuation_v4(
             logger.info(
                 "Position %s legacy continuation: conviction too weak "
                 "(p_up=%.3f, needed |p-0.5|>=%.2f)",
-                position.id,
-                prob.probability_up,
+                position.id, prob.probability_up,
                 self._v4_continuation_min_conviction,
             )
             return ExitReason.PROBABILITY_REVERSAL
@@ -515,196 +444,9 @@ async def _continuation_v4(
         await self._repo.save(position)
         logger.info(
             "Position %s CONTINUED (#%d via v2 legacy): new p_up=%.3f",
-            position.id,
-            position.continuation_count,
-            prob.probability_up,
+            position.id, position.continuation_count, prob.probability_up,
         )
         return None  # stay OPEN
-
-    # ── Fee-aware continuation (NEW) ──
-
-    async def _continuation_v4_fee_aware(
-        self,
-        position: Position,
-        v4: V4Snapshot,
-        mark: Price,
-    ) -> Optional[ExitReason]:
-        """
-        Fee-aware continuation with multi-timescale alignment.
-        
-        Uses fee-adjusted PnL and timescale alignment to make smarter
-        continuation decisions with hold time extensions.
-        """
-        from margin_engine.services.fee_aware_continuation import (
-            fee_aware_continuation_decision,
-            ContinuationDecision,
-        )
-        
-        result = fee_aware_continuation_decision(
-            position=position,
-            mark_price=mark.value,
-            v4=v4,
-            fee_aware_enabled=True,
-            alignment_enabled=self._alignment_enabled,
-            partial_tp_threshold=self._partial_tp_threshold,
-            partial_tp_size=self._partial_tp_size,
-            max_extension=self._hold_extension_max,
-            min_conviction=self._continuation_conviction_min,
-            regime_bonus=self._continuation_regime_bonus,
-        )
-        
-        # Handle decision
-        if result.decision == ContinuationDecision.CLOSE_ALL:
-            logger.info(
-                "Position %s fee-aware exit: %s (net_pnl=%.2f, aligned=%d/4)",
-                position.id, result.reason, result.net_pnl, result.timescale_aligned,
-            )
-            return ExitReason.PROBABILITY_REVERSAL
-        
-        elif result.decision == ContinuationDecision.CLOSE_PARTIAL:
-            logger.info(
-                "Position %s fee-aware partial: %s (net_pnl=%.2f, close_pct=%.0f%%)",
-                position.id, result.reason, result.net_pnl, result.partial_close_pct * 100,
-            )
-            # Partial close is handled separately in tick()
-            return None  # Don't exit, but partial close will be applied
-        
-        elif result.decision in (ContinuationDecision.CONTINUE, 
-                                 ContinuationDecision.CONTINUE_EXTENDED):
-            now = time.time()
-            position.continuation_count += 1
-            position.last_continuation_ts = now
-            
-            # Apply hold extension if CONTINUE_EXTENDED
-            if result.decision == ContinuationDecision.CONTINUE_EXTENDED:
-                extended_hold = position.max_hold_seconds * result.hold_extension_mult
-                position.hold_clock_anchor = now
-                logger.info(
-                    "Position %s CONTINUED_EXTENDED (#%d): net_pnl=%.2f "
-                    "aligned=%d/4 hold_mult=%.2f reason=%s",
-                    position.id, position.continuation_count, result.net_pnl,
-                    result.timescale_aligned, result.hold_extension_mult, result.reason,
-                )
-            else:
-                position.hold_clock_anchor = now
-                logger.info(
-                    "Position %s CONTINUED (#%d): net_pnl=%.2f aligned=%d/4 reason=%s",
-                    position.id, position.continuation_count, result.net_pnl,
-                    result.timescale_aligned, result.reason,
-                )
-            
-            await self._repo.save(position)
-            return None  # stay OPEN
-        
-        # Fallback
-        return ExitReason.PROBABILITY_REVERSAL
-
-    async def _check_partial_take_profit(
-        self,
-        position: Position,
-        mark: Price,
-        v4: V4Snapshot,
-    ) -> bool:
-        """
-        Check if partial take-profit should be triggered.
-        
-        Returns:
-            True if partial close is recommended
-        """
-        from margin_engine.services.fee_aware_continuation import (
-            should_take_partial_profit,
-        )
-        
-        # Check cooldown
-        if position.last_partial_close_ts > 0:
-            cooldown_elapsed = time.time() - position.last_partial_close_ts
-            if cooldown_elapsed < self._partial_close_cooldown_s:
-                return False
-        
-        # Check max partial closes
-        if position.partial_close_count >= self._max_partial_closes:
-            return False
-        
-        # Check if partial should be taken
-        close_pct = should_take_partial_profit(
-            position=position,
-            mark_price=mark.value,
-            v4=v4,
-            threshold=self._partial_tp_threshold,
-            partial_size=self._partial_tp_size,
-        )
-        
-        return close_pct is not None
-
-    async def _execute_partial_close(
-        self,
-        position: Position,
-        mark: Price,
-        v4: V4Snapshot,
-    ) -> Optional[Position]:
-        """
-        Execute partial close on position.
-        
-        Returns:
-            Position if successfully closed partially, None otherwise
-        """
-        from margin_engine.services.fee_aware_continuation import (
-            should_take_partial_profit,
-        )
-        
-        try:
-            close_pct = should_take_partial_profit(
-                position=position,
-                mark_price=mark.value,
-                v4=v4,
-                threshold=self._partial_tp_threshold,
-                partial_size=self._partial_tp_size,
-            )
-            
-            if close_pct is None:
-                return None
-            
-            # Calculate partial notional to close
-            if position.notional is None:
-                return None
-            
-            close_notional = position.notional.amount * close_pct
-            symbol = f"{position.asset}USDT"
-            
-            # Close partial on exchange
-            fill = await self._exchange.close_position(
-                symbol=symbol,
-                side=position.side,
-                notional=Money(close_notional, "USDT"),
-            )
-            
-            # Update position state
-            position.confirm_partial_close(
-                price=fill.fill_price,
-                order_id=fill.order_id,
-                close_pct=close_pct,
-                commission=fill.commission,
-                commission_is_actual=fill.commission_is_actual,
-            )
-            
-            await self._repo.save(position)
-            
-            logger.info(
-                "Position %s PARTIAL_CLOSE: closed %.0f%% (%.2f USDT) @ %.2f, "
-                "remaining notional=%.2f, net_pnl=%.2f",
-                position.id, 
-                close_pct * 100,
-                close_notional,
-                fill.fill_price.value,
-                position.notional.amount if position.notional else 0,
-                position.unrealised_pnl_net(mark.value),
-            )
-            
-            return position
-            
-        except Exception as e:
-            logger.error("Failed to execute partial close for %s: %s", position.id, e)
-            return None
 
     async def _close_position(
         self,
@@ -734,13 +476,9 @@ async def _continuation_v4(
             logger.info(
                 "Position closed: %s %s @ %.2f, PnL=%.2f, "
                 "commission=%.4f (actual=%s), reason=%s",
-                position.side.value,
-                position.asset,
-                fill.fill_price.value,
-                position.realised_pnl,
-                fill.commission,
-                fill.commission_is_actual,
-                reason.value,
+                position.side.value, position.asset,
+                fill.fill_price.value, position.realised_pnl,
+                fill.commission, fill.commission_is_actual, reason.value,
             )
             return position
 

@@ -354,110 +354,223 @@ async def signal_comparison(
     period_days = int(period.replace("d", ""))
     start_date = now - timedelta(days=period_days)
 
-    # Query for v2 probability ticks and their outcomes
+    # Query for strategy_decisions with V4 data and outcomes
+    # Join with window_snapshots to get actual outcomes
     query = text("""
         SELECT
-            t.ts,
-            t.probability_up,
-            t.model_version,
-            wp.window_ts,
-            wp.v2_direction AS predicted_direction,
-            wp.oracle_winner AS actual_direction,
-            wp.v2_correct,
-            wp.tiingo_direction AS tiingo_actual,
-            wp.chainlink_direction AS chainlink_actual
-        FROM ticks_v2_probability t
-        LEFT JOIN window_predictions wp
-          ON wp.asset = t.asset
-         AND wp.timeframe = :timeframe
-         AND wp.window_ts = (
-             (EXTRACT(EPOCH FROM t.ts)::bigint / :window_seconds)
-             * :window_seconds
-         )
-        WHERE t.asset = :asset
-          AND t.ts >= :start_date
-          AND t.ts <= :end_date
-        ORDER BY t.ts DESC
+            sd.strategy_id,
+            sd.asset,
+            sd.window_ts,
+            sd.decision,
+            sd.confidence,
+            sd.alignment_score,
+            sd.regime,
+            sd.expected_move_bps,
+            sd.actual_entry_price,
+            sd.actual_exit_price,
+            sd.pnl_usd,
+            sd.exit_reason,
+            sd.created_at,
+            sd.metadata_json,
+            ws.open_price,
+            ws.close_price,
+            CASE
+                WHEN ws.close_price > ws.open_price THEN 'UP'
+                WHEN ws.close_price < ws.open_price THEN 'DOWN'
+                ELSE 'UNCHANGED'
+            END AS actual_direction,
+            ws.v2_direction AS v2_predicted,
+            ws.v2_probability AS v2_probability_up,
+            ws.v2_correct
+        FROM strategy_decisions sd
+        LEFT JOIN window_snapshots ws
+          ON ws.asset = sd.asset
+         AND ws.window_ts = sd.window_ts
+        WHERE sd.asset = :asset
+          AND sd.created_at >= :start_date
+          AND sd.created_at <= :end_date
+          AND sd.strategy_id LIKE :strategy_pattern
+        ORDER BY sd.created_at DESC
     """)
 
-    window_seconds = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400}[timescale]
+    # Build strategy pattern to match V4 strategies
+    strategy_pattern = f"%v4%"
 
     result = await session.execute(
         query,
         {
             "asset": "BTC",
-            "timeframe": timescale,
             "start_date": start_date,
             "end_date": now,
-            "window_seconds": window_seconds,
+            "strategy_pattern": strategy_pattern,
         },
     )
     rows = result.mappings().all()
 
-    # Build accuracy overview
+    # Build accuracy overview by strategy
     accuracy_overview: dict[str, dict] = {}
     signal_timeline: list[dict] = []
 
     for r in rows:
-        # V2 signal
-        if r["probability_up"] is not None:
-            sig_name = "sequoia_v5_2"
-            predicted = "UP" if r["probability_up"] > 0.5 else "DOWN"
-            actual = (
-                r["actual_direction"] or r["tiingo_actual"] or r["chainlink_actual"]
-            )
-            correct = actual is not None and actual.upper() == predicted
+        strategy_id = r["strategy_id"] or "unknown"
+        decision = r["decision"] or "NO_DECISION"
+        actual_direction = r["actual_direction"]
+        window_ts = r["window_ts"]
 
-            if sig_name not in accuracy_overview:
-                accuracy_overview[sig_name] = {
-                    "n_trades": 0,
-                    "n_correct": 0,
-                    "n_with_outcome": 0,
-                    "hit_rate": None,
-                    "avg_probability": 0.0,
-                    "prob_sum": 0.0,
-                }
+        # Initialize strategy if not seen
+        if strategy_id not in accuracy_overview:
+            accuracy_overview[strategy_id] = {
+                "n_trades": 0,
+                "n_correct": 0,
+                "n_with_outcome": 0,
+                "n_skipped": 0,
+                "hit_rate": None,
+                "total_pnl": 0.0,
+                "avg_confidence": 0.0,
+                "confidence_sum": 0.0,
+            }
 
-            accuracy_overview[sig_name]["n_trades"] += 1
-            accuracy_overview[sig_name]["prob_sum"] += r["probability_up"]
+        # Count trade decisions
+        if decision in ("TRADE_LONG", "TRADE_SHORT"):
+            accuracy_overview[strategy_id]["n_trades"] += 1
 
-            if actual is not None:
-                accuracy_overview[sig_name]["n_with_outcome"] += 1
+            # Calculate predicted direction
+            if decision == "TRADE_LONG":
+                predicted = "UP"
+            else:  # TRADE_SHORT
+                predicted = "DOWN"
+
+            # Check if correct
+            if actual_direction:
+                accuracy_overview[strategy_id]["n_with_outcome"] += 1
+                correct = actual_direction == predicted
                 if correct:
-                    accuracy_overview[sig_name]["n_correct"] += 1
+                    accuracy_overview[strategy_id]["n_correct"] += 1
+
+            # Add PnL
+            pnl = r["pnl_usd"] or 0.0
+            accuracy_overview[strategy_id]["total_pnl"] += pnl
+
+            # Add confidence
+            confidence = r["confidence"] or 0.0
+            accuracy_overview[strategy_id]["confidence_sum"] += confidence
 
             signal_timeline.append(
                 {
-                    "ts": r["ts"].isoformat() if r["ts"] else None,
-                    "signal": sig_name,
+                    "ts": r["created_at"].isoformat() if r["created_at"] else None,
+                    "window_ts": window_ts,
+                    "signal": strategy_id,
+                    "decision": decision,
                     "predicted": predicted,
-                    "actual": actual,
-                    "correct": correct if actual else None,
-                    "probability": r["probability_up"],
+                    "actual": actual_direction,
+                    "correct": correct if actual_direction else None,
+                    "pnl": pnl,
+                    "confidence": confidence,
+                    "alignment_score": r["alignment_score"],
+                    "regime": r["regime"],
+                    "exit_reason": r["exit_reason"],
                 }
             )
+        elif decision == "SKIP":
+            accuracy_overview[strategy_id]["n_skipped"] += 1
 
-    # Calculate hit rates
+    # Calculate hit rates and averages
     for sig, data in accuracy_overview.items():
         if data["n_with_outcome"] > 0:
             data["hit_rate"] = round(data["n_correct"] / data["n_with_outcome"], 4)
-        data["avg_probability"] = (
-            round(data["prob_sum"] / data["n_trades"], 4)
+        data["avg_confidence"] = (
+            round(data["confidence_sum"] / data["n_trades"], 4)
             if data["n_trades"] > 0
             else 0.0
         )
-        del data["prob_sum"]
+        del data["confidence_sum"]
 
-    # Regime-specific accuracy (simplified - would need regime data in window_predictions)
-    regime_specific_accuracy: dict[str, dict] = {
-        "calm_trend": {},
-        "volatile_trend": {},
-        "chop": {},
-        "risk_off": {},
-    }
+    # Build regime-specific accuracy from strategy_decisions
+    regime_stats: dict[str, dict] = {}
+    for r in rows:
+        regime = r["regime"] or "UNKNOWN"
+        decision = r["decision"]
+        actual_direction = r["actual_direction"]
 
-    # Correlation matrix (simplified - would need multiple signal predictions at same time)
-    correlation_matrix: dict[str, dict] = {"sequoia_v5_2": {"sequoia_v5_2": 1.0}}
+        if regime not in regime_stats:
+            regime_stats[regime] = {}
+
+        if decision in ("TRADE_LONG", "TRADE_SHORT"):
+            strategy_id = r["strategy_id"]
+
+            if strategy_id not in regime_stats[regime]:
+                regime_stats[regime][strategy_id] = {
+                    "n_trades": 0,
+                    "n_correct": 0,
+                    "n_with_outcome": 0,
+                }
+
+            regime_stats[regime][strategy_id]["n_trades"] += 1
+
+            if actual_direction:
+                regime_stats[regime][strategy_id]["n_with_outcome"] += 1
+                predicted = "UP" if decision == "TRADE_LONG" else "DOWN"
+                if actual_direction == predicted:
+                    regime_stats[regime][strategy_id]["n_correct"] += 1
+
+    # Calculate hit rates for regime-specific accuracy
+    regime_specific_accuracy: dict[str, dict] = {}
+    for regime, strategies in regime_stats.items():
+        regime_specific_accuracy[regime] = {}
+        for strategy_id, stats in strategies.items():
+            if stats["n_with_outcome"] > 0:
+                hit_rate = round(stats["n_correct"] / stats["n_with_outcome"], 4)
+            else:
+                hit_rate = None
+            regime_specific_accuracy[regime][strategy_id] = hit_rate
+
+    # Build correlation matrix based on co-occurrence of decisions
+    # Group decisions by window_ts to see which strategies agree
+    from collections import defaultdict
+
+    window_decisions: dict[int, dict[str, str]] = defaultdict(dict)
+
+    for r in rows:
+        window_ts = r["window_ts"]
+        strategy_id = r["strategy_id"]
+        decision = r["decision"]
+
+        if decision in ("TRADE_LONG", "TRADE_SHORT"):
+            window_decisions[window_ts][strategy_id] = decision
+
+    # Count co-occurrences
+    co_occurrences: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for window_ts, decisions in window_decisions.items():
+        strategies = list(decisions.keys())
+        for i, s1 in enumerate(strategies):
+            for s2 in strategies[i + 1 :]:
+                d1 = decisions[s1]
+                d2 = decisions[s2]
+                # Count agreements (same direction)
+                if d1 == d2:
+                    co_occurrences[s1][s2] += 1
+                    co_occurrences[s2][s1] += 1
+
+    # Build correlation matrix
+    all_strategies = list(accuracy_overview.keys())
+    correlation_matrix: dict[str, dict] = {}
+
+    for s1 in all_strategies:
+        correlation_matrix[s1] = {}
+        for s2 in all_strategies:
+            if s1 == s2:
+                correlation_matrix[s1][s2] = 1.0
+            else:
+                # Normalize co-occurrences to correlation (0-1)
+                co_occ = co_occurrences[s1][s2]
+                # Simple normalization: co_occ / max(n_trades)
+                max_trades = max(
+                    accuracy_overview[s1]["n_trades"],
+                    accuracy_overview[s2]["n_trades"],
+                    1,
+                )
+                corr = round(co_occ / max_trades, 3) if max_trades > 0 else 0.0
+                correlation_matrix[s1][s2] = corr
 
     return {
         "accuracy_overview": accuracy_overview,
@@ -467,6 +580,20 @@ async def signal_comparison(
         "period": period,
         "timescale": timescale,
         "n_total_predictions": len(rows),
+        "n_strategies": len(accuracy_overview),
+        "summary": {
+            "total_decisions": sum(
+                d["n_trades"] + d["n_skipped"] for d in accuracy_overview.values()
+            ),
+            "total_trades": sum(d["n_trades"] for d in accuracy_overview.values()),
+            "total_correct": sum(d["n_correct"] for d in accuracy_overview.values()),
+            "overall_hit_rate": round(
+                sum(d["n_correct"] for d in accuracy_overview.values())
+                / max(sum(d["n_with_outcome"] for d in accuracy_overview.values()), 1),
+                4,
+            ),
+            "total_pnl": sum(d["total_pnl"] for d in accuracy_overview.values()),
+        },
     }
 
 
