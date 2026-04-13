@@ -57,6 +57,6 @@ class ConfidenceGate(Gate):
         return GateResult(
             passed=True,
             gate_name=self.name,
-            reason=f"dist={dist:.3f} in [{self._min:.2f}, {self._max:.2f if self._max else 'inf'}]",
+            reason=f"dist={dist:.3f} in [{self._min:.2f}, {f'{self._max:.2f}' if self._max is not None else 'inf'}]",
             data={"distance": dist},
         )
