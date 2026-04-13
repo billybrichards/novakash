@@ -2,10 +2,10 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useApi } from '../hooks/useApi.js';
 
 /**
- * LiveToggle — Two independent mode toggles: 📄 PAPER + 💰 LIVE
+ * LiveToggle — exclusive mode switch: 📄 PAPER or 💰 LIVE
  *
- * 📄 PAPER  — purple glow, instant toggle
- * 💰 LIVE   — red glow, requires confirmation modal with checklist
+  * 📄 PAPER  — safe mode, instantly forces paper on and live off
+  * 💰 LIVE   — requires confirmation modal, forces live on and paper off
  *
  * Mobile: stacks vertically, confirmation modal becomes full-screen.
  */
@@ -55,12 +55,15 @@ export default function LiveToggle({ compact = false }) {
   }, [status.live_enabled]);
 
   const handlePaperToggle = async () => {
-    const newVal = !status.paper_enabled;
     try {
-      await api('POST', '/trading-config/toggle-mode', {
-        data: { mode: 'paper', enabled: newVal },
+      const res = await api('POST', '/trading-config/toggle-mode', {
+        data: { mode: 'paper', enabled: true },
       });
-      setStatus(prev => ({ ...prev, paper_enabled: newVal }));
+      setStatus(prev => ({
+        ...prev,
+        paper_enabled: res.data.paper_enabled ?? true,
+        live_enabled: res.data.live_enabled ?? false,
+      }));
     } catch (e) { console.error('Failed to toggle paper mode', e); }
   };
 
@@ -76,10 +79,14 @@ export default function LiveToggle({ compact = false }) {
 
   const disableLive = async () => {
     try {
-      await api('POST', '/trading-config/toggle-mode', {
+      const res = await api('POST', '/trading-config/toggle-mode', {
         data: { mode: 'live', enabled: false },
       });
-      setStatus(prev => ({ ...prev, live_enabled: false }));
+      setStatus(prev => ({
+        ...prev,
+        paper_enabled: res.data.paper_enabled ?? true,
+        live_enabled: res.data.live_enabled ?? false,
+      }));
     } catch (e) { console.error('Failed to disable live mode', e); }
   };
 
@@ -91,10 +98,14 @@ export default function LiveToggle({ compact = false }) {
     setLoading(true);
     setError('');
     try {
-      await api('POST', '/trading-config/toggle-mode', {
+      const res = await api('POST', '/trading-config/toggle-mode', {
         data: { mode: 'live', enabled: true, confirmation: 'CONFIRM' },
       });
-      setStatus(prev => ({ ...prev, live_enabled: true }));
+      setStatus(prev => ({
+        ...prev,
+        paper_enabled: res.data.paper_enabled ?? false,
+        live_enabled: res.data.live_enabled ?? true,
+      }));
       setShowLiveModal(false);
     } catch (e) {
       setError(e.response?.data?.detail || 'Failed to enable live trading');

@@ -1,5 +1,5 @@
 name: v4_down_only
-version: "2.0.0"
+version: "2.1.0"
 mode: LIVE
 asset: BTC
 timescale: 5m
@@ -11,8 +11,6 @@ gates:
     params: { direction: DOWN }
   - type: confidence
     params: { min_dist: 0.10 }
-  - type: trade_advised
-    params: {}
   - type: clob_sizing
     params:
       schedule:

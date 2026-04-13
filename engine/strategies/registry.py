@@ -47,22 +47,24 @@ def _register_gates() -> None:
     from strategies.gates.macro_direction import MacroDirectionGate
     from strategies.gates.trade_advised import TradeAdvisedGate
 
-    _GATE_REGISTRY.update({
-        "timing": TimingGate,
-        "direction": DirectionGate,
-        "confidence": ConfidenceGate,
-        "session_hours": SessionHoursGate,
-        "clob_sizing": CLOBSizingGate,
-        "source_agreement": SourceAgreementGate,
-        "delta_magnitude": DeltaMagnitudeGate,
-        "taker_flow": TakerFlowGate,
-        "cg_confirmation": CGConfirmationGate,
-        "spread": SpreadGate,
-        "dynamic_cap": DynamicCapGate,
-        "regime": RegimeGate,
-        "macro_direction": MacroDirectionGate,
-        "trade_advised": TradeAdvisedGate,
-    })
+    _GATE_REGISTRY.update(
+        {
+            "timing": TimingGate,
+            "direction": DirectionGate,
+            "confidence": ConfidenceGate,
+            "session_hours": SessionHoursGate,
+            "clob_sizing": CLOBSizingGate,
+            "source_agreement": SourceAgreementGate,
+            "delta_magnitude": DeltaMagnitudeGate,
+            "taker_flow": TakerFlowGate,
+            "cg_confirmation": CGConfirmationGate,
+            "spread": SpreadGate,
+            "dynamic_cap": DynamicCapGate,
+            "regime": RegimeGate,
+            "macro_direction": MacroDirectionGate,
+            "trade_advised": TradeAdvisedGate,
+        }
+    )
 
 
 @dataclass
@@ -280,13 +282,15 @@ class StrategyRegistry:
                     try:
                         import asyncio, json, time
                         from domain.value_objects import StrategyDecisionRecord
+
                         record = StrategyDecisionRecord(
                             strategy_id=name,
                             strategy_version=config.version,
                             asset=getattr(window, "asset", "BTC"),
                             window_ts=window_ts,
                             timeframe=getattr(window, "timeframe", "5m")
-                                if hasattr(window, "timeframe") else "5m",
+                            if hasattr(window, "timeframe")
+                            else "5m",
                             eval_offset=eval_offset,
                             mode=config.mode,
                             action=decision.action,
@@ -300,6 +304,7 @@ class StrategyRegistry:
                             metadata_json=json.dumps(decision.metadata or {}),
                             evaluated_at=time.time(),
                         )
+
                         def _on_write_error(task, _n=name):
                             if not task.cancelled() and task.exception():
                                 log.warning(
@@ -307,18 +312,19 @@ class StrategyRegistry:
                                     strategy=_n,
                                     error=str(task.exception())[:200],
                                 )
+
                         t = asyncio.create_task(
                             self._decision_repo.write_decision(record)
                         )
                         t.add_done_callback(_on_write_error)
                     except Exception as _e:
-                        log.warning("registry.decision_record_error", error=str(_e)[:200])
+                        log.warning(
+                            "registry.decision_record_error", error=str(_e)[:200]
+                        )
 
                 # Execute LIVE trades when use case is wired
                 # In-memory dedup: only execute once per window per strategy
-                _already_executed = (
-                    self._executed_windows.get(name) == window_ts
-                )
+                _already_executed = self._executed_windows.get(name) == window_ts
                 if (
                     config.mode == "LIVE"
                     and decision.action == "TRADE"
@@ -391,8 +397,11 @@ class StrategyRegistry:
             self._last_summary_window = window_ts
             try:
                 import asyncio
+
                 asyncio.create_task(
-                    self._send_window_summary(window_ts, eval_offset_val, decisions, surface)
+                    self._send_window_summary(
+                        window_ts, eval_offset_val, decisions, surface
+                    )
                 )
             except Exception:
                 pass
@@ -408,32 +417,57 @@ class StrategyRegistry:
     ) -> None:
         """Send consolidated window summary to Telegram — all 5 strategies."""
         try:
+            history_by_strategy: dict[str, list[Any]] = {}
+            if self._decision_repo is not None and hasattr(
+                self._decision_repo, "get_decisions_for_window"
+            ):
+                try:
+                    history = await self._decision_repo.get_decisions_for_window(
+                        surface.asset, window_ts
+                    )
+                    for record in history:
+                        history_by_strategy.setdefault(record.strategy_id, []).append(
+                            record
+                        )
+                except Exception as exc:
+                    log.warning("registry.summary_history_error", error=str(exc)[:200])
+
             lines = [
                 "📋 *Strategy Engine v2 — Window Summary*",
                 "━━━━━━━━━━━━━━━━━━━━━━━━━",
                 f"Window: {surface.asset} 5m | T-{eval_offset}s",
-                f"BTC: ${surface.current_price:,.2f} | Δ {surface.delta_pct*100:+.3f}%",
+                f"BTC: ${surface.current_price:,.2f} | Δ {surface.delta_pct * 100:+.3f}%",
                 f"VPIN: {surface.vpin:.3f} | {surface.regime}",
             ]
 
             if surface.v2_probability_up is not None:
                 dist = abs(surface.v2_probability_up - 0.5)
                 dir_label = "UP" if surface.v2_probability_up > 0.5 else "DOWN"
-                lines.append(f"Model: P(UP)={surface.v2_probability_up:.3f} → *{dir_label}* (dist={dist:.3f})")
+                lines.append(
+                    f"Model: P(UP)={surface.v2_probability_up:.3f} → *{dir_label}* (dist={dist:.3f})"
+                )
 
             lines.append("")
 
             for d in decisions:
                 cfg = self._configs.get(d.strategy_id)
-                mode_tag = f"[{cfg.mode}]" if cfg else "[?]"
+                mode_tag = f"({cfg.mode})" if cfg else "(?)"
+                history_summary = self._summarize_window_history(
+                    history_by_strategy.get(d.strategy_id, []), d
+                )
 
                 if d.action == "TRADE":
-                    lines.append(f"✅ *{d.strategy_id}* {mode_tag} → TRADE {d.direction}")
+                    lines.append(
+                        f"✅ *{d.strategy_id}* {mode_tag} → TRADE {d.direction}"
+                    )
                 elif d.action == "SKIP":
                     reason_short = (d.skip_reason or "")[:60]
                     lines.append(f"⏭ {d.strategy_id} {mode_tag} → SKIP: {reason_short}")
                 else:
                     lines.append(f"❌ {d.strategy_id} {mode_tag} → ERROR")
+
+                if history_summary:
+                    lines.append(f"   window: {history_summary}")
 
             if hasattr(self._alerter, "send_raw_message"):
                 await self._alerter.send_raw_message("\n".join(lines))
@@ -441,6 +475,47 @@ class StrategyRegistry:
                 await self._alerter.send_system_alert("\n".join(lines))
         except Exception as exc:
             log.warning("registry.summary_alert_error", error=str(exc)[:200])
+
+    def _summarize_window_history(
+        self,
+        history: list[Any],
+        current_decision: StrategyDecision,
+    ) -> str:
+        if not history:
+            return ""
+
+        from collections import Counter
+        import re
+
+        trade_offsets = sorted(
+            [
+                record.eval_offset
+                for record in history
+                if record.action == "TRADE" and record.eval_offset is not None
+            ],
+            reverse=True,
+        )
+        if trade_offsets:
+            return f"traded earlier at T-{trade_offsets[0]}"
+
+        def _normalize_reason(reason: str) -> str:
+            cleaned = (reason or "unknown").strip()
+            cleaned = re.sub(r"T-\d+", "T-*", cleaned)
+            return cleaned[:70]
+
+        skip_reasons = [
+            _normalize_reason(record.skip_reason)
+            for record in history
+            if record.action == "SKIP" and record.skip_reason
+        ]
+        if skip_reasons:
+            top_reason, top_count = Counter(skip_reasons).most_common(1)[0]
+            return f"{top_reason} ({top_count}/{len(skip_reasons)} evals)"
+
+        if current_decision.action == "ERROR":
+            return f"{len(history)} evals logged"
+
+        return "no earlier window pattern"
 
     def _evaluate_one(
         self,
@@ -477,7 +552,11 @@ class StrategyRegistry:
                     skip_reason=f"{result.gate_name}: {result.reason}",
                     metadata={
                         "gate_results": [
-                            {"gate": r.gate_name, "passed": r.passed, "reason": r.reason}
+                            {
+                                "gate": r.gate_name,
+                                "passed": r.passed,
+                                "reason": r.reason,
+                            }
                             for r in gate_results
                         ]
                     },
@@ -508,10 +587,7 @@ class StrategyRegistry:
             collateral_pct=sizing.max_collateral_pct * sizing.size_modifier,
             strategy_id=name,
             strategy_version=config.version,
-            entry_reason=(
-                f"{name}_T{surface.eval_offset}_{direction}"
-                f"_{sizing.label}"
-            ),
+            entry_reason=(f"{name}_T{surface.eval_offset}_{direction}_{sizing.label}"),
             skip_reason=None,
             metadata={
                 "gate_results": [

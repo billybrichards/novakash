@@ -52,6 +52,7 @@ async def _fetchval(session: AsyncSession, query: str, params: dict | None = Non
     row = result.first()
     return row[0] if row else None
 
+
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/trading-config", tags=["trading-config"])
@@ -329,6 +330,7 @@ DEFAULT_CONFIG_VALUES: dict[str, Any] = {
 
 # ─── Pydantic models ──────────────────────────────────────────────────────────
 
+
 class CreateConfigRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
     description: Optional[str] = None
@@ -354,6 +356,7 @@ class ToggleModeRequest(BaseModel):
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
+
 def _verify_password(plain: str) -> bool:
     """Check against the TRADING_APPROVAL_PASSWORD env var (hashed or plain)."""
     expected = os.environ.get("TRADING_APPROVAL_PASSWORD", "")
@@ -375,39 +378,69 @@ def _row_to_dict(row) -> dict:
 
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
+
 @router.get("/defaults")
 async def get_defaults():
     """Return the full config variable schema with defaults, ranges, and descriptions."""
     return {
         "defaults": CONFIG_DEFAULTS,
         "categories": {
-            "risk": {"label": "Risk Management", "icon": "🛡️", "description": "Position sizing, drawdown protection, and daily limits"},
-            "vpin": {"label": "VPIN Signals", "icon": "📡", "description": "Volume-synchronised probability of informed trading parameters"},
-            "arb": {"label": "Arbitrage Strategy", "icon": "⚡", "description": "Cross-venue arbitrage detection and execution settings"},
-            "cascade": {"label": "Cascade Strategy", "icon": "🌊", "description": "Liquidation cascade detection and bet timing"},
-            "fees": {"label": "Fees & Venues", "icon": "💸", "description": "Fee multipliers and venue routing preferences"},
+            "risk": {
+                "label": "Risk Management",
+                "icon": "🛡️",
+                "description": "Position sizing, drawdown protection, and daily limits",
+            },
+            "vpin": {
+                "label": "VPIN Signals",
+                "icon": "📡",
+                "description": "Volume-synchronised probability of informed trading parameters",
+            },
+            "arb": {
+                "label": "Arbitrage Strategy",
+                "icon": "⚡",
+                "description": "Cross-venue arbitrage detection and execution settings",
+            },
+            "cascade": {
+                "label": "Cascade Strategy",
+                "icon": "🌊",
+                "description": "Liquidation cascade detection and bet timing",
+            },
+            "fees": {
+                "label": "Fees & Venues",
+                "icon": "💸",
+                "description": "Fee multipliers and venue routing preferences",
+            },
         },
     }
 
 
 @router.get("/list")
-async def list_configs(mode: Optional[str] = None, session: AsyncSession = Depends(get_session)):
+async def list_configs(
+    mode: Optional[str] = None, session: AsyncSession = Depends(get_session)
+):
     """List all trading configs, optionally filtered by mode (paper|live)."""
     if mode:
-        rows = await _fetch(session, """
+        rows = await _fetch(
+            session,
+            """
             SELECT id, name, version, description, mode, is_active, is_approved,
                    approved_at, approved_by, parent_id, created_at, updated_at
             FROM trading_configs
             WHERE mode = :p1
             ORDER BY updated_at DESC
-            """, {"p1": mode})
+            """,
+            {"p1": mode},
+        )
     else:
-        rows = await _fetch(session, """
+        rows = await _fetch(
+            session,
+            """
             SELECT id, name, version, description, mode, is_active, is_approved,
                    approved_at, approved_by, parent_id, created_at, updated_at
             FROM trading_configs
             ORDER BY updated_at DESC
-            """)
+            """,
+        )
     return {"configs": [dict(r) for r in rows]}
 
 
@@ -417,11 +450,15 @@ async def get_active_config(mode: str, session: AsyncSession = Depends(get_sessi
     if mode not in ("paper", "live"):
         raise HTTPException(status_code=400, detail="mode must be 'paper' or 'live'")
 
-    row = await _fetchrow(session, """
+    row = await _fetchrow(
+        session,
+        """
         SELECT * FROM trading_configs
         WHERE mode = :p1 AND is_active = TRUE
         LIMIT 1
-        """, {"p1": mode})
+        """,
+        {"p1": mode},
+    )
     if not row:
         return {"config": None}
     return {"config": dict(row)}
@@ -448,30 +485,40 @@ async def get_live_status(session: AsyncSession = Depends(get_session)):
     # Also check engine's actual runtime state from heartbeat data
     engine_state = state.get("state", {}) or {}
     engine_config = engine_state.get("config", {}) or {}
-    engine_paper_mode = paper_enabled  # use system_state.paper_enabled, not engine heartbeat
+    engine_paper_mode = engine_state.get("paper_mode", paper_enabled)
     runtime_config = engine_config.get("runtime_config", {})
 
     # Check live config approval
     live_config = None
     if live_config_id:
-        row = await _fetchrow(session, "SELECT * FROM trading_configs WHERE id = :p1", {"p1": live_config_id})
+        row = await _fetchrow(
+            session,
+            "SELECT * FROM trading_configs WHERE id = :p1",
+            {"p1": live_config_id},
+        )
         if row:
             live_config = dict(row)
 
     paper_config = None
     if paper_config_id:
-        row = await _fetchrow(session, "SELECT * FROM trading_configs WHERE id = :p1", {"p1": paper_config_id})
+        row = await _fetchrow(
+            session,
+            "SELECT * FROM trading_configs WHERE id = :p1",
+            {"p1": paper_config_id},
+        )
         if row:
             paper_config = dict(row)
 
-    has_approved_config = live_config is not None and live_config.get("is_approved", False)
+    has_approved_config = live_config is not None and live_config.get(
+        "is_approved", False
+    )
 
     # Check API keys — engine runs on Montreal (not here), so check DB state
     # Engine heartbeat updates system_state.config with runtime info
     # If engine is running and has placed trades, keys are configured
     engine_running = state.get("engine_status") == "running"
     api_keys_configured = bool(
-        os.environ.get("POLY_API_KEY") 
+        os.environ.get("POLY_API_KEY")
         or os.environ.get("OPINION_API_KEY")
         or engine_running  # If engine is running on Montreal, keys are there
     )
@@ -496,10 +543,12 @@ async def get_live_status(session: AsyncSession = Depends(get_session)):
 
 
 @router.post("/toggle-mode")
-async def toggle_mode(req: ToggleModeRequest, session: AsyncSession = Depends(get_session)):
+async def toggle_mode(
+    req: ToggleModeRequest, session: AsyncSession = Depends(get_session)
+):
     """
-    Enable or disable paper or live trading independently.
-    Both modes can be on simultaneously.
+    Switch between paper and live trading modes.
+    Enabling live also disables paper; disabling live falls back to paper.
     Enabling live requires confirmation='CONFIRM' string.
     """
     if req.mode == "live" and req.enabled:
@@ -510,32 +559,51 @@ async def toggle_mode(req: ToggleModeRequest, session: AsyncSession = Depends(ge
                 detail="Must pass confirmation='CONFIRM' to enable live trading",
             )
         # Verify there's an approved live config
-        approved = await _fetchrow(session, """
+        approved = await _fetchrow(
+            session,
+            """
             SELECT id FROM trading_configs
             WHERE mode = 'live' AND is_approved = TRUE AND is_active = TRUE
             LIMIT 1
-            """)
+            """,
+        )
         if not approved:
             raise HTTPException(
                 status_code=400,
                 detail="No approved live config is active. Approve a config first.",
             )
 
-    col = "paper_enabled" if req.mode == "paper" else "live_enabled"
-    await _execute(session, f"""
-        UPDATE system_state
-        SET {col} = :p1, updated_at = NOW()
-        WHERE id = 1
-        """, {"p1": req.enabled})
+    updates = {}
+    if req.mode == "live":
+        updates["live_enabled"] = req.enabled
+        updates["paper_enabled"] = False if req.enabled else True
+    else:
+        updates["paper_enabled"] = True if req.enabled else False
+        if req.enabled:
+            updates["live_enabled"] = False
 
-    log.info("trading.mode.toggled", mode=req.mode, enabled=req.enabled)
-    return {"ok": True, "mode": req.mode, "enabled": req.enabled}
+    set_clause = ", ".join(f"{col} = :{col}" for col in updates)
+    params = dict(updates)
+    await _execute(
+        session,
+        f"""
+        UPDATE system_state
+        SET {set_clause}, updated_at = NOW()
+        WHERE id = 1
+        """,
+        params,
+    )
+
+    log.info("trading.mode.toggled", mode=req.mode, enabled=req.enabled, **updates)
+    return {"ok": True, "mode": req.mode, "enabled": req.enabled, **updates}
 
 
 @router.get("/{config_id}")
 async def get_config(config_id: int, session: AsyncSession = Depends(get_session)):
     """Get a single config with full details including version history."""
-    row = await _fetchrow(session, "SELECT * FROM trading_configs WHERE id = :p1", {"p1": config_id})
+    row = await _fetchrow(
+        session, "SELECT * FROM trading_configs WHERE id = :p1", {"p1": config_id}
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Config not found")
 
@@ -545,7 +613,11 @@ async def get_config(config_id: int, session: AsyncSession = Depends(get_session
     history = []
     parent_id = result.get("parent_id")
     while parent_id:
-        parent_row = await _fetchrow(session, "SELECT id, name, version, created_at, updated_at FROM trading_configs WHERE id = :p1", {"p1": parent_id})
+        parent_row = await _fetchrow(
+            session,
+            "SELECT id, name, version, created_at, updated_at FROM trading_configs WHERE id = :p1",
+            {"p1": parent_id},
+        )
         if not parent_row:
             break
         history.append(dict(parent_row))
@@ -556,7 +628,9 @@ async def get_config(config_id: int, session: AsyncSession = Depends(get_session
 
 
 @router.post("")
-async def create_config(req: CreateConfigRequest, session: AsyncSession = Depends(get_session)):
+async def create_config(
+    req: CreateConfigRequest, session: AsyncSession = Depends(get_session)
+):
     """Create a new trading config."""
     # Merge with defaults to ensure all keys present
     merged = DEFAULT_CONFIG_VALUES.copy()
@@ -564,25 +638,40 @@ async def create_config(req: CreateConfigRequest, session: AsyncSession = Depend
 
     import json
 
-    row = await _fetchrow(session, """
+    row = await _fetchrow(
+        session,
+        """
         INSERT INTO trading_configs (name, description, config, mode, version)
         VALUES (:p1, :p2, :p3, :p4, 1)
         RETURNING *
-        """, {"p1": req.name, "p2": req.description, "p3": json.dumps(merged), "p4": req.mode})
+        """,
+        {
+            "p1": req.name,
+            "p2": req.description,
+            "p3": json.dumps(merged),
+            "p4": req.mode,
+        },
+    )
 
     log.info("trading_config.created", name=req.name, mode=req.mode)
     return {"config": dict(row)}
 
 
 @router.put("/{config_id}")
-async def update_config(config_id: int, req: UpdateConfigRequest, session: AsyncSession = Depends(get_session)):
+async def update_config(
+    config_id: int,
+    req: UpdateConfigRequest,
+    session: AsyncSession = Depends(get_session),
+):
     """
     Update a config. Bumps version and saves current as parent.
     Live configs lose approval on update (must re-approve).
     """
     import json
 
-    existing = await _fetchrow(session, "SELECT * FROM trading_configs WHERE id = :p1", {"p1": config_id})
+    existing = await _fetchrow(
+        session, "SELECT * FROM trading_configs WHERE id = :p1", {"p1": config_id}
+    )
     if not existing:
         raise HTTPException(status_code=404, detail="Config not found")
 
@@ -595,17 +684,40 @@ async def update_config(config_id: int, req: UpdateConfigRequest, session: Async
         new_config.update(req.config)
 
     # Insert new version (old id becomes parent)
-    new_row = await _fetchrow(session, """
+    new_row = await _fetchrow(
+        session,
+        """
         INSERT INTO trading_configs
             (name, description, config, mode, version, is_active, is_approved, parent_id)
         VALUES (:p1, :p2, :p3, :p4, :p5, :p6, FALSE, :p7)
         RETURNING *
-        """, {"p1": req.name or existing["name"], "p2": req.description if req.description is not None else existing["description"], "p3": json.dumps(new_config), "p4": existing["mode"], "p5": new_version, "p6": existing["is_active"], "p7": config_id})
+        """,
+        {
+            "p1": req.name or existing["name"],
+            "p2": req.description
+            if req.description is not None
+            else existing["description"],
+            "p3": json.dumps(new_config),
+            "p4": existing["mode"],
+            "p5": new_version,
+            "p6": existing["is_active"],
+            "p7": config_id,
+        },
+    )
 
     # Deactivate old version
-    await _execute(session, "UPDATE trading_configs SET is_active = FALSE WHERE id = :p1", {"p1": config_id})
+    await _execute(
+        session,
+        "UPDATE trading_configs SET is_active = FALSE WHERE id = :p1",
+        {"p1": config_id},
+    )
 
-    log.info("trading_config.updated", old_id=config_id, new_id=new_row["id"], version=new_version)
+    log.info(
+        "trading_config.updated",
+        old_id=config_id,
+        new_id=new_row["id"],
+        version=new_version,
+    )
     return {"config": dict(new_row)}
 
 
@@ -617,7 +729,9 @@ async def clone_config(config_id: int, session: AsyncSession = Depends(get_sessi
     """
     import json
 
-    existing = await _fetchrow(session, "SELECT * FROM trading_configs WHERE id = :p1", {"p1": config_id})
+    existing = await _fetchrow(
+        session, "SELECT * FROM trading_configs WHERE id = :p1", {"p1": config_id}
+    )
     if not existing:
         raise HTTPException(status_code=404, detail="Config not found")
 
@@ -625,13 +739,28 @@ async def clone_config(config_id: int, session: AsyncSession = Depends(get_sessi
     new_mode = "live" if existing["mode"] == "paper" else "paper"
     new_name = f"{existing['name']} ({new_mode.upper()})"
 
-    row = await _fetchrow(session, """
+    row = await _fetchrow(
+        session,
+        """
         INSERT INTO trading_configs (name, description, config, mode, version, parent_id)
         VALUES (:p1, :p2, :p3, :p4, 1, :p5)
         RETURNING *
-        """, {"p1": new_name, "p2": existing["description"], "p3": json.dumps(existing["config"]), "p4": new_mode, "p5": config_id})
+        """,
+        {
+            "p1": new_name,
+            "p2": existing["description"],
+            "p3": json.dumps(existing["config"]),
+            "p4": new_mode,
+            "p5": config_id,
+        },
+    )
 
-    log.info("trading_config.cloned", source_id=config_id, new_id=row["id"], new_mode=new_mode)
+    log.info(
+        "trading_config.cloned",
+        source_id=config_id,
+        new_id=row["id"],
+        new_mode=new_mode,
+    )
     return {"config": dict(row)}
 
 
@@ -642,7 +771,9 @@ async def activate_config(config_id: int, session: AsyncSession = Depends(get_se
     Deactivates any other active config for the same mode.
     Also updates system_state.active_{mode}_config_id.
     """
-    row = await _fetchrow(session, "SELECT * FROM trading_configs WHERE id = :p1", {"p1": config_id})
+    row = await _fetchrow(
+        session, "SELECT * FROM trading_configs WHERE id = :p1", {"p1": config_id}
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Config not found")
 
@@ -656,13 +787,25 @@ async def activate_config(config_id: int, session: AsyncSession = Depends(get_se
         )
 
     # Deactivate other configs of same mode
-    await _execute(session, "UPDATE trading_configs SET is_active = FALSE WHERE mode = :p1 AND id != :p2", {"p1": mode, "p2": config_id})
+    await _execute(
+        session,
+        "UPDATE trading_configs SET is_active = FALSE WHERE mode = :p1 AND id != :p2",
+        {"p1": mode, "p2": config_id},
+    )
     # Activate this one
-    await _execute(session, "UPDATE trading_configs SET is_active = TRUE, updated_at = NOW() WHERE id = :p1", {"p1": config_id})
+    await _execute(
+        session,
+        "UPDATE trading_configs SET is_active = TRUE, updated_at = NOW() WHERE id = :p1",
+        {"p1": config_id},
+    )
     # Update system_state (table may not have updated_at column)
     col = "active_paper_config_id" if mode == "paper" else "active_live_config_id"
     try:
-        await _execute(session, f"UPDATE system_state SET {col} = :p1 WHERE id = 1", {"p1": config_id})
+        await _execute(
+            session,
+            f"UPDATE system_state SET {col} = :p1 WHERE id = 1",
+            {"p1": config_id},
+        )
     except Exception as exc:
         log.warning("activate.system_state_update_failed", error=str(exc))
 
@@ -671,12 +814,18 @@ async def activate_config(config_id: int, session: AsyncSession = Depends(get_se
 
 
 @router.post("/{config_id}/approve")
-async def approve_config(config_id: int, req: ApproveConfigRequest, session: AsyncSession = Depends(get_session)):
+async def approve_config(
+    config_id: int,
+    req: ApproveConfigRequest,
+    session: AsyncSession = Depends(get_session),
+):
     """
     Approve a config for live trading. Requires password verification.
     Only live-mode configs can be approved.
     """
-    row = await _fetchrow(session, "SELECT * FROM trading_configs WHERE id = :p1", {"p1": config_id})
+    row = await _fetchrow(
+        session, "SELECT * FROM trading_configs WHERE id = :p1", {"p1": config_id}
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Config not found")
 
@@ -693,14 +842,18 @@ async def approve_config(config_id: int, req: ApproveConfigRequest, session: Asy
             detail="Invalid approval password",
         )
 
-    await _execute(session, """
+    await _execute(
+        session,
+        """
         UPDATE trading_configs
         SET is_approved = TRUE,
             approved_at = NOW(),
             approved_by = 'admin',
             updated_at = NOW()
         WHERE id = :p1
-        """, {"p1": config_id})
+        """,
+        {"p1": config_id},
+    )
 
     log.info("trading_config.approved", config_id=config_id)
     return {"ok": True, "config_id": config_id, "approved": True}
@@ -709,15 +862,23 @@ async def approve_config(config_id: int, req: ApproveConfigRequest, session: Asy
 @router.delete("/{config_id}")
 async def delete_config(config_id: int, session: AsyncSession = Depends(get_session)):
     """Soft-delete: deactivate and unapprove config."""
-    row = await _fetchrow(session, "SELECT id, is_active FROM trading_configs WHERE id = :p1", {"p1": config_id})
+    row = await _fetchrow(
+        session,
+        "SELECT id, is_active FROM trading_configs WHERE id = :p1",
+        {"p1": config_id},
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Config not found")
 
-    await _execute(session, """
+    await _execute(
+        session,
+        """
         UPDATE trading_configs
         SET is_active = FALSE, is_approved = FALSE, updated_at = NOW()
         WHERE id = :p1
-        """, {"p1": config_id})
+        """,
+        {"p1": config_id},
+    )
 
     log.info("trading_config.deleted", config_id=config_id)
     return {"ok": True, "config_id": config_id}
