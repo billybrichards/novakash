@@ -2316,6 +2316,27 @@ const TASKS = [
     fix: 'Config-first strategy registry with YAML definitions, reusable gate library (16 gates), FullDataSurface frozen dataclass, DataSurfaceManager background pre-fetch. Design spec: docs/superpowers/specs/2026-04-13-strategy-engine-v2-design.md',
     progressNotes: [
       { date: '2026-04-13', note: 'Design spec written. Implementation starting in feat/strategy-engine-v2 branch.' },
+      { date: '2026-04-13', note: 'SHIPPED — PRs #157 (engine: 40 files, 14 gates, 5 configs, 86 tests), #158 (frontend: shared constants, 3 new pages), #160 (ExecuteTradeUseCase: 6 files, 21 tests). Deployed to Montreal. All 5 strategies evaluating in GHOST. v4_down_only + v4_fusion producing TRADE decisions aligned with old system.' },
+    ],
+  },
+  {
+    id: 'SCHEMA-03',
+    category: 'data-quality',
+    severity: 'MEDIUM',
+    status: 'DONE',
+    title: 'window_snapshots missing actual_direction column — oracle resolution broken',
+    files: [
+      { path: 'engine/persistence/db_client.py', line: 1265, repo: 'novakash' },
+      { path: 'migrations/add_actual_direction_to_window_snapshots.sql', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Engine log: db.get_oracle_outcome_failed error="column actual_direction does not exist"',
+      'Column referenced by get_oracle_outcome(), orchestrator resolution alerts, Telegram outcome analysis',
+      'Shadow resolution cannot record oracle direction without this column',
+    ],
+    fix: 'SHIPPED — ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS actual_direction TEXT; Applied to Railway PostgreSQL. No engine restart needed.',
+    progressNotes: [
+      { date: '2026-04-13', note: 'Discovered during Strategy Engine v2 deployment. Migration applied directly to Railway DB. Error stopped immediately.' },
     ],
   },
 
