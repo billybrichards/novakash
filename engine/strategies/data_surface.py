@@ -276,7 +276,14 @@ class DataSurfaceManager:
         # Current price from Binance state
         btc_price = 0.0
         if self._binance_state:
-            btc_price = float(getattr(self._binance_state, "btc_price", 0) or 0)
+            # Supports MarketAggregator (has get_state()) and MarketState directly
+            _state_obj = self._binance_state
+            if hasattr(self._binance_state, "get_state"):
+                try:
+                    _state_obj = self._binance_state.get_state()
+                except Exception:
+                    pass
+            btc_price = float(getattr(_state_obj, "btc_price", 0) or 0)
 
         # Deltas from feed in-memory caches
         delta_tiingo = None

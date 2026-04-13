@@ -120,6 +120,9 @@ class StrategyRegistry:
         self._hooks: dict[str, dict[str, Callable]] = {}
         # Track last window_ts to send summary once per window at final offset
         self._last_summary_window: int = 0
+        # In-memory dedup: strategy_id -> last window_ts that was executed
+        # Prevents double-execution when WindowStateRepository is unavailable
+        self._executed_windows: dict[str, int] = {}
 
     def load_all(self) -> None:
         """Scan config_dir for *.yaml, build pipelines, load hooks."""
@@ -268,11 +271,16 @@ class StrategyRegistry:
                 decisions.append(decision)
 
                 # Execute LIVE trades when use case is wired
+                # In-memory dedup: only execute once per window per strategy
+                _already_executed = (
+                    self._executed_windows.get(name) == window_ts
+                )
                 if (
                     config.mode == "LIVE"
                     and decision.action == "TRADE"
                     and self._execute_uc is not None
                     and window_market is not None
+                    and not _already_executed
                 ):
                     try:
                         result = await self._execute_uc.execute(
@@ -281,6 +289,8 @@ class StrategyRegistry:
                             current_btc_price=current_btc_price,
                             open_price=open_price,
                         )
+                        # Mark window as executed (in-memory dedup)
+                        self._executed_windows[name] = window_ts
                         log.info(
                             "registry.executed",
                             strategy=name,
