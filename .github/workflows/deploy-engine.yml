@@ -133,15 +133,11 @@ jobs:
       - name: Write SSH key
         run: |
           mkdir -p ~/.ssh
-          if echo "$SSH_KEY" | base64 -d > ~/.ssh/deploy_key 2>/dev/null && [ -s ~/.ssh/deploy_key ]; then
-            echo "ssh key decoded from base64"
-          else
-            echo "$SSH_KEY" > ~/.ssh/deploy_key
-            echo "ssh key written as raw PEM"
-          fi
+          # Write the SSH key as raw PEM (GitHub Actions secrets store raw text)
+          echo "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          echo "StrictHostKeyChecking no" >> ~/.ssh/config
-          echo "UserKnownHostsFile=/dev/null" >> ~/.ssh/config
+          # Properly scan and add host key instead of disabling verification
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Ensure host directories exist
         run: |
@@ -220,10 +216,9 @@ jobs:
 
       - name: Restart engine via scripts/restart_engine.sh
         run: |
-          # Kill existing process and restart as novakash user
+          # Use the canonical restart script (rsynced earlier)
           timeout 90 ssh -i ~/.ssh/deploy_key novakash@"$HOST" \
-            'pkill -9 -f "python3 main.py" || true && sleep 3 && \
-             nohup python3 main.py >> /home/novakash/engine.log 2>&1 </dev/null & disown'
+            'cd /home/novakash/novakash && ./scripts/restart_engine.sh'
 
       - name: Wait for engine startup
         run: sleep 45
