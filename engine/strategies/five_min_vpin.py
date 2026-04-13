@@ -3183,6 +3183,16 @@ class FiveMinVPINStrategy(BaseStrategy):
             state: Current market state
             signal: Trading signal
         """
+        # Gate: when Strategy Engine v2 registry handles execution,
+        # disable the legacy execution path to avoid double-trading.
+        if os.environ.get("LEGACY_EXECUTION_DISABLED", "").lower() == "true":
+            self._log.info(
+                "legacy_execution.disabled",
+                reason="LEGACY_EXECUTION_DISABLED=true — new registry handles execution",
+                window=f"{signal.window.asset}-{signal.window.window_ts}",
+            )
+            return
+
         window = signal.window
         from config.runtime_config import runtime
 
