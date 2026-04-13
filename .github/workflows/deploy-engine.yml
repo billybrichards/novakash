@@ -187,6 +187,7 @@ jobs:
           if [ -d /home/novakash/novakash/engine ] && [ "$(ls -A /home/novakash/novakash/engine 2>/dev/null)" ]; then
             rm -rf "$BACKUP_DIR/engine.prev"
             cp -a /home/novakash/novakash/engine "$BACKUP_DIR/engine.prev"
+            cp /home/novakash/novakash/engine/.env /home/novakash/.rollback/engine.env.bak 2>/dev/null || true
             echo "Backed up engine/ to .rollback/engine.prev"
           else
             echo "No existing engine code to back up (first deploy?)"
@@ -274,7 +275,7 @@ jobs:
             'bash /home/novakash/novakash/scripts/restart_engine.sh'
 
       - name: Wait for engine startup
-        run: sleep 15
+        run: sleep 30
 
       - name: Post-deploy health probe -- process count
         id: health_probe
@@ -340,7 +341,7 @@ jobs:
           REMOTE
 
       - name: Rollback on failure
-        if: failure() && (steps.health_probe.outcome == 'failure' || steps.error_signatures.outcome == 'failure')
+        if: failure()
         run: |
           echo "::warning::Deploy health check failed — rolling back to previous code"
           ssh -i ~/.ssh/deploy_key novakash@"$HOST" bash -s <<'REMOTE'
@@ -350,6 +351,7 @@ jobs:
             echo "Restoring engine/ from backup..."
             rm -rf /home/novakash/novakash/engine
             cp -a "$BACKUP_DIR" /home/novakash/novakash/engine
+            cp /home/novakash/.rollback/engine.env.bak /home/novakash/novakash/engine/.env 2>/dev/null || true
             echo "Restarting engine on previous code..."
             bash /home/novakash/novakash/scripts/restart_engine.sh
             echo "Rollback complete"
