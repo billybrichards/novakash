@@ -111,6 +111,9 @@ class Orchestrator:
 
         # ── CLOB Reconciler (v10.2: definitive source of truth) ─────
         self._reconciler = None
+        self._reconcile_uc = None          # ReconcilePositionsUseCase — wired in start()
+        self._window_state_repo = None     # PgWindowRepository — wired in start()
+        self._trade_repo_adapter = None    # PgTradeRepository — wired in start()
 
         # ── TWAP Tracker (v5.7: time-weighted delta for direction) ─────────
         self._twap_tracker = TWAPTracker(max_windows=50)
@@ -665,6 +668,28 @@ class Orchestrator:
             await self._db.ensure_window_tables()
         except Exception as exc:
             log.warning("orchestrator.ensure_window_tables_failed", error=str(exc))
+
+        # ── Reconcile UC: wire after pool is live ──────────────────────────────
+        try:
+            from use_cases.reconcile_positions import ReconcilePositionsUseCase
+            from adapters.persistence.pg_trade_repo import PgTradeRepository
+            from adapters.persistence.pg_window_repo import PgWindowRepository
+            from adapters.clock.system_clock import SystemClock
+
+            self._window_state_repo = PgWindowRepository(self._db._pool)
+            self._trade_repo_adapter = PgTradeRepository(self._db._pool)
+            self._reconcile_uc = ReconcilePositionsUseCase(
+                trade_repo=self._trade_repo_adapter,
+                window_state=self._window_state_repo,
+                alerts=self._alerter,
+                clock=SystemClock(),
+            )
+            log.info("orchestrator.reconcile_uc_wired")
+        except Exception as exc:
+            log.warning(
+                "orchestrator.reconcile_uc_failed", error=str(exc)[:200]
+            )
+            self._reconcile_uc = None
 
         # ── TickRecorder: initialise now that pool is live ──────────────────
         try:
@@ -3348,6 +3373,53 @@ class Orchestrator:
                 break
             except Exception as exc:
                 log.error("sot_reconciler_loop.trades_pass_error", error=str(exc)[:200])
+
+            # Paper + live resolution via ReconcilePositionsUseCase
+            if getattr(self, "_reconcile_uc", None):
+                try:
+                    positions = []
+                    _use_live_uc = os.environ.get(
+                        "ENGINE_USE_RECONCILE_UC", "false"
+                    ).lower() == "true"
+                    if _use_live_uc and not self._settings.paper_mode:
+                        try:
+                            from domain.value_objects import PositionOutcome
+                            raw = await self._poly_client.get_position_outcomes()
+                            positions = [
+                                PositionOutcome(
+                                    condition_id=cid,
+                                    token_id=str(
+                                        data.get("asset", "") or data.get("tokenId", "")
+                                    ),
+                                    outcome=data["outcome"],
+                                    size=float(data.get("size", 0)),
+                                    avg_price=float(data.get("avgPrice", 0)),
+                                    cost=float(data.get("cost", 0)),
+                                    value=float(data.get("value", 0)),
+                                    pnl_raw=float(data.get("pnl", 0)),
+                                )
+                                for cid, data in (raw or {}).items()
+                                if data.get("outcome") in ("WIN", "LOSS")
+                            ]
+                        except Exception as exc:
+                            log.warning(
+                                "reconcile_uc.positions_fetch_failed",
+                                error=str(exc)[:100],
+                            )
+
+                    result = await self._reconcile_uc.execute(positions)
+                    if result.paper_resolved or result.live_resolved:
+                        log.info(
+                            "reconcile_uc.complete",
+                            live_resolved=result.live_resolved,
+                            paper_resolved=result.paper_resolved,
+                            paper_skipped=result.paper_skipped,
+                            errors=result.errors,
+                        )
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    log.error("reconcile_uc.loop_error", error=str(exc)[:200])
 
             try:
                 await asyncio.wait_for(
