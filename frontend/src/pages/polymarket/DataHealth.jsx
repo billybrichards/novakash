@@ -160,52 +160,104 @@ export default function DataHealth() {
   const fetchHealth = useCallback(async () => {
     if (!api) return;
 
-    // TODO: Replace with GET /api/data-surface/health when endpoint exists.
-    // For now, derive partial staleness from /api/v58/hq response.
+    // Derive source freshness from execution-hq (which now returns btc_price, vpin, regime)
+    // and the latest strategy-decisions row (which has _ctx fields).
     try {
-      const hq = await api.get('/api/v58/hq');
+      const [hqRes, decRes] = await Promise.allSettled([
+        api.get('/v58/execution-hq?asset=btc&timeframe=5m'),
+        api.get('/v58/strategy-decisions?limit=1'),
+      ]);
+
       const now = Date.now();
       const updates = {};
 
-      // Binance WS — derive from current_price presence
-      if (hq?.current_price) {
-        updates.binance_ws = now; // We got data, so it's fresh
+      // Parse execution-hq response
+      const hq = hqRes.status === 'fulfilled'
+        ? (hqRes.value?.data || hqRes.value)
+        : null;
+
+      // btc_price is now top-level in execution-hq (deploy 76be00e)
+      const btcPrice = hq?.btc_price ?? hq?.current_price ?? hq?.current_window?.close_price;
+      if (btcPrice != null) {
+        updates.binance_ws = now;
       }
 
-      // V4 snapshot — derive from v4_snapshot
-      if (hq?.v4_snapshot) {
-        const snapAge = hq.v4_snapshot?.assembled_at
-          ? hq.v4_snapshot.assembled_at * 1000
-          : now - 3000; // assume 3s ago if present
-        updates.v4_snapshot = snapAge;
-      }
-
-      // CLOB — from gate heartbeat
-      if (hq?.gate_heartbeat?.[0]?.gate_results?.clob_up_bid != null) {
-        updates.clob = now;
-      }
-
-      // VPIN — from vpin field
+      // vpin is now top-level in execution-hq
       if (hq?.vpin != null) {
         updates.vpin = now;
       }
 
-      // CoinGlass — from coinglass snapshot
-      if (hq?.coinglass || hq?.cg_snapshot) {
-        updates.coinglass = now - 5000; // Assume slightly stale
+      // V4 snapshot — derive from v4_snapshot or current_window
+      if (hq?.v4_snapshot || hq?.current_window) {
+        const snapAge = hq?.v4_snapshot?.assembled_at
+          ? hq.v4_snapshot.assembled_at * 1000
+          : now - 3000;
+        updates.v4_snapshot = snapAge;
       }
 
-      // Tiingo and Chainlink — if deltas present
-      if (hq?.delta_tiingo != null || hq?.v4_snapshot?.delta_tiingo != null) {
-        updates.tiingo = now - 2000;
-      }
-      if (hq?.delta_chainlink != null || hq?.v4_snapshot?.delta_chainlink != null) {
-        updates.chainlink = now - 5000;
+      // CLOB — from gate heartbeat fields
+      const gh = hq?.gate_heartbeat;
+      const ghArr = Array.isArray(gh) ? gh : [];
+      if (ghArr.some(g => g?.gate_results?.clob_up_bid != null) ||
+          hq?.clob_up_bid != null) {
+        updates.clob = now;
       }
 
-      // V3 composite — check if any v3 data present
-      if (hq?.v4_snapshot?.v3_5m_composite != null) {
-        updates.v3_composite = now - 5000;
+      // CoinGlass — from coinglass snapshot fields
+      if (hq?.coinglass || hq?.cg_snapshot || hq?.cg_oi_usd != null) {
+        updates.coinglass = now - 5000;
+      }
+
+      // Parse latest decision for _ctx fields
+      const decData = decRes.status === 'fulfilled'
+        ? (decRes.value?.data || decRes.value)
+        : null;
+      const latestDec = Array.isArray(decData)
+        ? decData[0]
+        : (decData?.decisions?.[0] ?? null);
+
+      if (latestDec) {
+        // Use evaluated_at from most recent decision to estimate freshness of sources
+        const evalTs = latestDec.evaluated_at
+          ? new Date(latestDec.evaluated_at).getTime()
+          : null;
+        const decAge = evalTs ? now - evalTs : null;
+
+        // Tiingo — if delta_tiingo present in decision or hq
+        const hasTiingo = latestDec.delta_tiingo != null
+          || latestDec._ctx?.delta_tiingo != null
+          || hq?.delta_tiingo != null
+          || hq?.v4_snapshot?.delta_tiingo != null;
+        if (hasTiingo) {
+          updates.tiingo = evalTs ? evalTs : now - 2000;
+        }
+
+        // Chainlink — if delta_chainlink present
+        const hasChainlink = latestDec.delta_chainlink != null
+          || latestDec._ctx?.delta_chainlink != null
+          || hq?.delta_chainlink != null
+          || hq?.v4_snapshot?.delta_chainlink != null;
+        if (hasChainlink) {
+          updates.chainlink = evalTs ? evalTs : now - 5000;
+        }
+
+        // V3 composite
+        const hasV3 = latestDec._ctx?.v3_5m_composite != null
+          || hq?.v4_snapshot?.v3_5m_composite != null;
+        if (hasV3) {
+          updates.v3_composite = evalTs ? evalTs : now - 5000;
+        }
+      } else {
+        // Fallback: if hq has delta fields, use them
+        if (hq?.delta_tiingo != null || hq?.v4_snapshot?.delta_tiingo != null) {
+          updates.tiingo = now - 2000;
+        }
+        if (hq?.delta_chainlink != null || hq?.v4_snapshot?.delta_chainlink != null) {
+          updates.chainlink = now - 5000;
+        }
+        if (hq?.v4_snapshot?.v3_5m_composite != null) {
+          updates.v3_composite = now - 5000;
+        }
       }
 
       setLastUpdates(prev => ({ ...prev, ...updates }));

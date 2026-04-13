@@ -326,21 +326,49 @@ export default function LiveFloor() {
   for (const d of decisions) {
     const key = d.window_ts;
     if (!decisionMap[key]) decisionMap[key] = {};
-    const existing = decisionMap[key][d.strategy_id];
+    const sid = d.strategy_id || d.strategy_name || 'unknown';
+    const existing = decisionMap[key][sid];
     if (!existing) {
-      decisionMap[key][d.strategy_id] = d;
+      decisionMap[key][sid] = d;
     } else {
       // Prefer offset in sweet spot (90-150), then closest to 120
       const inSweet = (o) => o >= 90 && o <= 150;
       const eNew = d.eval_offset || 0;
       const eOld = existing.eval_offset || 0;
       if (inSweet(eNew) && !inSweet(eOld)) {
-        decisionMap[key][d.strategy_id] = d;
+        decisionMap[key][sid] = d;
       } else if (inSweet(eNew) && inSweet(eOld) && Math.abs(eNew - 120) < Math.abs(eOld - 120)) {
-        decisionMap[key][d.strategy_id] = d;
+        decisionMap[key][sid] = d;
       }
     }
   }
+
+  // Build window rows from decisions when outcomes is unavailable or empty.
+  // Each "synthetic" row has: window_ts, actual_direction (from decisions), direction, confidence, vpin
+  const syntheticWindowRows = (() => {
+    if (outcomes.length > 0) return null; // outcomes has data — use it
+    const seen = new Set();
+    const rows = [];
+    for (const d of decisions) {
+      const wts = d.window_ts;
+      if (!wts || seen.has(wts)) continue;
+      seen.add(wts);
+      rows.push({
+        window_ts: wts,
+        actual_direction: d.actual_direction || d.oracle_direction || null,
+        direction: d.direction || null,
+        confidence: d.confidence ?? null,
+        vpin: d.vpin ?? null,
+        _synthetic: true,
+      });
+    }
+    // Sort newest first
+    rows.sort((a, b) => (b.window_ts || 0) - (a.window_ts || 0));
+    return rows.slice(0, 30);
+  })();
+
+  // Use outcomes if available, otherwise fall back to synthetic rows from decisions
+  const displayedWindows = outcomes.length > 0 ? outcomes : (syntheticWindowRows || []);
 
   // Latest V10 + V4 decisions (most recent window with data)
   const latestDecisionTs = decisions.length > 0
@@ -451,8 +479,14 @@ export default function LiveFloor() {
 
           {/* 3. Recent Windows Table */}
           <div style={{ ...S.card, padding: 0 }}>
-            <div style={{ ...S.cardTitle, padding: '14px 14px 0' }}>
-              Recent Windows ({outcomes.length})
+            <div style={{ ...S.cardTitle, padding: '14px 14px 0', display: 'flex', alignItems: 'center', gap: 8 }}>
+              Recent Windows ({displayedWindows.length})
+              {syntheticWindowRows && displayedWindows.length > 0 && (
+                <span style={{
+                  fontSize: 7, padding: '1px 5px', borderRadius: 2, fontFamily: T.mono, fontWeight: 600,
+                  background: 'rgba(245,158,11,0.12)', color: T.amber,
+                }}>FROM DECISIONS</span>
+              )}
             </div>
             <div style={{ maxHeight: 500, overflowY: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -470,9 +504,11 @@ export default function LiveFloor() {
                   </tr>
                 </thead>
                 <tbody>
-                  {outcomes.map((o, i) => {
+                  {displayedWindows.map((o, i) => {
+                    // window_ts may be ISO string (from outcomes) or numeric epoch seconds (from decisions)
                     const wts = (() => {
                       if (!o.window_ts) return 0;
+                      if (typeof o.window_ts === 'number') return o.window_ts;
                       const d = new Date(o.window_ts);
                       return isNaN(d) ? 0 : Math.floor(d.getTime() / 1000);
                     })();
@@ -506,7 +542,7 @@ export default function LiveFloor() {
                         }}
                         title={wts ? 'Click to analyze' : ''}
                       >
-                        <td style={{ ...S.td, color: T.text }}>{o.window_ts ? utcHHMM(o.window_ts) : '--'}</td>
+                        <td style={{ ...S.td, color: T.text }}>{wts ? utcHHMM(wts) : '--'}</td>
                         <td style={{ ...S.td, color: dirColor(o.actual_direction), fontWeight: 600 }}>{o.actual_direction || '--'}</td>
                         {stratCell('v4_down_only', STRATEGIES.v4_down_only.color)}
                         {stratCell('v4_up_asian', STRATEGIES.v4_up_asian.color)}
@@ -518,10 +554,10 @@ export default function LiveFloor() {
                       </tr>
                     );
                   })}
-                  {outcomes.length === 0 && (
+                  {displayedWindows.length === 0 && (
                     <tr>
                       <td colSpan={10} style={{ ...S.td, textAlign: 'center', color: T.textDim, padding: 20 }}>
-                        No recent windows
+                        No recent windows — waiting for completed windows
                       </td>
                     </tr>
                   )}

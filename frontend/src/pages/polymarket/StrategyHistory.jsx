@@ -16,6 +16,34 @@ import { STRATEGIES } from '../../constants/strategies.js';
 // ── Static changelog (code changes not tracked in DB) ────────────────────────
 const CODE_CHANGELOG = [
   {
+    date: '2026-04-13 20:00',
+    strategy: 'v4_up_basic',
+    change: 'Strategy created: UP-only, all hours, dist>=0.10, T-60-180. Expected 70-80% WR.',
+    author: 'claude',
+    type: 'created',
+  },
+  {
+    date: '2026-04-13 20:00',
+    strategy: 'v4_down_only',
+    change: 'Migrated to config-first YAML registry (CA-07). Same thresholds, cleaner architecture.',
+    author: 'claude',
+    type: 'config',
+  },
+  {
+    date: '2026-04-13 20:00',
+    strategy: 'v4_up_asian',
+    change: 'Confidence threshold relaxed from 0.15 to 0.10 (SIG-06). Now GHOST pending validation.',
+    author: 'claude',
+    type: 'threshold',
+  },
+  {
+    date: '2026-04-13 18:00',
+    strategy: 'all',
+    change: 'Strategy Engine v2 deployed: config-first registry, YAML gates, FullDataSurface.',
+    author: 'claude',
+    type: 'architecture',
+  },
+  {
     date: '2026-04-12 21:10',
     strategy: 'v4_down_only',
     change: 'CLOB sizing audit: bump 0.55-0.75 to 2.0x, skip <0.25 (53% WR), NULL CLOB → 1.5x',
@@ -87,6 +115,8 @@ const TYPE_COLORS = {
   sizing: '#f59e0b',
   gate: '#a855f7',
   fix: '#ef4444',
+  config: '#06b6d4',
+  architecture: '#8b5cf6',
 };
 
 // Strategy colors — sourced from shared constants, plus 'all' fallback
@@ -190,10 +220,11 @@ export default function StrategyHistory() {
       </div>
 
       {/* Current strategy status */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8, marginBottom: 16 }}>
         {[
           { name: 'V4 Down-Only', id: 'v4_down_only', mode: 'LIVE', desc: 'DOWN, dist>=0.10, T-90-150, CLOB sizing' },
-          { name: 'V4 Up Asian', id: 'v4_up_asian', mode: 'LIVE', desc: 'UP, Asian 23-02 UTC, dist 0.15-0.20' },
+          { name: 'V4 Up Asian', id: 'v4_up_asian', mode: 'GHOST', desc: 'UP, Asian 23-02 UTC, dist 0.10-0.20' },
+          { name: 'V4 Up Basic', id: 'v4_up_basic', mode: 'GHOST', desc: 'UP, all hours, dist>=0.10, T-60-180' },
           { name: 'V4 Fusion', id: 'v4_fusion', mode: 'GHOST', desc: 'Full V4 surface, baseline' },
           { name: 'V10 Gate', id: 'v10_gate', mode: 'GHOST', desc: 'Legacy 8-gate pipeline' },
         ].map(s => (
@@ -240,6 +271,7 @@ export default function StrategyHistory() {
                     <span style={{ color: stratColor, fontWeight: 600, fontSize: 9 }}>
                       {e.strategy === 'v4_down_only' ? 'DOWN-Only'
                         : e.strategy === 'v4_up_asian' ? 'UP Asian'
+                        : e.strategy === 'v4_up_basic' ? 'UP Basic'
                         : e.strategy === 'v4_fusion' ? 'V4 Fusion'
                         : e.strategy === 'v10_gate' ? 'V10 Gate'
                         : e.strategy}

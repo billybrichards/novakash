@@ -1072,13 +1072,21 @@ function ShadowComparison({ api }) {
       setLoading(true);
       setError(null);
       try {
-        const [decRes, cmpRes] = await Promise.all([
+        // strategy-comparison may not exist yet — use allSettled so decisions still load
+        const [decRes, cmpRes] = await Promise.allSettled([
           api('GET', `/v58/strategy-decisions?limit=200`),
           api('GET', `/v58/strategy-comparison?days=${days}`),
         ]);
         if (cancelled) return;
-        setDecisions(decRes.data?.decisions || []);
-        setComparison(cmpRes.data || { strategies: [] });
+        if (decRes.status === 'fulfilled') {
+          setDecisions(decRes.value?.data?.decisions || []);
+        }
+        if (cmpRes.status === 'fulfilled') {
+          setComparison(cmpRes.value?.data || { strategies: [] });
+        } else {
+          // Endpoint doesn't exist yet — use empty comparison, decisions still usable
+          setComparison(null);
+        }
       } catch (err) {
         if (!cancelled) setError(err.message || 'Failed to fetch strategy data');
       } finally {
@@ -1091,6 +1099,8 @@ function ShadowComparison({ api }) {
   if (loading) return <div style={S.loadingBox}>Loading strategy decisions...</div>;
   if (error) return <div style={S.errorBox}>{error}</div>;
 
+  // comparison may be null if /v58/strategy-comparison endpoint doesn't exist yet
+  const comparisonUnavailable = comparison === null;
   const strategies = comparison?.strategies || [];
   const v10 = strategies.find(s => s.strategy_id === 'v10_gate');
   const v4 = strategies.find(s => s.strategy_id === 'v4_fusion');
@@ -1101,7 +1111,8 @@ function ShadowComparison({ api }) {
   for (const d of decisions) {
     const key = d.window_ts;
     if (!windowMap[key]) windowMap[key] = {};
-    windowMap[key][d.strategy_id] = d;
+    const sid = d.strategy_id || d.strategy_name || 'unknown';
+    windowMap[key][sid] = d;
   }
   const windowKeys = Object.keys(windowMap).sort((a, b) => b - a);
 
@@ -1157,6 +1168,20 @@ function ShadowComparison({ api }) {
 
   return (
     <div>
+      {/* Info banner when strategy-comparison endpoint is unavailable */}
+      {comparisonUnavailable && (
+        <div style={{
+          padding: '10px 14px', borderRadius: 4, marginBottom: 12,
+          background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)',
+          fontSize: 10, color: T.amber, lineHeight: 1.5,
+        }}>
+          <strong>Gate Impact Analysis</strong> uses historical window data.
+          Powered by <code style={{ color: T.cyan }}>/api/v58/strategy-decisions</code> — summary stats (W/L by strategy)
+          will populate as the <code style={{ color: T.cyan }}>/api/v58/strategy-comparison</code> endpoint comes online.
+          The side-by-side decision timeline below is available now.
+        </div>
+      )}
+
       {/* Days selector */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, alignItems: 'center' }}>
         <span style={{ fontSize: 9, color: T.textMuted, letterSpacing: '0.06em' }}>LOOKBACK:</span>

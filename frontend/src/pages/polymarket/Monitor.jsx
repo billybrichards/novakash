@@ -122,6 +122,24 @@ export default function Monitor() {
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden', userSelect: 'none',
     }}>
+      {/* Legacy warning banner — pre-v2 endpoints */}
+      <div style={{
+        background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.25)',
+        padding: '5px 12px', borderRadius: 3, marginBottom: 6, fontSize: 10,
+        fontFamily: T.mono, color: T.amber, flexShrink: 0,
+        display: 'flex', alignItems: 'center', gap: 8,
+      }}>
+        <span style={{ fontWeight: 700 }}>⚠ Legacy Page</span>
+        <span style={{ color: T.textMuted }}>
+          This page uses pre-v2 endpoints (Sequoia V5.2, SRC AGREEMENT, CONSENSUS, V4 CONVICTION).
+          Use{' '}
+          <a href="/polymarket/command" style={{ color: T.cyan, textDecoration: 'none' }}>
+            Strategy Command (/polymarket/command)
+          </a>
+          {' '}for live data.
+        </span>
+      </div>
+
       {/* Error banner */}
       {error && (
         <div style={{
