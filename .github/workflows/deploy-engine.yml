@@ -254,6 +254,7 @@ jobs:
             echo "# Strategy Engine v2 (CA-07)"
             echo "ENGINE_USE_STRATEGY_REGISTRY=true"
             echo "ENGINE_REGISTRY_EXECUTE=true"
+            echo "LIVE_TRADING_ENABLED=true"
             echo "ENGINE_USE_STRATEGY_PORT=false"
             echo "LEGACY_EXECUTION_DISABLED=true"
             echo ""
