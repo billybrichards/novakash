@@ -3241,6 +3241,8 @@ async def get_execution_hq(
             except Exception:
                 pass
 
+        # Top-level convenience fields for Command Center frontend
+        _w0 = windows[0] if windows else {}
         return {
             "asset": asset_norm,
             "timeframe": tf_norm,
@@ -3252,6 +3254,18 @@ async def get_execution_hq(
             "v10_stats": v10_stats,
             "v9_gate_data": v9_gate_data,
             "gate_heartbeat": gate_heartbeat,
+            # Convenience aliases for Command Center
+            "btc_price": _w0.get("close_price"),
+            "open_price": _w0.get("open_price"),
+            "vpin": _w0.get("vpin"),
+            "regime": _w0.get("regime"),
+            "current_window": {
+                "window_ts": _w0.get("window_ts"),
+                "open_price": _w0.get("open_price"),
+                "close_price": _w0.get("close_price"),
+                "delta_pct": _w0.get("delta_pct"),
+            } if _w0 else None,
+            "bankroll": system_state.get("bankroll") if system_state else None,
         }
     except HTTPException:
         # Don't swallow the 400 we raised above for bad asset/timeframe.
@@ -3813,6 +3827,8 @@ async def strategy_decisions(
                 meta_parsed = {}
             decisions.append({
                 "strategy_id": r["strategy_id"],
+                "strategy_name": r["strategy_id"],  # alias for frontend compat
+                "id": r["strategy_id"],              # alias for frontend compat
                 "strategy_version": r["strategy_version"],
                 "mode": r["mode"],
                 "asset": r["asset"],
@@ -3892,6 +3908,9 @@ async def strategy_comparison(
             if sid not in strats:
                 strats[sid] = {
                     "strategy_id": sid,
+                    "strategy_name": sid,  # alias for frontend compat
+                    "id": sid,             # alias for frontend compat
+                    "name": sid,           # alias for frontend compat
                     "mode": r["mode"],
                     "total_evals": 0,
                     "trades": 0,
