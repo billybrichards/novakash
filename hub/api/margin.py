@@ -7,6 +7,7 @@ Forwards requests to the margin engine (eu-west-2) and TimesFM service
 GET  /api/margin/status              — margin engine portfolio + positions
 GET  /api/margin/logs                — recent log lines (filterable)
 GET  /api/margin/positions/history   — paginated closed-position history (Trade Timeline tab)
+GET  /api/margin/strategy-decisions  — V4 strategy decisions with outcomes
 GET  /api/v1/forecast                — legacy TimesFM point forecast (BTC only)
 GET  /api/v1/health                  — legacy TimesFM health
 GET  /api/v2/probability             — Sequoia v5.2 5m probability + quantiles
@@ -149,6 +150,155 @@ async def margin_strategy_stats(
     Returns: { strategies: { strategy_name: { win_rate, n_trades, total_pnl, ... } } }
     """
     return await _proxy_get(MARGIN_ENGINE_URL, "/strategy-stats")
+
+
+@router.get("/margin/strategy-decisions")
+async def margin_strategy_decisions(
+    limit: int = Query(default=100, le=500, ge=1),
+    offset: int = Query(default=0, ge=0),
+    strategy_id: str | None = Query(default=None),
+    asset: str = Query(default="BTC"),
+    user: TokenData = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """
+    Query strategy decisions with outcomes for backtesting.
+
+    Returns per-strategy evaluations at position entry time, joined to
+    actual position outcomes (entry/exit prices, PnL, exit reason).
+
+    Query:
+    - limit: max rows to return (default 100, max 500)
+    - offset: pagination offset
+    - strategy_id: filter by specific strategy (e.g., "regime_adaptive")
+    - asset: asset to filter (default "BTC")
+
+    Returns:
+    {
+      "rows": [
+        {
+          "id": "...",
+          "position_id": "...",
+          "strategy_id": "regime_adaptive",
+          "decision": "TRADE_LONG",
+          "confidence": 0.85,
+          "timescale": "15m",
+          "regime": "TRENDING",
+          "size_mult": 1.2,
+          "hold_minutes": 60,
+          "rationale": "Trend continuation",
+          "entry_price": 72810.0,
+          "exit_price": 73200.0,
+          "realised_pnl": 15.5,
+          "exit_reason": "TAKE_PROFIT",
+          ...
+        },
+        ...
+      ],
+      "total": 250,
+      "limit": 100,
+      "offset": 0
+    }
+    """
+    # Query strategy decisions joined to position outcomes
+    query = text("""
+        SELECT
+            sd.id,
+            sd.position_id,
+            sd.asset,
+            sd.strategy_id,
+            sd.decision,
+            sd.confidence,
+            sd.timescale,
+            sd.regime,
+            sd.v4_snapshot,
+            sd.rationale,
+            sd.size_mult,
+            sd.hold_minutes,
+            sd.created_at,
+            mp.entry_price,
+            mp.exit_price,
+            mp.realised_pnl,
+            mp.exit_reason,
+            mp.opened_at,
+            mp.closed_at,
+            mp.v4_entry_regime,
+            mp.v4_entry_macro_bias,
+            mp.v4_entry_expected_move_bps,
+            mp.v4_entry_composite_v3,
+            EXTRACT(EPOCH FROM (mp.closed_at - mp.opened_at)) AS hold_duration_s
+        FROM margin_strategy_decisions sd
+        LEFT JOIN margin_positions mp ON mp.id = sd.position_id
+        WHERE sd.asset = :asset
+          AND (:strategy_id IS NULL OR sd.strategy_id = :strategy_id)
+        ORDER BY sd.created_at DESC
+        LIMIT :limit OFFSET :offset
+    """)
+
+    result = await session.execute(
+        query,
+        {
+            "asset": asset,
+            "strategy_id": strategy_id,
+            "limit": limit,
+            "offset": offset,
+        },
+    )
+    rows = result.mappings().all()
+
+    # Get total count
+    count_query = text("""
+        SELECT COUNT(*) AS total FROM margin_strategy_decisions sd
+        WHERE sd.asset = :asset
+          AND (:strategy_id IS NULL OR sd.strategy_id = :strategy_id)
+    """)
+    count_result = await session.execute(
+        count_query,
+        {"asset": asset, "strategy_id": strategy_id},
+    )
+    total = count_result.scalar() or 0
+
+    # Convert to list of dicts
+    decisions = [
+        {
+            "id": r["id"],
+            "position_id": r["position_id"],
+            "asset": r["asset"],
+            "strategy_id": r["strategy_id"],
+            "decision": r["decision"],
+            "confidence": r["confidence"],
+            "timescale": r["timescale"],
+            "regime": r["regime"],
+            "v4_snapshot": r["v4_snapshot"],
+            "rationale": r["rationale"],
+            "size_mult": r["size_mult"],
+            "hold_minutes": r["hold_minutes"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "entry_price": r["entry_price"],
+            "exit_price": r["exit_price"],
+            "realised_pnl": float(r["realised_pnl"])
+            if r["realised_pnl"] is not None
+            else 0.0,
+            "exit_reason": r["exit_reason"],
+            "opened_at": r["opened_at"].isoformat() if r["opened_at"] else None,
+            "closed_at": r["closed_at"].isoformat() if r["closed_at"] else None,
+            "hold_duration_s": float(r["hold_duration_s"])
+            if r["hold_duration_s"] is not None
+            else None,
+            "v4_entry_regime": r["v4_entry_regime"],
+            "v4_entry_macro_bias": r["v4_entry_macro_bias"],
+            "v4_entry_expected_move_bps": r["v4_entry_expected_move_bps"],
+            "v4_entry_composite_v3": r["v4_entry_composite_v3"],
+        }
+        for r in rows
+    ]
+
+    return {
+        "rows": decisions,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 # ─── V1 Legacy Forecast ────────────────────────────────────────────────────

@@ -54,10 +54,56 @@
 ## Active Tasks
 
 - [x] V58Monitor.jsx audit — complete, see `docs/V58_MONITOR_AUDIT.md`
+- [x] TimesFM v5.2 chainlink_price fix — see `docs/analysis/TIMESFM_V5_FIX_2026-04-13.md`
 - [ ] Implement V1 TimesFM disagreement gate (highest ROI)
 - [ ] Remove paper mode Binance resolution fallback
 - [ ] Add error handling to frontend API calls
 - [ ] Clean up dead pages (PaperTrading.jsx, Learn.jsx)
+
+## TimesFM v5.2 Fix — 2026-04-13
+
+### What Was Broken
+
+Last 12h: 13,096 signal evaluations, ALL predicting UP at constant 10.2% conviction, 0 trades executed.
+
+**Root cause:** TimesFM v5.2 LightGBM model requires 25 features. When `chainlink_price` was missing (NaN), model followed the "missing value" path and returned the default leaf value: 0.60614485 (10.2% conviction, always UP).
+
+**Market reality:** BTC went DOWN 82.4% of the time during this period — the model was completely wrong.
+
+### What Was Fixed
+
+✅ Fixed 3 call sites adding `chainlink_price=window_snapshot.get("chainlink_open")`:
+- `engine/strategies/five_min_vpin.py:1759`
+- `engine/use_cases/evaluate_window.py:238`
+- `engine/use_cases/evaluate_window.py:851`
+
+✅ Note: `engine/signals/gates.py:952` already had `chainlink_price` (no change needed)
+
+✅ Created documentation:
+- `docs/analysis/TIMESFM_V5_MODEL_BROKEN_2026-04-13.md` — Root cause analysis
+- `docs/analysis/TIMESFM_V5_FIX_2026-04-13.md` — Detailed fix documentation  
+- `docs/analysis/TIMESFM_V5_FIX_APPLIED_2026-04-13.md` — Fix verification checklist
+
+✅ Committed to branch `fix/timesfm-v5-chainlink-feature`
+
+### What's Next
+
+- [ ] PR to `develop` (already created — awaiting review)
+- [ ] Deploy to Montreal (restart engine)
+- [ ] Verify logs show `v2.probability.push_mode_active feature_coverage>=0.80`
+- [ ] Monitor signals — P(UP) should vary 0.3-0.9 instead of constant 0.606
+- [ ] Monitor trades — should resume at ~40/day for DOWN-only
+- [ ] Track win rate — should return to 75-80%
+
+### Key Learnings
+
+1. **12 evaluations per window:** Each 5-minute window is evaluated 12 times (T-140 to T-90, every 5s), but only 1 trade executes per window after all filters pass
+2. **Filter cascade:** 18,701 evaluations → 36 unique windows → 40 actual trades (0.2% filter rate)
+3. **Strict filters saved us:** The 12% conviction threshold correctly blocked all trades, preventing massive losses
+4. **Use correct data source:**
+   - `signal_evaluations` — Signal quality analysis (does model predict well?)
+   - `unique_windows` — Strategy design (how many windows have valid signal?)
+   - `trade_bible` — Performance tracking (real PnL)
 
 ## Dashboard + Margin Engine Session — 2026-04-10
 
@@ -94,8 +140,45 @@ Two hidden bugs were compounding into one symptom:
 
 3. **Margin engine P&L fix** was the right fix for the overnight 116-trade fee-cost trap. The FillResult pattern puts the exchange adapter in charge of money, and the position entity becomes a record not a calculator. Paper mode mirrors live shape exactly so they can never drift again.
 
+## Margin Strategy Dashboard — 2026-04-12
+
+### What shipped
+- [x] `/frontend/src/pages/MarginStrategies.jsx` — Complete strategy dashboard page (1000+ lines)
+- [x] `/frontend/src/App.jsx` — Added route `/margin-strategies`
+- [x] `/frontend/src/components/Layout.jsx` — Added "Strategies" link to MARGIN ENGINE nav + mobile tab bar
+- [x] `/docs/MARGIN_STRATEGY_DASHBOARD_IMPLEMENTATION.md` — Implementation report with backend endpoint specs
+
+### Dashboard Sections Implemented
+1. **Strategy Performance Cards** — 5 strategies (V4 PATH live, 4 inactive with placeholders)
+2. **Real-Time V4 Data Panel** — Reuses V4Panel component, 4s refresh
+3. **Position Analysis** — Fee-adjusted PnL distribution + histogram
+4. **Signal Strength Distribution** — Alignment score histogram (6 bins)
+5. **Hold Extension Analysis** — Actual vs expected hold times + distribution
+6. **Partial Close Audit** — Table showing when/why partials happened
+7. **Regime Performance** — PnL breakdown by market regime (TRENDING_UP/DOWN, MEAN_REVERTING, CHOPPY)
+
+### Backend Endpoints Needed
+- `GET /api/margin/strategy-stats` — Historical performance metrics per strategy
+- `GET /api/margin/positions` — Position history with metadata (alignment_score, regime, partial_close info)
+- `GET /api/margin/strategy-config` (optional) — Strategy configuration for Configure buttons
+
+### Design Decisions
+- Graceful degradation: placeholder data when APIs unavailable
+- Reuses existing V4Panel component for consistency
+- 4-second refresh interval (matches V4Surface)
+- Follows existing color scheme and component patterns
+- Mobile-responsive with bottom tab bar integration
+
+### Follow-ups
+- [ ] Implement `GET /api/margin/strategy-stats` endpoint
+- [ ] Implement `GET /api/margin/positions` endpoint with real DB query
+- [ ] Add strategy tracking to margin engine (track which strategy triggered each trade)
+- [ ] Make "Configure" buttons functional (open modals with strategy details)
+- [ ] Add backtest simulation for inactive strategies
+
 ## Completed
 
 - [x] Phase 1: Foundation (Docker, DB schema, Auth, project skeleton)
 - [x] Codebase audit — 2026-04-06
 - [x] Dashboard + Margin Engine — 2026-04-10 (see section above)
+- [x] Margin Strategy Dashboard — 2026-04-12 (see section above)

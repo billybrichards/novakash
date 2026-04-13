@@ -129,6 +129,78 @@ python3 docs/analysis/full_signal_report.py --hours 1 --asset BTC --no-color
 
 ## Section 3: Standard Analysis Queries
 
+---
+
+### NEW: Evaluations vs Actual Trades (Critical Understanding)
+
+**IMPORTANT:** The signal_evaluations table contains EVERY model evaluation (every 2s tick), not just actual trades. This is a common source of confusion.
+
+**Key Facts:**
+- Each 5-minute window is evaluated **12 times** (T-140 to T-90, every 5s)
+- Each evaluation is stored as a separate row in signal_evaluations
+- The live engine only trades ~1-2x/hour after all filters applied
+- **Evaluations ≠ Trades** - use the correct method for your analysis
+
+**Example (Last 24h):**
+
+| Metric | Evaluations | Unique Windows | Actual Trades |
+|--------|-------------|----------------|---------------|
+| DOWN-Only | 11,621 | 36 | 40 |
+| Asian UP | 1,770 | 3 | 3 |
+
+**Wrong Method (Counts all evaluations):**
+```sql
+-- WRONG: This counts every evaluation as a "trade"
+SELECT COUNT(*) as n,
+       SUM(CASE WHEN win THEN 1 ELSE 0 END) / COUNT(*) as wr
+FROM signal_evaluations
+WHERE direction='DOWN' AND offset BETWEEN 90 AND 140
+-- Result: n=11,621, WR=92.5% (WRONG!)
+```
+
+**Correct Method (Counts unique windows):**
+```sql
+-- RIGHT: Count only the first evaluation per window
+WITH first_eval AS (
+    SELECT window_ts, eval_offset,
+           ROW_NUMBER() OVER (PARTITION BY window_ts ORDER BY eval_offset DESC) as rn
+    FROM signal_evaluations
+    WHERE direction='DOWN' AND offset BETWEEN 90 AND 140
+)
+SELECT COUNT(*) as n,
+       SUM(CASE WHEN win THEN 1 ELSE 0 END) / COUNT(*) as wr
+FROM first_eval
+WHERE rn = 1
+-- Result: n=36, WR=94.4% (CORRECT!)
+```
+
+**Best Method (Actual trades):**
+```sql
+-- BEST: Use trade_bible for real PnL
+SELECT COUNT(*) as trades,
+       SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) / COUNT(*) as wr
+FROM trade_bible
+WHERE strategy='v4_down_only'
+  AND created_at >= NOW() - INTERVAL '24 hours'
+-- Result: n=40, WR=77% (REAL PnL)
+```
+
+**Filter Cascade:**
+```
+Step 1: 18,701 total evaluations (all directions)
+Step 2: 11,621 DOWN evaluations (direction=DOWN, offset 90-140, conv≥12%)
+Step 3: 36 unique windows with DOWN signal
+Step 4: 40 actual trades (V4_DOWN_ONLY + CLOB + risk)
+Filter rate: 40/18,701 = 0.2% (only 0.2% of evaluations become trades)
+```
+
+**When to Use Each Method:**
+- **Evaluations:** Signal quality analysis (does the model predict well at T-140?)
+- **Unique Windows:** Strategy design (how many windows have a valid signal?)
+- **Actual Trades:** Performance tracking (what's my real PnL?)
+
+---
+
 ### A. Signal accuracy by eval_offset (the magic window)
 
 Answers: "At what T-minus are our predictions most accurate?"
@@ -169,6 +241,12 @@ ORDER BY 1 DESC;
 | T-60 | ~45% | Anti-predictive — market has priced in |
 
 **Key insight:** Signal gets WORSE below T-90. The CLOB has already priced in the outcome. Trade at T-90 to T-150.
+
+**Note on Evaluation Distribution:**
+You'll notice evaluations are NOT evenly distributed across offsets. T-140 has ~4.6% but T-90 only has ~3.1%. This suggests:
+- Earlier evaluations (T-140 to T-120) are more common
+- Later evaluations (T-100 to T-90) may be filtered out or not recorded
+- This is why live trades (~40) are much fewer than total evaluations (~11,600)
 
 ---
 

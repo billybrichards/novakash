@@ -76,6 +76,8 @@ from margin_engine.domain.value_objects import (
 )
 from margin_engine.services.regime_adaptive import RegimeAdaptiveRouter
 
+# Lazy import to avoid circular dependency
+
 logger = logging.getLogger(__name__)
 
 
@@ -95,6 +97,8 @@ class OpenPositionUseCase:
         probability_port: ProbabilityPort,
         signal_port: SignalPort,
         *,
+        # ── Strategy decision recorder (V4) ──
+        strategy_decision_recorder: Optional[Any] = None,
         # ── v4 integration (PR B) ──
         v4_snapshot_port: Optional[V4SnapshotPort] = None,
         engine_use_v4_actions: bool = False,
@@ -102,6 +106,8 @@ class OpenPositionUseCase:
         v4_timescales: tuple[str, ...] = ("5m", "15m", "1h", "4h"),
         v4_entry_edge: float = 0.10,
         v4_min_expected_move_bps: float = 15.0,
+        v4_fee_wall_continuation_divisor: float = 3.0,
+        fee_aware_continuation_enabled: bool = False,
         v4_allow_mean_reverting: bool = False,
         # ── Phase A (2026-04-11): macro advisory mode ──
         v4_macro_mode: str = "advisory",  # "veto" | "advisory"
@@ -148,6 +154,8 @@ class OpenPositionUseCase:
         self._alerts = alerts
         self._probability_port = probability_port
         self._signal_port = signal_port
+        # Strategy decision recorder
+        self._strategy_decision_recorder = strategy_decision_recorder
         # v4
         self._v4_port = v4_snapshot_port
         self._engine_use_v4_actions = engine_use_v4_actions
@@ -155,6 +163,8 @@ class OpenPositionUseCase:
         self._v4_timescales = v4_timescales
         self._v4_entry_edge = v4_entry_edge
         self._v4_min_expected_move_bps = v4_min_expected_move_bps
+        self._fee_wall_continuation_divisor = v4_fee_wall_continuation_divisor
+        self._fee_aware_continuation_enabled = fee_aware_continuation_enabled
         self._v4_allow_mean_reverting = v4_allow_mean_reverting
         # Phase A macro-mode fields
         if v4_macro_mode not in ("veto", "advisory"):
@@ -522,15 +532,42 @@ class OpenPositionUseCase:
             # Store decision for later use (size_mult, SL/TP override)
             _regime_decision = regime_decision
 
+            # Record the strategy decision for backtesting
+            if self._strategy_decision_recorder is not None:
+                self._strategy_decision_recorder.record_decision(
+                    position_id="pending",  # Will be updated when position is created
+                    strategy_id="regime_adaptive",
+                    decision=f"TRADE_{side.value}",
+                    asset=v4.asset,
+                    confidence=1.0,  # Regime strategy always trades if it passes
+                    timescale=self._v4_primary_timescale,
+                    regime=payload.regime,
+                    v4_snapshot=v4.to_dict() if hasattr(v4, "to_dict") else None,
+                    rationale=f"Regime {regime_decision.reason} with size_mult={regime_decision.size_mult}",
+                    size_mult=regime_decision.size_mult,
+                    hold_minutes=regime_decision.hold_minutes,
+                )
+
         # ── ⑥ conviction threshold ──
         if not payload.meets_threshold(self._v4_entry_edge):
             self._log_skip("conviction_below_threshold", v4, payload)
             return None
 
         # ── ⑦ expected move clears the fee wall ──
+        # When fee-aware continuation is enabled, positions can ride multiple
+        # windows, so the round-trip fee is amortized across the holding period.
+        # Divide the wall by the continuation divisor (default 3 = ~3 windows).
+        effective_fee_wall = self._v4_min_expected_move_bps
+        if (
+            self._fee_aware_continuation_enabled
+            and self._fee_wall_continuation_divisor > 1.0
+        ):
+            effective_fee_wall = (
+                self._v4_min_expected_move_bps / self._fee_wall_continuation_divisor
+            )
         if (
             payload.expected_move_bps is None
-            or abs(payload.expected_move_bps) < self._v4_min_expected_move_bps
+            or abs(payload.expected_move_bps) < effective_fee_wall
         ):
             self._log_skip("expected_move_below_fee_wall", v4, payload)
             return None

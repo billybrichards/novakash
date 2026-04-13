@@ -4,6 +4,7 @@ PostgreSQL position repository — persists margin positions to Railway DB.
 Uses asyncpg directly (same pattern as the engine's db_client.py).
 Table: margin_positions (created by migration).
 """
+
 from __future__ import annotations
 
 import json
@@ -250,7 +251,9 @@ class PgPositionRepository(PositionRepository):
             v4_entry_regime=_safe_get(row, "v4_entry_regime", None),
             v4_entry_macro_bias=_safe_get(row, "v4_entry_macro_bias", None),
             v4_entry_macro_confidence=_safe_get(row, "v4_entry_macro_confidence", None),
-            v4_entry_expected_move_bps=_safe_get(row, "v4_entry_expected_move_bps", None),
+            v4_entry_expected_move_bps=_safe_get(
+                row, "v4_entry_expected_move_bps", None
+            ),
             v4_entry_composite_v3=_safe_get(row, "v4_entry_composite_v3", None),
             v4_entry_consensus_safe=_safe_get(row, "v4_entry_consensus_safe", None),
             v4_entry_window_close_ts=_safe_get(row, "v4_entry_window_close_ts", None),
@@ -376,23 +379,30 @@ class PgPositionRepository(PositionRepository):
                 # ── PR B: continuation state ──
                 "continuation_count": int(r["continuation_count"] or 0),
                 "last_continuation_ts": r["last_continuation_ts"].isoformat()
-                if r["last_continuation_ts"] else None,
+                if r["last_continuation_ts"]
+                else None,
                 "last_continuation_p_up": float(r["last_continuation_p_up"])
-                if r["last_continuation_p_up"] is not None else None,
+                if r["last_continuation_p_up"] is not None
+                else None,
                 # ── PR B: v4 audit snapshot ──
                 "v4_entry_regime": r["v4_entry_regime"],
                 "v4_entry_macro_bias": r["v4_entry_macro_bias"],
                 "v4_entry_macro_confidence": int(r["v4_entry_macro_confidence"])
-                if r["v4_entry_macro_confidence"] is not None else None,
+                if r["v4_entry_macro_confidence"] is not None
+                else None,
                 "v4_entry_expected_move_bps": float(r["v4_entry_expected_move_bps"])
-                if r["v4_entry_expected_move_bps"] is not None else None,
+                if r["v4_entry_expected_move_bps"] is not None
+                else None,
                 "v4_entry_composite_v3": float(r["v4_entry_composite_v3"])
-                if r["v4_entry_composite_v3"] is not None else None,
+                if r["v4_entry_composite_v3"] is not None
+                else None,
                 "v4_entry_consensus_safe": r["v4_entry_consensus_safe"],
                 "v4_entry_window_close_ts": int(r["v4_entry_window_close_ts"])
-                if r["v4_entry_window_close_ts"] is not None else None,
+                if r["v4_entry_window_close_ts"] is not None
+                else None,
                 "v4_snapshot_ts_at_entry": float(r["v4_snapshot_ts_at_entry"])
-                if r["v4_snapshot_ts_at_entry"] is not None else None,
+                if r["v4_snapshot_ts_at_entry"] is not None
+                else None,
             }
             for r in rows
         ]

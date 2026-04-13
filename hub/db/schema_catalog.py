@@ -84,11 +84,9 @@ SchemaEntry = dict[str, Any]
 # hub endpoint groups by category for the frontend.
 
 SCHEMA_CATALOG: dict[str, SchemaEntry] = {
-
     # ══════════════════════════════════════════════════════════════════════
     # POLYMARKET — engine/ domain
     # ══════════════════════════════════════════════════════════════════════
-
     "signal_evaluations": {
         "service": "engine",
         "category": "polymarket",
@@ -126,7 +124,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         ),
         "large": True,
     },
-
     "window_snapshots": {
         "service": "engine",
         "category": "polymarket",
@@ -162,7 +159,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         ),
         "large": True,
     },
-
     "ticks_elm_predictions": {
         "service": "engine",
         "category": "polymarket",
@@ -194,7 +190,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         ),
         "large": True,
     },
-
     "manual_trades": {
         "service": "engine",
         "category": "polymarket",
@@ -226,7 +221,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "snapshot row in manual_trade_snapshots."
         ),
     },
-
     "manual_trade_snapshots": {
         "service": "engine",
         "category": "polymarket",
@@ -257,7 +251,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "free-form justification typed in the panel."
         ),
     },
-
     "market_data": {
         "service": "data-collector",
         "category": "data",
@@ -290,7 +283,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         ),
         "large": True,
     },
-
     "market_snapshots": {
         "service": "data-collector",
         "category": "data",
@@ -313,7 +305,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "notes": "No primary uniqueness — pure append log.",
         "large": True,
     },
-
     "clob_book_snapshots": {
         "service": "engine",
         "category": "exec",
@@ -340,7 +331,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "notes": "UNIQUE (window_ts, up_token_id, down_token_id, ts).",
         "large": True,
     },
-
     "clob_execution_log": {
         "service": "engine",
         "category": "exec",
@@ -365,7 +355,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "notes": "Pairs with fok_ladder_attempts via execution_log_id FK.",
         "large": True,
     },
-
     "fok_ladder_attempts": {
         "service": "engine",
         "category": "exec",
@@ -388,7 +377,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         ],
         "notes": "FK execution_log_id → clob_execution_log(id). UNIQUE (execution_log_id, attempt_num).",
     },
-
     "order_audit_log": {
         "service": "engine",
         "category": "exec",
@@ -413,7 +401,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         ],
         "notes": "UNIQUE on order_id.",
     },
-
     "poly_fills": {
         "service": "engine",
         "category": "exec",
@@ -446,7 +433,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "= orphan fill (engine never tracked the trade)."
         ),
     },
-
     "poly_trade_history": {
         "service": "engine",
         "category": "polymarket",
@@ -469,7 +455,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "docs": [],
         "notes": "Sibling to poly_fills but sourced from a different endpoint.",
     },
-
     "post_resolution_analyses": {
         "service": "engine",
         "category": "polymarket",
@@ -494,7 +479,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "docs": [],
         "notes": "UNIQUE (window_ts, asset, timeframe).",
     },
-
     "window_predictions": {
         "service": "engine",
         "category": "polymarket",
@@ -516,7 +500,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "docs": [],
         "notes": "UNIQUE (window_ts, asset, timeframe).",
     },
-
     "gate_audit": {
         "service": "engine",
         "category": "polymarket",
@@ -545,7 +528,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "signal_evaluations which has the eval_offset axis."
         ),
     },
-
     "trade_bible": {
         "service": "engine",
         "category": "polymarket",
@@ -578,7 +560,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "trades; for true P&L always read poly_fills directly."
         ),
     },
-
     "ticks_binance": {
         "service": "engine",
         "category": "data",
@@ -604,7 +585,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "notes": "Very high write volume — large=True. Indexed (asset, ts DESC).",
         "large": True,
     },
-
     "ticks_coinglass": {
         "service": "engine",
         "category": "data",
@@ -628,7 +608,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         ],
         "large": True,
     },
-
     "ticks_gamma": {
         "service": "engine",
         "category": "data",
@@ -650,7 +629,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "docs": [],
         "large": True,
     },
-
     "ticks_timesfm": {
         "service": "engine",
         "category": "data",
@@ -680,7 +658,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         ),
         "large": True,
     },
-
     "playwright_state": {
         "service": "engine",
         "category": "polymarket",
@@ -705,7 +682,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "docs": [],
         "notes": "Singleton row id=1 with CHECK constraint.",
     },
-
     "redeem_events": {
         "service": "engine",
         "category": "polymarket",
@@ -726,7 +702,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "recency_column": "created_at",
         "docs": [],
     },
-
     "wallet_snapshots": {
         "service": "engine",
         "category": "polymarket",
@@ -750,11 +725,9 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "migrations/add_wallet_snapshots.sql",
         ],
     },
-
     # ══════════════════════════════════════════════════════════════════════
     # MARGIN ENGINE — margin_engine/ domain
     # ══════════════════════════════════════════════════════════════════════
-
     "margin_positions": {
         "service": "margin_engine",
         "category": "margin",
@@ -786,7 +759,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "tab's most-recent-closed query."
         ),
     },
-
     "margin_signals": {
         "service": "margin_engine",
         "category": "margin",
@@ -811,7 +783,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "notes": "Indexed on (timescale, ts) for per-horizon scans.",
         "large": True,
     },
-
     "margin_logs": {
         "service": "margin_engine",
         "category": "margin",
@@ -834,11 +805,40 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "docs": [],
         "large": True,
     },
-
+    "strategy_decisions": {
+        "service": "margin_engine",
+        "category": "margin",
+        "status": "planned",
+        "sot_class": "SOT",
+        "data_flow": "margin_engine V4 strategies -> strategy_decisions (per-strategy evaluations)",
+        "purpose": (
+            "Per-strategy evaluations at position entry time. Each V4 strategy "
+            "that evaluates a position writes a row with its decision "
+            "(TRADE_LONG/TRADE_SHORT/NO_TRADE), confidence, timescale, regime, "
+            "size_mult, hold_minutes, rationale, and full v4_snapshot JSONB. "
+            "Used for backtesting strategy performance and post-trade analysis."
+        ),
+        "writers": [
+            "margin_engine/adapters/persistence/pg_strategy_decision_repository.py::AsyncStrategyDecisionRecorder",
+            "margin_engine/use_cases/open_position.py (via strategy_decision_recorder)",
+        ],
+        "readers": [
+            "hub/api/margin.py (GET /api/margin/strategy-decisions)",
+            "margin_engine/adapters/persistence/pg_strategy_decision_repository.py::PgStrategyDecisionRepository.get_stats_by_strategy",
+        ],
+        "recency_column": "created_at",
+        "docs": [
+            "margin_engine/adapters/persistence/pg_strategy_decision_repository.py",
+        ],
+        "notes": (
+            "Indexed on (position_id), (asset, created_at), (strategy_id). "
+            "FK to margin_positions(id) with ON DELETE CASCADE. "
+            "v4_snapshot JSONB captures full V4 context at decision time."
+        ),
+    },
     # ══════════════════════════════════════════════════════════════════════
     # MACRO OBSERVER — macro-observer/ domain
     # ══════════════════════════════════════════════════════════════════════
-
     "macro_signals": {
         "service": "macro-observer",
         "category": "macro",
@@ -872,7 +872,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "preserved. NULL timescale_map = pre-Phase-2 row."
         ),
     },
-
     "macro_events": {
         "service": "macro-observer",
         "category": "macro",
@@ -897,11 +896,9 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "migrations/add_macro_observer_tables.sql",
         ],
     },
-
     # ══════════════════════════════════════════════════════════════════════
     # HUB — hub/ domain
     # ══════════════════════════════════════════════════════════════════════
-
     "users": {
         "service": "hub",
         "category": "hub",
@@ -925,7 +922,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "hub/db/schema.sql",
         ],
     },
-
     "notes": {
         "service": "hub",
         "category": "hub",
@@ -954,7 +950,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "isn't empty on first deploy."
         ),
     },
-
     "trades": {
         "service": "hub",
         "category": "hub",
@@ -986,7 +981,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "read poly_fills which is the on-chain source of truth."
         ),
     },
-
     "signals": {
         "service": "hub",
         "category": "hub",
@@ -1014,7 +1008,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "the /signals page."
         ),
     },
-
     "daily_pnl": {
         "service": "hub",
         "category": "hub",
@@ -1044,7 +1037,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "breaking the historical chart."
         ),
     },
-
     "system_state": {
         "service": "hub",
         "category": "hub",
@@ -1078,7 +1070,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "table to flip mode — that's how STOP-01 happened."
         ),
     },
-
     "trading_configs": {
         "service": "hub",
         "category": "hub",
@@ -1113,7 +1104,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "key/value layout."
         ),
     },
-
     "backtest_runs": {
         "service": "hub",
         "category": "hub",
@@ -1138,11 +1128,9 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "hub/db/schema.sql",
         ],
     },
-
     # ══════════════════════════════════════════════════════════════════════
     # CONFIG V2 — CFG-02/03 (shipped, active)
     # ══════════════════════════════════════════════════════════════════════
-
     "config_keys": {
         "service": "hub",
         "category": "hub",
@@ -1170,7 +1158,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "boot. UNIQUE (service, key)."
         ),
     },
-
     "config_values": {
         "service": "hub",
         "category": "hub",
@@ -1195,7 +1182,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         ],
         "notes": "CFG-02 shipped. Table exists and is seeded on every hub boot.",
     },
-
     "config_history": {
         "service": "hub",
         "category": "hub",
@@ -1218,12 +1204,9 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         ],
         "notes": "CFG-03 shipped. Table exists. Append-only.",
     },
-
-
     # ══════════════════════════════════════════════════════════════════════
     # MISSING FROM CATALOG — added by data architecture audit 2026-04-11
     # ══════════════════════════════════════════════════════════════════════
-
     "countdown_evaluations": {
         "service": "engine",
         "category": "polymarket",
@@ -1250,7 +1233,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "DDL found in codebase. Needs composite index on (window_ts, stage)."
         ),
     },
-
     "telegram_notifications": {
         "service": "engine",
         "category": "polymarket",
@@ -1272,7 +1254,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "composite dedup index on (bot_id, location, window_id)."
         ),
     },
-
     "analysis_docs": {
         "service": "hub",
         "category": "hub",
@@ -1289,7 +1270,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "docs": ["docs/DATA_ARCHITECTURE_AUDIT_2026-04-11.md"],
         "notes": "Added by data architecture audit 2026-04-11. Needs GIN index on tags.",
     },
-
     "timesfm_forecasts": {
         "service": "timesfm-service",
         "category": "external",
@@ -1304,10 +1284,12 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
         "writers": ["(see novakash-timesfm-repo)"],
         "readers": ["hub/api/forecast.py (5 SELECT queries for forecast display)"],
         "recency_column": "created_at",
-        "docs": ["docs/DATA_ARCHITECTURE_AUDIT_2026-04-11.md", "see novakash-timesfm-repo"],
+        "docs": [
+            "docs/DATA_ARCHITECTURE_AUDIT_2026-04-11.md",
+            "see novakash-timesfm-repo",
+        ],
         "notes": "Added by data architecture audit 2026-04-11. Cross-repo table.",
     },
-
     "ai_analyses": {
         "service": "hub",
         "category": "hub",
@@ -1319,7 +1301,9 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "The only reader wraps the query in a bare except and silently fails."
         ),
         "writers": [],
-        "readers": ["macro-observer/observer.py::fetch_recent_ai_analyses (bare except)"],
+        "readers": [
+            "macro-observer/observer.py::fetch_recent_ai_analyses (bare except)"
+        ],
         "recency_column": None,
         "docs": ["docs/DATA_ARCHITECTURE_AUDIT_2026-04-11.md"],
         "notes": (
@@ -1327,12 +1311,9 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "no writer, no DDL. Candidate for DROP."
         ),
     },
-
-
     # ══════════════════════════════════════════════════════════════════════
     # EXTERNAL — different repo (timesfm-service)
     # ══════════════════════════════════════════════════════════════════════
-
     "ticks_v3_composite": {
         "service": "timesfm-service",
         "category": "external",
@@ -1356,7 +1337,6 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
             "queries against this table — it only documents its existence."
         ),
     },
-
     "ticks_v4_decision": {
         "name": "ticks_v4_decision",
         "service": "timesfm-service",
@@ -1375,6 +1355,7 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
 
 
 # ─── Convenience accessors ─────────────────────────────────────────────────
+
 
 def list_categories() -> list[str]:
     """Distinct categories in catalog order."""

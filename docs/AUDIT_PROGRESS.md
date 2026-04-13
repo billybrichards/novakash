@@ -538,16 +538,53 @@ All 10 items (ME-STRAT-01 through ME-STRAT-08 + ME-STRAT-UI-01 + SIGNAL-COMP-UI-
 
 **Signal eval runbook created** (`docs/analysis/SIGNAL_EVAL_RUNBOOK.md`). Covers all tables, queries, config decision framework, schema gotchas. Any agent can run `full_signal_report.py` for current-state analysis.
 
-## Next up (ordered, updated 2026-04-12 session 5)
+## Session 6 — 2026-04-12: Margin engine V4 strategy persistence + fee wall + model training
+
+### ME-STRAT-05: Strategy decisions persistence (DONE)
+
+V4 strategies (fee_aware_continuation, timescale_alignment, quantile_var_sizer, regime_adaptive, cascade_fade) were running but NOT saving per-strategy decision data for backtesting. Only entry snapshot fields were saved to `margin_positions`.
+
+**Fix:** Created `margin_strategy_decisions` table (separate name from Polymarket `strategy_decisions` to avoid collision in shared Railway DB). New `PgStrategyDecisionRepository` + `AsyncStrategyDecisionRecorder` (5s flush). Hub API endpoint `GET /api/margin/strategy-decisions`. Deployed to 18.169.244.162, service active.
+
+Files: `margin_engine/adapters/persistence/pg_strategy_decision_repository.py` (new), `pg_repository.py`, `open_position.py:532`, `main.py:84`, `hub/api/margin.py:155`.
+
+### ME-STRAT-06: Fee wall blocks all entries with continuation (DONE)
+
+Fee wall gate compared single-window `expected_move_bps` (1-3 bps on 5m) against 15 bps threshold. With continuation holding 3+ windows, the fee is amortized but the gate didn't account for it.
+
+**Fix:** Added `v4_fee_wall_continuation_divisor=3.0` setting. When `fee_aware_continuation_enabled=true`, effective wall = 15/3 = 5 bps. After deploy, `expected_move_below_fee_wall` no longer dominant skip reason. Env: `MARGIN_V4_FEE_WALL_CONTINUATION_DIVISOR`.
+
+Files: `open_position.py:556`, `settings.py:92`, `main.py:364`.
+
+### ME-STRAT-07: 1h and 4h TimesFM models missing (IN PROGRESS)
+
+`/v4/snapshot` returns `status=no_model` for 1h and 4h. Only 5m (Sequoia v4) and 15m (ELM v3) scorers loaded. The macro HMM observer works per-timescale (1h BULL@65, 4h BULL@70) but probability/quantile models don't exist.
+
+**Root cause:** 4h missing from `DELTA_BUCKETS_BY_TIMEFRAME` in `v2_model_registry.py`. Auto-promote block in `retrain.yml` was blanket-blocking ALL slots (should only protect 5m Sequoia v5.2 calibration).
+
+**Fix:** (1) Added 4h delta buckets — `novakash-timesfm` commit `b6dbb9f`. (2) Scoped promote guard to 5m polymarket only — commit `a6abb8a`. (3) Triggered retrain workflow run #24317357688 (`force_promote=no`). 5m stays protected. 1h/4h/15m promote through quality gate (ECE <= 0.10, skill >= +0.5pp).
+
+### ME-STRAT-08: Conviction gate too tight for continuation (OPEN)
+
+After fee wall fix, `conviction_below_threshold` became dominant skip. `p_up=0.596` gives edge=0.096 — just 0.004 short of 0.10 threshold. With continuation compounding over 3+ windows, this is a meaningful edge. Possible fix: `v4_entry_edge_with_continuation=0.08`. Not shipped — needs p_up distribution analysis first.
+
+### ME-STRAT-09: Alignment includes fake timescales (OPEN)
+
+Alignment reports 9/9 direction agreement including 24h, 48h, 72h, 1w, 2w — none have models. `direction_agreement=1.0` is misleading. Continuation may extend holds based on bogus alignment scores. Fix: filter to only `status=ok` timescales. Tracked in `v4_snapshot_assembler.py`.
+
+## Next up (ordered, updated 2026-04-12 session 6)
 
 0. **Go live** — top up wallet confirmed ($101.21 USDC). Flip PAPER→LIVE toggle in Monitor top bar when ready.
-1. **FE-MONITOR-01 remaining** — Sequoia p_up still NO DATA in some scenarios, V3 composite join still using API (not DB), gate pipeline occasional double render. Tracked in audit.
-2. **SIGNAL-CLOB-EDGE-GATE** — gate on (Sequoia p_up - CLOB implied prob) > threshold. Most impactful improvement identified from data.
-3. **V4-TIMING-BUG** — CRITICAL: add `if timing == 'late': skip` guard (fix deployed, verify in next paper session).
-4. **CA-EXEC-INDEPENDENCE** — extract `_execute_trade` into ExecuteTradeUseCase so V4 has fully independent execution path.
-5. **Macro Phase C** — replace Qwen with per-horizon LightGBM MacroV2Classifier.
-6. **Window analysis on neutral BTC period** — current analysis is 84% DOWN biased. Need mixed-regime validation.
-7. **CA-01 Phase 4** — wire use-case calls behind feature flag.
+1. **ME-STRAT-07** — Monitor retrain workflow run #24317357688 for 1h/4h model training completion and promotion.
+2. **ME-STRAT-09** — Filter alignment to only count timescales with active models.
+3. **ME-STRAT-08** — Analyze p_up distributions to decide if conviction gate should relax for continuation trades.
+4. **FE-MONITOR-01 remaining** — Sequoia p_up still NO DATA in some scenarios, V3 composite join still using API (not DB), gate pipeline occasional double render. Tracked in audit.
+5. **SIGNAL-CLOB-EDGE-GATE** — gate on (Sequoia p_up - CLOB implied prob) > threshold. Most impactful improvement identified from data.
+6. **V4-TIMING-BUG** — CRITICAL: add `if timing == 'late': skip` guard (fix deployed, verify in next paper session).
+7. **CA-EXEC-INDEPENDENCE** — extract `_execute_trade` into ExecuteTradeUseCase so V4 has fully independent execution path.
+8. **Macro Phase C** — replace Qwen with per-horizon LightGBM MacroV2Classifier.
+9. **Window analysis on neutral BTC period** — current analysis is 84% DOWN biased. Need mixed-regime validation.
+10. **CA-01 Phase 4** — wire use-case calls behind feature flag.
 
 ## Conventions
 

@@ -132,6 +132,18 @@ class Position:
     v4_entry_strategy_size_mult: Optional[float] = None
     v4_entry_strategy_hold_minutes: Optional[int] = None
 
+    # ── Strategy decisions (V4 multi-strategy evaluations) ──
+    # List of per-strategy decisions recorded at position entry. Each strategy
+    # that evaluates the position writes a decision with its confidence,
+    # timescale, regime, size_mult, and rationale. Populated by the
+    # OpenPositionUseCase via the StrategyDecisionRecorder.
+    strategy_decisions: list[dict] = None  # type: ignore
+
+    def __post_init__(self) -> None:
+        """Initialize mutable default fields."""
+        if self.strategy_decisions is None:
+            self.strategy_decisions = []
+
     # ─── State transitions ───────────────────────────────────────────────
 
     def confirm_entry(

@@ -151,6 +151,32 @@ const TASKS = [
     ],
   },
   {
+    id: 'TSFM-01',
+    category: 'data-quality',
+    severity: 'CRITICAL',
+    status: 'DONE',
+    title: 'TimesFM v5.2 chainlink_price feature missing — model returns constant 0.606 (10.2% conviction)',
+    files: [
+      { path: 'engine/strategies/five_min_vpin.py', line: 1759, repo: 'novakash' },
+      { path: 'engine/use_cases/evaluate_window.py', line: 238, repo: 'novakash' },
+      { path: 'engine/use_cases/evaluate_window.py', line: 851, repo: 'novakash' },
+      { path: 'engine/signals/gates.py', line: 952, repo: 'novakash' },
+      { path: 'docs/analysis/TIMESFM_V5_MODEL_BROKEN_2026-04-13.md', line: 1, repo: 'novakash' },
+      { path: 'docs/analysis/TIMESFM_V5_FIX_2026-04-13.md', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Last 12h: 13,096 signal evaluations, ALL predicting UP at constant 10.2% conviction, 0 trades executed',
+      'TimesFM v5.2 LightGBM model requires 25 features. When chainlink_price was missing (NaN), model followed the "missing value" path and returned the default leaf value: 0.60614485',
+      'Market reality: BTC went DOWN 82.4% of the time during this period — the model was completely wrong',
+      'Would-have performance: If we had relaxed thresholds, win rate would have been 18% (catastrophic)',
+      'Strict filters saved us: The 12% conviction threshold correctly blocked all trades, preventing massive losses',
+    ],
+    fix: 'FIXED — Added chainlink_price=window_snapshot.get("chainlink_open") to 3 call sites:',
+    progressNotes: [
+      { date: '2026-04-13', note: 'FIXED in PR #XXX (branch: fix/timesfm-v5-chainlink-feature). Fixed 3 call sites: five_min_vpin.py:1759, evaluate_window.py:238, evaluate_window.py:851. Note: gates.py:952 already had chainlink_price. Documentation: TIMESFM_V5_MODEL_BROKEN_2026-04-13.md (root cause), TIMESFM_V5_FIX_2026-04-13.md (fix details), TIMESFM_V5_FIX_APPLIED_2026-04-13.md (verification checklist).' },
+    ],
+  },
+  {
     id: 'DQ-02',
     category: 'data-quality',
     severity: 'MEDIUM',
@@ -165,6 +191,9 @@ const TASKS = [
       'Less severe than DQ-01 but same shape: mismatched numerator/denominator',
     ],
     fix: 'Normalise denominator: either use chainlink_open at window start OR fetch spot reference aligned in time. Treat as follow-up to DQ-01.',
+    progressNotes: [
+      { date: '2026-04-13', note: 'Related to TSFM-01 fix — must use chainlink_open (not window.open_price) for consistency with how delta_chainlink is calculated.' },
+    ],
   },
   {
     id: 'DQ-03',
@@ -2125,6 +2154,128 @@ const TASKS = [
     progressNotes: [
       { date: '2026-04-12', note: 'Diagnosed from screenshot. All 5 bugs identified with root cause. Not yet fixed.' },
       { date: '2026-04-12', note: 'PR #133: FE-MONITOR-01a–01e all fixed. DataHealthStrip p_up uses 4-path fallback chain (v4Snapshot.timescales.5m.probability_up → flat → heartbeat → window). V3 composite reads v3Snapshot.timescales.5m.composite from /v3/snapshot API. Sub-signals, gate dedup, bankroll, SRC agreement also resolved.' },
+    ],
+  },
+  // ── ME-STRAT-05: Strategy decisions persistence for backtesting ──────────
+  {
+    id: 'ME-STRAT-05',
+    category: 'data-quality',
+    severity: 'HIGH',
+    status: 'DONE',
+    title: 'Margin engine V4 strategies not saving per-strategy decisions for backtesting',
+    files: [
+      { path: 'margin_engine/adapters/persistence/pg_strategy_decision_repository.py', line: 1, repo: 'novakash' },
+      { path: 'margin_engine/adapters/persistence/pg_repository.py', line: 127, repo: 'novakash' },
+      { path: 'margin_engine/domain/entities/position.py', line: 1, repo: 'novakash' },
+      { path: 'margin_engine/use_cases/open_position.py', line: 532, repo: 'novakash' },
+      { path: 'margin_engine/main.py', line: 84, repo: 'novakash' },
+      { path: 'hub/api/margin.py', line: 155, repo: 'novakash' },
+    ],
+    evidence: [
+      'V4 strategies (fee_aware_continuation, timescale_alignment, quantile_var_sizer, regime_adaptive, cascade_fade) were running but NOT recording individual decision data.',
+      'Only entry snapshot fields (regime, macro_bias, expected_move_bps) were saved to margin_positions. Per-strategy evaluations, confidence, rationale, size_mult — all lost.',
+      'Hub API /api/margin/strategy-decisions queried a strategy_decisions table that did not exist in the margin engine DB.',
+      'Initial attempt used table name strategy_decisions which collided with existing Polymarket engine table in the shared Railway DB — CREATE TABLE IF NOT EXISTS was a no-op, then CREATE INDEX failed on missing columns.',
+    ],
+    fix: 'Created margin_strategy_decisions table (separate name to avoid collision with Polymarket strategy_decisions). New PgStrategyDecisionRepository with batched writes via AsyncStrategyDecisionRecorder (5s flush interval). Wired into main.py and open_position.py. Hub API GET /api/margin/strategy-decisions queries the new table with position outcome joins. Fields: strategy_id, decision, confidence, timescale, regime, v4_snapshot (JSONB), rationale, size_mult, hold_minutes.',
+    progressNotes: [
+      { date: '2026-04-12', note: 'Discovered: 6 V4 strategies running with zero decision persistence. All evaluations lost after each run.' },
+      { date: '2026-04-12', note: 'FIXED: margin_strategy_decisions table created. AsyncStrategyDecisionRecorder running on server (flush_interval=5s). Deployed to 18.169.244.162, service active.' },
+    ],
+  },
+  // ── ME-STRAT-06: Fee wall gate blocks all entries with continuation enabled ──
+  {
+    id: 'ME-STRAT-06',
+    category: 'data-quality',
+    severity: 'HIGH',
+    status: 'DONE',
+    title: 'Fee wall gate compares single-window expected move against full round-trip fee — blocks all entries when continuation enabled',
+    files: [
+      { path: 'margin_engine/use_cases/open_position.py', line: 556, repo: 'novakash' },
+      { path: 'margin_engine/infrastructure/config/settings.py', line: 92, repo: 'novakash' },
+      { path: 'margin_engine/main.py', line: 364, repo: 'novakash' },
+    ],
+    evidence: [
+      'Fee wall threshold: 15 bps (v4_min_expected_move_bps). Round-trip Hyperliquid fees: 9 bps (4.5 bps/side).',
+      'Expected move on 5m timescale during low vol: 1-3 bps — always rejected.',
+      'With continuation enabled (fee_aware_continuation_enabled=true), positions ride 3+ windows. The fee is amortized, so the per-window threshold should be ~5 bps not 15.',
+      '100% of skips in first 10 minutes were reason=expected_move_below_fee_wall.',
+    ],
+    fix: 'Added v4_fee_wall_continuation_divisor setting (default 3.0). When continuation is enabled, effective_fee_wall = 15 / 3 = 5 bps. Deployed — expected_move values of 10-35 bps now pass the wall. Current blockers shifted to conviction_below_threshold (p_up=0.596, needs 0.60) and consensus_fail.',
+    progressNotes: [
+      { date: '2026-04-12', note: 'FIXED: Fee wall now continuation-aware. After deploy, expected_move_below_fee_wall no longer dominant skip reason. Env var: MARGIN_V4_FEE_WALL_CONTINUATION_DIVISOR=3.0' },
+    ],
+  },
+  // ── ME-STRAT-07: 1h and 4h TimesFM probability models missing ──────────
+  {
+    id: 'ME-STRAT-07',
+    category: 'data-quality',
+    severity: 'HIGH',
+    status: 'IN_PROGRESS',
+    title: '1h and 4h TimesFM probability models never trained — v4 snapshot returns status=no_model for both',
+    files: [
+      { path: 'app/v2_model_registry.py', line: 84, repo: 'novakash-timesfm' },
+      { path: 'app/v4_snapshot_assembler.py', line: 62, repo: 'novakash-timesfm' },
+      { path: '.github/workflows/retrain.yml', line: 85, repo: 'novakash-timesfm' },
+    ],
+    evidence: [
+      '/v4/snapshot shows 1h: status=no_model, model_version=None, p_up=None, quantiles=None.',
+      '/v4/snapshot shows 4h: status=no_model, model_version=None, p_up=None, quantiles=None.',
+      '/scorers endpoint shows only 3 models loaded: production (5m Sequoia v4), staging (cedar), 15m (ELM).',
+      'v4_snapshot_assembler.py already has _v2_1h_scorer / _v2_4h_scorer slots — they just load as None because no models exist in S3.',
+      'retrain.yml matrix already includes 1h/binance and 4h/binance cells — but 4h was missing from DELTA_BUCKETS_BY_TIMEFRAME in v2_model_registry.py.',
+      'Alignment data is bogus: reports 9/9 agreement including fake timescales (24h, 48h, 72h, 1w, 2w) that have no models.',
+      'Macro HMM observer IS working per-timescale (1h BULL@65, 4h BULL@70) — only the probability/quantile models are missing.',
+    ],
+    fix: 'Two-step fix: (1) Added 4h delta buckets to v2_model_registry.py DELTA_BUCKETS_BY_TIMEFRAME — pushed to novakash-timesfm main (commit b6dbb9f). (2) Scoped auto-promote block to 5m polymarket slot only (commit a6abb8a) — was blocking ALL slots including 1h/4h. (3) Triggered retrain workflow (run #24317357688) with force_promote=no. 5m stays protected by calibration guard. 1h/4h/15m promote through normal quality gate (ECE <= 0.10, skill >= +0.5pp).',
+    progressNotes: [
+      { date: '2026-04-12', note: 'Discovered: 1h and 4h return no_model from /v4/snapshot. Only 5m and 15m scorers loaded.' },
+      { date: '2026-04-12', note: 'Fixed 4h delta buckets in v2_model_registry.py (was missing, blocking 4h model loading). Pushed to main.' },
+      { date: '2026-04-12', note: 'Fixed retrain.yml auto-promote guard: was blanket-blocking all slots, now only blocks 5m polymarket (Sequoia v5.2 calibration protection). 1h/4h/15m can promote through quality gate.' },
+      { date: '2026-04-12', note: 'Retrain workflow triggered (run #24317357688). 5 parallel jobs: 5m/polymarket (promote blocked), 15m/polymarket, 15m/binance, 1h/binance, 4h/binance. Awaiting completion.' },
+    ],
+  },
+  // ── ME-STRAT-08: Conviction gate too tight for continuation trades ──────
+  {
+    id: 'ME-STRAT-08',
+    category: 'data-quality',
+    severity: 'MEDIUM',
+    status: 'OPEN',
+    title: 'Conviction gate (v4_entry_edge=0.10) blocks entries at p_up=0.596 — too tight when continuation amortizes risk',
+    files: [
+      { path: 'margin_engine/use_cases/open_position.py', line: 551, repo: 'novakash' },
+      { path: 'margin_engine/infrastructure/config/settings.py', line: 89, repo: 'novakash' },
+    ],
+    evidence: [
+      'After fee wall fix, conviction_below_threshold became the dominant skip reason.',
+      'p_up=0.596 gives edge=|0.596-0.5|=0.096 — just 0.004 short of the 0.10 threshold.',
+      'With continuation holding 3+ windows, a sustained 0.096 edge compounds significantly.',
+      'Expected moves of 10-35 bps were being rejected despite clearing the (now-fixed) fee wall.',
+      'Possible fix: v4_entry_edge_with_continuation=0.08 when fee_aware_continuation is enabled. Not yet shipped — needs analysis of historical p_up distributions to validate.',
+    ],
+    fix: 'PENDING: Consider adding v4_entry_edge_with_continuation setting (0.08) that relaxes conviction when continuation is enabled. Alternatively, wait for 1h/4h models to provide higher-conviction longer-horizon signals that naturally clear the 0.10 bar. Env var: MARGIN_V4_ENTRY_EDGE_WITH_CONTINUATION.',
+    progressNotes: [
+      { date: '2026-04-12', note: 'Identified as secondary blocker after fee wall fix. Not yet shipped — needs data analysis first.' },
+    ],
+  },
+  // ── ME-STRAT-09: Alignment data includes fake timescales with no models ──
+  {
+    id: 'ME-STRAT-09',
+    category: 'data-quality',
+    severity: 'MEDIUM',
+    status: 'OPEN',
+    title: 'V4 alignment reports 9/9 agreement including timescales with no models (24h, 48h, 72h, 1w, 2w)',
+    files: [
+      { path: 'app/v4_snapshot_assembler.py', line: 1, repo: 'novakash-timesfm' },
+    ],
+    evidence: [
+      'alignment.aligned_timescales includes 24h, 48h, 72h, 1w, 2w — none of which have probability models.',
+      'direction_agreement=1.0 (100%) is misleading — only 5m and 15m have real signals.',
+      'Continuation logic may be extending holds based on bogus alignment scores.',
+    ],
+    fix: 'PENDING: Filter alignment to only count timescales with status=ok (active models). Either fix in v4_snapshot_assembler.py on the TimesFM service, or filter in the margin engine when reading the alignment data.',
+    progressNotes: [
+      { date: '2026-04-12', note: 'Discovered during investigation of fee wall / continuation logic. Not yet fixed.' },
     ],
   },
 ];

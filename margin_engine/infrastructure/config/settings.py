@@ -4,6 +4,7 @@ Margin engine settings — loaded from environment variables.
 Pydantic BaseSettings reads from env vars and .env files automatically.
 All secrets come from the environment; no hardcoded values.
 """
+
 from __future__ import annotations
 
 from typing import Optional
@@ -78,19 +79,26 @@ class MarginSettings(BaseSettings):
     v4_snapshot_url: str = "http://3.98.114.0:8080"
     engine_use_v4_actions: bool = False
     v4_primary_timescale: str = "15m"
-    v4_timescales: str = "5m,15m,1h,4h"   # CSV; used for snapshot request
+    v4_timescales: str = "5m,15m,1h,4h"  # CSV; used for snapshot request
     v4_strategy: str = "fee_aware_15m"
     v4_poll_interval_s: float = 2.0
     v4_freshness_s: float = 10.0
 
     # Thresholds consumed by PR B code paths. Declared here so env files
     # are ready before PR B lands — no settings churn in the second PR.
-    v4_entry_edge: float = 0.10                      # min |p - 0.5| for entry
-    v4_continuation_min_conviction: float = 0.10     # looser than entry (user's choice)
-    v4_continuation_max: Optional[int] = None        # None = uncapped (user's choice)
-    v4_min_expected_move_bps: float = 15.0           # Hyperliquid-calibrated fee wall
-    v4_allow_mean_reverting: bool = False            # opt-in per strategy
-    v4_event_exit_seconds: int = 120                 # force exit within 2 min of HIGH/EXTREME
+    v4_entry_edge: float = 0.10  # min |p - 0.5| for entry
+    v4_continuation_min_conviction: float = 0.10  # looser than entry (user's choice)
+    v4_continuation_max: Optional[int] = None  # None = uncapped (user's choice)
+    v4_min_expected_move_bps: float = 15.0  # Hyperliquid-calibrated fee wall
+    # When continuation is enabled, the fee wall is too conservative because
+    # it compares a single-window expected move against the full round-trip
+    # fee. With continuation, positions ride multiple windows, so the fee is
+    # amortized. This divisor relaxes the wall: effective_wall = wall / divisor.
+    # Default 3.0 = assume ~3 windows of hold (15 bps / 3 = 5 bps threshold).
+    # Set to 1.0 to disable the relaxation.
+    v4_fee_wall_continuation_divisor: float = 3.0
+    v4_allow_mean_reverting: bool = False  # opt-in per strategy
+    v4_event_exit_seconds: int = 120  # force exit within 2 min of HIGH/EXTREME
 
     # ── Fee-aware continuation (NEW) ──
     fee_aware_continuation_enabled: bool = False
@@ -134,7 +142,7 @@ class MarginSettings(BaseSettings):
     # suspiciously clean and needs a 7-day replay before activation. This
     # flag ships the code in Phase A but leaves it OFF (None) by default.
     # Flip via MARGIN_V4_ALLOW_NO_EDGE_IF_EXP_MOVE_BPS_GTE=3.0 after replay.
-   v4_allow_no_edge_if_exp_move_bps_gte: Optional[float] = None
+    v4_allow_no_edge_if_exp_move_bps_gte: Optional[float] = None
 
     # DQ-07: defensive mark_divergence gate. When v4.last_price (which is
     # Binance spot from the assembler) diverges from the exchange's actual
@@ -224,19 +232,19 @@ class MarginSettings(BaseSettings):
     # Paper mode → can size larger than live-ready defaults to generate
     # meaningful P&L signal while we validate the new strategy.
     starting_capital: float = 500.0
-    leverage: int = 3                # down from 5 while validating
-    bet_fraction: float = 0.02       # 2% per trade, down from 5%
+    leverage: int = 3  # down from 5 while validating
+    bet_fraction: float = 0.02  # 2% per trade, down from 5%
 
     # ── Risk ──
-    max_open_positions: int = 1      # one at a time — clean attribution
-    max_exposure_pct: float = 0.20   # down from 0.60
+    max_open_positions: int = 1  # one at a time — clean attribution
+    max_exposure_pct: float = 0.20  # down from 0.60
     daily_loss_limit_pct: float = 0.10
     consecutive_loss_cooldown: int = 3
     cooldown_seconds: int = 600
-    stop_loss_pct: float = 0.006     # 0.6% (3x fee cost, was 1.5%)
-    take_profit_pct: float = 0.005   # 0.5% (2.7x fee cost, was 3%)
-    trailing_stop_pct: float = 0.003 # 0.3% (was 1%)
-    max_hold_seconds: int = 900      # 15 min (window close, was 1 hour)
+    stop_loss_pct: float = 0.006  # 0.6% (3x fee cost, was 1.5%)
+    take_profit_pct: float = 0.005  # 0.5% (2.7x fee cost, was 3%)
+    trailing_stop_pct: float = 0.003  # 0.3% (was 1%)
+    max_hold_seconds: int = 900  # 15 min (window close, was 1 hour)
     # v2: signal_reversal_threshold removed from active code path but
     # retained here so existing .env files don't fail on startup.
     signal_reversal_threshold: float = -10.0
