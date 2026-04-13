@@ -1,13 +1,11 @@
-"""Unit tests for ReconcilePositionsUseCase.
-
-All ports are mocked.  No DB, no network, no Polymarket.
-"""
+"""Tests for ReconcilePositionsUseCase — paper + live resolution."""
 from __future__ import annotations
 
-import pytest
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
+import pytest
 
-from engine.domain.value_objects import PositionOutcome, ResolutionResult
+from engine.domain.value_objects import PositionOutcome, ResolutionResult, WindowKey
 from engine.use_cases.reconcile_positions import ReconcilePositionsUseCase
 
 
@@ -195,3 +193,98 @@ async def test_empty_token_id_skips_token_matching():
     assert result.match_method == "cost_fallback"
     p.trade_repo.find_by_token_id.assert_not_called()
     p.trade_repo.find_by_token_prefix.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# PgWindowRepository.get_actual_direction
+# ---------------------------------------------------------------------------
+
+class TestGetActualDirection:
+    """Unit tests via a mock pool — verifies SQL and return value."""
+
+    def _make_repo_with_pool(self, fetchrow_result):
+        import asyncpg
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=fetchrow_result)
+        pool = AsyncMock()
+        pool.acquire = MagicMock(
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=conn),
+                __aexit__=AsyncMock(return_value=False),
+            )
+        )
+        from engine.adapters.persistence.pg_window_repo import PgWindowRepository
+        repo = PgWindowRepository(pool=pool)
+        return repo, conn
+
+    @pytest.mark.asyncio
+    async def test_returns_direction_when_row_exists(self):
+        row = {"actual_direction": "UP"}
+        repo, conn = self._make_repo_with_pool(row)
+        key = WindowKey(asset="BTC", window_ts=1776109200)
+        result = await repo.get_actual_direction(key)
+        assert result == "UP"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_row(self):
+        repo, conn = self._make_repo_with_pool(None)
+        key = WindowKey(asset="BTC", window_ts=1776109200)
+        result = await repo.get_actual_direction(key)
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_pool_is_none(self):
+        from engine.adapters.persistence.pg_window_repo import PgWindowRepository
+        repo = PgWindowRepository(pool=None)
+        key = WindowKey(asset="BTC", window_ts=1776109200)
+        result = await repo.get_actual_direction(key)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# PgTradeRepository.find_unresolved_paper_trades
+# ---------------------------------------------------------------------------
+
+
+class TestFindUnresolvedPaperTrades:
+
+    def _make_repo_with_pool(self, fetch_result):
+        conn = AsyncMock()
+        conn.fetch = AsyncMock(return_value=fetch_result)
+        pool = AsyncMock()
+        pool.acquire = MagicMock(
+            return_value=AsyncMock(
+                __aenter__=AsyncMock(return_value=conn),
+                __aexit__=AsyncMock(return_value=False),
+            )
+        )
+        from engine.adapters.persistence.pg_trade_repo import PgTradeRepository
+        repo = PgTradeRepository(pool=pool)
+        return repo, conn
+
+    @pytest.mark.asyncio
+    async def test_returns_rows_as_dicts(self):
+        fake_row = {
+            "id": "abc123", "order_id": "5min-1234", "direction": "UP",
+            "stake_usd": 10.0, "entry_price": 0.65,
+            "execution_mode": "paper", "metadata": '{"window_ts": "1776109200"}',
+            "asset": "BTC", "window_ts": "1776109200", "created_at": None,
+        }
+
+        class FakeRow(dict):
+            pass
+
+        row = FakeRow(fake_row)
+        repo, conn = self._make_repo_with_pool([row])
+
+        results = await repo.find_unresolved_paper_trades(min_age_seconds=360)
+        assert len(results) == 1
+        assert results[0]["id"] == "abc123"
+        assert results[0]["direction"] == "UP"
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_pool_none(self):
+        from engine.adapters.persistence.pg_trade_repo import PgTradeRepository
+        repo = PgTradeRepository(pool=None)
+        results = await repo.find_unresolved_paper_trades()
+        assert results == []

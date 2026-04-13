@@ -843,3 +843,29 @@ class PgWindowRepository(WindowStateRepository):
         except Exception as exc:
             log.warning("db.load_recent_traded_failed", hours=hours, error=str(exc)[:120])
             return set()
+
+    async def get_actual_direction(self, key: WindowKey) -> Optional[str]:
+        """Return actual_direction from window_snapshots, or None.
+
+        Implements WindowStateRepository.get_actual_direction.
+        """
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """SELECT actual_direction
+                       FROM window_snapshots
+                       WHERE window_ts = $1 AND asset = $2
+                         AND actual_direction IS NOT NULL
+                       LIMIT 1""",
+                    key.window_ts,
+                    key.asset,
+                )
+                return row["actual_direction"] if row else None
+        except Exception as exc:
+            log.warning(
+                "pg_window_repo.get_actual_direction_failed",
+                error=str(exc)[:100],
+            )
+            return None
