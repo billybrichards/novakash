@@ -197,6 +197,9 @@ jobs:
 
       - name: Rsync engine code to host
         run: |
+          # Update git HEAD on host so git log matches deployed code
+          ssh -i ~/.ssh/deploy_key novakash@"$HOST" \
+            "cd /home/novakash/novakash && git fetch origin develop && git reset --hard origin/develop --" 2>/dev/null || true
           rsync -avz --delete \
             -e "ssh -i ~/.ssh/deploy_key" \
             --exclude '.git' \
