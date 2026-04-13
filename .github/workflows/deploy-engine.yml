@@ -1,6 +1,6 @@
 name: Deploy Engine to Montreal
 
-# Retrying deployment with updated SSH key (2026-04-13)
+# Deployment fixed 2026-04-13 - SSH key + sudoers configured
 # Deploys the Polymarket trading engine to the EC2 Montreal box. This is
 # the first GitHub Actions deploy workflow for engine/ — until this
 # lands, engine/ has been the only major service in the novakash repo
