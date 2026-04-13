@@ -2344,7 +2344,12 @@ class FiveMinVPINStrategy(BaseStrategy):
             # At the final offset (min of configured offsets), send consolidated summary
             _min_offset = min(FIVE_MIN_EVAL_OFFSETS) if FIVE_MIN_EVAL_OFFSETS else 60
             _is_final_offset = eval_offset is not None and eval_offset <= _min_offset
-            if self._alerter and _is_final_offset:
+            # Skip old-system window summary when Strategy Engine v2 is active
+            # (registry sends its own summary via _send_window_summary)
+            _legacy_alerts_enabled = (
+                os.environ.get("LEGACY_EXECUTION_DISABLED", "").lower() != "true"
+            )
+            if self._alerter and _is_final_offset and _legacy_alerts_enabled:
                 try:
                     _hist = list(self._window_eval_history.get(_window_key, []))
                     # v12: Consume strategy port decisions for skip summary
@@ -2512,7 +2517,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             # At the final offset, send the consolidated summary
             _min_offset2 = min(FIVE_MIN_EVAL_OFFSETS) if FIVE_MIN_EVAL_OFFSETS else 60
             _is_final_offset2 = eval_offset is not None and eval_offset <= _min_offset2
-            if self._alerter and _is_final_offset2:
+            if self._alerter and _is_final_offset2 and _legacy_alerts_enabled:
                 try:
                     _hist2 = list(self._window_eval_history.get(_window_key, []))
 
@@ -2549,7 +2554,10 @@ class FiveMinVPINStrategy(BaseStrategy):
 
         # ── Send consolidated window summary if we have prior skip history ──────
         _trade_window_key = f"{window.asset}-{window.window_ts}"
-        if self._alerter and _trade_window_key in self._window_eval_history:
+        _legacy_trade_alerts = (
+            os.environ.get("LEGACY_EXECUTION_DISABLED", "").lower() != "true"
+        )
+        if self._alerter and _trade_window_key in self._window_eval_history and _legacy_trade_alerts:
             try:
                 _trade_hist = list(self._window_eval_history.get(_trade_window_key, []))
                 _trade_offset_val = eval_offset
@@ -2630,7 +2638,10 @@ class FiveMinVPINStrategy(BaseStrategy):
                     _sp_decisions = self._pending_strategy_decisions
                     self._pending_strategy_decisions = None  # consume once
 
-                    # Send decision + AI analysis (separated for timeout resilience)
+                    # Send decision only if old system is primary executor
+                    # (Strategy Engine v2 sends its own alerts when LEGACY_EXECUTION_DISABLED=true)
+                    if os.environ.get("LEGACY_EXECUTION_DISABLED", "").lower() == "true":
+                        return  # v2 registry handles alerts
                     await self._alerter.send_trade_decision_detailed(
                         window_id=window_id,
                         signal=signal_dict,
