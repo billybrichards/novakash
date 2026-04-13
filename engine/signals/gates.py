@@ -37,9 +37,11 @@ log = structlog.get_logger(__name__)
 
 # ── Result Types ────────────────────────────────────────────────────────────
 
+
 @dataclass
 class GateResult:
     """Result from a single gate evaluation."""
+
     passed: bool
     gate_name: str
     reason: str = ""
@@ -49,18 +51,20 @@ class GateResult:
 @dataclass
 class PipelineResult:
     """Result from the full gate pipeline."""
+
     passed: bool
-    direction: Optional[str] = None       # UP or DOWN
-    cap: Optional[float] = None           # Dynamic entry cap
-    dune_p: Optional[float] = None        # DUNE model probability
+    direction: Optional[str] = None  # UP or DOWN
+    cap: Optional[float] = None  # Dynamic entry cap
+    dune_p: Optional[float] = None  # DUNE model probability
     gate_results: list[GateResult] = field(default_factory=list)
-    failed_gate: Optional[str] = None     # Name of first gate that failed
-    skip_reason: Optional[str] = None     # Human-readable reason
+    failed_gate: Optional[str] = None  # Name of first gate that failed
+    skip_reason: Optional[str] = None  # Human-readable reason
 
 
 @dataclass
 class GateContext:
     """All data needed by gates for evaluation."""
+
     # Price deltas
     delta_chainlink: Optional[float] = None
     delta_tiingo: Optional[float] = None
@@ -89,8 +93,8 @@ class GateContext:
 
     # v10.3: CoinGlass modifiers (set by TakerFlowGate + CGConfirmationGate)
     cg_threshold_modifier: float = 0.0  # +0.05 penalty or -0.02 bonus from taker flow
-    cg_confirms: int = 0                # 0-3 confirming CG signals
-    cg_bonus: float = 0.0              # Confirmation bonus (subtracted from threshold)
+    cg_confirms: int = 0  # 0-3 confirming CG signals
+    cg_bonus: float = 0.0  # Confirmation bonus (subtracted from threshold)
 
     # Gamma / Polymarket CLOB prices (for spread gate)
     gamma_up_price: Optional[float] = None
@@ -102,11 +106,11 @@ class GateContext:
     # DuneConfidenceGate can build an identical V5FeatureBody to the one
     # the strategy's own v8.1 fetch builds. Train/serve parity across
     # both decision-path call sites depends on these being set.
-    twap_delta: Optional[float] = None        # TWAP delta percentage from twap_result
-    tiingo_close: Optional[float] = None      # Tiingo REST candle close price
-    current_price: Optional[float] = None     # Binance last price at eval time
-    chainlink_price: Optional[float] = None   # Chainlink spot (when available)
-    delta_source: Optional[str] = None        # "binance" | "chainlink" | "tiingo" raw string
+    twap_delta: Optional[float] = None  # TWAP delta percentage from twap_result
+    tiingo_close: Optional[float] = None  # Tiingo REST candle close price
+    current_price: Optional[float] = None  # Binance last price at eval time
+    chainlink_price: Optional[float] = None  # Chainlink spot (when available)
+    delta_source: Optional[str] = None  # "binance" | "chainlink" | "tiingo" raw string
     prev_v2_probability_up: Optional[float] = None  # For v2_logit — prior scorer output
 
     # v11.1: Pre-built V5 feature body, attached by the strategy. When
@@ -118,8 +122,6 @@ class GateContext:
     # with signals.v2_feature_body — the DUNE gate type-checks it
     # locally when it uses it.
     v5_features: Optional[object] = None
-
-
 
 
 # -- Feature flag: immutable gate context (CA-03) -------------------------
@@ -134,6 +136,7 @@ class GateContextDelta:
     Only fields that are not None are applied during merge. Gates that
     do not modify context return EMPTY_DELTA.
     """
+
     agreed_direction: Optional[str] = None
     cg_threshold_modifier: Optional[float] = None
     cg_confirms: Optional[int] = None
@@ -150,8 +153,13 @@ def _merge_context(ctx: GateContext, delta: GateContextDelta) -> GateContext:
     """Return a NEW GateContext with delta fields applied."""
     overrides = {}
     for fn in (
-        "agreed_direction", "cg_threshold_modifier", "cg_confirms",
-        "cg_bonus", "dune_probability_up", "dune_direction", "dune_model_version",
+        "agreed_direction",
+        "cg_threshold_modifier",
+        "cg_confirms",
+        "cg_bonus",
+        "dune_probability_up",
+        "dune_direction",
+        "dune_model_version",
     ):
         val = getattr(delta, fn)
         if val is not None:
@@ -163,6 +171,7 @@ def _merge_context(ctx: GateContext, delta: GateContextDelta) -> GateContext:
 
 # ── Gate Protocol ───────────────────────────────────────────────────────────
 
+
 class Gate(Protocol):
     """Protocol for gate implementations.
 
@@ -170,11 +179,14 @@ class Gate(Protocol):
     evaluate_immutable() if present, falling back to evaluate()
     with a mutable copy for unmigrated gates.
     """
+
     name: str
+
     async def evaluate(self, ctx: GateContext) -> GateResult: ...
 
 
 # ── V10.6 Eval Offset Bounds Gate (DS-01) ───────────────────────────────────
+
 
 class EvalOffsetBoundsGate:
     """G0: V10.6 hard eval_offset bounds — default OFF.
@@ -238,6 +250,7 @@ class EvalOffsetBoundsGate:
         T-180-240:   21 trades, 47.62% WR, −33.96% ROI (catastrophic)
       Only the T-90-180 band is reliable under v4/v5 calibration.
     """
+
     name = "eval_offset_bounds"
 
     def __init__(self):
@@ -260,7 +273,8 @@ class EvalOffsetBoundsGate:
         # this PR to develop, until an operator flips the flag.
         if not self._enabled:
             return GateResult(
-                passed=True, gate_name=self.name,
+                passed=True,
+                gate_name=self.name,
                 reason="disabled (V10_6_ENABLED=false)",
             )
 
@@ -279,7 +293,8 @@ class EvalOffsetBoundsGate:
                 reason="missing eval_offset",
             )
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason="V10.6: missing eval_offset (fail-closed)",
                 data={"offset": None, "min": self._min_offset, "max": self._max_offset},
             )
@@ -295,8 +310,14 @@ class EvalOffsetBoundsGate:
                 reason=reason,
             )
             return GateResult(
-                passed=False, gate_name=self.name, reason=reason,
-                data={"offset": offset, "min": self._min_offset, "max": self._max_offset},
+                passed=False,
+                gate_name=self.name,
+                reason=reason,
+                data={
+                    "offset": offset,
+                    "min": self._min_offset,
+                    "max": self._max_offset,
+                },
             )
 
         # Above max: too far from close, v4/v5 calibration not yet
@@ -311,24 +332,34 @@ class EvalOffsetBoundsGate:
                 reason=reason,
             )
             return GateResult(
-                passed=False, gate_name=self.name, reason=reason,
-                data={"offset": offset, "min": self._min_offset, "max": self._max_offset},
+                passed=False,
+                gate_name=self.name,
+                reason=reason,
+                data={
+                    "offset": offset,
+                    "min": self._min_offset,
+                    "max": self._max_offset,
+                },
             )
 
         # Inside [min, max] inclusive — the safe tradeable band
         return GateResult(
-            passed=True, gate_name=self.name,
+            passed=True,
+            gate_name=self.name,
             reason=f"V10.6: T-{offset} in safe band [T-{self._min_offset}, T-{self._max_offset}]",
             data={"offset": offset, "min": self._min_offset, "max": self._max_offset},
         )
 
-
-    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+    async def evaluate_immutable(
+        self, ctx: GateContext
+    ) -> tuple[GateResult, GateContextDelta]:
         """CA-03 immutable path."""
         result = await self.evaluate(ctx)
         return (result, EMPTY_DELTA)
 
+
 # ── Source Agreement Gate ───────────────────────────────────────────────────
+
 
 class SourceAgreementGate:
     """G1: source agreement vote — direction consensus between price feeds.
@@ -381,6 +412,7 @@ class SourceAgreementGate:
       - `V11_POLY_SPOT_ONLY_CONSENSUS` — master flag for Mode B.
         Default `false`. Accepts `true`/`false` case-insensitively.
     """
+
     name = "source_agreement"
 
     def __init__(self):
@@ -397,7 +429,8 @@ class SourceAgreementGate:
     async def evaluate(self, ctx: GateContext) -> GateResult:
         if ctx.delta_chainlink is None or ctx.delta_tiingo is None:
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason="missing CL or TI data",
             )
 
@@ -415,7 +448,8 @@ class SourceAgreementGate:
                 agreed_dir = cl_dir
                 ctx.agreed_direction = agreed_dir
                 return GateResult(
-                    passed=True, gate_name=self.name,
+                    passed=True,
+                    gate_name=self.name,
                     reason=f"spot-only {agreed_dir} (CL={cl_dir} TI={ti_dir})",
                     data={
                         "mode": "spot_only",
@@ -434,7 +468,8 @@ class SourceAgreementGate:
                 ti_dir=ti_dir,
             )
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason=f"spot disagree: CL={cl_dir} TI={ti_dir} (spot-only mode)",
                 data={
                     "mode": "spot_only",
@@ -444,7 +479,9 @@ class SourceAgreementGate:
             )
 
         # ── Mode A: 2/3 majority vote (default, v11.1 legacy path) ──
-        bin_dir = "UP" if ctx.delta_binance is not None and ctx.delta_binance > 0 else "DOWN"
+        bin_dir = (
+            "UP" if ctx.delta_binance is not None and ctx.delta_binance > 0 else "DOWN"
+        )
 
         # Count votes for each direction
         up_votes = sum([cl_dir == "UP", ti_dir == "UP", bin_dir == "UP"])
@@ -458,24 +495,45 @@ class SourceAgreementGate:
         else:
             # 2-2 split impossible with 3 sources, but handle gracefully
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason=f"CL={cl_dir} TI={ti_dir} BIN={bin_dir} NO MAJORITY",
-                data={"cl_dir": cl_dir, "ti_dir": ti_dir, "bin_dir": bin_dir, "up_votes": up_votes, "down_votes": down_votes},
+                data={
+                    "cl_dir": cl_dir,
+                    "ti_dir": ti_dir,
+                    "bin_dir": bin_dir,
+                    "up_votes": up_votes,
+                    "down_votes": down_votes,
+                },
             )
 
         # Store agreed direction in context for downstream gates
         ctx.agreed_direction = agreed_dir
         return GateResult(
-            passed=True, gate_name=self.name,
+            passed=True,
+            gate_name=self.name,
             reason=f"2/3 {agreed_dir} (CL={cl_dir} TI={ti_dir} BIN={bin_dir})",
-            data={"cl_dir": cl_dir, "ti_dir": ti_dir, "bin_dir": bin_dir, "direction": agreed_dir, "up_votes": up_votes, "down_votes": down_votes},
+            data={
+                "cl_dir": cl_dir,
+                "ti_dir": ti_dir,
+                "bin_dir": bin_dir,
+                "direction": agreed_dir,
+                "up_votes": up_votes,
+                "down_votes": down_votes,
+            },
         )
 
-
-    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+    async def evaluate_immutable(
+        self, ctx: GateContext
+    ) -> tuple[GateResult, GateContextDelta]:
         """CA-03 immutable path -- returns agreed_direction delta."""
         if ctx.delta_chainlink is None or ctx.delta_tiingo is None:
-            return (GateResult(passed=False, gate_name=self.name, reason="missing CL or TI data"), EMPTY_DELTA)
+            return (
+                GateResult(
+                    passed=False, gate_name=self.name, reason="missing CL or TI data"
+                ),
+                EMPTY_DELTA,
+            )
 
         cl_dir = "UP" if ctx.delta_chainlink > 0 else "DOWN"
         ti_dir = "UP" if ctx.delta_tiingo > 0 else "DOWN"
@@ -483,20 +541,38 @@ class SourceAgreementGate:
         if self._spot_only:
             if cl_dir == ti_dir:
                 return (
-                    GateResult(passed=True, gate_name=self.name,
+                    GateResult(
+                        passed=True,
+                        gate_name=self.name,
                         reason=f"spot-only {cl_dir} (CL={cl_dir} TI={ti_dir})",
-                        data={"mode": "spot_only", "cl_dir": cl_dir, "ti_dir": ti_dir, "direction": cl_dir}),
+                        data={
+                            "mode": "spot_only",
+                            "cl_dir": cl_dir,
+                            "ti_dir": ti_dir,
+                            "direction": cl_dir,
+                        },
+                    ),
                     GateContextDelta(agreed_direction=cl_dir),
                 )
-            self._log.info("gate.source_agreement.spot_disagree", mode="spot_only", cl_dir=cl_dir, ti_dir=ti_dir)
+            self._log.info(
+                "gate.source_agreement.spot_disagree",
+                mode="spot_only",
+                cl_dir=cl_dir,
+                ti_dir=ti_dir,
+            )
             return (
-                GateResult(passed=False, gate_name=self.name,
+                GateResult(
+                    passed=False,
+                    gate_name=self.name,
                     reason=f"spot disagree: CL={cl_dir} TI={ti_dir} (spot-only mode)",
-                    data={"mode": "spot_only", "cl_dir": cl_dir, "ti_dir": ti_dir}),
+                    data={"mode": "spot_only", "cl_dir": cl_dir, "ti_dir": ti_dir},
+                ),
                 EMPTY_DELTA,
             )
 
-        bin_dir = "UP" if ctx.delta_binance is not None and ctx.delta_binance > 0 else "DOWN"
+        bin_dir = (
+            "UP" if ctx.delta_binance is not None and ctx.delta_binance > 0 else "DOWN"
+        )
         up_votes = sum([cl_dir == "UP", ti_dir == "UP", bin_dir == "UP"])
         down_votes = 3 - up_votes
         if up_votes >= 2:
@@ -505,20 +581,41 @@ class SourceAgreementGate:
             agreed_dir = "DOWN"
         else:
             return (
-                GateResult(passed=False, gate_name=self.name,
+                GateResult(
+                    passed=False,
+                    gate_name=self.name,
                     reason=f"CL={cl_dir} TI={ti_dir} BIN={bin_dir} NO MAJORITY",
-                    data={"cl_dir": cl_dir, "ti_dir": ti_dir, "bin_dir": bin_dir, "up_votes": up_votes, "down_votes": down_votes}),
+                    data={
+                        "cl_dir": cl_dir,
+                        "ti_dir": ti_dir,
+                        "bin_dir": bin_dir,
+                        "up_votes": up_votes,
+                        "down_votes": down_votes,
+                    },
+                ),
                 EMPTY_DELTA,
             )
 
         return (
-            GateResult(passed=True, gate_name=self.name,
+            GateResult(
+                passed=True,
+                gate_name=self.name,
                 reason=f"2/3 {agreed_dir} (CL={cl_dir} TI={ti_dir} BIN={bin_dir})",
-                data={"cl_dir": cl_dir, "ti_dir": ti_dir, "bin_dir": bin_dir, "direction": agreed_dir, "up_votes": up_votes, "down_votes": down_votes}),
+                data={
+                    "cl_dir": cl_dir,
+                    "ti_dir": ti_dir,
+                    "bin_dir": bin_dir,
+                    "direction": agreed_dir,
+                    "up_votes": up_votes,
+                    "down_votes": down_votes,
+                },
+            ),
             GateContextDelta(agreed_direction=agreed_dir),
         )
 
+
 # ── Delta Magnitude Gate (v10.5) ───────────────────────────────────────────
+
 
 class DeltaMagnitudeGate:
     """G2: Delta magnitude must exceed regime-specific floor.
@@ -531,6 +628,7 @@ class DeltaMagnitudeGate:
       |delta| >= 0.01% in TRANSITION: 23W/5L (82.1% WR)
       CASCADE exempt — forced liq reversals can start at tiny delta.
     """
+
     name = "delta_magnitude"
 
     def __init__(self):
@@ -545,7 +643,8 @@ class DeltaMagnitudeGate:
         # CASCADE exempt — tiny deltas are normal pre-liquidation
         if regime == "CASCADE":
             return GateResult(
-                passed=True, gate_name=self.name,
+                passed=True,
+                gate_name=self.name,
                 reason=f"CASCADE exempt (|delta|={abs_delta:.4f}%)",
             )
 
@@ -555,28 +654,36 @@ class DeltaMagnitudeGate:
             floor = self._transition_min
 
         if floor > 0 and abs_delta < floor:
-            self._log.info("delta_magnitude.blocked",
-                regime=regime, abs_delta=f"{abs_delta:.6f}",
-                floor=f"{floor:.4f}")
+            self._log.info(
+                "delta_magnitude.blocked",
+                regime=regime,
+                abs_delta=f"{abs_delta:.6f}",
+                floor=f"{floor:.4f}",
+            )
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason=f"|delta|={abs_delta:.4f}% < {floor:.4f}% ({regime})",
                 data={"abs_delta": abs_delta, "floor": floor, "regime": regime},
             )
 
         return GateResult(
-            passed=True, gate_name=self.name,
+            passed=True,
+            gate_name=self.name,
             reason=f"|delta|={abs_delta:.4f}% >= {floor:.4f}% ({regime})",
             data={"abs_delta": abs_delta, "floor": floor},
         )
 
-
-    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+    async def evaluate_immutable(
+        self, ctx: GateContext
+    ) -> tuple[GateResult, GateContextDelta]:
         """CA-03 immutable path."""
         result = await self.evaluate(ctx)
         return (result, EMPTY_DELTA)
 
+
 # ── DUNE Confidence Gate ───────────────────────────────────────────────────
+
 
 class DuneConfidenceGate:
     """G4: DUNE ML model must confirm direction with sufficient confidence.
@@ -590,43 +697,50 @@ class DuneConfidenceGate:
       - down_penalty: +0.03 for DOWN predictions (9.3pp less accurate, N=865)
       - cg_modifier: +0.05 if taker opposing, -0.02 if taker aligned (from TakerFlowGate)
       - cg_bonus: -0.02 if 2+ CG confirmation signals (from CGConfirmationGate)
-    
+
     v11.0: Dynamic TimesFM confidence gating
       - timesfm.confidence >= 0.90: Allow P(UP) >= 0.55 (was 0.65)
       - timesfm.confidence >= 0.80: Allow P(UP) >= 0.58
       - timesfm.confidence >= 0.70: Allow P(UP) >= 0.60
       - timesfm.confidence < 0.70: Require HIGH confidence (p > 0.65 or p < 0.35)
     """
+
     name = "dune_confidence"
 
     # v10.3: ELM-calibrated regime thresholds
     _REGIME_DEFAULTS = {
-        "TRANSITION": 0.70,   # 85% WR best regime (was 0.85 in v10.2, 9.99 in v10.1)
-        "CASCADE":    0.72,   # 67% WR small sample, keep tighter
-        "NORMAL":     0.65,   # ELM P>=0.65 = 78.4% acc on 93% coverage
-        "LOW_VOL":    0.65,   # Same as NORMAL
-        "TRENDING":   0.72,   # Same as CASCADE
-        "CALM":       0.72,   # Conservative — low signal environment
+        "TRANSITION": 0.70,  # 85% WR best regime (was 0.85 in v10.2, 9.99 in v10.1)
+        "CASCADE": 0.72,  # 67% WR small sample, keep tighter
+        "NORMAL": 0.65,  # ELM P>=0.65 = 78.4% acc on 93% coverage
+        "LOW_VOL": 0.65,  # Same as NORMAL
+        "TRENDING": 0.72,  # Same as CASCADE
+        "CALM": 0.72,  # Conservative — low signal environment
     }
 
     _REGIME_ENV = {
         "TRANSITION": "V10_TRANSITION_MIN_P",
-        "CASCADE":    "V10_CASCADE_MIN_P",
-        "NORMAL":     "V10_NORMAL_MIN_P",
-        "LOW_VOL":    "V10_LOW_VOL_MIN_P",
-        "TRENDING":   "V10_TRENDING_MIN_P",
-        "CALM":       "V10_CALM_MIN_P",
+        "CASCADE": "V10_CASCADE_MIN_P",
+        "NORMAL": "V10_NORMAL_MIN_P",
+        "LOW_VOL": "V10_LOW_VOL_MIN_P",
+        "TRENDING": "V10_TRENDING_MIN_P",
+        "CALM": "V10_CALM_MIN_P",
     }
 
     def __init__(self, dune_client=None):
         self._base_min_p = float(os.environ.get("V10_DUNE_MIN_P", "0.65"))
-        self._offset_penalty_max = float(os.environ.get("V10_OFFSET_PENALTY_MAX", "0.06"))
-        self._early_penalty_max = float(os.environ.get("V10_OFFSET_PENALTY_EARLY_MAX", "0.0"))
+        self._offset_penalty_max = float(
+            os.environ.get("V10_OFFSET_PENALTY_MAX", "0.06")
+        )
+        self._early_penalty_max = float(
+            os.environ.get("V10_OFFSET_PENALTY_EARLY_MAX", "0.0")
+        )
         self._early_min_conf = float(os.environ.get("V10_EARLY_ENTRY_MIN_CONF", "0.90"))
         self._down_penalty = float(os.environ.get("V10_DOWN_PENALTY", "0.0"))
         # v11.0: Dynamic confidence gating
         self._cascade_min_conf = float(os.environ.get("V10_CASCADE_MIN_CONF", "0.90"))
-        self._cascade_conf_bonus = float(os.environ.get("V10_CASCADE_CONF_BONUS", "0.05"))
+        self._cascade_conf_bonus = float(
+            os.environ.get("V10_CASCADE_CONF_BONUS", "0.05")
+        )
         self._client = dune_client
         self._log = log.bind(gate="dune_confidence")
 
@@ -637,12 +751,18 @@ class DuneConfidenceGate:
                 os.environ.get(env_key, str(default))
             )
 
-    def _effective_threshold(self, ctx: GateContext, regime: str, eval_offset: Optional[int],
-                            p_up: Optional[float] = None, timesfm_conf: Optional[float] = None) -> float:
+    def _effective_threshold(
+        self,
+        ctx: GateContext,
+        regime: str,
+        eval_offset: Optional[int],
+        p_up: Optional[float] = None,
+        timesfm_conf: Optional[float] = None,
+    ) -> float:
         """Calculate threshold = regime_base + offset + down + cg_modifier - cg_bonus.
 
         Per-20s offset granularity from decision surface spec (Section 5, Gate 2).
-        
+
         v11.0: Dynamic TimesFM confidence adjustment
           - If timesfm.conf >= 0.90: Apply -0.05 bonus to threshold (allow P(UP) >= 0.55)
           - If timesfm.conf >= 0.80: Apply -0.03 bonus
@@ -656,12 +776,16 @@ class DuneConfidenceGate:
         # Tier 2: linear from 0 at T-180 to _early_penalty_max at T-200 (steeper)
         offset_penalty = 0.0
         if eval_offset is not None and eval_offset > 60:
-            base_penalty = min(self._offset_penalty_max,
-                               (eval_offset - 60) / 120.0 * self._offset_penalty_max)
+            base_penalty = min(
+                self._offset_penalty_max,
+                (eval_offset - 60) / 120.0 * self._offset_penalty_max,
+            )
             early_penalty = 0.0
             if eval_offset > 180 and self._early_penalty_max > 0:
-                early_penalty = min(self._early_penalty_max,
-                                    (eval_offset - 180) / 20.0 * self._early_penalty_max)
+                early_penalty = min(
+                    self._early_penalty_max,
+                    (eval_offset - 180) / 20.0 * self._early_penalty_max,
+                )
             offset_penalty = base_penalty + early_penalty
 
         # DOWN penalty: +0.03 (9.3pp accuracy gap, N=865)
@@ -669,7 +793,7 @@ class DuneConfidenceGate:
 
         # CG modifiers from upstream gates
         cg_mod = ctx.cg_threshold_modifier  # +0.05 (taker opposing) or 0.0
-        cg_bonus = ctx.cg_bonus             # 0.02 (3-signal confirmation) or 0.0
+        cg_bonus = ctx.cg_bonus  # 0.02 (3-signal confirmation) or 0.0
 
         # v11.0: TimesFM confidence adjustment
         conf_bonus = 0.0
@@ -681,13 +805,16 @@ class DuneConfidenceGate:
             elif timesfm_conf >= 0.70 and timesfm_conf < 0.80:
                 conf_bonus = 0.01
 
-        effective = base + offset_penalty + down_penalty + cg_mod - cg_bonus - conf_bonus
+        effective = (
+            base + offset_penalty + down_penalty + cg_mod - cg_bonus - conf_bonus
+        )
         return round(effective, 4)
 
     async def evaluate(self, ctx: GateContext) -> GateResult:
         if not ctx.agreed_direction:
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason="no agreed direction (agreement gate must run first)",
             )
 
@@ -699,7 +826,8 @@ class DuneConfidenceGate:
         _min_offset = int(os.environ.get("V10_MIN_EVAL_OFFSET", "200"))
         if ctx.eval_offset and ctx.eval_offset > _min_offset:
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason=f"too early: T-{ctx.eval_offset} > T-{_min_offset}",
             )
 
@@ -711,9 +839,16 @@ class DuneConfidenceGate:
                 dir_conf = p_up if ctx.agreed_direction == "UP" else (1.0 - p_up)
             if dir_conf is None or dir_conf < self._early_min_conf:
                 return GateResult(
-                    passed=False, gate_name=self.name,
-                    reason=f"early entry T-{ctx.eval_offset}: conf {dir_conf:.3f} < {self._early_min_conf:.2f}" if dir_conf else f"early entry T-{ctx.eval_offset}: no confidence",
-                    data={"offset": ctx.eval_offset, "conf": dir_conf, "min_conf": self._early_min_conf},
+                    passed=False,
+                    gate_name=self.name,
+                    reason=f"early entry T-{ctx.eval_offset}: conf {dir_conf:.3f} < {self._early_min_conf:.2f}"
+                    if dir_conf
+                    else f"early entry T-{ctx.eval_offset}: no confidence",
+                    data={
+                        "offset": ctx.eval_offset,
+                        "conf": dir_conf,
+                        "min_conf": self._early_min_conf,
+                    },
                 )
 
         regime = ctx.regime or "NORMAL"
@@ -721,29 +856,52 @@ class DuneConfidenceGate:
         # v10.4: per-regime offset limits
         # NORMAL before T-100: 25% WR (1W/3L), too early for low-VPIN regime
         _normal_min = int(os.environ.get("V10_NORMAL_MIN_OFFSET", "0"))
-        if regime == "NORMAL" and _normal_min > 0 and ctx.eval_offset and ctx.eval_offset > _normal_min:
+        if (
+            regime == "NORMAL"
+            and _normal_min > 0
+            and ctx.eval_offset
+            and ctx.eval_offset > _normal_min
+        ):
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason=f"NORMAL too early: T-{ctx.eval_offset} > T-{_normal_min}",
-                data={"regime": regime, "offset": ctx.eval_offset, "limit": _normal_min},
+                data={
+                    "regime": regime,
+                    "offset": ctx.eval_offset,
+                    "limit": _normal_min,
+                },
             )
 
         # TRANSITION+DOWN after T-140: 56.3% WR, collapses while UP stays strong
         _trans_down_max = int(os.environ.get("V10_TRANSITION_MAX_DOWN_OFFSET", "0"))
-        if (regime == "TRANSITION" and _trans_down_max > 0
-                and ctx.agreed_direction == "DOWN"
-                and ctx.eval_offset and ctx.eval_offset > _trans_down_max):
+        if (
+            regime == "TRANSITION"
+            and _trans_down_max > 0
+            and ctx.agreed_direction == "DOWN"
+            and ctx.eval_offset
+            and ctx.eval_offset > _trans_down_max
+        ):
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason=f"TRANSITION+DOWN too early: T-{ctx.eval_offset} > T-{_trans_down_max}",
-                data={"regime": regime, "direction": "DOWN", "offset": ctx.eval_offset, "limit": _trans_down_max},
+                data={
+                    "regime": regime,
+                    "direction": "DOWN",
+                    "offset": ctx.eval_offset,
+                    "limit": _trans_down_max,
+                },
             )
-        threshold = self._effective_threshold(ctx, regime, ctx.eval_offset, p_up, timesfm_conf)
+        threshold = self._effective_threshold(
+            ctx, regime, ctx.eval_offset, p_up, timesfm_conf
+        )
 
         # Fast-reject if threshold is unreachable
         if threshold >= 1.0:
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason=f"regime {regime} blocked (threshold={threshold:.2f})",
                 data={"regime": regime, "threshold": threshold},
             )
@@ -751,7 +909,8 @@ class DuneConfidenceGate:
         # Query DUNE API
         if self._client is None:
             return GateResult(
-                passed=True, gate_name=self.name,
+                passed=True,
+                gate_name=self.name,
                 reason="DUNE client not configured (pass-through)",
             )
 
@@ -812,13 +971,15 @@ class DuneConfidenceGate:
             self._log.warning("dune.query_failed", error=str(exc)[:100])
             # BLOCK on DUNE failure — never trade without model confidence
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason=f"DUNE query failed: {str(exc)[:50]} (BLOCKED)",
             )
 
         if not result or "probability_up" not in result:
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason="DUNE returned invalid response (BLOCKED)",
             )
 
@@ -847,41 +1008,66 @@ class DuneConfidenceGate:
             components += f" -cg_bonus={ctx.cg_bonus:.03f}"
         # v11.0: Add TimesFM confidence component
         if timesfm_conf is not None:
-            conf_bonus = self._cascade_conf_bonus if timesfm_conf >= self._cascade_min_conf else (
-                0.03 if timesfm_conf >= 0.80 else (0.01 if timesfm_conf >= 0.70 else 0.0))
+            conf_bonus = (
+                self._cascade_conf_bonus
+                if timesfm_conf >= self._cascade_min_conf
+                else (
+                    0.03
+                    if timesfm_conf >= 0.80
+                    else (0.01 if timesfm_conf >= 0.70 else 0.0)
+                )
+            )
             if conf_bonus > 0:
-                components += f" -timesfm_conf={timesfm_conf:.2f} (bonus={conf_bonus:.03f})"
+                components += (
+                    f" -timesfm_conf={timesfm_conf:.2f} (bonus={conf_bonus:.03f})"
+                )
 
-        self._log.info("dune.evaluated",
-            asset=ctx.asset, offset=seconds_to_close,
-            p_up=f"{p_up:.4f}", dune_p=f"{dune_p:.4f}",
+        self._log.info(
+            "dune.evaluated",
+            asset=ctx.asset,
+            offset=seconds_to_close,
+            p_up=f"{p_up:.4f}",
+            dune_p=f"{dune_p:.4f}",
             agreed_dir=ctx.agreed_direction,
-            regime=regime, threshold=f"{threshold:.4f}",
+            regime=regime,
+            threshold=f"{threshold:.4f}",
             timesfm_conf=f"{timesfm_conf:.2f}",  # v11.0: TimesFM confidence
             components=components,
-            passed=dune_p >= threshold)
+            passed=dune_p >= threshold,
+        )
 
-        data = {"dune_p": dune_p, "p_up": p_up, "threshold": threshold,
-                "regime": regime, "offset": ctx.eval_offset,
-                "down_penalty": self._down_penalty if ctx.agreed_direction == "DOWN" else 0.0,
-                "cg_modifier": ctx.cg_threshold_modifier, "cg_bonus": ctx.cg_bonus,
-                "timesfm_conf": timesfm_conf}  # v11.0: TimesFM confidence
+        data = {
+            "dune_p": dune_p,
+            "p_up": p_up,
+            "threshold": threshold,
+            "regime": regime,
+            "offset": ctx.eval_offset,
+            "down_penalty": self._down_penalty
+            if ctx.agreed_direction == "DOWN"
+            else 0.0,
+            "cg_modifier": ctx.cg_threshold_modifier,
+            "cg_bonus": ctx.cg_bonus,
+            "timesfm_conf": timesfm_conf,
+        }  # v11.0: TimesFM confidence
 
         if dune_p < threshold:
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason=f"DUNE P({ctx.agreed_direction})={dune_p:.3f} < {threshold:.3f} (timesfm_conf={timesfm_conf:.2f}, {regime} T-{ctx.eval_offset} {components})",
                 data=data,
             )
 
         return GateResult(
-            passed=True, gate_name=self.name,
+            passed=True,
+            gate_name=self.name,
             reason=f"DUNE P({ctx.agreed_direction})={dune_p:.3f} >= {threshold:.3f} ({regime} T-{ctx.eval_offset})",
             data=data,
         )
 
-
-    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+    async def evaluate_immutable(
+        self, ctx: GateContext
+    ) -> tuple[GateResult, GateContextDelta]:
         """CA-03 immutable path -- runs evaluate on a mutable copy, diffs for delta."""
         mutable_ctx = replace(ctx)
         result = await self.evaluate(mutable_ctx)
@@ -894,7 +1080,9 @@ class DuneConfidenceGate:
             kw["dune_model_version"] = mutable_ctx.dune_model_version
         return (result, GateContextDelta(**kw) if kw else EMPTY_DELTA)
 
+
 # ── Taker Flow Gate (v10.3 — replaces CoinGlassVetoGate) ─────────────────
+
 
 class TakerFlowGate:
     """G2: CoinGlass taker flow alignment gate.
@@ -915,36 +1103,54 @@ class TakerFlowGate:
     Runs BEFORE DuneConfidenceGate so modifier is available.
     Feature flag: V10_CG_TAKER_GATE (default false for safe rollout).
     """
+
     name = "taker_flow"
 
     def __init__(self):
         self._enabled = os.environ.get("V10_CG_TAKER_GATE", "false").lower() == "true"
-        self._taker_opposing_pct = float(os.environ.get("V10_CG_TAKER_OPPOSING_PCT", "55"))
-        self._smart_opposing_pct = float(os.environ.get("V10_CG_SMART_OPPOSING_PCT", "52"))
-        self._taker_opposing_penalty = float(os.environ.get("V10_CG_TAKER_OPPOSING_PENALTY", "0.05"))
-        self._taker_aligned_bonus = float(os.environ.get("V10_CG_TAKER_ALIGNED_BONUS", "0.02"))
+        self._taker_opposing_pct = float(
+            os.environ.get("V10_CG_TAKER_OPPOSING_PCT", "55")
+        )
+        self._smart_opposing_pct = float(
+            os.environ.get("V10_CG_SMART_OPPOSING_PCT", "52")
+        )
+        self._taker_opposing_penalty = float(
+            os.environ.get("V10_CG_TAKER_OPPOSING_PENALTY", "0.05")
+        )
+        self._taker_aligned_bonus = float(
+            os.environ.get("V10_CG_TAKER_ALIGNED_BONUS", "0.02")
+        )
         self._max_age_ms = int(os.environ.get("V10_CG_MAX_AGE_MS", "120000"))
         self._log = log.bind(gate="taker_flow")
 
     async def evaluate(self, ctx: GateContext) -> GateResult:
         if not self._enabled:
-            return GateResult(passed=True, gate_name=self.name, reason="disabled (V10_CG_TAKER_GATE=false)")
+            return GateResult(
+                passed=True,
+                gate_name=self.name,
+                reason="disabled (V10_CG_TAKER_GATE=false)",
+            )
 
         cg = ctx.cg_snapshot
         direction = ctx.agreed_direction
 
-        if cg is None or not hasattr(cg, 'connected') or not cg.connected:
-            return GateResult(passed=True, gate_name=self.name, reason="CG not connected (pass-through)")
+        if cg is None or not hasattr(cg, "connected") or not cg.connected:
+            return GateResult(
+                passed=True,
+                gate_name=self.name,
+                reason="CG not connected (pass-through)",
+            )
 
         if not direction:
             return GateResult(passed=True, gate_name=self.name, reason="no direction")
 
         # Freshness check — stale CG data is no signal
-        if hasattr(cg, 'timestamp') and cg.timestamp:
+        if hasattr(cg, "timestamp") and cg.timestamp:
             age_ms = (datetime.now(timezone.utc) - cg.timestamp).total_seconds() * 1000
             if age_ms > self._max_age_ms:
                 return GateResult(
-                    passed=False, gate_name=self.name,
+                    passed=False,
+                    gate_name=self.name,
                     reason=f"CG stale ({age_ms:.0f}ms > {self._max_age_ms}ms)",
                     data={"age_ms": age_ms},
                 )
@@ -952,7 +1158,9 @@ class TakerFlowGate:
         # Calculate taker alignment
         taker_total = cg.taker_buy_volume_1m + cg.taker_sell_volume_1m
         if taker_total <= 0:
-            return GateResult(passed=True, gate_name=self.name, reason="no taker volume data")
+            return GateResult(
+                passed=True, gate_name=self.name, reason="no taker volume data"
+            )
 
         buy_pct = cg.taker_buy_volume_1m / taker_total * 100
         sell_pct = 100 - buy_pct
@@ -966,47 +1174,86 @@ class TakerFlowGate:
             taker_opposing = buy_pct > self._taker_opposing_pct
             smart_opposing = cg.top_position_long_pct > self._smart_opposing_pct
 
-        flow_info = f"buy={buy_pct:.0f}% sell={sell_pct:.0f}% smart_opp={smart_opposing}"
+        flow_info = (
+            f"buy={buy_pct:.0f}% sell={sell_pct:.0f}% smart_opp={smart_opposing}"
+        )
 
         # Decision matrix
         if taker_opposing and smart_opposing:
-            self._log.info("taker_flow.both_opposing", direction=direction, flow=flow_info)
+            self._log.info(
+                "taker_flow.both_opposing", direction=direction, flow=flow_info
+            )
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason=f"BOTH OPPOSING ({direction}) — taker+smart against, 58% WR bucket. {flow_info}",
-                data={"taker_opposing": True, "smart_opposing": True, "buy_pct": buy_pct},
+                data={
+                    "taker_opposing": True,
+                    "smart_opposing": True,
+                    "buy_pct": buy_pct,
+                },
             )
 
         if taker_opposing:
             ctx.cg_threshold_modifier = self._taker_opposing_penalty
-            self._log.info("taker_flow.taker_opposing", direction=direction, penalty=self._taker_opposing_penalty, flow=flow_info)
+            self._log.info(
+                "taker_flow.taker_opposing",
+                direction=direction,
+                penalty=self._taker_opposing_penalty,
+                flow=flow_info,
+            )
             return GateResult(
-                passed=True, gate_name=self.name,
+                passed=True,
+                gate_name=self.name,
                 reason=f"taker opposing +{self._taker_opposing_penalty} penalty ({direction}). {flow_info}",
-                data={"taker_opposing": True, "smart_opposing": False, "modifier": self._taker_opposing_penalty, "buy_pct": buy_pct},
+                data={
+                    "taker_opposing": True,
+                    "smart_opposing": False,
+                    "modifier": self._taker_opposing_penalty,
+                    "buy_pct": buy_pct,
+                },
             )
 
         if taker_aligned:
             ctx.cg_threshold_modifier = -self._taker_aligned_bonus
-            self._log.info("taker_flow.taker_aligned", direction=direction, bonus=self._taker_aligned_bonus, flow=flow_info)
+            self._log.info(
+                "taker_flow.taker_aligned",
+                direction=direction,
+                bonus=self._taker_aligned_bonus,
+                flow=flow_info,
+            )
             return GateResult(
-                passed=True, gate_name=self.name,
+                passed=True,
+                gate_name=self.name,
                 reason=f"taker aligned -{self._taker_aligned_bonus} bonus ({direction}). {flow_info}",
-                data={"taker_aligned": True, "modifier": -self._taker_aligned_bonus, "buy_pct": buy_pct},
+                data={
+                    "taker_aligned": True,
+                    "modifier": -self._taker_aligned_bonus,
+                    "buy_pct": buy_pct,
+                },
             )
 
         # Neutral — no strong taker signal
         return GateResult(
-            passed=True, gate_name=self.name,
+            passed=True,
+            gate_name=self.name,
             reason=f"neutral taker flow ({direction}). {flow_info}",
             data={"neutral": True, "buy_pct": buy_pct},
         )
 
-
-    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+    async def evaluate_immutable(
+        self, ctx: GateContext
+    ) -> tuple[GateResult, GateContextDelta]:
         """CA-03 immutable path -- runs evaluate on a mutable copy, diffs for delta."""
         if not self._enabled:
-            return (GateResult(passed=True, gate_name=self.name, reason="disabled (V10_CG_TAKER_GATE=false)"), EMPTY_DELTA)
+            return (
+                GateResult(
+                    passed=True,
+                    gate_name=self.name,
+                    reason="disabled (V10_CG_TAKER_GATE=false)",
+                ),
+                EMPTY_DELTA,
+            )
         mutable_ctx = replace(ctx)
         result = await self.evaluate(mutable_ctx)
         kw = {}
@@ -1014,7 +1261,9 @@ class TakerFlowGate:
             kw["cg_threshold_modifier"] = mutable_ctx.cg_threshold_modifier
         return (result, GateContextDelta(**kw) if kw else EMPTY_DELTA)
 
+
 # ── CoinGlass Confirmation Gate (v10.3 — 3-signal bonus) ─────────────────
+
 
 class CGConfirmationGate:
     """G3: CoinGlass 3-signal confirmation — stronger version.
@@ -1030,19 +1279,29 @@ class CGConfirmationGate:
     Always passes — only modifies ctx.cg_bonus and ctx.cg_confirms.
     The bonus/penalty is applied in DuneConfidenceGate via ctx.cg_bonus.
     """
+
     name = "cg_confirmation"
 
     def __init__(self):
         self._bonus = float(os.environ.get("V10_CG_CONFIRM_BONUS", "0.03"))
-        self._zero_penalty = float(os.environ.get("V10_CG_ZERO_CONFIRM_PENALTY", "0.02"))
+        self._zero_penalty = float(
+            os.environ.get("V10_CG_ZERO_CONFIRM_PENALTY", "0.02")
+        )
         self._min_confirms = int(os.environ.get("V10_CG_CONFIRM_MIN", "2"))
 
     async def evaluate(self, ctx: GateContext) -> GateResult:
         cg = ctx.cg_snapshot
         direction = ctx.agreed_direction
 
-        if cg is None or not hasattr(cg, 'connected') or not cg.connected or not direction:
-            return GateResult(passed=True, gate_name=self.name, reason="no CG data (no bonus)")
+        if (
+            cg is None
+            or not hasattr(cg, "connected")
+            or not cg.connected
+            or not direction
+        ):
+            return GateResult(
+                passed=True, gate_name=self.name, reason="no CG data (no bonus)"
+            )
 
         confirms = 0
         details = []
@@ -1057,7 +1316,7 @@ class CGConfirmationGate:
             details.append("net_selling")
 
         # Signal 2: OI momentum
-        oi_delta = getattr(cg, 'oi_delta_pct_1m', 0) or 0
+        oi_delta = getattr(cg, "oi_delta_pct_1m", 0) or 0
         if direction == "UP" and oi_delta > 0:
             confirms += 1
             details.append(f"oi_rising({oi_delta:+.2f}%)")
@@ -1066,7 +1325,7 @@ class CGConfirmationGate:
             details.append(f"oi_falling({oi_delta:+.2f}%)")
 
         # Signal 3: Long/short ratio
-        lsr = getattr(cg, 'long_short_ratio', 1.0) or 1.0
+        lsr = getattr(cg, "long_short_ratio", 1.0) or 1.0
         if direction == "UP" and lsr > 1.0:
             confirms += 1
             details.append(f"lsr={lsr:.2f}>1")
@@ -1089,13 +1348,15 @@ class CGConfirmationGate:
 
         detail_str = ", ".join(details) if details else "none"
         return GateResult(
-            passed=True, gate_name=self.name,
+            passed=True,
+            gate_name=self.name,
             reason=f"CG confirms={confirms}/3 ({detail_str}) → {action}",
             data={"confirms": confirms, "bonus": ctx.cg_bonus, "details": details},
         )
 
-
-    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+    async def evaluate_immutable(
+        self, ctx: GateContext
+    ) -> tuple[GateResult, GateContextDelta]:
         """CA-03 immutable path -- runs evaluate on a mutable copy, diffs for delta."""
         mutable_ctx = replace(ctx)
         result = await self.evaluate(mutable_ctx)
@@ -1106,7 +1367,9 @@ class CGConfirmationGate:
             kw["cg_bonus"] = mutable_ctx.cg_bonus
         return (result, GateContextDelta(**kw) if kw else EMPTY_DELTA)
 
+
 # ── Polymarket Spread Gate (v10.3) ───────────────────────────────────────
+
 
 class SpreadGate:
     """G5: Kill trade if Polymarket orderbook spread is too wide.
@@ -1115,6 +1378,7 @@ class SpreadGate:
       Wide spread = thin liquidity = high slippage risk.
       Default threshold: 8% spread.
     """
+
     name = "spread_gate"
 
     def __init__(self):
@@ -1125,34 +1389,43 @@ class SpreadGate:
         down = ctx.gamma_down_price
 
         if up is None or down is None:
-            return GateResult(passed=True, gate_name=self.name, reason="no Gamma data (pass-through)")
+            return GateResult(
+                passed=True, gate_name=self.name, reason="no Gamma data (pass-through)"
+            )
 
         total = up + down
         if total <= 0:
-            return GateResult(passed=True, gate_name=self.name, reason="zero Gamma prices")
+            return GateResult(
+                passed=True, gate_name=self.name, reason="zero Gamma prices"
+            )
 
         spread_pct = abs(up - down) / (total / 2) * 100
 
         if spread_pct > self._max_spread_pct:
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason=f"spread {spread_pct:.1f}% > {self._max_spread_pct}% (thin liquidity)",
                 data={"spread_pct": spread_pct, "up": up, "down": down},
             )
 
         return GateResult(
-            passed=True, gate_name=self.name,
+            passed=True,
+            gate_name=self.name,
             reason=f"spread {spread_pct:.1f}% OK",
             data={"spread_pct": spread_pct},
         )
 
-
-    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+    async def evaluate_immutable(
+        self, ctx: GateContext
+    ) -> tuple[GateResult, GateContextDelta]:
         """CA-03 immutable path."""
         result = await self.evaluate(ctx)
         return (result, EMPTY_DELTA)
 
+
 # ── CoinGlass Veto Gate (LEGACY — kept for V10_CG_TAKER_GATE=false) ─────
+
 
 class CoinGlassVetoGate:
     """G3: CoinGlass micro-structure veto (3+ opposing signals = skip).
@@ -1160,21 +1433,24 @@ class CoinGlassVetoGate:
     Kept from v9 — checks smart money, funding, crowd positioning,
     taker volume, and cascade divergence.
     """
+
     name = "cg_veto"
 
     async def evaluate(self, ctx: GateContext) -> GateResult:
         cg = ctx.cg_snapshot
         direction = ctx.agreed_direction
 
-        if cg is None or not hasattr(cg, 'connected') or not cg.connected:
+        if cg is None or not hasattr(cg, "connected") or not cg.connected:
             return GateResult(
-                passed=True, gate_name=self.name,
+                passed=True,
+                gate_name=self.name,
                 reason="CG not connected (pass-through)",
             )
 
         if not direction:
             return GateResult(
-                passed=True, gate_name=self.name,
+                passed=True,
+                gate_name=self.name,
                 reason="no direction to check",
             )
 
@@ -1229,24 +1505,29 @@ class CoinGlassVetoGate:
 
         if veto_count >= 3:
             return GateResult(
-                passed=False, gate_name=self.name,
+                passed=False,
+                gate_name=self.name,
                 reason=f"CG VETO ({veto_count}): {', '.join(veto_reasons)}",
                 data={"veto_count": veto_count, "reasons": veto_reasons},
             )
 
         return GateResult(
-            passed=True, gate_name=self.name,
+            passed=True,
+            gate_name=self.name,
             reason=f"CG OK (veto={veto_count})",
             data={"veto_count": veto_count, "reasons": veto_reasons},
         )
 
-
-    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+    async def evaluate_immutable(
+        self, ctx: GateContext
+    ) -> tuple[GateResult, GateContextDelta]:
         """CA-03 immutable path."""
         result = await self.evaluate(ctx)
         return (result, EMPTY_DELTA)
 
+
 # ── Dynamic Cap Gate ───────────────────────────────────────────────────────
+
 
 class DynamicCapGate:
     """G7: Confidence-scaled entry cap (v10.6).
@@ -1267,6 +1548,7 @@ class DynamicCapGate:
 
     Falls back to v9 fixed cap ($0.65) if DUNE not available.
     """
+
     name = "dynamic_cap"
 
     def __init__(self):
@@ -1278,7 +1560,9 @@ class DynamicCapGate:
         self._floor = float(os.environ.get("V10_DUNE_CAP_FLOOR", "0.35"))
         # Early entry zone cap override (T-180..200)
         self._early_cap_max = float(os.environ.get("V10_EARLY_ENTRY_CAP_MAX", "0.63"))
-        self._early_offset_threshold = int(os.environ.get("V10_EARLY_ENTRY_OFFSET", "180"))
+        self._early_offset_threshold = int(
+            os.environ.get("V10_EARLY_ENTRY_OFFSET", "180")
+        )
         self._v9_fallback = float(os.environ.get("V9_CAP_GOLDEN", "0.65"))
         self._log = log.bind(gate="dynamic_cap")
 
@@ -1305,11 +1589,18 @@ class DynamicCapGate:
                 cap = min(cap, self._early_cap_max)
                 cap = round(cap, 2)
 
-            self._log.info("cap.scaled",
-                dune_p=f"{dune_p:.3f}", t=f"{t:.2f}", cap=f"${cap:.2f}",
-                early_zone=bool(ctx.eval_offset and ctx.eval_offset > self._early_offset_threshold))
+            self._log.info(
+                "cap.scaled",
+                dune_p=f"{dune_p:.3f}",
+                t=f"{t:.2f}",
+                cap=f"${cap:.2f}",
+                early_zone=bool(
+                    ctx.eval_offset and ctx.eval_offset > self._early_offset_threshold
+                ),
+            )
             return GateResult(
-                passed=True, gate_name=self.name,
+                passed=True,
+                gate_name=self.name,
                 reason=f"cap=${cap:.2f} (P={dune_p:.3f} t={t:.2f} [{self._scale_base:.2f},{self._scale_ceiling:.2f}])",
                 data={"cap": cap, "dune_p": dune_p, "t": t, "source": "scaled"},
             )
@@ -1317,18 +1608,22 @@ class DynamicCapGate:
             # Fallback to v9 fixed cap
             cap = self._v9_fallback
             return GateResult(
-                passed=True, gate_name=self.name,
+                passed=True,
+                gate_name=self.name,
                 reason=f"v9 fallback cap=${cap:.2f} (no DUNE data)",
                 data={"cap": cap, "source": "v9_fallback"},
             )
 
-
-    async def evaluate_immutable(self, ctx: GateContext) -> tuple[GateResult, GateContextDelta]:
+    async def evaluate_immutable(
+        self, ctx: GateContext
+    ) -> tuple[GateResult, GateContextDelta]:
         """CA-03 immutable path."""
         result = await self.evaluate(ctx)
         return (result, EMPTY_DELTA)
 
+
 # ── Gate Pipeline ──────────────────────────────────────────────────────────
+
 
 class GatePipeline:
     """Chains gates in order. Stops at first failure.
@@ -1355,27 +1650,38 @@ class GatePipeline:
             result = await gate.evaluate(ctx)
             results.append(result)
             if not result.passed:
-                self._log.info("gate.failed", gate=result.gate_name, reason=result.reason)
+                self._log.info(
+                    "gate.failed", gate=result.gate_name, reason=result.reason
+                )
                 return PipelineResult(
-                    passed=False, direction=ctx.agreed_direction,
-                    gate_results=results, failed_gate=result.gate_name,
+                    passed=False,
+                    direction=ctx.agreed_direction,
+                    gate_results=results,
+                    failed_gate=result.gate_name,
                     skip_reason=result.reason,
                 )
 
         cap, dune_p = None, None
         for r in results:
-            if r.data.get("cap"): cap = r.data["cap"]
-            if r.data.get("dune_p"): dune_p = r.data["dune_p"]
+            if r.data.get("cap"):
+                cap = r.data["cap"]
+            if r.data.get("dune_p"):
+                dune_p = r.data["dune_p"]
 
-        self._log.info("gate.all_passed",
+        self._log.info(
+            "gate.all_passed",
             direction=ctx.agreed_direction,
             cap=f"${cap:.2f}" if cap else "none",
             dune_p=f"{dune_p:.3f}" if dune_p else "none",
-            gates_passed=[r.gate_name for r in results])
+            gates_passed=[r.gate_name for r in results],
+        )
 
         return PipelineResult(
-            passed=True, direction=ctx.agreed_direction,
-            cap=cap, dune_p=dune_p, gate_results=results,
+            passed=True,
+            direction=ctx.agreed_direction,
+            cap=cap,
+            dune_p=dune_p,
+            gate_results=results,
         )
 
     async def _evaluate_immutable(self, ctx: GateContext) -> PipelineResult:
@@ -1389,7 +1695,7 @@ class GatePipeline:
         current_ctx = ctx  # never mutated
 
         for gate in self._gates:
-            if hasattr(gate, 'evaluate_immutable'):
+            if hasattr(gate, "evaluate_immutable"):
                 result, delta = await gate.evaluate_immutable(current_ctx)
             else:
                 mutable_copy = replace(current_ctx)
@@ -1398,28 +1704,39 @@ class GatePipeline:
 
             results.append(result)
             if not result.passed:
-                self._log.info("gate.failed", gate=result.gate_name, reason=result.reason)
+                self._log.info(
+                    "gate.failed", gate=result.gate_name, reason=result.reason
+                )
                 return PipelineResult(
-                    passed=False, direction=current_ctx.agreed_direction,
-                    gate_results=results, failed_gate=result.gate_name,
+                    passed=False,
+                    direction=current_ctx.agreed_direction,
+                    gate_results=results,
+                    failed_gate=result.gate_name,
                     skip_reason=result.reason,
                 )
             current_ctx = _merge_context(current_ctx, delta)
 
         cap, dune_p = None, None
         for r in results:
-            if r.data.get("cap"): cap = r.data["cap"]
-            if r.data.get("dune_p"): dune_p = r.data["dune_p"]
+            if r.data.get("cap"):
+                cap = r.data["cap"]
+            if r.data.get("dune_p"):
+                dune_p = r.data["dune_p"]
 
-        self._log.info("gate.all_passed",
+        self._log.info(
+            "gate.all_passed",
             direction=current_ctx.agreed_direction,
             cap=f"${cap:.2f}" if cap else "none",
             dune_p=f"{dune_p:.3f}" if dune_p else "none",
-            gates_passed=[r.gate_name for r in results])
+            gates_passed=[r.gate_name for r in results],
+        )
 
         return PipelineResult(
-            passed=True, direction=current_ctx.agreed_direction,
-            cap=cap, dune_p=dune_p, gate_results=results,
+            passed=True,
+            direction=current_ctx.agreed_direction,
+            cap=cap,
+            dune_p=dune_p,
+            gate_results=results,
         )
 
 
@@ -1427,8 +1744,13 @@ def _infer_delta(before: GateContext, after: GateContext) -> GateContextDelta:
     """Infer a GateContextDelta by diffing two GateContext instances."""
     kwargs = {}
     for fn in (
-        "agreed_direction", "cg_threshold_modifier", "cg_confirms",
-        "cg_bonus", "dune_probability_up", "dune_direction", "dune_model_version",
+        "agreed_direction",
+        "cg_threshold_modifier",
+        "cg_confirms",
+        "cg_bonus",
+        "dune_probability_up",
+        "dune_direction",
+        "dune_model_version",
     ):
         bv = getattr(before, fn)
         av = getattr(after, fn)

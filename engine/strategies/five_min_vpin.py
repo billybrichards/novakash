@@ -1748,7 +1748,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 # window_snapshot["v2_probability_up"]; we use that as
                 # the v2_logit self-reference. First tick in a window
                 # → None → scorer gets NaN → LightGBM missing-default.
-                _decision_features = build_v5_feature_body(
+               _decision_features = build_v5_feature_body(
                     eval_offset=float(eval_offset),
                     vpin=current_vpin,
                     delta_pct=delta_pct,
@@ -1756,6 +1756,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                     clob_up_price=window.up_price,
                     clob_down_price=window.down_price,
                     binance_price=current_price,
+                    chainlink_price=window_snapshot.get("chainlink_open"),
                     tiingo_close=_tiingo_close,
                     delta_binance=delta_binance,
                     delta_chainlink=delta_chainlink,
@@ -1763,8 +1764,6 @@ class FiveMinVPINStrategy(BaseStrategy):
                     gate_vpin_passed=_vpin_passed,
                     gate_delta_passed=_delta_passed,
                     gate_cg_passed=_cg_passed,
-                    # gate_twap_passed / gate_timesfm_passed aren't directly
-                    # named here; reuse the v8.0 "blocked" flags inverted.
                     gate_twap_passed=not _twap_gate_blocked_actual,
                     gate_timesfm_passed=not _timesfm_gate_blocked_actual,
                     gate_passed=_all_passed,
