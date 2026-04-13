@@ -2615,6 +2615,118 @@ const TASKS = [
     fix: 'Phase 3b: add Hyperliquid orderflow adapter. Phase 4: add Deribit/Bybit via CoinGlass multi-exchange API. Standardize feature_freshness_ms across all tick tables.',
     progressNotes: [],
   },
+
+  // ── ml-training-data: TimesFM depth audit ────────────────────────────────
+
+  {
+    id: 'ML-08',
+    category: 'ml-training-data',
+    title: 'TimesFM depth audit: context 2048→8192 (1-line change, +1-3pp)',
+    severity: 'HIGH',
+    status: 'OPEN',
+    file: 'novakash-timesfm-repo/app/main.py:103',
+    summary:
+      'TimesFM 2.5 currently uses 2048 ticks (34 min context). Model supports 8192 (137 min). One-line change: max_context=8192 in main.py + extend price_feed buffer_size. Captures longer regime transitions. Cost: ~200ms extra latency (700→900ms), acceptable for 1Hz refresh.',
+    symptoms: [
+      'main.py:103 — max_context=2048 (hardcoded)',
+      'price_feed.py — buffer_size matches context length',
+      'Model capacity: 8192 ticks with same arch, just more memory',
+      '137 min captures full intra-day regime cycles vs 34 min current',
+    ],
+    fix: 'Change max_context=8192, extend buffer_size. Profile CPU/memory. Deploy to Montreal. A/B shadow comparison.',
+    progressNotes: ['Identified 2026-04-13. Highest ROI change — trivial effort, measurable gain.'],
+  },
+  {
+    id: 'ML-09',
+    category: 'ml-training-data',
+    title: 'TimesFM: dynamic horizon already works (NOT fixed 60s)',
+    severity: 'INFO',
+    status: 'DONE',
+    file: 'novakash-timesfm-repo/app/forecaster.py',
+    summary:
+      'CLARIFICATION: TimesFM already predicts dynamically to close. Each call passes horizon=seconds_to_close — at T-180 it forecasts 180 steps, at T-60 it forecasts 60 steps. This is correct and working. The multi-horizon ENSEMBLE idea is different: at T-180, run BOTH 180-step and 60-step forecasts simultaneously to get agreement signals (short-range vs long-range consensus).',
+    symptoms: [
+      'forecaster.py: forecast(horizon=seconds_to_close) — dynamic per call',
+      'v2_scorer.py: passes seconds_to_close from window state',
+      'timesfm_client.py: get_forecast(seconds_to_close=N) — capped at 600s',
+      'NOT a fixed horizon — adapts to where we are in the window',
+    ],
+    fix: 'Current behavior is correct. Multi-horizon ensemble (run 2-3 horizons per call for agreement signal) is a separate enhancement tracked as ML-12.',
+    progressNotes: ['Confirmed 2026-04-13. Dynamic horizon working as designed.'],
+  },
+  {
+    id: 'ML-10',
+    category: 'ml-training-data',
+    title: 'TimesFM: fine-tuning on 2088+ Polymarket windows (+4-8pp)',
+    severity: 'HIGH',
+    status: 'OPEN',
+    file: 'novakash-timesfm-repo/training/',
+    summary:
+      'TimesFM 2.5 supports HuggingFace fine-tuning. We have 2088+ labeled Polymarket 5-min windows in Railway. Zero-shot gives 58% direction accuracy. Fine-tuned on our domain data: estimated +4-8pp (per TimesFM paper domain adaptation results). This is the biggest accuracy unlock and nobody else has this labeled dataset.',
+    symptoms: [
+      'Current: pure zero-shot, no domain adaptation',
+      '2088+ labeled windows available (window_snapshots with outcome)',
+      'Split: 1500 train / 400 val / 188 test (walk-forward)',
+      'PyTorch fine-tuning supported by timesfm library',
+      'Inference stays on CPU (c6a.xlarge) — fine-tune offline',
+    ],
+    fix: '1. Export labeled windows from Railway. 2. Implement fine-tuning loop (HF examples). 3. Validate on holdout. 4. Deploy fine-tuned weights alongside base. 5. A/B shadow mode. Estimate: 2-3 weeks.',
+    progressNotes: [],
+  },
+  {
+    id: 'ML-11',
+    category: 'ml-training-data',
+    title: 'TimesFM: exogenous covariates (CoinGlass/Gamma into model, +2-7pp)',
+    severity: 'MEDIUM',
+    status: 'OPEN',
+    file: 'novakash-timesfm-repo/app/forecaster.py',
+    summary:
+      'TimesFM 2.5 supports multivariate input with exogenous features. Currently: BTC price only (univariate). Missing: CoinGlass OI/funding/liquidations, Gamma prices, Tiingo bid-ask spread. Model has no regime context — must guess at cascades from price alone. Adding covariates lets it "see" liquidation pressure and funding spikes directly.',
+    symptoms: [
+      'forecaster.py: forecast(inputs=[single_price_series]) — univariate only',
+      'CoinGlass data already in ticks_coinglass (10s cadence, 15 columns)',
+      'Gamma prices in ticks_gamma (per window)',
+      'Model API supports inputs=[series1, series2, ...] but unused',
+    ],
+    fix: 'Stack CoinGlass OI+funding+liq + Gamma prices as additional input series. Normalize to price scale. Retrain LightGBM on enriched TimesFM outputs. Estimate: 3-5 days.',
+    progressNotes: [],
+  },
+  {
+    id: 'ML-12',
+    category: 'ml-training-data',
+    title: 'TimesFM: multi-horizon ensemble for direction consensus (+1-3pp)',
+    severity: 'MEDIUM',
+    status: 'OPEN',
+    file: 'novakash-timesfm-repo/app/forecaster.py',
+    summary:
+      'At any given point, run 2-3 forecasts at different horizons (e.g., T-30 + T-60 + T-180) in one call. When short-range and long-range agree → high conviction. When they disagree → regime uncertainty. This is a free meta-feature for LightGBM that costs ~2x inference. Note: TimesFM already predicts dynamically to close — this is about running MULTIPLE horizons simultaneously for consensus.',
+    symptoms: [
+      'Currently: one forecast per tick at horizon=seconds_to_close',
+      'Could: 3 forecasts per tick at horizons=[30, seconds_to_close, 180]',
+      'Agreement metric: direction_agreement_3h = how many agree on direction',
+      'Divergence metric: when short-term says UP but long-term says DOWN → regime shift signal',
+    ],
+    fix: 'Add multi-horizon call to forecaster.py. Extract agreement/divergence features. Feed to LightGBM v2 as new columns. Estimate: 1-2 days.',
+    progressNotes: [],
+  },
+  {
+    id: 'ML-13',
+    category: 'ml-training-data',
+    title: 'TimesFM: quantile-derived features underused (spread only, 5 more possible)',
+    severity: 'LOW',
+    status: 'OPEN',
+    file: 'novakash-timesfm-repo/app/v2_scorer.py:492-499',
+    summary:
+      'Quantiles P10/P25/P50/P75/P90 computed and stored in ticks_timesfm but only spread=(P90-P10) used as feature. Missing: tail_risk=(P50-P10)/P50 (downside), skew=(P90+P10-2×P50)/spread (asymmetry), interval_width=(P75-P25)/P50 (uncertainty), quantile_convergence (how quantiles change over window). All computable from existing stored data — 10 lines of code.',
+    symptoms: [
+      'v2_scorer.py: extracts tfm_spread = P90-P10 only',
+      'P10/P25/P50/P75/P90 all stored in ticks_timesfm',
+      'LightGBM receives only 5 TimesFM features (direction, confidence, predicted_close, delta_vs_open, spread)',
+      'Could have 10+ features from same quantile data',
+    ],
+    fix: 'Add tail_risk, skew, interval_width, quantile_convergence features in v2_scorer.py. Add to LightGBM feature vector. Retrain. Estimate: ~10 lines.',
+    progressNotes: [],
+  },
 ];
 
 // ─── Components ───────────────────────────────────────────────────────────
