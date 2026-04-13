@@ -2367,6 +2367,31 @@ const TASKS = [
     ],
   },
 
+  {
+    id: 'CA-10',
+    category: 'clean-architect',
+    severity: 'HIGH',
+    status: 'OPEN',
+    title: 'Decommission legacy execution — remove FiveMinVPINStrategy._execute_trade (536 LOC)',
+    files: [
+      { path: 'engine/strategies/five_min_vpin.py', line: 3178, repo: 'novakash' },
+      { path: 'engine/strategies/orchestrator.py', line: 736, repo: 'novakash' },
+      { path: 'engine/use_cases/evaluate_window.py', line: 1, repo: 'novakash' },
+    ],
+    evidence: [
+      'Old FiveMinVPINStrategy._execute_trade is 536 LOC of coupled execution logic',
+      'Strategy Engine v2 ExecuteTradeUseCase replaces it with clean 10-step flow (PR #160)',
+      'LEGACY_EXECUTION_DISABLED=true gates the old path — new registry is sole executor',
+      'Old SITREP still shows legacy v2.2 labels instead of strategy names',
+      'five_min_vpin.py is 3600+ LOC god class — after removing _execute_trade it drops to ~3000',
+      'Old orchestrator._sp_trade_decision shortcut can be removed once validated',
+    ],
+    fix: 'After 1 week of v2 paper validation with zero mismatches: (1) Remove _execute_trade + _sp_trade_decision, (2) Update SITREP to read from registry decisions, (3) Remove LEGACY_EXECUTION_DISABLED flag, (4) Update Telegram alerts to use new format exclusively.',
+    progressNotes: [
+      { date: '2026-04-13', note: 'LEGACY_EXECUTION_DISABLED flag added (commit 7505a89). New ExecuteTradeUseCase deployed (PR #160). Both systems running in parallel for validation.' },
+    ],
+  },
+
   // CA-09: Domain layer reconciliation
   {
     id: 'CA-09',

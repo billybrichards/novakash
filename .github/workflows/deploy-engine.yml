@@ -247,6 +247,17 @@ jobs:
             echo "TELEGRAM_CHAT_ID=$DEPLOY_TELEGRAM_CHAT_ID"
             echo "FIVE_MIN_MIN_DELTA_PCT=0.0010"
             echo "V10_MIN_DELTA_PCT=0.001"
+            echo ""
+            echo "# Strategy Engine v2 (CA-07)"
+            echo "ENGINE_USE_STRATEGY_REGISTRY=true"
+            echo "ENGINE_REGISTRY_EXECUTE=true"
+            echo "ENGINE_USE_STRATEGY_PORT=false"
+            echo "LEGACY_EXECUTION_DISABLED=true"
+            echo ""
+            echo "# Feeds & Services"
+            echo "FIVE_MIN_ENABLED=true"
+            echo "V4_FUSION_ENABLED=true"
+            echo "TIMESFM_URL=http://3.98.114.0:8080"
           } > .env.new
           ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'cat > /home/novakash/novakash/engine/.env' < .env.new
           ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'wc -l /home/novakash/novakash/engine/.env'
