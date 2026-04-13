@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useApi } from '../../hooks/useApi.js';
 import { T, fmt, utcHHMM } from './components/theme.js';
 import WindowAnalysisModal from './components/WindowAnalysisModal.jsx';
+import { STRATEGIES } from '../../constants/strategies.js';
 
 /**
  * LiveFloor -- Active trading view with live price chart,
@@ -399,14 +400,20 @@ export default function LiveFloor() {
             )}
           </div>
 
-          {/* 2. Active Strategy Decisions — all 4 */}
+          {/* 2. Active Strategy Decisions — dynamic from shared constants */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, marginBottom: 8 }}>
             {[
-              { label: 'V4 Down-Only', data: latestDown, color: '#10b981', mode: 'LIVE' },
-              { label: 'V4 Up Asian', data: latestUpAsian, color: '#f59e0b', mode: 'LIVE' },
-              { label: 'V4 Fusion', data: latestV4, color: '#06b6d4', mode: 'GHOST' },
-              { label: 'V10 Gate', data: latestV10, color: '#a855f7', mode: 'GHOST' },
-            ].map(({ label, data: d, color, mode }) => (
+              { sid: 'v4_down_only', data: latestDown },
+              { sid: 'v4_up_asian', data: latestUpAsian },
+              { sid: 'v4_fusion', data: latestV4 },
+              { sid: 'v10_gate', data: latestV10 },
+            ].map(({ sid, data: d }) => {
+              const strat = STRATEGIES[sid] || {};
+              const label = strat.label || sid;
+              const color = strat.color || T.textMuted;
+              const mode = strat.defaultMode || 'GHOST';
+              return { label, data: d, color, mode, key: sid };
+            }).map(({ label, data: d, color, mode, key }) => (
               <div key={label} style={{
                 ...S.card,
                 borderLeft: `3px solid ${d?.action === 'TRADE' ? color : 'rgba(51,65,85,0.5)'}`,
@@ -453,10 +460,10 @@ export default function LiveFloor() {
                   <tr>
                     <th style={S.th}>Window</th>
                     <th style={S.th}>Actual</th>
-                    <th style={{ ...S.th, textAlign: 'center', color: '#10b981' }}>Down-Only</th>
-                    <th style={{ ...S.th, textAlign: 'center', color: '#f59e0b' }}>Up Asian</th>
-                    <th style={{ ...S.th, textAlign: 'center', color: '#06b6d4' }}>V4 Fusion</th>
-                    <th style={{ ...S.th, textAlign: 'center', color: '#a855f7' }}>V10 Gate</th>
+                    <th style={{ ...S.th, textAlign: 'center', color: STRATEGIES.v4_down_only.color }}>{STRATEGIES.v4_down_only.shortLabel}</th>
+                    <th style={{ ...S.th, textAlign: 'center', color: STRATEGIES.v4_up_asian.color }}>{STRATEGIES.v4_up_asian.shortLabel}</th>
+                    <th style={{ ...S.th, textAlign: 'center', color: STRATEGIES.v4_fusion.color }}>{STRATEGIES.v4_fusion.shortLabel}</th>
+                    <th style={{ ...S.th, textAlign: 'center', color: STRATEGIES.v10_gate.color }}>{STRATEGIES.v10_gate.shortLabel}</th>
                     <th style={S.th}>Signal</th>
                     <th style={S.th}>Confidence</th>
                     <th style={S.th}>VPIN</th>
@@ -501,10 +508,10 @@ export default function LiveFloor() {
                       >
                         <td style={{ ...S.td, color: T.text }}>{o.window_ts ? utcHHMM(o.window_ts) : '--'}</td>
                         <td style={{ ...S.td, color: dirColor(o.actual_direction), fontWeight: 600 }}>{o.actual_direction || '--'}</td>
-                        {stratCell('v4_down_only', '#10b981')}
-                        {stratCell('v4_up_asian', '#f59e0b')}
-                        {stratCell('v4_fusion', '#06b6d4')}
-                        {stratCell('v10_gate', '#a855f7')}
+                        {stratCell('v4_down_only', STRATEGIES.v4_down_only.color)}
+                        {stratCell('v4_up_asian', STRATEGIES.v4_up_asian.color)}
+                        {stratCell('v4_fusion', STRATEGIES.v4_fusion.color)}
+                        {stratCell('v10_gate', STRATEGIES.v10_gate.color)}
                         <td style={{ ...S.td, color: dirColor(o.direction), fontWeight: 600 }}>{o.direction || '--'}</td>
                         <td style={{ ...S.td, color: T.purple }}>{o.confidence != null ? fmt(o.confidence, 3) : '--'}</td>
                         <td style={{ ...S.td, color: (o.vpin || 0) >= 0.55 ? T.green : T.text }}>{o.vpin != null ? fmt(o.vpin, 3) : '--'}</td>

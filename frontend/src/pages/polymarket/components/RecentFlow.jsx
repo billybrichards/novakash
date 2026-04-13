@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { T, fmt, utcHHMM } from './theme.js';
 import { useApi } from '../../../hooks/useApi.js';
+import { STRATEGIES } from '../../../constants/strategies.js';
 
 /**
  * Band 5 — Recent Flow Timeline.
@@ -47,18 +48,13 @@ function actualDirection(o) {
   return null;
 }
 
-const STRAT_COLORS = {
-  v4_down_only: '#10b981',
-  v4_up_asian: '#f59e0b',
-  v4_fusion: '#06b6d4',
-  v10_gate: '#a855f7',
-};
-const STRAT_SHORT = {
-  v4_down_only: 'DN',
-  v4_up_asian: 'UP-A',
-  v4_fusion: 'V4F',
-  v10_gate: 'V10',
-};
+// Strategy colors and short labels — sourced from shared constants
+const STRAT_COLORS = Object.fromEntries(
+  Object.entries(STRATEGIES).map(([id, s]) => [id, s.color])
+);
+const STRAT_SHORT = Object.fromEntries(
+  Object.entries(STRATEGIES).map(([id, s]) => [id, s.shortLabel])
+);
 
 function StrategyChips({ decisions }) {
   if (!decisions || !decisions.length) return <span style={{ color: T.textDim, fontSize: 8 }}>{'\u2014'}</span>;
