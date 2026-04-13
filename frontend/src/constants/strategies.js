@@ -39,6 +39,7 @@ export const STRATEGIES = {
     description: 'Global UP strategy. dist>=0.10, T-60-180, all hours. Expected 70-80% WR.',
     configKey: 'V4_UP_BASIC_MODE',
     defaultMode: 'GHOST',
+    deployed: false, // Not yet registered in engine runtime_config — ships with CA-07
     timescale: '5m',
     asset: 'BTC',
     gateLabel: 'UP filter \u00b7 dist\u22650.10 \u00b7 T-60-180',
@@ -55,14 +56,14 @@ export const STRATEGIES = {
     color: '#f59e0b',
     colorDim: 'rgba(245,158,11,0.12)',
     direction: 'UP',
-    description: 'Asian session UP strategy. dist 0.10-0.20, hours 23-02 UTC.',
+    description: 'Asian session UP strategy. dist 0.15-0.20, hours 23-02 UTC. SIG-06 proposes relaxing to 0.10.',
     configKey: 'V4_UP_ASIAN_MODE',
     defaultMode: 'LIVE',
     timescale: '5m',
     asset: 'BTC',
-    gateLabel: 'UP filter \u00b7 Asian session \u00b7 dist 0.10-0.20 \u00b7 T-90-150',
+    gateLabel: 'UP filter \u00b7 Asian session \u00b7 dist 0.15-0.20 \u00b7 T-90-150',
     thresholds: {
-      minDist: 0.10,
+      minDist: 0.15, // Live engine value. SIG-06 will relax to 0.10
       maxDist: 0.20,
       minOffset: 90,
       maxOffset: 150,

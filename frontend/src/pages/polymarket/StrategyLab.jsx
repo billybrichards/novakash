@@ -143,7 +143,12 @@ function StrategyConfigPanel({ api }) {
                 {strat.description}
               </div>
 
-              {/* Mode toggle buttons */}
+              {/* Mode toggle buttons — disabled for strategies not yet deployed */}
+              {strat.deployed === false ? (
+                <div style={{ fontSize: 9, color: T.textMuted, fontStyle: 'italic', padding: '3px 0' }}>
+                  Not yet deployed — ships with CA-07
+                </div>
+              ) : (
               <div style={{ display: 'flex', gap: 4 }}>
                 {['LIVE', 'GHOST', 'OFF'].map(mode => {
                   const active = currentMode === mode;
@@ -173,6 +178,7 @@ function StrategyConfigPanel({ api }) {
                   );
                 })}
               </div>
+              )}
             </div>
           );
         })}
