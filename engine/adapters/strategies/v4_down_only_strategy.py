@@ -13,6 +13,7 @@ CLOB-based sizing (applied to DOWN trades):
 See docs/analysis/DOWN_ONLY_STRATEGY_2026-04-12.md for full analysis.
 Audit: SIG-03, SIG-04.
 """
+
 from __future__ import annotations
 
 import structlog
@@ -26,17 +27,17 @@ log = structlog.get_logger(__name__)
 # Key changes vs v1: bump 0.55-0.75 to 2.0x (97%+ WR), skip <0.25 (53%/31% WR),
 # bump NULL to 1.5x (99% WR — strong moves lack CLOB data).
 _CLOB_SIZING: list[tuple[float, float, str]] = [
-    (0.55, 2.0, "strong_97pct"),           # 0.55+ all 97%+ WR
-    (0.35, 1.2, "mild_88pct"),             # 88-93% WR
-    (0.25, 1.0, "contrarian_87pct"),       # 87% WR, base Kelly
-    (0.0,  0.0, "skip_sub25_53pct"),       # <0.25 = 53%/31% WR, not tradeable
+    (0.55, 2.0, "strong_97pct"),  # 0.55+ all 97%+ WR
+    (0.35, 1.2, "mild_88pct"),  # 88-93% WR
+    (0.25, 1.0, "contrarian_87pct"),  # 87% WR, base Kelly
+    (0.0, 0.0, "skip_sub25_53pct"),  # <0.25 = 53%/31% WR, not tradeable
 ]
 
 # Size modifier when CLOB data is NULL — 99.2% WR historically,
 # strong moves often lack CLOB data because market hasn't caught up.
 _NULL_CLOB_SIZE_MOD = 1.5
 
-_MAX_COLLATERAL_PCT = 0.10   # cap: never bet more than 10% per trade
+_MAX_COLLATERAL_PCT = 0.10  # cap: never bet more than 10% per trade
 
 # Confidence threshold — relaxed from V4's default 0.12 to 0.10.
 # 897K-sample analysis: DOWN WR at dist>=0.10 = 90.5% vs dist>=0.12 = 90.6%.
@@ -61,9 +62,56 @@ class V4DownOnlyStrategy(V4FusionStrategy):
         return "1.0.0"
 
     async def evaluate(self, ctx: StrategyContext) -> StrategyDecision:
-        """Run V4 evaluation with relaxed confidence (0.10 vs parent's 0.12)."""
+        """Run V4 evaluation with relaxed confidence (0.10 vs parent's 0.12) and timing (T-90-150 vs parent's T-180)."""
         try:
             decision = await super().evaluate(ctx)
+
+            # Override parent's timing check for our T-90 to T-150 window.
+            # Parent V4FusionStrategy skips at timing="early" (T-180+), but we want to trade at T-150.
+            # Parent skip format: "polymarket: timing=early — outside window"
+            if (
+                decision.action == "SKIP"
+                and decision.skip_reason
+                and "timing=early" in decision.skip_reason
+                and ctx.eval_offset is not None
+                and _MIN_EVAL_OFFSET <= ctx.eval_offset <= _MAX_EVAL_OFFSET
+            ):
+                # Parent says "early" but we're in our valid T-90-150 window.
+                # Re-evaluate as if timing="optimal" for our window.
+                snap = ctx.v4_snapshot
+                if snap:
+                    poly = snap.polymarket_outcome or {}
+                    direction = poly.get("direction") or (
+                        "DOWN" if snap.probability_up < 0.5 else "UP"
+                    )
+                    dist = (
+                        abs(snap.probability_up - 0.5)
+                        if snap.probability_up is not None
+                        else 0.0
+                    )
+                    trade_advised = poly.get("trade_advised", False)
+
+                    # Check if we should trade (bypassing parent's timing=early check)
+                    if (
+                        direction == "DOWN"
+                        and dist >= _MIN_CONFIDENCE_DIST
+                        and trade_advised
+                    ):
+                        decision = StrategyDecision(
+                            action="TRADE",
+                            direction=direction,
+                            confidence=snap.conviction or f"dist_{dist:.2f}",
+                            confidence_score=dist * 2.0,
+                            entry_cap=poly.get("max_entry_price"),
+                            collateral_pct=snap.recommended_collateral_pct,
+                            strategy_id=self.strategy_id,
+                            strategy_version=self.version,
+                            entry_reason=f"polymarket_down_only_T{ctx.eval_offset}",
+                            skip_reason=None,
+                            metadata=self._build_metadata(snap)
+                            if hasattr(self, "_build_metadata")
+                            else {},
+                        )
 
             # If parent SKIPped on confidence < 0.12, re-check at our lower 0.10.
             # Parent skip format: "polymarket: p_up=X.XXX dist=X.XXX < 0.12 threshold"
@@ -92,7 +140,9 @@ class V4DownOnlyStrategy(V4FusionStrategy):
                             strategy_version=self.version,
                             entry_reason=f"polymarket_down_only_dist{dist:.2f}_T{ctx.eval_offset}",
                             skip_reason=None,
-                            metadata=self._build_metadata(snap) if hasattr(self, '_build_metadata') else {},
+                            metadata=self._build_metadata(snap)
+                            if hasattr(self, "_build_metadata")
+                            else {},
                         )
 
             return self._apply_down_only(decision, ctx)
@@ -123,7 +173,9 @@ class V4DownOnlyStrategy(V4FusionStrategy):
 
         # Skip if CLOB says <0.25 (53%/31% WR — not tradeable)
         if size_mod == 0.0:
-            return self._skip(f"down_only_clob_skip: clob_down_ask={ctx.clob_down_ask:.3f} {label}")
+            return self._skip(
+                f"down_only_clob_skip: clob_down_ask={ctx.clob_down_ask:.3f} {label}"
+            )
 
         base_pct = decision.collateral_pct or 0.025
         new_pct = min(base_pct * size_mod, _MAX_COLLATERAL_PCT)
@@ -147,9 +199,7 @@ class V4DownOnlyStrategy(V4FusionStrategy):
             },
         )
 
-    def _clob_size_modifier(
-        self, clob_down_ask: float | None
-    ) -> tuple[float, str]:
+    def _clob_size_modifier(self, clob_down_ask: float | None) -> tuple[float, str]:
         """Return (size_modifier, label) based on clob_down_ask."""
         if clob_down_ask is None:
             return _NULL_CLOB_SIZE_MOD, "no_clob_99pct"
