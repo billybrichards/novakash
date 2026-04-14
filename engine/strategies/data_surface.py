@@ -311,12 +311,25 @@ class DataSurfaceManager:
         if btc_price and open_price:
             delta_binance = (btc_price - open_price) / open_price
 
-        # Select primary delta (priority: tiingo > chainlink > binance)
-        for src, val in [
-            ("tiingo_rest_candle", delta_tiingo),
-            ("chainlink", delta_chainlink),
-            ("binance", delta_binance),
-        ]:
+        # Select primary delta
+        # For 5m Polymarket markets: chainlink first (it IS the resolution oracle)
+        # For other timescales: tiingo first (higher update frequency)
+        timeframe = getattr(window, "timeframe", "5m")
+        _duration = getattr(window, "duration_secs", 300)
+        _is_5m = timeframe == "5m" or _duration == 300
+        if _is_5m:
+            _delta_priority = [
+                ("chainlink", delta_chainlink),
+                ("tiingo_rest_candle", delta_tiingo),
+                ("binance", delta_binance),
+            ]
+        else:
+            _delta_priority = [
+                ("tiingo_rest_candle", delta_tiingo),
+                ("chainlink", delta_chainlink),
+                ("binance", delta_binance),
+            ]
+        for src, val in _delta_priority:
             if val is not None:
                 delta_pct = val
                 delta_source = src
