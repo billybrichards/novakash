@@ -86,43 +86,41 @@ class HaikuSummarizer:
 
     def _build_evaluation_prompt(self, ctx: dict) -> str:
         return (
-            "Summarize this 5-minute BTC trading window in 2-3 concise sentences "
-            "for a trader monitoring Telegram. Focus on market read and why "
-            "strategies acted as they did. Be specific with numbers. No fluff.\n\n"
-            f"Window: {ctx.get('window_time', '?')} UTC | "
-            f"Delta: {ctx.get('delta_pct', '?')}% | "
-            f"VPIN: {ctx.get('vpin', '?')} | "
-            f"Regime: {ctx.get('regime', '?')}\n"
-            f"Model: P(UP)={ctx.get('p_up', '?')}, "
-            f"direction={ctx.get('model_direction', '?')}, "
-            f"confidence dist={ctx.get('dist', '?')}\n"
-            f"Chainlink delta: {ctx.get('chainlink_delta', '?')}% | "
-            f"Tiingo delta: {ctx.get('tiingo_delta', '?')}% | "
-            f"Sources agree: {ctx.get('sources_agree', '?')}\n\n"
-            f"Strategy decisions:\n{ctx.get('decisions_text', 'none')}"
+            f"You are a crypto trading analyst. Write a Telegram-ready window summary.\n\n"
+            f"BTC {ctx.get('timescale','5m')} window at {ctx.get('window_time','?')} UTC:\n"
+            f"  Delta: {ctx.get('delta_pct','?')}% | VPIN: {ctx.get('vpin','?')} | Regime: {ctx.get('regime','?')}\n"
+            f"  Model: P(UP)={ctx.get('p_up','?')} dist={ctx.get('dist','?')} → {ctx.get('model_direction','?')}\n"
+            f"  Chainlink: {ctx.get('chainlink_delta','?')}% | Tiingo: {ctx.get('tiingo_delta','?')}% | Sources: {ctx.get('sources_agree','?')}\n\n"
+            f"Strategy decisions:\n{ctx.get('decisions_text','none')}\n\n"
+            f"Write TWO parts, separated by '---':\n"
+            f"PART 1 (1 sentence): Market read — what BTC is doing and why the model thinks {ctx.get('model_direction','?')}.\n"
+            f"PART 2: One plain-English sentence PER strategy explaining what it decided and the real reason why "
+            f"(not just the raw gate name — translate it). Format each as '• StrategyName: sentence'.\n"
+            f"Be specific with numbers. Max 10 words per strategy sentence. No fluff."
         )
 
     def _format_evaluation_message(self, ctx: dict, ai_summary: str) -> str:
-        """Build the final Telegram message with header + AI summary + decisions."""
-        # Header line
+        """Build the final Telegram message. ai_summary has PART1 --- PART2 format."""
         delta_str = f"{ctx.get('delta_pct', '?')}%" if ctx.get('delta_pct') is not None else "?"
         vpin_str = f"VPIN {ctx['vpin']:.2f}" if ctx.get('vpin') is not None else ""
         header = f"\U0001f550 BTC {ctx.get('timescale','5m')} | {ctx.get('window_time', '?')} UTC | \u0394{delta_str}"
         if vpin_str:
             header += f" | {vpin_str}"
 
-        # AI market summary
-        market_line = f"\U0001f4ca {ai_summary}"
-
-        # Per-strategy lines
-        strategy_lines = ctx.get("decision_lines", [])
-
-        parts = [header, "", market_line]
-        if strategy_lines:
-            parts.append("")
-            parts.extend(strategy_lines)
-
-        return "\n".join(parts)
+        # Split AI response into market read + per-strategy analysis
+        if "---" in ai_summary:
+            parts_split = ai_summary.split("---", 1)
+            market_read = parts_split[0].strip()
+            strategy_analysis = parts_split[1].strip()
+            return "\n".join([header, "", f"\U0001f4ca {market_read}", "", strategy_analysis])
+        else:
+            # Fallback: AI didn't use separator, show as-is + template strategies
+            strategy_lines = ctx.get("decision_lines", [])
+            parts = [header, "", f"\U0001f4ca {ai_summary}"]
+            if strategy_lines:
+                parts.append("")
+                parts.extend(strategy_lines)
+            return "\n".join(parts)
 
     def _fallback_evaluation(self, ctx: dict) -> str:
         """Template-based fallback when Haiku API is unavailable."""
