@@ -113,20 +113,19 @@ class StrategyRegistry:
         execute_trade_uc: Any = None,
         alerter: Any = None,
         decision_repo: Any = None,
+        pre_trade_gate: Any = None,
     ):
         self._config_dir = Path(config_dir)
         self._data_surface = data_surface
         self._execute_uc = execute_trade_uc
         self._alerter = alerter
         self._decision_repo = decision_repo  # PgStrategyDecisionRepository
+        self._pre_trade_gate = pre_trade_gate  # PreTradeGate (DB-backed dedup)
         self._configs: dict[str, StrategyConfig] = {}
         self._pipelines: dict[str, list[Gate]] = {}
         self._hooks: dict[str, dict[str, Callable]] = {}
         # Track last window_ts to send summary once per window at final offset
         self._last_summary_window: int = 0
-        # In-memory dedup: strategy_id -> last window_ts that was executed
-        # Prevents double-execution when WindowStateRepository is unavailable
-        self._executed_windows: dict[str, int] = {}
 
     def load_all(self) -> None:
         """Scan config_dir for *.yaml, build pipelines, load hooks."""
@@ -323,15 +322,39 @@ class StrategyRegistry:
                         )
 
                 # Execute LIVE trades when use case is wired
-                # In-memory dedup: only execute once per window per strategy
-                _already_executed = self._executed_windows.get(name) == window_ts
+                # DB-backed dedup via PreTradeGate (survives restarts)
                 if (
                     config.mode == "LIVE"
                     and decision.action == "TRADE"
                     and self._execute_uc is not None
                     and window_market is not None
-                    and not _already_executed
                 ):
+                    # Pre-trade gate check (dedup + CLOB freshness + bankroll)
+                    if self._pre_trade_gate is not None:
+                        try:
+                            _clob_price = getattr(decision, "entry_cap", None)
+                            _clob_price_ts = (decision.metadata or {}).get("clob_price_ts", 0.0) or 0.0
+                            _gate_result = await self._pre_trade_gate.check(
+                                strategy_id=name,
+                                window_ts=window_ts,
+                                clob_price=_clob_price,
+                                clob_price_ts=_clob_price_ts,
+                                proposed_stake=0,  # stake computed later in execute_trade
+                            )
+                            if not _gate_result.approved:
+                                log.info(
+                                    "registry.pre_gate_blocked",
+                                    strategy=name,
+                                    reason=_gate_result.reason,
+                                )
+                                continue
+                        except Exception as _gate_exc:
+                            log.warning(
+                                "registry.pre_gate_error",
+                                strategy=name,
+                                error=str(_gate_exc)[:200],
+                            )
+                            continue  # Fail-closed on gate error
                     try:
                         result = await self._execute_uc.execute(
                             decision=decision,
@@ -339,8 +362,6 @@ class StrategyRegistry:
                             current_btc_price=current_btc_price,
                             open_price=open_price,
                         )
-                        # Mark window as executed (in-memory dedup)
-                        self._executed_windows[name] = window_ts
                         log.info(
                             "registry.executed",
                             strategy=name,
