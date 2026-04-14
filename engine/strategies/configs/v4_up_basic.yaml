@@ -1,5 +1,5 @@
 name: v4_up_basic
-version: "1.0.0"
+version: "1.1.0"
 mode: LIVE
 asset: BTC
 timescale: 5m
@@ -10,7 +10,7 @@ gates:
   - type: direction
     params: { direction: UP }
   - type: confidence
-    params: { min_dist: 0.10 }
+    params: { min_dist: 0.15 }  # 2026-04-14: raised from 0.10 — MODERATE (0.12-0.15) is 26.3% WR, STRONG (≥0.15) = 66.6%
   - type: trade_advised
     params: {}
 
