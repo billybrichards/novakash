@@ -390,13 +390,17 @@ class StrategyRegistry:
                         metadata={},
                     )
                 )
-        # Send per-window summary at final eval offset (T-60)
+        # Send per-window summary at final eval offset
+        # 5m windows: T-60 (eval_offset <= 62)
+        # 15m windows: T-270 (eval_offset <= 280, first eval in trade window)
         window_ts = getattr(window, "window_ts", 0)
         eval_offset_val = getattr(window, "eval_offset", None)
+        window_tf = getattr(window, "timeframe", "5m")
+        summary_threshold = 280 if window_tf == "15m" else 62
         if (
             decisions
             and eval_offset_val is not None
-            and eval_offset_val <= 62  # Near T-60, final eval offset
+            and eval_offset_val <= summary_threshold
             and window_ts != self._last_summary_window
             and self._alerter is not None
         ):
