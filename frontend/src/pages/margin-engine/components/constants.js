@@ -13,6 +13,7 @@ export const T = {
   green: '#10b981',
   red: '#ef4444',
   amber: '#f59e0b',
+  orange: '#f97316',
   purple: '#a855f7',
   blue: '#3b82f6',
   white: '#fff',
@@ -32,3 +33,8 @@ export const SIGNAL_COLORS = {
 export const TIMESCALES = ['5m', '15m', '1h', '4h', '24h', '48h', '72h', '1w', '2w'];
 export const SHORT_TERM = ['5m', '15m', '1h', '4h'];
 export const LONG_TERM = ['24h', '48h', '72h', '1w', '2w'];
+
+export const DEFAULT_ASSET = 'BTC';
+export const DEFAULT_TIMESCALES = '5m,15m,1h,4h';
+export const DEFAULT_STRATEGY = 'fee_aware_15m';
+export const POLLING_INTERVAL_MS = 5000;

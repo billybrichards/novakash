@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApi } from '../../hooks/useApi.js';
-import { T } from './components/constants.js';
+import { T, POLLING_INTERVAL_MS, DEFAULT_ASSET, DEFAULT_TIMESCALES, DEFAULT_STRATEGY } from './components/constants.js';
 import PositionsPanel from './components/PositionsPanel.jsx';
 import SignalPanel from './components/SignalPanel.jsx';
 import TradeTimelinePanel from './components/TradeTimelinePanel.jsx';
@@ -30,13 +30,14 @@ export default function MarginEngine() {
   const [v4Snapshot, setV4Snapshot] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [controlLoading, setControlLoading] = useState({});
 
   const fetchData = async () => {
     try {
       const [marginRes, signalRes, v4Res] = await Promise.allSettled([
         api('GET', '/margin/status'),
-        api('GET', '/v3/snapshot?asset=BTC'),
-        api('GET', '/v4/snapshot?asset=BTC&timescales=5m,15m,1h,4h&strategy=fee_aware_15m'),
+        api('GET', `/v3/snapshot?asset=${DEFAULT_ASSET}`),
+        api('GET', `/v4/snapshot?asset=${DEFAULT_ASSET}&timescales=${DEFAULT_TIMESCALES}&strategy=${DEFAULT_STRATEGY}`),
       ]);
 
       if (marginRes.status === 'fulfilled') {
@@ -60,9 +61,47 @@ export default function MarginEngine() {
 
   useEffect(() => {
     if (activeTab !== 'live') return;
-    const interval = setInterval(fetchData, 5000);
+    const interval = setInterval(fetchData, POLLING_INTERVAL_MS);
     return () => clearInterval(interval);
   }, [activeTab, api]);
+
+  const handleKillSwitch = async () => {
+    if (!confirm('Are you sure you want to trigger the kill switch? This will immediately close all positions.')) return;
+    setControlLoading(prev => ({ ...prev, kill: true }));
+    try {
+      await api('POST', '/system/kill');
+      fetchData();
+    } catch (err) {
+      setError(err.message || 'Failed to trigger kill switch');
+    } finally {
+      setControlLoading(prev => ({ ...prev, kill: false }));
+    }
+  };
+
+  const handleResume = async () => {
+    setControlLoading(prev => ({ ...prev, resume: true }));
+    try {
+      await api('POST', '/system/resume');
+      fetchData();
+    } catch (err) {
+      setError(err.message || 'Failed to resume');
+    } finally {
+      setControlLoading(prev => ({ ...prev, resume: false }));
+    }
+  };
+
+  const handleTogglePaperMode = async () => {
+    const newPaperMode = !marginData?.portfolio?.paper_mode;
+    setControlLoading(prev => ({ ...prev, paperMode: true }));
+    try {
+      await api('PUT', '/system/paper-mode', { data: { paper_mode: newPaperMode } });
+      fetchData();
+    } catch (err) {
+      setError(err.message || 'Failed to toggle paper mode');
+    } finally {
+      setControlLoading(prev => ({ ...prev, paperMode: false }));
+    }
+  };
 
   const portfolio = marginData?.portfolio || {};
   const execution = marginData?.execution || {};
@@ -213,6 +252,59 @@ export default function MarginEngine() {
         )}
       </div>
 
+      {/* Control panel */}
+      <div style={{
+        display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap',
+      }}>
+        {!killSwitch ? (
+          <button
+            onClick={handleKillSwitch}
+            disabled={controlLoading.kill || !engineOnline}
+            style={{
+              padding: '8px 16px', borderRadius: 6, fontSize: 10, fontWeight: 700,
+              background: 'rgba(239,68,68,0.15)', color: T.red,
+              border: `1px solid rgba(239,68,68,0.3)`, fontFamily: T.mono,
+              cursor: (!engineOnline || controlLoading.kill) ? 'not-allowed' : 'pointer',
+              opacity: (!engineOnline || controlLoading.kill) ? 0.5 : 1,
+              textTransform: 'uppercase', letterSpacing: '0.05em',
+            }}
+          >
+            {controlLoading.kill ? 'KILLING...' : 'KILL SWITCH'}
+          </button>
+        ) : (
+          <button
+            onClick={handleResume}
+            disabled={controlLoading.resume || !engineOnline}
+            style={{
+              padding: '8px 16px', borderRadius: 6, fontSize: 10, fontWeight: 700,
+              background: 'rgba(16,185,129,0.15)', color: T.green,
+              border: `1px solid rgba(16,185,129,0.3)`, fontFamily: T.mono,
+              cursor: (!engineOnline || controlLoading.resume) ? 'not-allowed' : 'pointer',
+              opacity: (!engineOnline || controlLoading.resume) ? 0.5 : 1,
+              textTransform: 'uppercase', letterSpacing: '0.05em',
+            }}
+          >
+            {controlLoading.resume ? 'RESUMING...' : 'RESUME'}
+          </button>
+        )}
+        <button
+          onClick={handleTogglePaperMode}
+          disabled={controlLoading.paperMode || !engineOnline}
+          style={{
+            padding: '8px 16px', borderRadius: 6, fontSize: 10, fontWeight: 700,
+            background: portfolio.paper_mode ? 'rgba(239,68,68,0.15)' : 'rgba(16,185,129,0.15)',
+            color: portfolio.paper_mode ? T.red : T.green,
+            border: `1px solid ${portfolio.paper_mode ? 'rgba(239,68,68,0.3)' : 'rgba(16,185,129,0.3)'}`,
+            fontFamily: T.mono,
+            cursor: (!engineOnline || controlLoading.paperMode) ? 'not-allowed' : 'pointer',
+            opacity: (!engineOnline || controlLoading.paperMode) ? 0.5 : 1,
+            textTransform: 'uppercase', letterSpacing: '0.05em',
+          }}
+        >
+          {controlLoading.paperMode ? 'TOGGLING...' : (portfolio.paper_mode ? 'GO LIVE' : 'PAPER MODE')}
+        </button>
+      </div>
+
       {error && (
         <div style={{ padding: '8px 12px', marginBottom: 12, borderRadius: 6, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', fontSize: 10, color: T.red }}>
           {error}
@@ -262,16 +354,57 @@ export default function MarginEngine() {
 
           {/* Open positions */}
           <PositionsPanel positions={openPositions} />
+
+          {/* Help section */}
+          <div style={{ marginTop: 8, padding: 10, background: 'rgba(6,182,212,0.05)', border: `1px solid ${T.cardBorder}`, borderRadius: 6 }}>
+            <div style={{ fontSize: 9, color: T.textMuted, marginBottom: 4 }}>Need help understanding this dashboard?</div>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <a
+                href="https://github.com/billybrichards/novakash/wiki/V4-Fusion-Surface"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontSize: 9, color: T.cyan, textDecoration: 'none' }}
+              >
+                V4 Surface Guide →
+              </a>
+              <a
+                href="https://github.com/billybrichards/novakash/wiki/Position-Management"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontSize: 9, color: T.cyan, textDecoration: 'none' }}
+              >
+                Position Guide →
+              </a>
+              <a
+                href="https://github.com/billybrichards/novakash/wiki/Trading-Strategy"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontSize: 9, color: T.cyan, textDecoration: 'none' }}
+              >
+                Strategy Docs →
+              </a>
+            </div>
+          </div>
         </div>
       )}
       {activeTab === 'history' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {/* Closed positions from current session (memory) */}
           <PositionsPanel positions={closedPositions} />
+          <div style={{ marginTop: 8 }}>
+            <a
+              href="https://github.com/billybrichards/novakash/wiki/Trade-History"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: 9, color: T.cyan, textDecoration: 'none' }}
+            >
+              History Guide →
+            </a>
+          </div>
         </div>
       )}
       {activeTab === 'trades' && (
-        /* Full DB history with per-trade entry/exit conditions */
+        {/* Full DB history with per-trade entry/exit conditions */}
         <TradeTimelinePanel api={api} />
       )}
     </div>
