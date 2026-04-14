@@ -413,7 +413,9 @@ class ExecuteTradeUseCase:
             if isinstance(risk, dict)
             else risk.current_bankroll
         )
-        bet_fraction = decision.collateral_pct or runtime.bet_fraction
+        # Always use runtime.bet_fraction (operator-set). YAML collateral_pct was
+        # designed for $500 bankroll and overrides runtime on smaller wallets.
+        bet_fraction = runtime.bet_fraction
 
         base_stake = bankroll * bet_fraction
 
