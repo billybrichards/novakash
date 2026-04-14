@@ -38,8 +38,20 @@ TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/sendMessage"
 TELEGRAM_PHOTO_BASE = "https://api.telegram.org/bot{token}/sendPhoto"
 
 _DIR_EMOJI = {"UP": "📈", "DOWN": "📉", "YES": "📈", "NO": "📉"}
-_REGIME_EMOJI = {"CASCADE": "🌊", "TRANSITION": "🔄", "NORMAL": "📊", "CALM": "😴", "TIMESFM_ONLY": "⚫"}
-_GATE_EMOJI = {"BLOCK": "🚫", "SKIP": "⚠️", "REDUCE": "🔻", "OK": "✅", "PRICED_IN": "💸"}
+_REGIME_EMOJI = {
+    "CASCADE": "🌊",
+    "TRANSITION": "🔄",
+    "NORMAL": "📊",
+    "CALM": "😴",
+    "TIMESFM_ONLY": "⚫",
+}
+_GATE_EMOJI = {
+    "BLOCK": "🚫",
+    "SKIP": "⚠️",
+    "REDUCE": "🔻",
+    "OK": "✅",
+    "PRICED_IN": "💸",
+}
 
 
 def _format_v103_block(signal: dict) -> str:
@@ -57,7 +69,9 @@ def _format_v103_block(signal: dict) -> str:
         passed = dune_p >= threshold
         icon = "✅" if passed else "❌"
         direction = signal.get("direction", "?")
-        lines.append(f"🔮 DUNE: P({direction})=`{dune_p:.3f}` {'≥' if passed else '<'} `{threshold:.3f}` {icon}")
+        lines.append(
+            f"🔮 DUNE: P({direction})=`{dune_p:.3f}` {'≥' if passed else '<'} `{threshold:.3f}` {icon}"
+        )
 
         # Threshold components
         parts = []
@@ -88,9 +102,16 @@ def _format_v103_block(signal: dict) -> str:
     if taker_status:
         buy_pct = signal.get("v103_taker_buy_pct", 0)
         sell_pct = signal.get("v103_taker_sell_pct", 0)
-        icon_map = {"aligned": "✅", "opposing": "⚠️", "both_opposing": "🚫", "neutral": "➖"}
+        icon_map = {
+            "aligned": "✅",
+            "opposing": "⚠️",
+            "both_opposing": "🚫",
+            "neutral": "➖",
+        }
         icon = icon_map.get(taker_status, "?")
-        lines.append(f"🌊 Taker: `{taker_status.upper()}` {icon} buy {buy_pct:.0f}% sell {sell_pct:.0f}%")
+        lines.append(
+            f"🌊 Taker: `{taker_status.upper()}` {icon} buy {buy_pct:.0f}% sell {sell_pct:.0f}%"
+        )
 
     # ── CG confirmation dots ──
     confirms = signal.get("v103_cg_confirms")
@@ -167,21 +188,20 @@ class TelegramAlerter:
 
         # Prefer passed-in key, fall back to env, then settings
         self._anthropic_api_key = (
-            anthropic_api_key
-            or os.environ.get("ANTHROPIC_API_KEY", "")
-            or ""
+            anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "") or ""
         )
 
         # Try to get from pydantic settings if not set
         if not self._anthropic_api_key:
             try:
                 from config.settings import settings
+
                 self._anthropic_api_key = settings.anthropic_api_key or ""
             except Exception:
                 pass
 
         self._log = log.bind(component="TelegramAlerter")
-        
+
         # Dual AI system: Claude primary, Qwen122b fallback
         self._ai = DualAIAssessment(
             anthropic_key=self._anthropic_api_key,
@@ -224,21 +244,21 @@ class TelegramAlerter:
             strategy_decisions: List of StrategyDecision from StrategyPort evaluation
         """
         from datetime import datetime, timezone
-        
+
         window_time = "?"
         try:
-            ts = int(window_id.split('-')[1])
+            ts = int(window_id.split("-")[1])
             dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-            window_time = dt.strftime('%H:%M UTC')
+            window_time = dt.strftime("%H:%M UTC")
         except Exception:
             pass
-        
+
         direction = signal.get("direction", "?")
         delta = signal.get("delta_pct", 0)
         vpin = signal.get("vpin", 0)
         regime = signal.get("regime", "?")
         mode = self._mode_tag()
-        
+
         # v8.0 multi-source data
         delta_source = signal.get("delta_source", "?")
         delta_tiingo = signal.get("delta_tiingo")
@@ -252,14 +272,17 @@ class TelegramAlerter:
         confidence_tier = signal.get("confidence_tier", "?")
         macro_bias = signal.get("macro_bias", "N/A")
         macro_confidence = signal.get("macro_confidence", "")
-        
+
         # Build source prices line
         prices = []
-        if tiingo_close: prices.append(f"TI=${tiingo_close:,.0f}")
-        if chainlink_price: prices.append(f"CL=${chainlink_price:,.0f}")
-        if binance_price: prices.append(f"BN=${binance_price:,.0f}")
+        if tiingo_close:
+            prices.append(f"TI=${tiingo_close:,.0f}")
+        if chainlink_price:
+            prices.append(f"CL=${chainlink_price:,.0f}")
+        if binance_price:
+            prices.append(f"BN=${binance_price:,.0f}")
         prices_line = " | ".join(prices) if prices else "N/A"
-        
+
         # Build gates line — only show signal gates (VPIN, DELTA, CG)
         # Floor/Cap from Gamma are indicative only, not real CLOB book
         gate_icons = ""
@@ -270,7 +293,7 @@ class TelegramAlerter:
                 gate_icons += f"✅{g.upper()} "
         if not gate_icons:
             gate_icons = "N/A"
-        
+
         # Real CLOB book price + Gamma indicative
         entry_line = ""
         clob_up = signal.get("clob_up_ask")
@@ -292,13 +315,17 @@ class TelegramAlerter:
             entry = gamma_down if direction in ("DOWN", "NO") else gamma_up
             rr = (1 - entry) / entry if entry > 0 else 0
             entry_line = f"💱 Gamma: `${entry:.3f}` R/R `1:{rr:.1f}` _(indicative)_\n"
-        
+
         # Delta display with source
         delta_str = f"{delta:+.4f}%" if delta else "?"
-        src_short = delta_source.replace("_rest_candle", "").replace("_db_tick", "(db)").replace("_fallback", "(fb)")
-        
+        src_short = (
+            delta_source.replace("_rest_candle", "")
+            .replace("_db_tick", "(db)")
+            .replace("_fallback", "(fb)")
+        )
+
         emoji = "🎯" if decision == "TRADE" else "⏭"
-        
+
         # v8.1 early entry info
         _eval_offset = signal.get("eval_offset")
         _entry_reason = signal.get("entry_reason", "v8_standard")
@@ -318,7 +345,11 @@ class TelegramAlerter:
 
         offset_line = ""
         if _eval_offset and _eval_offset != 60:
-            offset_line = f"⏱ Entry: `T-{_eval_offset}s` | cap `${_v81_cap:.2f}`\n" if _v81_cap else f"⏱ Entry: `T-{_eval_offset}s`\n"
+            offset_line = (
+                f"⏱ Entry: `T-{_eval_offset}s` | cap `${_v81_cap:.2f}`\n"
+                if _v81_cap
+                else f"⏱ Entry: `T-{_eval_offset}s`\n"
+            )
 
         # v10.3: build CG/DUNE/threshold block if available
         v103_block = _format_v103_block(signal)
@@ -338,8 +369,15 @@ class TelegramAlerter:
         health_line = ""
         if consensus_live is not None and consensus_total is not None:
             _macro_tag = f"Macro: `{macro_status or 'OK'}`"
-            _seq_tag = f"Sequoia: {'✓' if sequoia_ok else '✗'}" if sequoia_ok is not None else ""
-            _health_parts = [f"Consensus `{consensus_live}/{consensus_total}`", _macro_tag]
+            _seq_tag = (
+                f"Sequoia: {'✓' if sequoia_ok else '✗'}"
+                if sequoia_ok is not None
+                else ""
+            )
+            _health_parts = [
+                f"Consensus `{consensus_live}/{consensus_total}`",
+                _macro_tag,
+            ]
             if _seq_tag:
                 _health_parts.append(_seq_tag)
             health_line = f"📊 Health: {' | '.join(_health_parts)}\n"
@@ -358,17 +396,31 @@ class TelegramAlerter:
             f"\n⚡ Gates: {gate_icons}\n"
             f"🎖 Confidence: `{confidence_tier}`\n"
         )
-        
+
         # v12: Strategy Port comparison (V10 LIVE vs V4 GHOST)
         if strategy_decisions:
             decision_text += "\n"
             for sd in strategy_decisions:
-                _mode = getattr(sd, 'mode', None) or sd.get('mode', '?') if isinstance(sd, dict) else '?'
-                _sid = getattr(sd, 'strategy_id', None) or (sd.get('strategy_id', '?') if isinstance(sd, dict) else '?')
-                _action = getattr(sd, 'action', None) or (sd.get('action', '?') if isinstance(sd, dict) else '?')
-                _skip = getattr(sd, 'skip_reason', None) or (sd.get('skip_reason') if isinstance(sd, dict) else None)
-                _dir = getattr(sd, 'direction', None) or (sd.get('direction') if isinstance(sd, dict) else None)
-                _conf = getattr(sd, 'confidence', None) or (sd.get('confidence') if isinstance(sd, dict) else None)
+                _mode = (
+                    getattr(sd, "mode", None) or sd.get("mode", "?")
+                    if isinstance(sd, dict)
+                    else "?"
+                )
+                _sid = getattr(sd, "strategy_id", None) or (
+                    sd.get("strategy_id", "?") if isinstance(sd, dict) else "?"
+                )
+                _action = getattr(sd, "action", None) or (
+                    sd.get("action", "?") if isinstance(sd, dict) else "?"
+                )
+                _skip = getattr(sd, "skip_reason", None) or (
+                    sd.get("skip_reason") if isinstance(sd, dict) else None
+                )
+                _dir = getattr(sd, "direction", None) or (
+                    sd.get("direction") if isinstance(sd, dict) else None
+                )
+                _conf = getattr(sd, "confidence", None) or (
+                    sd.get("confidence") if isinstance(sd, dict) else None
+                )
                 _icon = "🎯" if _mode == "LIVE" else "👻"
                 _label = _sid.upper().replace("_", " ")
                 if _action == "TRADE":
@@ -384,10 +436,15 @@ class TelegramAlerter:
 
         if not self._paper_mode and decision == "TRADE":
             decision_text += f"\n🟢 *ORDER SENT → awaiting fill*  {mode}\n"
-        
+
         decision_msg_id = await self._send_with_id(decision_text)
-        await self._log_notification("trade_decision_v8", decision_text, f"{window_id}", telegram_message_id=decision_msg_id)
-        
+        await self._log_notification(
+            "trade_decision_v8",
+            decision_text,
+            f"{window_id}",
+            telegram_message_id=decision_msg_id,
+        )
+
         # AI analysis (shorter in v8.0 — 1 sentence max)
         analysis_msg_id = None
         if decision == "TRADE":
@@ -401,7 +458,7 @@ class TelegramAlerter:
                 analysis_msg_id = await self._send_with_id(analysis_card)
             except Exception as exc:
                 self._log.warning("ai.decision_analysis_failed", error=str(exc)[:100])
-        
+
         return decision_msg_id, analysis_msg_id
 
     # ── Consolidated Window Summary (replaces 19 individual skip alerts) ────────
@@ -433,7 +490,9 @@ class TelegramAlerter:
             parts = window_id.split("-", 1)
             asset = parts[0]
             ts = int(parts[1])
-            window_time = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%H:%M UTC")
+            window_time = datetime.fromtimestamp(ts, tz=timezone.utc).strftime(
+                "%H:%M UTC"
+            )
         except Exception:
             pass
 
@@ -469,7 +528,12 @@ class TelegramAlerter:
         else:
             source_line = ""
 
-        regime_emoji = {"CASCADE": "🌊", "TRANSITION": "🔄", "NORMAL": "📊", "CALM": "😴"}.get(regime, "📊")
+        regime_emoji = {
+            "CASCADE": "🌊",
+            "TRANSITION": "🔄",
+            "NORMAL": "📊",
+            "CALM": "😴",
+        }.get(regime, "📊")
         delta_str = f"{delta_pct:+.4f}%" if delta_pct else "?"
 
         # v9 tier info
@@ -498,13 +562,17 @@ class TelegramAlerter:
                 # e.g. "v8.1: not CASCADE (VPIN 0.612 < 0.65) at T-240" → "not CASCADE"
                 reason_key = raw_reason
                 if " at T-" in reason_key:
-                    reason_key = reason_key[:reason_key.rfind(" at T-")].strip()
+                    reason_key = reason_key[: reason_key.rfind(" at T-")].strip()
                 # Also normalise CLOB values: "CLOB CAP: UP ask $0.57 > $0.55" → "CLOB cap"
                 if "CLOB CAP" in reason_key.upper():
                     # Extract the ask price for display
                     try:
                         _ask_part = reason_key.split("ask $")[1].split(" >")[0]
-                        _cap_part = reason_key.split("> $")[1].split()[0] if "> $" in reason_key else "?"
+                        _cap_part = (
+                            reason_key.split("> $")[1].split()[0]
+                            if "> $" in reason_key
+                            else "?"
+                        )
                         reason_key = f"CLOB cap (${_ask_part} > ${_cap_part})"
                     except Exception:
                         reason_key = "CLOB cap"
@@ -517,7 +585,11 @@ class TelegramAlerter:
                         _vpin_val = reason_key.split("VPIN ")[1].split(")")[0]
                     except Exception:
                         pass
-                    reason_key = f"not CASCADE (VPIN {_vpin_val})" if _vpin_val else "not CASCADE"
+                    reason_key = (
+                        f"not CASCADE (VPIN {_vpin_val})"
+                        if _vpin_val
+                        else "not CASCADE"
+                    )
                 elif "v8.1: delta too weak" in reason_key:
                     reason_key = "delta too weak"
                 elif "v2.2 DISAGREES" in reason_key:
@@ -559,7 +631,9 @@ class TelegramAlerter:
                         if current_start == current_end:
                             groups.append(f"T-{current_start}: {current_reason}")
                         else:
-                            groups.append(f"T-{current_start}..T-{current_end}: {current_reason}")
+                            groups.append(
+                                f"T-{current_start}..T-{current_end}: {current_reason}"
+                            )
                     current_reason = reason_key
                     current_start = offset
                     current_end = offset
@@ -570,7 +644,9 @@ class TelegramAlerter:
                 if current_start == current_end:
                     groups.append(f"T-{current_start}: {current_reason}")
                 else:
-                    groups.append(f"T-{current_start}..T-{current_end}: {current_reason}")
+                    groups.append(
+                        f"T-{current_start}..T-{current_end}: {current_reason}"
+                    )
             return groups
 
         reason_groups = _group_reasons(eval_history)
@@ -581,7 +657,12 @@ class TelegramAlerter:
         _v103_confirms = latest.get("v103_cg_confirms")
         v103_line = ""
         if _v103_taker:
-            _icon_map = {"aligned": "✅", "opposing": "⚠️", "both_opposing": "🚫", "neutral": "➖"}
+            _icon_map = {
+                "aligned": "✅",
+                "opposing": "⚠️",
+                "both_opposing": "🚫",
+                "neutral": "➖",
+            }
             _taker_icon = _icon_map.get(_v103_taker, "?")
             _buy_pct = latest.get("v103_taker_buy_pct", 0)
             _sell_pct = latest.get("v103_taker_sell_pct", 0)
@@ -596,7 +677,11 @@ class TelegramAlerter:
 
         if not traded:
             # ALL SKIPPED card
-            skip_reasons_text = "\n".join(f"  {r}" for r in reason_groups) if reason_groups else "  (unknown)"
+            skip_reasons_text = (
+                "\n".join(f"  {r}" for r in reason_groups)
+                if reason_groups
+                else "  (unknown)"
+            )
             msg = (
                 f"📋 *{asset} 5m* | {window_time} | {_version_tag}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -627,12 +712,24 @@ class TelegramAlerter:
         if strategy_decisions:
             msg += "\n"
             for sd in strategy_decisions:
-                _mode = getattr(sd, 'mode', None) or (sd.get('mode', '?') if isinstance(sd, dict) else '?')
-                _sid = getattr(sd, 'strategy_id', None) or (sd.get('strategy_id', '?') if isinstance(sd, dict) else '?')
-                _action = getattr(sd, 'action', None) or (sd.get('action', '?') if isinstance(sd, dict) else '?')
-                _skip = getattr(sd, 'skip_reason', None) or (sd.get('skip_reason') if isinstance(sd, dict) else None)
-                _dir = getattr(sd, 'direction', None) or (sd.get('direction') if isinstance(sd, dict) else None)
-                _conf = getattr(sd, 'confidence', None) or (sd.get('confidence') if isinstance(sd, dict) else None)
+                _mode = getattr(sd, "mode", None) or (
+                    sd.get("mode", "?") if isinstance(sd, dict) else "?"
+                )
+                _sid = getattr(sd, "strategy_id", None) or (
+                    sd.get("strategy_id", "?") if isinstance(sd, dict) else "?"
+                )
+                _action = getattr(sd, "action", None) or (
+                    sd.get("action", "?") if isinstance(sd, dict) else "?"
+                )
+                _skip = getattr(sd, "skip_reason", None) or (
+                    sd.get("skip_reason") if isinstance(sd, dict) else None
+                )
+                _dir = getattr(sd, "direction", None) or (
+                    sd.get("direction") if isinstance(sd, dict) else None
+                )
+                _conf = getattr(sd, "confidence", None) or (
+                    sd.get("confidence") if isinstance(sd, dict) else None
+                )
                 _icon = "🎯" if _mode == "LIVE" else "👻"
                 _label = _sid.upper().replace("_", " ")
                 if _action == "TRADE":
@@ -644,7 +741,9 @@ class TelegramAlerter:
                 msg += f"{_icon} {_label} ({_mode}): {_detail}\n"
 
         msg_id = await self._send_with_id(msg)
-        await self._log_notification("window_summary", msg, window_id, telegram_message_id=msg_id)
+        await self._log_notification(
+            "window_summary", msg, window_id, telegram_message_id=msg_id
+        )
         return msg_id
 
     # ── Clean 5-Stage Lifecycle Notifications ─────────────────────────────────
@@ -674,9 +773,9 @@ class TelegramAlerter:
             window_time = data.get("window_time", "?")
             if not window_time or window_time == "?":
                 try:
-                    ts = int(window_id.split('-')[1])
+                    ts = int(window_id.split("-")[1])
                     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-                    window_time = dt.strftime('%H:%M')
+                    window_time = dt.strftime("%H:%M")
                 except Exception:
                     pass
 
@@ -709,10 +808,16 @@ class TelegramAlerter:
             # v11.2: Sequoia + HMM regime
             if sequoia_p_up is not None:
                 _seq_dir = "UP" if sequoia_p_up >= 0.5 else "DOWN"
-                lines.append(f"🔮 Sequoia v5.2: P(UP)=`{sequoia_p_up:.3f}` → `{_seq_dir}`")
+                lines.append(
+                    f"🔮 Sequoia v5.2: P(UP)=`{sequoia_p_up:.3f}` → `{_seq_dir}`"
+                )
             if regime_hmm:
                 _hmm_display = regime_hmm.replace("_", " ").title()
-                _hmm_conf = f" `{regime_hmm_confidence:.0%}`" if regime_hmm_confidence is not None else ""
+                _hmm_conf = (
+                    f" `{regime_hmm_confidence:.0%}`"
+                    if regime_hmm_confidence is not None
+                    else ""
+                )
                 lines.append(f"🧠 HMM: `{_hmm_display}`{_hmm_conf}")
             if ai_text:
                 lines += ["", f"🤖 _{ai_text}_"]
@@ -720,10 +825,14 @@ class TelegramAlerter:
 
             text = "\n".join(lines)
             msg_id = await self._send_with_id(text)
-            await self._log_notification("signal_snapshot", text, window_id, telegram_message_id=msg_id)
+            await self._log_notification(
+                "signal_snapshot", text, window_id, telegram_message_id=msg_id
+            )
             return msg_id
         except Exception as exc:
-            self._log.warning("telegram.send_signal_snapshot_failed", error=str(exc)[:100])
+            self._log.warning(
+                "telegram.send_signal_snapshot_failed", error=str(exc)[:100]
+            )
             return None
 
     async def send_trade_decision(
@@ -745,9 +854,9 @@ class TelegramAlerter:
         try:
             window_time = "?"
             try:
-                ts = int(window_id.split('-')[1])
+                ts = int(window_id.split("-")[1])
                 dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-                window_time = dt.strftime('%H:%M UTC')
+                window_time = dt.strftime("%H:%M UTC")
             except Exception:
                 pass
 
@@ -775,12 +884,18 @@ class TelegramAlerter:
 
             # Show gamma movement vs T-90 if available
             if prev_gamma_up is not None and prev_gamma_down is not None:
-                prev_entry = prev_gamma_down if direction in ("DOWN", "NO") else prev_gamma_up
+                prev_entry = (
+                    prev_gamma_down if direction in ("DOWN", "NO") else prev_gamma_up
+                )
                 arrow = "↑" if entry > prev_entry else "↓"
-                lines.append(f"Gamma moved `${prev_entry:.3f}`→`${entry:.3f}` since T-90 {arrow}")
+                lines.append(
+                    f"Gamma moved `${prev_entry:.3f}`→`${entry:.3f}` since T-90 {arrow}"
+                )
 
             if decision == "TRADE":
-                lines.append(f"R/R `1:{rr}` | Entry `${entry:.3f}` | Will place at `${entry + 0.02:.3f}`")
+                lines.append(
+                    f"R/R `1:{rr}` | Entry `${entry:.3f}` | Will place at `${entry + 0.02:.3f}`"
+                )
 
             if reason:
                 lines.append(f"_{reason}_")
@@ -795,10 +910,14 @@ class TelegramAlerter:
 
             text = "\n".join(lines)
             msg_id = await self._send_with_id(text)
-            await self._log_notification("trade_decision", text, window_id, telegram_message_id=msg_id)
+            await self._log_notification(
+                "trade_decision", text, window_id, telegram_message_id=msg_id
+            )
             return msg_id
         except Exception as exc:
-            self._log.warning("telegram.send_trade_decision_failed", error=str(exc)[:100])
+            self._log.warning(
+                "telegram.send_trade_decision_failed", error=str(exc)[:100]
+            )
             return None
 
     async def send_order_filled(
@@ -828,7 +947,11 @@ class TelegramAlerter:
             fok_step = getattr(order, "fok_fill_step", None)
             fok_attempts = getattr(order, "fok_attempts", None)
             delta_source = getattr(order, "delta_source", "?")
-            src_short = delta_source.replace("_rest_candle", "").replace("_db_tick", "(db)") if delta_source else "?"
+            src_short = (
+                delta_source.replace("_rest_candle", "").replace("_db_tick", "(db)")
+                if delta_source
+                else "?"
+            )
 
             fok_line = ""
             if fok_step is not None and fok_attempts is not None:
@@ -844,7 +967,9 @@ class TelegramAlerter:
                 f"Source: `{src_short}` | Mode: `{'gtc' if not fok_step else 'fok'}`\n"
             )
             msg_id = await self._send_with_id(text)
-            await self._log_notification("order_filled", text, telegram_message_id=msg_id)
+            await self._log_notification(
+                "order_filled", text, telegram_message_id=msg_id
+            )
             return msg_id
         except Exception as exc:
             self._log.warning("telegram.send_order_filled_failed", error=str(exc)[:100])
@@ -893,7 +1018,9 @@ class TelegramAlerter:
 
             text = "\n".join(lines)
             msg_id = await self._send_with_id(text)
-            await self._log_notification("trade_result", text, window_id, telegram_message_id=msg_id)
+            await self._log_notification(
+                "trade_result", text, window_id, telegram_message_id=msg_id
+            )
             return msg_id
         except Exception as exc:
             self._log.warning("telegram.send_trade_result_failed", error=str(exc)[:100])
@@ -957,7 +1084,9 @@ class TelegramAlerter:
                     clob = t.get("clob_ask")
                     pnl_label = t.get("pnl_label", "")
                     clob_str = f" CLOB ${clob:.2f}" if clob is not None else ""
-                    tick_lines.append(f"T-{offset} ({skip_reason}{clob_str}): {pnl_label}")
+                    tick_lines.append(
+                        f"T-{offset} ({skip_reason}{clob_str}): {pnl_label}"
+                    )
 
             # Limit to 6 most informative lines to keep message readable
             tick_lines = tick_lines[:6]
@@ -990,7 +1119,7 @@ class TelegramAlerter:
                 ai_snippet = ai_analysis[:250].strip()
                 if len(ai_analysis) > 250:
                     ai_snippet += "…"
-                text += f"\n🤖 _Sonnet: \"{ai_snippet}\"_\n"
+                text += f'\n🤖 _Sonnet: "{ai_snippet}"_\n'
 
             msg_id = await self._send_with_id(text)
             await self._log_notification(
@@ -1047,7 +1176,7 @@ class TelegramAlerter:
             except Exception:
                 pass
 
-            signal_correct = (direction == oracle_direction)
+            signal_correct = direction == oracle_direction
             oracle_emoji = "✅" if signal_correct else "❌"
             pnl_sign = "+" if shadow_pnl >= 0 else ""
             pnl_label = "missed profit" if shadow_pnl > 0 else "avoided loss"
@@ -1056,7 +1185,9 @@ class TelegramAlerter:
             _shadow_ctx = ""
             if sequoia_p_up is not None:
                 _seq_dir = "UP" if sequoia_p_up >= 0.5 else "DOWN"
-                _shadow_ctx += f"🔮 Sequoia v5.2: P(UP)=`{sequoia_p_up:.3f}` → `{_seq_dir}`\n"
+                _shadow_ctx += (
+                    f"🔮 Sequoia v5.2: P(UP)=`{sequoia_p_up:.3f}` → `{_seq_dir}`\n"
+                )
             if regime_hmm:
                 _hmm_display = regime_hmm.replace("_", " ").title()
                 _shadow_ctx += f"🧠 HMM: `{_hmm_display}`\n"
@@ -1077,7 +1208,9 @@ class TelegramAlerter:
             )
             return msg_id
         except Exception as exc:
-            self._log.warning("telegram.send_shadow_resolution_failed", error=str(exc)[:100])
+            self._log.warning(
+                "telegram.send_shadow_resolution_failed", error=str(exc)[:100]
+            )
             return None
 
     async def send_redemption(
@@ -1126,22 +1259,22 @@ class TelegramAlerter:
             regime_hmm: HMM regime active at trade time (calm_trend/volatile_trend/chop/risk_off)
         """
         from datetime import datetime, timezone
-        
+
         window_time = "?"
         try:
-            ts = int(window_id.split('-')[1])
+            ts = int(window_id.split("-")[1])
             dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-            window_time = dt.strftime('%H:%M UTC')
+            window_time = dt.strftime("%H:%M UTC")
         except Exception:
             pass
-        
+
         wd = window_data or {}
         emoji = "✅" if outcome == "WIN" else "❌"
         pnl_sign = "+" if pnl_usd >= 0 else ""
         mode = self._mode_tag()
-        
+
         # v8.0 session tracking — reload from DB on first call
-        if not hasattr(self, '_session_wins'):
+        if not hasattr(self, "_session_wins"):
             self._session_wins = 0
             self._session_losses = 0
             self._session_pnl = 0.0
@@ -1158,9 +1291,9 @@ class TelegramAlerter:
                             "AND created_at > DATE_TRUNC('day', NOW())"
                         )
                         if row:
-                            self._session_wins = int(row['w'] or 0)
-                            self._session_losses = int(row['l'] or 0)
-                            self._session_pnl = float(row['pnl'] or 0)
+                            self._session_wins = int(row["w"] or 0)
+                            self._session_losses = int(row["l"] or 0)
+                            self._session_pnl = float(row["pnl"] or 0)
                 except Exception:
                     pass  # Fall back to zero counters
         if outcome == "WIN":
@@ -1170,27 +1303,35 @@ class TelegramAlerter:
         self._session_pnl += pnl_usd
         total = self._session_wins + self._session_losses
         wr = (self._session_wins / total * 100) if total > 0 else 0
-        
+
         # v8.0 source attribution
         delta_source = wd.get("delta_source", "?")
         delta_val = wd.get("delta_pct", 0)
-        src_short = delta_source.replace("_rest_candle", "").replace("_db_tick", "(db)") if delta_source else "?"
-        
+        src_short = (
+            delta_source.replace("_rest_candle", "").replace("_db_tick", "(db)")
+            if delta_source
+            else "?"
+        )
+
         oracle_note = ""
         if outcome == "LOSS" and wd.get("actual_direction"):
-            oracle_note = f"\nOracle: `{wd['actual_direction']}` ← {src_short} was wrong"
-        
+            oracle_note = (
+                f"\nOracle: `{wd['actual_direction']}` ← {src_short} was wrong"
+            )
+
         # v8.1: Show actual fill price (may differ from submitted entry)
         _fill_price = wd.get("actual_fill_price")
         _entry_reason = wd.get("entry_reason", "")
         _fill_line = f"Entry: `${entry_price:.3f}`"
         if _fill_price and abs(float(_fill_price) - entry_price) > 0.001:
-            _fill_line = f"Submitted: `${entry_price:.3f}` → Fill: `${float(_fill_price):.4f}`"
+            _fill_line = (
+                f"Submitted: `${entry_price:.3f}` → Fill: `${float(_fill_price):.4f}`"
+            )
         elif _fill_price:
             _fill_line = f"Fill: `${float(_fill_price):.4f}`"
-        
+
         _reason_tag = f" | `{_entry_reason}`" if _entry_reason else ""
-        
+
         # v10.3 retrospective block (especially useful for LOSS to show what gates said)
         v103_retro = ""
         _v103_taker = wd.get("v103_taker_status")
@@ -1199,22 +1340,35 @@ class TelegramAlerter:
         _v103_dune_p = wd.get("v103_dune_p")
         if _v103_taker or _v103_confirms is not None:
             retro_lines = []
-            retro_label = "v10.3 at entry:" if outcome == "WIN" else "v10.3 retrospective:"
+            retro_label = (
+                "v10.3 at entry:" if outcome == "WIN" else "v10.3 retrospective:"
+            )
             retro_lines.append(f"\n*{retro_label}*")
             if _v103_taker:
-                _icon_map = {"aligned": "✅", "opposing": "⚠️", "both_opposing": "🚫", "neutral": "➖"}
+                _icon_map = {
+                    "aligned": "✅",
+                    "opposing": "⚠️",
+                    "both_opposing": "🚫",
+                    "neutral": "➖",
+                }
                 _bp = wd.get("v103_taker_buy_pct", 0)
                 _sp = wd.get("v103_taker_sell_pct", 0)
-                retro_lines.append(f"🌊 Taker was: `{_v103_taker.upper()}` {_icon_map.get(_v103_taker, '?')} buy {_bp:.0f}% sell {_sp:.0f}%")
+                retro_lines.append(
+                    f"🌊 Taker was: `{_v103_taker.upper()}` {_icon_map.get(_v103_taker, '?')} buy {_bp:.0f}% sell {_sp:.0f}%"
+                )
             if _v103_confirms is not None:
                 _dots = "🟢" * _v103_confirms + "⚫" * (3 - _v103_confirms)
                 _dets = wd.get("v103_cg_details", [])
                 _det_s = ", ".join(_dets[:3]) if _dets else "none"
                 retro_lines.append(f"{_dots} CG: {_v103_confirms}/3 ({_det_s})")
             if _v103_threshold is not None and _v103_dune_p is not None:
-                retro_lines.append(f"📐 Was: P={_v103_dune_p:.3f} vs threshold={_v103_threshold:.3f}")
+                retro_lines.append(
+                    f"📐 Was: P={_v103_dune_p:.3f} vs threshold={_v103_threshold:.3f}"
+                )
             if outcome == "LOSS" and _v103_taker in ("opposing", "both_opposing"):
-                retro_lines.append(f"⚠️ v10.3 taker gate would have: {'BLOCKED' if _v103_taker == 'both_opposing' else 'raised threshold +0.05'}")
+                retro_lines.append(
+                    f"⚠️ v10.3 taker gate would have: {'BLOCKED' if _v103_taker == 'both_opposing' else 'raised threshold +0.05'}"
+                )
             v103_retro = "\n".join(retro_lines) + "\n"
 
         _version_tag = "v10.3" if _v103_taker else self._engine_version
@@ -1235,10 +1389,12 @@ class TelegramAlerter:
             f"{_hmm_line}"
             f"{v103_retro}"
         )
-        
+
         outcome_msg_id = await self._send_with_id(outcome_text)
-        await self._log_notification("outcome_v8", outcome_text, window_id, telegram_message_id=outcome_msg_id)
-        
+        await self._log_notification(
+            "outcome_v8", outcome_text, window_id, telegram_message_id=outcome_msg_id
+        )
+
         # AI analysis — shorter in v8.0 (1-2 sentences)
         analysis_msg_id = None
         try:
@@ -1258,7 +1414,7 @@ class TelegramAlerter:
             analysis_msg_id = await self._send_with_id(analysis_card)
         except Exception as exc:
             self._log.warning("ai.outcome_analysis_failed", error=str(exc)[:100])
-        
+
         return outcome_msg_id, analysis_msg_id
 
     def set_risk_manager(self, rm) -> None:
@@ -1291,9 +1447,9 @@ class TelegramAlerter:
                       Falls back to sensible defaults if not provided.
         """
         try:
-            w = getattr(self, '_session_wins', 0)
-            l = getattr(self, '_session_losses', 0)
-            pnl = getattr(self, '_session_pnl', 0.0)
+            w = getattr(self, "_session_wins", 0)
+            l = getattr(self, "_session_losses", 0)
+            pnl = getattr(self, "_session_pnl", 0.0)
             total = w + l
             wr = (w / total * 100) if total > 0 else 0
             pnl_sign = "+" if pnl >= 0 else ""
@@ -1319,22 +1475,35 @@ class TelegramAlerter:
             self._log.warning("telegram.session_summary_failed", error=str(exc)[:100])
             return None
 
-    async def send_fok_exhausted(self, window_id: str, attempts: int, prices: list, abort_reason: str = "", dynamic_cap: float = 0.73) -> Optional[int]:
+    async def send_fok_exhausted(
+        self,
+        window_id: str,
+        attempts: int,
+        prices: list,
+        abort_reason: str = "",
+        dynamic_cap: float = 0.73,
+    ) -> Optional[int]:
         """v8.1 FOK Ladder — no fill, falling back to GTC with dynamic cap."""
         try:
             from datetime import datetime, timezone
+
             window_time = "?"
             try:
-                ts = int(window_id.split('-')[1])
+                ts = int(window_id.split("-")[1])
                 dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-                window_time = dt.strftime('%H:%M UTC')
+                window_time = dt.strftime("%H:%M UTC")
             except Exception:
                 pass
             import os as _os
+
             _ot = _os.environ.get("ORDER_TYPE", "FAK").upper()
             if attempts == 0:
                 reason_clean = abort_reason or "no book liquidity"
-                reason_clean = reason_clean.split("for token")[0].strip() if "for token" in reason_clean else reason_clean
+                reason_clean = (
+                    reason_clean.split("for token")[0].strip()
+                    if "for token" in reason_clean
+                    else reason_clean
+                )
                 text = (
                     f"🔄 *{_ot} → GTC* — BTC 5m | {window_time} | v9.0\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1386,8 +1555,13 @@ class TelegramAlerter:
                        (bot_id, location, window_id, notification_type,
                         message_text, has_chart, engine_version, telegram_message_id)
                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
-                    "novakash", self._location, window_id, notification_type,
-                    message_text[:4000], has_chart, self._engine_version,
+                    "novakash",
+                    self._location,
+                    window_id,
+                    notification_type,
+                    message_text[:4000],
+                    has_chart,
+                    self._engine_version,
                     telegram_message_id,
                 )
         except Exception as exc:
@@ -1406,23 +1580,29 @@ class TelegramAlerter:
     ) -> None:
         """v8.0 Window Open — compact card."""
         from datetime import datetime, timezone
-        
+
         window_time = "?"
         try:
-            ts = int(window_id.split('-')[1])
+            ts = int(window_id.split("-")[1])
             dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-            window_time = dt.strftime('%H:%M UTC')
+            window_time = dt.strftime("%H:%M UTC")
         except:
             pass
-        
-        skew = "BALANCED" if abs(gamma_up - gamma_down) < 0.03 else ("↑ UP" if gamma_up > gamma_down else "↓ DOWN")
+
+        skew = (
+            "BALANCED"
+            if abs(gamma_up - gamma_down) < 0.03
+            else ("↑ UP" if gamma_up > gamma_down else "↓ DOWN")
+        )
         text = (
             f"🪟 *{asset} {timeframe}* | {window_time} | {self._engine_version}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"Open: `${open_price:,.2f}` | Gamma: ↑`${gamma_up:.3f}` ↓`${gamma_down:.3f}` `{skew}`\n"
         )
         msg_id = await self._send_with_id(text)
-        await self._log_notification("window_open", text, window_id, telegram_message_id=msg_id)
+        await self._log_notification(
+            "window_open", text, window_id, telegram_message_id=msg_id
+        )
 
     async def send_window_snapshot(
         self,
@@ -1453,16 +1633,23 @@ class TelegramAlerter:
         from datetime import datetime, timezone
 
         delta_sign = "+" if delta_pct >= 0 else ""
-        dirs = [d for d in [twap_direction, timesfm_direction,
-                             "UP" if delta_pct > 0 else "DOWN"] if d]
+        dirs = [
+            d
+            for d in [
+                twap_direction,
+                timesfm_direction,
+                "UP" if delta_pct > 0 else "DOWN",
+            ]
+            if d
+        ]
         conflict = len(set(dirs)) > 1
-        
+
         # Extract window time from ID
         window_time = "?"
         try:
-            ts = int(window_id.split('-')[1])
+            ts = int(window_id.split("-")[1])
             dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-            window_time = dt.strftime('%H:%M UTC')
+            window_time = dt.strftime("%H:%M UTC")
         except:
             pass
 
@@ -1513,8 +1700,11 @@ class TelegramAlerter:
             # Fallback to text only
             msg_id = await self._send_with_id(caption)
         await self._log_notification(
-            f"snapshot_{t_label}", caption, window_id,
-            has_chart=bool(chart_bytes), telegram_message_id=msg_id,
+            f"snapshot_{t_label}",
+            caption,
+            window_id,
+            has_chart=bool(chart_bytes),
+            telegram_message_id=msg_id,
         )
 
     async def send_window_resolution(
@@ -1522,10 +1712,10 @@ class TelegramAlerter:
         window_id: str,
         asset: str,
         timeframe: str,
-        outcome: str,                   # "WIN" or "LOSS"
-        direction: str,                 # "UP" or "DOWN" (our bet)
-        actual_direction: str,          # "UP" or "DOWN" (what happened)
-        entry_price: float,             # actual token entry price
+        outcome: str,  # "WIN" or "LOSS"
+        direction: str,  # "UP" or "DOWN" (our bet)
+        actual_direction: str,  # "UP" or "DOWN" (what happened)
+        entry_price: float,  # actual token entry price
         pnl_usd: float,
         open_price: float,
         close_price: float,
@@ -1546,8 +1736,13 @@ class TelegramAlerter:
         correct = actual_direction == direction
         confirm = "✓" if correct else "✗"
         pnl_sign = "+" if pnl_usd >= 0 else ""
-        streak_str = (f" | `{win_streak}W streak`" if win_streak > 0
-                      else f" | `{loss_streak}L streak`" if loss_streak > 0 else "")
+        streak_str = (
+            f" | `{win_streak}W streak`"
+            if win_streak > 0
+            else f" | `{loss_streak}L streak`"
+            if loss_streak > 0
+            else ""
+        )
 
         reason_line = f"Entry: `{entry_reason}`\n" if entry_reason else ""
 
@@ -1580,7 +1775,9 @@ class TelegramAlerter:
             pnl_e = "✅" if actual_pnl > 0 else "❌"
             actual_sign = "+" if actual_pnl > 0 else ""
             marker = " ← actual" if label == "T-60" else ""
-            lines.append(f"`{label}`  `${ep_price:.3f}`  →  `{actual_sign}${actual_pnl:.2f}` {pnl_e}{marker}")
+            lines.append(
+                f"`{label}`  `${ep_price:.3f}`  →  `{actual_sign}${actual_pnl:.2f}` {pnl_e}{marker}"
+            )
 
         if ai_commentary:
             lines += ["", f"🤖 _{ai_commentary}_"]
@@ -1593,8 +1790,11 @@ class TelegramAlerter:
         text = "\n".join(lines)
         msg_id = await self._send_with_id(text)
         await self._log_notification(
-            "resolution", text, window_id,
-            has_chart=False, telegram_message_id=msg_id,
+            "resolution",
+            text,
+            window_id,
+            has_chart=False,
+            telegram_message_id=msg_id,
         )
 
     # ── Portfolio footer ───────────────────────────────────────────────────────
@@ -1675,17 +1875,37 @@ class TelegramAlerter:
 
             # Signal source agreement
             _pt_dir = "UP" if delta_pct > 0 else "DOWN"
-            _twap_dir = getattr(twap_result, "twap_direction", None) if twap_result else None
-            _gamma_dir = getattr(twap_result, "gamma_direction", None) if twap_result else None
-            _tfm_dir = getattr(timesfm_forecast, "direction", None) if timesfm_forecast else None
-            _tfm_conf = getattr(timesfm_forecast, "confidence", 0) if timesfm_forecast else 0
-            _tfm_close = getattr(timesfm_forecast, "predicted_close", 0) if timesfm_forecast else 0
-            _tfm_err = getattr(timesfm_forecast, "error", "") if timesfm_forecast else ""
+            _twap_dir = (
+                getattr(twap_result, "twap_direction", None) if twap_result else None
+            )
+            _gamma_dir = (
+                getattr(twap_result, "gamma_direction", None) if twap_result else None
+            )
+            _tfm_dir = (
+                getattr(timesfm_forecast, "direction", None)
+                if timesfm_forecast
+                else None
+            )
+            _tfm_conf = (
+                getattr(timesfm_forecast, "confidence", 0) if timesfm_forecast else 0
+            )
+            _tfm_close = (
+                getattr(timesfm_forecast, "predicted_close", 0)
+                if timesfm_forecast
+                else 0
+            )
+            _tfm_err = (
+                getattr(timesfm_forecast, "error", "") if timesfm_forecast else ""
+            )
 
             # Agreement score (Point + TWAP + Gamma)
             _agree_count = 0
             _agree_parts = []
-            for src_name, src_dir in [("Point", _pt_dir), ("TWAP", _twap_dir), ("Gamma", _gamma_dir)]:
+            for src_name, src_dir in [
+                ("Point", _pt_dir),
+                ("TWAP", _twap_dir),
+                ("Gamma", _gamma_dir),
+            ]:
                 if src_dir:
                     arrow = "▲" if src_dir == "UP" else "▼"
                     _agree_parts.append(f"{src_name} {arrow}")
@@ -1696,8 +1916,12 @@ class TelegramAlerter:
             _agree_bar = _agree_bar_fn(_agree_count)
 
             # TWAP agreement score (internal)
-            _twap_agree_score = getattr(twap_result, "agreement_score", 0) if twap_result else 0
-            _gamma_gate = getattr(twap_result, "gamma_gate", "OK") if twap_result else "OK"
+            _twap_agree_score = (
+                getattr(twap_result, "agreement_score", 0) if twap_result else 0
+            )
+            _gamma_gate = (
+                getattr(twap_result, "gamma_gate", "OK") if twap_result else "OK"
+            )
             _gate_e = _GATE_EMOJI.get(_gamma_gate, "❓")
 
             # Gamma prices
@@ -1727,19 +1951,25 @@ class TelegramAlerter:
                 lines.append(f"TimesFM ⚫ no data")
 
             # Gamma prices line
-            lines.append(f"Gamma UP `${_g_up:.3f}` / DOWN `${_g_down:.3f}`  {_gate_e} `{_gamma_gate}`")
+            lines.append(
+                f"Gamma UP `${_g_up:.3f}` / DOWN `${_g_down:.3f}`  {_gate_e} `{_gamma_gate}`"
+            )
 
             lines.append(f"")
 
             # Trade / skip
             if trade_placed:
                 _v81_cap = signal.get("v81_entry_cap") if signal else None
-                _price = _v81_cap or token_price or (_g_down if _dir == "DOWN" else _g_up)
+                _price = (
+                    _v81_cap or token_price or (_g_down if _dir == "DOWN" else _g_up)
+                )
                 _stake = stake_usd or 4.0
                 _token = "NO" if _dir == "DOWN" else "YES"
                 _win = (1.0 - _price) * _stake * 0.98
                 _reason = (signal.get("entry_reason", "") if signal else "") or ""
-                lines.append(f"⚡ *PLACED {_token} limit `${_price:.2f}`* | `{_reason}`")
+                lines.append(
+                    f"⚡ *PLACED {_token} limit `${_price:.2f}`* | `{_reason}`"
+                )
                 lines.append(f"Stake `${_stake:.2f}` → Win `+${_win:.2f}`")
             else:
                 _short_reason = (skip_reason or "—")[:80]
@@ -1801,7 +2031,11 @@ class TelegramAlerter:
             tp = float(order.price) if order.price else 0.50
             _token = order.direction  # YES or NO
             pnl_sign = "+" if pnl >= 0 else ""
-            streak_str = f"{win_streak}W" if win_streak > 0 else (f"{loss_streak}L" if loss_streak > 0 else "")
+            streak_str = (
+                f"{win_streak}W"
+                if win_streak > 0
+                else (f"{loss_streak}L" if loss_streak > 0 else "")
+            )
 
             # Did actual close confirm direction?
             _actual_dir = "UP" if close_price > open_price else "DOWN"
@@ -1812,7 +2046,9 @@ class TelegramAlerter:
                 f"{result_emoji} *{outcome} — {asset} {timeframe}*  {mode}",
                 f"",
                 f"{_dir_arrow} {_dir} @ `${tp:.3f}` → resolved {_actual_dir} {_confirm}",
-                f"P&L: `{pnl_sign}${pnl:.2f}`  |  Streak: `{streak_str}`" if streak_str else f"P&L: `{pnl_sign}${pnl:.2f}`",
+                f"P&L: `{pnl_sign}${pnl:.2f}`  |  Streak: `{streak_str}`"
+                if streak_str
+                else f"P&L: `{pnl_sign}${pnl:.2f}`",
                 f"",
             ]
 
@@ -1820,11 +2056,17 @@ class TelegramAlerter:
             try:
                 assessment = await self._generate_assessment(
                     order=order,
-                    asset=asset, timeframe=timeframe,
-                    open_price=open_price, close_price=close_price,
-                    delta_pct=delta_pct, vpin=vpin, regime=regime,
-                    twap_result=twap_result, timesfm_forecast=timesfm_forecast,
-                    win_streak=win_streak, loss_streak=loss_streak,
+                    asset=asset,
+                    timeframe=timeframe,
+                    open_price=open_price,
+                    close_price=close_price,
+                    delta_pct=delta_pct,
+                    vpin=vpin,
+                    regime=regime,
+                    twap_result=twap_result,
+                    timesfm_forecast=timesfm_forecast,
+                    win_streak=win_streak,
+                    loss_streak=loss_streak,
                 )
                 if assessment:
                     lines.append(f"🤖 _{assessment}_")
@@ -1842,6 +2084,7 @@ class TelegramAlerter:
             if price_ticks and len(price_ticks) > 5:
                 try:
                     from alerts.chart_generator import window_sparkline
+
                     chart = window_sparkline(
                         prices=price_ticks,
                         open_price=open_price,
@@ -1855,7 +2098,9 @@ class TelegramAlerter:
                         trade_placed=True,
                     )
                     if chart:
-                        caption = f"{result_emoji} {asset} {timeframe} — {pnl_sign}${pnl:.2f}"
+                        caption = (
+                            f"{result_emoji} {asset} {timeframe} — {pnl_sign}${pnl:.2f}"
+                        )
                         await self._send_photo(chart, caption)
                 except Exception as exc:
                     self._log.debug("telegram.chart_failed", error=str(exc))
@@ -1926,22 +2171,41 @@ class TelegramAlerter:
                 message_text=msg,
                 window_id=meta.get("market_slug"),
             )
-            self._log.info("telegram.entry_alert_sent", order_id=str(order.order_id)[:20])
+            self._log.info(
+                "telegram.entry_alert_sent", order_id=str(order.order_id)[:20]
+            )
         except Exception as exc:
             self._log.warning("telegram.entry_alert_failed", error=str(exc)[:200])
 
     # Backwards compat for v6.0 window reports
     async def send_timesfm_window_report(self, **kwargs) -> None:
         """Legacy alias → send_window_report."""
-        await self.send_window_report(**{
-            k: v for k, v in kwargs.items()
-            if k in (
-                "window_ts", "asset", "timeframe", "open_price", "close_price",
-                "delta_pct", "vpin", "regime", "direction", "trade_placed",
-                "skip_reason", "twap_result", "timesfm_forecast",
-                "gamma_up_price", "gamma_down_price", "stake_usd", "token_price",
-            )
-        })
+        await self.send_window_report(
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k
+                in (
+                    "window_ts",
+                    "asset",
+                    "timeframe",
+                    "open_price",
+                    "close_price",
+                    "delta_pct",
+                    "vpin",
+                    "regime",
+                    "direction",
+                    "trade_placed",
+                    "skip_reason",
+                    "twap_result",
+                    "timesfm_forecast",
+                    "gamma_up_price",
+                    "gamma_down_price",
+                    "stake_usd",
+                    "token_price",
+                )
+            }
+        )
 
     # ── AI Assessment ──────────────────────────────────────────────────────────
 
@@ -1972,7 +2236,9 @@ class TelegramAlerter:
             pnl = order.pnl_usd or 0
             direction = "UP" if order.direction == "YES" else "DOWN"
             tp = float(order.price) if order.price else 0.50
-            entry_reason = meta.get("entry_reason_detail") or meta.get("entry_label", "—")
+            entry_reason = meta.get("entry_reason_detail") or meta.get(
+                "entry_label", "—"
+            )
 
             # TWAP context
             twap_ctx = ""
@@ -1990,7 +2256,9 @@ class TelegramAlerter:
             if timesfm_forecast and not getattr(timesfm_forecast, "error", ""):
                 tfm_dir = getattr(timesfm_forecast, "direction", "?")
                 tfm_conf = getattr(timesfm_forecast, "confidence", 0)
-                tfm_ctx = f"TimesFM predicted {tfm_dir} with {tfm_conf:.0%} confidence. "
+                tfm_ctx = (
+                    f"TimesFM predicted {tfm_dir} with {tfm_conf:.0%} confidence. "
+                )
 
             # Streak context
             streak_ctx = ""
@@ -2010,7 +2278,9 @@ class TelegramAlerter:
 
             source_ctx = f"Delta source: {delta_source}. "
             if delta_tiingo is not None and delta_binance is not None:
-                source_ctx += f"Tiingo Δ{delta_tiingo:+.4f}%, Binance Δ{delta_binance:+.4f}%"
+                source_ctx += (
+                    f"Tiingo Δ{delta_tiingo:+.4f}%, Binance Δ{delta_binance:+.4f}%"
+                )
                 if delta_chainlink is not None:
                     source_ctx += f", Chainlink Δ{delta_chainlink:+.4f}%"
                 source_ctx += ". "
@@ -2062,7 +2332,11 @@ class TelegramAlerter:
                 "IDLE": "💤 IDLE",
             }
             label = state_labels.get(signal.state, f"🌊 {signal.state}")
-            dir_str = f"{_DIR_EMOJI.get(signal.direction or '', '')} `{signal.direction}`" if signal.direction else "`none`"
+            dir_str = (
+                f"{_DIR_EMOJI.get(signal.direction or '', '')} `{signal.direction}`"
+                if signal.direction
+                else "`none`"
+            )
 
             lines = [
                 f"*{label}*",
@@ -2078,15 +2352,21 @@ class TelegramAlerter:
     # ── System / Admin Alerts ──────────────────────────────────────────────────
 
     async def send_system_alert(self, message: str, level: str = "info") -> None:
-        emoji = {"info": "🟢", "warning": "🟡", "error": "🔴", "critical": "🔴"}.get(level, "🟢")
+        emoji = {"info": "🟢", "warning": "🟡", "error": "🔴", "critical": "🔴"}.get(
+            level, "🟢"
+        )
         try:
             text = f"{emoji} *System*\n{message}"
             await self._send(text)
             await self._log_notification(f"system_{level}", text[:2000])
-            self._log.info("telegram.system_alert_sent", level=level, preview=message[:80])
+            self._log.info(
+                "telegram.system_alert_sent", level=level, preview=message[:80]
+            )
         except Exception as exc:
             # v11 fix: was silently swallowing all errors — now logs for diagnosability
-            self._log.warning("telegram.system_alert_failed", level=level, error=str(exc)[:200])
+            self._log.warning(
+                "telegram.system_alert_failed", level=level, error=str(exc)[:200]
+            )
 
     async def send_strategy_trade_alert(
         self,
@@ -2130,7 +2410,9 @@ class TelegramAlerter:
             ]
 
             # Signal
-            lines.append(f"{dir_emoji} Signal: *{direction}* | conf={confidence} ({confidence_score:.2f})")
+            lines.append(
+                f"{dir_emoji} Signal: *{direction}* | conf={confidence} ({confidence_score:.2f})"
+            )
             if vpin > 0:
                 lines.append(f"📈 VPIN: {vpin:.3f} | {regime}")
             if clob_up_ask or clob_down_ask:
@@ -2143,7 +2425,7 @@ class TelegramAlerter:
             # Gates
             if gate_results:
                 checks = []
-                for g in (gate_results or []):
+                for g in gate_results or []:
                     icon = "✅" if g.get("passed") else "❌"
                     checks.append(f"{icon}{g.get('gate', '?')}")
                 lines.append(f"\n⚡ Gates: {' '.join(checks)}")
@@ -2190,7 +2472,9 @@ class TelegramAlerter:
 
     async def send_kill_switch_alert(self) -> None:
         try:
-            await self._send("🛑 *KILL SWITCH*\nAll trading halted. Manual restart required.")
+            await self._send(
+                "🛑 *KILL SWITCH*\nAll trading halted. Manual restart required."
+            )
         except Exception:
             pass
 
@@ -2200,8 +2484,8 @@ class TelegramAlerter:
         try:
             await self._send(text)
             await self._log_notification("raw_message", text[:2000])
-        except Exception:
-            pass
+        except Exception as exc:
+            self._log.warning("telegram.raw_message_failed", error=str(exc)[:200])
 
     async def send_redeem_alert(self, result: dict) -> None:
         try:
@@ -2237,9 +2521,12 @@ class TelegramAlerter:
         """Send daily P&L curve chart."""
         try:
             from alerts.chart_generator import daily_pnl_curve
+
             chart = daily_pnl_curve(windows, date_str)
             if chart:
-                await self._send_photo(chart, f"📊 Daily P&L — {date_str or _now_utc()}")
+                await self._send_photo(
+                    chart, f"📊 Daily P&L — {date_str or _now_utc()}"
+                )
         except Exception as exc:
             self._log.debug("telegram.daily_chart_failed", error=str(exc))
 
@@ -2275,7 +2562,8 @@ class TelegramAlerter:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    self._url, json=payload,
+                    self._url,
+                    json=payload,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status == 200:
@@ -2285,8 +2573,11 @@ class TelegramAlerter:
                     if "can't parse entities" in body:
                         plain = dict(payload)
                         del plain["parse_mode"]
-                        async with session.post(self._url, json=plain,
-                                                timeout=aiohttp.ClientTimeout(total=10)) as r2:
+                        async with session.post(
+                            self._url,
+                            json=plain,
+                            timeout=aiohttp.ClientTimeout(total=10),
+                        ) as r2:
                             if r2.status == 200:
                                 d2 = await r2.json()
                                 return d2.get("result", {}).get("message_id")
@@ -2294,27 +2585,34 @@ class TelegramAlerter:
             self._log.warning("telegram.send_error", error=str(exc))
         return None
 
-    async def _send_photo_with_id(self, photo_bytes: bytes, caption: str = "") -> Optional[int]:
+    async def _send_photo_with_id(
+        self, photo_bytes: bytes, caption: str = ""
+    ) -> Optional[int]:
         """Send photo and return Telegram message_id."""
         if not self._bot_token or not self._chat_id or not photo_bytes:
             return None
         try:
             form = aiohttp.FormData()
             form.add_field("chat_id", str(self._chat_id))
-            form.add_field("photo", photo_bytes, content_type="image/png", filename="chart.png")
+            form.add_field(
+                "photo", photo_bytes, content_type="image/png", filename="chart.png"
+            )
             if caption:
                 form.add_field("caption", caption[:1024])
                 form.add_field("parse_mode", "Markdown")
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    self._photo_url, data=form,
+                    self._photo_url,
+                    data=form,
                     timeout=aiohttp.ClientTimeout(total=15),
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         return data.get("result", {}).get("message_id")
                     body = await resp.text()
-                    self._log.warning("telegram.photo_failed", status=resp.status, body=body[:100])
+                    self._log.warning(
+                        "telegram.photo_failed", status=resp.status, body=body[:100]
+                    )
         except Exception as exc:
             self._log.warning("telegram.photo_error", error=str(exc))
         return None
@@ -2331,7 +2629,8 @@ class TelegramAlerter:
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    self._url, json=payload,
+                    self._url,
+                    json=payload,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status != 200:
@@ -2341,13 +2640,20 @@ class TelegramAlerter:
                             plain = {**payload}
                             del plain["parse_mode"]
                             async with session.post(
-                                self._url, json=plain,
+                                self._url,
+                                json=plain,
                                 timeout=aiohttp.ClientTimeout(total=10),
                             ) as r2:
                                 if r2.status != 200:
-                                    self._log.warning("telegram.send_failed", status=r2.status)
+                                    self._log.warning(
+                                        "telegram.send_failed", status=r2.status
+                                    )
                         else:
-                            self._log.warning("telegram.api_error", status=resp.status, body=body[:200])
+                            self._log.warning(
+                                "telegram.api_error",
+                                status=resp.status,
+                                body=body[:200],
+                            )
         except Exception as exc:
             self._log.warning("telegram.send_error", error=str(exc))
 
@@ -2358,17 +2664,22 @@ class TelegramAlerter:
         try:
             form = aiohttp.FormData()
             form.add_field("chat_id", str(self._chat_id))
-            form.add_field("photo", photo_bytes, content_type="image/png", filename="chart.png")
+            form.add_field(
+                "photo", photo_bytes, content_type="image/png", filename="chart.png"
+            )
             if caption:
                 form.add_field("caption", caption[:1024])
             async with aiohttp.ClientSession() as session:
                 async with session.post(
-                    self._photo_url, data=form,
+                    self._photo_url,
+                    data=form,
                     timeout=aiohttp.ClientTimeout(total=15),
                 ) as resp:
                     if resp.status != 200:
                         body = await resp.text()
-                        self._log.warning("telegram.photo_failed", status=resp.status, body=body[:200])
+                        self._log.warning(
+                            "telegram.photo_failed", status=resp.status, body=body[:200]
+                        )
         except Exception as exc:
             self._log.warning("telegram.photo_error", error=str(exc))
 
@@ -2381,13 +2692,19 @@ def _agree_bar_fn(n: int, total: int = 3) -> str:
 # ─── Dual AI Fallback System ────────────────────────────────────────────────
 class DualAIAssessment:
     """Claude primary, Qwen122b fallback for redundancy."""
-    
-    def __init__(self, anthropic_key: str, qwen_host: str = "ollama-ssh1", qwen_port: int = 11434, log=None):
+
+    def __init__(
+        self,
+        anthropic_key: str,
+        qwen_host: str = "ollama-ssh1",
+        qwen_port: int = 11434,
+        log=None,
+    ):
         self.anthropic_key = anthropic_key
         self.qwen_host = qwen_host
         self.qwen_port = qwen_port
         self.log = log
-    
+
     async def assess(self, prompt: str, timeout_s: int = 8) -> tuple[str, str]:
         """
         Get AI assessment with fallback.
@@ -2404,7 +2721,7 @@ class DualAIAssessment:
             except Exception as e:
                 if self.log:
                     self.log.warning("ai.claude_error", error=str(e)[:100])
-        
+
         # Fallback: Qwen122b
         try:
             text = await self._qwen(prompt, timeout_s=timeout_s)
@@ -2417,7 +2734,7 @@ class DualAIAssessment:
             if self.log:
                 self.log.warning("ai.qwen_error", error=str(e)[:100])
             return "[AI analysis unavailable - see trade decision above]", "error"
-    
+
     async def _claude(self, prompt: str, timeout_s: int = 8) -> str:
         """Call Claude via Anthropic API."""
         url = "https://api.anthropic.com/v1/messages"
@@ -2431,15 +2748,19 @@ class DualAIAssessment:
             "max_tokens": 200,
             "messages": [{"role": "user", "content": prompt}],
         }
-        
+
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers,
-                                   timeout=aiohttp.ClientTimeout(total=timeout_s)) as resp:
+            async with session.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout_s),
+            ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return data["content"][0]["text"]
                 raise Exception(f"Status {resp.status}")
-    
+
     async def _qwen(self, prompt: str, timeout_s: int = 45) -> str:
         """Call Qwen122b — supports both Ollama (/api/generate) and OpenAI (/v1) endpoints.
 
@@ -2462,8 +2783,12 @@ class DualAIAssessment:
             }
             headers = {"Authorization": f"Bearer {api_key}"}
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, headers=headers,
-                                       timeout=aiohttp.ClientTimeout(total=timeout_s)) as resp:
+                async with session.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=timeout_s),
+                ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         return data["choices"][0]["message"]["content"][:300]
@@ -2478,10 +2803,10 @@ class DualAIAssessment:
                 "temperature": 0.3,
             }
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload,
-                                       timeout=aiohttp.ClientTimeout(total=timeout_s)) as resp:
+                async with session.post(
+                    url, json=payload, timeout=aiohttp.ClientTimeout(total=timeout_s)
+                ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         return data["response"][:300]
                     raise Exception(f"Status {resp.status}")
-

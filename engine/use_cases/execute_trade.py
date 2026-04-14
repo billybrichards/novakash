@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 # Constants ported from five_min_vpin.py
 PRICE_FLOOR = 0.30
 DEFAULT_ENTRY_CAP = 0.65
-MIN_BET_USD = 2.0
+MIN_BET_USD = 1.0  # floor; runtime.min_bet_usd overrides this if lower
 DEFAULT_BET_FRACTION = 0.025
 FEE_MULTIPLIER = 0.072  # Polymarket binary options fee
 
@@ -453,10 +453,11 @@ class ExecuteTradeUseCase:
                 False,
                 f"drawdown {status.drawdown_pct:.1%} > {runtime.max_drawdown_kill:.0%}",
             )
-        if stake.adjusted_stake < MIN_BET_USD:
+        min_bet = min(MIN_BET_USD, runtime.min_bet_usd)
+        if stake.adjusted_stake < min_bet:
             return (
                 False,
-                f"stake ${stake.adjusted_stake:.2f} < ${MIN_BET_USD:.2f} minimum",
+                f"stake ${stake.adjusted_stake:.2f} < ${min_bet:.2f} minimum",
             )
         return True, ""
 

@@ -101,13 +101,13 @@ class RuntimeConfig:
 
     def __init__(self) -> None:
         # ── Risk ───────────────────────────────────────────────────────────
-        self.starting_bankroll: float = _env_float("STARTING_BANKROLL", 500.0)
+        self.starting_bankroll: float = _env_float("STARTING_BANKROLL", 29.0)
         self.bet_fraction: float = _env_float("BET_FRACTION", 0.025)
-        self.max_position_usd: float = _env_float("MAX_POSITION_USD", 500.0)
+        self.max_position_usd: float = _env_float("MAX_POSITION_USD", 5.0)
         self.max_drawdown_kill: float = _env_float("MAX_DRAWDOWN_KILL", 0.45)
         self.daily_loss_limit_usd: float = _env_float("DAILY_LOSS_LIMIT_USD", 50.0)
         self.daily_loss_limit_pct: float = _env_float("DAILY_LOSS_LIMIT_PCT", 0.10)
-        self.min_bet_usd: float = _env_float("MIN_BET_USD", 2.0)
+        self.min_bet_usd: float = _env_float("MIN_BET_USD", 1.0)
         self.max_open_exposure_pct: float = _env_float("MAX_OPEN_EXPOSURE_PCT", 0.30)
         self.consecutive_loss_cooldown: int = _env_int("CONSECUTIVE_LOSS_COOLDOWN", 3)
         self.cooldown_seconds: int = _env_int("COOLDOWN_SECONDS", 900)
