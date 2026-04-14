@@ -1104,7 +1104,9 @@ class Orchestrator:
                 "ON strategy_executions (executed_at DESC)"
             )
         except Exception as exc:
-            log.warning("orchestrator.ensure_strategy_executions_failed", error=str(exc))
+            log.warning(
+                "orchestrator.ensure_strategy_executions_failed", error=str(exc)
+            )
 
         # 6f. Recover open trades from previous sessions (startup trade recovery)
         try:
@@ -2268,8 +2270,17 @@ class Orchestrator:
                 except Exception as exc:
                     log.warning("fifteen_min.registry_eval_error", error=str(exc)[:200])
 
-                # G1 & G3: Queue window for staggered execution instead of immediate eval
-                await self._execution_queue.put((window, self._aggregator))
+                # Registry execution already handles LIVE 15m orders through
+                # ExecuteTradeUseCase. Do not fall through to the legacy 5m
+                # staggered execution queue when registry execution is enabled.
+                if not (
+                    self._use_strategy_registry
+                    and self._strategy_registry is not None
+                    and os.environ.get("ENGINE_REGISTRY_EXECUTE", "false").lower()
+                    == "true"
+                ):
+                    # Legacy fallback path only.
+                    await self._execution_queue.put((window, self._aggregator))
 
                 # v5.8: TimesFM checked inside v5.7c agreement (no standalone)
             else:

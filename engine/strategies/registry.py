@@ -345,8 +345,11 @@ class StrategyRegistry:
                             current_btc_price=current_btc_price,
                             open_price=open_price,
                         )
-                        # Mark window as executed (in-memory dedup)
-                        self._executed_windows[name] = window_ts
+                        # Only dedup successful executions. A failed/no-fill
+                        # attempt should be allowed to retry at a later eval
+                        # offset within the same window.
+                        if result.success:
+                            self._executed_windows[name] = window_ts
                         log.info(
                             "registry.executed",
                             strategy=name,
@@ -434,9 +437,9 @@ class StrategyRegistry:
         try:
             from datetime import datetime, timezone
 
-            window_time = datetime.fromtimestamp(
-                window_ts, tz=timezone.utc
-            ).strftime("%H:%M")
+            window_time = datetime.fromtimestamp(window_ts, tz=timezone.utc).strftime(
+                "%H:%M"
+            )
 
             # Compute model direction and confidence distance
             p_up = surface.v2_probability_up
@@ -498,15 +501,18 @@ class StrategyRegistry:
                     line = f"  {sid} ({mode}): Skipped -- {reason}"
                     decision_lines.append(line)
                     decisions_text_parts.append(
-                        f"{sid} ({mode}) [gates: {gate_summary}]: "
-                        f"SKIPPED — {reason}"
+                        f"{sid} ({mode}) [gates: {gate_summary}]: SKIPPED — {reason}"
                     )
                 else:
                     decision_lines.append(f"  {sid} ({mode}): ERROR")
                     decisions_text_parts.append(f"{sid} ({mode}): Error")
 
             # Infer timescale from decisions (15m strategies have v15m_ prefix)
-            inferred_tf = "15m" if decisions and decisions[0].strategy_id.startswith("v15m") else "5m"
+            inferred_tf = (
+                "15m"
+                if decisions and decisions[0].strategy_id.startswith("v15m")
+                else "5m"
+            )
 
             context = {
                 "window_time": window_time,
@@ -547,7 +553,11 @@ class StrategyRegistry:
     def _check_source_agreement(surface: FullDataSurface) -> str:
         """Check if Chainlink, Tiingo, and Binance deltas agree on direction."""
         directions = []
-        for delta in (surface.delta_chainlink, surface.delta_tiingo, surface.delta_binance):
+        for delta in (
+            surface.delta_chainlink,
+            surface.delta_tiingo,
+            surface.delta_binance,
+        ):
             if delta is not None:
                 directions.append("UP" if delta > 0 else "DOWN")
         if not directions:
