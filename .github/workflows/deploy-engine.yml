@@ -276,6 +276,11 @@ jobs:
             echo "QWEN_PORT=39633"
             echo "QWEN_API_KEY=${DEPLOY_QWEN_API_KEY}"
             echo "QWEN_MODEL=qwen35-122b-abliterated"
+            echo ""
+            echo "# Polymarket Builder Relayer (redemptions)"
+            echo "BUILDER_API_KEY=${DEPLOY_BUILDER_API_KEY}"
+            echo "BUILDER_SECRET=${DEPLOY_BUILDER_SECRET}"
+            echo "BUILDER_PASSPHRASE=${DEPLOY_BUILDER_PASSPHRASE}"
           } > .env.new
           ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'cat > /home/novakash/novakash/engine/.env' < .env.new
           ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'wc -l /home/novakash/novakash/engine/.env'
@@ -295,6 +300,9 @@ jobs:
           DEPLOY_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DEPLOY_TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
           DEPLOY_QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+          DEPLOY_BUILDER_API_KEY: ${{ secrets.BUILDER_API_KEY }}
+          DEPLOY_BUILDER_SECRET: ${{ secrets.BUILDER_SECRET }}
+          DEPLOY_BUILDER_PASSPHRASE: ${{ secrets.BUILDER_PASSPHRASE }}
           # Bankroll / risk — set as GitHub Actions Variables (not secrets)
           DEPLOY_STARTING_BANKROLL: ${{ vars.STARTING_BANKROLL || '30' }}
           DEPLOY_BET_FRACTION: ${{ vars.BET_FRACTION || '0.07' }}
@@ -329,6 +337,7 @@ jobs:
           check_var POLY_API_KEY
           check_var POLY_PRIVATE_KEY
           check_var FIVE_MIN_ENABLED
+          check_var BUILDER_API_KEY
           if [ $failed -eq 1 ]; then
             echo "::error::.env validation failed — critical vars missing"
             exit 1
