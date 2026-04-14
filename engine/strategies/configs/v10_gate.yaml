@@ -1,6 +1,6 @@
 name: v10_gate
 version: "10.6.0"
-mode: GHOST
+mode: LIVE
 asset: BTC
 timescale: 5m
 
