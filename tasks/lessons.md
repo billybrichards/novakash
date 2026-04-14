@@ -151,3 +151,59 @@ Verification revealed:
 **What happened:** Killed and restarted a working engine because the log showed only `db.connected` and 48 lines after 2 minutes. The engine was actually still starting up — warm-starting VPIN from 15K+ ticks, connecting feeds, loading strategy configs.
 **Root cause:** Impatience + confusing "normal startup" with "hung at db.connected". The deploy CI does a 30s sleep for exactly this reason.
 **Rule:** Wait at least 60 seconds after `db.connected` before concluding the engine is hung. Check process is still alive, check stderr, and look for actual error output — not just silence.
+
+### How to audit real Polymarket CLOB history — 2026-04-14
+**Context:** DB `trades` table shows EXPIRED/OPEN for most GTC orders (unfilled = stake returned). DB is NOT ground truth for what actually executed on-chain. Must go directly to Polymarket APIs.
+
+**Step 1 — Get funder address:**
+```bash
+aws ec2-instance-connect send-ssh-public-key --region ca-central-1 \
+  --instance-id i-0785ed930423ae9fd --instance-os-user novakash \
+  --ssh-public-key file:///tmp/ec2ic_key.pub
+ssh -i /tmp/ec2ic_key -o StrictHostKeyChecking=no novakash@15.223.247.178 \
+  'grep POLY_FUNDER_ADDRESS /home/novakash/novakash/engine/.env'
+```
+
+**Step 2 — Get actual trade activity (last 50):**
+```bash
+FUNDER="0x181D2ED714E0f7Fe9c6e4f13711376eDaab25E10"
+curl -s "https://data-api.polymarket.com/activity?user=$FUNDER&limit=50" > /tmp/poly_activity.json
+```
+
+**Step 3 — Get current open positions:**
+```bash
+curl -s "https://data-api.polymarket.com/positions?user=$FUNDER&sizeThreshold=0.01" > /tmp/poly_positions.json
+```
+
+**Step 4 — Parse P&L by market:**
+```python
+import json, datetime
+from collections import defaultdict
+
+data = json.load(open('/tmp/poly_activity.json'))
+by_market = defaultdict(list)
+for item in data:
+    by_market[item['conditionId']].append(item)
+
+for cond_id, items in sorted(by_market.items(), key=lambda x: min(i['timestamp'] for i in x[1])):
+    trades = [i for i in items if i['type']=='TRADE']
+    redeems = [i for i in items if i['type']=='REDEEM']
+    if not trades: continue
+    ts = datetime.datetime.fromtimestamp(min(t['timestamp'] for t in trades), datetime.UTC).strftime('%H:%M UTC')
+    spent = sum(float(t.get('usdcSize',0)) for t in trades)
+    redeemed = sum(float(r.get('usdcSize',0)) for r in redeems)
+    resolved = len(redeems) > 0
+    status = 'WIN' if redeemed > 0.01 else ('LOSS' if resolved else 'OPEN')
+    print(f"{ts} | {status} | spent=${spent:.2f} | redeemed=${redeemed:.2f} | pnl=${redeemed-spent:+.2f} | {trades[0].get('title','')[:55]}")
+```
+
+**Key insights:**
+- `REDEEM usdcSize=0` = LOSS (losing side redeems nothing)
+- `REDEEM usdcSize>0` = WIN (value returned)
+- `TRADE` without `REDEEM` = still open, check `positions` API
+- DB `EXPIRED` status = GTC order unfilled (stake returned, no P&L impact except fees)
+- DB `OPEN` with large stake = may actually be resolved on-chain — always check Polymarket API
+
+**CLOB balance note:** `/balance` endpoint doesn't exist. Trust `data-api.polymarket.com/positions` + Hub's system_state.current_balance field.
+
+**Rule:** When investigating wallet drawdown, ALWAYS check Polymarket CLOB activity API first. The DB reconciler has known bugs where resolved positions stay OPEN/EXPIRED status.

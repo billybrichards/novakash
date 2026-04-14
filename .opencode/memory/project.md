@@ -286,3 +286,40 @@ cd engine && pytest tests/
 </content>
 <parameter=filePath>
 /Users/billyrichards/Code/novakash/.opencode/memory/project.md
+## CLOB Audit Methodology (confirmed 2026-04-14)
+
+**Ground truth for real trades = Polymarket data-api, NOT the DB.**
+
+DB `trades` table is unreliable for execution audit:
+- `EXPIRED` status = GTC order unfilled (stake returned, no P&L)
+- `OPEN` with large stake = may be resolved on-chain already
+- `RESOLVED_LOSS` only set if reconciler ran — has known bugs
+
+### Real audit steps:
+```bash
+# Get funder address from Montreal
+aws ec2-instance-connect send-ssh-public-key --region ca-central-1 \
+  --instance-id i-0785ed930423ae9fd --instance-os-user novakash \
+  --ssh-public-key file:///tmp/ec2ic_key.pub
+FUNDER=$(ssh -i /tmp/ec2ic_key -o StrictHostKeyChecking=no novakash@15.223.247.178 \
+  'grep POLY_FUNDER_ADDRESS /home/novakash/novakash/engine/.env | cut -d= -f2')
+
+# All on-chain activity (TRADE + REDEEM events)
+curl -s "https://data-api.polymarket.com/activity?user=$FUNDER&limit=50" > /tmp/poly_activity.json
+
+# Current open positions (unredeemed wins = redeemable:true)
+curl -s "https://data-api.polymarket.com/positions?user=$FUNDER&sizeThreshold=0.01" > /tmp/poly_positions.json
+```
+
+**Interpreting activity:**
+- `TRADE` = real fill, money left wallet
+- `REDEEM usdcSize>0` = WIN
+- `REDEEM usdcSize=0` = LOSS (losing side gets nothing)
+- `TRADE` with no `REDEEM` = still open
+
+**Today (2026-04-14) confirmed real losses:**
+- 01:13 UTC: -$68.34 (9:10PM ET window — MASSIVE oversize, bug in bankroll calc)
+- 11:57 UTC: -$14.40 (7:55AM ET window — 4 fills same window, dedup bug)
+- 14:12 UTC: -$18.75 (10:10AM ET window — 4 fills same window again)
+
+**Total: ~$93 start → $40.93 accessible ($25.27 CLOB + $15.66 unredeemed win)**
