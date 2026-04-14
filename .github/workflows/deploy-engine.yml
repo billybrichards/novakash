@@ -248,7 +248,6 @@ jobs:
             echo ""
             echo "# Bankroll / Risk (must match actual wallet balance)"
             echo "STARTING_BANKROLL=${DEPLOY_STARTING_BANKROLL}"
-            echo "PAPER_MODE=true"
             echo "BET_FRACTION=${DEPLOY_BET_FRACTION}"
             echo "MIN_BET_USD=1.0"
             echo "MAX_POSITION_USD=${DEPLOY_MAX_POSITION_USD}"
