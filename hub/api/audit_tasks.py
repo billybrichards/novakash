@@ -14,6 +14,7 @@ Endpoints (all JWT-protected):
 
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 import structlog
@@ -184,8 +185,8 @@ async def create_task(
         "category": req.category,
         "priority": req.priority or 0,
         "dedupe_key": req.dedupe_key,
-        "payload": req.payload or {},
-        "metadata": req.metadata or {},
+        "payload": json.dumps(req.payload or {}),
+        "metadata": json.dumps(req.metadata or {}),
         "created_by": user.username,
         "updated_by": user.username,
         "status_reason": req.status_reason,
@@ -223,8 +224,8 @@ async def update_task(
         (req.severity, "severity"),
         (req.category, "category"),
         (req.priority, "priority"),
-        (req.payload, "payload"),
-        (req.metadata, "metadata"),
+        (json.dumps(req.payload) if req.payload is not None else None, "payload"),
+        (json.dumps(req.metadata) if req.metadata is not None else None, "metadata"),
         (req.status_reason, "status_reason"),
         (req.last_error, "last_error"),
     ):
