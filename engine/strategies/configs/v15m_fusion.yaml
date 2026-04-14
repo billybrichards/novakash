@@ -4,7 +4,9 @@ mode: LIVE
 asset: BTC
 timescale: 15m
 
-gates: []
+gates:
+  - type: timing
+    params: { min_offset: 100, max_offset: 400 }
 
 hooks_file: v15m_fusion.py
 pre_gate_hook: evaluate_polymarket_v2
