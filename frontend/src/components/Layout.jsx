@@ -36,6 +36,7 @@ const NAV_SECTIONS = [
       { path: '/polymarket/gate-monitor', label: 'Gates', icon: 'G' },
       { path: '/polymarket/data-health', label: 'Data Health', icon: 'D' },
       { path: '/polymarket/strategy-history', label: 'History', icon: 'H' },
+      { path: '/polymarket/15min', label: '15-Min Monitor', icon: '15' },
       { path: '/config', label: 'Configure', icon: 'C' },
     ],
   },

@@ -1,0 +1,15 @@
+name: v15m_fusion
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 15m
+
+gates: []
+
+hooks_file: v15m_fusion.py
+pre_gate_hook: evaluate_polymarket_v2
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.10

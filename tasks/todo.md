@@ -1,5 +1,20 @@
 # tasks/todo.md — BTC Trader Hub
 
+## 15m Clean-Arch Implementation — 2026-04-14
+
+### Plan
+- [x] Step 0: Add WindowInfo.timeframe property (polymarket_5min.py)
+- [x] Step 1-2: Update data_surface fetch + get_surface to be timeframe-aware
+- [x] Step 3: Add strategy registry timescale filter (safety gate)
+- [x] Step 4-5: Wire orchestrator market_slug + 15m CLOSING registry eval
+- [x] Step 6-7: Add 15m YAML configs + hook files (v15m_*)
+- [x] Verification: sanity-check diff + note V4 snapshot handling decision
+
+### Review
+- [x] Summarize files touched, note any deviations from handover spec
+- V4 snapshot: single-request (`timescale` param removed) based on v4 API
+- Tests: `python3 -m pytest tests/` fails (missing `database_url` env)
+
 ## Audit Tasks Dev Table Plan — 2026-04-14
 
 ### Plan

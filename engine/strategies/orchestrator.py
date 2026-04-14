@@ -698,7 +698,6 @@ class Orchestrator:
         except Exception as exc:
             log.warning("orchestrator.ensure_window_tables_failed", error=str(exc))
 
-
         # ── Reconcile UC: wire after pool is live ──────────────────────────────
         try:
             from use_cases.reconcile_positions import ReconcilePositionsUseCase
@@ -1963,11 +1962,12 @@ class Orchestrator:
                             ):
                                 from domain.value_objects import WindowMarket
 
+                                _tf = getattr(window, "timeframe", "5m")
                                 _v2_window_market = WindowMarket(
                                     condition_id=f"{window.asset}-{window.window_ts}",
                                     up_token_id=window.up_token_id,
                                     down_token_id=window.down_token_id,
-                                    market_slug=f"{window.asset.lower()}-updown-5m-{window.window_ts}",
+                                    market_slug=f"{window.asset.lower()}-updown-{_tf}-{window.window_ts}",
                                 )
 
                             v2_decisions = await self._strategy_registry.evaluate_all(
@@ -2210,6 +2210,49 @@ class Orchestrator:
 
             # ONLY evaluate at T-60s (CLOSING state), NOT at window open
             if state_value == "CLOSING":
+                # Strategy registry v2: evaluate all 15m GHOST strategies
+                try:
+                    _reg_state = await self._aggregator.get_state()
+                    if self._strategy_registry:
+                        try:
+                            _v2_window_market = None
+                            if getattr(window, "up_token_id", None) and getattr(
+                                window, "down_token_id", None
+                            ):
+                                from domain.value_objects import WindowMarket
+
+                                _tf = getattr(window, "timeframe", "15m")
+                                _v2_window_market = WindowMarket(
+                                    condition_id=f"{window.asset}-{window.window_ts}",
+                                    up_token_id=window.up_token_id,
+                                    down_token_id=window.down_token_id,
+                                    market_slug=f"{window.asset.lower()}-updown-{_tf}-{window.window_ts}",
+                                )
+                            v2_decisions = await self._strategy_registry.evaluate_all(
+                                window,
+                                _reg_state,
+                                window_market=_v2_window_market,
+                                current_btc_price=float(
+                                    getattr(_reg_state, "btc_price", 0) or 0
+                                ),
+                                open_price=float(getattr(window, "open_price", 0) or 0),
+                            )
+                            for d in v2_decisions:
+                                log.info(
+                                    "strategy_registry_v2.decision_15m",
+                                    strategy=d.strategy_id,
+                                    action=d.action,
+                                    direction=d.direction,
+                                    skip_reason=d.skip_reason,
+                                )
+                        except Exception as exc:
+                            log.warning(
+                                "strategy_registry_v2.eval_error_15m",
+                                error=str(exc)[:200],
+                            )
+                except Exception as exc:
+                    log.warning("fifteen_min.registry_eval_error", error=str(exc)[:200])
+
                 # G1 & G3: Queue window for staggered execution instead of immediate eval
                 await self._execution_queue.put((window, self._aggregator))
 

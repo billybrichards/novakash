@@ -74,6 +74,9 @@ class CLOBFeed:
         if not window or not window.up_token_id or not window.down_token_id:
             return
 
+        # Derive timeframe from window duration
+        timeframe = "15m" if window.duration_secs >= 900 else "5m"
+
         try:
             # Use the new get_clob_order_book method which works in both paper and live mode
             up_book = await self._poly.get_clob_order_book(window.up_token_id)
@@ -137,7 +140,7 @@ class CLOBFeed:
                             ) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                             """,
                             "BTC",
-                            "5m",
+                            timeframe,
                             window.window_ts,
                             window.up_token_id,
                             window.down_token_id,
@@ -170,7 +173,7 @@ class CLOBFeed:
                             ON CONFLICT (window_ts, up_token_id, down_token_id, ts) DO NOTHING
                             """,
                             "BTC",
-                            "5m",
+                            timeframe,
                             window.window_ts,
                             window.up_token_id,
                             window.down_token_id,

@@ -1,0 +1,22 @@
+name: v15m_up_asian
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 15m
+
+gates:
+  - type: timing
+    params: { min_offset: 270, max_offset: 450 }
+  - type: direction
+    params: { direction: UP }
+  - type: confidence
+    params: { min_dist: 0.10, max_dist: 0.20 }
+  - type: session_hours
+    params: { hours_utc: [23, 0, 1, 2] }
+  - type: trade_advised
+    params: {}
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.05

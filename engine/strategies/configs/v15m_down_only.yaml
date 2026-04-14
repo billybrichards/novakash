@@ -1,0 +1,31 @@
+name: v15m_down_only
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 15m
+
+gates:
+  - type: timing
+    params: { min_offset: 270, max_offset: 450 }
+  - type: direction
+    params: { direction: DOWN }
+  - type: confidence
+    params: { min_dist: 0.10 }
+  - type: trade_advised
+    params: {}
+  - type: clob_sizing
+    params:
+      schedule:
+        - { threshold: 0.55, modifier: 2.0, label: "strong_97pct" }
+        - { threshold: 0.35, modifier: 1.2, label: "mild_88pct" }
+        - { threshold: 0.25, modifier: 1.0, label: "contrarian_87pct" }
+        - { threshold: 0.0, modifier: 0.0, label: "skip_sub25_53pct" }
+      null_modifier: 1.5
+
+sizing:
+  type: custom
+  fraction: 0.025
+  max_collateral_pct: 0.10
+  custom_hook: clob_sizing
+
+hooks_file: v15m_down_only.py

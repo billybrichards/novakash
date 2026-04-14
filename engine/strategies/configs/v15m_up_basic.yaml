@@ -1,0 +1,20 @@
+name: v15m_up_basic
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 15m
+
+gates:
+  - type: timing
+    params: { min_offset: 180, max_offset: 540 }
+  - type: direction
+    params: { direction: UP }
+  - type: confidence
+    params: { min_dist: 0.15 }
+  - type: trade_advised
+    params: {}
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.05
