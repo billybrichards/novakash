@@ -11,7 +11,6 @@ gates:
     params: { direction: UP }
   - type: confidence
     params: { min_dist: 0.15 }
-  - type: trade_advised
     params: {}
 
 sizing:

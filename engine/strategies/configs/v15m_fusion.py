@@ -104,8 +104,11 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
             f"polymarket: p_up={confidence:.3f} dist={distance:.3f} < 0.12 threshold"
         )
 
-    if not trade_advised:
-        return _skip(f"polymarket: {reason} (timing={timing}, dist={distance:.3f})")
+    # trade_advised disabled for 15m — TimesFM assembler's regime/fee gates are
+    # calibrated for 5m and incorrectly block high-conviction 15m signals.
+    # Engine-side gates (timing, confidence, direction) are sufficient.
+    # if not trade_advised:
+    #     return _skip(f"polymarket: {reason} (timing={timing}, dist={distance:.3f})")
 
     if not direction:
         return _skip("polymarket: no direction")
