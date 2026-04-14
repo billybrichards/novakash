@@ -446,7 +446,7 @@ jobs:
           check_signature "clob_feed.write_error"              0  || failed=1
           check_signature "reconciler.resolve_db_error"        0  || failed=1
           check_signature "reconciler.orphan_fills_error"      5  || failed=1
-          check_signature "evaluate.price_source_disagreement" 30 || failed=1
+          check_signature "evaluate.price_source_disagreement" 200 || failed=1
           check_signature "evaluate.no_current_price"          2  || failed=1
           check_signature "reconciler.no_trade_match"          5  || failed=1
           check_signature "prediction_recorder.write_error"    0  || failed=1

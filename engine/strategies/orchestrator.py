@@ -137,6 +137,7 @@ class Orchestrator:
         self._aggregator = MarketAggregator()
 
         # ── Alerts ─────────────────────────────────────────────────────────────
+        self._live_gate_alerted = False  # deduplicate live-gate-blocked spam
         self._alerter = TelegramAlerter(
             bot_token=settings.telegram_bot_token,
             chat_id=settings.telegram_chat_id,
@@ -2549,7 +2550,8 @@ class Orchestrator:
                                         "mode_switch.live_gate_disabled",
                                         requested_mode=new_mode,
                                     )
-                                    if self._alerter:
+                                    if self._alerter and not self._live_gate_alerted:
+                                        self._live_gate_alerted = True
                                         await self._alerter.send_system_alert(
                                             "LIVE mode requested but LIVE_TRADING_ENABLED is not set. "
                                             "Keeping engine in PAPER mode.",
