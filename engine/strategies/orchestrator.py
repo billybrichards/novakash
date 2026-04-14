@@ -568,10 +568,14 @@ class Orchestrator:
             ","
         )
         if fifteen_min_enabled:
+            # 15m eval offsets: T-600 down to T-60 every 2s
+            # Covers [270,450] timing gates (v15m_down_only etc) that 5m offsets miss
+            _fifteen_eval_offsets = list(range(600, 59, -2))
             self._fifteen_min_feed = Polymarket5MinFeed(
                 assets=fifteen_min_assets,
                 duration_secs=900,  # 15 minutes
-                signal_offset=FIVE_MIN_ENTRY_OFFSET,  # Same entry offset (T-60s)
+                signal_offset=FIVE_MIN_ENTRY_OFFSET,
+                eval_offsets=_fifteen_eval_offsets,
                 on_window_signal=self._on_fifteen_min_window,
                 paper_mode=settings.paper_mode,
             )
