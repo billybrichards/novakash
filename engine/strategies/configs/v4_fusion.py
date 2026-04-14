@@ -110,6 +110,17 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
         if macro_gate == "SHORT_ONLY" and direction == "UP":
             return _skip("macro direction_gate=SHORT_ONLY blocks UP")
 
+    # Chainlink oracle agreement gate (5m Polymarket resolves on Chainlink)
+    # If Chainlink delta is available and disagrees with trade direction, skip.
+    # This prevents trades where the resolution oracle points the other way.
+    if surface.delta_chainlink is not None:
+        cl_direction = "UP" if surface.delta_chainlink > 0 else "DOWN"
+        if cl_direction != direction:
+            return _skip(
+                f"chainlink_disagrees: oracle={cl_direction} vs trade={direction} "
+                f"(cl_delta={surface.delta_chainlink:+.5f})"
+            )
+
     return StrategyDecision(
         action="TRADE",
         direction=direction,
@@ -126,6 +137,8 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
             "poly_confidence_distance": distance,
             "poly_timing": timing,
             "v4_regime": surface.v4_regime,
+            "chainlink_delta": surface.delta_chainlink,
+            "chainlink_agrees": True,
         },
     )
 
