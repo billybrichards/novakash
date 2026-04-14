@@ -2,26 +2,24 @@
 
 ## Where it runs
 
-**EC2 Montreal (`3.98.114.0`, ca-central-1)** — same box as `timesfm-service`. Sibling directory layout:
+**EC2 Hub box (`16.54.141.121`, ca-central-1)** — runs alongside hub, data-collector. TimesFM is on a separate dedicated box (`16.52.14.182`).
 
 ```
 /home/ubuntu/
-├── timesfm-service/        # /v4 endpoint surface, scorers, forecaster
+├── macro-observer/         # this service
 │   ├── docker-compose.yml
-│   ├── .env
-│   └── ...
-└── macro-observer/         # this service
-    ├── docker-compose.yml
-    ├── Dockerfile
-    ├── observer.py
-    ├── requirements.txt
-    └── .env                # templated by GitHub Actions on every deploy
+│   ├── Dockerfile
+│   ├── observer.py
+│   ├── requirements.txt
+│   └── .env                # templated by GitHub Actions on every deploy
+└── data-collector/         # sibling service
+    └── ...
 ```
 
-Migrated from Railway → AWS on 2026-04-11 to:
-1. Unify ops with the timesfm service (one box, one log location, one set of credentials)
-2. Eliminate Railway's silent build-context misrouting that was keeping the new Qwen 3.5 122B + per-timescale code from actually reaching production for ~24h
-3. Drop the ~$10/mo Railway hosting cost (the observer is a ~30 MB Python loop — invisible alongside TimesFM)
+Migrated from Railway → AWS on 2026-04-11, then split across two boxes on 2026-04-14:
+1. TimesFM moved to dedicated c6a.2xlarge (`16.52.14.182`) for GPU/memory headroom
+2. Hub + data-collector + macro-observer moved to t3.medium (`16.54.141.121`)
+3. Drop the ~$10/mo Railway hosting cost (the observer is a ~30 MB Python loop — invisible alongside the hub)
 
 ## What it does
 
@@ -45,8 +43,8 @@ Set these on the `novakash` repo (Settings → Secrets and variables → Actions
 
 | Secret | What it is | Where to get it |
 |---|---|---|
-| `MACRO_OBSERVER_HOST` | EC2 host IP (`3.98.114.0`) | Same as timesfm-service |
-| `MACRO_OBSERVER_SSH_KEY` | SSH private key for `ubuntu@MACRO_OBSERVER_HOST`, base64 encoded | Same key as timesfm-service's `DEPLOY_SSH_KEY` |
+| `MACRO_OBSERVER_HOST` | EC2 host IP (`16.54.141.121`) | Hub box (separate from TimesFM) |
+| `MACRO_OBSERVER_SSH_KEY` | SSH private key for `ubuntu@MACRO_OBSERVER_HOST`, base64 encoded | Hub box deploy key |
 | `DATABASE_URL` | Shared Railway Postgres connection string | Existing — already used by margin_engine deploy |
 | `QWEN_API_KEY` | Bearer token for the Qwen 3.5 122B endpoint | From the Vast.ai openclaw-vast ops doc |
 | `QWEN_BASE_URL` | Qwen endpoint base URL | `http://194.228.55.129:39633/v1` |
@@ -78,7 +76,7 @@ Three independent signals to confirm the observer is happy:
 ### 1. Container is running and healthy
 
 ```bash
-ssh ubuntu@3.98.114.0
+ssh ubuntu@16.54.141.121
 docker ps --filter name=macro-observer --format "{{.Names}} {{.Status}}"
 # Expected: macro-observer Up X minutes (healthy)
 
@@ -101,7 +99,7 @@ Expected: most recent row within 60s, real reasoning text (not "Fallback"), `has
 ### 3. `/v4/macro` on the timesfm service shows the new bias
 
 ```bash
-curl -s http://3.98.114.0:8080/v4/macro?asset=BTC | jq '{bias, confidence, direction_gate, reasoning, age_s}'
+curl -s http://16.52.14.182:8080/v4/macro?asset=BTC | jq '{bias, confidence, direction_gate, reasoning, age_s}'
 ```
 
 Expected: real bias/confidence, reasoning text quoting actual payload features (not "Fallback").
@@ -111,7 +109,7 @@ Expected: real bias/confidence, reasoning text quoting actual payload features (
 If the new container is broken and the healthcheck doesn't catch it:
 
 ```bash
-ssh ubuntu@3.98.114.0
+ssh ubuntu@16.54.141.121
 cd /home/ubuntu/macro-observer
 docker compose down
 # Edit .env if a credential is wrong, OR git revert the bad commit
@@ -135,14 +133,14 @@ The Railway service is **disabled but not deleted** as an emergency fallback. Re
 
 ```bash
 # tail live
-ssh ubuntu@3.98.114.0 'docker logs -f --tail 100 macro-observer'
+ssh ubuntu@16.54.141.121 'docker logs -f --tail 100 macro-observer'
 
 # json structured queries
-ssh ubuntu@3.98.114.0 'docker logs --tail 1000 macro-observer 2>&1 | grep llm.call_ok | tail -20'
+ssh ubuntu@16.54.141.121 'docker logs --tail 1000 macro-observer 2>&1 | grep llm.call_ok | tail -20'
 ```
 
 ## Cost
 
-- **Hosting**: $0 marginal (rounding error on the existing c6a.xlarge)
+- **Hosting**: $0 marginal (rounding error on the existing t3.medium hub box)
 - **Qwen API**: $0 (self-hosted on Vast.ai)
 - **Was on Railway**: ~$10/mo for the macro-observer service alone
