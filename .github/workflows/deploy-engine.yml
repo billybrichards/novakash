@@ -330,7 +330,6 @@ jobs:
           check_var BET_FRACTION
           check_var MIN_BET_USD
           check_var MAX_POSITION_USD
-          check_var PAPER_MODE
           # Critical API keys
           check_var DATABASE_URL
           check_var POLY_API_KEY
