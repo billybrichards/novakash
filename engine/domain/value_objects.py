@@ -572,3 +572,12 @@ class ExecutionResult:
     # Strategy identity (for logging/alerting)
     strategy_id: str = ""
     direction: str = ""
+
+
+@dataclass(frozen=True)
+class PreTradeCheckResult:
+    """Result of the pre-execution gate. approved=False means SKIP."""
+    approved: bool
+    reason: str
+    live_bankroll: float = 0.0
+    clob_price_age_s: float = 0.0

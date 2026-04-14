@@ -383,6 +383,34 @@ class WindowStateRepository(abc.ABC):
         ...
 
 
+class WindowExecutionGuard(abc.ABC):
+    """Strategy-level dedup: has (strategy_id, window_ts) been executed?
+
+    Backed by DB so state survives engine restarts.
+    FAIL-CLOSED: if DB is unreachable, has_executed() returns True (block trade).
+    """
+
+    @abc.abstractmethod
+    async def has_executed(self, strategy_id: str, window_ts: int) -> bool: ...
+
+    @abc.abstractmethod
+    async def mark_executed(
+        self, strategy_id: str, window_ts: int, order_id: str
+    ) -> None: ...
+
+    @abc.abstractmethod
+    async def load_recent(self, hours: int = 2) -> None:
+        """Warm in-memory cache from DB on startup."""
+        ...
+
+
+class WalletBalancePort(abc.ABC):
+    """Live wallet balance — never returns a .env default."""
+
+    @abc.abstractmethod
+    async def get_live_balance(self) -> float: ...
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 4.8  ConfigPort  (deferred -- tracked as CFG-01)
 # ═══════════════════════════════════════════════════════════════════════════
