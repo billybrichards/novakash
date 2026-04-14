@@ -359,7 +359,7 @@ async def run() -> None:
     # ── Status HTTP server (for dashboard proxy) ──
     # Pass position_repo so /history works, and execution_info_fn so /status
     # surfaces venue/fee/price-feed health for the dashboard.
-    from margin_engine.infrastructure.status_server import StatusServer
+    from margin_engine.presentation.api.routes.status import StatusServer
     status_server = StatusServer(
         portfolio,
         exchange,
