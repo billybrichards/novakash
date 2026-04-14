@@ -698,6 +698,24 @@ class Orchestrator:
         except Exception as exc:
             log.warning("orchestrator.ensure_window_tables_failed", error=str(exc))
 
+        # Ensure strategy_executions table exists (persistent window dedup)
+        try:
+            await self._db._pool.execute("""
+                CREATE TABLE IF NOT EXISTS strategy_executions (
+                    strategy_id TEXT NOT NULL,
+                    window_ts   BIGINT NOT NULL,
+                    order_id    TEXT,
+                    executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (strategy_id, window_ts)
+                )
+            """)
+            await self._db._pool.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_executions_ts "
+                "ON strategy_executions (executed_at DESC)"
+            )
+            log.info("orchestrator.strategy_executions_table_ready")
+        except Exception as exc:
+            log.warning("orchestrator.strategy_executions_ddl_failed", error=str(exc)[:200])
 
         # ── Reconcile UC: wire after pool is live ──────────────────────────────
         try:
@@ -731,6 +749,9 @@ class Orchestrator:
                         DBTradeRecorder as TradeRecorder,
                     )
                     from adapters.clock.system_clock import SystemClock
+                    from adapters.persistence.pg_execution_guard import PgWindowExecutionGuard
+                    from adapters.wallet.polymarket_wallet import PolymarketWalletAdapter, PaperWalletAdapter
+                    from use_cases.pre_trade_gate import PreTradeGate
 
                     _paper = self._settings.paper_mode
                     _executor = (
@@ -749,6 +770,33 @@ class Orchestrator:
                         else None
                     )
 
+                    # Build execution guard — warm cache from DB (last 2h)
+                    _execution_guard = PgWindowExecutionGuard(self._db._pool)
+                    try:
+                        await _execution_guard.load_recent(hours=2)
+                    except Exception as _warm_exc:
+                        log.warning("orchestrator.guard_warm_failed", error=str(_warm_exc)[:200])
+
+                    # Build wallet adapter
+                    if _paper:
+                        _wallet = PaperWalletAdapter(self._risk_manager)
+                    else:
+                        _wallet = PolymarketWalletAdapter(
+                            poly_client=self._poly_client,
+                            fallback_balance=self._settings.starting_bankroll,
+                        )
+
+                    # Initialize risk manager with live balance BEFORE wiring execute use case
+                    try:
+                        _live_balance = await _wallet.get_live_balance()
+                        self._risk_manager.initialize_bankroll(_live_balance)
+                    except Exception as _balance_exc:
+                        log.warning("orchestrator.bankroll_init_failed", error=str(_balance_exc)[:200])
+                        self._risk_manager.initialize_bankroll(self._settings.starting_bankroll)
+
+                    # Build pre-trade gate
+                    _pre_trade_gate = PreTradeGate(guard=_execution_guard, wallet=_wallet)
+
                     self._execute_uc = ExecuteTradeUseCase(
                         polymarket=self._poly_client,
                         order_executor=_executor,
@@ -758,8 +806,10 @@ class Orchestrator:
                         trade_recorder=_recorder,
                         clock=SystemClock(),
                         paper_mode=_paper,
+                        pre_trade_gate=_pre_trade_gate,
                     )
                     self._strategy_registry.wire_execute_uc(self._execute_uc)
+                    self._strategy_registry._pre_trade_gate = _pre_trade_gate
                     log.info("orchestrator.execute_trade_uc_wired", paper_mode=_paper)
                 except Exception as exc:
                     log.warning(
