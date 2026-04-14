@@ -1,19 +1,16 @@
 /**
  * AuditChecklist.jsx — Big Audit Session tracking page.
  *
- * Static data page (no API). Renders the audit taxonomy, severity, file:line
- * citations, and live/done status for the deep clean-architect audit
- * covering:
- *   - Data-quality bugs in the Polymarket engine
- *   - V10.6 decision surface rollout
- *   - V4 fusion surface adoption (Polymarket engine side)
- *   - Clean-architect migration (engine/ → margin_engine/ patterns)
- *   - Production error regressions (PR #18 + pre-existing)
+ * Hybrid mode: fetches live task state from /api/audit-tasks on mount
+ * (status overrides static TASKS by dedupe_key=task.id). Falls back to
+ * static TASKS if the API is unreachable. Agents can update task status
+ * via PATCH /api/audit-tasks/{id} without a frontend deploy.
  *
- * Update STATUS and PROGRESS_NOTES in-file as tasks land. No backend writes.
+ * Seed the DB with:  python scripts/seed_audit_tasks.py
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect, useCallback } from 'react';
+import { useApi } from '../hooks/useApi.js';
 
 // ─── Theme ────────────────────────────────────────────────────────────────
 const T = {
@@ -3233,28 +3230,68 @@ function ProgressBar({ done, total }) {
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function AuditChecklist() {
+  const api = useApi();
   const [severityFilter, setSeverityFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
 
+  // DB-backed status overrides — keyed by task id (dedupe_key)
+  const [dbStatusMap, setDbStatusMap] = useState(null); // null = not yet fetched
+  const [dbSource, setDbSource] = useState('static'); // 'static' | 'db'
+
+  const fetchDbTasks = useCallback(async () => {
+    try {
+      const res = await api.get('/audit-tasks?limit=500&task_type=audit_checklist');
+      const rows = res.data?.rows ?? [];
+      if (rows.length > 0) {
+        const map = {};
+        for (const row of rows) {
+          if (row.dedupe_key) {
+            map[row.dedupe_key] = row.status;
+          }
+        }
+        setDbStatusMap(map);
+        setDbSource('db');
+      }
+    } catch (_err) {
+      // DB unavailable — silently fall back to static data
+    }
+  }, [api]);
+
+  useEffect(() => {
+    fetchDbTasks();
+  }, [fetchDbTasks]);
+
+  // Merge static TASKS with DB status overrides
+  const tasks = useMemo(() => {
+    if (!dbStatusMap) return TASKS;
+    return TASKS.map((t) => {
+      const dbStatus = dbStatusMap[t.id];
+      if (dbStatus && dbStatus !== t.status) {
+        return { ...t, status: dbStatus };
+      }
+      return t;
+    });
+  }, [dbStatusMap]);
+
   const filteredTasks = useMemo(() => {
-    return TASKS.filter((t) => {
+    return tasks.filter((t) => {
       if (severityFilter !== 'ALL' && t.severity !== severityFilter) return false;
       if (statusFilter !== 'ALL' && t.status !== statusFilter) return false;
       if (categoryFilter !== 'ALL' && t.category !== categoryFilter) return false;
       return true;
     });
-  }, [severityFilter, statusFilter, categoryFilter]);
+  }, [tasks, severityFilter, statusFilter, categoryFilter]);
 
   const stats = useMemo(() => {
-    const total = TASKS.length;
-    const done = TASKS.filter((t) => t.status === 'DONE').length;
-    const open = TASKS.filter((t) => t.status === 'OPEN').length;
-    const inProgress = TASKS.filter((t) => t.status === 'IN_PROGRESS').length;
-    const critical = TASKS.filter((t) => t.severity === 'CRITICAL').length;
-    const high = TASKS.filter((t) => t.severity === 'HIGH').length;
+    const total = tasks.length;
+    const done = tasks.filter((t) => t.status === 'DONE').length;
+    const open = tasks.filter((t) => t.status === 'OPEN').length;
+    const inProgress = tasks.filter((t) => t.status === 'IN_PROGRESS').length;
+    const critical = tasks.filter((t) => t.severity === 'CRITICAL').length;
+    const high = tasks.filter((t) => t.severity === 'HIGH').length;
     return { total, done, open, inProgress, critical, high };
-  }, []);
+  }, [tasks]);
 
   const tasksByCategory = useMemo(() => {
     const map = {};
@@ -3286,13 +3323,13 @@ export default function AuditChecklist() {
               fontWeight: 700,
               padding: '2px 6px',
               borderRadius: 3,
-              background: 'rgba(168,85,247,0.15)',
-              color: T.purple,
-              border: '1px solid rgba(168,85,247,0.3)',
+              background: dbSource === 'db' ? 'rgba(16,185,129,0.15)' : 'rgba(168,85,247,0.15)',
+              color: dbSource === 'db' ? T.green : T.purple,
+              border: `1px solid ${dbSource === 'db' ? 'rgba(16,185,129,0.3)' : 'rgba(168,85,247,0.3)'}`,
               fontFamily: T.mono,
             }}
           >
-            STATIC
+            {dbSource === 'db' ? 'DB-LIVE' : 'STATIC'}
           </span>
           <span style={{ fontSize: 8, fontWeight: 700, padding: '2px 6px', borderRadius: 3, background: 'rgba(6,182,212,0.12)', color: T.cyan, border: '1px solid rgba(6,182,212,0.3)', fontFamily: T.mono, letterSpacing: '0.06em' }}>POLY + PERPS</span>
         </h1>
@@ -3328,12 +3365,24 @@ export default function AuditChecklist() {
             lineHeight: 1.5,
           }}
         >
-          <span style={{ color: T.cyan, fontWeight: 700, letterSpacing: '0.08em' }}>AGENT OPS</span>{' '}
-          audit checklist tasks are moving to DB. New source table:{' '}
-          <span style={{ color: T.text, fontFamily: T.mono }}>audit_tasks_dev</span>{' '}— use the
-          Hub API <span style={{ color: T.text, fontFamily: T.mono }}>/api/audit-tasks</span> for live
-          task state. This page still renders the static TASKS list until the
-          DB-backed view lands.
+          {dbSource === 'db' ? (
+            <>
+              <span style={{ color: T.green, fontWeight: 700, letterSpacing: '0.08em' }}>DB-LIVE</span>{' '}
+              Task statuses loaded from{' '}
+              <span style={{ color: T.text, fontFamily: T.mono }}>audit_tasks_dev</span>. Agents can update
+              status via{' '}
+              <span style={{ color: T.text, fontFamily: T.mono }}>PATCH /api/audit-tasks/{'{id}'}</span>{' '}
+              without a frontend deploy. Static TASKS array used as fallback for fields not in DB.
+            </>
+          ) : (
+            <>
+              <span style={{ color: T.cyan, fontWeight: 700, letterSpacing: '0.08em' }}>AGENT OPS</span>{' '}
+              audit checklist tasks are backed by DB table{' '}
+              <span style={{ color: T.text, fontFamily: T.mono }}>audit_tasks_dev</span>. Seed with{' '}
+              <span style={{ color: T.text, fontFamily: T.mono }}>python scripts/seed_audit_tasks.py</span>.
+              Currently showing static TASKS (DB unreachable or not yet seeded).
+            </>
+          )}
         </div>
       </div>
 
