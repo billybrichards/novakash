@@ -16,41 +16,9 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import get_session
-
-
-# ─── Thin query helpers (SQLAlchemy :pN named-param style) ───────────────────
-# These replace the old _DBShim that translated asyncpg $1 positional params
-# at runtime.  Using native SQLAlchemy named params directly is simpler and
-# avoids a string-replace pass on every query.
-
-
-async def _fetch(session: AsyncSession, query: str, params: dict | None = None):
-    """Execute *query* and return all rows as list[dict]."""
-    result = await session.execute(text(query), params or {})
-    return [dict(r) for r in result.mappings().all()]
-
-
-async def _fetchrow(session: AsyncSession, query: str, params: dict | None = None):
-    """Execute *query* and return the first row as dict, or None."""
-    result = await session.execute(text(query), params or {})
-    row = result.mappings().first()
-    return dict(row) if row else None
-
-
-async def _execute(session: AsyncSession, query: str, params: dict | None = None):
-    """Execute *query* (INSERT/UPDATE/DELETE) and commit."""
-    await session.execute(text(query), params or {})
-    await session.commit()
-
-
-async def _fetchval(session: AsyncSession, query: str, params: dict | None = None):
-    """Execute *query* and return the scalar from the first column of the first row."""
-    result = await session.execute(text(query), params or {})
-    row = result.first()
-    return row[0] if row else None
+from db.helpers import fetch as _fetch, fetchrow as _fetchrow, execute as _execute, fetchval as _fetchval
 
 
 log = structlog.get_logger(__name__)

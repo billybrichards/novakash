@@ -17,6 +17,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Depends
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +28,7 @@ from db.database import get_session
 from db.models import DailyPnL, Signal, SystemState, Trade, window_snapshots
 from services.dashboard_service import DashboardService
 
+log = structlog.get_logger(__name__)
 router = APIRouter()
 
 
@@ -82,7 +84,8 @@ async def get_vpin_history(
             }
             for idx, s in enumerate(signals)
         ]
-    except Exception:
+    except Exception as exc:
+        log.warning("dashboard.vpin_history_failed", error=str(exc))
         return []
 
 
@@ -125,8 +128,8 @@ async def get_cascade_state(
                 "direction": s.get("cascade_direction", "—"),
                 "oi_delta": float(s.get("cascade_oi_delta", 0.0)),
             }
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("dashboard.cascade_state_failed", error=str(exc))
 
     return {"state": "IDLE", "direction": "—", "oi_delta": 0.0}
 
@@ -158,7 +161,8 @@ async def get_arb_spreads(
             combined = p.get("combined_price", p.get("yes_price", 0) + p.get("no_price", 0))
             out.append(float(combined))
         return out
-    except Exception:
+    except Exception as exc:
+        log.warning("dashboard.arb_spreads_failed", error=str(exc))
         return []
 
 
@@ -195,7 +199,8 @@ async def get_equity(
                 "balance": balance,
             })
         return out
-    except Exception:
+    except Exception as exc:
+        log.warning("dashboard.equity_failed", error=str(exc))
         return []
 
 
@@ -221,7 +226,8 @@ async def get_daily_pnl(
         # Return chronological
         rows = list(reversed(rows))
         return [float(r.total_pnl or 0) for r in rows]
-    except Exception:
+    except Exception as exc:
+        log.warning("dashboard.daily_pnl_failed", error=str(exc))
         return []
 
 
@@ -289,7 +295,8 @@ async def get_stats(
             "daily_pnl_engine": config_data.get("daily_pnl", 0),
             "drawdown_pct": engine_state.get("current_drawdown_pct"),
         }
-    except Exception:
+    except Exception as exc:
+        log.warning("dashboard.stats_failed", error=str(exc))
         return {
             "balance": None,
             "today_pnl": 0.0,
@@ -335,7 +342,8 @@ async def get_trades_for_analysis(
                 "stake_usd": float(t.stake_usd) if t.stake_usd else None,
             })
         return out
-    except Exception:
+    except Exception as exc:
+        log.warning("dashboard.trades_analysis_failed", error=str(exc))
         return []
 
 
@@ -375,7 +383,8 @@ async def get_entry_timing(
                 "stake_usd": float(t.stake_usd) if t.stake_usd is not None else None,
             })
         return out
-    except Exception:
+    except Exception as exc:
+        log.warning("dashboard.entry_timing_failed", error=str(exc))
         return []
 
 
@@ -415,7 +424,8 @@ async def get_signal_breakdown(
                 "outcome": t.outcome,
             })
         return out
-    except Exception:
+    except Exception as exc:
+        log.warning("dashboard.signal_breakdown_failed", error=str(exc))
         return []
 
 
@@ -481,7 +491,8 @@ async def get_confidence_histogram(
                 "avg_pnl": b["pnl_sum"] / total if total > 0 else 0.0,
             })
         return out
-    except Exception:
+    except Exception as exc:
+        log.warning("dashboard.confidence_histogram_failed", error=str(exc))
         return []
 
 
@@ -545,7 +556,8 @@ async def get_tier_stats(
                 "avg_entry_seconds": b["seconds_sum"] / b["seconds_count"] if b["seconds_count"] > 0 else None,
             })
         return out
-    except Exception:
+    except Exception as exc:
+        log.warning("dashboard.tier_stats_failed", error=str(exc))
         return []
 
 
