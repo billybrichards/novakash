@@ -697,14 +697,6 @@ class Orchestrator:
         except Exception as exc:
             log.warning("orchestrator.ensure_window_tables_failed", error=str(exc))
 
-        # Ensure window_states table exists (dedup — non-fatal if it fails)
-        try:
-            from adapters.persistence.pg_window_repo import PgWindowRepository as _WR
-            _wr = _WR(self._db._pool)
-            await _wr.ensure_window_states_table()
-            log.info("orchestrator.window_states_table_ok")
-        except Exception as exc:
-            log.warning("orchestrator.window_states_table_failed", error=str(exc))
 
         # ── Reconcile UC: wire after pool is live ──────────────────────────────
         try:
