@@ -14,8 +14,6 @@ from margin_engine.domain.value_objects import (
     PositionState,
     StopLevel,
     TradeSide,
-)
-from margin_engine.adapters.signal.v4_models import (
     V4Snapshot,
     TimescalePayload,
     Cascade,

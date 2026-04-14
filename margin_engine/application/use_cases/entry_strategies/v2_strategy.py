@@ -11,8 +11,8 @@ from margin_engine.domain.value_objects import (
     Money,
     StopLevel,
     TradeSide,
+    V4Snapshot,
 )
-from margin_engine.adapters.signal.v4_models import V4Snapshot
 
 from .base import EntryStrategy
 

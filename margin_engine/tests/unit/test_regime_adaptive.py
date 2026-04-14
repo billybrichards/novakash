@@ -13,7 +13,7 @@ import pytest
 from typing import Optional
 
 from margin_engine.application.services.strategy import TradeDecision, Regime
-from margin_engine.adapters.signal.v4_models import (
+from margin_engine.domain.value_objects import (
     V4Snapshot,
     TimescalePayload,
     Quantiles,

@@ -55,13 +55,13 @@ from margin_engine.domain.ports import (
     ProbabilityPort,
     V4SnapshotPort,
 )
-from margin_engine.adapters.signal.v4_models import V4Snapshot
 from margin_engine.domain.value_objects import (
     ExitReason,
     Money,
     PositionState,
     Price,
     TradeSide,
+    V4Snapshot,
 )
 from margin_engine.application.use_cases.position_management import (
     StopLossManager,

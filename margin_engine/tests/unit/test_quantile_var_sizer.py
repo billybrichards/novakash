@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from dataclasses import dataclass
 
-from margin_engine.adapters.signal.v4_models import (
+from margin_engine.domain.value_objects import (
     Quantiles,
     TimescalePayload,
     V4Snapshot,

@@ -25,7 +25,7 @@ from margin_engine.domain.value_objects import (
     PositionState,
     TradeSide,
 )
-from margin_engine.adapters.signal.v4_models import (
+from margin_engine.domain.value_objects import (
     Cascade,
     Consensus,
     MacroBias,

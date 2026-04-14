@@ -37,8 +37,8 @@ from margin_engine.domain.ports import (
 from margin_engine.domain.value_objects import (
     Money,
     Price,
+    V4Snapshot,
 )
-from margin_engine.adapters.signal.v4_models import V4Snapshot
 
 from .entry_strategies import V4Strategy, V2Strategy
 from ..dto import OpenPositionInput, OpenPositionOutput
@@ -211,7 +211,7 @@ class OpenPositionUseCase:
         )
 
         # Create a dummy v4 snapshot for the interface
-        from margin_engine.adapters.signal.v4_models import (
+        from margin_engine.domain.value_objects import (
             V4Snapshot,
             MacroBias,
             Consensus,

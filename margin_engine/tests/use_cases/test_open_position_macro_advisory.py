@@ -29,9 +29,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from margin_engine.domain.value_objects import Money, Price, TradeSide
-from margin_engine.domain.ports import FillResult
-from margin_engine.adapters.signal.v4_models import (
+from margin_engine.domain.value_objects import (
+    Money,
+    Price,
+    TradeSide,
     Consensus,
     MacroBias,
     Quantiles,
@@ -39,6 +40,7 @@ from margin_engine.adapters.signal.v4_models import (
     V4Snapshot,
     _parse_macro,
 )
+from margin_engine.domain.ports import FillResult
 from margin_engine.application.use_cases.open_position import OpenPositionUseCase
 from margin_engine.application.dto import OpenPositionInput
 

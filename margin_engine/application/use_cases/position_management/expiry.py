@@ -22,7 +22,7 @@ if TYPE_CHECKING:
         V4SnapshotPort,
         ProbabilityPort,
     )
-    from margin_engine.adapters.signal.v4_models import V4Snapshot
+    from margin_engine.domain.value_objects import V4Snapshot
 
 
 logger = logging.getLogger(__name__)

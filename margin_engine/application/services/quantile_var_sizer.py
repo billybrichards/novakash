@@ -42,7 +42,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from margin_engine.adapters.signal.v4_models import V4Snapshot, TimescalePayload
+from margin_engine.domain.value_objects import V4Snapshot, TimescalePayload
 
 logger = logging.getLogger(__name__)
 

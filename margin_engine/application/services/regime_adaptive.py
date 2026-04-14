@@ -10,7 +10,7 @@ Routes:
 from typing import Dict, Optional
 
 from margin_engine.application.services.strategy import Strategy, TradeDecision, Regime
-from margin_engine.adapters.signal.v4_models import V4Snapshot
+from margin_engine.domain.value_objects import V4Snapshot
 from margin_engine.application.services.regime_trend import (
     TrendStrategy,
     TrendStrategyConfig,
