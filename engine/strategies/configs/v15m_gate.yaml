@@ -17,8 +17,6 @@ gates:
     params: { oi_threshold: 0.01, liq_threshold: 1000000 }
   - type: confidence
     params: { min_dist: 0.12 }
-  - type: spread
-    params: { max_spread_bps: 500000 }  # 15m markets illiquid, wide spreads normal
   - type: dynamic_cap
     params: { default_cap: 0.65 }
   - type: trade_advised
