@@ -494,9 +494,13 @@ class StrategyRegistry:
                     decision_lines.append(f"  {sid} ({mode}): ERROR")
                     decisions_text_parts.append(f"{sid} ({mode}): Error")
 
+            # Infer timescale from decisions (15m strategies have v15m_ prefix)
+            inferred_tf = "15m" if decisions and decisions[0].strategy_id.startswith("v15m") else "5m"
+
             context = {
                 "window_time": window_time,
                 "window_ts": window_ts,
+                "timescale": inferred_tf,
                 "delta_pct": delta_pct,
                 "vpin": surface.vpin,
                 "regime": surface.regime,

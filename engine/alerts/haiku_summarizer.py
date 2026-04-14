@@ -107,7 +107,7 @@ class HaikuSummarizer:
         # Header line
         delta_str = f"{ctx.get('delta_pct', '?')}%" if ctx.get('delta_pct') is not None else "?"
         vpin_str = f"VPIN {ctx['vpin']:.2f}" if ctx.get('vpin') is not None else ""
-        header = f"\U0001f550 BTC 5m | {ctx.get('window_time', '?')} UTC | \u0394{delta_str}"
+        header = f"\U0001f550 BTC {ctx.get('timescale','5m')} | {ctx.get('window_time', '?')} UTC | \u0394{delta_str}"
         if vpin_str:
             header += f" | {vpin_str}"
 
@@ -130,7 +130,7 @@ class HaikuSummarizer:
         vpin_str = f"VPIN {ctx['vpin']:.2f}" if ctx.get('vpin') is not None else ""
         regime = ctx.get("regime", "?")
 
-        header = f"\U0001f550 BTC 5m | {ctx.get('window_time', '?')} UTC | \u0394{delta_str}"
+        header = f"\U0001f550 BTC {ctx.get('timescale','5m')} | {ctx.get('window_time', '?')} UTC | \u0394{delta_str}"
         if vpin_str:
             header += f" | {vpin_str}"
 
@@ -206,7 +206,7 @@ class HaikuSummarizer:
         delta_str = f"{ctx.get('delta_pct', '?')}%" if ctx.get('delta_pct') is not None else "?"
 
         header = (
-            f"\u2705 BTC 5m | {ctx.get('window_time', '?')} UTC | "
+            f"\u2705 BTC {ctx.get('timescale','5m')} | {ctx.get('window_time', '?')} UTC | "
             f"RESOLVED {actual} {arrow}"
         )
 
@@ -232,7 +232,7 @@ class HaikuSummarizer:
         delta_str = f"{ctx.get('delta_pct', '?')}%" if ctx.get('delta_pct') is not None else "?"
 
         header = (
-            f"\u2705 BTC 5m | {ctx.get('window_time', '?')} UTC | "
+            f"\u2705 BTC {ctx.get('timescale','5m')} | {ctx.get('window_time', '?')} UTC | "
             f"RESOLVED {actual} {arrow}"
         )
 
