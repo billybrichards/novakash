@@ -23,6 +23,7 @@ export default function FifteenMinMonitor() {
   const [selectedConfig, setSelectedConfig] = useState('v15m_down_only');
   const [configData, setConfigData] = useState(null);
   const [windows, setWindows] = useState([]);
+  const [actualTrades, setActualTrades] = useState([]);
   const [loading, setLoading] = useState(true);
 
   // Load YAML config viewer data
@@ -43,11 +44,35 @@ export default function FifteenMinMonitor() {
   useEffect(() => {
     const loadWindows = async () => {
       try {
-        const res = await api('GET', '/strategy-decisions/15m?limit=20');
-        setWindows(res?.data?.windows || []);
+        const [decisionsRes, tradesRes] = await Promise.all([
+          api('GET', '/v58/strategy-decisions?limit=100&timeframe=15m'),
+          api('GET', '/trades?limit=200'),
+        ]);
+
+        const decisions = decisionsRes?.data?.decisions || decisionsRes?.data?.rows || [];
+        const grouped = new Map();
+        decisions.forEach((decision) => {
+          const windowTs = decision.window_ts;
+          if (!windowTs) return;
+          if (!grouped.has(windowTs)) {
+            grouped.set(windowTs, {
+              window_ts: windowTs,
+              outcome: decision.outcome || null,
+              decisions: [],
+            });
+          }
+          const row = grouped.get(windowTs);
+          row.decisions.push(decision);
+          if (!row.outcome && decision.outcome) row.outcome = decision.outcome;
+        });
+
+        const tradeRows = tradesRes?.data?.trades || tradesRes?.data?.rows || [];
+        setWindows(Array.from(grouped.values()).sort((a, b) => b.window_ts - a.window_ts).slice(0, 20));
+        setActualTrades(tradeRows.filter((trade) => String(trade.strategy || '').startsWith('v15m_')));
       } catch (err) {
         console.error('Failed to load windows:', err);
         setWindows([]);
+        setActualTrades([]);
       } finally {
         setLoading(false);
       }
@@ -60,12 +85,15 @@ export default function FifteenMinMonitor() {
   // Calculate P&L per strategy
   const strategyPnL = STRATEGIES.reduce((acc, strat) => {
     const decisions = windows.flatMap(w => w.decisions.filter(d => d.strategy_id === strat));
-    const trades = decisions.filter(d => d.action === 'TRADE');
-    const wins = trades.filter(d => d.hypothetical_outcome === 'WIN').length;
-    const losses = trades.filter(d => d.hypothetical_outcome === 'LOSS').length;
-    const winRate = trades.length > 0 ? (wins / trades.length) : 0;
-    const hypotheticalPnL = wins * 10 - losses * 10; // Simplified: $10 per trade
-    acc[strat] = { trades: trades.length, wins, losses, winRate, hypotheticalPnL };
+    const actual = actualTrades.filter(t => t.strategy === strat);
+    const resolved = actual.filter(t => t.outcome === 'WIN' || t.outcome === 'LOSS');
+    const wins = resolved.filter(t => t.outcome === 'WIN').length;
+    const losses = resolved.filter(t => t.outcome === 'LOSS').length;
+    const winRate = resolved.length > 0 ? (wins / resolved.length) : 0;
+    const pnl = actual.reduce((sum, t) => sum + Number(t.pnl_usd || 0), 0);
+    const liveTrades = actual.length;
+    const signalTrades = decisions.filter(d => d.action === 'TRADE').length;
+    acc[strat] = { liveTrades, signalTrades, wins, losses, winRate, pnl };
     return acc;
   }, {});
 
@@ -185,7 +213,7 @@ export default function FifteenMinMonitor() {
           <div style={{ color: '#64748b', fontSize: 14 }}>Loading windows...</div>
         ) : windows.length === 0 ? (
           <div style={{ color: '#64748b', fontSize: 14 }}>
-            No 15m windows yet. Deploy with FIFTEEN_MIN_ENABLED=true to start collecting data.
+            No 15m decision windows returned yet.
           </div>
         ) : (
           <div style={{ overflowX: 'auto' }}>
@@ -274,7 +302,7 @@ export default function FifteenMinMonitor() {
       {/* Section 3: P&L Boxes */}
       <section>
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 15, color: '#a855f7' }}>
-          3. Strategy P&L (Hypothetical)
+          3. Strategy P&L (Actual)
         </h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 15 }}>
           {STRATEGIES.map(strat => {
@@ -293,7 +321,10 @@ export default function FifteenMinMonitor() {
                   {strat.replace('v15m_', '')}
                 </div>
                 <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 5 }}>
-                  Trades: <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{pnl.trades}</span>
+                  Live trades: <span style={{ color: '#e2e8f0', fontWeight: 600 }}>{pnl.liveTrades}</span>
+                </div>
+                <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 5 }}>
+                  Signals: <span style={{ color: '#06b6d4', fontWeight: 600 }}>{pnl.signalTrades}</span>
                 </div>
                 <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 5 }}>
                   Wins: <span style={{ color: '#10b981', fontWeight: 600 }}>{pnl.wins}</span> | 
@@ -301,18 +332,18 @@ export default function FifteenMinMonitor() {
                 </div>
                 <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 5 }}>
                   Win Rate: <span style={{ color: '#e2e8f0', fontWeight: 600 }}>
-                    {pnl.trades > 0 ? `${(pnl.winRate * 100).toFixed(1)}%` : '—'}
+                    {pnl.wins + pnl.losses > 0 ? `${(pnl.winRate * 100).toFixed(1)}%` : '—'}
                   </span>
                 </div>
                 <div style={{ fontSize: 14, fontWeight: 700, marginTop: 8 }}>
                   P&L: <span style={{
-                    color: pnl.hypotheticalPnL >= 0 ? '#10b981' : '#ef4444',
+                    color: pnl.pnl >= 0 ? '#10b981' : '#ef4444',
                   }}>
-                    {pnl.hypotheticalPnL >= 0 ? '+' : ''}{pnl.hypotheticalPnL.toFixed(2)} USDC
+                    {pnl.pnl >= 0 ? '+' : ''}{pnl.pnl.toFixed(2)} USDC
                   </span>
                 </div>
                 <div style={{ fontSize: 10, color: '#64748b', marginTop: 5 }}>
-                  (GHOST mode – not executed)
+                  actual trade rows from hub
                 </div>
               </div>
             );

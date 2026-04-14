@@ -68,14 +68,20 @@ async def kill_switch(
     state = result.scalar_one_or_none()
 
     if state is None:
-        return {"success": False, "detail": "Engine state not found — is the engine running?"}
+        return {
+            "success": False,
+            "detail": "Engine state not found — is the engine running?",
+        }
 
     current = state.state or {}
     current["kill_switch_manual"] = True
     state.state = current
     await session.commit()
 
-    return {"success": True, "message": "Kill switch activated — engine will halt new orders"}
+    return {
+        "success": True,
+        "message": "Kill switch activated — engine will halt new orders",
+    }
 
 
 @router.post("/system/resume")
@@ -124,6 +130,8 @@ async def set_paper_mode(
     current = state.state or {}
     current["paper_mode"] = body.enabled
     state.state = current
+    state.paper_enabled = body.enabled
+    state.live_enabled = not body.enabled
     await session.commit()
 
     mode = "enabled" if body.enabled else "disabled"
