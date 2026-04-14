@@ -1,7 +1,7 @@
 /**
  * websocket.js — TimesFM WebSocket client.
  *
- * Connects to ws://timesfm-host:8080/ws/forecast (or configured VITE_WS_URL).
+ * Connects to VITE_TIMESFM_WS_URL (set in .env.production).
  * Falls back gracefully to mock data when the backend isn't available.
  *
  * Usage:
@@ -10,7 +10,7 @@
  *   ws.disconnect();
  */
 
-const WS_URL = import.meta.env.VITE_TIMESFM_WS_URL || 'ws://localhost:8080/ws/forecast';
+const WS_URL = import.meta.env.VITE_TIMESFM_WS_URL || 'ws://16.52.14.182:8080/ws/forecast';
 const RECONNECT_DELAY_BASE = 1500;
 const RECONNECT_DELAY_MAX = 30_000;
 const RECONNECT_MAX_ATTEMPTS = 10;
