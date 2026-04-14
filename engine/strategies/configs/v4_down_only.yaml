@@ -11,6 +11,8 @@ gates:
     params: { direction: DOWN }
   - type: confidence
     params: { min_dist: 0.10 }
+  - type: trade_advised
+    params: {}
   - type: clob_sizing
     params:
       schedule:
