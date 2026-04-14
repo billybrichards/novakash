@@ -255,7 +255,7 @@ class DataSurfaceManager:
         if not self._session:
             return
         url = f"{self._v4_url}/v4/snapshot"
-        params = {"asset": "BTC", "strategy": "polymarket_5m"}
+        params = {"asset": "BTC", "timescales": "5m,15m", "strategy": "polymarket_5m"}
         try:
             async with self._session.get(url, params=params) as resp:
                 if resp.status == 200:
@@ -370,7 +370,8 @@ class DataSurfaceManager:
 
         poly = ts_data.get("polymarket_live_recommended_outcome") or {}
         rec = ts_data.get("recommended_action") or {}
-        macro = v4.get("macro", {}) if v4 else {}
+        # Read per-timescale macro (fallback to top-level for backward compat)
+        macro = ts_data.get("macro", {}) or (v4.get("macro", {}) if v4 else {})
         consensus = v4.get("consensus", {}) if v4 else {}
         sub_signals = ts_data.get("sub_signals", {})
         quantiles = ts_data.get("quantiles_at_close") or ts_data.get(
