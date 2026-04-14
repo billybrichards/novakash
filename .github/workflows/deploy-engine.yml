@@ -313,7 +313,7 @@ jobs:
           DEPLOY_BUILDER_PASSPHRASE: ${{ secrets.BUILDER_PASSPHRASE }}
           # Bankroll / risk — set as GitHub Actions Variables (not secrets)
           DEPLOY_STARTING_BANKROLL: ${{ vars.STARTING_BANKROLL || '30' }}
-          DEPLOY_BET_FRACTION: ${{ vars.BET_FRACTION || '0.025' }}
+          DEPLOY_BET_FRACTION: ${{ vars.BET_FRACTION || '0.07' }}
           DEPLOY_MAX_POSITION_USD: ${{ vars.MAX_POSITION_USD || '10.0' }}
 
       - name: Validate critical .env vars on host
@@ -358,7 +358,7 @@ jobs:
           HUB_ADMIN_USERNAME: ${{ secrets.HUB_ADMIN_USERNAME }}
           HUB_ADMIN_PASSWORD: ${{ secrets.HUB_ADMIN_PASSWORD }}
           DEPLOY_STARTING_BANKROLL: ${{ vars.STARTING_BANKROLL || '30' }}
-          DEPLOY_BET_FRACTION: ${{ vars.BET_FRACTION || '0.025' }}
+          DEPLOY_BET_FRACTION: ${{ vars.BET_FRACTION || '0.07' }}
           DEPLOY_MAX_POSITION_USD: ${{ vars.MAX_POSITION_USD || '10.0' }}
         run: |
           # Non-blocking: any failure here just logs a warning, never kills the deploy
