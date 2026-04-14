@@ -114,6 +114,7 @@ class ExecuteTradeUseCase:
         clock: Clock,
         *,
         paper_mode: bool = True,
+        pre_trade_gate: "PreTradeGate | None" = None,
     ) -> None:
         self._polymarket = polymarket
         self._executor = order_executor
@@ -123,6 +124,7 @@ class ExecuteTradeUseCase:
         self._recorder = trade_recorder
         self._clock = clock
         self._paper_mode = paper_mode
+        self._pre_trade_gate = pre_trade_gate
 
         # Guardrails (stateful -- mirrors five_min_vpin guardrails)
         self._order_timestamps: list[float] = []
@@ -154,25 +156,52 @@ class ExecuteTradeUseCase:
         # Extract window key from market slug
         window_key = self._make_window_key(window_market)
 
-        # ── Step 1: Dedup ──────────────────────────────────────────────
-        try:
-            if await self._window_state.was_traded(window_key):
-                logger.info(
-                    "execute_trade.dedup_hit",
-                    extra={"strategy": sid, "window": str(window_key)},
+        # ── Step 1: Pre-trade gate (dedup + CLOB freshness + bankroll) ───
+        if self._pre_trade_gate is not None:
+            _clob_price = getattr(decision, "entry_cap", None)
+            _clob_price_ts = getattr(decision, "metadata", {}).get("clob_price_ts", 0.0) or 0.0
+            _proposed_stake = getattr(decision, "collateral_pct", 0.07) or 0.07
+            _proposed_stake = _proposed_stake * 30  # rough estimate in USD
+            gate_result = await self._pre_trade_gate.check(
+                strategy_id=decision.strategy_id,
+                window_ts=window_key.window_ts,
+                clob_price=_clob_price,
+                clob_price_ts=_clob_price_ts,
+                proposed_stake=_proposed_stake,
+            )
+            if not gate_result.approved:
+                logger.warning(
+                    "execute_trade.pre_gate_blocked",
+                    extra={
+                        "strategy": sid,
+                        "window_ts": window_key.window_ts,
+                        "reason": gate_result.reason,
+                    },
                 )
                 return _failed(
-                    "already_traded",
+                    gate_result.reason,
                     strategy_id=sid,
                     direction=direction,
                 )
-        except Exception as exc:
-            logger.warning(
-                "execute_trade.dedup_check_error",
-                extra={"error": str(exc)[:200]},
-            )
-            # Fail safe: if we can't check dedup, proceed anyway
-            # The CLOB will reject if already filled
+        else:
+            # Legacy fail-open dedup via WindowStateRepository
+            try:
+                if await self._window_state.was_traded(window_key):
+                    logger.info(
+                        "execute_trade.dedup_hit",
+                        extra={"strategy": sid, "window": str(window_key)},
+                    )
+                    return _failed(
+                        "already_traded",
+                        strategy_id=sid,
+                        direction=direction,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "execute_trade.dedup_check_error",
+                    extra={"error": str(exc)[:200]},
+                )
+                # Legacy fail-open: proceed anyway (CLOB will reject duplicates)
 
         # ── Step 2: Stake calculation ──────────────────────────────────
         stake = self._calculate_stake(decision)
@@ -232,6 +261,21 @@ class ExecuteTradeUseCase:
                 strategy_id=sid,
                 direction=direction,
                 stake_usd=stake.adjusted_stake,
+            )
+
+        # ── Step 4.5: Validate entry_cap (CLOB price) ────────────────────
+        if decision.entry_cap is None or decision.entry_cap < 0.01:
+            logger.warning(
+                "execute_trade.invalid_entry_cap",
+                extra={
+                    "entry_cap": decision.entry_cap,
+                    "strategy": sid,
+                },
+            )
+            return _failed(
+                f"invalid_entry_cap: {decision.entry_cap}",
+                strategy_id=sid,
+                direction=direction,
             )
 
         # ── Step 5: Token ID resolution ────────────────────────────────
@@ -311,6 +355,20 @@ class ExecuteTradeUseCase:
                 "execute_trade.record_error",
                 extra={"error": str(exc)[:200]},
             )
+
+        # ── Step 7.5: Mark in pre-trade gate (DB-backed dedup) ────────────
+        if self._pre_trade_gate is not None:
+            try:
+                await self._pre_trade_gate.mark_executed(
+                    decision.strategy_id,
+                    window_key.window_ts,
+                    result.order_id or "",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "execute_trade.gate_mark_error",
+                    extra={"error": str(exc)[:200]},
+                )
 
         # ── Step 8: Mark traded ────────────────────────────────────────
         try:
