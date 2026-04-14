@@ -99,15 +99,15 @@ class ReconcilePositionsUseCase:
                 errors += 1
                 logger.warning("reconciler.live_resolve_error", condition_id=pos.condition_id[:20], error=str(exc)[:100])
 
-        paper_resolved, paper_skipped, paper_errors = await self._resolve_paper_batch()
-
-        # Shadow-label pass: stamp actual_direction on ALL resolved windows
-        # (not just traded ones) so ML training has labels for every window.
+        # Shadow-label pass FIRST: stamp actual_direction on ALL resolved windows
+        # so paper trades can look up their outcome.
         windows_labeled = 0
         try:
             windows_labeled = await self._window_state.label_resolved_windows()
         except Exception as exc:
             logger.warning("reconciler.label_windows_error", error=str(exc)[:100])
+
+        paper_resolved, paper_skipped, paper_errors = await self._resolve_paper_batch()
 
         return ReconcileResult(
             live_resolved=live_resolved,

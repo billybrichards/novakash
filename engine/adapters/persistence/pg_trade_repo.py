@@ -228,12 +228,13 @@ class PgTradeRepository:
                     """SELECT id, order_id, direction, stake_usd, entry_price,
                               execution_mode, metadata, strategy,
                               COALESCE(metadata->>'asset', 'BTC') AS asset,
-                              metadata->>'window_ts' AS window_ts,
+                              COALESCE(metadata->>'window_ts',
+                                SUBSTRING(market_slug FROM '[0-9]+$')) AS window_ts,
                               created_at
                        FROM trades
-                       WHERE execution_mode = 'paper'
+                       WHERE order_id LIKE 'paper-%'
                          AND outcome IS NULL
-                         AND status = 'OPEN'
+                         AND status IN ('OPEN', 'EXPIRED')
                          AND created_at < NOW() - ($1::int * INTERVAL '1 second')
                        ORDER BY created_at ASC""",
                     min_age_seconds,

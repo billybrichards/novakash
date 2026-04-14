@@ -267,6 +267,8 @@ jobs:
             echo ""
             echo "# Feeds & Services"
             echo "FIVE_MIN_ENABLED=true"
+            echo "FIFTEEN_MIN_ENABLED=true"
+            echo "FIFTEEN_MIN_ASSETS=BTC"
             echo "V4_FUSION_ENABLED=true"
             echo "TIMESFM_URL=http://${DEPLOY_TIMESFM_HOST}:8080"
             echo "POLYGON_RPC_URL=https://polygon-bor-rpc.publicnode.com"
