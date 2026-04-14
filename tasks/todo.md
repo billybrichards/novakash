@@ -138,3 +138,118 @@ Two hidden bugs were compounding into one symptom:
 - [x] Phase 1: Foundation (Docker, DB schema, Auth, project skeleton)
 - [x] Codebase audit — 2026-04-06
 - [x] Dashboard + Margin Engine — 2026-04-10 (see section above)
+
+---
+
+## Margin Engine Clean Architecture Refactoring — 2026-04-14
+
+### Audit Complete ✅
+
+**Documents Created:**
+- `docs/margin_engine/clean-architecture-audit-2026-04-14.md` — Full audit report
+- `tasks/margin-engine-clean-arch.md` — Actionable implementation plan
+
+### Findings Summary
+
+The margin engine has **solid port-based architecture** but violates clean architecture in 3 key areas:
+
+1. **Domain contamination** (CRITICAL) — v4 API models (`V4Snapshot`, `Consensus`, etc.) live in `domain/value_objects.py` — should be in adapter
+2. **Services layer misplacement** (HIGH) — Business logic in `services/` should be in `application/services/`
+3. **Missing presentation layer** (MEDIUM) — HTTP status server buried in `infrastructure/`
+
+### Refactoring Plan (5 Phases)
+
+| Phase | Description | Effort | Priority |
+|-------|-------------|--------|----------|
+| 1 | Domain Cleanup — Move v4 models to adapter, split value objects | 2-3 days | P0 ⚡ |
+| 2 | Services → Application — Relocate business logic | 2-3 days | P1 🔥 |
+| 3 | Infrastructure/Presentation Separation — Create presentation layer, Alembic | 3-4 days | P2 🏗️ |
+| 4 | Use Case Refactoring — Extract strategies, reduce 840-line use case | 2-3 days | P3 🔄 |
+| 5 | DTO Layer — Add proper I/O boundaries | 1-2 days | P4 📦 |
+
+**Total Effort:** 10-15 days over 4 weeks  
+**Risk Level:** Medium (requires careful testing at each phase)
+
+### What's Already Good ✅
+
+- Port-based dependency inversion (well implemented)
+- Use cases have clear single responsibility
+- Adapters properly implement ports
+- Test structure is solid
+
+### Next Steps
+
+- [ ] Review audit report: `docs/margin_engine/clean-architecture-audit-2026-04-14.md`
+- [ ] Review implementation plan: `tasks/margin-engine-clean-arch.md`
+- [ ] Decide: Start Phase 1 implementation or defer
+- [ ] If starting: Begin with moving v4 value objects to adapter
+
+### Notes
+
+- **Related to main engine:** The main engine (in `engine/`) recently underwent clean architecture refactor (see commits 4221581, b97655e, 6251152)
+- **Margin engine is separate:** This is the legacy `margin_engine/` directory (Binance margin trading)
+- **Migration approach:** Incremental refactoring, preserving working functionality at each step
+- **AuditChecklist context:** As noted, `frontend/src/pages/AuditChecklist.jsx` was migrated to `audit_tasks_dev` table in DB
+
+### Review
+
+- Audit performed by AI Assistant using `clean_architecture_python_guide.md` (v1.0, Jan 2026)
+- Subagent deep-dive completed
+- Full report and actionable plan saved to docs
+- Ready for implementation decision
+
+### Strategy Coverage
+
+**All 9 strategies are covered** in the refactoring plan:
+
+| Strategy | File | Lines | Status |
+|----------|------|-------|--------|
+| Regime Router | `regime_adaptive.py` | 463 | ✅ Phase 2 |
+| Trend Strategy | `regime_trend.py` | 472 | ✅ Phase 2 |
+| Mean Reversion | `regime_mean_reversion.py` | 472 | ✅ Phase 2 |
+| No-Trade Regime | `regime_no_trade.py` | 185 | ✅ Phase 2 |
+| Cascade Detector | `cascade_detector.py` | 407 | ✅ Phase 2 |
+| Cascade Fade | `cascade_fade.py` | 544 | ✅ Phase 2 |
+| Continuation Alignment | `continuation_alignment.py` | 801 | ✅ Phase 2 |
+| Fee-Aware Continuation | `fee_aware_continuation.py` | 1406 | ✅ Phase 2 |
+| Quantile VaR Sizing | `quantile_var_sizer.py` | 719 | ✅ Phase 2 |
+
+**Orchestration:**
+- `open_position.py` (840 lines) → Phase 4 (extract entry strategies)
+- `manage_positions.py` (~600 lines) → Phase 4 (extract management logic)
+
+**Result:** All 9 strategy files moved to `application/services/` with proper package organization.
+
+### YAML-Configurable Strategies (Phase 6 - Optional)
+
+Like the main engine, we can make margin engine strategies **YAML-configurable**:
+
+```yaml
+# margin_engine/strategies/configs/regime_trend.yaml
+name: regime_trend
+version: "1.0.0"
+mode: ACTIVE
+asset: BTC
+
+regime:
+  type: trend
+  params:
+    min_confidence: 0.15
+    direction_gate: true
+
+sizing:
+  type: quantile_var
+  params:
+    quantile: 0.95
+    var_multiplier: 1.0
+```
+
+**Benefits:**
+- Hot reload without code changes
+- A/B testing of parameter variations
+- Git-tracked strategy versions
+- Non-dev trading input
+
+**Effort:** 3-4 days (Week 5, optional)
+
+**Status:** Planned in Phase 6 of refactoring plan
