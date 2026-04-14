@@ -8,7 +8,7 @@ from fastapi import APIRouter, Query
 from typing import Optional
 import structlog
 
-from db.session import get_db
+from db.database import get_session as get_db
 
 log = structlog.get_logger(__name__)
 router = APIRouter()
