@@ -32,8 +32,9 @@ Port dependencies (all from ``engine/domain/ports.py``):
 from __future__ import annotations
 
 import structlog
-from typing import Optional
+from typing import Any, Optional
 
+from alerts.haiku_summarizer import HaikuSummarizer
 from domain.ports import (
     AlerterPort,
     Clock,
@@ -77,6 +78,7 @@ class ReconcilePositionsUseCase:
         self._window_state = window_state
         self._alerts = alerts
         self._clock = clock
+        self._haiku = HaikuSummarizer()
 
     async def execute(
         self,
@@ -176,15 +178,13 @@ class ReconcilePositionsUseCase:
                 )
 
                 try:
-                    emoji = "✅" if outcome == "WIN" else "❌"
-                    pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
-                    strategy_name = trade.get("strategy") or "unknown"
-                    # Compute BTC delta direction from actual vs trade direction
-                    btc_dir = actual_direction.upper()  # what BTC actually did
-                    # e.g. trade direction DOWN, actual DOWN → BTC fell = "BTC closed ↓"
-                    btc_arrow = "↓" if btc_dir == "DOWN" else "↑"
-                    await self._alerts.send_system_alert(
-                        f"{emoji} {outcome} {pnl_str} | {strategy_name} {direction} | BTC closed {btc_arrow}"
+                    await self._send_resolution_alert(
+                        trade=trade,
+                        outcome=outcome,
+                        pnl=pnl,
+                        actual_direction=actual_direction,
+                        stake=stake,
+                        shares=shares,
                     )
                 except Exception:
                     pass  # never let Telegram break reconciliation
@@ -350,3 +350,79 @@ class ReconcilePositionsUseCase:
             await self._alerts.send_system_alert(msg)
         except Exception:
             pass  # never let Telegram break reconciliation
+
+    async def _send_resolution_alert(
+        self,
+        trade: dict,
+        outcome: str,
+        pnl: float,
+        actual_direction: str,
+        stake: float,
+        shares: float,
+    ) -> None:
+        """Send a Haiku-powered resolution alert for a paper trade.
+
+        Builds context from the trade dict and calls the summarizer.
+        Falls back to a simple one-liner if anything fails.
+        """
+        from datetime import datetime, timezone
+
+        strategy_name = trade.get("strategy") or "unknown"
+        direction = (trade.get("direction") or "?").upper()
+        raw_ts = trade.get("window_ts")
+        entry_price = float(trade.get("entry_price") or 0)
+
+        # Format window time
+        window_time = "?"
+        if raw_ts:
+            try:
+                window_time = datetime.fromtimestamp(
+                    int(raw_ts), tz=timezone.utc
+                ).strftime("%H:%M")
+            except (ValueError, OSError):
+                pass
+
+        # Build trade result line
+        emoji = "\u2705" if outcome == "WIN" else "\u274c"
+        pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+
+        trade_result_line = (
+            f"{emoji} {outcome} {pnl_str} | {strategy_name} {direction}"
+        )
+        if stake > 0:
+            return_val = shares if outcome == "WIN" else 0.0
+            trade_result_line += (
+                f" | ${stake:.2f} stake \u2192 ${return_val:.2f} return"
+            )
+
+        # Compute delta from open/close if available
+        open_price = trade.get("open_price")
+        close_price = trade.get("close_price")
+        delta_pct = None
+        if open_price and close_price:
+            try:
+                delta_pct = f"{((float(close_price) - float(open_price)) / float(open_price)) * 100:+.3f}"
+            except (ValueError, ZeroDivisionError):
+                pass
+
+        context = {
+            "window_time": window_time,
+            "actual_direction": actual_direction.upper(),
+            "oracle_source": "Chainlink",
+            "open_price": open_price or "?",
+            "close_price": close_price or "?",
+            "delta_pct": delta_pct,
+            "trades_text": (
+                f"{strategy_name}: bet {direction}, stake ${stake:.2f}, "
+                f"entry {entry_price:.3f}, outcome {outcome}, PnL {pnl_str}"
+            ),
+            "ghost_text": "N/A",
+            "trade_result_lines": [trade_result_line],
+        }
+
+        msg = await self._haiku.summarize_resolution(context)
+
+        if hasattr(self._alerts, "send_raw_message"):
+            await self._alerts.send_raw_message(msg)
+        elif hasattr(self._alerts, "send_system_alert"):
+            await self._alerts.send_system_alert(msg)
