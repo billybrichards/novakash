@@ -146,3 +146,8 @@ Verification revealed:
 **What happened:** I claimed the system had a hard $5 max bet while the actual execution path was still using a hardcoded $50 ceiling and stale bankroll state.
 **Root cause:** I checked the active config but not the exact `ExecuteTradeUseCase._calculate_stake()` path that places orders.
 **Rule:** Never claim a risk cap is enforced until the exact live execution code path uses the runtime-configured value. Config presence is not proof of enforcement.
+
+### Engine startup takes 10-20s — don't assume it's hung — 2026-04-14
+**What happened:** Killed and restarted a working engine because the log showed only `db.connected` and 48 lines after 2 minutes. The engine was actually still starting up — warm-starting VPIN from 15K+ ticks, connecting feeds, loading strategy configs.
+**Root cause:** Impatience + confusing "normal startup" with "hung at db.connected". The deploy CI does a 30s sleep for exactly this reason.
+**Rule:** Wait at least 60 seconds after `db.connected` before concluding the engine is hung. Check process is still alive, check stderr, and look for actual error output — not just silence.
