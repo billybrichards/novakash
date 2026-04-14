@@ -37,7 +37,7 @@
 **Serving:** Push-mode POST `/v2/probability` with full feature body  
 **Feature Body:** `V5FeatureBody` dataclass in `engine/signals/v2_feature_body.py`  
 **Client:** `TimesFMV2Client` in `engine/signals/timesfm_v2_client.py`  
-**Service:** `http://3.98.114.0:8080` (TimesFM service on Montreal)
+**Service:** `http://16.52.14.182:8080` (TimesFM service on Montreal)
 
 **Train/Serve Skew:** v5 trained with 25 features, but v4 pull-mode feature assembly produced NaNs → model fell back to default leaf → constant 0.606
 
@@ -155,8 +155,8 @@ POLY_API_PASSPHRASE=...
 POLY_FUNDER_ADDRESS=0x...
 
 # TimesFM
-TIMESFM_URL=http://3.98.114.0:8080
-TIMESFM_V2_URL=http://3.98.114.0:8080  # v2 push-mode
+TIMESFM_URL=http://16.52.14.182:8080
+TIMESFM_V2_URL=http://16.52.14.182:8080  # v2 push-mode
 
 # Risk
 STARTING_BANKROLL=500
@@ -187,9 +187,9 @@ V10_DUNE_MODEL=oak  # Model name for v5 (oak = production)
 ### Services
 
 - **Engine** - Runs on Montreal EC2 (15.223.247.178)
-- **Hub** - Runs on AWS (3.98.114.0:8091)
+- **Hub** - Runs on AWS (16.54.141.121:8091)
 - **Frontend** - localhost:3000 (dev), HTTPS via Caddy (prod)
-- **TimesFM** - localhost:8080 on Montreal (3.98.114.0:8080)
+- **TimesFM** - Dedicated box (16.52.14.182:8080)
 - **PostgreSQL** - Railway (hopper.proxy.rlwy.net:35772)
 
 ### Commands

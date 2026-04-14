@@ -120,27 +120,27 @@ gh run list --repo billybrichards/novakash --workflow deploy-frontend.yml --limi
 ### Hub API (AWS Montreal, port 8091) — USE THIS, NOT RAILWAY
 
 The hub was migrated from Railway to AWS Montreal (DEP-02, PR #104). **Always use the AWS hub.**
-Railway hub may be stale. Frontend nginx already points to `3.98.114.0:8091`.
+Railway hub may be stale. Frontend nginx already points to `16.54.141.121:8091`.
 
 ```bash
 # Get fresh JWT — valid 15 minutes
-TOKEN=$(curl -s -X POST http://3.98.114.0:8091/auth/login \
+TOKEN=$(curl -s -X POST http://16.54.141.121:8091/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"billy","password":"novakash2026"}' | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))")
 
 # Key endpoints
-curl -s "http://3.98.114.0:8091/api/v58/execution-hq?asset=btc&timeframe=5m" -H "Authorization: Bearer $TOKEN"
-curl -s "http://3.98.114.0:8091/api/v58/strategy-decisions?limit=10" -H "Authorization: Bearer $TOKEN"
-curl -s "http://3.98.114.0:8091/api/v58/accuracy?limit=100" -H "Authorization: Bearer $TOKEN"
-curl -s "http://3.98.114.0:8091/api/v58/prediction-surface?days=7" -H "Authorization: Bearer $TOKEN"
-curl -s "http://3.98.114.0:8091/health"  # sanity check — returns {"status":"ok"}
+curl -s "http://16.54.141.121:8091/api/v58/execution-hq?asset=btc&timeframe=5m" -H "Authorization: Bearer $TOKEN"
+curl -s "http://16.54.141.121:8091/api/v58/strategy-decisions?limit=10" -H "Authorization: Bearer $TOKEN"
+curl -s "http://16.54.141.121:8091/api/v58/accuracy?limit=100" -H "Authorization: Bearer $TOKEN"
+curl -s "http://16.54.141.121:8091/api/v58/prediction-surface?days=7" -H "Authorization: Bearer $TOKEN"
+curl -s "http://16.54.141.121:8091/health"  # sanity check — returns {"status":"ok"}
 ```
 
 ### TimesFM service (Montreal, port 8080) — no auth
 ```bash
-curl -s "http://3.98.114.0:8080/v4/snapshot?asset=btc&timescales=5m"
-curl -s "http://3.98.114.0:8080/v3/snapshot?asset=btc"
-curl -s "http://3.98.114.0:8080/health"
+curl -s "http://16.52.14.182:8080/v4/snapshot?asset=btc&timescales=5m"
+curl -s "http://16.52.14.182:8080/v3/snapshot?asset=btc"
+curl -s "http://16.52.14.182:8080/health"
 ```
 
 ### Database (Railway PostgreSQL) — public URL
@@ -222,7 +222,7 @@ git push origin develop
 The two repos talk to each other via:
 
 - **`TIMESFM_URL`** (env var read by `engine/` and `margin_engine/`) — HTTP base URL for the
-  timesfm-service on Montreal (`http://3.98.114.0:8080`). Engine code fetches `/v2/probability`,
+  timesfm-service on Montreal (`http://16.52.14.182:8080`). Engine code fetches `/v2/probability`,
   `/v3/composite`, `/v4/snapshot` etc. directly.
 - **The hub proxy** — `hub/api/margin.py` exposes every model endpoint through `/api/*` so the
   frontend can hit them with JWT auth. See `frontend/src/pages/V4Surface.jsx` for a canonical
@@ -267,7 +267,7 @@ and `DQ-05` is a separate margin_engine pricing audit. See
 The Polymarket engine runs on `15.223.247.178` (instance `i-0785ed930423ae9fd`,
 `novakash-montreal-vnc`, AZ `ca-central-1b`). It runs as a raw `python3 main.py` nohup process
 under the `novakash` user — not systemd, not Docker. The timesfm-service, macro-observer, and
-data-collector run on a different Montreal box at `3.98.114.0`.
+data-collector run on a separate hub box at `16.54.141.121`. TimesFM runs on `16.52.14.182`.
 
 Access uses **EC2 Instance Connect** — generate a fresh ed25519 keypair, push the public key
 with a 60-second TTL, SSH in before it expires. The full incantation (verbatim from
@@ -415,9 +415,9 @@ This section summarises the pattern so you can recognise when to port it.
 
 | Service | Repo | Target | Workflow | Fires on |
 |---|---|---|---|---|
-| **timesfm-service** | novakash-timesfm-repo | EC2 Montreal `3.98.114.0:8080` | `.github/workflows/ci.yml` | push to `main` |
-| **macro-observer** | novakash | EC2 Montreal `3.98.114.0` (sibling dir, Docker) | `.github/workflows/deploy-macro-observer.yml` | push to `develop`, path `macro-observer/**` |
-| **data-collector** | novakash | EC2 Montreal `3.98.114.0` (sibling dir, Docker) | `.github/workflows/deploy-data-collector.yml` | push to `develop`, path `data-collector/**` |
+| **timesfm-service** | novakash-timesfm-repo | EC2 `16.52.14.182:8080` (dedicated c6a.2xlarge) | `.github/workflows/ci.yml` | push to `main` |
+| **macro-observer** | novakash | EC2 `16.54.141.121` (hub box, Docker) | `.github/workflows/deploy-macro-observer.yml` | push to `develop`, path `macro-observer/**` |
+| **data-collector** | novakash | EC2 `16.54.141.121` (hub box, Docker) | `.github/workflows/deploy-data-collector.yml` | push to `develop`, path `data-collector/**` |
 | **margin-engine** | novakash | EC2 eu-west-2 (systemd) | `.github/workflows/deploy-margin-engine.yml` | push to `develop`, path `margin_engine/**` |
 | **hub (API)** | novakash | Railway | Railway auto-deploy | push to `develop` |
 | **frontend (web)** | novakash | EC2 AWS_FRONTEND_HOST (nginx) | `.github/workflows/deploy-frontend.yml` | push to `develop`, path `frontend/**` |

@@ -1,8 +1,9 @@
 name: Deploy Hub to AWS
 
 # DEP-02: Migrate the BTC-Trader Hub FastAPI backend from Railway to
-# the Montreal EC2 box (3.98.114.0, same host as timesfm-service,
-# macro-observer, data-collector). The migration is motivated by:
+# the Hub EC2 box (16.54.141.121, t3.medium). After the infra split,
+# Hub + data-collector + macro-observer live here; TimesFM is on a
+# separate c6a.2xlarge at 16.52.14.182. The migration is motivated by:
 #
 #   1. LATENCY. Manual trades currently go Frontend(AWS) ->
 #      /api/v58/manual-trade -> Railway(hub) -> Postgres(Railway) ->
@@ -67,11 +68,10 @@ jobs:
       DEPLOY_DATABASE_URL: ${{ secrets.DATABASE_URL }}
       DEPLOY_JWT_SECRET: ${{ secrets.JWT_SECRET }}
       DEPLOY_TRADING_APPROVAL_PASSWORD: ${{ secrets.TRADING_APPROVAL_PASSWORD }}
-      # Upstream proxy targets. Once the hub lives on the Montreal box
-      # the timesfm URL collapses to localhost:8080; the margin engine
-      # stays in eu-west-2 so its URL still needs the MARGIN_ENGINE_HOST
-      # secret (same one deploy-margin-engine.yml reads).
-      DEPLOY_TIMESFM_URL: http://host.docker.internal:8080
+      # Upstream proxy targets. After the infra split, TimesFM runs on
+      # a separate box (TIMESFM_HOST secret). The margin engine stays
+      # in eu-west-2 so its URL still needs the MARGIN_ENGINE_HOST secret.
+      DEPLOY_TIMESFM_URL: http://${{ secrets.TIMESFM_HOST }}:8080
       DEPLOY_MARGIN_ENGINE_HOST: ${{ secrets.MARGIN_ENGINE_HOST }}
 
     steps:
@@ -121,9 +121,9 @@ jobs:
       - name: Ensure host directory exists
         # First-deploy bootstrap. mkdir -p is idempotent so this is safe
         # to re-run on every deploy. /home/ubuntu/hub/ is the canonical
-        # sibling to /home/ubuntu/timesfm-service/,
-        # /home/ubuntu/macro-observer/, and /home/ubuntu/data-collector/
-        # on the same box.
+        # sibling to /home/ubuntu/macro-observer/ and
+        # /home/ubuntu/data-collector/ on the Hub box (16.54.141.121).
+        # TimesFM now lives on a separate box (16.52.14.182).
         run: |
           ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'mkdir -p /home/ubuntu/hub'
 

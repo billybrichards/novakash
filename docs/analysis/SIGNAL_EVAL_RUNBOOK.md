@@ -10,24 +10,24 @@
 
 ### Hub API (preferred — no DB credentials needed)
 
-All signal data is accessible via the AWS hub at `http://3.98.114.0:8091`. Use this first.
+All signal data is accessible via the AWS hub at `http://16.54.141.121:8091`. Use this first.
 
 ```bash
 # Get JWT token from AWS hub (not Railway — Railway hub may be stale)
-TOKEN=$(curl -s -X POST http://3.98.114.0:8091/auth/login \
+TOKEN=$(curl -s -X POST http://16.54.141.121:8091/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"billy","password":"novakash2026"}' \
   | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))")
 
 # Key analysis endpoints
-curl -s "http://3.98.114.0:8091/api/v58/accuracy?limit=100" -H "Authorization: Bearer $TOKEN"
-curl -s "http://3.98.114.0:8091/api/v58/strategy-decisions?limit=50" -H "Authorization: Bearer $TOKEN"
-curl -s "http://3.98.114.0:8091/api/v58/prediction-surface?days=7" -H "Authorization: Bearer $TOKEN"
-curl -s "http://3.98.114.0:8091/api/v58/execution-hq?asset=btc&timeframe=5m" -H "Authorization: Bearer $TOKEN"
+curl -s "http://16.54.141.121:8091/api/v58/accuracy?limit=100" -H "Authorization: Bearer $TOKEN"
+curl -s "http://16.54.141.121:8091/api/v58/strategy-decisions?limit=50" -H "Authorization: Bearer $TOKEN"
+curl -s "http://16.54.141.121:8091/api/v58/prediction-surface?days=7" -H "Authorization: Bearer $TOKEN"
+curl -s "http://16.54.141.121:8091/api/v58/execution-hq?asset=btc&timeframe=5m" -H "Authorization: Bearer $TOKEN"
 
 # TimesFM live surface (no auth required)
-curl -s "http://3.98.114.0:8080/v4/snapshot?asset=btc&timescales=5m"
-curl -s "http://3.98.114.0:8080/v3/snapshot?asset=btc"
+curl -s "http://16.52.14.182:8080/v4/snapshot?asset=btc&timescales=5m"
+curl -s "http://16.52.14.182:8080/v3/snapshot?asset=btc"
 ```
 
 ### Get the Database URL (for direct SQL queries)

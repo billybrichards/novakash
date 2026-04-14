@@ -293,7 +293,7 @@ WHERE asset = 'BTC' ORDER BY ts DESC LIMIT 20;
 **Module:** `engine/signals/timesfm_client.py`  
 **Asset:** BTC (forecast only)  
 **Update rate:** ~1s during active windows  
-**Endpoint:** `TIMESFM_URL` from `.env` (default: `http://3.98.114.0:8080`)
+**Endpoint:** `TIMESFM_URL` from `.env` (default: `http://16.52.14.182:8080`)
 
 ### What TimesFM provides
 - ML-based price direction forecast (UP/DOWN)

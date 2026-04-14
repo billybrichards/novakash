@@ -185,7 +185,7 @@ class RuntimeConfig:
         self.timesfm_enabled: bool = (
             os.environ.get("TIMESFM_ENABLED", "false").lower() == "true"
         )
-        self.timesfm_url: str = os.environ.get("TIMESFM_URL", "http://3.98.114.0:8000")
+        self.timesfm_url: str = os.environ.get("TIMESFM_URL", "http://16.52.14.182:8080")
         self.timesfm_min_confidence: float = _env_float("TIMESFM_MIN_CONFIDENCE", 0.30)
         self.timesfm_assets: list[str] = os.environ.get("TIMESFM_ASSETS", "BTC").split(
             ","

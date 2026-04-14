@@ -134,6 +134,7 @@ jobs:
       DEPLOY_POLY_BTC_TOKEN_IDS: ${{ secrets.POLY_BTC_TOKEN_IDS }}
       DEPLOY_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       DEPLOY_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      DEPLOY_TIMESFM_HOST: ${{ secrets.TIMESFM_HOST }}
 
     steps:
       - name: Checkout code
@@ -151,6 +152,7 @@ jobs:
           if [ -z "${DEPLOY_POLY_FUNDER_ADDRESS}" ]; then missing="$missing POLY_FUNDER_ADDRESS"; fi
           if [ -z "${DEPLOY_TELEGRAM_BOT_TOKEN}" ]; then missing="$missing TELEGRAM_BOT_TOKEN"; fi
           if [ -z "${DEPLOY_TELEGRAM_CHAT_ID}" ]; then missing="$missing TELEGRAM_CHAT_ID"; fi
+          if [ -z "${DEPLOY_TIMESFM_HOST}" ]; then missing="$missing TIMESFM_HOST"; fi
           if [ -n "$missing" ]; then
             echo "::error::missing required GitHub Actions secrets:$missing"
             echo "Add them under Settings -> Secrets and variables -> Actions"
@@ -266,7 +268,7 @@ jobs:
             echo "# Feeds & Services"
             echo "FIVE_MIN_ENABLED=true"
             echo "V4_FUSION_ENABLED=true"
-            echo "TIMESFM_URL=http://3.98.114.0:8080"
+            echo "TIMESFM_URL=http://${DEPLOY_TIMESFM_HOST}:8080"
             echo "POLYGON_RPC_URL=https://polygon-bor-rpc.publicnode.com"
             echo "TIINGO_API_KEY=${DEPLOY_TIINGO_API_KEY}"
             echo ""
@@ -298,6 +300,7 @@ jobs:
           DEPLOY_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           DEPLOY_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DEPLOY_TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
+          DEPLOY_TIMESFM_HOST: ${{ secrets.TIMESFM_HOST }}
           DEPLOY_QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
           DEPLOY_BUILDER_API_KEY: ${{ secrets.BUILDER_API_KEY }}
           DEPLOY_BUILDER_SECRET: ${{ secrets.BUILDER_SECRET }}

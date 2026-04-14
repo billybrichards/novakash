@@ -330,7 +330,7 @@ class Orchestrator:
                         if line.startswith("TIMESFM_URL="):
                             timesfm_url = line.split("=", 1)[1].strip()
                             break
-        timesfm_url = timesfm_url or "http://3.98.114.0:8080"
+        timesfm_url = timesfm_url or "http://16.52.14.182:8080"
 
         timesfm_min_conf_str = os.environ.get("TIMESFM_MIN_CONFIDENCE")
         if not timesfm_min_conf_str:
@@ -370,7 +370,7 @@ class Orchestrator:
         if _v2_enabled and self._five_min_strategy:
             from signals.timesfm_v2_client import TimesFMV2Client
 
-            _v2_url = os.environ.get("TIMESFM_V2_URL", "http://3.98.114.0:8080")
+            _v2_url = os.environ.get("TIMESFM_V2_URL", "http://16.52.14.182:8080")
             self._five_min_strategy.set_timesfm_v2_client(
                 TimesFMV2Client(base_url=_v2_url)
             )

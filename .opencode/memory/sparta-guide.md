@@ -27,7 +27,7 @@
 **Model:** LightGBM with 25 features for 5-minute BTC direction prediction  
 **Output:** `P(UP)` probability (0-1, calibrated)  
 **Serving:** Push-mode POST `/v2/probability` with full 25-feature body  
-**Location:** `http://3.98.114.0:8080` (TimesFM service on Montreal)
+**Location:** `http://16.52.14.182:8080` (TimesFM service on Montreal)
 
 **Known Issue (FIXED):** Missing `chainlink_price` caused constant 0.606 output
 - **Before:** 13,096 evals in 12h, all UP at 10.2% conviction, 0 trades
@@ -410,8 +410,8 @@ async def test_down_only_strategy_trade_decision():
 ### Environment Variables
 
 ```bash
-TIMESFM_URL=http://3.98.114.0:8080
-TIMESFM_V2_URL=http://3.98.114.0:8080
+TIMESFM_URL=http://16.52.14.182:8080
+TIMESFM_V2_URL=http://16.52.14.182:8080
 V10_DUNE_MODEL=oak
 PAPER_MODE=true
 ```

@@ -1,9 +1,10 @@
 name: Deploy Data Collector to AWS
 
-# Deploys the data-collector service to the EC2 Montreal box (the same
-# 3.98.114.0 host that runs timesfm-service and macro-observer). This was
-# migrated from Railway to AWS on 2026-04-11 to:
-#   1. Unify ops with timesfm + macro-observer (one box, one log location,
+# Deploys the data-collector service to the Hub EC2 box (16.54.141.121,
+# t3.medium). After the infra split, data-collector lives alongside Hub
+# and macro-observer on this box; TimesFM moved to a separate c6a.2xlarge
+# (16.52.14.182). Originally migrated from Railway to AWS on 2026-04-11 to:
+#   1. Unify ops with hub + macro-observer (one box, one log location,
 #      one set of credentials, one place to ssh into when something breaks)
 #   2. Stop the Railway deploys that have been FAILED on every push since
 #      the 2026-04-11 merge cascade started; the Railway build context
@@ -48,8 +49,8 @@ jobs:
     # GitHub Actions injection-defence pattern from
     # https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
     env:
-      SSH_KEY: ${{ secrets.MACRO_OBSERVER_SSH_KEY }}
-      HOST: ${{ secrets.MACRO_OBSERVER_HOST }}
+      SSH_KEY: ${{ secrets.HUB_SSH_KEY }}
+      HOST: ${{ secrets.HUB_HOST }}
       DEPLOY_DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
     steps:
@@ -62,8 +63,8 @@ jobs:
         # on the next container restart -- fail loudly here instead.
         run: |
           missing=""
-          if [ -z "${HOST}" ]; then missing="$missing MACRO_OBSERVER_HOST"; fi
-          if [ -z "${SSH_KEY}" ]; then missing="$missing MACRO_OBSERVER_SSH_KEY"; fi
+          if [ -z "${HOST}" ]; then missing="$missing HUB_HOST"; fi
+          if [ -z "${SSH_KEY}" ]; then missing="$missing HUB_SSH_KEY"; fi
           if [ -z "${DEPLOY_DATABASE_URL}" ]; then missing="$missing DATABASE_URL"; fi
           if [ -n "$missing" ]; then
             echo "::error::missing required GitHub Actions secrets:$missing"
@@ -74,13 +75,9 @@ jobs:
           echo "all required secrets present"
 
       - name: Write SSH key
-        # Reuses MACRO_OBSERVER_SSH_KEY because data-collector deploys
-        # to the same Montreal box as macro-observer. The key was
-        # bootstrapped into ubuntu@3.98.114.0's authorized_keys via the
-        # one-shot bootstrap workflow that ran earlier on 2026-04-11;
-        # adding a second key per service would be ceremony without
-        # meaningful isolation (both services run as the same ubuntu
-        # user in sibling docker-compose stacks anyway).
+        # Uses HUB_SSH_KEY (novakash-infra-v2 key pair) because after
+        # the infra split, data-collector deploys to the Hub box
+        # (16.54.141.121) alongside hub and macro-observer.
         run: |
           mkdir -p ~/.ssh
           if echo "$SSH_KEY" | base64 -d > ~/.ssh/deploy_key 2>/dev/null && [ -s ~/.ssh/deploy_key ]; then

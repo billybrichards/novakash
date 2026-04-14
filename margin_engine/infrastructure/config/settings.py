@@ -75,7 +75,7 @@ class MarginSettings(BaseSettings):
     # telemetry — use cases keep running on the legacy /v2/probability path
     # regardless of this setting until PR B wires them to consume v4.
 
-    v4_snapshot_url: str = "http://3.98.114.0:8080"
+    v4_snapshot_url: str = "http://16.52.14.182:8080"
     engine_use_v4_actions: bool = False
     v4_primary_timescale: str = "15m"
     v4_timescales: str = "5m,15m,1h,4h"   # CSV; used for snapshot request
@@ -198,7 +198,7 @@ class MarginSettings(BaseSettings):
     # ── Signal sources ──
     # v3 composite: still polled for REGIME FILTER (soft, logged only) and
     # for passive signal recording. Direction comes from the ML endpoint.
-    timesfm_ws_url: str = "ws://3.98.114.0:8080/v3/signal"
+    timesfm_ws_url: str = "ws://16.52.14.182:8080/v3/signal"
     # Magnitude of 1h composite required to allow a trade. Market too quiet
     # → skip. This is NOT a directional threshold — sign is not used.
     # NOTE: start at 0.0 (effectively OFF). Backtest on 114 historical
@@ -211,7 +211,7 @@ class MarginSettings(BaseSettings):
     signal_threshold: float = 0.50
 
     # v2 ML probability endpoint (HTTP poller, not WebSocket)
-    probability_http_url: str = "http://3.98.114.0:8080"
+    probability_http_url: str = "http://16.52.14.182:8080"
     probability_asset: str = "BTC"
     probability_timescale: str = "15m"
     probability_seconds_to_close: int = 480  # sweet spot per edge analysis
