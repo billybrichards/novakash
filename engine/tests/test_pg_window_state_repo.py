@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 import pytest
 
@@ -61,27 +61,32 @@ def repo(pool):
     return PgWindowRepository(pool)
 
 
+def make_window_key(asset="BTC", window_ts=1234, timeframe="5m"):
+    from domain.value_objects import WindowKey
+
+    return WindowKey(asset=asset, window_ts=window_ts, timeframe=timeframe)
+
+
 class TestWasTraded:
     def test_true(self, repo, conn):
         conn.fetchval_result = True
-        assert (
-            asyncio.get_event_loop().run_until_complete(repo.was_traded("BTC-1234"))
-            is True
-        )
+        key = make_window_key("BTC", 1234, "5m")
+        assert asyncio.get_event_loop().run_until_complete(repo.was_traded(key)) is True
 
     def test_false(self, repo, conn):
         conn.fetchval_result = False
+        key = make_window_key("BTC", 9, "5m")
         assert (
-            asyncio.get_event_loop().run_until_complete(repo.was_traded("BTC-9"))
-            is False
+            asyncio.get_event_loop().run_until_complete(repo.was_traded(key)) is False
         )
 
     def test_no_pool(self):
         from engine.adapters.persistence.pg_window_repo import PgWindowRepository
 
+        key = make_window_key("X", 1, "5m")
         assert (
             asyncio.get_event_loop().run_until_complete(
-                PgWindowRepository(None).was_traded("X")
+                PgWindowRepository(None).was_traded(key)
             )
             is False
         )
@@ -89,85 +94,94 @@ class TestWasTraded:
 
 class TestMarkTraded:
     def test_insert(self, repo, conn):
-        asyncio.get_event_loop().run_until_complete(
-            repo.mark_traded("BTC-1775683200", "0xabc")
-        )
+        key = make_window_key("BTC", 1775683200, "5m")
+        asyncio.get_event_loop().run_until_complete(repo.mark_traded(key, "0xabc"))
         q, a = conn.execute_calls[0]
-        assert (
-            "INSERT INTO window_states" in q
-            and a[0] == "BTC-1775683200"
-            and a[1] == "BTC"
-            and a[2] == 1775683200
-            and isinstance(a[3], datetime)
-            and a[4] == "0xabc"
-        )
+        assert "INSERT INTO window_states" in q
+        assert a[0] == "BTC"
+        assert a[1] == 1775683200
+        assert a[2] == "5m"
+        assert isinstance(a[3], datetime)
+        assert a[4] == "0xabc"
 
-    def test_multi_dash(self, repo, conn):
-        asyncio.get_event_loop().run_until_complete(
-            repo.mark_traded("ETH-USD-12345", "o1")
-        )
-        assert (
-            conn.execute_calls[0][1][1] == "ETH-USD"
-            and conn.execute_calls[0][1][2] == 12345
-        )
+    def test_multi_asset(self, repo, conn):
+        key = make_window_key("ETH", 12345, "5m")
+        asyncio.get_event_loop().run_until_complete(repo.mark_traded(key, "o1"))
+        q, a = conn.execute_calls[0]
+        assert a[0] == "ETH"
+        assert a[1] == 12345
+        assert a[2] == "5m"
 
 
 class TestClaims:
     def test_try_claim_true(self, repo, conn):
         conn.fetchval_result = 1
+        key = make_window_key("BTC", 1234, "5m")
         assert (
-            asyncio.get_event_loop().run_until_complete(
-                repo.try_claim_trade("BTC-1234")
-            )
+            asyncio.get_event_loop().run_until_complete(repo.try_claim_trade(key))
             is True
         )
 
     def test_try_claim_false(self, repo, conn):
         conn.fetchval_result = None
+        key = make_window_key("BTC", 1234, "5m")
         assert (
-            asyncio.get_event_loop().run_until_complete(
-                repo.try_claim_trade("BTC-1234")
-            )
+            asyncio.get_event_loop().run_until_complete(repo.try_claim_trade(key))
             is False
         )
 
     def test_clear_claim(self, repo, conn):
-        asyncio.get_event_loop().run_until_complete(repo.clear_trade_claim("BTC-1234"))
+        key = make_window_key("BTC", 1234, "5m")
+        asyncio.get_event_loop().run_until_complete(repo.clear_trade_claim(key))
         q, a = conn.execute_calls[0]
-        assert "DELETE FROM window_states" in q and a[0] == "BTC-1234"
+        assert "DELETE FROM window_states" in q
+        assert a[0] == "BTC"
+        assert a[1] == 1234
+        assert a[2] == "5m"
 
 
 class TestWasResolved:
     def test_true(self, repo, conn):
         conn.fetchval_result = True
+        key = make_window_key("BTC", 1, "5m")
         assert (
-            asyncio.get_event_loop().run_until_complete(repo.was_resolved("BTC-1"))
-            is True
+            asyncio.get_event_loop().run_until_complete(repo.was_resolved(key)) is True
         )
 
     def test_false(self, repo, conn):
         conn.fetchval_result = False
+        key = make_window_key("BTC", 1, "5m")
         assert (
-            asyncio.get_event_loop().run_until_complete(repo.was_resolved("BTC-1"))
-            is False
+            asyncio.get_event_loop().run_until_complete(repo.was_resolved(key)) is False
         )
 
 
 class TestMarkResolved:
     def test_update(self, repo, conn):
+        from domain.value_objects import WindowOutcome
+
+        key = make_window_key("BTC", 1234, "5m")
         asyncio.get_event_loop().run_until_complete(
-            repo.mark_resolved("BTC-1234", "WIN")
+            repo.mark_resolved(key, WindowOutcome.UP)
         )
         q, a = conn.execute_calls[0]
-        assert "UPDATE window_states" in q and a[2] == "WIN"
+        assert "UPDATE window_states" in q
+        assert a[0] == "BTC"
+        assert a[1] == 1234
+        assert a[2] == "5m"
+        assert a[3] == "UP"
 
 
 class TestLoadRecentTraded:
     def test_keys(self, repo, conn):
-        conn.fetch_result = [{"window_key": "BTC-100"}, {"window_key": "BTC-200"}]
-        assert asyncio.get_event_loop().run_until_complete(
-            repo.load_recent_traded(2)
-        ) == {"BTC-100", "BTC-200"}
+        from domain.value_objects import WindowKey
+
+        conn.fetch_result = [
+            {"asset": "BTC", "window_ts": 100, "timeframe": "5m"},
+            {"asset": "BTC", "window_ts": 200, "timeframe": "5m"},
+        ]
+        result = asyncio.get_event_loop().run_until_complete(repo.load_recent_traded(2))
+        assert result == {WindowKey("BTC", 100, "5m"), WindowKey("BTC", 200, "5m")}
 
     def test_empty(self, repo, conn):
         conn.fetch_result = []
@@ -180,6 +194,6 @@ class TestLoadRecentTraded:
 class TestEnsureTable:
     def test_creates(self, repo, conn):
         asyncio.get_event_loop().run_until_complete(repo.ensure_window_states_table())
-        assert len(conn.execute_calls) == 4
+        assert len(conn.execute_calls) == 3
         qs = [q for q, _ in conn.execute_calls]
         assert any("CREATE TABLE" in q for q in qs)
