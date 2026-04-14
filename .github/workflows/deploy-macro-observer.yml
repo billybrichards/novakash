@@ -1,9 +1,10 @@
 name: Deploy Macro Observer to AWS
 
-# Deploys the macro-observer service to the EC2 Montreal box (the same
-# 3.98.114.0 host that runs timesfm-service). This was migrated from
-# Railway to AWS to:
-#   1. Unify ops with the timesfm service (one box, one log location,
+# Deploys the macro-observer service to the Hub EC2 box (16.54.141.121,
+# t3.medium). After the infra split, macro-observer lives alongside Hub
+# and data-collector on this box; TimesFM moved to a separate c6a.2xlarge
+# (16.52.14.182). Originally migrated from Railway to AWS to:
+#   1. Unify ops with hub + data-collector (one box, one log location,
 #      one set of credentials, one place to ssh into when something breaks)
 #   2. Eliminate Railway's silent build-context misrouting bug that was
 #      keeping the new Qwen 3.5 122B + per-timescale code from actually
@@ -42,8 +43,8 @@ jobs:
     # GitHub Actions injection-defence pattern from
     # https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
     env:
-      SSH_KEY: ${{ secrets.MACRO_OBSERVER_SSH_KEY }}
-      HOST: ${{ secrets.MACRO_OBSERVER_HOST }}
+      SSH_KEY: ${{ secrets.HUB_SSH_KEY }}
+      HOST: ${{ secrets.HUB_HOST }}
       DEPLOY_DATABASE_URL: ${{ secrets.DATABASE_URL }}
       DEPLOY_QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
       DEPLOY_QWEN_BASE_URL: ${{ secrets.QWEN_BASE_URL }}
@@ -60,8 +61,8 @@ jobs:
         # on the next container restart -- fail loudly here instead.
         run: |
           missing=""
-          if [ -z "${HOST}" ]; then missing="$missing MACRO_OBSERVER_HOST"; fi
-          if [ -z "${SSH_KEY}" ]; then missing="$missing MACRO_OBSERVER_SSH_KEY"; fi
+          if [ -z "${HOST}" ]; then missing="$missing HUB_HOST"; fi
+          if [ -z "${SSH_KEY}" ]; then missing="$missing HUB_SSH_KEY"; fi
           if [ -z "${DEPLOY_DATABASE_URL}" ]; then missing="$missing DATABASE_URL"; fi
           if [ -z "${DEPLOY_QWEN_API_KEY}" ]; then missing="$missing QWEN_API_KEY"; fi
           if [ -z "${DEPLOY_QWEN_BASE_URL}" ]; then missing="$missing QWEN_BASE_URL"; fi
@@ -91,8 +92,8 @@ jobs:
       - name: Ensure host directory exists
         # First-deploy bootstrap. mkdir -p is idempotent so this is safe
         # to re-run on every deploy. /home/ubuntu/macro-observer/ is the
-        # canonical sibling to /home/ubuntu/timesfm-service/ on the same
-        # box.
+        # canonical sibling to /home/ubuntu/hub/ and
+        # /home/ubuntu/data-collector/ on the Hub box (16.54.141.121).
         run: |
           ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'mkdir -p /home/ubuntu/macro-observer'
 
