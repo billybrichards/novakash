@@ -269,8 +269,8 @@ class DBClient:
                     created_dt,
                     resolved_dt,
                     json.dumps(order.metadata),
-                    "live" if order.order_id.startswith("0x") else "paper",
-                    not order.order_id.startswith("5min-") and not order.order_id.startswith("manual-paper"),
+                    "paper" if execution_mode == "paper" else "live",
+                    execution_mode != "paper",
                     # v8.0 fields
                     "v8.0",
                     clob_order_id,

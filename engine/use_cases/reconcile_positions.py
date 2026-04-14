@@ -31,7 +31,7 @@ Port dependencies (all from ``engine/domain/ports.py``):
 
 from __future__ import annotations
 
-import logging
+import structlog
 from typing import Optional
 
 from domain.ports import (
@@ -48,7 +48,7 @@ from domain.value_objects import (
     WindowOutcome,
 )
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class ReconcilePositionsUseCase:
@@ -97,13 +97,7 @@ class ReconcilePositionsUseCase:
                     live_resolved += 1
             except Exception as exc:
                 errors += 1
-                logger.warning(
-                    "reconciler.live_resolve_error",
-                    extra={
-                        "condition_id": pos.condition_id[:20],
-                        "error": str(exc)[:100],
-                    },
-                )
+                logger.warning("reconciler.live_resolve_error", condition_id=pos.condition_id[:20], error=str(exc)[:100])
 
         paper_resolved, paper_skipped, paper_errors = await self._resolve_paper_batch()
 
@@ -113,10 +107,7 @@ class ReconcilePositionsUseCase:
         try:
             windows_labeled = await self._window_state.label_resolved_windows()
         except Exception as exc:
-            logger.warning(
-                "reconciler.label_windows_error",
-                extra={"error": str(exc)[:100]},
-            )
+            logger.warning("reconciler.label_windows_error", error=str(exc)[:100])
 
         return ReconcileResult(
             live_resolved=live_resolved,
@@ -196,13 +187,7 @@ class ReconcilePositionsUseCase:
 
             except Exception as exc:
                 errors += 1
-                logger.warning(
-                    "reconciler.paper_resolve_error",
-                    extra={
-                        "trade_id": trade.get("id"),
-                        "error": str(exc)[:100],
-                    },
-                )
+                logger.warning("reconciler.paper_resolve_error", trade_id=trade.get("id"), error=str(exc)[:100])
 
         return resolved, skipped, errors
 
@@ -281,10 +266,7 @@ class ReconcilePositionsUseCase:
                     ),
                 )
         except Exception as exc:
-            logger.debug(
-                "reconciler.mark_resolved_failed",
-                extra={"error": str(exc)[:100]},
-            )
+            logger.debug("reconciler.mark_resolved_failed", error=str(exc)[:100])
 
         await self._notify_resolution(
             position=position,
@@ -322,13 +304,7 @@ class ReconcilePositionsUseCase:
         if token_id and len(token_id) > 10:
             match = await self._trade_repo.find_by_token_prefix(token_id)
             if match:
-                logger.info(
-                    "reconciler.prefix_match",
-                    extra={
-                        "pos_token": token_id[:20],
-                        "db_token": (match.get("token_id") or "")[:20],
-                    },
-                )
+                logger.info("reconciler.prefix_match", pos_token=token_id[:20], db_token=(match.get("token_id") or "")[:20])
                 return match, "prefix"
 
         # Tier 3: approximate cost match

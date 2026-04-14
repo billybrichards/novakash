@@ -32,10 +32,6 @@ on:
       - '.github/workflows/deploy-engine.yml'
       - '!engine/**/*.md'
       - '!engine/**/*.txt'
-      - '!engine/domain/**'
-      - '!engine/adapters/**'
-      - '!engine/use_cases/**'
-      - '!engine/tests/**'
   pull_request:
     branches: [develop]
     paths:
