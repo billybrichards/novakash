@@ -2,6 +2,15 @@ import { useCallback, useMemo } from 'react';
 import axios from 'axios';
 import { useAuth } from '../auth/AuthContext.jsx';
 
+function normalizeApiPath(url) {
+  if (!url || typeof url !== 'string') return url;
+  if (url.startsWith('/auth/')) return url;
+  if (url.startsWith('/api/')) return url;
+  if (url.startsWith('/v4/')) return url;
+  if (url.startsWith('/')) return `/api${url}`;
+  return `/api/${url}`;
+}
+
 /**
  * useApi — Returns an axios-like object with auth headers.
  *
@@ -9,16 +18,14 @@ import { useAuth } from '../auth/AuthContext.jsx';
  *   1. api.get('/trades')           — axios instance style
  *   2. api('GET', '/trading-config') — callable style
  *
- * Base URL is '/api' — all paths are relative to it.
- * Paths that already start with '/api/' are normalised to avoid double-prefix.
+ * Base URL is the hub root. Most app calls are normalized to `/api/*`,
+ * while root-level routes like `/auth/*` and `/v4/*` are preserved.
  */
 export function useApi() {
   const { token, logout } = useAuth();
 
   return useMemo(() => {
-    const apiBase = import.meta.env.VITE_API_URL
-      ? `${import.meta.env.VITE_API_URL}/api`
-      : '/api';
+    const apiBase = import.meta.env.VITE_API_URL || '';
     
     const instance = axios.create({
       baseURL: apiBase,
@@ -28,10 +35,7 @@ export function useApi() {
     });
 
     instance.interceptors.request.use(config => {
-      // Strip leading /api/ to avoid double-prefix (/api/api/...)
-      if (config.url && config.url.startsWith('/api/')) {
-        config.url = config.url.slice(4); // '/api/foo' → '/foo'
-      }
+      config.url = normalizeApiPath(config.url);
       return config;
     });
 

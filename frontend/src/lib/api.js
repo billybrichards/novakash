@@ -2,6 +2,15 @@ import axios from 'axios';
 
 const BASE_URL = import.meta.env.VITE_API_URL || '';
 
+function normalizeApiPath(url) {
+  if (!url || typeof url !== 'string') return url;
+  if (url.startsWith('/auth/')) return url;
+  if (url.startsWith('/api/')) return url;
+  if (url.startsWith('/v4/')) return url;
+  if (url.startsWith('/')) return `/api${url}`;
+  return `/api/${url}`;
+}
+
 const apiClient = axios.create({
   baseURL: BASE_URL,
   headers: {
@@ -12,6 +21,7 @@ const apiClient = axios.create({
 // Attach JWT token to every request
 apiClient.interceptors.request.use(config => {
   const token = localStorage.getItem('access_token');
+  config.url = normalizeApiPath(config.url);
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -27,7 +37,7 @@ apiClient.interceptors.response.use(
       originalRequest._retry = true;
       try {
         const refreshToken = localStorage.getItem('refresh_token');
-        const res = await axios.post(`${BASE_URL}/auth/refresh`, {
+        const res = await axios.post(`${BASE_URL}${normalizeApiPath('/auth/refresh')}`, {
           refresh_token: refreshToken,
         });
         localStorage.setItem('access_token', res.data.access_token);
