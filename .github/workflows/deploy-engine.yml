@@ -345,35 +345,32 @@ jobs:
           DEPLOY_BET_FRACTION: ${{ vars.BET_FRACTION || '0.07' }}
           DEPLOY_MAX_POSITION_USD: ${{ vars.MAX_POSITION_USD || '5.0' }}
         run: |
+          # Non-blocking: any failure here just logs a warning, never kills the deploy
+          set +e
           if [ -z "${HUB_URL}" ]; then
-            echo "HUB_URL not set — skipping DB config sync"
+            echo "::warning::HUB_URL not set — skipping DB config sync"
             exit 0
           fi
-          # Login to get JWT
-          TOKEN=$(curl -sf -X POST "${HUB_URL}/auth/login" \
+          # Login to get JWT (curl -s = silent, no -f so non-2xx won't crash)
+          LOGIN_RESP=$(curl -s --max-time 10 -X POST "${HUB_URL}/auth/login" \
             -H "Content-Type: application/json" \
-            -d "{\"username\":\"${HUB_ADMIN_USERNAME}\",\"password\":\"${HUB_ADMIN_PASSWORD}\"}" \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+            -d "{\"username\":\"${HUB_ADMIN_USERNAME}\",\"password\":\"${HUB_ADMIN_PASSWORD}\"}" 2>/dev/null || echo "")
+          TOKEN=$(echo "$LOGIN_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('access_token',''))" 2>/dev/null || echo "")
           if [ -z "$TOKEN" ]; then
             echo "::warning::Hub login failed — skipping DB config sync (non-blocking)"
             exit 0
           fi
           # Update paper trading config
-          HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" -X PUT "${HUB_URL}/api/config" \
+          HTTP_STATUS=$(curl -s --max-time 10 -o /dev/null -w "%{http_code}" -X PUT "${HUB_URL}/api/config" \
             -H "Authorization: Bearer ${TOKEN}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "starting_bankroll": ${DEPLOY_STARTING_BANKROLL},
-              "bet_fraction": ${DEPLOY_BET_FRACTION},
-              "absolute_max_bet": ${DEPLOY_MAX_POSITION_USD},
-              "daily_loss_limit": 6.0,
-              "min_bet_usd": 1.0
-            }')
+            -d "{\"starting_bankroll\": ${DEPLOY_STARTING_BANKROLL}, \"bet_fraction\": ${DEPLOY_BET_FRACTION}, \"absolute_max_bet\": ${DEPLOY_MAX_POSITION_USD}, \"daily_loss_limit\": 6.0, \"min_bet_usd\": 1.0}" 2>/dev/null || echo "000")
           if [ "$HTTP_STATUS" = "200" ]; then
             echo "Hub DB config synced OK (HTTP 200)"
           else
-            echo "::warning::Hub config sync returned HTTP ${HTTP_STATUS} — check manually"
+            echo "::warning::Hub config sync returned HTTP ${HTTP_STATUS} — check manually (non-blocking)"
           fi
+          exit 0
 
       - name: Restart engine via restart_engine.sh
         run: |
