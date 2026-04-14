@@ -251,11 +251,11 @@ jobs:
             echo "FIVE_MIN_MIN_DELTA_PCT=0.0010"
             echo ""
             echo "# Bankroll / Risk (must match actual wallet balance)"
-            echo "STARTING_BANKROLL=30"
+            echo "STARTING_BANKROLL=${DEPLOY_STARTING_BANKROLL}"
             echo "PAPER_MODE=true"
-            echo "BET_FRACTION=0.07"
+            echo "BET_FRACTION=${DEPLOY_BET_FRACTION}"
             echo "MIN_BET_USD=1.0"
-            echo "MAX_POSITION_USD=5.0"
+            echo "MAX_POSITION_USD=${DEPLOY_MAX_POSITION_USD}"
             echo "V10_MIN_DELTA_PCT=0.001"
             echo ""
             echo "# Strategy Engine v2 (CA-07)"
@@ -299,6 +299,82 @@ jobs:
           DEPLOY_TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DEPLOY_TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
           DEPLOY_QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+          # Bankroll / risk — set as GitHub Actions Variables (not secrets)
+          DEPLOY_STARTING_BANKROLL: ${{ vars.STARTING_BANKROLL || '30' }}
+          DEPLOY_BET_FRACTION: ${{ vars.BET_FRACTION || '0.07' }}
+          DEPLOY_MAX_POSITION_USD: ${{ vars.MAX_POSITION_USD || '5.0' }}
+
+      - name: Validate critical .env vars on host
+        run: |
+          ssh -i ~/.ssh/deploy_key novakash@"$HOST" bash -s <<'REMOTE'
+          set -e
+          ENV_FILE=/home/novakash/novakash/engine/.env
+          echo "=== Critical .env var check ==="
+          failed=0
+          check_var() {
+            local key="$1"
+            local val
+            val=$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d '\r' || echo "")
+            if [ -z "$val" ]; then
+              echo "::error::  MISSING: ${key}"
+              failed=1
+            else
+              echo "  OK: ${key}=${val}"
+            fi
+          }
+          # Risk / sizing — must all be present
+          check_var STARTING_BANKROLL
+          check_var BET_FRACTION
+          check_var MIN_BET_USD
+          check_var MAX_POSITION_USD
+          check_var PAPER_MODE
+          # Critical API keys
+          check_var DATABASE_URL
+          check_var POLY_API_KEY
+          check_var POLY_PRIVATE_KEY
+          check_var FIVE_MIN_ENABLED
+          if [ $failed -eq 1 ]; then
+            echo "::error::.env validation failed — critical vars missing"
+            exit 1
+          fi
+          echo ".env validation passed"
+          REMOTE
+
+      - name: Sync DB trading config via Hub API
+        if: ${{ secrets.HUB_URL != '' }}
+        env:
+          HUB_URL: ${{ secrets.HUB_URL }}
+          HUB_ADMIN_USERNAME: ${{ secrets.HUB_ADMIN_USERNAME }}
+          HUB_ADMIN_PASSWORD: ${{ secrets.HUB_ADMIN_PASSWORD }}
+          DEPLOY_STARTING_BANKROLL: ${{ vars.STARTING_BANKROLL || '30' }}
+          DEPLOY_BET_FRACTION: ${{ vars.BET_FRACTION || '0.07' }}
+          DEPLOY_MAX_POSITION_USD: ${{ vars.MAX_POSITION_USD || '5.0' }}
+        run: |
+          # Login to get JWT
+          TOKEN=$(curl -sf -X POST "${HUB_URL}/auth/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"username\":\"${HUB_ADMIN_USERNAME}\",\"password\":\"${HUB_ADMIN_PASSWORD}\"}" \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::Hub login failed — skipping DB config sync (non-blocking)"
+            exit 0
+          fi
+          # Update paper trading config
+          HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" -X PUT "${HUB_URL}/api/config" \
+            -H "Authorization: Bearer ${TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "starting_bankroll": ${DEPLOY_STARTING_BANKROLL},
+              "bet_fraction": ${DEPLOY_BET_FRACTION},
+              "absolute_max_bet": ${DEPLOY_MAX_POSITION_USD},
+              "daily_loss_limit": 6.0,
+              "min_bet_usd": 1.0
+            }')
+          if [ "$HTTP_STATUS" = "200" ]; then
+            echo "Hub DB config synced OK (HTTP 200)"
+          else
+            echo "::warning::Hub config sync returned HTTP ${HTTP_STATUS} — check manually"
+          fi
 
       - name: Restart engine via restart_engine.sh
         run: |
