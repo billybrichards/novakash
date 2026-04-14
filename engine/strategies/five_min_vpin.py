@@ -669,8 +669,21 @@ class FiveMinVPINStrategy(BaseStrategy):
             price_consensus = "AGREE"  # Only one source — no conflict
 
         # ── Select primary delta based on DELTA_PRICE_SOURCE ──────────────
-        # v8.0 default: tiingo → chainlink fallback → binance fallback
-        if _delta_source == "tiingo" and delta_tiingo is not None:
+        # v9.0: For 5m Polymarket markets, Chainlink is the resolution oracle.
+        # Default priority: chainlink → tiingo fallback → binance fallback
+        # Config override via DELTA_PRICE_SOURCE still respected.
+        if _delta_source == "chainlink" and delta_chainlink is not None:
+            delta_pct = delta_chainlink
+            _price_source_used = "chainlink"
+        elif _delta_source == "chainlink" and delta_tiingo is not None:
+            # Chainlink unavailable — fall back to tiingo
+            delta_pct = delta_tiingo
+            _price_source_used = f"tiingo_fallback_{_tiingo_candle_source}"
+            self._log.info(
+                "evaluate.chainlink_unavailable_tiingo_fallback",
+                asset=window.asset,
+            )
+        elif _delta_source == "tiingo" and delta_tiingo is not None:
             delta_pct = delta_tiingo
             _price_source_used = f"tiingo_{_tiingo_candle_source}"
         elif _delta_source == "tiingo" and delta_chainlink is not None:
@@ -682,9 +695,6 @@ class FiveMinVPINStrategy(BaseStrategy):
                 asset=window.asset,
                 tiingo_source=_tiingo_candle_source,
             )
-        elif _delta_source == "chainlink" and delta_chainlink is not None:
-            delta_pct = delta_chainlink
-            _price_source_used = "chainlink"
         elif _delta_source == "consensus":
             if price_consensus != "AGREE":
                 self._log.info(
@@ -703,21 +713,21 @@ class FiveMinVPINStrategy(BaseStrategy):
                 )
                 return
             # delta_binance is now SPOT (via binance_spot_feed), not futures.
-            # Tiingo and Chainlink are still preferred as they're oracle-aligned.
+            # Chainlink preferred as oracle-aligned for 5m Polymarket.
             delta_pct = (
-                delta_tiingo
-                if delta_tiingo is not None
-                else (delta_chainlink if delta_chainlink is not None else delta_binance)
+                delta_chainlink
+                if delta_chainlink is not None
+                else (delta_tiingo if delta_tiingo is not None else delta_binance)
             )
             _price_source_used = "consensus"
         else:
-            # Fallback: tiingo → chainlink → binance (all oracle-aligned)
-            if delta_tiingo is not None:
-                delta_pct = delta_tiingo
-                _price_source_used = f"tiingo_{_tiingo_candle_source}"
-            elif delta_chainlink is not None:
+            # Fallback: chainlink → tiingo → binance (oracle-aligned first)
+            if delta_chainlink is not None:
                 delta_pct = delta_chainlink
                 _price_source_used = "chainlink"
+            elif delta_tiingo is not None:
+                delta_pct = delta_tiingo
+                _price_source_used = f"tiingo_{_tiingo_candle_source}"
             else:
                 delta_pct = delta_binance
                 _price_source_used = "binance"

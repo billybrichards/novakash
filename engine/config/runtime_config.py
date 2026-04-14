@@ -208,11 +208,12 @@ class RuntimeConfig:
 
         # ── v8.0: Price source feature flag (env-only, not DB-synced) ────────
         # Controls which feed drives direction signal in five_min_vpin evaluate().
-        # Values: 'tiingo' | 'binance' | 'chainlink'
-        # Default: 'tiingo' — oracle-aligned (96.9% accuracy vs Binance 71.6%)
-        # Tiingo REST candle (open/close) used when available; falls back to Binance.
+        # Values: 'chainlink' | 'tiingo' | 'binance' | 'consensus'
+        # Default: 'chainlink' — Polymarket resolves on Chainlink oracle,
+        # so using it for delta aligns prediction with resolution source.
+        # Falls back to tiingo -> binance when chainlink unavailable.
         self.delta_price_source: str = os.environ.get(
-            "DELTA_PRICE_SOURCE", "tiingo"
+            "DELTA_PRICE_SOURCE", "chainlink"
         ).lower()
 
         # ── v8.0 Phase 2: FOK Execution Ladder (env-only, default ON) ───────────

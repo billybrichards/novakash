@@ -96,6 +96,7 @@ class Polymarket5MinFeed:
             Callable[[str, WindowState, WindowState], Awaitable[None]]
         ] = None,
         paper_mode: bool = True,
+        chainlink_feed: Optional[object] = None,
     ) -> None:
         """
         Initialize the 5-minute market feed.
@@ -107,6 +108,8 @@ class Polymarket5MinFeed:
             on_window_signal: Async callback when T-10s signal ready
             on_window_state_change: Async callback on state change
             paper_mode: If True, simulate market data
+            chainlink_feed: ChainlinkFeed instance with latest_prices dict
+                for oracle-aligned open price (primary source for Polymarket)
         """
         self._assets = assets or ["BTC"]
         self._duration_secs = duration_secs
@@ -114,6 +117,7 @@ class Polymarket5MinFeed:
         self._on_window_signal = on_window_signal
         self._on_window_state_change = on_window_state_change
         self._paper_mode = paper_mode
+        self._chainlink_feed = chainlink_feed
 
         # Track windows by asset -> window_ts -> WindowInfo
         self._windows: Dict[str, Dict[int, WindowInfo]] = {
@@ -488,12 +492,32 @@ class Polymarket5MinFeed:
             self._log.error("gamma_api_error", error=str(exc))
 
     async def _fetch_open_price(self, window: WindowInfo) -> None:
-        """Fetch the current spot price from Binance REST API for the window's asset.
+        """Fetch the window open price, preferring Chainlink oracle (Polymarket resolution source).
 
-        Used in live mode where _fetch_paper_data is skipped but we still
-        need the open price for delta calculation.
-        Tries spot API first, then futures API as fallback.
+        Priority: Chainlink in-memory cache -> Binance REST (fallback).
+        Polymarket 5m markets resolve using Chainlink oracle on Polygon,
+        so using the same source for open_price aligns our delta with resolution.
         """
+        # ── PRIMARY: Chainlink oracle (same source Polymarket resolves on) ──
+        if self._chainlink_feed:
+            cl_prices = getattr(self._chainlink_feed, "latest_prices", {})
+            cl_price = cl_prices.get(window.asset)
+            if cl_price and cl_price > 0:
+                window.open_price = float(cl_price)
+                self._log.info(
+                    "live.open_price_fetched",
+                    asset=window.asset,
+                    price=window.open_price,
+                    source="chainlink_oracle",
+                )
+                return
+
+        # ── FALLBACK: Binance REST ──
+        self._log.warning(
+            "live.open_price_chainlink_unavailable_falling_back_to_binance",
+            asset=window.asset,
+            chainlink_feed_present=self._chainlink_feed is not None,
+        )
         asset_symbols = {
             "BTC": "BTCUSDT",
             "ETH": "ETHUSDT",
@@ -530,7 +554,7 @@ class Polymarket5MinFeed:
                                 "live.open_price_fetched",
                                 asset=window.asset,
                                 price=window.open_price,
-                                source=url.split("/")[2],
+                                source=f"binance_fallback_{url.split('/')[2]}",
                             )
                             return
             except Exception:
@@ -556,7 +580,21 @@ class Polymarket5MinFeed:
         if window.down_token_id is None:
             window.down_token_id = f"paper-down-{window.asset}-{window.window_ts}"
 
-        # Fetch real price for this asset from Binance (works for BTC, ETH, SOL, etc.)
+        # Fetch open price: Chainlink oracle (primary) -> Binance REST (fallback)
+        if window.open_price is None:
+            # Try Chainlink first (oracle-aligned with Polymarket resolution)
+            if self._chainlink_feed:
+                cl_prices = getattr(self._chainlink_feed, "latest_prices", {})
+                cl_price = cl_prices.get(window.asset)
+                if cl_price and cl_price > 0:
+                    window.open_price = float(cl_price)
+                    self._log.debug(
+                        "paper.open_price_from_chainlink",
+                        asset=window.asset,
+                        price=window.open_price,
+                    )
+
+        # Fallback to Binance REST if Chainlink unavailable
         asset_symbols = {
             "BTC": "BTCUSDT",
             "ETH": "ETHUSDT",
@@ -579,6 +617,11 @@ class Polymarket5MinFeed:
                     ) as resp:
                         data = await resp.json()
                         window.open_price = float(data["price"])
+                        self._log.debug(
+                            "paper.open_price_from_binance_fallback",
+                            asset=window.asset,
+                            price=window.open_price,
+                        )
             except Exception:
                 # Fallback estimates
                 fallbacks = {
