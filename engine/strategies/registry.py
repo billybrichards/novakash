@@ -18,6 +18,7 @@ from typing import Any, Callable, Optional
 import structlog
 import yaml
 
+from alerts.haiku_summarizer import HaikuSummarizer
 from domain.value_objects import StrategyDecision
 from strategies.data_surface import DataSurfaceManager, FullDataSurface
 from strategies.gates.base import Gate, GateResult
@@ -127,6 +128,8 @@ class StrategyRegistry:
         # In-memory dedup: strategy_id -> last window_ts that was executed
         # Prevents double-execution when WindowStateRepository is unavailable
         self._executed_windows: dict[str, int] = {}
+        # Haiku summarizer for human-readable Telegram messages
+        self._haiku = HaikuSummarizer()
 
     def load_all(self) -> None:
         """Scan config_dir for *.yaml, build pipelines, load hooks."""
@@ -418,59 +421,112 @@ class StrategyRegistry:
         decisions: list[StrategyDecision],
         surface: FullDataSurface,
     ) -> None:
-        """Send compact haiku-style window summary to Telegram."""
-        try:
-            # ── Line 1: market context ─────────────────────────────────────
-            vpin_str = f"VPIN {surface.vpin:.2f}" if surface.vpin is not None else ""
-            regime_str = surface.regime or ""
-            regime_tag = (
-                f"{vpin_str} {regime_str}".strip() if vpin_str or regime_str else ""
-            )
-            delta_str = (
-                f"Δ{surface.delta_pct * 100:+.2f}%"
-                if surface.delta_pct is not None
-                else "Δ?"
-            )
-            line1 = f"🕐 {surface.asset} 5m | T-{eval_offset}s | {delta_str}"
-            if regime_tag:
-                line1 += f" | {regime_tag}"
+        """Send Haiku-powered window summary to Telegram.
 
-            # ── Line 2: per-strategy decisions (LIVE strategies first) ──────
-            strategy_parts = []
-            live_trades = []
+        Builds a context dict from the data surface and strategy decisions,
+        then calls HaikuSummarizer for a human-readable AI summary.
+        Falls back to template if Haiku API is unavailable.
+        """
+        try:
+            from datetime import datetime, timezone
+
+            window_time = datetime.fromtimestamp(
+                window_ts, tz=timezone.utc
+            ).strftime("%H:%M")
+
+            # Compute model direction and confidence distance
+            p_up = surface.v2_probability_up
+            model_direction = None
+            dist = None
+            if p_up is not None:
+                model_direction = "UP" if p_up > 0.5 else "DOWN"
+                dist = abs(p_up - 0.5)
+
+            # Delta as percentage string
+            delta_pct = None
+            if surface.delta_pct is not None:
+                delta_pct = f"{surface.delta_pct * 100:+.2f}"
+
+            # Source deltas
+            chainlink_delta = (
+                f"{surface.delta_chainlink * 100:+.2f}"
+                if surface.delta_chainlink is not None
+                else "N/A"
+            )
+            tiingo_delta = (
+                f"{surface.delta_tiingo * 100:+.2f}"
+                if surface.delta_tiingo is not None
+                else "N/A"
+            )
+
+            # Source agreement
+            sources_agree = self._check_source_agreement(surface)
+
+            # Build per-strategy decision lines and text block
+            decision_lines = []
+            decisions_text_parts = []
             for d in decisions:
                 cfg = self._configs.get(d.strategy_id)
                 mode = cfg.mode if cfg else "?"
-                sid = d.strategy_id  # e.g. "v4_fusion"
+                sid = d.strategy_id
+
                 if d.action == "TRADE":
-                    strategy_parts.append(f"*{sid}* {mode}→TRADE {d.direction}")
-                    if mode == "LIVE":
-                        live_trades.append(f"{sid} {d.direction}")
+                    line = f"  {sid} ({mode}): TRADE {d.direction}"
+                    if d.confidence:
+                        line += f" | conf={d.confidence}"
+                    decision_lines.append(line)
+                    decisions_text_parts.append(
+                        f"{sid} ({mode}): Trading {d.direction}, "
+                        f"confidence={d.confidence or '?'}"
+                    )
                 elif d.action == "SKIP":
-                    reason = (d.skip_reason or "skip")[:30]
-                    strategy_parts.append(f"{sid} {mode}→SKIP({reason})")
+                    reason = d.skip_reason or "unknown"
+                    line = f"  {sid} ({mode}): Skipped -- {reason}"
+                    decision_lines.append(line)
+                    decisions_text_parts.append(
+                        f"{sid} ({mode}): Skipped -- {reason}"
+                    )
                 else:
-                    strategy_parts.append(f"{sid} {mode}→ERR")
+                    decision_lines.append(f"  {sid} ({mode}): ERROR")
+                    decisions_text_parts.append(f"{sid} ({mode}): Error")
 
-            line2 = " | ".join(strategy_parts) if strategy_parts else "no strategies"
+            context = {
+                "window_time": window_time,
+                "window_ts": window_ts,
+                "delta_pct": delta_pct,
+                "vpin": surface.vpin,
+                "regime": surface.regime,
+                "p_up": p_up,
+                "model_direction": model_direction,
+                "dist": dist,
+                "chainlink_delta": chainlink_delta,
+                "tiingo_delta": tiingo_delta,
+                "sources_agree": sources_agree,
+                "decisions_text": "\n".join(decisions_text_parts),
+                "decision_lines": decision_lines,
+            }
 
-            lines = [line1, line2]
+            msg = await self._haiku.summarize_evaluation(context)
 
-            # ── Optional line 3: model signal when available ───────────────
-            if surface.v2_probability_up is not None:
-                dist = abs(surface.v2_probability_up - 0.5)
-                dir_label = "UP" if surface.v2_probability_up > 0.5 else "DOWN"
-                lines.append(
-                    f"Model P(UP)={surface.v2_probability_up:.2f} → {dir_label} dist={dist:.2f}"
-                )
-
-            msg = "\n".join(lines)
             if hasattr(self._alerter, "send_raw_message"):
                 await self._alerter.send_raw_message(msg)
             elif hasattr(self._alerter, "send_system_alert"):
                 await self._alerter.send_system_alert(msg)
         except Exception as exc:
             log.warning("registry.summary_alert_error", error=str(exc)[:200])
+
+    @staticmethod
+    def _check_source_agreement(surface: FullDataSurface) -> str:
+        """Check if Chainlink, Tiingo, and Binance deltas agree on direction."""
+        directions = []
+        for delta in (surface.delta_chainlink, surface.delta_tiingo, surface.delta_binance):
+            if delta is not None:
+                directions.append("UP" if delta > 0 else "DOWN")
+        if not directions:
+            return "no data"
+        if all(d == directions[0] for d in directions):
+            return f"YES ({directions[0]})"
+        return "NO (mixed)"
 
     def wire_execute_uc(self, uc: "ExecuteTradeUseCase") -> None:
         """Inject the ExecuteTradeUseCase after orchestrator startup."""
