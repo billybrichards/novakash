@@ -53,6 +53,55 @@ import DataHealth from './pages/polymarket/DataHealth.jsx';
 import StrategyCommand from './pages/polymarket/StrategyCommand.jsx';
 import SignalComparison from './pages/SignalComparison.jsx';
 
+/**
+ * AppErrorBoundary — catches any render-time JS errors and shows a visible
+ * error panel instead of a silent black screen.
+ */
+class AppErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error('[AppErrorBoundary] Render crash:', error, info.componentStack);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{
+          minHeight: '100vh', background: '#07070c', color: '#f87171',
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          justifyContent: 'center', padding: 32, fontFamily: 'monospace',
+        }}>
+          <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 12 }}>
+            App crashed — check browser console
+          </div>
+          <pre style={{
+            fontSize: 12, color: 'rgba(255,255,255,0.5)', maxWidth: 700,
+            whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+          }}>
+            {this.state.error.toString()}
+          </pre>
+          <button
+            onClick={() => window.location.reload()}
+            style={{
+              marginTop: 24, padding: '8px 20px', borderRadius: 6,
+              background: 'rgba(248,113,113,0.15)', border: '1px solid rgba(248,113,113,0.3)',
+              color: '#f87171', cursor: 'pointer', fontFamily: 'monospace', fontSize: 13,
+            }}
+          >
+            Reload
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   return (
     <AppErrorBoundary>
