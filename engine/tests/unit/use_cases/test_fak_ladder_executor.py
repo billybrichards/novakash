@@ -41,6 +41,6 @@ async def test_gtc_open_order_counts_as_successful_placement():
 
     assert result.success is True
     assert result.order_id == "0xgtc-open"
-    assert result.execution_mode == "gtc"
-    assert result.fill_price == 0.74
-    assert result.fill_size is not None
+    assert result.execution_mode == "gtc_resting"
+    assert result.fill_price is None
+    assert result.fill_size is None

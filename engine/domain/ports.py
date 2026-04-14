@@ -344,6 +344,19 @@ class WindowStateRepository(abc.ABC):
         ...
 
     @abc.abstractmethod
+    async def try_claim_trade(self, key: WindowKey) -> bool:
+        """Atomically claim a window for execution.
+
+        Returns ``True`` only for the first caller that acquires the claim.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def clear_trade_claim(self, key: WindowKey) -> None:
+        """Release a pending claim when execution never placed an order."""
+        ...
+
+    @abc.abstractmethod
     async def was_resolved(self, key: WindowKey) -> bool:
         """Return ``True`` if the given window has already been resolved."""
         ...
@@ -733,7 +746,7 @@ class OrderExecutionPort(abc.ABC):
     async def execute_order(
         self,
         token_id: str,
-        side: str,             # "YES" | "NO"
+        side: str,  # "YES" | "NO"
         stake_usd: float,
         entry_cap: float,
         price_floor: float,

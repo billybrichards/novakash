@@ -154,9 +154,23 @@ class ExecuteTradeUseCase:
         # Extract window key from market slug
         window_key = self._make_window_key(window_market)
 
-        # ── Step 1: Dedup ──────────────────────────────────────────────
+        claim_acquired = False
+
+        # ── Step 1: Dedup / atomic claim ───────────────────────────────
         try:
-            if await self._window_state.was_traded(window_key):
+            if hasattr(self._window_state, "try_claim_trade"):
+                claim_acquired = await self._window_state.try_claim_trade(window_key)
+                if not claim_acquired:
+                    logger.info(
+                        "execute_trade.dedup_hit",
+                        extra={"strategy": sid, "window": str(window_key)},
+                    )
+                    return _failed(
+                        "already_traded",
+                        strategy_id=sid,
+                        direction=direction,
+                    )
+            elif await self._window_state.was_traded(window_key):
                 logger.info(
                     "execute_trade.dedup_hit",
                     extra={"strategy": sid, "window": str(window_key)},
@@ -266,6 +280,11 @@ class ExecuteTradeUseCase:
                 price_floor=PRICE_FLOOR,
             )
         except Exception as exc:
+            if claim_acquired and hasattr(self._window_state, "clear_trade_claim"):
+                try:
+                    await self._window_state.clear_trade_claim(window_key)
+                except Exception:
+                    pass
             self._on_order_error()
             logger.error(
                 "execute_trade.execution_error",
@@ -292,6 +311,11 @@ class ExecuteTradeUseCase:
         )
 
         if not result.success:
+            if claim_acquired and hasattr(self._window_state, "clear_trade_claim"):
+                try:
+                    await self._window_state.clear_trade_claim(window_key)
+                except Exception:
+                    pass
             self._on_order_error()
             logger.info(
                 "execute_trade.order_not_filled",
@@ -343,7 +367,10 @@ class ExecuteTradeUseCase:
                     fill_price=result.fill_price or 0.0,
                     fill_size=result.fill_size or 0.0,
                     stake_usd=result.stake_usd,
-                    order_type=result.order_type,
+                    order_type=(result.execution_mode or "paper").upper(),
+                    order_id=result.order_id,
+                    execution_mode=result.execution_mode,
+                    timeframe=window_key.timeframe,
                     btc_price=current_btc_price,
                     vpin=getattr(self, "_last_vpin", 0.0),
                     regime=getattr(self, "_last_regime", "?"),

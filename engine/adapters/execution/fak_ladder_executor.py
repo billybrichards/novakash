@@ -260,15 +260,14 @@ class FAKLadderExecutor(OrderExecutionPort):
         )
 
         if order_live_on_book:
-            est_size = stake_usd / gtc_price if gtc_price > 0 else 0.0
             return ExecutionResult(
                 success=True,
                 order_id=order_id_str,
-                fill_price=gtc_price,
-                fill_size=est_size,
+                fill_price=None,
+                fill_size=None,
                 stake_usd=stake_usd,
                 fee_usd=0.0,
-                execution_mode="gtc",
+                execution_mode="gtc_resting",
                 fak_attempts=2,
                 fak_prices=fak_prices,
                 token_id=token_id,
