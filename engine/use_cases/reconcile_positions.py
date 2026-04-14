@@ -145,7 +145,10 @@ class ReconcilePositionsUseCase:
                     skipped += 1
                     continue
 
-                outcome = "WIN" if direction == actual_direction.upper() else "LOSS"
+                # direction is "NO" (bet DOWN) or "YES" (bet UP) from Polymarket
+                # actual_direction is "DOWN" or "UP" from window_snapshots
+                trade_expects = "DOWN" if direction == "NO" else "UP"
+                outcome = "WIN" if trade_expects == actual_direction.upper() else "LOSS"
                 status = "RESOLVED_WIN" if outcome == "WIN" else "RESOLVED_LOSS"
 
                 stake = float(trade.get("stake_usd") or 0)
