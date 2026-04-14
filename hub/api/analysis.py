@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -18,6 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth.jwt import TokenData
 from auth.middleware import get_current_user
 from db.database import get_session
+
+log = structlog.get_logger(__name__)
 
 router = APIRouter()
 
@@ -81,6 +84,7 @@ async def list_analysis(
             "count": len(rows),
         }
     except Exception as exc:
+        log.warning("analysis.list_failed", error=str(exc))
         return {"docs": [], "count": 0, "error": str(exc)}
 
 
@@ -116,6 +120,7 @@ async def get_analysis(
     except HTTPException:
         raise
     except Exception as exc:
+        log.warning("analysis.get_failed", doc_id=doc_id, error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -143,4 +148,5 @@ async def create_analysis(
         await session.commit()
         return {"ok": True, "doc_id": body.doc_id}
     except Exception as exc:
+        log.warning("analysis.create_failed", doc_id=body.doc_id, error=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))

@@ -48,244 +48,49 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup/shutdown lifecycle."""
     log.info("hub.starting")
     await init_db()
-    # Auto-run migrations on startup
+
+    # ── Startup DDL (idempotent, lock_timeout=5s to prevent hangups) ────────
     try:
-        from sqlalchemy import text
         from db.database import get_session
+        from db.migrations.startup_ddl import run_startup_migrations
 
         async for session in get_session():
-            await session.execute(
-                text("""
-                CREATE TABLE IF NOT EXISTS trading_configs (
-                    id SERIAL PRIMARY KEY, name VARCHAR(128) NOT NULL,
-                    version INTEGER NOT NULL DEFAULT 1, description TEXT,
-                    config JSONB NOT NULL, mode VARCHAR(16) NOT NULL DEFAULT 'paper',
-                    is_active BOOLEAN DEFAULT FALSE, is_approved BOOLEAN DEFAULT FALSE,
-                    approved_at TIMESTAMPTZ, approved_by VARCHAR(64),
-                    parent_id INTEGER REFERENCES trading_configs(id),
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-            """)
-            )
-            await session.execute(
-                text(
-                    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS mode VARCHAR(16) DEFAULT 'paper'"
-                )
-            )
-            await session.execute(
-                text(
-                    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS vpin_at_entry NUMERIC(10,6)"
-                )
-            )
-            await session.execute(
-                text(
-                    "ALTER TABLE system_state ADD COLUMN IF NOT EXISTS paper_enabled BOOLEAN DEFAULT TRUE"
-                )
-            )
-            await session.execute(
-                text(
-                    "ALTER TABLE system_state ADD COLUMN IF NOT EXISTS live_enabled BOOLEAN DEFAULT FALSE"
-                )
-            )
-            await session.execute(
-                text(
-                    "ALTER TABLE system_state ADD COLUMN IF NOT EXISTS active_paper_config_id INTEGER"
-                )
-            )
-            await session.execute(
-                text(
-                    "ALTER TABLE system_state ADD COLUMN IF NOT EXISTS active_live_config_id INTEGER"
-                )
-            )
-            # NT-01: persistent notes/journal table
-            await session.execute(
-                text("""
-                CREATE TABLE IF NOT EXISTS notes (
-                    id SERIAL PRIMARY KEY,
-                    title VARCHAR(200) NOT NULL DEFAULT '',
-                    body TEXT NOT NULL,
-                    tags VARCHAR(500) NOT NULL DEFAULT '',
-                    status VARCHAR(20) NOT NULL DEFAULT 'open',
-                    author VARCHAR(50) NOT NULL DEFAULT 'claude',
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-            """)
-            )
-            await session.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS notes_status_updated_idx "
-                    "ON notes (status, updated_at DESC)"
-                )
-            )
-            # Seed one initial note so the page isn't empty on first deploy.
-            # SQL escapes the apostrophe in "don't" with '' (string escape).
-            await session.execute(
-                text("""
-                INSERT INTO notes (title, body, tags, status, author)
-                SELECT
-                    'Notes page live (NT-01)',
-                    'This page is a persistent journal for audit observations, to-do items, and working notes. It backs /audit by providing a place to drop quick observations that don''t warrant a new task. Add new notes with the + button. Filter by status or tag. Cmd+Enter submits.',
-                    'nt-01,meta',
-                    'open',
-                    'claude'
-                WHERE NOT EXISTS (SELECT 1 FROM notes WHERE title = 'Notes page live (NT-01)')
-            """)
-            )
-            # AUDIT-01: agent ops task queue + audit checklist table
-            await session.execute(
-                text("""
-                CREATE TABLE IF NOT EXISTS audit_tasks_dev (
-                    id                BIGSERIAL PRIMARY KEY,
-                    task_key          VARCHAR(64),
-                    task_type         VARCHAR(64) NOT NULL,
-                    source            VARCHAR(64),
-                    title             TEXT NOT NULL,
-                    status            VARCHAR(24) NOT NULL DEFAULT 'OPEN',
-                    severity          VARCHAR(16),
-                    category          VARCHAR(64),
-                    priority          INTEGER NOT NULL DEFAULT 0,
-                    dedupe_key        TEXT,
-                    payload           JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    created_by        VARCHAR(64),
-                    updated_by        VARCHAR(64),
-                    claimed_by        VARCHAR(64),
-                    claimed_at        TIMESTAMPTZ,
-                    claim_expires_at  TIMESTAMPTZ,
-                    started_at        TIMESTAMPTZ,
-                    completed_at      TIMESTAMPTZ,
-                    canceled_at       TIMESTAMPTZ,
-                    last_heartbeat_at TIMESTAMPTZ,
-                    attempt_count     INTEGER NOT NULL DEFAULT 0,
-                    last_error        TEXT,
-                    status_reason     TEXT,
-                    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-            """)
-            )
-            await session.execute(
-                text(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS audit_tasks_dev_dedupe_key_uq "
-                    "ON audit_tasks_dev (dedupe_key) WHERE dedupe_key IS NOT NULL"
-                )
-            )
-            await session.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS audit_tasks_dev_status_priority_idx "
-                    "ON audit_tasks_dev (status, priority DESC, created_at ASC)"
-                )
-            )
-            await session.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS audit_tasks_dev_claim_expires_idx "
-                    "ON audit_tasks_dev (claim_expires_at)"
-                )
-            )
-            await session.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS audit_tasks_dev_claimed_by_idx "
-                    "ON audit_tasks_dev (claimed_by, status)"
-                )
-            )
-            await session.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS audit_tasks_dev_updated_at_idx "
-                    "ON audit_tasks_dev (updated_at DESC)"
-                )
-            )
-            await session.execute(
-                text(
-                    "CREATE INDEX IF NOT EXISTS audit_tasks_dev_type_created_idx "
-                    "ON audit_tasks_dev (task_type, created_at DESC)"
-                )
-            )
-            await session.commit()
-            log.info("hub.migrations_applied")
-            # Ensure manual_trades table exists
-            try:
-                from db.migrations.v58_monitor_ddl import ensure_manual_trades_table
-
-                await ensure_manual_trades_table(session)
-            except Exception as mt_exc:
-                log.warning("hub.manual_trades_migration_error", error=str(mt_exc))
-            # LT-03: ensure manual_trade_snapshots table exists
-            try:
-                from db.migrations.v58_monitor_ddl import (
-                    ensure_manual_trade_snapshots_table,
-                )
-
-                await ensure_manual_trade_snapshots_table(session)
-            except Exception as mts_exc:
-                log.warning(
-                    "hub.manual_trade_snapshots_migration_error", error=str(mts_exc)
-                )
-            # CFG-02: ensure config_keys / config_values / config_history tables exist
-            # and seed config_keys with the inventoried 142+ keys. Idempotent —
-            # re-running on every hub boot is safe and picks up new seed entries.
-            try:
-                from db.config_schema import ensure_config_tables
-                from db.config_seed import seed_config_keys
-
-                await ensure_config_tables(session)
-                await session.commit()
-                counts = await seed_config_keys(session)
-                await session.commit()
-                log.info("hub.config_seed_done", per_service=counts)
-            except Exception as cfg_exc:
-                log.warning("hub.config_schema_migration_error", error=str(cfg_exc))
-            # SP-05: ensure strategy_decisions table exists
-            try:
-                await session.execute(
-                    text("""
-                    CREATE TABLE IF NOT EXISTS strategy_decisions (
-                        id              BIGSERIAL PRIMARY KEY,
-                        strategy_id     TEXT NOT NULL,
-                        strategy_version TEXT NOT NULL,
-                        asset           TEXT NOT NULL,
-                        window_ts       BIGINT NOT NULL,
-                        timeframe       TEXT NOT NULL DEFAULT '5m',
-                        eval_offset     INTEGER,
-                        mode            TEXT NOT NULL,
-                        action          TEXT NOT NULL,
-                        direction       TEXT,
-                        confidence      TEXT,
-                        confidence_score DOUBLE PRECISION,
-                        entry_cap       DOUBLE PRECISION,
-                        collateral_pct  DOUBLE PRECISION,
-                        entry_reason    TEXT NOT NULL DEFAULT '',
-                        skip_reason     TEXT,
-                        executed        BOOLEAN NOT NULL DEFAULT false,
-                        order_id        TEXT,
-                        fill_price      DOUBLE PRECISION,
-                        fill_size       DOUBLE PRECISION,
-                        metadata_json   JSONB NOT NULL DEFAULT '{}',
-                        evaluated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                        UNIQUE (strategy_id, asset, window_ts, eval_offset)
-                    )
-                """)
-                )
-                await session.execute(
-                    text(
-                        "CREATE INDEX IF NOT EXISTS idx_sd_window "
-                        "ON strategy_decisions (asset, window_ts)"
-                    )
-                )
-                await session.execute(
-                    text(
-                        "CREATE INDEX IF NOT EXISTS idx_sd_strategy "
-                        "ON strategy_decisions (strategy_id, evaluated_at)"
-                    )
-                )
-                await session.commit()
-                log.info("hub.strategy_decisions_table_ensured")
-            except Exception as sd_exc:
-                log.warning("hub.strategy_decisions_migration_error", error=str(sd_exc))
+            await run_startup_migrations(session)
             break
     except Exception as exc:
-        log.warning("hub.migration_error", error=str(exc))
+        log.warning("hub.startup_ddl_error", error=str(exc))
+
+    # ── v58 monitor tables ───────────────────────────────────────────────────
+    try:
+        from db.database import get_session
+        from db.migrations.v58_monitor_ddl import (
+            ensure_manual_trades_table,
+            ensure_manual_trade_snapshots_table,
+        )
+
+        async for session in get_session():
+            await ensure_manual_trades_table(session)
+            await ensure_manual_trade_snapshots_table(session)
+            break
+    except Exception as exc:
+        log.warning("hub.v58_migration_error", error=str(exc))
+
+    # ── CFG-02: config_keys / config_values / config_history + seed ─────────
+    try:
+        from db.database import get_session
+        from db.config_schema import ensure_config_tables
+        from db.config_seed import seed_config_keys
+
+        async for session in get_session():
+            await ensure_config_tables(session)
+            await session.commit()
+            counts = await seed_config_keys(session)
+            await session.commit()
+            log.info("hub.config_seed_done", per_service=counts)
+            break
+    except Exception as exc:
+        log.warning("hub.config_schema_migration_error", error=str(exc))
+
     yield
     log.info("hub.stopping")
     await close_db()
