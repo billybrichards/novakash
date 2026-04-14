@@ -466,7 +466,7 @@ class StrategyRegistry:
             # Source agreement
             sources_agree = self._check_source_agreement(surface)
 
-            # Build per-strategy decision lines and text block
+            # Build per-strategy decision lines with YAML config context
             decision_lines = []
             decisions_text_parts = []
             for d in decisions:
@@ -474,21 +474,32 @@ class StrategyRegistry:
                 mode = cfg.mode if cfg else "?"
                 sid = d.strategy_id
 
+                # Build gate config summary for Haiku context
+                gate_summary = ""
+                if cfg and hasattr(cfg, "gates") and cfg.gates:
+                    gate_parts = []
+                    for g in cfg.gates:
+                        gtype = getattr(g, "type", str(g))
+                        params = getattr(g, "params", {})
+                        gate_parts.append(f"{gtype}({params})")
+                    gate_summary = " | ".join(gate_parts)
+
                 if d.action == "TRADE":
                     line = f"  {sid} ({mode}): TRADE {d.direction}"
                     if d.confidence:
                         line += f" | conf={d.confidence}"
                     decision_lines.append(line)
                     decisions_text_parts.append(
-                        f"{sid} ({mode}): Trading {d.direction}, "
-                        f"confidence={d.confidence or '?'}"
+                        f"{sid} ({mode}) [gates: {gate_summary}]: "
+                        f"TRADING {d.direction}, confidence={d.confidence or '?'}"
                     )
                 elif d.action == "SKIP":
                     reason = d.skip_reason or "unknown"
                     line = f"  {sid} ({mode}): Skipped -- {reason}"
                     decision_lines.append(line)
                     decisions_text_parts.append(
-                        f"{sid} ({mode}): Skipped -- {reason}"
+                        f"{sid} ({mode}) [gates: {gate_summary}]: "
+                        f"SKIPPED — {reason}"
                     )
                 else:
                     decision_lines.append(f"  {sid} ({mode}): ERROR")
@@ -510,6 +521,15 @@ class StrategyRegistry:
                 "chainlink_delta": chainlink_delta,
                 "tiingo_delta": tiingo_delta,
                 "sources_agree": sources_agree,
+                # Full surface for Haiku context
+                "clob_up_ask": getattr(surface, "clob_up_ask", None),
+                "clob_dn_ask": getattr(surface, "clob_dn_ask", None),
+                "clob_mid": getattr(surface, "clob_mid", None),
+                "trade_advised": getattr(surface, "trade_advised", None),
+                "v4_consensus": getattr(surface, "v4_consensus_direction", None),
+                "v2_direction": getattr(surface, "v2_direction", None),
+                "open_price": getattr(surface, "open_price", None),
+                "macro_bias": getattr(surface, "macro_bias", None),
                 "decisions_text": "\n".join(decisions_text_parts),
                 "decision_lines": decision_lines,
             }
