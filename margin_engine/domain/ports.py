@@ -5,21 +5,61 @@ These are the dependency inversion boundaries. The domain layer never imports
 from adapters or infrastructure; instead, it depends on these abstract ports.
 Adapters implement them.
 """
+
 from __future__ import annotations
 
 import abc
+import math
+from dataclasses import dataclass
 from typing import Optional
 
 from margin_engine.domain.entities.position import Position
 from margin_engine.domain.value_objects import (
     CompositeSignal,
-    FillResult,
     Money,
     Price,
     ProbabilitySignal,
     TradeSide,
-    V4Snapshot,
 )
+from margin_engine.domain.exceptions import DomainValidationError
+from margin_engine.adapters.signal.v4_models import V4Snapshot
+
+
+@dataclass(frozen=True)
+class FillResult:
+    """
+    Result of a filled market order.
+
+    Carries exchange ground truth so the caller doesn't have to estimate fees
+    or filled notional after the fact. For paper mode, the adapter populates
+    these from its own simulation — they're still "actual" in that the paper
+    calculation IS the paper outcome.
+
+    commission is always expressed in USDT-equivalent. commission_asset
+    records the original asset the fee was paid in (e.g. "USDT", "BNB")
+    for audit purposes. commission_is_actual is True when the value came
+    from the exchange's fill response; False when it's a fallback estimate
+    (e.g. the exchange returned no fills array, or the commission was in an
+    unrecognized asset that we couldn't convert to USDT).
+    """
+
+    order_id: str
+    fill_price: Price
+    filled_notional: float  # actual USDT filled (sum of price * qty across fills)
+    commission: float = 0.0  # USDT-equivalent, always non-negative
+    commission_asset: str = "USDT"
+    commission_is_actual: bool = False
+
+    def __post_init__(self) -> None:
+        errors = []
+        if self.commission < 0:
+            errors.append(f"Commission cannot be negative: {self.commission}")
+        if self.filled_notional < 0:
+            errors.append(f"Filled notional cannot be negative: {self.filled_notional}")
+        if math.isnan(self.commission) or math.isinf(self.commission):
+            errors.append(f"Commission must be finite: {self.commission}")
+        if errors:
+            raise DomainValidationError(errors)
 
 
 class ExchangePort(abc.ABC):
@@ -238,40 +278,32 @@ class AlertPort(abc.ABC):
     """Interface for sending alerts (Telegram, etc.)."""
 
     @abc.abstractmethod
-    async def send_trade_opened(self, position: Position) -> None:
-        ...
+    async def send_trade_opened(self, position: Position) -> None: ...
 
     @abc.abstractmethod
-    async def send_trade_closed(self, position: Position) -> None:
-        ...
+    async def send_trade_closed(self, position: Position) -> None: ...
 
     @abc.abstractmethod
-    async def send_kill_switch(self, reason: str) -> None:
-        ...
+    async def send_kill_switch(self, reason: str) -> None: ...
 
     @abc.abstractmethod
-    async def send_error(self, message: str) -> None:
-        ...
+    async def send_error(self, message: str) -> None: ...
 
 
 class PositionRepository(abc.ABC):
     """Interface for persisting positions."""
 
     @abc.abstractmethod
-    async def save(self, position: Position) -> None:
-        ...
+    async def save(self, position: Position) -> None: ...
 
     @abc.abstractmethod
-    async def get_open_positions(self) -> list[Position]:
-        ...
+    async def get_open_positions(self) -> list[Position]: ...
 
     @abc.abstractmethod
-    async def get_by_id(self, position_id: str) -> Optional[Position]:
-        ...
+    async def get_by_id(self, position_id: str) -> Optional[Position]: ...
 
     @abc.abstractmethod
-    async def get_closed_today(self) -> list[Position]:
-        ...
+    async def get_closed_today(self) -> list[Position]: ...
 
 
 class ClockPort(abc.ABC):

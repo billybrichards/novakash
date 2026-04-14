@@ -9,12 +9,12 @@ from __future__ import annotations
 import pytest
 from dataclasses import dataclass
 
-from margin_engine.domain.value_objects import (
+from margin_engine.adapters.signal.v4_models import (
     Quantiles,
     TimescalePayload,
     V4Snapshot,
 )
-from margin_engine.services.quantile_var_sizer import (
+from margin_engine.application.services.quantile_var_sizer import (
     calculate_var,
     calculate_var_from_payload,
     _calculate_size_mult,

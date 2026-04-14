@@ -12,11 +12,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from margin_engine.domain.entities.position import Position
-from margin_engine.domain.value_objects import (
-    TradeSide,
-    V4Snapshot,
-    TimescalePayload,
-)
+from margin_engine.domain.value_objects import TradeSide
+from margin_engine.adapters.signal.v4_models import V4Snapshot, TimescalePayload
 
 
 @dataclass

@@ -18,6 +18,7 @@ Ground-truth contract:
     borrow interest is still an estimate because Binance cross-margin reports
     interest only at the account level, not per position.
 """
+
 from __future__ import annotations
 
 import base64
@@ -33,7 +34,8 @@ from cryptography.hazmat.primitives import serialization
 
 from margin_engine.domain.entities.position import Position
 from margin_engine.domain.ports import ExchangePort
-from margin_engine.domain.value_objects import FillResult, Money, Price, TradeSide
+from margin_engine.domain.value_objects import Money, Price, TradeSide
+from margin_engine.domain.ports import FillResult
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +120,9 @@ class BinanceMarginAdapter(ExchangePort):
         except Exception as e:
             logger.warning(
                 "commission conversion failed for %s %s: %s — treating as USDT fallback",
-                amount, asset, e,
+                amount,
+                asset,
+                e,
             )
             return amount, False
 
@@ -149,7 +153,8 @@ class BinanceMarginAdapter(ExchangePort):
             fallback_price = float(data.get("price") or 0) or 0.0
             logger.warning(
                 "Binance order %s returned no fills — using fallback price %.2f",
-                order_id, fallback_price,
+                order_id,
+                fallback_price,
             )
             return FillResult(
                 order_id=order_id,
@@ -162,7 +167,7 @@ class BinanceMarginAdapter(ExchangePort):
 
         # Volume-weighted average fill price
         total_qty = 0.0
-        quote_sum = 0.0       # sum of price * qty → actual filled notional in USDT
+        quote_sum = 0.0  # sum of price * qty → actual filled notional in USDT
         commission_usdt = 0.0
         any_conversion_failed = False
         dominant_asset = "USDT"
@@ -205,14 +210,16 @@ class BinanceMarginAdapter(ExchangePort):
         session = await self._ensure_session()
 
         binance_side = "BUY" if side == TradeSide.LONG else "SELL"
-        params = self._sign({
-            "symbol": symbol,
-            "side": binance_side,
-            "type": "MARKET",
-            "quoteOrderQty": f"{notional.amount:.2f}",
-            "sideEffectType": "MARGIN_BUY",  # auto-borrow for margin
-            "isIsolated": "FALSE",  # cross margin
-        })
+        params = self._sign(
+            {
+                "symbol": symbol,
+                "side": binance_side,
+                "type": "MARKET",
+                "quoteOrderQty": f"{notional.amount:.2f}",
+                "sideEffectType": "MARGIN_BUY",  # auto-borrow for margin
+                "isIsolated": "FALSE",  # cross margin
+            }
+        )
 
         url = f"{self._base_url}/sapi/v1/margin/order"
         async with session.post(url, params=params) as resp:
@@ -227,9 +234,14 @@ class BinanceMarginAdapter(ExchangePort):
         )
         logger.info(
             "Binance margin order filled: %s %s req=%.2f filled=%.2f @ %.2f commission=%.4f %s (actual=%s)",
-            binance_side, symbol,
-            notional.amount, fill.filled_notional, fill.fill_price.value,
-            fill.commission, fill.commission_asset, fill.commission_is_actual,
+            binance_side,
+            symbol,
+            notional.amount,
+            fill.filled_notional,
+            fill.fill_price.value,
+            fill.commission,
+            fill.commission_asset,
+            fill.commission_is_actual,
         )
         return fill
 
@@ -243,14 +255,16 @@ class BinanceMarginAdapter(ExchangePort):
         session = await self._ensure_session()
 
         close_side = "SELL" if side == TradeSide.LONG else "BUY"
-        params = self._sign({
-            "symbol": symbol,
-            "side": close_side,
-            "type": "MARKET",
-            "quoteOrderQty": f"{notional.amount:.2f}",
-            "sideEffectType": "AUTO_REPAY",  # auto-repay borrowed assets
-            "isIsolated": "FALSE",
-        })
+        params = self._sign(
+            {
+                "symbol": symbol,
+                "side": close_side,
+                "type": "MARKET",
+                "quoteOrderQty": f"{notional.amount:.2f}",
+                "sideEffectType": "AUTO_REPAY",  # auto-repay borrowed assets
+                "isIsolated": "FALSE",
+            }
+        )
 
         url = f"{self._base_url}/sapi/v1/margin/order"
         async with session.post(url, params=params) as resp:
@@ -265,9 +279,13 @@ class BinanceMarginAdapter(ExchangePort):
         )
         logger.info(
             "Binance margin close filled: %s %s filled=%.2f @ %.2f commission=%.4f %s (actual=%s)",
-            close_side, symbol,
-            fill.filled_notional, fill.fill_price.value,
-            fill.commission, fill.commission_asset, fill.commission_is_actual,
+            close_side,
+            symbol,
+            fill.filled_notional,
+            fill.fill_price.value,
+            fill.commission,
+            fill.commission_asset,
+            fill.commission_is_actual,
         )
         return fill
 

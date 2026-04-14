@@ -22,6 +22,10 @@ from margin_engine.domain.value_objects import (
     StopLevel,
     TradeSide,
 )
+from margin_engine.domain.exceptions import (
+    BusinessRuleViolationError,
+    DomainValidationError,
+)
 
 
 @dataclass
@@ -145,7 +149,9 @@ class Position:
     ) -> None:
         """Transition PENDING_ENTRY → OPEN."""
         if self.state != PositionState.PENDING_ENTRY:
-            raise ValueError(f"Cannot confirm entry in state {self.state}")
+            raise BusinessRuleViolationError(
+                "Cannot confirm entry", f"position in state {self.state}"
+            )
         self.entry_price = price
         self.notional = notional
         self.collateral = collateral
@@ -161,7 +167,9 @@ class Position:
     def request_exit(self, reason: ExitReason) -> None:
         """Transition OPEN → PENDING_EXIT."""
         if self.state != PositionState.OPEN:
-            raise ValueError(f"Cannot request exit in state {self.state}")
+            raise BusinessRuleViolationError(
+                "Cannot request exit", f"position in state {self.state}"
+            )
         self.exit_reason = reason
         self.state = PositionState.PENDING_EXIT
 
@@ -174,7 +182,9 @@ class Position:
     ) -> None:
         """Transition PENDING_EXIT → CLOSED, compute P&L."""
         if self.state != PositionState.PENDING_EXIT:
-            raise ValueError(f"Cannot confirm exit in state {self.state}")
+            raise BusinessRuleViolationError(
+                "Cannot confirm exit", f"position in state {self.state}"
+            )
         self.exit_price = price
         self.exit_order_id = order_id
         self.exit_commission = commission
@@ -201,9 +211,11 @@ class Position:
             commission_is_actual: Whether commission is from exchange or estimated
         """
         if self.state != PositionState.OPEN:
-            raise ValueError(f"Cannot partial close in state {self.state}")
+            raise BusinessRuleViolationError(
+                "Cannot partial close", f"position in state {self.state}"
+            )
         if not 0.0 < close_pct < 1.0:
-            raise ValueError(f"close_pct must be in (0, 1): {close_pct}")
+            raise DomainValidationError([f"close_pct must be in (0, 1): {close_pct}"])
 
         # Reduce notional
         if self.notional:

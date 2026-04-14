@@ -12,8 +12,8 @@ Tests cover:
 import pytest
 from typing import Optional
 
-from margin_engine.domain.strategy import TradeDecision, Regime
-from margin_engine.domain.value_objects import (
+from margin_engine.application.services.strategy import TradeDecision, Regime
+from margin_engine.adapters.signal.v4_models import (
     V4Snapshot,
     TimescalePayload,
     Quantiles,
@@ -21,13 +21,16 @@ from margin_engine.domain.value_objects import (
     MacroBias,
     Cascade,
 )
-from margin_engine.services.regime_trend import TrendStrategy, TrendStrategyConfig
-from margin_engine.services.regime_mean_reversion import (
+from margin_engine.application.services.regime_trend import (
+    TrendStrategy,
+    TrendStrategyConfig,
+)
+from margin_engine.application.services.regime_mean_reversion import (
     MeanReversionStrategy,
     MeanReversionConfig,
 )
-from margin_engine.services.regime_no_trade import NoTradeStrategy
-from margin_engine.services.regime_adaptive import RegimeAdaptiveRouter
+from margin_engine.application.services.regime_no_trade import NoTradeStrategy
+from margin_engine.application.services.regime_adaptive import RegimeAdaptiveRouter
 
 
 # ─────────────────────────────────────────────────────────────────────────

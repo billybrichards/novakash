@@ -16,8 +16,8 @@ import pytest
 from datetime import datetime, timedelta
 from typing import Optional
 
-from margin_engine.domain.strategy import TradeDecision
-from margin_engine.domain.value_objects import (
+from margin_engine.application.services.strategy import TradeDecision
+from margin_engine.adapters.signal.v4_models import (
     V4Snapshot,
     TimescalePayload,
     Quantiles,
@@ -25,12 +25,12 @@ from margin_engine.domain.value_objects import (
     MacroBias,
     Cascade,
 )
-from margin_engine.services.cascade_detector import (
+from margin_engine.application.services.cascade_detector import (
     analyze_cascade,
     CascadeState,
     CascadeInfo,
 )
-from margin_engine.services.cascade_fade import (
+from margin_engine.application.services.cascade_fade import (
     CascadeFadeStrategy,
     CascadeFadeConfig,
 )

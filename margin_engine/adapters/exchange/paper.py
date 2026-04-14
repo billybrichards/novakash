@@ -9,6 +9,7 @@ If live mode computes stops from bid/ask and reads real commissions off fills,
 paper does the same using modeled values. This prevents the class of bug
 from tasks/lessons.md where paper and live diverged silently.
 """
+
 from __future__ import annotations
 
 import logging
@@ -16,7 +17,8 @@ from typing import Optional
 
 from margin_engine.domain.entities.position import Position
 from margin_engine.domain.ports import ExchangePort
-from margin_engine.domain.value_objects import FillResult, Money, Price, TradeSide
+from margin_engine.domain.value_objects import Money, Price, TradeSide
+from margin_engine.domain.ports import FillResult
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +37,9 @@ class PaperExchangeAdapter(ExchangePort):
     def __init__(
         self,
         starting_balance: float = 500.0,
-        spread_bps: float = 2.0,       # 2bp total spread — realistic for BTCUSDT top of book
-        fee_rate: float = 0.001,        # 0.1% per side — matches live fallback
-        price_getter=None,              # callable returning current BTC mid price
+        spread_bps: float = 2.0,  # 2bp total spread — realistic for BTCUSDT top of book
+        fee_rate: float = 0.001,  # 0.1% per side — matches live fallback
+        price_getter=None,  # callable returning current BTC mid price
     ) -> None:
         self._balance = starting_balance
         self._spread_bps = spread_bps
@@ -78,7 +80,12 @@ class PaperExchangeAdapter(ExchangePort):
         order_id = self._next_order_id()
         logger.info(
             "PAPER order: %s %s %.2f USDT @ %.2f (mid=%.2f, fee=%.4f)",
-            side.value, symbol, notional.amount, fill_price, mid, fee,
+            side.value,
+            symbol,
+            notional.amount,
+            fill_price,
+            mid,
+            fee,
         )
         return FillResult(
             order_id=order_id,
@@ -108,7 +115,12 @@ class PaperExchangeAdapter(ExchangePort):
         order_id = self._next_order_id()
         logger.info(
             "PAPER close: %s %s %.2f USDT @ %.2f (mid=%.2f, fee=%.4f)",
-            side.value, symbol, notional.amount, fill_price, mid, fee,
+            side.value,
+            symbol,
+            notional.amount,
+            fill_price,
+            mid,
+            fee,
         )
         return FillResult(
             order_id=order_id,

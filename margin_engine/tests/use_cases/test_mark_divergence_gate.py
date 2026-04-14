@@ -24,6 +24,7 @@ Test scope (all 4 cases from the DQ-07 plan):
 All tests run offline — no real exchange, DB, or HTTP. The same mocking
 pattern used by test_open_position_macro_advisory.py is reused here.
 """
+
 from __future__ import annotations
 
 import logging
@@ -32,18 +33,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from margin_engine.domain.value_objects import (
+from margin_engine.domain.value_objects import Money, Price, TradeSide
+from margin_engine.domain.ports import FillResult
+from margin_engine.adapters.signal.v4_models import (
     Consensus,
-    FillResult,
     MacroBias,
-    Money,
-    Price,
     Quantiles,
     TimescalePayload,
-    TradeSide,
     V4Snapshot,
 )
-from margin_engine.use_cases.open_position import OpenPositionUseCase
+from margin_engine.application.use_cases.open_position import OpenPositionUseCase
+from margin_engine.application.dto import OpenPositionInput
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -180,29 +180,31 @@ def _build_use_case(
     v4_port = MagicMock()
 
     uc = OpenPositionUseCase(
-        exchange=exchange,
-        portfolio=portfolio,
-        repository=repo,
-        alerts=alerts,
-        probability_port=probability_port,
-        signal_port=signal_port,
-        v4_snapshot_port=v4_port,
-        engine_use_v4_actions=True,
-        v4_primary_timescale="15m",
-        v4_timescales=("15m",),
-        v4_entry_edge=0.10,
-        v4_min_expected_move_bps=15.0,
-        v4_allow_mean_reverting=False,
-        v4_macro_mode="advisory",
-        v4_macro_hard_veto_confidence_floor=80,
-        v4_macro_advisory_size_mult_on_conflict=0.75,
-        v4_allow_no_edge_if_exp_move_bps_gte=None,
-        # ── The setting under test ──
-        v4_max_mark_divergence_bps=v4_max_mark_divergence_bps,
-        fee_rate_per_side=0.00045,
-        bet_fraction=0.02,
-        venue="hyperliquid",
-        strategy_version="v2-probability",
+        input=OpenPositionInput(
+            exchange=exchange,
+            portfolio=portfolio,
+            repository=repo,
+            alerts=alerts,
+            probability_port=probability_port,
+            signal_port=signal_port,
+            v4_snapshot_port=v4_port,
+            engine_use_v4_actions=True,
+            v4_primary_timescale="15m",
+            v4_timescales=("15m",),
+            v4_entry_edge=0.10,
+            v4_min_expected_move_bps=15.0,
+            v4_allow_mean_reverting=False,
+            v4_macro_mode="advisory",
+            v4_macro_hard_veto_confidence_floor=80,
+            v4_macro_advisory_size_mult_on_conflict=0.75,
+            v4_allow_no_edge_if_exp_move_bps_gte=None,
+            # ── The setting under test ──
+            v4_max_mark_divergence_bps=v4_max_mark_divergence_bps,
+            fee_rate_per_side=0.00045,
+            bet_fraction=0.02,
+            venue="hyperliquid",
+            strategy_version="v2-probability",
+        )
     )
     return uc, exchange
 
@@ -233,18 +235,18 @@ class TestMarkDivergenceGate:
         with caplog.at_level(logging.DEBUG):
             result = await uc._execute_v4(snap)
 
-        assert result is not None, \
-            "Default-off gate must not block the entry"
-        assert exchange.place_market_order.called, \
+        assert result is not None, "Default-off gate must not block the entry"
+        assert exchange.place_market_order.called, (
             "Order must fire when gate is default-off"
+        )
         # get_mark should NOT have been called — the gate branch is
         # short-circuited by the `> 0` check before the exchange call.
-        assert not exchange.get_mark.called, \
+        assert not exchange.get_mark.called, (
             "get_mark should not be queried when gate is default-off"
+        )
         # No mark-divergence log messages of any kind
         assert not any(
-            "dq07.mark_divergence_gate" in rec.message
-            for rec in caplog.records
+            "dq07.mark_divergence_gate" in rec.message for rec in caplog.records
         ), "Gate must be silent when default-off"
 
     @pytest.mark.asyncio
@@ -265,21 +267,22 @@ class TestMarkDivergenceGate:
         with caplog.at_level(logging.INFO):
             result = await uc._execute_v4(snap)
 
-        assert result is None, \
+        assert result is None or result.position is None, (
             "Gate must reject when divergence exceeds threshold"
-        assert not exchange.place_market_order.called, \
+        )
+        assert not exchange.place_market_order.called, (
             "No order must fire when mark divergence gate fails"
-        assert exchange.get_mark.called, \
+        )
+        assert exchange.get_mark.called, (
             "get_mark must have been queried to compute divergence"
+        )
         # Structured skip log landed with reason=mark_divergence
-        assert any(
-            "mark_divergence" in rec.message
-            for rec in caplog.records
-        ), "Expected 'mark_divergence' in _log_skip output"
+        assert any("mark_divergence" in rec.message for rec in caplog.records), (
+            "Expected 'mark_divergence' in _log_skip output"
+        )
         # And the detailed WARNING with v4_last_price/exchange_mark fired
         assert any(
-            "dq07.mark_divergence_gate_failed" in rec.message
-            for rec in caplog.records
+            "dq07.mark_divergence_gate_failed" in rec.message for rec in caplog.records
         ), "Expected dq07.mark_divergence_gate_failed warning"
 
     @pytest.mark.asyncio
@@ -298,16 +301,16 @@ class TestMarkDivergenceGate:
         with caplog.at_level(logging.DEBUG):
             result = await uc._execute_v4(snap)
 
-        assert result is not None, \
-            "Gate must pass when divergence is below threshold"
-        assert exchange.place_market_order.called, \
+        assert result is not None, "Gate must pass when divergence is below threshold"
+        assert exchange.place_market_order.called, (
             "Order must fire when mark divergence is within threshold"
-        assert exchange.get_mark.called, \
+        )
+        assert exchange.get_mark.called, (
             "get_mark must have been queried to compute divergence"
+        )
         # No failure log
         assert not any(
-            "dq07.mark_divergence_gate_failed" in rec.message
-            for rec in caplog.records
+            "dq07.mark_divergence_gate_failed" in rec.message for rec in caplog.records
         )
         assert not any(
             "mark_divergence" in rec.message and "skip" in rec.message.lower()
@@ -316,7 +319,8 @@ class TestMarkDivergenceGate:
 
     @pytest.mark.asyncio
     async def test_threshold_20bps_exchange_raises_graceful_passthrough(
-        self, caplog,
+        self,
+        caplog,
     ):
         """Case 4 — threshold=20, exchange.get_mark raises.
 
@@ -335,17 +339,17 @@ class TestMarkDivergenceGate:
         with caplog.at_level(logging.WARNING):
             result = await uc._execute_v4(snap)
 
-        assert result is not None, \
+        assert result is not None, (
             "Graceful degradation: transient exchange error must not block"
-        assert exchange.place_market_order.called, \
+        )
+        assert exchange.place_market_order.called, (
             "Order must fire when get_mark raises (graceful passthrough)"
+        )
         # The warning log surfaced the failure for ops monitoring
-        assert any(
-            "dq07.mark_query_failed" in rec.message
-            for rec in caplog.records
-        ), "Expected dq07.mark_query_failed warning on exchange error"
+        assert any("dq07.mark_query_failed" in rec.message for rec in caplog.records), (
+            "Expected dq07.mark_query_failed warning on exchange error"
+        )
         # No skip log — the graceful path continues, not rejects
         assert not any(
-            "dq07.mark_divergence_gate_failed" in rec.message
-            for rec in caplog.records
+            "dq07.mark_divergence_gate_failed" in rec.message for rec in caplog.records
         ), "No gate-failed log should fire when mark query itself failed"
