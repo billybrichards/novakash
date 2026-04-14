@@ -1084,6 +1084,24 @@ class Orchestrator:
         except Exception as exc:
             log.warning("orchestrator.ensure_trades_sot_columns_failed", error=str(exc))
 
+        # 6d4. Strategy executions table (for persistent window dedup)
+        try:
+            await self._db._pool.execute("""
+                CREATE TABLE IF NOT EXISTS strategy_executions (
+                    strategy_id TEXT NOT NULL,
+                    window_ts   BIGINT NOT NULL,
+                    order_id    TEXT,
+                    executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (strategy_id, window_ts)
+                )
+            """)
+            await self._db._pool.execute(
+                "CREATE INDEX IF NOT EXISTS idx_strategy_executions_ts "
+                "ON strategy_executions (executed_at DESC)"
+            )
+        except Exception as exc:
+            log.warning("orchestrator.ensure_strategy_executions_failed", error=str(exc))
+
         # 6f. Recover open trades from previous sessions (startup trade recovery)
         try:
             recovered = await self._order_manager.recover_open_trades(self._db)
