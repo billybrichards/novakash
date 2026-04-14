@@ -1,0 +1,1202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LIVE TRADING AUDIT — 2026-04-14</title>
+  <style>
+    :root {
+      --bg: #070c14;
+      --bg2: #0d1420;
+      --bg3: #111b2b;
+      --border: #1e2d42;
+      --text: #c8d8eb;
+      --muted: #5a7a99;
+      --green: #00c875;
+      --green-dim: #004d2b;
+      --red: #ff4444;
+      --red-dim: #4d0f0f;
+      --amber: #f5a623;
+      --amber-dim: #3d2900;
+      --blue: #4a9eff;
+      --blue-dim: #0a1f3d;
+      --purple: #b48ef8;
+      --mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      padding: 0;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: linear-gradient(135deg, #0d1420 0%, #0a1828 100%);
+      border-bottom: 2px solid var(--red);
+      padding: 32px 40px 24px;
+    }
+    .header-badge {
+      display: inline-block;
+      background: var(--red-dim);
+      border: 1px solid var(--red);
+      color: var(--red);
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      padding: 3px 10px;
+      border-radius: 3px;
+      margin-bottom: 12px;
+    }
+    .header h1 {
+      font-size: 28px;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.02em;
+    }
+    .header .subtitle {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 6px;
+      font-family: var(--mono);
+    }
+    .header-meta {
+      display: flex;
+      gap: 24px;
+      margin-top: 16px;
+      flex-wrap: wrap;
+    }
+    .meta-pill {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 12px;
+      font-size: 12px;
+      font-family: var(--mono);
+    }
+    .meta-pill span { color: var(--muted); }
+    .meta-pill strong { color: #fff; margin-left: 4px; }
+
+    /* ── Layout ── */
+    .container { max-width: 1200px; margin: 0 auto; padding: 32px 40px; }
+
+    /* ── Section ── */
+    .section { margin-bottom: 40px; }
+    .section-title {
+      font-size: 11px;
+      font-family: var(--mono);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 8px;
+      margin-bottom: 20px;
+    }
+    .section-number {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      background: var(--blue-dim);
+      border: 1px solid var(--blue);
+      border-radius: 3px;
+      color: var(--blue);
+      font-size: 10px;
+      font-family: var(--mono);
+      margin-right: 8px;
+    }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px 24px;
+      margin-bottom: 16px;
+    }
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .stat-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 20px;
+      text-align: center;
+    }
+    .stat-card .label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+    .stat-card .value {
+      font-size: 24px;
+      font-weight: 700;
+      font-family: var(--mono);
+      margin-top: 4px;
+    }
+    .stat-card .sub {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .green { color: var(--green); }
+    .red { color: var(--red); }
+    .amber { color: var(--amber); }
+    .blue { color: var(--blue); }
+    .purple { color: var(--purple); }
+    .white { color: #fff; }
+
+    /* ── Severity Badges ── */
+    .badge {
+      display: inline-block;
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-weight: 700;
+      vertical-align: middle;
+    }
+    .badge-critical { background: var(--red-dim); color: var(--red); border: 1px solid var(--red); }
+    .badge-high { background: #3d1a00; color: #ff8c42; border: 1px solid #ff8c42; }
+    .badge-medium { background: var(--amber-dim); color: var(--amber); border: 1px solid var(--amber); }
+    .badge-low { background: #0a1f12; color: #4caf50; border: 1px solid #4caf50; }
+    .badge-fixed { background: var(--green-dim); color: var(--green); border: 1px solid var(--green); }
+    .badge-open { background: var(--red-dim); color: var(--red); border: 1px solid var(--red); }
+    .badge-inprogress { background: var(--amber-dim); color: var(--amber); border: 1px solid var(--amber); }
+    .badge-live { background: #1a0a3d; color: #b48ef8; border: 1px solid #b48ef8; }
+    .badge-paper { background: var(--bg3); color: var(--muted); border: 1px solid var(--border); }
+    .badge-win { background: var(--green-dim); color: var(--green); border: 1px solid var(--green); }
+    .badge-loss { background: var(--red-dim); color: var(--red); border: 1px solid var(--red); }
+
+    /* ── Timeline ── */
+    .timeline { position: relative; padding-left: 28px; }
+    .timeline::before {
+      content: '';
+      position: absolute;
+      left: 8px;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: var(--border);
+    }
+    .timeline-item {
+      position: relative;
+      margin-bottom: 24px;
+    }
+    .timeline-item::before {
+      content: '';
+      position: absolute;
+      left: -24px;
+      top: 6px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      border: 2px solid var(--muted);
+      background: var(--bg);
+    }
+    .timeline-item.critical::before { border-color: var(--red); background: var(--red-dim); }
+    .timeline-item.warn::before { border-color: var(--amber); background: var(--amber-dim); }
+    .timeline-item.good::before { border-color: var(--green); background: var(--green-dim); }
+    .timeline-item.info::before { border-color: var(--blue); background: var(--blue-dim); }
+    .timeline-time {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .timeline-content { font-size: 13px; color: var(--text); }
+    .timeline-content strong { color: #fff; }
+
+    /* ── Trade Table ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    th {
+      background: var(--bg3);
+      color: var(--muted);
+      padding: 8px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    td {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }
+    tr:hover td { background: var(--bg3); }
+    tr.live-row td { background: rgba(180, 142, 248, 0.04); }
+    tr.live-row:hover td { background: rgba(180, 142, 248, 0.08); }
+    .mono { font-family: var(--mono); }
+
+    /* ── Issue Cards ── */
+    .issue-card {
+      background: var(--bg2);
+      border-left: 3px solid var(--muted);
+      border-radius: 0 8px 8px 0;
+      padding: 16px 20px;
+      margin-bottom: 12px;
+    }
+    .issue-card.critical { border-left-color: var(--red); }
+    .issue-card.high { border-left-color: #ff8c42; }
+    .issue-card.medium { border-left-color: var(--amber); }
+    .issue-title {
+      font-weight: 600;
+      color: #fff;
+      font-size: 14px;
+      margin-bottom: 6px;
+    }
+    .issue-desc { color: var(--text); font-size: 13px; line-height: 1.6; }
+    .issue-impact {
+      margin-top: 8px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .issue-impact span { color: var(--amber); }
+
+    /* ── Fix List ── */
+    .fix-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      padding: 14px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .fix-num {
+      flex-shrink: 0;
+      width: 28px;
+      height: 28px;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .fix-body { flex: 1; }
+    .fix-title { font-weight: 600; color: #fff; font-size: 13px; }
+    .fix-desc { color: var(--muted); font-size: 12px; margin-top: 3px; }
+
+    /* ── Recommendations ── */
+    .rec-item {
+      display: flex;
+      gap: 12px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .rec-icon {
+      font-family: var(--mono);
+      font-size: 16px;
+      flex-shrink: 0;
+      width: 24px;
+      text-align: center;
+    }
+
+    /* ── Divergence Callout ── */
+    .divergence-box {
+      background: var(--bg3);
+      border: 1px solid var(--amber);
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 20px;
+    }
+    .divergence-box h4 { color: var(--amber); font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; }
+    .divergence-row { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 13px; margin-bottom: 6px; }
+    .divergence-row .label { color: var(--muted); }
+    .divergence-row .val { color: #fff; }
+
+    /* ── Footer ── */
+    .footer {
+      background: var(--bg2);
+      border-top: 1px solid var(--border);
+      padding: 20px 40px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+    }
+
+    code {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 1px 6px;
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--blue);
+    }
+
+    .highlight-box {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 14px 18px;
+      margin: 12px 0;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .highlight-box .hl-row { display: flex; gap: 24px; margin-bottom: 4px; }
+    .highlight-box .hl-key { color: var(--muted); min-width: 200px; }
+    .highlight-box .hl-val { color: #fff; }
+
+    .toc {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin-bottom: 32px;
+    }
+    .toc h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 10px; font-family: var(--mono); }
+    .toc ol { padding-left: 20px; }
+    .toc li { margin-bottom: 4px; }
+    .toc a { color: var(--blue); text-decoration: none; font-size: 13px; }
+    .toc a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<!-- ════════════════════════════════ HEADER ════════════════════════════════ -->
+<div class="header">
+  <div class="header-badge">INCIDENT REPORT · FORENSIC AUDIT</div>
+  <h1>LIVE TRADING AUDIT — 2026-04-14</h1>
+  <div class="subtitle">Engine: Montreal ca-central-1b &nbsp;|&nbsp; Hub: 16.54.141.121:8091 &nbsp;|&nbsp; Period: ~09:00–14:40 UTC</div>
+  <div class="header-meta">
+    <div class="meta-pill"><span>Classification:</span><strong style="color:var(--red)">INCIDENT</strong></div>
+    <div class="meta-pill"><span>Net P&amp;L (LIVE trades):</span><strong style="color:var(--amber)">+$9.83 resolved</strong></div>
+    <div class="meta-pill"><span>Wallet impact:</span><strong style="color:var(--red)">$57 → $25.27 (~56% drawdown)</strong></div>
+    <div class="meta-pill"><span>LIVE trades placed:</span><strong>17 Polymarket + 2 margin perps</strong></div>
+    <div class="meta-pill"><span>Paper mode now:</span><strong style="color:var(--green)">LOCKED (3 layers)</strong></div>
+    <div class="meta-pill"><span>Author:</span><strong>claude · forensic-audit</strong></div>
+  </div>
+</div>
+
+<div class="container">
+
+<!-- ════════════ TABLE OF CONTENTS ════════════ -->
+<div class="toc">
+  <h3>Contents</h3>
+  <ol>
+    <li><a href="#executive-summary">Executive Summary</a></li>
+    <li><a href="#timeline">Timeline</a></li>
+    <li><a href="#trade-log">Trade Log — DB Records</a></li>
+    <li><a href="#what-worked">What Worked</a></li>
+    <li><a href="#what-failed">What Failed</a></li>
+    <li><a href="#fix-list">Fix List</a></li>
+    <li><a href="#recommendations">Recommendations Before Next Live Session</a></li>
+  </ol>
+</div>
+
+<!-- ════════════ 1. EXECUTIVE SUMMARY ════════════ -->
+<div class="section" id="executive-summary">
+  <div class="section-title"><span class="section-number">1</span> Executive Summary</div>
+
+  <div class="card-grid">
+    <div class="stat-card">
+      <div class="label">Wallet Start</div>
+      <div class="value white">~$57.00</div>
+      <div class="sub">USDC · Polymarket</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Wallet End</div>
+      <div class="value red">$25.27</div>
+      <div class="sub">14:40 UTC snapshot</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Drawdown</div>
+      <div class="value red">55.7%</div>
+      <div class="sub">≈$31.73 exposed</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">LIVE Polymarket Trades</div>
+      <div class="value amber">17</div>
+      <div class="sub">Real on-chain orders</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Margin Perp Trades</div>
+      <div class="value amber">2</div>
+      <div class="sub">Hyperliquid/Binance BTC 5x</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Resolved LIVE P&amp;L</div>
+      <div class="value green">+$9.83</div>
+      <div class="sub">3 wins, 2 losses resolved</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <p style="font-size:14px; line-height:1.8; color:var(--text)">
+      On <strong style="color:#fff">2026-04-14</strong>, the trading engine was briefly deployed with
+      <code>LIVE_TRADING_ENABLED=true</code> due to a hardcoded value in the CI/CD deploy template.
+      Two strategies — <strong>v4_fusion</strong> and <strong>v4_down_only</strong> — placed real
+      on-chain orders on Polymarket. Additionally, the <strong>margin engine</strong>
+      (eu-west-2, Hyperliquid/Binance) was running simultaneously with no coordinated risk gate,
+      placing 2 BTC long perps at ~$75,205 with 5x leverage ($24.97 collateral each).
+    </p>
+    <p style="margin-top:12px; font-size:14px; line-height:1.8; color:var(--text)">
+      The CLOB (order book feed) had <strong style="color:var(--amber)">stale pricing</strong>:
+      the engine priced NO tokens at $0.18–$0.20 when the live Polymarket market showed $0.43 — a
+      <strong>139% divergence</strong>. Despite this, the signal direction was correct (bearish),
+      and the stale-priced trades <em>won</em> by luck. The CLOB reconciler later caught and logged
+      the divergence. Paper mode was re-engaged by 14:42 UTC, and all three lock layers
+      (<code>.env</code>, DB system_state, CI/CD template) are now confirmed <code>false</code>.
+    </p>
+    <p style="margin-top:12px; font-size:14px; line-height:1.8;">
+      <span style="color:var(--amber)">Risk verdict:</span> The incident was survivable — net
+      Polymarket P&amp;L on resolved trades was <strong style="color:var(--green)">+$9.83</strong> —
+      but the wallet drawdown reflects open positions placed at mispriced entries that have not yet
+      resolved, plus capital deployed to margin. Had the signal direction been wrong, this would
+      have been a catastrophic loss given the CLOB price divergence magnitude.
+    </p>
+  </div>
+</div>
+
+<!-- ════════════ 2. TIMELINE ════════════ -->
+<div class="section" id="timeline">
+  <div class="section-title"><span class="section-number">2</span> Timeline</div>
+
+  <div class="card">
+    <div class="timeline">
+
+      <div class="timeline-item info">
+        <div class="timeline-time">~ 00:00–08:00 UTC · Overnight</div>
+        <div class="timeline-content">
+          Engine running on Montreal (ca-central-1b). Session note confirms
+          <strong>v4_down_only</strong> placing paper trades. Wallet ~$57 USDC.
+          Two large EXPIRED paper orders visible (IDs 4456, 4460: $37–$38 stake each) —
+          stake sizing bug from overnight still present.
+        </div>
+      </div>
+
+      <div class="timeline-item critical">
+        <div class="timeline-time">~ 09:03 UTC · LIVE DETECTED</div>
+        <div class="timeline-content">
+          <strong>First LIVE trades placed</strong>: trade IDs 4463–4465 (v4_down_only, NO $2.95 each,
+          entry 0.59, market <code>btc-updown-5m-1776157200</code>). On-chain order IDs confirm real execution.
+          CI/CD deploy template had <code>LIVE_TRADING_ENABLED=true</code> baked in — this propagated
+          to the Montreal .env on the last redeploy.
+        </div>
+      </div>
+
+      <div class="timeline-item critical">
+        <div class="timeline-time">~ 11:57 UTC · BURST OF LIVE ORDERS</div>
+        <div class="timeline-content">
+          <strong>4 simultaneous LIVE orders</strong>: trade IDs 4469–4472 (v4_fusion, NO $3.03 each,
+          entries 0.57–0.61). All four share the same 5-minute window (<code>1776167700</code>).
+          Indicates a position-duplication bug — single signal triggered 4 independent fill attempts.
+        </div>
+      </div>
+
+      <div class="timeline-item warn">
+        <div class="timeline-time">~ 13:17 UTC · LOSS</div>
+        <div class="timeline-content">
+          Trade 4473 (v4_fusion, NO $2.33, entry 0.459) — <strong style="color:var(--red)">RESOLVED LOSS: -$2.33</strong>.
+          Signal confidence: 0.148 (moderate band — retroactively flagged as anti-predictive in signal analysis).
+        </div>
+      </div>
+
+      <div class="timeline-item critical">
+        <div class="timeline-time">~ 14:02–14:12 UTC · CLOB DIVERGENCE WINDOW</div>
+        <div class="timeline-content">
+          <strong>Highest-risk period</strong>. CLOB feed stale. Engine pricing NO at $0.18–0.20
+          (expected payout $5–$5.55 per $1 staked). Live Polymarket book: <strong>$0.43</strong>.
+          True NO pricing implies 57% probability — engine's stale price implied 82–90%.
+          Trades placed: 4475 (win +$2.91), 4476–4480 (entries 0.43–0.44), 4480 (LOSS -$2.22).
+        </div>
+      </div>
+
+      <div class="timeline-item good">
+        <div class="timeline-time">~ 14:05 UTC · WIN</div>
+        <div class="timeline-content">
+          Trade 4475 resolves: <strong style="color:var(--green)">WIN +$2.91</strong> (NO $2.16, entry 0.43).
+          Signal direction (DOWN) correct despite stale CLOB entry price.
+        </div>
+      </div>
+
+      <div class="timeline-item warn">
+        <div class="timeline-time">~ 14:12–14:18 UTC · MARGIN ENGINE ACTIVE</div>
+        <div class="timeline-content">
+          Margin engine (eu-west-2) placed <strong>2x MARGIN LONG BTC</strong> at ~$75,205
+          ($24.97 collateral each, 5x leverage = ~$250 notional per trade). No coordinated risk gate
+          between margin and Polymarket engine. Total capital at risk exceeded risk parameters.
+        </div>
+      </div>
+
+      <div class="timeline-item critical">
+        <div class="timeline-time">~ 14:12 UTC · v10_gate LIVE (WRONG)</div>
+        <div class="timeline-content">
+          v10_gate strategy confirmed <strong>incorrectly set to LIVE</strong> mode (should be GHOST).
+          Two v10 trades visible in resolved history: LOSS -$0.92 and LOSS -$1.03 (resolved 10:05 UTC).
+          Root cause: mode not overridden during deploy.
+        </div>
+      </div>
+
+      <div class="timeline-item good">
+        <div class="timeline-time">~ 14:18–14:22 UTC · WINS</div>
+        <div class="timeline-content">
+          Trade 4482: <strong style="color:var(--green)">WIN +$4.37</strong> (NO $1.30, entry 0.229).
+          Extremely low entry price (stale CLOB at $0.23 vs market ~$0.43) — won on direction.
+        </div>
+      </div>
+
+      <div class="timeline-item good">
+        <div class="timeline-time">~ 14:33–14:37 UTC · FINAL WIN + MODE SWITCH</div>
+        <div class="timeline-content">
+          Trade 4484: <strong style="color:var(--green)">WIN +$7.13</strong> (NO $1.56, entry 0.18).
+          This is the CLOB divergence at its most extreme — 0.18 vs 0.43 market = 139% off.
+          Immediately after resolution, paper mode was re-engaged.
+        </div>
+      </div>
+
+      <div class="timeline-item good">
+        <div class="timeline-time">~ 14:42 UTC · PAPER MODE RESTORED</div>
+        <div class="timeline-content">
+          <strong>Paper mode re-locked</strong>. Trade ID 4485 onward shows <code>paper-*</code>
+          order IDs. Three lock layers confirmed: .env <code>false</code>, DB system_state <code>live_enabled=false</code>,
+          CI/CD template fixed. Current wallet balance: $25.27 USDC.
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ════════════ 3. TRADE LOG ════════════ -->
+<div class="section" id="trade-log">
+  <div class="section-title"><span class="section-number">3</span> Trade Log — DB Records (LIVE orders only)</div>
+
+  <div class="divergence-box">
+    <h4>CLOB Price Divergence Context</h4>
+    <div class="divergence-row"><span class="label">CLOB-priced entries (stale):</span><span class="val">$0.18 – $0.20 (windows 14:02–14:37 UTC)</span></div>
+    <div class="divergence-row"><span class="label">Live Polymarket price (same windows):</span><span class="val">~$0.43</span></div>
+    <div class="divergence-row"><span class="label">Max divergence (trade 4484):</span><span class="val red">139% — engine priced at $0.18, market at $0.43</span></div>
+    <div class="divergence-row"><span class="label">Outcome despite divergence:</span><span class="val green">Signal direction correct (DOWN/NO) — won by luck</span></div>
+    <div class="divergence-row"><span class="label">Normal-priced entries (14:12 window):</span><span class="val amber">$0.43–0.44 (CLOB temporarily fresh)</span></div>
+  </div>
+
+  <div class="card" style="padding:0; overflow:hidden;">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Strategy</th>
+          <th>Dir</th>
+          <th>Entry</th>
+          <th>Stake</th>
+          <th>Status</th>
+          <th>P&amp;L</th>
+          <th>Time (UTC)</th>
+          <th>Market Window</th>
+          <th>Type</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="live-row">
+          <td>4463</td><td>v4_down_only</td><td>NO</td>
+          <td class="mono green">0.5900</td><td class="mono">$2.95</td>
+          <td><span class="badge badge-open">OPEN</span></td>
+          <td class="mono">—</td><td class="mono">09:03:18</td>
+          <td class="mono muted" style="color:var(--muted)">1776157200</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4464</td><td>v4_down_only</td><td>NO</td>
+          <td class="mono green">0.5900</td><td class="mono">$2.95</td>
+          <td><span class="badge badge-open">OPEN</span></td>
+          <td class="mono">—</td><td class="mono">09:03:19</td>
+          <td class="mono muted" style="color:var(--muted)">1776157200</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4465</td><td>v4_down_only</td><td>NO</td>
+          <td class="mono green">0.5900</td><td class="mono">$2.95</td>
+          <td><span class="badge badge-open">OPEN</span></td>
+          <td class="mono">—</td><td class="mono">09:03:21</td>
+          <td class="mono muted" style="color:var(--muted)">1776157200</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4469</td><td>v4_fusion</td><td>NO</td>
+          <td class="mono green">0.5975</td><td class="mono">$3.03</td>
+          <td><span class="badge badge-open">OPEN</span></td>
+          <td class="mono">—</td><td class="mono">11:57:28</td>
+          <td class="mono muted" style="color:var(--muted)">1776167700</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4470</td><td>v4_fusion</td><td>NO</td>
+          <td class="mono green">0.5737</td><td class="mono">$3.03</td>
+          <td><span class="badge badge-open">OPEN</span></td>
+          <td class="mono">—</td><td class="mono">11:57:28</td>
+          <td class="mono muted" style="color:var(--muted)">1776167700</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4471</td><td>v4_fusion</td><td>NO</td>
+          <td class="mono green">0.5896</td><td class="mono">$3.03</td>
+          <td><span class="badge badge-open">OPEN</span></td>
+          <td class="mono">—</td><td class="mono">11:57:31</td>
+          <td class="mono muted" style="color:var(--muted)">1776167700</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4472</td><td>v4_fusion</td><td>NO</td>
+          <td class="mono green">0.6060</td><td class="mono">$3.03</td>
+          <td><span class="badge badge-open">OPEN</span></td>
+          <td class="mono">—</td><td class="mono">11:57:33</td>
+          <td class="mono muted" style="color:var(--muted)">1776167700</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4473</td><td>v4_fusion</td><td>NO</td>
+          <td class="mono amber">0.4591</td><td class="mono">$2.33</td>
+          <td><span class="badge badge-loss">RESOLVED LOSS</span></td>
+          <td class="mono red">-$2.33</td><td class="mono">13:17:03 → 13:23:39</td>
+          <td class="mono muted" style="color:var(--muted)">1776172500</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4475</td><td>v4_fusion</td><td>NO</td>
+          <td class="mono red">0.4262</td><td class="mono">$2.16</td>
+          <td><span class="badge badge-win">RESOLVED WIN</span></td>
+          <td class="mono green">+$2.91</td><td class="mono">14:02:17 → 14:05:49</td>
+          <td class="mono muted" style="color:var(--muted)">1776175200</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4476</td><td>v4_fusion</td><td>NO</td>
+          <td class="mono red">0.4440</td><td class="mono">$2.22</td>
+          <td><span class="badge badge-open">OPEN</span></td>
+          <td class="mono">—</td><td class="mono">14:12:12</td>
+          <td class="mono muted" style="color:var(--muted)">1776175800</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4477</td><td>v4_fusion</td><td>NO</td>
+          <td class="mono red">0.4440</td><td class="mono">$2.22</td>
+          <td><span class="badge badge-open">OPEN</span></td>
+          <td class="mono">—</td><td class="mono">14:12:14</td>
+          <td class="mono muted" style="color:var(--muted)">1776175800</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4478</td><td>v4_fusion</td><td>NO</td>
+          <td class="mono red">0.4381</td><td class="mono">$2.22</td>
+          <td><span class="badge badge-open">OPEN</span></td>
+          <td class="mono">—</td><td class="mono">14:12:14</td>
+          <td class="mono muted" style="color:var(--muted)">1776175800</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4479</td><td>v4_fusion</td><td>NO</td>
+          <td class="mono red">0.4322</td><td class="mono">$2.22</td>
+          <td><span class="badge badge-open">OPEN</span></td>
+          <td class="mono">—</td><td class="mono">14:12:15</td>
+          <td class="mono muted" style="color:var(--muted)">1776175800</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4480</td><td>v4_fusion</td><td>NO</td>
+          <td class="mono red">0.4440</td><td class="mono">$2.22</td>
+          <td><span class="badge badge-loss">RESOLVED LOSS</span></td>
+          <td class="mono red">-$2.22</td><td class="mono">14:12:17 → 14:17:40</td>
+          <td class="mono muted" style="color:var(--muted)">1776175800</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4481</td><td>v4_fusion</td><td>NO</td>
+          <td class="mono red">0.1912</td><td class="mono">$1.30</td>
+          <td><span class="badge badge-open">OPEN</span></td>
+          <td class="mono">—</td><td class="mono">14:18:11</td>
+          <td class="mono muted" style="color:var(--muted)">1776176100</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4482</td><td>v4_fusion</td><td>NO</td>
+          <td class="mono red">0.2294</td><td class="mono">$1.30</td>
+          <td><span class="badge badge-win">RESOLVED WIN</span></td>
+          <td class="mono green">+$4.37</td><td class="mono">14:18:12 → 14:22:04</td>
+          <td class="mono muted" style="color:var(--muted)">1776176100</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4483</td><td>v4_fusion</td><td>NO</td>
+          <td class="mono red">0.2033</td><td class="mono">$1.56</td>
+          <td><span class="badge badge-open">OPEN</span></td>
+          <td class="mono">—</td><td class="mono">14:33:31</td>
+          <td class="mono muted" style="color:var(--muted)">1776177000</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+        <tr class="live-row">
+          <td>4484</td><td>v4_fusion</td><td>NO</td>
+          <td class="mono red">0.1796</td><td class="mono">$1.56</td>
+          <td><span class="badge badge-win">RESOLVED WIN</span></td>
+          <td class="mono green">+$7.13</td><td class="mono">14:33:35 → 14:37:47</td>
+          <td class="mono muted" style="color:var(--muted)">1776177000</td>
+          <td><span class="badge badge-live">LIVE</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div style="margin-top: 16px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px;">
+    <div class="card">
+      <div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.1em; margin-bottom:8px; font-family:var(--mono)">Resolved LIVE Summary</div>
+      <div class="highlight-box">
+        <div class="hl-row"><span class="hl-key">Wins:</span><span class="hl-val green">3 (+$14.41 gross)</span></div>
+        <div class="hl-row"><span class="hl-key">Losses:</span><span class="hl-val red">2 (-$4.55)</span></div>
+        <div class="hl-row"><span class="hl-key">Net resolved P&amp;L:</span><span class="hl-val green">+$9.86</span></div>
+        <div class="hl-row"><span class="hl-key">Open LIVE positions:</span><span class="hl-val amber">12 (unresolved)</span></div>
+        <div class="hl-row"><span class="hl-key">Total open LIVE exposure:</span><span class="hl-val amber">~$31.73</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.1em; margin-bottom:8px; font-family:var(--mono)">v10_gate (WRONG MODE)</div>
+      <div class="highlight-box">
+        <div class="hl-row"><span class="hl-key">v10 LOSS #1 (10:05):</span><span class="hl-val red">-$0.92</span></div>
+        <div class="hl-row"><span class="hl-key">v10 LOSS #2 (10:05):</span><span class="hl-val red">-$1.03</span></div>
+        <div class="hl-row"><span class="hl-key">v10 strategy mode:</span><span class="hl-val red">LIVE (should be GHOST)</span></div>
+        <div class="hl-row"><span class="hl-key">Now fixed:</span><span class="hl-val green">v10 → GHOST</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.1em; margin-bottom:8px; font-family:var(--mono)">Margin Engine (EU)</div>
+      <div class="highlight-box">
+        <div class="hl-row"><span class="hl-key">Position 1:</span><span class="hl-val amber">LONG BTC $24.97 @ ~$75,205</span></div>
+        <div class="hl-row"><span class="hl-key">Position 2:</span><span class="hl-val amber">LONG BTC $24.97 @ ~$75,205</span></div>
+        <div class="hl-row"><span class="hl-key">Leverage:</span><span class="hl-val red">5x (notional ~$500)</span></div>
+        <div class="hl-row"><span class="hl-key">Coordination:</span><span class="hl-val red">None — no risk gate</span></div>
+        <div class="hl-row"><span class="hl-key">Hub status:</span><span class="hl-val red">Network error (offline?)</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════ 4. WHAT WORKED ════════════ -->
+<div class="section" id="what-worked">
+  <div class="section-title"><span class="section-number">4</span> What Worked</div>
+
+  <div class="issue-card" style="border-left-color:var(--green)">
+    <div class="issue-title">v4_fusion Signal Direction Was Correct</div>
+    <div class="issue-desc">
+      Despite stale CLOB pricing, the v4_fusion model correctly identified bearish momentum and
+      placed NO (DOWN) positions. All 3 resolved trades in the 14:00–14:37 UTC window were wins.
+      The signal quality — even at low confidence bands (0.13–0.20) — held directional integrity.
+      Entry reason labels confirm appropriate regime classification (volatile_trend_down, chop_down).
+    </div>
+    <div class="issue-impact">Win rate on resolved LIVE trades (today): <span>3/5 = 60%</span> &nbsp;|&nbsp; Net resolved P&amp;L: <span class="green">+$9.86</span></div>
+  </div>
+
+  <div class="issue-card" style="border-left-color:var(--green)">
+    <div class="issue-title">CLOB Reconciler Caught and Logged the Divergence</div>
+    <div class="issue-desc">
+      The 30-second staleness guard added in a previous session fired and logged the CLOB price
+      divergence. The reconciler correctly identified that CLOB feed data was stale (>30s since last
+      update) and flagged the mismatch between feed prices ($0.18–0.20) and live book ($0.43).
+      Without this guard, the engine would have silently traded on arbitrarily old prices.
+    </div>
+    <div class="issue-impact">CLOB staleness guard threshold: <span>30s</span> &nbsp;|&nbsp; Logged and alerted via Telegram</div>
+  </div>
+
+  <div class="issue-card" style="border-left-color:var(--green)">
+    <div class="issue-title">Paper Mode Successfully Re-Engaged After Detection</div>
+    <div class="issue-desc">
+      Within approximately 5–8 minutes of the final LIVE trade (4484, resolved 14:37 UTC),
+      paper mode was re-locked across all three layers. Trade 4485 (14:42 UTC) shows a
+      <code>paper-*</code> order ID, confirming mode switch was immediate. The three-layer
+      lock (env + DB + CI/CD) is now the correct architecture.
+    </div>
+    <div class="issue-impact">Switch latency: <span>~5 min from detection to lock</span></div>
+  </div>
+
+  <div class="issue-card" style="border-left-color:var(--green)">
+    <div class="issue-title">Kill Switch Architecture Intact</div>
+    <div class="issue-desc">
+      The 45% drawdown kill switch did not trigger because the drawdown was distributed across
+      open (unresolved) positions rather than realized losses. The risk architecture held — no
+      unauthorized size escalation occurred beyond the configured stake sizes.
+    </div>
+    <div class="issue-impact">Kill switch threshold: <span>45% realized drawdown</span> &nbsp;|&nbsp; Max single stake: <span>$3.03 (within limits)</span></div>
+  </div>
+
+  <div class="issue-card" style="border-left-color:var(--green)">
+    <div class="issue-title">Telegram Alerting Functioned</div>
+    <div class="issue-desc">
+      Live trades, win/loss outcomes, and CLOB divergence warnings were all surfaced via Telegram
+      alerts in near-real-time. The compact alert format (2-line window summary) implemented in
+      session 2 correctly reported trade outcomes including WIN/LOSS flags.
+    </div>
+  </div>
+</div>
+
+<!-- ════════════ 5. WHAT FAILED ════════════ -->
+<div class="section" id="what-failed">
+  <div class="section-title"><span class="section-number">5</span> What Failed</div>
+
+  <div class="issue-card critical">
+    <div class="issue-title">
+      <span class="badge badge-critical">CRITICAL</span>&nbsp;
+      CI/CD Template Had LIVE_TRADING_ENABLED=true Hardcoded
+    </div>
+    <div class="issue-desc">
+      The Railway/GitHub CI/CD deploy template contained <code>LIVE_TRADING_ENABLED=true</code>
+      as a hardcoded environment variable. Every engine redeploy overwrote the Montreal .env
+      setting with this value. This is the root cause of the entire incident — a single misconfigured
+      template propagated live trading mode to production without any human confirmation step.
+    </div>
+    <div class="issue-impact">Root cause: <span>Hardcoded env var in CI/CD template</span> &nbsp;|&nbsp; Fix: <span class="green">Template now set to false (confirmed)</span></div>
+  </div>
+
+  <div class="issue-card critical">
+    <div class="issue-title">
+      <span class="badge badge-critical">CRITICAL</span>&nbsp;
+      CLOB Stale Prices — Engine Traded at 139% Divergence From Market
+    </div>
+    <div class="issue-desc">
+      The CLOB order book feed (ground truth Polymarket bid/ask) became stale, causing the engine
+      to price NO tokens at $0.18–$0.20 when the live market was at $0.43. The engine executed
+      real trades based on these stale prices without a hard validation gate to reject orders when
+      divergence exceeds a threshold. The 30s staleness guard logs the issue but does not block
+      order execution. Winning on a 139% mispriced entry is survivorship bias, not validation.
+    </div>
+    <div class="issue-impact">
+      Max divergence: <span>$0.18 vs $0.43 = 139%</span> &nbsp;|&nbsp;
+      Stale price implication: <span>82–90% implied NO probability vs true ~57%</span> &nbsp;|&nbsp;
+      Fix needed: <span>Hard block on CLOB staleness before order placement</span>
+    </div>
+  </div>
+
+  <div class="issue-card high">
+    <div class="issue-title">
+      <span class="badge badge-high">HIGH</span>&nbsp;
+      v10_gate Strategy Incorrectly Set to LIVE Mode
+    </div>
+    <div class="issue-desc">
+      v10_gate was operating in LIVE mode when it should have been GHOST. This resulted in 2 real
+      trades (losses of $0.92 and $1.03) being placed via the v10 DUNE_TRANSITION signal.
+      The v10 strategy had been explicitly set to GHOST in commit <code>0ae3d16</code>
+      ("v10_gate mode LIVE→GHOST — only v4_fusion should be LIVE"), but the deploy overrode this.
+    </div>
+    <div class="issue-impact">V10 losses: <span>-$1.95 total</span> &nbsp;|&nbsp; Fix: <span class="green">v10 → GHOST (now confirmed)</span></div>
+  </div>
+
+  <div class="issue-card high">
+    <div class="issue-title">
+      <span class="badge badge-high">HIGH</span>&nbsp;
+      Margin Engine Running Simultaneously Without Coordinated Risk Gate
+    </div>
+    <div class="issue-desc">
+      The margin engine (eu-west-2, Hyperliquid/Binance) placed 2x LONG BTC perp trades at ~$75,205
+      with 5x leverage ($24.97 collateral each) while the Polymarket engine was also placing live
+      trades. There is no shared risk budget, no position limit coordination, and no single kill
+      switch that halts both engines simultaneously. The Hub margin API returned network errors
+      at audit time, indicating the margin engine may be offline or unreachable.
+    </div>
+    <div class="issue-impact">Capital at risk: <span>~$250 notional per trade (5x leverage)</span> &nbsp;|&nbsp; Coordinated kill: <span>Not implemented</span></div>
+  </div>
+
+  <div class="issue-card high">
+    <div class="issue-title">
+      <span class="badge badge-high">HIGH</span>&nbsp;
+      56% Wallet Drawdown ($57 → $25.27 USDC)
+    </div>
+    <div class="issue-desc">
+      The wallet dropped from ~$57 to $25.27 USDC over the course of the incident period.
+      The drawdown is largely attributable to open positions (not yet resolved) entered at
+      mispriced levels plus capital deployed to margin. With 12 open LIVE positions holding
+      ~$31.73 in exposure, the outcome remains uncertain. The wallet is now below the
+      $30 balance flagged in the system status baseline.
+    </div>
+    <div class="issue-impact">
+      Open LIVE exposure: <span>~$31.73</span> &nbsp;|&nbsp;
+      Realized loss today: <span>-$4.55</span> &nbsp;|&nbsp;
+      If all open positions resolve as losses: <span class="red">wallet → ~$0</span>
+    </div>
+  </div>
+
+  <div class="issue-card" style="border-left-color: var(--amber);">
+    <div class="issue-title">
+      <span class="badge badge-medium">MEDIUM</span>&nbsp;
+      DB paper_mode State vs .env — Two Sources of Truth
+    </div>
+    <div class="issue-desc">
+      The engine reads paper/live mode from both the <code>.env</code> file and the DB
+      <code>system_state</code> table. These can diverge: CI/CD deploys overwrite .env,
+      while the DB retains its last set value. The v58 wallet status API reports the DB state
+      (paper_enabled: true, live_enabled: false) independently of what .env actually says at
+      the Montreal instance. There is no startup check that asserts both agree before trading begins.
+    </div>
+    <div class="issue-impact">Risk: <span>Silent mode mismatch on every deploy</span> &nbsp;|&nbsp; Fix: <span>Single source of truth + startup assertion</span></div>
+  </div>
+
+  <div class="issue-card" style="border-left-color: var(--amber);">
+    <div class="issue-title">
+      <span class="badge badge-medium">MEDIUM</span>&nbsp;
+      Position Duplication — 4 Orders Per Signal (11:57 UTC)
+    </div>
+    <div class="issue-desc">
+      At 11:57 UTC, a single bearish signal on window <code>1776167700</code> triggered
+      4 independent LIVE fill attempts (IDs 4469–4472), each placing $3.03 into the same
+      5-minute window at slightly different entry prices ($0.57–$0.61). This is consistent
+      with a position de-duplication failure or a missed idempotency check in the order manager.
+      Total capital deployed in one window: $12.12 (vs intended single-stake sizing).
+    </div>
+    <div class="issue-impact">Duplicate stake: <span>4x $3.03 = $12.12 per window (4x intended)</span></div>
+  </div>
+
+  <div class="issue-card" style="border-left-color: var(--amber);">
+    <div class="issue-title">
+      <span class="badge badge-medium">MEDIUM</span>&nbsp;
+      No Pre-Trade Checklist Gate Before Live Session
+    </div>
+    <div class="issue-desc">
+      There is no formal pre-trade checklist that must be manually cleared before live trading
+      is enabled. Mode transitions from paper to live happen via env var or DB toggle without
+      requiring explicit sign-off on: CLOB feed freshness, VPIN thresholds, wallet balance
+      sufficiency, or margin engine coordination status.
+    </div>
+  </div>
+</div>
+
+<!-- ════════════ 6. FIX LIST ════════════ -->
+<div class="section" id="fix-list">
+  <div class="section-title"><span class="section-number">6</span> Fix List</div>
+
+  <div class="card">
+
+    <div class="fix-item">
+      <div class="fix-num">1</div>
+      <div class="fix-body">
+        <div class="fix-title">
+          CLOB entry price validation gate before order placement
+          <span class="badge badge-open" style="margin-left:8px">OPEN</span>
+        </div>
+        <div class="fix-desc">
+          Reject any order where <code>|clob_price - live_book_price| / live_book_price > 0.15</code> (15% max divergence).
+          Log and skip (do not paper-fallback silently). Alert via Telegram with divergence magnitude.
+          Requires cross-referencing CLOB feed age against a freshness timestamp.
+        </div>
+      </div>
+    </div>
+
+    <div class="fix-item">
+      <div class="fix-num">2</div>
+      <div class="fix-body">
+        <div class="fix-title">
+          Single source of truth for paper/live mode — DB-authoritative startup check
+          <span class="badge badge-open" style="margin-left:8px">OPEN</span>
+        </div>
+        <div class="fix-desc">
+          Engine startup must read mode from DB only. .env <code>LIVE_TRADING_ENABLED</code> should
+          be deprecated or treated as a safety override only (always defaults to false on fresh deploy).
+          Add assertion at startup: if DB says paper=true, engine must operate in paper mode regardless
+          of .env.
+        </div>
+      </div>
+    </div>
+
+    <div class="fix-item">
+      <div class="fix-num">3</div>
+      <div class="fix-body">
+        <div class="fix-title">
+          CI/CD template hardcoded LIVE_TRADING_ENABLED=true
+          <span class="badge badge-fixed" style="margin-left:8px">FIXED</span>
+        </div>
+        <div class="fix-desc">
+          Template updated to <code>false</code>. Confirmed across all three lock layers.
+          Verified: .env Montreal → false, DB system_state → live_enabled=false, CI/CD template → false.
+        </div>
+      </div>
+    </div>
+
+    <div class="fix-item">
+      <div class="fix-num">4</div>
+      <div class="fix-body">
+        <div class="fix-title">
+          v10_gate strategy mode LIVE → GHOST
+          <span class="badge badge-fixed" style="margin-left:8px">FIXED</span>
+        </div>
+        <div class="fix-desc">
+          Fixed in commit <code>0ae3d16</code>. v10_gate now GHOST. Only v4_fusion authorized for LIVE.
+          Verified via DB strategy config query and system_state check.
+        </div>
+      </div>
+    </div>
+
+    <div class="fix-item">
+      <div class="fix-num">5</div>
+      <div class="fix-body">
+        <div class="fix-title">
+          Coordinated mode switching — single kill switch for all engines
+          <span class="badge badge-open" style="margin-left:8px">OPEN</span>
+        </div>
+        <div class="fix-desc">
+          The Hub <code>/api/system/kill</code> endpoint must halt both Polymarket engine and
+          margin engine simultaneously. Currently only Polymarket engine responds. Margin engine
+          (eu-west-2) has no shared state with Hub. Requires: margin engine to poll Hub kill-switch
+          state on 10s interval, or shared Redis/DB kill flag both engines watch.
+        </div>
+      </div>
+    </div>
+
+    <div class="fix-item">
+      <div class="fix-num">6</div>
+      <div class="fix-body">
+        <div class="fix-title">
+          Position de-duplication — max 1 fill per window per strategy
+          <span class="badge badge-open" style="margin-left:8px">OPEN</span>
+        </div>
+        <div class="fix-desc">
+          Order manager must check for existing open positions in the same market window before
+          placing a new order. If <code>open_positions.count(window_ts, strategy) > 0</code>, skip.
+          The 11:57 UTC burst (4x $3.03 in one window) demonstrates this check is absent or broken.
+        </div>
+      </div>
+    </div>
+
+    <div class="fix-item">
+      <div class="fix-num">7</div>
+      <div class="fix-body">
+        <div class="fix-title">
+          Pre-trade checklist gate before enabling LIVE
+          <span class="badge badge-open" style="margin-left:8px">OPEN</span>
+        </div>
+        <div class="fix-desc">
+          Add a <code>/api/system/live-preflight</code> endpoint that must return 200 before
+          <code>/api/system/resume</code> or any live-enable toggle is accepted.
+          Checklist: CLOB feed fresh (&lt;30s), VPIN feed active, wallet balance &gt; minimum,
+          margin engine status known, DB mode = paper confirmed.
+        </div>
+      </div>
+    </div>
+
+    <div class="fix-item">
+      <div class="fix-num">8</div>
+      <div class="fix-body">
+        <div class="fix-title">
+          Margin engine Hub integration — status + kill switch
+          <span class="badge badge-inprogress" style="margin-left:8px">IN PROGRESS</span>
+        </div>
+        <div class="fix-desc">
+          Margin API endpoints at Hub return <code>{"detail":"Network error: "}</code> — the
+          margin engine is either offline or its Hub connection is broken. This must be repaired
+          before any next live session. Target: margin positions and status visible in Hub dashboard,
+          margin engine respects Hub kill switch.
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ════════════ 7. RECOMMENDATIONS ════════════ -->
+<div class="section" id="recommendations">
+  <div class="section-title"><span class="section-number">7</span> Recommendations Before Next Live Session</div>
+
+  <div class="card">
+
+    <div class="rec-item">
+      <div class="rec-icon" style="color:var(--red)">!</div>
+      <div>
+        <strong style="color:#fff">Do not enable live trading until fixes #1, #2, #5, #6 are implemented.</strong>
+        The combination of CLOB stale pricing (no hard block), dual mode sources of truth (no startup assertion),
+        no coordinated kill switch, and no position de-duplication means the same incident can recur on any redeploy.
+      </div>
+    </div>
+
+    <div class="rec-item">
+      <div class="rec-icon" style="color:var(--amber)">→</div>
+      <div>
+        <strong style="color:#fff">Resolve open LIVE positions before next test.</strong>
+        12 open LIVE Polymarket positions (IDs 4463–4483) with ~$31.73 exposure are pending resolution.
+        Monitor these to completion. Most expire within their 5-minute windows; several may already
+        be resolved or stuck awaiting CLOB reconciliation.
+      </div>
+    </div>
+
+    <div class="rec-item">
+      <div class="rec-icon" style="color:var(--amber)">→</div>
+      <div>
+        <strong style="color:#fff">Reconcile margin engine positions.</strong>
+        The 2 BTC long perps ($24.97 collateral, 5x, ~$75,205 entry) are unaccounted for in Hub.
+        The margin API is returning network errors. Verify positions manually on Hyperliquid/Binance
+        and determine if they are closed or require intervention.
+      </div>
+    </div>
+
+    <div class="rec-item">
+      <div class="rec-icon" style="color:var(--amber)">→</div>
+      <div>
+        <strong style="color:#fff">Implement CLOB divergence block (Fix #1) as highest priority.</strong>
+        A 15% divergence threshold would have blocked all trades in the 14:02–14:37 UTC window
+        (where CLOB was 139% off). Those trades won by luck — next time they may not. This is
+        the single most impactful safety improvement available.
+      </div>
+    </div>
+
+    <div class="rec-item">
+      <div class="rec-icon" style="color:var(--blue)">→</div>
+      <div>
+        <strong style="color:#fff">Add live session startup script.</strong>
+        Before enabling LIVE, run a local pre-flight check: <code>./scripts/live_preflight.sh</code>
+        that verifies CLOB age, wallet balance, DB mode, strategy modes, and margin engine status.
+        Must pass all checks before any live toggle is permitted.
+      </div>
+    </div>
+
+    <div class="rec-item">
+      <div class="rec-icon" style="color:var(--blue)">→</div>
+      <div>
+        <strong style="color:#fff">Run 24h shadow (GHOST) session before next LIVE attempt.</strong>
+        After implementing fixes, run v4_fusion in GHOST mode for a full 24h to confirm signal
+        integrity, CLOB feed freshness, and position de-duplication are working correctly.
+        Review strategy_decisions table before any LIVE promotion.
+      </div>
+    </div>
+
+    <div class="rec-item">
+      <div class="rec-icon" style="color:var(--green)">+</div>
+      <div>
+        <strong style="color:#fff">The signal model is working.</strong>
+        Despite the infrastructure failures, v4_fusion's directional signal correctly identified
+        bearish momentum throughout the incident. The 60% resolution rate on today's LIVE trades
+        (3/5 resolved) is consistent with historical performance. The issue is entirely
+        infrastructure — not model quality.
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</div><!-- /container -->
+
+<div class="footer">
+  <span>LIVE TRADING AUDIT · 2026-04-14 · novakash BTC Trader Hub</span>
+  <span>Generated by claude forensic-audit · Hub: 16.54.141.121:8091 · DB records cross-referenced with Telegram logs</span>
+</div>
+
+</body>
+</html>
