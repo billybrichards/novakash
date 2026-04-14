@@ -1,21 +1,28 @@
 # tasks/todo.md — BTC Trader Hub
 
-## AuditChecklist DB Migration — 2026-04-14
+## Audit Tasks Dev Table Plan — 2026-04-14
 
 ### Plan
-- [x] Add audit_tasks_dev table migration + schema.sql entry
-- [x] Add hub API endpoints for task CRUD + claim/lease
-- [x] Register table in schema_catalog + ORM model
-- [x] Add agent-facing banner in AuditChecklist UI pointing to audit_tasks_dev
-- [x] Verify API + schema wiring (lint-level checks only)
+- [ ] Review schema/migration conventions for hub tables and existing audit-style tables
+- [ ] Draft schema + indexes + lifecycle fields for audit_tasks_dev (claim/lease + dedupe)
+- [ ] Outline hub API endpoints + integration points (router + schema catalog)
+- [ ] Provide migration placement guidance (hub/db/migrations + optional runtime ensure)
 
-### Review
-- [x] Summarize DB + API changes and how to seed
+## AuditChecklist Sitrep — 2026-04-14
 
-Review notes:
-- Added audit_tasks_dev table + indexes in migration, schema.sql, and hub startup ensure block.
-- Added hub /api/audit-tasks endpoints for CRUD + claim/lease/heartbeat.
-- Added AuditChecklist banner pointing agents at audit_tasks_dev; static TASKS remain for now.
+### Plan
+- [ ] Parse all checklist items in `frontend/src/pages/AuditChecklist.jsx`
+- [ ] Cross-reference each item against codebase paths/docs and current repo state
+- [ ] Flag mismatches (DONE but missing, OPEN but implemented, stale refs)
+- [ ] Produce sitrep report (DONE/OPEN/BLOCKED/STale + key gaps)
+
+## AuditChecklist → DB Migration Plan — 2026-04-14
+
+### Plan
+- [ ] Design target schema for audit_tasks_dev (core columns + JSONB extensions)
+- [ ] Map existing AuditChecklist fields to DB columns/metadata
+- [ ] Draft migration plan (seed strategy, idempotency, versioning)
+- [ ] Add agent-facing banner text plan for AuditChecklist.jsx
 
 ## Codebase Audit — 2026-04-06
 

@@ -55,6 +55,7 @@ import SignalComparison from './pages/SignalComparison.jsx';
 
 export default function App() {
   return (
+    <AppErrorBoundary>
     <BrowserRouter>
       <ThemeProvider>
       <AuthProvider>
@@ -135,5 +136,6 @@ export default function App() {
       </AuthProvider>
       </ThemeProvider>
     </BrowserRouter>
+    </AppErrorBoundary>
   );
 }
