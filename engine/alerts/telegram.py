@@ -675,6 +675,14 @@ class TelegramAlerter:
 
         _version_tag = "v10.3" if _v103_taker else "v9.0"
 
+        # v2 model line
+        model_line = ""
+        if v2_p is not None:
+            _model_dir = "UP" if v2_p > 0.5 else "DOWN"
+            _model_dist = abs(v2_p - 0.5)
+            _model_icon = "🔺" if _model_dir == "UP" else "🔻"
+            model_line = f"{_model_icon} Model: P(UP)=`{v2_p:.3f}` → *{_model_dir}* (dist=`{_model_dist:.3f}`)\n"
+
         if not traded:
             # ALL SKIPPED card
             skip_reasons_text = (
@@ -686,10 +694,11 @@ class TelegramAlerter:
                 f"📋 *{asset} 5m* | {window_time} | {_version_tag}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"⏭ `{n_evals}` evals — *ALL SKIPPED*\n"
+                f"{model_line}"
+                f"📈 VPIN: `{vpin:.3f}` {regime_emoji} `{regime}` | Δ `{delta_str}`\n"
                 f"{source_line}"
                 f"{v103_line}"
                 f"{tier_line}"
-                f"📈 VPIN: `{vpin:.3f}` {regime_emoji} `{regime}` | Δ `{delta_str}`\n"
                 f"\n*Skip reasons:*\n{skip_reasons_text}\n"
             )
         else:
@@ -701,44 +710,37 @@ class TelegramAlerter:
                 f"📋 *{asset} 5m* | {window_time} | {_version_tag}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"{trade_line} (after `{n_skipped}` skips)\n"
+                f"{model_line}"
+                f"📈 VPIN: `{vpin:.3f}` {regime_emoji} `{regime}` | Δ `{delta_str}`\n"
                 f"{source_line}"
                 f"{v103_line}"
                 f"{tier_line}"
-                f"📈 VPIN: `{vpin:.3f}` {regime_emoji} `{regime}` | Δ `{delta_str}`\n"
                 f"\n_Prior skips: {skip_reasons_compact}_\n"
             )
 
-        # v12: Strategy Port comparison block (V10 LIVE vs V4 GHOST)
+        # v13: Clear per-strategy decision block
         if strategy_decisions:
-            msg += "\n"
+            msg += "\n*Strategy Decisions:*\n"
             for sd in strategy_decisions:
-                _mode = getattr(sd, "mode", None) or (
-                    sd.get("mode", "?") if isinstance(sd, dict) else "?"
-                )
-                _sid = getattr(sd, "strategy_id", None) or (
-                    sd.get("strategy_id", "?") if isinstance(sd, dict) else "?"
-                )
-                _action = getattr(sd, "action", None) or (
-                    sd.get("action", "?") if isinstance(sd, dict) else "?"
-                )
-                _skip = getattr(sd, "skip_reason", None) or (
-                    sd.get("skip_reason") if isinstance(sd, dict) else None
-                )
-                _dir = getattr(sd, "direction", None) or (
-                    sd.get("direction") if isinstance(sd, dict) else None
-                )
-                _conf = getattr(sd, "confidence", None) or (
-                    sd.get("confidence") if isinstance(sd, dict) else None
-                )
-                _icon = "🎯" if _mode == "LIVE" else "👻"
-                _label = _sid.upper().replace("_", " ")
+                _d = sd if isinstance(sd, dict) else {}
+                _sid = getattr(sd, "strategy_id", None) or _d.get("strategy_id", "?")
+                _action = getattr(sd, "action", None) or _d.get("action", "?")
+                _skip = getattr(sd, "skip_reason", None) or _d.get("skip_reason")
+                _dir = getattr(sd, "direction", None) or _d.get("direction")
+                _conf = getattr(sd, "confidence", None) or _d.get("confidence")
+                _dist = getattr(sd, "confidence_distance", None) or _d.get("confidence_distance")
+
+                _name = _sid.replace("_", " ").title()
+
                 if _action == "TRADE":
-                    _detail = f"`{_dir}` ({_conf or '?'})"
+                    _dist_s = f" dist={_dist:.3f}" if _dist else ""
+                    msg += f"  ✅ *{_name}* → TRADE `{_dir}`{_dist_s}\n"
                 elif _action == "SKIP":
-                    _detail = f"SKIP — _{(_skip or 'no reason')[:60]}_"
+                    # Show first gate that failed — the actionable info
+                    _reason = (_skip or "unknown")[:55]
+                    msg += f"  ⏭ {_name} → skip: _{_reason}_\n"
                 else:
-                    _detail = f"`{_action}` — _{(_skip or '')[:60]}_"
-                msg += f"{_icon} {_label} ({_mode}): {_detail}\n"
+                    msg += f"  ❓ {_name} → `{_action}`\n"
 
         msg_id = await self._send_with_id(msg)
         await self._log_notification(
