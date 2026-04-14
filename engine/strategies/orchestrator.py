@@ -511,7 +511,8 @@ class Orchestrator:
                 self._data_surface_mgr = DataSurfaceManager(
                     v4_base_url=os.environ.get("TIMESFM_URL", "http://localhost:8001"),
                     tiingo_feed=getattr(self, "_tiingo_feed", None),
-                    chainlink_feed=getattr(self, "_chainlink_feed", None),
+                    chainlink_feed=getattr(self, "_chainlink_multi_feed", None)
+                    or getattr(self, "_chainlink_feed", None),
                     clob_feed=getattr(self, "_clob_feed", None),
                     vpin_calculator=self._vpin_calc,
                     cg_feeds=self._cg_feeds,
@@ -1211,13 +1212,23 @@ class Orchestrator:
                 # Windows doesn't support add_signal_handler
                 pass
 
+        # Inject Chainlink multi-feed into Polymarket feeds for oracle-aligned open price
+        if self._five_min_feed and self._chainlink_multi_feed:
+            self._five_min_feed._chainlink_feed = self._chainlink_multi_feed
+            log.info("orchestrator.chainlink_injected_into_5min_feed")
+        if getattr(self, "_fifteen_min_feed", None) and self._chainlink_multi_feed:
+            self._fifteen_min_feed._chainlink_feed = self._chainlink_multi_feed
+            log.info("orchestrator.chainlink_injected_into_15min_feed")
+
         # Start Strategy Engine v2 DataSurfaceManager background loop
         # Inject live feed references NOW (they were None at __init__ time)
+        # Use chainlink_multi_feed (has latest_prices dict) not chainlink_feed (RPC, BTC-only)
         if self._strategy_registry and hasattr(self, "_data_surface_mgr"):
             try:
                 self._data_surface_mgr.set_feeds(
                     tiingo_feed=getattr(self, "_tiingo_feed", None),
-                    chainlink_feed=getattr(self, "_chainlink_feed", None),
+                    chainlink_feed=getattr(self, "_chainlink_multi_feed", None)
+                    or getattr(self, "_chainlink_feed", None),
                     clob_feed=getattr(self, "_clob_feed", None),
                     vpin_calculator=self._vpin_calc,
                     cg_feeds=self._cg_feeds,
