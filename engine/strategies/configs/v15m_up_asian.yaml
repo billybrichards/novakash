@@ -1,6 +1,6 @@
 name: v15m_up_asian
 version: "1.0.0"
-mode: GHOST
+mode: LIVE
 asset: BTC
 timescale: 15m
 
@@ -13,7 +13,6 @@ gates:
     params: { min_dist: 0.10, max_dist: 0.20 }
   - type: session_hours
     params: { hours_utc: [23, 0, 1, 2] }
-    params: {}
 
 sizing:
   type: fixed_kelly
