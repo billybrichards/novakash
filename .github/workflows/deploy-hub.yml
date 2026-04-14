@@ -73,6 +73,7 @@ jobs:
       # in eu-west-2 so its URL still needs the MARGIN_ENGINE_HOST secret.
       DEPLOY_TIMESFM_URL: http://${{ secrets.TIMESFM_HOST }}:8080
       DEPLOY_MARGIN_ENGINE_HOST: ${{ secrets.MARGIN_ENGINE_HOST }}
+      DEPLOY_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
     steps:
       - name: Checkout code
@@ -168,6 +169,7 @@ jobs:
           TIMESFM_URL=${DEPLOY_TIMESFM_URL}
           MARGIN_ENGINE_URL=http://${DEPLOY_MARGIN_ENGINE_HOST}:8090
           TRADING_APPROVAL_PASSWORD=${DEPLOY_TRADING_APPROVAL_PASSWORD}
+          ANTHROPIC_API_KEY=${DEPLOY_ANTHROPIC_API_KEY}
           DEBUG=false
           ENV
           ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'chmod 600 /home/ubuntu/hub/.env && wc -l /home/ubuntu/hub/.env'
