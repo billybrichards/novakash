@@ -42,6 +42,7 @@ from api.config_v2 import router as config_v2_router
 
 # AGENT-OPS: Claude Agent SDK background task runners
 from api.agent_ops import router as agent_ops_router
+from api.strategy_decisions import router as strategy_decisions_router
 
 log = structlog.get_logger(__name__)
 
@@ -178,13 +179,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             # Ensure constraint exists for ON CONFLICT (dedupe_key) — needed when
             # dedupe_key is always set (e.g. audit_checklist seed). The partial index
             # above only works with ON CONFLICT ... WHERE, so add a full constraint too.
-            await session.execute(text(
-                "DO $$ BEGIN "
-                "  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='audit_tasks_dev_dedupe_key_uniq') THEN "
-                "    ALTER TABLE audit_tasks_dev ADD CONSTRAINT audit_tasks_dev_dedupe_key_uniq UNIQUE (dedupe_key); "
-                "  END IF; "
-                "END $$"
-            ))
+            await session.execute(
+                text(
+                    "DO $$ BEGIN "
+                    "  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='audit_tasks_dev_dedupe_key_uniq') THEN "
+                    "    ALTER TABLE audit_tasks_dev ADD CONSTRAINT audit_tasks_dev_dedupe_key_uniq UNIQUE (dedupe_key); "
+                    "  END IF; "
+                    "END $$"
+                )
+            )
             await session.execute(
                 text(
                     "CREATE INDEX IF NOT EXISTS audit_tasks_dev_status_priority_idx "
@@ -368,6 +371,10 @@ app.include_router(schema_router, prefix="/api", tags=["schema"])
 app.include_router(config_v2_router, prefix="/api", tags=["config-v2"])
 # AGENT-OPS: Claude Agent SDK background task runners
 app.include_router(agent_ops_router, prefix="/api", tags=["agent-ops"])
+# STRATEGY-DECISIONS: 15m + 5m strategy decision queries
+app.include_router(
+    strategy_decisions_router, prefix="/api", tags=["strategy-decisions"]
+)
 
 
 @app.get("/health", tags=["health"])
