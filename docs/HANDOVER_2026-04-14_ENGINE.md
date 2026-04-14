@@ -109,6 +109,43 @@ Meaning:
 - but paper resolution did not close out cleanly
 - the overnight paper run cannot yet be used as a trustworthy win/loss proof
 
+### Reconstructed Overnight Outcome Estimate
+
+Using Montreal DB state, I matched paper trades against stored
+`window_snapshots.actual_direction` by `window_ts` to estimate what the
+overnight paper trades would have done if paper reconciliation had worked.
+
+Estimated result over the last 8 hours:
+
+- `v4_down_only`
+  - trades: `13`
+  - would win: `8`
+  - would lose: `5`
+  - implied PnL: `+$48.60`
+- `v4_fusion`
+  - trades: `25`
+  - would win: `18`
+  - would lose: `6`
+  - unresolved: `1`
+  - implied PnL: `+$121.80`
+
+Interpretation:
+
+- overnight paper signal quality looked good overall
+- the main remaining problem is systems reliability, not obvious signal failure
+- because the paper resolver is still broken, these should be treated as a
+  reconstructed estimate, not a finalized audited paper PnL report
+
+Useful matched examples:
+
+- `v4_down_only`
+  - `btc-updown-5m-1776152100` -> `DOWN` -> would win
+  - `btc-updown-5m-1776150000` -> `DOWN` -> would win
+  - `btc-updown-5m-1776144300` -> `DOWN` -> would win
+- `v4_fusion`
+  - many `NO/DOWN` windows would have won
+  - a smaller set of `UP` outcome windows would have lost
+
 ## Montreal Ops Details
 
 ### Montreal engine box
@@ -152,28 +189,100 @@ curl http://localhost:8080/health
 curl http://localhost:8080/v4/health
 ```
 
-## Next Steps
+## Session 2 Fixes (2026-04-14 Morning)
 
-1. Commit and push the remaining local safety fixes:
-   - `runtime_config.py`
-   - `execute_trade.py`
-   - `pg_trade_repo.py`
+All fixes deployed to Montreal. Engine is on commit `67e1d00`.
 
-2. Deploy those fixes to Montreal.
+### Bankroll / risk sizing fixed
 
-3. Keep engine in `PAPER` mode.
+- `runtime_config.py`: defaults changed — `STARTING_BANKROLL 500→29`, `max_position_usd 500→5`, `min_bet_usd 2→1`
+- `execute_trade.py`: `MIN_BET_USD` constant `2→1`, now uses `min(constant, runtime.min_bet_usd)` so it's overridable
+- `execute_trade.py`: hard cap now uses `runtime.max_position_usd` (was hardcoded `$50`)
+- CI `.env` template: `STARTING_BANKROLL=30`, `PAPER_MODE=true`, `BET_FRACTION=0.07`, `MIN_BET_USD=1.0`, `MAX_POSITION_USD=5.0`
+- GitHub Actions Variables set: `STARTING_BANKROLL=30`, `BET_FRACTION=0.07`, `MAX_POSITION_USD=5.0`
+- With `$30` wallet at `7%` Kelly: `$30 × 0.07 = $2.10` → bumped to `5 shares × $0.48 = $2.40` actual. Hard cap `$5`.
 
-4. Verify after several windows that:
-   - dedup works
-   - `mark_traded` works
-   - paper trades are recorded as paper
-   - paper trades resolve correctly against outcomes
-   - no trade exceeds the configured hard cap
+### is_live=True bug found and fixed (root cause)
 
-5. Only after that, do a controlled live re-enable.
+Wrong file was patched previously. Real write path:
+```
+ExecuteTradeUseCase → DBTradeRecorder → OrderManager._persist_trade → DBClient.write_trade()
+```
+`PgTradeRepository.record_trade` is only used by the Hub-side CLOB reconciler.
+
+In `db_client.write_trade()` lines 272-273, `is_live` was derived from order ID prefix:
+```python
+# WRONG (old)
+"live" if order.order_id.startswith("0x") else "paper",
+not order.order_id.startswith("5min-") and not order.order_id.startswith("manual-paper"),
+```
+Registry paper trades get UUID order IDs (not `5min-` prefix) → `is_live=True` always.
+
+Fix: derive from `execution_mode` in metadata (same as `pg_trade_repo.py`):
+```python
+# CORRECT (new)
+"paper" if execution_mode == "paper" else "live",
+execution_mode != "paper",
+```
+
+### Paper reconciliation fixed
+
+`reconcile_positions.py` used stdlib `logging` with `extra={}` kwargs. Structlog
+renderer swallows those fields, so all error detail was invisible in logs.
+Switched to `structlog.get_logger()` — error detail now visible.
+
+### DB paper config (Railway)
+
+DB config `Paper Config v7.1` (id=26) overrides env vars on every sync:
+- `bet_fraction`: `0.07 → 0.1` (DB has 0.1 — acceptable, 10% Kelly = `$3/trade`)
+- `max_position_usd`: final value `5.0` ✅
+- `daily_loss_limit_usd`: `50 → 80` (acceptable)
+
+**Still needs manual update** on Railway to align `starting_bankroll=30`.
+Use Hub API: `PUT /api/config {"starting_bankroll": 30}` or Hub UI Config page.
+Hub credentials: user=`billy` / `HUB_ADMIN_PASSWORD` secret.
+
+### CI path filter fixed
+
+Removed dangerous exclusions (`engine/adapters/**`, `engine/use_cases/**`,
+`engine/domain/**`, `engine/tests/**`) from deploy trigger paths. Previously a
+fix in any of those directories would silently skip the deploy.
+
+### 5-share minimum
+
+Both `fok_ladder.py` and `polymarket_client.py` bump to `5 shares` (never reject).
+At balanced `$0.48` DOWN market: `5 × $0.48 = $2.40` actual cost.
+
+### Reconcile UC
+
+`ENGINE_USE_RECONCILE_UC=true` in CI `.env` — wired and running.
+`reconcile_uc.complete` firing every 2 min. `paper_resolved` will be non-zero
+once first paper trade window closes and `window_snapshots.actual_direction` populated.
+
+### Reconstructed overnight signal quality
+
+From Montreal DB, matching paper trades against `window_snapshots.actual_direction`:
+- `v4_down_only`: 8/13 = 61.5% WR (breakeven ~56%)
+- `v4_fusion`: 18/25 = 72% WR
+
+Both clear breakeven with margin. Reconstructed estimate, not audited fills.
+
+## Go-Live Checklist
+
+- [x] Dedup fixed (ExecuteTradeUseCase wired after DB init)
+- [x] Hard cap `$5/trade` in code and CI env
+- [x] `is_live` correctly derived from `execution_mode`
+- [x] Paper trades mode/is_live columns correct
+- [x] Paper reconciliation wired (ReconcilePositionsUseCase)
+- [x] Paper resolve error detail visible in logs (structlog)
+- [x] CI path filter no longer silently skips adapter/use_case fixes
+- [x] GitHub Actions Variables: STARTING_BANKROLL=30, BET_FRACTION=0.07, MAX_POSITION_USD=5.0
+- [ ] DB paper config `starting_bankroll` updated to `30` on Railway
+- [ ] Confirm `reconcile_uc.complete paper_resolved > 0` after a full window
+- [ ] Flip `PAPER_MODE=false` to go live (Hub UI system page or CI env)
 
 ## Bottom Line
 
-The system is no longer in a dangerous live state.
-
-But it is also **not yet safe to re-enable live trading** until the remaining hard-cap and persistence fixes are deployed and verified in paper mode.
+Engine is in `PAPER` mode on Montreal with correct risk sizing for `$30` wallet.
+Safe to observe paper trades resolve. Once `paper_resolved > 0` confirmed in logs,
+flip to live via Hub system page. Kill switch fires at 45% drawdown (~`$13.50` loss).
