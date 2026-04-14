@@ -53,6 +53,7 @@ def _env_int(key: str, default: int) -> int:
 # Attributes on the right are what engine components read.
 _DB_KEY_MAP: dict[str, tuple[str, type]] = {
     "starting_bankroll": ("starting_bankroll", float),
+    "bankroll": ("starting_bankroll", float),  # legacy DB key alias
     "bet_fraction": ("bet_fraction", float),
     "max_position_usd": ("max_position_usd", float),
     "absolute_max_bet": ("max_position_usd", float),

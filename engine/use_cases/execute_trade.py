@@ -409,11 +409,11 @@ class ExecuteTradeUseCase:
         """
         risk = self._risk.get_status()
         bankroll = (
-            risk.get("current_bankroll", 500)
+            risk.get("current_bankroll", runtime.starting_bankroll)
             if isinstance(risk, dict)
             else risk.current_bankroll
         )
-        bet_fraction = decision.collateral_pct or DEFAULT_BET_FRACTION
+        bet_fraction = decision.collateral_pct or runtime.bet_fraction
 
         base_stake = bankroll * bet_fraction
 
