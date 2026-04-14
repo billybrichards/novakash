@@ -188,7 +188,7 @@ jobs:
           set -e
           cd /home/ubuntu/hub
           echo "Starting hub build at $(date)"
-          nohup bash -c "docker compose build --quiet 2>&1 && docker compose up -d --force-recreate 2>&1" > /tmp/hub-build.log 2>&1 &
+          nohup bash -c "DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose build --quiet 2>&1 && docker compose up -d --force-recreate 2>&1" > /tmp/hub-build.log 2>&1 &
           echo "Build PID: $!"
           HUBEOF
 
