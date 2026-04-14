@@ -11,6 +11,16 @@ import { useApi } from '../hooks/useApi.js';
  */
 export default function LiveToggle({ compact = false }) {
   const api = useApi();
+  const normalizeStatus = useCallback((raw = {}) => {
+    const liveEnabled = raw.live_enabled === true;
+    const paperEnabled = liveEnabled ? false : (raw.paper_enabled ?? true);
+    return {
+      ...raw,
+      paper_enabled: paperEnabled,
+      live_enabled: liveEnabled,
+    };
+  }, []);
+
   const [status, setStatus] = useState({
     paper_enabled: true,
     live_enabled: false,
@@ -31,9 +41,9 @@ export default function LiveToggle({ compact = false }) {
   const fetchStatus = useCallback(async () => {
     try {
       const res = await api('GET', '/trading-config/live-status');
-      setStatus(res.data);
+      setStatus(normalizeStatus(res.data));
     } catch { /* silent */ }
-  }, [api]);
+  }, [api, normalizeStatus]);
 
   useEffect(() => {
     fetchStatus();
@@ -59,11 +69,7 @@ export default function LiveToggle({ compact = false }) {
       const res = await api('POST', '/trading-config/toggle-mode', {
         data: { mode: 'paper', enabled: true },
       });
-      setStatus(prev => ({
-        ...prev,
-        paper_enabled: res.data.paper_enabled ?? true,
-        live_enabled: res.data.live_enabled ?? false,
-      }));
+      setStatus(prev => normalizeStatus({ ...prev, ...res.data }));
     } catch (e) { console.error('Failed to toggle paper mode', e); }
   };
 
@@ -83,11 +89,7 @@ export default function LiveToggle({ compact = false }) {
       const res = await api('POST', '/trading-config/toggle-mode', {
         data: { mode: 'live', enabled: false },
       });
-      setStatus(prev => ({
-        ...prev,
-        paper_enabled: res.data.paper_enabled ?? true,
-        live_enabled: res.data.live_enabled ?? false,
-      }));
+      setStatus(prev => normalizeStatus({ ...prev, ...res.data }));
     } catch (e) { console.error('Failed to disable live mode', e); }
   };
 
@@ -102,11 +104,7 @@ export default function LiveToggle({ compact = false }) {
       const res = await api('POST', '/trading-config/toggle-mode', {
         data: { mode: 'live', enabled: true, confirmation: 'CONFIRM' },
       });
-      setStatus(prev => ({
-        ...prev,
-        paper_enabled: res.data.paper_enabled ?? false,
-        live_enabled: res.data.live_enabled ?? true,
-      }));
+      setStatus(prev => normalizeStatus({ ...prev, ...res.data }));
       setShowLiveModal(false);
     } catch (e) {
       setError(e.response?.data?.detail || 'Failed to enable live trading');
@@ -201,7 +199,7 @@ export default function LiveToggle({ compact = false }) {
         {toggleBtn({
           label: 'PAPER',
           icon: '📄',
-          enabled: status.paper_enabled,
+          enabled: status.live_enabled ? false : status.paper_enabled,
           color: '#a855f7',
           borderColor: 'rgba(168,85,247,0.45)',
           bgColor: 'rgba(168,85,247,0.1)',

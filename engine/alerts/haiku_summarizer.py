@@ -85,18 +85,30 @@ class HaikuSummarizer:
             return self._fallback_evaluation(context)
 
     def _build_evaluation_prompt(self, ctx: dict) -> str:
+        # Build full signal surface block
+        surface_lines = [
+            f"  CLOB: up_ask={ctx.get('clob_up_ask','?')} dn_ask={ctx.get('clob_dn_ask','?')} mid={ctx.get('clob_mid','?')}",
+            f"  Trade advised: {ctx.get('trade_advised','?')} | V4 consensus: {ctx.get('v4_consensus','?')} | V2 dir: {ctx.get('v2_direction','?')}",
+            f"  Open price: ${ctx.get('open_price','?')} | Macro bias: {ctx.get('macro_bias','?')}",
+        ]
+        surface_block = "\n".join(surface_lines)
+
         return (
-            f"You are a crypto trading analyst. Write a Telegram-ready window summary.\n\n"
-            f"BTC {ctx.get('timescale','5m')} window at {ctx.get('window_time','?')} UTC:\n"
-            f"  Delta: {ctx.get('delta_pct','?')}% | VPIN: {ctx.get('vpin','?')} | Regime: {ctx.get('regime','?')}\n"
-            f"  Model: P(UP)={ctx.get('p_up','?')} dist={ctx.get('dist','?')} → {ctx.get('model_direction','?')}\n"
-            f"  Chainlink: {ctx.get('chainlink_delta','?')}% | Tiingo: {ctx.get('tiingo_delta','?')}% | Sources: {ctx.get('sources_agree','?')}\n\n"
-            f"Strategy decisions:\n{ctx.get('decisions_text','none')}\n\n"
-            f"Write TWO parts, separated by '---':\n"
-            f"PART 1 (1 sentence): Market read — what BTC is doing and why the model thinks {ctx.get('model_direction','?')}.\n"
-            f"PART 2: One plain-English sentence PER strategy explaining what it decided and the real reason why "
-            f"(not just the raw gate name — translate it). Format each as '• StrategyName: sentence'.\n"
-            f"Be specific with numbers. Max 10 words per strategy sentence. No fluff."
+            f"You are a crypto trading analyst. Write a concise Telegram window summary.\n\n"
+            f"=== BTC {ctx.get('timescale','5m')} | {ctx.get('window_time','?')} UTC ===\n"
+            f"Delta: {ctx.get('delta_pct','?')}% | VPIN: {ctx.get('vpin','?')} | Regime: {ctx.get('regime','?')}\n"
+            f"Model: P(UP)={ctx.get('p_up','?')} dist={ctx.get('dist','?')} → {ctx.get('model_direction','?')}\n"
+            f"Chainlink: {ctx.get('chainlink_delta','?')}% | Tiingo: {ctx.get('tiingo_delta','?')}% | Sources agree: {ctx.get('sources_agree','?')}\n"
+            f"Full surface:\n{surface_block}\n\n"
+            f"=== Strategy decisions (each includes its gate config) ===\n"
+            f"{ctx.get('decisions_text','none')}\n\n"
+            f"Write TWO parts separated by exactly '---':\n\n"
+            f"PART 1 (1 sentence): Market read — what BTC is doing this window and why the model favors {ctx.get('model_direction','?')}. Include the key signal values.\n\n"
+            f"PART 2: For EACH strategy, write '• [name]: [one plain-English sentence]' explaining:\n"
+            f"  - If SKIPPED: WHY it skipped in human terms based on its specific gates and the current signal values (e.g. 'confidence dist=0.07 needs 0.12+', not just 'low confidence')\n"
+            f"  - If TRADED: what signal triggered it and at what values\n"
+            f"  - If GHOST: note it's monitoring only\n"
+            f"Be specific with actual numbers from the surface. Max 15 words per strategy."
         )
 
     def _format_evaluation_message(self, ctx: dict, ai_summary: str) -> str:

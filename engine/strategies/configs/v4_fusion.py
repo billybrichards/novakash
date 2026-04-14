@@ -67,6 +67,11 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
     timing = surface.poly_timing or "unknown"
     max_entry = surface.poly_max_entry_price
 
+    # Hard skip if < 70s left — T-60 late entries fire too close to close
+    offset = surface.eval_offset or 0
+    if offset < 70:
+        return _skip(f"polymarket: timing={timing} T-{offset} -- too late (<70s), skip")
+
     # Expired / too early
     if timing in ("expired", "early"):
         return _skip(f"polymarket: timing={timing} -- outside window")

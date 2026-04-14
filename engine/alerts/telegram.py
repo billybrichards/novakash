@@ -728,7 +728,9 @@ class TelegramAlerter:
                 _skip = getattr(sd, "skip_reason", None) or _d.get("skip_reason")
                 _dir = getattr(sd, "direction", None) or _d.get("direction")
                 _conf = getattr(sd, "confidence", None) or _d.get("confidence")
-                _dist = getattr(sd, "confidence_distance", None) or _d.get("confidence_distance")
+                _dist = getattr(sd, "confidence_distance", None) or _d.get(
+                    "confidence_distance"
+                )
 
                 _name = _sid.replace("_", " ").title()
 
@@ -2386,6 +2388,9 @@ class TelegramAlerter:
         fill_size: float = 0.0,
         stake_usd: float = 0.0,
         order_type: str = "PAPER",
+        order_id: str = "",
+        execution_mode: str = "",
+        timeframe: str = "5m",
         btc_price: float = 0.0,
         vpin: float = 0.0,
         regime: str = "?",
@@ -2407,7 +2412,7 @@ class TelegramAlerter:
 
             # Header
             lines = [
-                f"🎯 *TRADE — BTC 5m | {strategy_id} {strategy_version}*",
+                f"🎯 *TRADE — BTC {timeframe} | {strategy_id} {strategy_version}*",
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━",
             ]
 
@@ -2438,18 +2443,29 @@ class TelegramAlerter:
 
             lines.append("")
 
-            # Fill result
-            if success and fill_price > 0:
-                lines.append(f"✅ {order_type} FILLED")
+            status_label = (execution_mode or order_type or "").upper()
+
+            # Execution result
+            if success and execution_mode == "gtc_resting":
+                lines.append("🟡 ORDER SUBMITTED (RESTING ON BOOK)")
+                lines.append(f"💵 Stake: ${stake_usd:.2f}")
+                if order_id:
+                    lines.append(f"🆔 Order: `{order_id[:16]}...`")
+            elif success and fill_price and fill_size:
+                lines.append(f"✅ {status_label} FILLED")
                 lines.append(
                     f"💵 Fill: ${fill_price:.3f} | "
                     f"Size: {fill_size:.1f} shares | "
                     f"Stake: ${stake_usd:.2f}"
                 )
+                if order_id:
+                    lines.append(f"🆔 Order: `{order_id[:16]}...`")
                 if elapsed_s > 0:
                     lines.append(f"⏱ Filled in {elapsed_s:.1f}s")
             elif not success:
-                lines.append(f"❌ {order_type} FAILED: {failure_reason}")
+                lines.append(
+                    f"❌ {status_label or order_type} FAILED: {failure_reason}"
+                )
 
             if btc_price > 0:
                 lines.append(f"\nBTC: ${btc_price:,.2f}")

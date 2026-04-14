@@ -88,7 +88,8 @@ class FAKLadderExecutor(OrderExecutionPort):
 
             if fok_result.filled:
                 fee = self._calc_fee(
-                    fok_result.fill_price or entry_cap, stake_usd,
+                    fok_result.fill_price or entry_cap,
+                    stake_usd,
                 )
                 return ExecutionResult(
                     success=True,
@@ -121,14 +122,24 @@ class FAKLadderExecutor(OrderExecutionPort):
 
         # ── Phase 2: RFQ ────────────────────────────────────────────────
         rfq_result = await self._try_rfq(
-            token_id, side, stake_usd, entry_cap, price_floor, start,
+            token_id,
+            side,
+            stake_usd,
+            entry_cap,
+            price_floor,
+            start,
         )
         if rfq_result is not None:
             return rfq_result
 
         # ── Phase 3: GTC ────────────────────────────────────────────────
         gtc_result = await self._try_gtc(
-            token_id, side, stake_usd, entry_cap, start, fak_prices,
+            token_id,
+            side,
+            stake_usd,
+            entry_cap,
+            start,
+            fak_prices,
         )
         return gtc_result
 
@@ -213,7 +224,9 @@ class FAKLadderExecutor(OrderExecutionPort):
                 execution_end=time.time(),
             )
 
-        # Poll for fill
+        # Poll briefly for an immediate fill. If the order remains live on the
+        # book, treat that as a successful placement so callers record/dedup the
+        # order instead of resubmitting duplicate GTC orders for the same window.
         filled = False
         fill_size = 0.0
         elapsed = 0
@@ -239,14 +252,32 @@ class FAKLadderExecutor(OrderExecutionPort):
                     extra={"error": str(exc)[:100], "elapsed": elapsed},
                 )
 
+        order_id_str = str(order_id) if order_id else None
+        order_live_on_book = bool(order_id_str) and not filled
         fee = self._calc_fee(gtc_price, stake_usd) if filled else 0.0
         fill_price = (
             round(stake_usd / fill_size, 4) if filled and fill_size > 0 else None
         )
 
+        if order_live_on_book:
+            return ExecutionResult(
+                success=True,
+                order_id=order_id_str,
+                fill_price=None,
+                fill_size=None,
+                stake_usd=stake_usd,
+                fee_usd=0.0,
+                execution_mode="gtc_resting",
+                fak_attempts=2,
+                fak_prices=fak_prices,
+                token_id=token_id,
+                execution_start=start,
+                execution_end=time.time(),
+            )
+
         return ExecutionResult(
             success=filled,
-            order_id=str(order_id) if order_id else None,
+            order_id=order_id_str,
             fill_price=fill_price,
             fill_size=fill_size if filled else None,
             stake_usd=stake_usd,

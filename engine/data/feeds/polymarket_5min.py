@@ -91,6 +91,7 @@ class Polymarket5MinFeed:
         assets: List[str] = None,
         duration_secs: int = 300,
         signal_offset: int = 10,
+        eval_offsets: Optional[List[int]] = None,
         on_window_signal: Optional[Callable[[WindowInfo], Awaitable[None]]] = None,
         on_window_state_change: Optional[
             Callable[[str, WindowState, WindowState], Awaitable[None]]
@@ -114,6 +115,7 @@ class Polymarket5MinFeed:
         self._assets = assets or ["BTC"]
         self._duration_secs = duration_secs
         self._signal_offset = signal_offset
+        self._eval_offsets_override = eval_offsets  # if set, use instead of FIVE_MIN_EVAL_OFFSETS
         self._on_window_signal = on_window_signal
         self._on_window_state_change = on_window_state_change
         self._paper_mode = paper_mode
@@ -293,10 +295,13 @@ class Polymarket5MinFeed:
             # Emit CLOSING signal at each configured eval offset (T-90, T-60, etc.)
             # Allows strategy to evaluate (and optionally trade) at multiple points.
             # Each offset fires exactly once per window.
-            try:
-                from config.constants import FIVE_MIN_EVAL_OFFSETS as _eval_offsets
-            except ImportError:
-                _eval_offsets = [self._signal_offset]
+            if self._eval_offsets_override is not None:
+                _eval_offsets = self._eval_offsets_override
+            else:
+                try:
+                    from config.constants import FIVE_MIN_EVAL_OFFSETS as _eval_offsets
+                except ImportError:
+                    _eval_offsets = [self._signal_offset]
 
             if not hasattr(window, "_eval_offsets_emitted"):
                 window._eval_offsets_emitted = set()

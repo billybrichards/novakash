@@ -54,10 +54,9 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
     """Polymarket v2 evaluation -- clean venue-specific recommendation.
 
     Timing gates:
-      - early (>T-180): hard skip
-      - optimal (T-30 to T-180): trade if confidence + trade_advised pass
-      - late_window (T-5 to T-30): trade only if CLOB divergence >= 4pp
-      - expired (<T-5): hard skip
+      - early (>T-400): hard skip
+      - optimal (T-100 to T-400): trade if confidence passes
+      - late (<T-100): hard skip
     """
     direction = surface.poly_direction
     trade_advised = surface.poly_trade_advised or False
@@ -68,35 +67,16 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
 
     # Replace server timing label with offset-based derivation (server may be 5m-calibrated)
     offset = surface.eval_offset or 0
-    if offset > 540:
+    if offset > 400:
         timing = "early"
-    elif offset >= 90:
+    elif offset >= 100:
         timing = "optimal"
-    elif offset >= 15:
-        timing = "late_window"
     else:
-        timing = "expired"
+        timing = "late"
 
-    # Expired / too early
-    if timing in ("expired", "early"):
+    # Too early / too late
+    if timing in ("early", "late"):
         return _skip(f"polymarket: timing={timing} -- outside window")
-
-    # Late window: only trade with CLOB divergence >= 4pp
-    if timing == "late_window":
-        clob_implied = surface.clob_implied_up
-        if clob_implied is not None:
-            # Sequoia's edge over CLOB: how much further from 0.5 is our model vs market
-            divergence = distance - abs(float(clob_implied) - 0.5)
-            if divergence < 0.04:
-                return _skip(
-                    f"polymarket: late_window but CLOB already priced (div={divergence:.3f} < 0.04)"
-                )
-        else:
-            return _skip("polymarket: late_window but no CLOB data")
-
-    # Legacy "late" label
-    if timing == "late":
-        return _skip(f"polymarket: timing=late -- outside window")
 
     # Confidence gate
     if distance < 0.12:
@@ -104,8 +84,11 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
             f"polymarket: p_up={confidence:.3f} dist={distance:.3f} < 0.12 threshold"
         )
 
-    if not trade_advised:
-        return _skip(f"polymarket: {reason} (timing={timing}, dist={distance:.3f})")
+    # trade_advised disabled for 15m — TimesFM assembler's regime/fee gates are
+    # calibrated for 5m and incorrectly block high-conviction 15m signals.
+    # Engine-side gates (timing, confidence, direction) are sufficient.
+    # if not trade_advised:
+    #     return _skip(f"polymarket: {reason} (timing={timing}, dist={distance:.3f})")
 
     if not direction:
         return _skip("polymarket: no direction")

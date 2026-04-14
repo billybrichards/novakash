@@ -19,7 +19,6 @@ gates:
     params: { min_dist: 0.12 }
   - type: dynamic_cap
     params: { default_cap: 0.65 }
-  - type: trade_advised
     params: {}
 
 hooks_file: v15m_gate.py

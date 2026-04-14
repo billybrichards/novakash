@@ -138,7 +138,9 @@ def _build_use_case(
     mock_risk.get_status.return_value = risk
     mock_window_state = AsyncMock()
     mock_window_state.was_traded.return_value = was_traded
+    mock_window_state.try_claim_trade.return_value = not was_traded
     mock_alerter = AsyncMock()
+    mock_alerter.send_strategy_trade_alert = AsyncMock()
     mock_recorder = AsyncMock()
 
     uc = ExecuteTradeUseCase(
@@ -193,11 +195,12 @@ async def test_happy_path_down_trade():
     # Trade was recorded
     mocks["recorder"].record_trade.assert_called_once()
 
-    # Window marked as traded
+    # Window claimed and marked as traded
+    mocks["window_state"].try_claim_trade.assert_called_once()
     mocks["window_state"].mark_traded.assert_called_once()
 
     # Alert sent
-    mocks["alerter"].send_system_alert.assert_called_once()
+    mocks["alerter"].send_strategy_trade_alert.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -239,6 +242,7 @@ async def test_already_traded_dedup():
 
     assert not result.success
     assert result.failure_reason == "already_traded"
+    mocks["window_state"].try_claim_trade.assert_called_once()
     mocks["executor"].execute_order.assert_not_called()
     mocks["recorder"].record_trade.assert_not_called()
 
@@ -453,6 +457,7 @@ class TestStakeCalculation:
 
     def _calc(self, bankroll=500.0, entry_cap=0.50, collateral_pct=0.025):
         from use_cases.execute_trade import ExecuteTradeUseCase
+
         risk = _make_risk_status(current_bankroll=bankroll)
         clock = FakeClock()
         uc, _ = _build_use_case(risk_status=risk, clock=clock)
@@ -487,6 +492,7 @@ class TestStakeCalculation:
     def test_fee_calculation(self):
         """Fee = 0.072 * p * (1-p) * stake."""
         from use_cases.execute_trade import ExecuteTradeUseCase
+
         fee = ExecuteTradeUseCase.calculate_fee(0.55, 10.0)
         expected = 0.072 * 0.55 * 0.45 * 10.0
         assert abs(fee - expected) < 0.001
@@ -500,6 +506,7 @@ class TestWindowKeyExtraction:
 
     def test_standard_slug(self):
         from use_cases.execute_trade import ExecuteTradeUseCase
+
         market = _make_window_market(market_slug="btc-updown-5m-1713000000")
         key = ExecuteTradeUseCase._make_window_key(market)
         assert key.asset == "BTC"
@@ -508,6 +515,7 @@ class TestWindowKeyExtraction:
 
     def test_15m_slug(self):
         from use_cases.execute_trade import ExecuteTradeUseCase
+
         market = _make_window_market(market_slug="btc-updown-15m-1713000000")
         key = ExecuteTradeUseCase._make_window_key(market)
         assert key.timeframe == "15m"
@@ -530,10 +538,9 @@ async def test_alert_includes_strategy_name():
         open_price=84331.0,
     )
 
-    alert_call = mocks["alerter"].send_system_alert.call_args
-    msg = alert_call[0][0]
-    assert "v4_down_only" in msg
-    assert "2.0.0" in msg
+    alert_kwargs = mocks["alerter"].send_strategy_trade_alert.call_args.kwargs
+    assert alert_kwargs["strategy_id"] == "v4_down_only"
+    assert alert_kwargs["strategy_version"] == "2.0.0"
 
 
 @pytest.mark.asyncio
@@ -550,5 +557,5 @@ async def test_alert_paper_mode_label():
         open_price=84331.0,
     )
 
-    msg = mocks["alerter"].send_system_alert.call_args[0][0]
-    assert "PAPER" in msg
+    alert_kwargs = mocks["alerter"].send_strategy_trade_alert.call_args.kwargs
+    assert alert_kwargs["paper_mode"] is True

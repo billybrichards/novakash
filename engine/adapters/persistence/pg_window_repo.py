@@ -145,7 +145,9 @@ class PgWindowRepository(WindowStateRepository):
                     ("shadow_trade_entry_price", "DOUBLE PRECISION"),
                 ]:
                     try:
-                        await conn.execute(f"ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS {col} {col_type}")
+                        await conn.execute(
+                            f"ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS {col} {col_type}"
+                        )
                     except Exception:
                         pass  # Column already exists or not supported
             log.info("db.window_tables_ensured")
@@ -209,8 +211,13 @@ class PgWindowRepository(WindowStateRepository):
         if not self._pool:
             return
         valid_cols = {
-            "chainlink_open", "chainlink_close", "tiingo_open", "tiingo_close",
-            "poly_resolved_outcome", "poly_up_price_final", "poly_down_price_final",
+            "chainlink_open",
+            "chainlink_close",
+            "tiingo_open",
+            "tiingo_close",
+            "poly_resolved_outcome",
+            "poly_up_price_final",
+            "poly_down_price_final",
         }
         updates = []
         params = []
@@ -227,7 +234,10 @@ class PgWindowRepository(WindowStateRepository):
                 await conn.execute(
                     f"UPDATE window_snapshots SET {', '.join(updates)} "
                     f"WHERE window_ts = $1 AND asset = $2 AND timeframe = $3",
-                    window_ts, asset, timeframe, *params,
+                    window_ts,
+                    asset,
+                    timeframe,
+                    *params,
                 )
         except Exception as exc:
             log.error("db.update_window_prices_failed", error=str(exc)[:80])
@@ -269,12 +279,22 @@ class PgWindowRepository(WindowStateRepository):
                 await conn.execute(
                     f"UPDATE window_snapshots SET {', '.join(updates)} "
                     f"WHERE window_ts = $1 AND asset = $2 AND timeframe = $3",
-                    window_ts, asset, timeframe, *params,
+                    window_ts,
+                    asset,
+                    timeframe,
+                    *params,
                 )
         except Exception as exc:
             log.error("db.update_window_resolution_extras_failed", error=str(exc)[:80])
 
-    async def update_gamma_prices(self, window_ts: int, asset: str, timeframe: str, gamma_up: float, gamma_down: float) -> None:
+    async def update_gamma_prices(
+        self,
+        window_ts: int,
+        asset: str,
+        timeframe: str,
+        gamma_up: float,
+        gamma_down: float,
+    ) -> None:
         """Store fresh T-60 Gamma prices to window_snapshot.
 
         Verbatim SQL from ``DBClient.update_gamma_prices``.
@@ -285,12 +305,18 @@ class PgWindowRepository(WindowStateRepository):
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     "UPDATE window_snapshots SET gamma_up_price = $1, gamma_down_price = $2 WHERE window_ts = $3 AND asset = $4 AND timeframe = $5",
-                    gamma_up, gamma_down, window_ts, asset, timeframe
+                    gamma_up,
+                    gamma_down,
+                    window_ts,
+                    asset,
+                    timeframe,
                 )
         except Exception:
             pass
 
-    async def get_window_close(self, window_ts: int, asset: str, timeframe: str) -> float:
+    async def get_window_close(
+        self, window_ts: int, asset: str, timeframe: str
+    ) -> float:
         """Get the close price for a resolved window from window_snapshots.
 
         Verbatim SQL from ``DBClient.get_window_close``.
@@ -301,13 +327,17 @@ class PgWindowRepository(WindowStateRepository):
             async with self._pool.acquire() as conn:
                 row = await conn.fetchval(
                     "SELECT close_price FROM window_snapshots WHERE window_ts = $1 AND asset = $2 AND timeframe = $3",
-                    window_ts, asset, timeframe
+                    window_ts,
+                    asset,
+                    timeframe,
                 )
                 return float(row) if row else 0.0
         except Exception:
             return 0.0
 
-    async def update_window_trade_placed(self, window_ts: int, asset: str, timeframe: str) -> None:
+    async def update_window_trade_placed(
+        self, window_ts: int, asset: str, timeframe: str
+    ) -> None:
         """Mark a window_snapshot as having a trade placed.
 
         Verbatim SQL from ``DBClient.update_window_trade_placed``.
@@ -318,15 +348,33 @@ class PgWindowRepository(WindowStateRepository):
             async with self._pool.acquire() as conn:
                 result = await conn.execute(
                     "UPDATE window_snapshots SET trade_placed = TRUE WHERE window_ts = $1 AND asset = $2 AND timeframe = $3",
-                    window_ts, asset, timeframe
+                    window_ts,
+                    asset,
+                    timeframe,
                 )
-                log.info("db.trade_placed_updated", window_ts=window_ts, asset=asset, result=result)
+                log.info(
+                    "db.trade_placed_updated",
+                    window_ts=window_ts,
+                    asset=asset,
+                    result=result,
+                )
         except Exception as exc:
-            log.error("db.trade_placed_update_failed", window_ts=window_ts, asset=asset, error=str(exc))
+            log.error(
+                "db.trade_placed_update_failed",
+                window_ts=window_ts,
+                asset=asset,
+                error=str(exc),
+            )
 
     async def update_window_fok_data(
-        self, window_ts: int, asset: str, timeframe: str,
-        execution_mode: str, fok_attempts: int, fok_fill_step: int, clob_fill_price: float,
+        self,
+        window_ts: int,
+        asset: str,
+        timeframe: str,
+        execution_mode: str,
+        fok_attempts: int,
+        fok_fill_step: int,
+        clob_fill_price: float,
     ) -> None:
         """Write FOK execution details to window_snapshot after a successful fill.
 
@@ -341,13 +389,20 @@ class PgWindowRepository(WindowStateRepository):
                        SET execution_mode = $4, fok_attempts = $5,
                            fok_fill_step = $6, clob_fill_price = $7
                        WHERE window_ts = $1 AND asset = $2 AND timeframe = $3""",
-                    window_ts, asset, timeframe,
-                    execution_mode, fok_attempts, fok_fill_step, clob_fill_price,
+                    window_ts,
+                    asset,
+                    timeframe,
+                    execution_mode,
+                    fok_attempts,
+                    fok_fill_step,
+                    clob_fill_price,
                 )
         except Exception as exc:
             log.error("db.fok_data_update_failed", window_ts=window_ts, error=str(exc))
 
-    async def update_window_skip_reason(self, window_ts: int, asset: str, timeframe: str, skip_reason: str) -> None:
+    async def update_window_skip_reason(
+        self, window_ts: int, asset: str, timeframe: str, skip_reason: str
+    ) -> None:
         """Update skip_reason on a window_snapshot after evaluation.
 
         Verbatim SQL from ``DBClient.update_window_skip_reason``.
@@ -358,7 +413,10 @@ class PgWindowRepository(WindowStateRepository):
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     "UPDATE window_snapshots SET skip_reason = $1 WHERE window_ts = $2 AND asset = $3 AND timeframe = $4",
-                    skip_reason, window_ts, asset, timeframe
+                    skip_reason,
+                    window_ts,
+                    asset,
+                    timeframe,
                 )
         except Exception:
             pass
@@ -548,10 +606,16 @@ class PgWindowRepository(WindowStateRepository):
                         ai_post_analysis  = EXCLUDED.ai_post_analysis,
                         analysed_at       = NOW()
                     """,
-                    window_ts, asset, timeframe,
-                    oracle_direction, n_ticks,
-                    missed_profit, blocked_loss,
-                    cap_too_tight, gate_rec, ai_text[:4000] if ai_text else None,
+                    window_ts,
+                    asset,
+                    timeframe,
+                    oracle_direction,
+                    n_ticks,
+                    missed_profit,
+                    blocked_loss,
+                    cap_too_tight,
+                    gate_rec,
+                    ai_text[:4000] if ai_text else None,
                 )
                 # Update summary columns in window_snapshots
                 await conn.execute(
@@ -569,7 +633,9 @@ class PgWindowRepository(WindowStateRepository):
                     blocked_loss,
                     cap_too_tight,
                     gate_rec,
-                    window_ts, asset, timeframe,
+                    window_ts,
+                    asset,
+                    timeframe,
                 )
             log.debug(
                 "db.post_resolution_stored",
@@ -612,7 +678,9 @@ class PgWindowRepository(WindowStateRepository):
                       AND timeframe = $3
                     ORDER BY eval_offset DESC NULLS LAST
                     """,
-                    window_ts, asset, timeframe,
+                    window_ts,
+                    asset,
+                    timeframe,
                 )
                 return [dict(r) for r in rows]
         except Exception as exc:
@@ -675,7 +743,8 @@ class PgWindowRepository(WindowStateRepository):
             return
         try:
             async with self._pool.acquire() as conn:
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO window_predictions (
                         window_ts, asset, timeframe,
                         tiingo_open, tiingo_close,
@@ -725,8 +794,9 @@ class PgWindowRepository(WindowStateRepository):
         except Exception as exc:
             log.warning("db.write_window_prediction_failed", error=str(exc)[:120])
 
-    async def update_window_prediction_outcome(self, window_ts: int, asset: str,
-                                                oracle_winner: str) -> None:
+    async def update_window_prediction_outcome(
+        self, window_ts: int, asset: str, oracle_winner: str
+    ) -> None:
         """After oracle resolution, update the prediction with actual outcome.
 
         Verbatim SQL from ``DBClient.update_window_prediction_outcome``.
@@ -735,14 +805,20 @@ class PgWindowRepository(WindowStateRepository):
             return
         try:
             async with self._pool.acquire() as conn:
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE window_predictions SET
                         oracle_winner = $4::varchar,
                         tiingo_correct = (tiingo_direction = $4::varchar),
                         chainlink_correct = (chainlink_direction = $4::varchar),
                         our_signal_correct = (our_signal_direction = $4::varchar)
                     WHERE window_ts = $1 AND asset = $2 AND timeframe = $3
-                """, window_ts, asset, "5m", oracle_winner.upper())
+                """,
+                    window_ts,
+                    asset,
+                    "5m",
+                    oracle_winner.upper(),
+                )
         except Exception as exc:
             log.warning("db.update_prediction_outcome_failed", error=str(exc)[:120])
 
@@ -754,94 +830,166 @@ class PgWindowRepository(WindowStateRepository):
     # ======================================================================
 
     async def ensure_window_states_table(self) -> None:
-        if not self._pool: return
+        if not self._pool:
+            return
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute("""CREATE TABLE IF NOT EXISTS window_states (
-                    window_key VARCHAR(64) PRIMARY KEY, asset VARCHAR(10) NOT NULL,
-                    window_ts BIGINT NOT NULL, duration_secs INTEGER NOT NULL DEFAULT 300,
-                    traded_at TIMESTAMPTZ, traded_order_id TEXT, resolved_at TIMESTAMPTZ,
-                    resolved_outcome TEXT, resolved_pnl_usd NUMERIC,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+                    id SERIAL PRIMARY KEY, asset VARCHAR(10) NOT NULL,
+                    window_ts BIGINT NOT NULL, timeframe VARCHAR(10) NOT NULL DEFAULT '5m',
+                    order_id TEXT, traded_at TIMESTAMPTZ,
+                    resolved_at TIMESTAMPTZ, outcome VARCHAR(10),
+                    actual_direction VARCHAR(10),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (asset, window_ts, timeframe))""")
                 await conn.execute("""CREATE INDEX IF NOT EXISTS idx_window_states_traded_at
                     ON window_states (traded_at) WHERE traded_at IS NOT NULL""")
                 await conn.execute("""CREATE INDEX IF NOT EXISTS idx_window_states_resolved_at
                     ON window_states (resolved_at) WHERE resolved_at IS NOT NULL""")
-                await conn.execute("""CREATE INDEX IF NOT EXISTS idx_window_states_asset_ts
-                    ON window_states (asset, window_ts)""")
             log.info("db.window_states_table_ensured")
         except Exception as exc:
             log.error("db.ensure_window_states_table_failed", error=str(exc)[:200])
 
     async def was_traded(self, key: WindowKey) -> bool:
-        if not self._pool: return False
+        if not self._pool:
+            return False
         try:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchval(
-                    "SELECT EXISTS(SELECT 1 FROM window_states WHERE window_key = $1)", str(key))
+                    "SELECT EXISTS(SELECT 1 FROM window_states WHERE asset = $1 AND window_ts = $2 AND timeframe = $3 AND order_id IS NOT NULL)",
+                    key.asset,
+                    key.window_ts,
+                    key.timeframe,
+                )
                 return bool(row)
         except Exception as exc:
             log.warning("db.was_traded_failed", key=str(key), error=str(exc)[:120])
             return False
 
     async def mark_traded(self, key: WindowKey, order_id: str) -> None:
-        if not self._pool: return
-        key_str = str(key)
-        parts = key_str.rsplit("-", 1)
-        asset = parts[0] if len(parts) == 2 else "BTC"
-        try: window_ts = int(parts[1]) if len(parts) == 2 else 0
-        except ValueError: window_ts = 0
+        if not self._pool:
+            return
         try:
             async with self._pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO window_states (window_key, asset, window_ts, traded_at, traded_order_id)
+                await conn.execute(
+                    """
+                    INSERT INTO window_states (asset, window_ts, timeframe, traded_at, order_id)
                     VALUES ($1, $2, $3, $4, $5)
-                    ON CONFLICT (window_key) DO UPDATE
-                        SET traded_order_id = EXCLUDED.traded_order_id
-                        WHERE window_states.traded_order_id IS NULL
-                           OR window_states.traded_order_id = 'pending'
-                """, key_str, asset, window_ts, datetime.now(timezone.utc), order_id)
-            log.debug("db.mark_traded", key=key_str, order_id=order_id[:20] if order_id else None)
+                    ON CONFLICT (asset, window_ts, timeframe) DO UPDATE
+                        SET order_id = EXCLUDED.order_id
+                        WHERE window_states.order_id IS NULL
+                           OR window_states.order_id = 'pending'
+                """,
+                    key.asset,
+                    key.window_ts,
+                    key.timeframe,
+                    datetime.now(timezone.utc),
+                    order_id,
+                )
+            log.debug(
+                "db.mark_traded",
+                key=str(key),
+                order_id=order_id[:20] if order_id else None,
+            )
         except Exception as exc:
-            log.warning("db.mark_traded_failed", key=key_str, error=str(exc)[:120])
+            log.warning("db.mark_traded_failed", key=str(key), error=str(exc)[:120])
+
+    async def try_claim_trade(self, key: WindowKey) -> bool:
+        if not self._pool:
+            return True
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchval(
+                    """
+                    INSERT INTO window_states (asset, window_ts, timeframe, traded_at, order_id)
+                    VALUES ($1, $2, $3, $4, 'pending')
+                    ON CONFLICT (asset, window_ts, timeframe) DO NOTHING
+                    RETURNING 1
+                    """,
+                    key.asset,
+                    key.window_ts,
+                    key.timeframe,
+                    datetime.now(timezone.utc),
+                )
+                claimed = bool(row)
+            log.debug("db.try_claim_trade", key=str(key), claimed=claimed)
+            return claimed
+        except Exception as exc:
+            log.warning("db.try_claim_trade_failed", key=str(key), error=str(exc)[:120])
+            return False
+
+    async def clear_trade_claim(self, key: WindowKey) -> None:
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM window_states WHERE asset = $1 AND window_ts = $2 AND timeframe = $3 AND order_id = 'pending'",
+                    key.asset,
+                    key.window_ts,
+                    key.timeframe,
+                )
+            log.debug("db.clear_trade_claim", key=str(key))
+        except Exception as exc:
+            log.warning(
+                "db.clear_trade_claim_failed", key=str(key), error=str(exc)[:120]
+            )
 
     async def was_resolved(self, key: WindowKey) -> bool:
-        if not self._pool: return False
+        if not self._pool:
+            return False
         try:
             async with self._pool.acquire() as conn:
-                row = await conn.fetchval("""
+                row = await conn.fetchval(
+                    """
                     SELECT EXISTS(SELECT 1 FROM window_states
-                    WHERE window_key = $1 AND resolved_at IS NOT NULL)""", str(key))
+                    WHERE asset = $1 AND window_ts = $2 AND timeframe = $3 AND resolved_at IS NOT NULL)""",
+                    key.asset,
+                    key.window_ts,
+                    key.timeframe,
+                )
                 return bool(row)
         except Exception as exc:
             log.warning("db.was_resolved_failed", key=str(key), error=str(exc)[:120])
             return False
 
     async def mark_resolved(self, key: WindowKey, outcome: WindowOutcome) -> None:
-        if not self._pool: return
-        key_str = str(key)
+        if not self._pool:
+            return
         outcome_str = str(outcome) if outcome is not None else None
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
-                    'UPDATE window_states SET resolved_at = $2, resolved_outcome = $3 WHERE window_key = $1',
-                    key_str, datetime.now(timezone.utc), outcome_str)
-            log.debug("db.mark_resolved", key=key_str, outcome=outcome_str)
+                    "UPDATE window_states SET resolved_at = $2, outcome = $3 WHERE asset = $1 AND window_ts = $4 AND timeframe = $5",
+                    key.asset,
+                    datetime.now(timezone.utc),
+                    outcome_str,
+                    key.window_ts,
+                    key.timeframe,
+                )
+            log.debug("db.mark_resolved", key=str(key), outcome=outcome_str)
         except Exception as exc:
-            log.warning("db.mark_resolved_failed", key=key_str, error=str(exc)[:120])
+            log.warning("db.mark_resolved_failed", key=str(key), error=str(exc)[:120])
 
     async def load_recent_traded(self, hours: int) -> set[WindowKey]:
-        if not self._pool: return set()
+        if not self._pool:
+            return set()
         try:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
-                    "SELECT window_key FROM window_states WHERE traded_at > NOW() - ($1 || ' hours')::interval",
-                    str(hours))
-                keys: set[WindowKey] = {r["window_key"] for r in rows}
+                    "SELECT asset, window_ts, timeframe FROM window_states WHERE traded_at > NOW() - ($1 || ' hours')::interval",
+                    hours,
+                )
+                keys: set[WindowKey] = {
+                    WindowKey(row["asset"], row["window_ts"], row["timeframe"])
+                    for row in rows
+                }
                 log.info("db.load_recent_traded", count=len(keys), hours=hours)
                 return keys
         except Exception as exc:
-            log.warning("db.load_recent_traded_failed", hours=hours, error=str(exc)[:120])
+            log.warning(
+                "db.load_recent_traded_failed", hours=hours, error=str(exc)[:120]
+            )
             return set()
 
     async def get_actual_direction(self, key: WindowKey) -> Optional[str]:

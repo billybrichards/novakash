@@ -568,10 +568,14 @@ class Orchestrator:
             ","
         )
         if fifteen_min_enabled:
+            # 15m eval offsets: T-600 down to T-60 every 2s
+            # Covers [270,450] timing gates (v15m_down_only etc) that 5m offsets miss
+            _fifteen_eval_offsets = list(range(600, 59, -2))
             self._fifteen_min_feed = Polymarket5MinFeed(
                 assets=fifteen_min_assets,
                 duration_secs=900,  # 15 minutes
-                signal_offset=FIVE_MIN_ENTRY_OFFSET,  # Same entry offset (T-60s)
+                signal_offset=FIVE_MIN_ENTRY_OFFSET,
+                eval_offsets=_fifteen_eval_offsets,
                 on_window_signal=self._on_fifteen_min_window,
                 paper_mode=settings.paper_mode,
             )
@@ -1100,7 +1104,9 @@ class Orchestrator:
                 "ON strategy_executions (executed_at DESC)"
             )
         except Exception as exc:
-            log.warning("orchestrator.ensure_strategy_executions_failed", error=str(exc))
+            log.warning(
+                "orchestrator.ensure_strategy_executions_failed", error=str(exc)
+            )
 
         # 6f. Recover open trades from previous sessions (startup trade recovery)
         try:
@@ -2264,8 +2270,17 @@ class Orchestrator:
                 except Exception as exc:
                     log.warning("fifteen_min.registry_eval_error", error=str(exc)[:200])
 
-                # G1 & G3: Queue window for staggered execution instead of immediate eval
-                await self._execution_queue.put((window, self._aggregator))
+                # Registry execution already handles LIVE 15m orders through
+                # ExecuteTradeUseCase. Do not fall through to the legacy 5m
+                # staggered execution queue when registry execution is enabled.
+                if not (
+                    self._use_strategy_registry
+                    and self._strategy_registry is not None
+                    and os.environ.get("ENGINE_REGISTRY_EXECUTE", "false").lower()
+                    == "true"
+                ):
+                    # Legacy fallback path only.
+                    await self._execution_queue.put((window, self._aggregator))
 
                 # v5.8: TimesFM checked inside v5.7c agreement (no standalone)
             else:

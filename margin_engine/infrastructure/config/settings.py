@@ -88,7 +88,7 @@ class MarginSettings(BaseSettings):
     # are ready before PR B lands — no settings churn in the second PR.
     v4_entry_edge: float = 0.10  # min |p - 0.5| for entry
     v4_continuation_min_conviction: float = 0.10  # looser than entry (user's choice)
-    v4_continuation_max: Optional[int] = None  # None = uncapped (user's choice)
+    v4_continuation_max: Optional[int] = 7  # max 7 continuations per position
     v4_min_expected_move_bps: float = 15.0  # Hyperliquid-calibrated fee wall
     v4_allow_mean_reverting: bool = False  # opt-in per strategy
     v4_event_exit_seconds: int = 120  # force exit within 2 min of HIGH/EXTREME
@@ -228,13 +228,14 @@ class MarginSettings(BaseSettings):
     # ── Sizing ──
     # Paper mode → can size larger than live-ready defaults to generate
     # meaningful P&L signal while we validate the new strategy.
-    starting_capital: float = 500.0
+<<<<<<< HEAD
+    starting_capital: float = 1000.0  # paper mode starting bankroll
     leverage: int = 3  # down from 5 while validating
     bet_fraction: float = 0.02  # 2% per trade, down from 5%
 
     # ── Risk ──
     max_open_positions: int = 1  # one at a time — clean attribution
-    max_exposure_pct: float = 0.20  # down from 0.60
+    max_exposure_pct: float = 0.80  # 80% max exposure per position
     daily_loss_limit_pct: float = 0.10
     consecutive_loss_cooldown: int = 3
     cooldown_seconds: int = 600
@@ -247,10 +248,10 @@ class MarginSettings(BaseSettings):
     signal_reversal_threshold: float = -10.0
 
     # ── Timescales to trade on ──
-    # v2 trades only the 15m window (the one with proven edge) via the
-    # probability endpoint. The v3 composite timescales are still
-    # retained for regime filtering.
-    trading_timescales: str = "15m"
+    # DEPRECATED: v2/v3 legacy field, no longer used in V4 fusion path.
+    # V4 uses v4_timescales (5m,15m,1h,4h) for multi-timescale consensus.
+    # Kept for .env compatibility only.
+    trading_timescales: str = "15m"  # DEPRECATED — not used in V4
 
     # ── Database ──
     database_url: str = ""
