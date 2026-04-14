@@ -255,7 +255,7 @@ class DataSurfaceManager:
         if not self._session:
             return
         url = f"{self._v4_url}/v4/snapshot"
-        params = {"asset": "BTC", "timescale": "5m", "strategy": "polymarket_5m"}
+        params = {"asset": "BTC", "strategy": "polymarket_5m"}
         try:
             async with self._session.get(url, params=params) as resp:
                 if resp.status == 200:
@@ -362,10 +362,11 @@ class DataSurfaceManager:
         gamma_down = getattr(window, "down_price", None)
 
         # V4 snapshot from cache
+        timeframe = getattr(window, "timeframe", "5m")
         v4 = self._cached_v4
         ts_data = {}
         if v4:
-            ts_data = (v4.get("timescales") or {}).get("5m", {})
+            ts_data = (v4.get("timescales") or {}).get(timeframe, {})
 
         poly = ts_data.get("polymarket_live_recommended_outcome") or {}
         rec = ts_data.get("recommended_action") or {}
@@ -394,7 +395,7 @@ class DataSurfaceManager:
         return FullDataSurface(
             # Identity
             asset=asset,
-            timescale="5m",
+            timescale=timeframe,
             window_ts=window_ts,
             eval_offset=eval_offset,
             assembled_at=now,

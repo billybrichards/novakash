@@ -265,11 +265,14 @@ class StrategyRegistry:
         """
         eval_offset = getattr(window, "eval_offset", None)
         window_ts = getattr(window, "window_ts", 0)
+        window_tf = getattr(window, "timeframe", "5m")
         surface = self._data_surface.get_surface(window, eval_offset)
 
         decisions = []
         for name, config in self._configs.items():
             if config.mode == "DISABLED":
+                continue
+            if config.timescale != window_tf:
                 continue
             try:
                 decision = self._evaluate_one(name, config, surface)
@@ -420,8 +423,14 @@ class StrategyRegistry:
             # ── Line 1: market context ─────────────────────────────────────
             vpin_str = f"VPIN {surface.vpin:.2f}" if surface.vpin is not None else ""
             regime_str = surface.regime or ""
-            regime_tag = f"{vpin_str} {regime_str}".strip() if vpin_str or regime_str else ""
-            delta_str = f"Δ{surface.delta_pct * 100:+.2f}%" if surface.delta_pct is not None else "Δ?"
+            regime_tag = (
+                f"{vpin_str} {regime_str}".strip() if vpin_str or regime_str else ""
+            )
+            delta_str = (
+                f"Δ{surface.delta_pct * 100:+.2f}%"
+                if surface.delta_pct is not None
+                else "Δ?"
+            )
             line1 = f"🕐 {surface.asset} 5m | T-{eval_offset}s | {delta_str}"
             if regime_tag:
                 line1 += f" | {regime_tag}"
@@ -451,7 +460,9 @@ class StrategyRegistry:
             if surface.v2_probability_up is not None:
                 dist = abs(surface.v2_probability_up - 0.5)
                 dir_label = "UP" if surface.v2_probability_up > 0.5 else "DOWN"
-                lines.append(f"Model P(UP)={surface.v2_probability_up:.2f} → {dir_label} dist={dist:.2f}")
+                lines.append(
+                    f"Model P(UP)={surface.v2_probability_up:.2f} → {dir_label} dist={dist:.2f}"
+                )
 
             msg = "\n".join(lines)
             if hasattr(self._alerter, "send_raw_message"):

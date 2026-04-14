@@ -56,6 +56,11 @@ class WindowInfo:
     price_source: str = "unknown"  # "gamma_api", "synthetic", "stale_gamma"
     eval_offset: Optional[int] = None  # Current T-minus evaluation offset, if any
 
+    @property
+    def timeframe(self) -> str:
+        """Semantic timeframe derived from duration_secs."""
+        return "15m" if self.duration_secs >= 900 else "5m"
+
 
 class Polymarket5MinFeed:
     """

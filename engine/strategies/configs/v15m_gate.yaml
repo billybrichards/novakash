@@ -1,0 +1,33 @@
+name: v15m_gate
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 15m
+
+gates:
+  - type: timing
+    params: { min_offset: 15, max_offset: 900 }
+  - type: source_agreement
+    params: { min_sources: 2, spot_only: false }
+  - type: delta_magnitude
+    params: { min_threshold: 0.0005 }
+  - type: taker_flow
+    params: {}
+  - type: cg_confirmation
+    params: { oi_threshold: 0.01, liq_threshold: 1000000 }
+  - type: confidence
+    params: { min_dist: 0.12 }
+  - type: spread
+    params: { max_spread_bps: 100 }
+  - type: dynamic_cap
+    params: { default_cap: 0.65 }
+  - type: trade_advised
+    params: {}
+
+hooks_file: v15m_gate.py
+post_gate_hook: classify_confidence
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.10
