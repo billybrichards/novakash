@@ -47,6 +47,7 @@ from domain.value_objects import (
     WindowKey,
     WindowMarket,
 )
+from config.runtime_config import runtime
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +56,6 @@ PRICE_FLOOR = 0.30
 DEFAULT_ENTRY_CAP = 0.65
 MIN_BET_USD = 2.0
 DEFAULT_BET_FRACTION = 0.025
-MAX_DRAWDOWN_KILL = 0.45
-HARD_CAP_USD = 50.0
 FEE_MULTIPLIER = 0.072  # Polymarket binary options fee
 
 # Guardrail constants
@@ -183,6 +182,7 @@ class ExecuteTradeUseCase:
         # Adapt dict→RiskStatus if the risk manager returns a dict (legacy)
         if isinstance(raw_status, dict):
             from domain.value_objects import RiskStatus
+
             risk_status = RiskStatus(
                 current_bankroll=raw_status.get("current_bankroll", 500),
                 peak_bankroll=raw_status.get("peak_bankroll", 500),
@@ -347,7 +347,9 @@ class ExecuteTradeUseCase:
                     btc_price=current_btc_price,
                     vpin=getattr(self, "_last_vpin", 0.0),
                     regime=getattr(self, "_last_regime", "?"),
-                    eval_offset=getattr(decision, 'metadata', {}).get('eval_offset') if decision.metadata else None,
+                    eval_offset=getattr(decision, "metadata", {}).get("eval_offset")
+                    if decision.metadata
+                    else None,
                     paper_mode=self._paper_mode,
                     success=result.success,
                     failure_reason=result.failure_reason or "",
@@ -357,7 +359,11 @@ class ExecuteTradeUseCase:
                 )
             else:
                 alert_msg = self._format_trade_alert(
-                    decision, result, stake, current_btc_price, open_price,
+                    decision,
+                    result,
+                    stake,
+                    current_btc_price,
+                    open_price,
                 )
                 await self._alerter.send_system_alert(alert_msg)
         except Exception as exc:
@@ -402,7 +408,11 @@ class ExecuteTradeUseCase:
           - 65c token -> 0.7x multiplier (worse R/R, bet less)
         """
         risk = self._risk.get_status()
-        bankroll = risk.get("current_bankroll", 500) if isinstance(risk, dict) else risk.current_bankroll
+        bankroll = (
+            risk.get("current_bankroll", 500)
+            if isinstance(risk, dict)
+            else risk.current_bankroll
+        )
         bet_fraction = decision.collateral_pct or DEFAULT_BET_FRACTION
 
         base_stake = bankroll * bet_fraction
@@ -414,8 +424,8 @@ class ExecuteTradeUseCase:
 
         adjusted = base_stake * price_multiplier
 
-        # Hard caps
-        hard_cap = min(HARD_CAP_USD, bankroll * bet_fraction * 0.95)
+        # Hard caps: enforce the runtime-configured absolute max bet.
+        hard_cap = min(runtime.max_position_usd, bankroll * bet_fraction * 0.95)
         adjusted = min(adjusted, hard_cap)
         adjusted = round(adjusted, 2)
 
@@ -438,10 +448,16 @@ class ExecuteTradeUseCase:
         """Validate trade against risk limits."""
         if status.kill_switch_active:
             return False, "kill_switch_active"
-        if status.drawdown_pct > MAX_DRAWDOWN_KILL:
-            return False, f"drawdown {status.drawdown_pct:.1%} > {MAX_DRAWDOWN_KILL:.0%}"
+        if status.drawdown_pct > runtime.max_drawdown_kill:
+            return (
+                False,
+                f"drawdown {status.drawdown_pct:.1%} > {runtime.max_drawdown_kill:.0%}",
+            )
         if stake.adjusted_stake < MIN_BET_USD:
-            return False, f"stake ${stake.adjusted_stake:.2f} < ${MIN_BET_USD:.2f} minimum"
+            return (
+                False,
+                f"stake ${stake.adjusted_stake:.2f} < ${MIN_BET_USD:.2f} minimum",
+            )
         return True, ""
 
     # ─── Guardrails ────────────────────────────────────────────────────
@@ -463,11 +479,12 @@ class ExecuteTradeUseCase:
 
         # Hourly cap
         cutoff = now - 3600.0
-        self._order_timestamps = [
-            ts for ts in self._order_timestamps if ts > cutoff
-        ]
+        self._order_timestamps = [ts for ts in self._order_timestamps if ts > cutoff]
         if len(self._order_timestamps) >= MAX_ORDERS_PER_HOUR:
-            return False, f"rate_limit: {len(self._order_timestamps)} >= {MAX_ORDERS_PER_HOUR}/hr"
+            return (
+                False,
+                f"rate_limit: {len(self._order_timestamps)} >= {MAX_ORDERS_PER_HOUR}/hr",
+            )
 
         return True, ""
 
@@ -485,9 +502,7 @@ class ExecuteTradeUseCase:
         """Track consecutive errors and trigger circuit breaker."""
         self._consecutive_errors += 1
         if self._consecutive_errors >= CIRCUIT_BREAKER_ERRORS:
-            self._circuit_break_until = (
-                self._clock.now() + CIRCUIT_BREAKER_COOLDOWN_S
-            )
+            self._circuit_break_until = self._clock.now() + CIRCUIT_BREAKER_COOLDOWN_S
             logger.warning(
                 "execute_trade.circuit_breaker_tripped",
                 extra={
@@ -553,11 +568,15 @@ class ExecuteTradeUseCase:
         modifier = sizing_meta.get("modifier", 1.0)
 
         # Delta from btc price
-        delta_pct = ((btc_price - open_price) / open_price * 100) if open_price > 0 else 0.0
+        delta_pct = (
+            ((btc_price - open_price) / open_price * 100) if open_price > 0 else 0.0
+        )
 
         lines = [
             f"TRADE {sid} {ver}",
-            f"Direction: {direction} ({result.token_id[:20]}...)" if result.token_id else f"Direction: {direction}",
+            f"Direction: {direction} ({result.token_id[:20]}...)"
+            if result.token_id
+            else f"Direction: {direction}",
             f"Confidence: {decision.confidence or '?'} ({decision.confidence_score or 0:.2f})",
             "",
         ]
@@ -565,31 +584,37 @@ class ExecuteTradeUseCase:
         if gate_lines:
             lines.append(gate_lines.strip())
 
-        lines.extend([
-            f"\U0001f4b0 Sizing: {modifier:.1f}x ({size_label})",
-            "",
-            f"\u2705 {mode} {'FILLED' if result.success else 'FAILED'}",
-        ])
+        lines.extend(
+            [
+                f"\U0001f4b0 Sizing: {modifier:.1f}x ({size_label})",
+                "",
+                f"\u2705 {mode} {'FILLED' if result.success else 'FAILED'}",
+            ]
+        )
 
         if result.success and result.fill_price:
             fee = self.calculate_fee(result.fill_price, result.stake_usd)
-            lines.extend([
-                f"\U0001f4b5 Fill: ${result.fill_price:.2f} | "
-                f"Size: {result.fill_size:.1f} shares | "
-                f"Stake: ${result.stake_usd:.2f}",
-                f"\U0001f4b8 Fee: ${fee:.2f}",
-            ])
+            lines.extend(
+                [
+                    f"\U0001f4b5 Fill: ${result.fill_price:.2f} | "
+                    f"Size: {result.fill_size:.1f} shares | "
+                    f"Stake: ${result.stake_usd:.2f}",
+                    f"\U0001f4b8 Fee: ${fee:.2f}",
+                ]
+            )
             if result.execution_end > result.execution_start:
                 elapsed = result.execution_end - result.execution_start
                 lines.append(f"\u23f1 Filled in {elapsed:.1f}s")
         elif result.failure_reason:
             lines.append(f"\u274c Reason: {result.failure_reason}")
 
-        lines.extend([
-            "",
-            f"Entry: {decision.entry_reason}",
-            f"BTC: ${btc_price:,.0f} -> delta {delta_pct:+.2f}%",
-        ])
+        lines.extend(
+            [
+                "",
+                f"Entry: {decision.entry_reason}",
+                f"BTC: ${btc_price:,.0f} -> delta {delta_pct:+.2f}%",
+            ]
+        )
 
         if self._paper_mode:
             lines.insert(0, "\U0001f4dd PAPER MODE")

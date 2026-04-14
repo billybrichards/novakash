@@ -28,9 +28,12 @@ import structlog
 # runtime_config uses os.environ.get() directly — so we must load it ourselves.
 try:
     from dotenv import load_dotenv as _load_dotenv
+
     _env_path = Path(__file__).parent.parent / ".env"
     if _env_path.exists():
-        _load_dotenv(dotenv_path=str(_env_path), override=False)  # override=False: don't clobber existing env
+        _load_dotenv(
+            dotenv_path=str(_env_path), override=False
+        )  # override=False: don't clobber existing env
 except ImportError:
     pass
 
@@ -49,41 +52,42 @@ def _env_int(key: str, default: int) -> int:
 # Keys on the left are from trading_configs.config JSON.
 # Attributes on the right are what engine components read.
 _DB_KEY_MAP: dict[str, tuple[str, type]] = {
-    "starting_bankroll":        ("starting_bankroll", float),
-    "bet_fraction":             ("bet_fraction", float),
-    "max_position_usd":         ("max_position_usd", float),
-    "max_drawdown_pct":         ("max_drawdown_kill", float),
-    "daily_loss_limit":         ("daily_loss_limit_usd", float),
-    "vpin_informed_threshold":  ("vpin_informed_threshold", float),
-    "vpin_cascade_threshold":   ("vpin_cascade_threshold", float),
-    "vpin_bucket_size_usd":     ("vpin_bucket_size_usd", float),
-    "vpin_lookback_buckets":    ("vpin_lookback_buckets", int),
-    "five_min_vpin_gate":       ("five_min_vpin_gate", float),
-    "arb_min_spread":           ("arb_min_spread", float),
-    "arb_max_position":         ("arb_max_position", float),
-    "arb_max_execution_ms":     ("arb_max_execution_ms", int),
-    "enable_arb_strategy":      ("arb_enabled", bool),
+    "starting_bankroll": ("starting_bankroll", float),
+    "bet_fraction": ("bet_fraction", float),
+    "max_position_usd": ("max_position_usd", float),
+    "absolute_max_bet": ("max_position_usd", float),
+    "max_drawdown_pct": ("max_drawdown_kill", float),
+    "daily_loss_limit": ("daily_loss_limit_usd", float),
+    "vpin_informed_threshold": ("vpin_informed_threshold", float),
+    "vpin_cascade_threshold": ("vpin_cascade_threshold", float),
+    "vpin_bucket_size_usd": ("vpin_bucket_size_usd", float),
+    "vpin_lookback_buckets": ("vpin_lookback_buckets", int),
+    "five_min_vpin_gate": ("five_min_vpin_gate", float),
+    "arb_min_spread": ("arb_min_spread", float),
+    "arb_max_position": ("arb_max_position", float),
+    "arb_max_execution_ms": ("arb_max_execution_ms", int),
+    "enable_arb_strategy": ("arb_enabled", bool),
     "cascade_cooldown_seconds": ("cooldown_seconds", int),
-    "cascade_min_liq_usd":      ("cascade_liq_volume_threshold", float),
-    "enable_cascade_strategy":  ("cascade_enabled", bool),
-    "polymarket_fee_mult":      ("polymarket_fee_mult", float),
-    "opinion_fee_mult":         ("opinion_fee_mult", float),
-    "preferred_venue":          ("preferred_venue", str),
-    "five_min_min_delta_pct":   ("five_min_min_delta_pct", float),
+    "cascade_min_liq_usd": ("cascade_liq_volume_threshold", float),
+    "enable_cascade_strategy": ("cascade_enabled", bool),
+    "polymarket_fee_mult": ("polymarket_fee_mult", float),
+    "opinion_fee_mult": ("opinion_fee_mult", float),
+    "preferred_venue": ("preferred_venue", str),
+    "five_min_min_delta_pct": ("five_min_min_delta_pct", float),
     "five_min_cascade_min_delta_pct": ("five_min_cascade_min_delta_pct", float),
     "vpin_cascade_direction_threshold": ("vpin_cascade_direction_threshold", float),
     # SP-04 / SP-05: Strategy port settings (hot-reloadable)
-    "V4_FUSION_MODE":            ("v4_fusion_mode", str),
-    "V10_GATE_MODE":             ("v10_gate_mode", str),
-    "V4_FUSION_ENABLED":         ("v4_fusion_enabled", bool),
+    "V4_FUSION_MODE": ("v4_fusion_mode", str),
+    "V10_GATE_MODE": ("v10_gate_mode", str),
+    "V4_FUSION_ENABLED": ("v4_fusion_enabled", bool),
     "V10_6_MIN_EVAL_OFFSET_STRATEGY": ("v10_6_min_eval_offset", int),
     "V10_6_MAX_EVAL_OFFSET_STRATEGY": ("v10_6_max_eval_offset", int),
     # SIG-03/SIG-04: V4 DOWN-only strategy (DOWN filter + CLOB sizing)
-    "V4_DOWN_ONLY_MODE":         ("v4_down_only_mode", str),
-    "V4_DOWN_ONLY_ENABLED":      ("v4_down_only_enabled", bool),
+    "V4_DOWN_ONLY_MODE": ("v4_down_only_mode", str),
+    "V4_DOWN_ONLY_ENABLED": ("v4_down_only_enabled", bool),
     # SIG-05: V4 Asian UP strategy (UP-only, Asian session, medium conviction)
-    "V4_UP_ASIAN_MODE":          ("v4_up_asian_mode", str),
-    "V4_UP_ASIAN_ENABLED":       ("v4_up_asian_enabled", bool),
+    "V4_UP_ASIAN_MODE": ("v4_up_asian_mode", str),
+    "V4_UP_ASIAN_ENABLED": ("v4_up_asian_enabled", bool),
 }
 
 
@@ -111,13 +115,21 @@ class RuntimeConfig:
         # ── VPIN ──────────────────────────────────────────────────────────
         self.vpin_bucket_size_usd: float = _env_float("VPIN_BUCKET_SIZE_USD", 500_000)
         self.vpin_lookback_buckets: int = _env_int("VPIN_LOOKBACK_BUCKETS", 50)
-        self.vpin_informed_threshold: float = _env_float("VPIN_INFORMED_THRESHOLD", 0.55)
+        self.vpin_informed_threshold: float = _env_float(
+            "VPIN_INFORMED_THRESHOLD", 0.55
+        )
         self.vpin_cascade_threshold: float = _env_float("VPIN_CASCADE_THRESHOLD", 0.70)
-        self.vpin_cascade_direction_threshold: float = _env_float("VPIN_CASCADE_DIRECTION_THRESHOLD", 0.65)
+        self.vpin_cascade_direction_threshold: float = _env_float(
+            "VPIN_CASCADE_DIRECTION_THRESHOLD", 0.65
+        )
 
         # ── Cascade ───────────────────────────────────────────────────────
-        self.cascade_oi_drop_threshold: float = _env_float("CASCADE_OI_DROP_THRESHOLD", 0.02)
-        self.cascade_liq_volume_threshold: float = _env_float("CASCADE_LIQ_VOLUME_THRESHOLD", 5e6)
+        self.cascade_oi_drop_threshold: float = _env_float(
+            "CASCADE_OI_DROP_THRESHOLD", 0.02
+        )
+        self.cascade_liq_volume_threshold: float = _env_float(
+            "CASCADE_LIQ_VOLUME_THRESHOLD", 5e6
+        )
         self.cascade_enabled: bool = True
 
         # ── Arb ───────────────────────────────────────────────────────────
@@ -136,6 +148,7 @@ class RuntimeConfig:
         _five_min_env = os.environ.get("FIVE_MIN_ENABLED", "")
         if not _five_min_env:
             from pathlib import Path
+
             _env_file = Path(__file__).parent.parent / ".env"
             if _env_file.exists():
                 with open(_env_file) as f:
@@ -144,40 +157,62 @@ class RuntimeConfig:
                             _five_min_env = line.split("=", 1)[1].strip()
                             break
         self.five_min_enabled: bool = _five_min_env.lower() == "true"
-        self.five_min_assets: list[str] = os.environ.get("FIVE_MIN_ASSETS", "BTC").split(",")
+        self.five_min_assets: list[str] = os.environ.get(
+            "FIVE_MIN_ASSETS", "BTC"
+        ).split(",")
         self.five_min_mode: str = os.environ.get("FIVE_MIN_MODE", "safe")
         self.five_min_entry_offset: int = _env_int("FIVE_MIN_ENTRY_OFFSET", 10)
-        self.five_min_min_confidence: float = _env_float("FIVE_MIN_MIN_CONFIDENCE", 0.30)
+        self.five_min_min_confidence: float = _env_float(
+            "FIVE_MIN_MIN_CONFIDENCE", 0.30
+        )
         self.five_min_min_delta_pct: float = _env_float("FIVE_MIN_MIN_DELTA_PCT", 0.08)
-        self.five_min_cascade_min_delta_pct: float = _env_float("FIVE_MIN_CASCADE_MIN_DELTA_PCT", 0.03)
+        self.five_min_cascade_min_delta_pct: float = _env_float(
+            "FIVE_MIN_CASCADE_MIN_DELTA_PCT", 0.03
+        )
         self.five_min_vpin_gate: float = _env_float("FIVE_MIN_VPIN_GATE", 0.45)
-        self.five_min_max_entry_price: float = _env_float("FIVE_MIN_MAX_ENTRY_PRICE", 0.70)
-        self.fifteen_min_max_entry_price: float = _env_float("FIFTEEN_MIN_MAX_ENTRY_PRICE", 0.70)
+        self.five_min_max_entry_price: float = _env_float(
+            "FIVE_MIN_MAX_ENTRY_PRICE", 0.70
+        )
+        self.fifteen_min_max_entry_price: float = _env_float(
+            "FIFTEEN_MIN_MAX_ENTRY_PRICE", 0.70
+        )
 
         # ── Window ────────────────────────────────────────────────────────
         self.poly_window_seconds: int = _env_int("POLY_WINDOW_SECONDS", 300)
 
         # ── v6.0 TimesFM-Only Strategy ────────────────────────────────────
-        self.timesfm_enabled: bool = os.environ.get("TIMESFM_ENABLED", "false").lower() == "true"
+        self.timesfm_enabled: bool = (
+            os.environ.get("TIMESFM_ENABLED", "false").lower() == "true"
+        )
         self.timesfm_url: str = os.environ.get("TIMESFM_URL", "http://3.98.114.0:8000")
         self.timesfm_min_confidence: float = _env_float("TIMESFM_MIN_CONFIDENCE", 0.30)
-        self.timesfm_assets: list[str] = os.environ.get("TIMESFM_ASSETS", "BTC").split(",")
+        self.timesfm_assets: list[str] = os.environ.get("TIMESFM_ASSETS", "BTC").split(
+            ","
+        )
 
         # ── Guardrails ────────────────────────────────────────────────────
         # G1: Staggered asset execution
-        self.order_stagger_seconds: float = _env_float("ORDER_STAGGER_SECONDS", 1.5)  # was 5.0, reduced — FOK fills are near-instant
+        self.order_stagger_seconds: float = _env_float(
+            "ORDER_STAGGER_SECONDS", 1.5
+        )  # was 5.0, reduced — FOK fills are near-instant
         # G3: Single best signal mode (only trade the top-scoring asset per window)
-        self.single_best_signal: bool = os.environ.get("SINGLE_BEST_SIGNAL", "false").lower() == "true"
+        self.single_best_signal: bool = (
+            os.environ.get("SINGLE_BEST_SIGNAL", "false").lower() == "true"
+        )
         # G4: Order rate limiter
         self.max_orders_per_hour: int = _env_int("MAX_ORDERS_PER_HOUR", 10)
-        self.min_order_interval_seconds: float = _env_float("MIN_ORDER_INTERVAL_SECONDS", 4.0)
+        self.min_order_interval_seconds: float = _env_float(
+            "MIN_ORDER_INTERVAL_SECONDS", 4.0
+        )
 
         # ── v8.0: Price source feature flag (env-only, not DB-synced) ────────
         # Controls which feed drives direction signal in five_min_vpin evaluate().
         # Values: 'tiingo' | 'binance' | 'chainlink'
         # Default: 'tiingo' — oracle-aligned (96.9% accuracy vs Binance 71.6%)
         # Tiingo REST candle (open/close) used when available; falls back to Binance.
-        self.delta_price_source: str = os.environ.get("DELTA_PRICE_SOURCE", "tiingo").lower()
+        self.delta_price_source: str = os.environ.get(
+            "DELTA_PRICE_SOURCE", "tiingo"
+        ).lower()
 
         # ── v8.0 Phase 2: FOK Execution Ladder (env-only, default ON) ───────────
         # FOK_ENABLED: replace GTC single-order with FOK attempt ladder.
@@ -189,39 +224,55 @@ class RuntimeConfig:
         # TWAP_OVERRIDE_ENABLED: allow TWAP+Gamma to override point-delta direction.
         # Disabled: TWAP blocked 12 windows, 8 were winners — net harmful.
         # With Tiingo as delta source, TWAP direction is redundant.
-        self.twap_override_enabled: bool = os.environ.get("TWAP_OVERRIDE_ENABLED", "false").lower() == "true"
+        self.twap_override_enabled: bool = (
+            os.environ.get("TWAP_OVERRIDE_ENABLED", "false").lower() == "true"
+        )
 
         # TWAP_GAMMA_GATE_ENABLED: allow TWAP should_skip to return None early.
         # Disabled: gate was blocking more winners than losers.
-        self.twap_gamma_gate_enabled: bool = os.environ.get("TWAP_GAMMA_GATE_ENABLED", "false").lower() == "true"
+        self.twap_gamma_gate_enabled: bool = (
+            os.environ.get("TWAP_GAMMA_GATE_ENABLED", "false").lower() == "true"
+        )
 
         # TIMESFM_AGREEMENT_ENABLED: allow TimesFM forecast to gate/modify confidence.
         # Disabled: TimesFM accuracy 47.8% — worse than coin flip as a gate.
         # Forecast is still fetched and logged for monitoring when timesfm_enabled=True.
-        self.timesfm_agreement_enabled: bool = os.environ.get("TIMESFM_AGREEMENT_ENABLED", "false").lower() == "true"
+        self.timesfm_agreement_enabled: bool = (
+            os.environ.get("TIMESFM_AGREEMENT_ENABLED", "false").lower() == "true"
+        )
 
         # ── v9.0: Source agreement + dynamic caps ───────────────────────────
         # V9_SOURCE_AGREEMENT: CL+TI direction must agree (94.7% WR when agree, 9.1% when disagree)
-        self.v9_source_agreement: bool = os.environ.get("V9_SOURCE_AGREEMENT", "false").lower() == "true"
+        self.v9_source_agreement: bool = (
+            os.environ.get("V9_SOURCE_AGREEMENT", "false").lower() == "true"
+        )
         # V9_CAPS_ENABLED: Two-tier dynamic caps based on empirical agreement WR
-        self.v9_caps_enabled: bool = os.environ.get("V9_CAPS_ENABLED", "false").lower() == "true"
+        self.v9_caps_enabled: bool = (
+            os.environ.get("V9_CAPS_ENABLED", "false").lower() == "true"
+        )
         # ORDER_TYPE: FAK (Fill-And-Kill), FOK (Fill-Or-Kill), or GTC
         self.order_type: str = os.environ.get("ORDER_TYPE", "FAK").upper()
 
         # ── v10: DUNE-gated dynamic pricing ──────────────────────────────
         # V10_DUNE_ENABLED: Use DUNE ML model as confidence gate (replaces VPIN)
-        self.v10_dune_enabled: bool = os.environ.get("V10_DUNE_ENABLED", "false").lower() == "true"
+        self.v10_dune_enabled: bool = (
+            os.environ.get("V10_DUNE_ENABLED", "false").lower() == "true"
+        )
         # V10_DUNE_MIN_P: Minimum DUNE P(direction) to trade
         self.v10_dune_min_p: float = float(os.environ.get("V10_DUNE_MIN_P", "0.65"))
         # FIVE_MIN_EVAL_INTERVAL: Seconds between eval ticks (2 = 2s polling, 10 = v9 default)
-        self.five_min_eval_interval: int = int(os.environ.get("FIVE_MIN_EVAL_INTERVAL", "10"))
+        self.five_min_eval_interval: int = int(
+            os.environ.get("FIVE_MIN_EVAL_INTERVAL", "10")
+        )
 
         # ── v10.6: Sequoia v5 decision surface (DS-01 — eval_offset bounds) ─
         # V10_6_ENABLED: master flag for the v10.6 decision surface.
         # DEFAULTS OFF — merging this PR to develop is zero-behaviour-change
         # in production. Operator flips this on the host to enable. Matches
         # the MARGIN_ENGINE_USE_V4_ACTIONS pattern from margin_engine PR #16.
-        self.v10_6_enabled: bool = os.environ.get("V10_6_ENABLED", "false").lower() == "true"
+        self.v10_6_enabled: bool = (
+            os.environ.get("V10_6_ENABLED", "false").lower() == "true"
+        )
         # V10_6_MIN_EVAL_OFFSET / V10_6_MAX_EVAL_OFFSET: inclusive bounds on
         # ctx.eval_offset for the v10.6 EvalOffsetBoundsGate.
         #
@@ -235,26 +286,40 @@ class RuntimeConfig:
         # Defaults match docs/V10_6_DECISION_SURFACE_PROPOSAL.md §3.4:
         #   90 = refuse to trade closer than T-90 to window close
         #  180 = refuse to trade further than T-180 from window close
-        self.v10_6_min_eval_offset: int = int(os.environ.get("V10_6_MIN_EVAL_OFFSET", "90"))
-        self.v10_6_max_eval_offset: int = int(os.environ.get("V10_6_MAX_EVAL_OFFSET", "180"))
+        self.v10_6_min_eval_offset: int = int(
+            os.environ.get("V10_6_MIN_EVAL_OFFSET", "90")
+        )
+        self.v10_6_max_eval_offset: int = int(
+            os.environ.get("V10_6_MAX_EVAL_OFFSET", "180")
+        )
 
         # ── SP-04 / SP-05: Strategy port settings (DB-synced, hot-reloadable) ──
         # These default to env vars and are overridden by DB config on each sync().
         # V10_GATE_MODE / V4_FUSION_MODE: per-window mode for LIVE vs GHOST execution.
         # V4_FUSION_ENABLED: whether V4 fusion strategy is included in evaluation.
-        self.use_strategy_port: bool = os.environ.get("ENGINE_USE_STRATEGY_PORT", "false").lower() == "true"
+        self.use_strategy_port: bool = (
+            os.environ.get("ENGINE_USE_STRATEGY_PORT", "false").lower() == "true"
+        )
         self.v10_gate_mode: str = os.environ.get("V10_GATE_MODE", "LIVE").upper()
         self.v4_fusion_mode: str = os.environ.get("V4_FUSION_MODE", "GHOST").upper()
-        self.v4_fusion_enabled: bool = os.environ.get("V4_FUSION_ENABLED", "false").lower() == "true"
+        self.v4_fusion_enabled: bool = (
+            os.environ.get("V4_FUSION_ENABLED", "false").lower() == "true"
+        )
         # SIG-03/SIG-04: V4 DOWN-only strategy (DOWN filter + CLOB sizing).
         # Default enabled=false (matches v4_fusion_enabled pattern — explicit opt-in via DB seed).
         # DB config_seed.py seeds V4_DOWN_ONLY_ENABLED=true so live envs enable it on first sync.
-        self.v4_down_only_mode: str = os.environ.get("V4_DOWN_ONLY_MODE", "LIVE").upper()
-        self.v4_down_only_enabled: bool = os.environ.get("V4_DOWN_ONLY_ENABLED", "false").lower() == "true"
+        self.v4_down_only_mode: str = os.environ.get(
+            "V4_DOWN_ONLY_MODE", "LIVE"
+        ).upper()
+        self.v4_down_only_enabled: bool = (
+            os.environ.get("V4_DOWN_ONLY_ENABLED", "false").lower() == "true"
+        )
         # SIG-05: V4 Asian UP strategy (UP-only, Asian session 23-02 UTC, dist 0.15-0.20).
         # Discovered 2026-04-12: 81-99% WR (5,543 samples). Safe to run alongside v4_down_only.
         self.v4_up_asian_mode: str = os.environ.get("V4_UP_ASIAN_MODE", "LIVE").upper()
-        self.v4_up_asian_enabled: bool = os.environ.get("V4_UP_ASIAN_ENABLED", "false").lower() == "true"
+        self.v4_up_asian_enabled: bool = (
+            os.environ.get("V4_UP_ASIAN_ENABLED", "false").lower() == "true"
+        )
 
         # ── Sync metadata ─────────────────────────────────────────────────
         self._active_config_id: Optional[int] = None
@@ -270,10 +335,10 @@ class RuntimeConfig:
         Returns True if config was updated, False if no change or error.
         """
         # Skip DB sync if env var says so — use pure env var config
-        if os.environ.get('SKIP_DB_CONFIG_SYNC') == 'true':
+        if os.environ.get("SKIP_DB_CONFIG_SYNC") == "true":
             log.info("runtime_config.skip_db_sync", reason="SKIP_DB_CONFIG_SYNC=true")
             return False
-        
+
         mode = "paper" if paper_mode else "live"
 
         try:
@@ -304,7 +369,11 @@ class RuntimeConfig:
             if config_id == self._active_config_id:
                 return False
 
-            config_data: dict = row["config"] if isinstance(row["config"], dict) else json.loads(row["config"] or "{}")
+            config_data: dict = (
+                row["config"]
+                if isinstance(row["config"], dict)
+                else json.loads(row["config"] or "{}")
+            )
 
             # Apply DB values
             changes = []

@@ -126,3 +126,23 @@ Verification revealed:
 **What happened:** The margin engine's Position entity was computing P&L from a hardcoded `0.075%` fee rate and `0.008%` daily borrow rate, neither of which matched Binance's actual fees. The engine was reporting trades as +$0.156 raw when they were actually −$0.059 net — the fee cost trap that caused the 116-trade overnight loss.
 **Root cause:** Position was trying to be a calculator when it should have been a record. The Binance adapter had `fills[]` with real commission in the order response but threw it away, returning just `(order_id, price)`.
 **Rule:** The exchange adapter is the authority on anything involving money. Adapters should return a rich `FillResult` with actual filled notional, real commission (parsed from `fills[]`), and a `commission_is_actual` flag. Entities store these values and use them as-is; they never re-estimate. Paper-mode adapters must return the same shape so paper and live never drift.
+
+### Montreal-only verification means no local testing — 2026-04-14
+**What happened:** I ran a targeted local pytest after identifying the likely production fix.
+**Root cause:** I optimized for fast feedback instead of following the user's deployment rule for this engine.
+**Rule:** When the user says to obey Montreal rules, do all validation on the Montreal box only. Do not run local tests or use local results as proof.
+
+### v4_down_only must stay independent of fusion-style consensus gating — 2026-04-14
+**What happened:** I treated the "consensus not safe_to_trade" behavior as generally acceptable while reviewing the production skips.
+**Root cause:** I did not separate the intended behavior of `v4_down_only` from `v4_fusion` clearly enough.
+**Rule:** `v4_down_only` is its own executable strategy and should not inherit `v4_fusion`-style consensus blocking unless the user explicitly asks for that. Leave stricter consensus behavior on `v4_fusion` only.
+
+### Fix missing probability inputs at the data-surface layer, not by weakening gates — 2026-04-14
+**What happened:** I started adding broader gate fallbacks when `v2_probability_up` / polymarket fields were missing in the registry surface.
+**Root cause:** I moved too quickly to make downstream gates more permissive instead of fixing the upstream surface-loading contract.
+**Rule:** When a strategy is engineered around the proper probability estimate, repair the data-surface fetch/population path first. Do not paper over missing surface fields by widening gate fallbacks unless the user explicitly asks for a semantic change.
+
+### Execution caps must use the real runtime config, not stale constants — 2026-04-14
+**What happened:** I claimed the system had a hard $5 max bet while the actual execution path was still using a hardcoded $50 ceiling and stale bankroll state.
+**Root cause:** I checked the active config but not the exact `ExecuteTradeUseCase._calculate_stake()` path that places orders.
+**Rule:** Never claim a risk cap is enforced until the exact live execution code path uses the runtime-configured value. Config presence is not proof of enforcement.

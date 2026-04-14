@@ -112,8 +112,8 @@ class PgTradeRepository:
                     created_dt,
                     resolved_dt,
                     json.dumps(order.metadata),
-                    "live" if order.order_id.startswith("0x") else "paper",
-                    not order.order_id.startswith("5min-") and not order.order_id.startswith("manual-paper"),
+                    "paper" if execution_mode == "paper" else "live",
+                    execution_mode != "paper",
                     # v8.0 fields
                     "v8.0",
                     clob_order_id,
@@ -280,7 +280,10 @@ class PgTradeRepository:
                     datetime.now(timezone.utc),
                     order_id,
                 )
-            log.info("db.trade_marked_expired", order_id=order_id[:24] if len(order_id) > 24 else order_id)
+            log.info(
+                "db.trade_marked_expired",
+                order_id=order_id[:24] if len(order_id) > 24 else order_id,
+            )
         except Exception as exc:
             log.error("db.mark_trade_expired_failed", order_id=order_id, error=str(exc))
 
@@ -333,7 +336,10 @@ class PgTradeRepository:
             return []
 
     async def get_token_ids_from_market_data(
-        self, asset: str, window_ts: int, timeframe: str = "5m",
+        self,
+        asset: str,
+        window_ts: int,
+        timeframe: str = "5m",
     ) -> dict | None:
         """LT-02: fallback lookup for CLOB token_ids.
 
@@ -343,7 +349,8 @@ class PgTradeRepository:
             return None
         try:
             async with self._pool.acquire() as conn:
-                row = await conn.fetchrow("""
+                row = await conn.fetchrow(
+                    """
                     SELECT up_token_id, down_token_id
                     FROM market_data
                     WHERE asset = $1
@@ -353,7 +360,11 @@ class PgTradeRepository:
                       AND down_token_id IS NOT NULL
                     ORDER BY ABS(window_ts - $3::bigint) ASC
                     LIMIT 1
-                """, asset, timeframe, int(window_ts))
+                """,
+                    asset,
+                    timeframe,
+                    int(window_ts),
+                )
                 if row and row["up_token_id"] and row["down_token_id"]:
                     return {
                         "up_token_id": row["up_token_id"],
@@ -365,8 +376,12 @@ class PgTradeRepository:
             return None
 
     async def update_manual_trade_status(
-        self, trade_id: str, status: str, pnl_usd: float = None,
-        outcome_direction: str = None, clob_order_id: str = None,
+        self,
+        trade_id: str,
+        status: str,
+        pnl_usd: float = None,
+        outcome_direction: str = None,
+        clob_order_id: str = None,
     ) -> None:
         """Update a manual trade after execution or resolution.
 
@@ -378,24 +393,38 @@ class PgTradeRepository:
         try:
             async with self._pool.acquire() as conn:
                 if pnl_usd is not None:
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE manual_trades
                         SET status = $1, pnl_usd = $2, outcome_direction = $3, resolved_at = NOW()
                         WHERE trade_id = $4
-                    """, status, pnl_usd, outcome_direction, trade_id)
+                    """,
+                        status,
+                        pnl_usd,
+                        outcome_direction,
+                        trade_id,
+                    )
                 else:
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE manual_trades SET status = $1 WHERE trade_id = $2
-                    """, status, trade_id)
+                    """,
+                        status,
+                        trade_id,
+                    )
                 # POLY-SOT: persist the CLOB order ID separately if provided.
                 if clob_order_id:
                     try:
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             UPDATE manual_trades
                             SET polymarket_order_id = $1
                             WHERE trade_id = $2
                               AND (polymarket_order_id IS NULL OR polymarket_order_id = '')
-                        """, clob_order_id, trade_id)
+                        """,
+                            clob_order_id,
+                            trade_id,
+                        )
                     except Exception as col_exc:
                         log.warning(
                             "db.manual_trade_polymarket_order_id_update_failed",
@@ -453,7 +482,9 @@ class PgTradeRepository:
             log.warning("db.ensure_manual_trades_sot_columns_failed", error=str(exc))
 
     async def fetch_manual_trades_for_sot_check(
-        self, since: Optional[datetime] = None, limit: int = 100,
+        self,
+        since: Optional[datetime] = None,
+        limit: int = 100,
     ) -> list[dict]:
         """Return recent manual_trades rows for SOT reconciliation.
 
@@ -502,7 +533,9 @@ class PgTradeRepository:
                 )
                 return [dict(r) for r in rows]
         except Exception as exc:
-            log.warning("db.fetch_manual_trades_for_sot_check_failed", error=str(exc)[:200])
+            log.warning(
+                "db.fetch_manual_trades_for_sot_check_failed", error=str(exc)[:200]
+            )
             return []
 
     async def update_manual_trade_sot(
@@ -599,7 +632,9 @@ class PgTradeRepository:
             log.warning("db.ensure_trades_sot_columns_failed", error=str(exc))
 
     async def fetch_trades_for_sot_check(
-        self, since: Optional[datetime] = None, limit: int = 100,
+        self,
+        since: Optional[datetime] = None,
+        limit: int = 100,
     ) -> list[dict]:
         """Return recent automatic-trade rows for SOT reconciliation.
 
