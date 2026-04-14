@@ -40,7 +40,8 @@ from db.database import Base
 # Raw table reflection for window_snapshots (engine-managed, not ORM)
 _metadata = MetaData()
 window_snapshots = Table(
-    "window_snapshots", _metadata,
+    "window_snapshots",
+    _metadata,
     Column("id", Integer, primary_key=True),
     Column("window_ts", BigInteger),
     Column("asset", String),
@@ -63,7 +64,9 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    username: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False, index=True
+    )
     hashed_password: Mapped[str] = mapped_column(String(256), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -77,7 +80,9 @@ class Trade(Base):
     __tablename__ = "trades"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    order_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    order_id: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False, index=True
+    )
     strategy: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     venue: Mapped[str] = mapped_column(String(32), nullable=False)
     market_slug: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -85,7 +90,9 @@ class Trade(Base):
     entry_price: Mapped[Optional[float]] = mapped_column(Numeric(10, 6))
     stake_usd: Mapped[Optional[float]] = mapped_column(Numeric(12, 4))
     fee_usd: Mapped[Optional[float]] = mapped_column(Numeric(10, 6))
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="PENDING", index=True)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="PENDING", index=True
+    )
     outcome: Mapped[Optional[str]] = mapped_column(String(8))  # WIN | LOSS | PUSH
     payout_usd: Mapped[Optional[float]] = mapped_column(Numeric(12, 4))
     pnl_usd: Mapped[Optional[float]] = mapped_column(Numeric(12, 4))
@@ -115,7 +122,9 @@ class DailyPnL(Base):
     __tablename__ = "daily_pnl"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, unique=True, index=True)
+    date: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, unique=True, index=True
+    )
     total_pnl: Mapped[Optional[float]] = mapped_column(Numeric(12, 4))
     num_trades: Mapped[int] = mapped_column(Integer, default=0)
     wins: Mapped[int] = mapped_column(Integer, default=0)
@@ -193,4 +202,54 @@ class Note(Base):
         onupdate=func.now(),
         nullable=False,
         index=True,
+    )
+
+
+class AuditTaskDev(Base):
+    """
+    Agent Ops task queue + audit checklist persistence.
+    """
+
+    __tablename__ = "audit_tasks_dev"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    task_key: Mapped[Optional[str]] = mapped_column(String(64))
+    task_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[Optional[str]] = mapped_column(String(64))
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default="OPEN", index=True
+    )
+    severity: Mapped[Optional[str]] = mapped_column(String(16))
+    category: Mapped[Optional[str]] = mapped_column(String(64))
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dedupe_key: Mapped[Optional[str]] = mapped_column(Text, unique=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    metadata_json: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=dict, name="metadata"
+    )
+    created_by: Mapped[Optional[str]] = mapped_column(String(64))
+    updated_by: Mapped[Optional[str]] = mapped_column(String(64))
+    claimed_by: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    claim_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    canceled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_heartbeat_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True)
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[Optional[str]] = mapped_column(Text)
+    status_reason: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )

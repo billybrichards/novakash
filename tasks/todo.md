@@ -1,5 +1,22 @@
 # tasks/todo.md — BTC Trader Hub
 
+## AuditChecklist DB Migration — 2026-04-14
+
+### Plan
+- [x] Add audit_tasks_dev table migration + schema.sql entry
+- [x] Add hub API endpoints for task CRUD + claim/lease
+- [x] Register table in schema_catalog + ORM model
+- [x] Add agent-facing banner in AuditChecklist UI pointing to audit_tasks_dev
+- [x] Verify API + schema wiring (lint-level checks only)
+
+### Review
+- [x] Summarize DB + API changes and how to seed
+
+Review notes:
+- Added audit_tasks_dev table + indexes in migration, schema.sql, and hub startup ensure block.
+- Added hub /api/audit-tasks endpoints for CRUD + claim/lease/heartbeat.
+- Added AuditChecklist banner pointing agents at audit_tasks_dev; static TASKS remain for now.
+
 ## Codebase Audit — 2026-04-06
 
 ### Plan

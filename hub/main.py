@@ -34,7 +34,9 @@ from api.v58_monitor import router as v58_router
 from api.analysis import router as analysis_router
 from api.margin import router as margin_router
 from api.notes import router as notes_router
+from api.audit_tasks import router as audit_tasks_router
 from api.schema import router as schema_router
+
 # CFG-02/03: DB-backed config schema + read-only API
 from api.config_v2 import router as config_v2_router
 
@@ -50,8 +52,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         from sqlalchemy import text
         from db.database import get_session
+
         async for session in get_session():
-            await session.execute(text("""
+            await session.execute(
+                text("""
                 CREATE TABLE IF NOT EXISTS trading_configs (
                     id SERIAL PRIMARY KEY, name VARCHAR(128) NOT NULL,
                     version INTEGER NOT NULL DEFAULT 1, description TEXT,
@@ -62,15 +66,41 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
-            """))
-            await session.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS mode VARCHAR(16) DEFAULT 'paper'"))
-            await session.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS vpin_at_entry NUMERIC(10,6)"))
-            await session.execute(text("ALTER TABLE system_state ADD COLUMN IF NOT EXISTS paper_enabled BOOLEAN DEFAULT TRUE"))
-            await session.execute(text("ALTER TABLE system_state ADD COLUMN IF NOT EXISTS live_enabled BOOLEAN DEFAULT FALSE"))
-            await session.execute(text("ALTER TABLE system_state ADD COLUMN IF NOT EXISTS active_paper_config_id INTEGER"))
-            await session.execute(text("ALTER TABLE system_state ADD COLUMN IF NOT EXISTS active_live_config_id INTEGER"))
+            """)
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS mode VARCHAR(16) DEFAULT 'paper'"
+                )
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS vpin_at_entry NUMERIC(10,6)"
+                )
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE system_state ADD COLUMN IF NOT EXISTS paper_enabled BOOLEAN DEFAULT TRUE"
+                )
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE system_state ADD COLUMN IF NOT EXISTS live_enabled BOOLEAN DEFAULT FALSE"
+                )
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE system_state ADD COLUMN IF NOT EXISTS active_paper_config_id INTEGER"
+                )
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE system_state ADD COLUMN IF NOT EXISTS active_live_config_id INTEGER"
+                )
+            )
             # NT-01: persistent notes/journal table
-            await session.execute(text("""
+            await session.execute(
+                text("""
                 CREATE TABLE IF NOT EXISTS notes (
                     id SERIAL PRIMARY KEY,
                     title VARCHAR(200) NOT NULL DEFAULT '',
@@ -81,14 +111,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
-            """))
-            await session.execute(text(
-                "CREATE INDEX IF NOT EXISTS notes_status_updated_idx "
-                "ON notes (status, updated_at DESC)"
-            ))
+            """)
+            )
+            await session.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS notes_status_updated_idx "
+                    "ON notes (status, updated_at DESC)"
+                )
+            )
             # Seed one initial note so the page isn't empty on first deploy.
             # SQL escapes the apostrophe in "don't" with '' (string escape).
-            await session.execute(text("""
+            await session.execute(
+                text("""
                 INSERT INTO notes (title, body, tags, status, author)
                 SELECT
                     'Notes page live (NT-01)',
@@ -97,27 +131,104 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     'open',
                     'claude'
                 WHERE NOT EXISTS (SELECT 1 FROM notes WHERE title = 'Notes page live (NT-01)')
-            """))
+            """)
+            )
+            # AUDIT-01: agent ops task queue + audit checklist table
+            await session.execute(
+                text("""
+                CREATE TABLE IF NOT EXISTS audit_tasks_dev (
+                    id                BIGSERIAL PRIMARY KEY,
+                    task_key          VARCHAR(64),
+                    task_type         VARCHAR(64) NOT NULL,
+                    source            VARCHAR(64),
+                    title             TEXT NOT NULL,
+                    status            VARCHAR(24) NOT NULL DEFAULT 'OPEN',
+                    severity          VARCHAR(16),
+                    category          VARCHAR(64),
+                    priority          INTEGER NOT NULL DEFAULT 0,
+                    dedupe_key        TEXT,
+                    payload           JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_by        VARCHAR(64),
+                    updated_by        VARCHAR(64),
+                    claimed_by        VARCHAR(64),
+                    claimed_at        TIMESTAMPTZ,
+                    claim_expires_at  TIMESTAMPTZ,
+                    started_at        TIMESTAMPTZ,
+                    completed_at      TIMESTAMPTZ,
+                    canceled_at       TIMESTAMPTZ,
+                    last_heartbeat_at TIMESTAMPTZ,
+                    attempt_count     INTEGER NOT NULL DEFAULT 0,
+                    last_error        TEXT,
+                    status_reason     TEXT,
+                    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            )
+            await session.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS audit_tasks_dev_dedupe_key_uq "
+                    "ON audit_tasks_dev (dedupe_key) WHERE dedupe_key IS NOT NULL"
+                )
+            )
+            await session.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS audit_tasks_dev_status_priority_idx "
+                    "ON audit_tasks_dev (status, priority DESC, created_at ASC)"
+                )
+            )
+            await session.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS audit_tasks_dev_claim_expires_idx "
+                    "ON audit_tasks_dev (claim_expires_at)"
+                )
+            )
+            await session.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS audit_tasks_dev_claimed_by_idx "
+                    "ON audit_tasks_dev (claimed_by, status)"
+                )
+            )
+            await session.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS audit_tasks_dev_updated_at_idx "
+                    "ON audit_tasks_dev (updated_at DESC)"
+                )
+            )
+            await session.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS audit_tasks_dev_type_created_idx "
+                    "ON audit_tasks_dev (task_type, created_at DESC)"
+                )
+            )
             await session.commit()
             log.info("hub.migrations_applied")
             # Ensure manual_trades table exists
             try:
                 from db.migrations.v58_monitor_ddl import ensure_manual_trades_table
+
                 await ensure_manual_trades_table(session)
             except Exception as mt_exc:
                 log.warning("hub.manual_trades_migration_error", error=str(mt_exc))
             # LT-03: ensure manual_trade_snapshots table exists
             try:
-                from db.migrations.v58_monitor_ddl import ensure_manual_trade_snapshots_table
+                from db.migrations.v58_monitor_ddl import (
+                    ensure_manual_trade_snapshots_table,
+                )
+
                 await ensure_manual_trade_snapshots_table(session)
             except Exception as mts_exc:
-                log.warning("hub.manual_trade_snapshots_migration_error", error=str(mts_exc))
+                log.warning(
+                    "hub.manual_trade_snapshots_migration_error", error=str(mts_exc)
+                )
             # CFG-02: ensure config_keys / config_values / config_history tables exist
             # and seed config_keys with the inventoried 142+ keys. Idempotent —
             # re-running on every hub boot is safe and picks up new seed entries.
             try:
                 from db.config_schema import ensure_config_tables
                 from db.config_seed import seed_config_keys
+
                 await ensure_config_tables(session)
                 await session.commit()
                 counts = await seed_config_keys(session)
@@ -127,7 +238,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 log.warning("hub.config_schema_migration_error", error=str(cfg_exc))
             # SP-05: ensure strategy_decisions table exists
             try:
-                await session.execute(text("""
+                await session.execute(
+                    text("""
                     CREATE TABLE IF NOT EXISTS strategy_decisions (
                         id              BIGSERIAL PRIMARY KEY,
                         strategy_id     TEXT NOT NULL,
@@ -153,15 +265,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         evaluated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                         UNIQUE (strategy_id, asset, window_ts, eval_offset)
                     )
-                """))
-                await session.execute(text(
-                    "CREATE INDEX IF NOT EXISTS idx_sd_window "
-                    "ON strategy_decisions (asset, window_ts)"
-                ))
-                await session.execute(text(
-                    "CREATE INDEX IF NOT EXISTS idx_sd_strategy "
-                    "ON strategy_decisions (strategy_id, evaluated_at)"
-                ))
+                """)
+                )
+                await session.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_sd_window "
+                        "ON strategy_decisions (asset, window_ts)"
+                    )
+                )
+                await session.execute(
+                    text(
+                        "CREATE INDEX IF NOT EXISTS idx_sd_strategy "
+                        "ON strategy_decisions (strategy_id, evaluated_at)"
+                    )
+                )
                 await session.commit()
                 log.info("hub.strategy_decisions_table_ensured")
             except Exception as sd_exc:
@@ -211,6 +328,7 @@ app.include_router(v58_router, prefix="/api", tags=["v58-monitor"])
 app.include_router(analysis_router, prefix="/api", tags=["analysis"])
 app.include_router(margin_router, prefix="/api", tags=["margin"])
 app.include_router(notes_router, prefix="/api", tags=["notes"])
+app.include_router(audit_tasks_router, prefix="/api", tags=["audit-tasks"])
 # SCHEMA-01: /schema page — DB table inventory (catalog + live runtime stats)
 app.include_router(schema_router, prefix="/api", tags=["schema"])
 # CFG-02/03: DB-backed config (read-only in this PR; writes ship in CFG-04)
@@ -234,7 +352,9 @@ _TIMESFM_INTERNAL = _os.environ.get("TIMESFM_URL", "http://localhost:8080")
 
 
 @app.get("/v4/snapshot", tags=["internal-proxy"])
-async def proxy_v4_snapshot(asset: str = "btc", timescale: str = "5m", strategy: str = "polymarket_5m") -> dict:
+async def proxy_v4_snapshot(
+    asset: str = "btc", timescale: str = "5m", strategy: str = "polymarket_5m"
+) -> dict:
     """No-auth proxy to timesfm /v4/snapshot. Used by Strategy Engine v2 on Montreal."""
     try:
         async with _httpx.AsyncClient(timeout=8.0) as client:
@@ -246,4 +366,6 @@ async def proxy_v4_snapshot(asset: str = "btc", timescale: str = "5m", strategy:
             return resp.json()
     except Exception as exc:
         return {"error": str(exc)[:200]}
+
+
 # Hub v10 — deployed 2026-04-08T14:44

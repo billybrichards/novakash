@@ -128,3 +128,52 @@ CREATE TABLE IF NOT EXISTS backtest_runs (
 
 CREATE INDEX IF NOT EXISTS idx_backtest_strategy   ON backtest_runs(strategy);
 CREATE INDEX IF NOT EXISTS idx_backtest_created_at ON backtest_runs(created_at DESC);
+
+
+-- Audit Tasks (Agent Ops + audit checklist)
+CREATE TABLE IF NOT EXISTS audit_tasks_dev (
+    id                BIGSERIAL PRIMARY KEY,
+    task_key          VARCHAR(64),
+    task_type         VARCHAR(64) NOT NULL,
+    source            VARCHAR(64),
+    title             TEXT NOT NULL,
+    status            VARCHAR(24) NOT NULL DEFAULT 'OPEN',
+    severity          VARCHAR(16),
+    category          VARCHAR(64),
+    priority          INTEGER NOT NULL DEFAULT 0,
+    dedupe_key        TEXT,
+    payload           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_by        VARCHAR(64),
+    updated_by        VARCHAR(64),
+    claimed_by        VARCHAR(64),
+    claimed_at        TIMESTAMPTZ,
+    claim_expires_at  TIMESTAMPTZ,
+    started_at        TIMESTAMPTZ,
+    completed_at      TIMESTAMPTZ,
+    canceled_at       TIMESTAMPTZ,
+    last_heartbeat_at TIMESTAMPTZ,
+    attempt_count     INTEGER NOT NULL DEFAULT 0,
+    last_error        TEXT,
+    status_reason     TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS audit_tasks_dev_dedupe_key_uq
+    ON audit_tasks_dev (dedupe_key) WHERE dedupe_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS audit_tasks_dev_status_priority_idx
+    ON audit_tasks_dev (status, priority DESC, created_at ASC);
+
+CREATE INDEX IF NOT EXISTS audit_tasks_dev_claim_expires_idx
+    ON audit_tasks_dev (claim_expires_at);
+
+CREATE INDEX IF NOT EXISTS audit_tasks_dev_claimed_by_idx
+    ON audit_tasks_dev (claimed_by, status);
+
+CREATE INDEX IF NOT EXISTS audit_tasks_dev_updated_at_idx
+    ON audit_tasks_dev (updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS audit_tasks_dev_type_created_idx
+    ON audit_tasks_dev (task_type, created_at DESC);

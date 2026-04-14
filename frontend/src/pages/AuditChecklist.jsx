@@ -3316,6 +3316,25 @@ export default function AuditChecklist() {
             </span>
           ))}
         </div>
+        <div
+          style={{
+            marginTop: 10,
+            padding: '8px 10px',
+            borderRadius: 6,
+            border: `1px solid ${T.cardBorder}`,
+            background: 'rgba(15,23,42,0.55)',
+            fontSize: 9,
+            color: T.textMuted,
+            lineHeight: 1.5,
+          }}
+        >
+          <span style={{ color: T.cyan, fontWeight: 700, letterSpacing: '0.08em' }}>AGENT OPS</span>{' '}
+          audit checklist tasks are moving to DB. New source table:{' '}
+          <span style={{ color: T.text, fontFamily: T.mono }}>audit_tasks_dev</span>{' '}— use the
+          Hub API <span style={{ color: T.text, fontFamily: T.mono }}>/api/audit-tasks</span> for live
+          task state. This page still renders the static TASKS list until the
+          DB-backed view lands.
+        </div>
       </div>
 
       {/* Stats + Progress */}
