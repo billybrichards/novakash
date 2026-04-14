@@ -337,7 +337,6 @@ jobs:
           REMOTE
 
       - name: Sync DB trading config via Hub API
-        if: ${{ secrets.HUB_URL != '' }}
         env:
           HUB_URL: ${{ secrets.HUB_URL }}
           HUB_ADMIN_USERNAME: ${{ secrets.HUB_ADMIN_USERNAME }}
@@ -346,6 +345,10 @@ jobs:
           DEPLOY_BET_FRACTION: ${{ vars.BET_FRACTION || '0.07' }}
           DEPLOY_MAX_POSITION_USD: ${{ vars.MAX_POSITION_USD || '5.0' }}
         run: |
+          if [ -z "${HUB_URL}" ]; then
+            echo "HUB_URL not set — skipping DB config sync"
+            exit 0
+          fi
           # Login to get JWT
           TOKEN=$(curl -sf -X POST "${HUB_URL}/auth/login" \
             -H "Content-Type: application/json" \
