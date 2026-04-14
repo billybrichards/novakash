@@ -476,6 +476,10 @@ class StrategyRegistry:
         except Exception as exc:
             log.warning("registry.summary_alert_error", error=str(exc)[:200])
 
+    def wire_execute_uc(self, uc: "ExecuteTradeUseCase") -> None:
+        """Inject the ExecuteTradeUseCase after orchestrator startup."""
+        self._execute_uc = uc
+
     def _summarize_window_history(
         self,
         history: list[Any],

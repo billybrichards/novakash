@@ -91,6 +91,7 @@ class Orchestrator:
             asyncio.Queue()
         )  # Pending window evaluations
         self._geoblock_active: bool = False  # G6: Geoblock flag
+        self._execute_uc: Optional[ExecuteTradeUseCase] = None
 
         # ── LT-04: manual trade fast path (hybrid LISTEN/NOTIFY + poll) ──────
         # When the hub INSERTs a row into manual_trades with
@@ -497,6 +498,8 @@ class Orchestrator:
             os.environ.get("ENGINE_USE_STRATEGY_REGISTRY", "false").lower() == "true"
         )
         if self._use_strategy_registry:
+            # Create the registry, but defer wiring the ExecuteTradeUseCase until
+            # after all its dependencies (DB, repos) are live.
             try:
                 from strategies.data_surface import DataSurfaceManager
                 from strategies.registry import StrategyRegistry
@@ -516,55 +519,6 @@ class Orchestrator:
                     if hasattr(self, "_aggregator")
                     else None,
                 )
-                # Wire ExecuteTradeUseCase if execution is enabled
-                _execute_uc = None
-                if os.environ.get("ENGINE_REGISTRY_EXECUTE", "false").lower() == "true":
-                    try:
-                        from use_cases.execute_trade import ExecuteTradeUseCase
-                        from adapters.execution.paper_executor import PaperExecutor
-                        from adapters.execution.fak_ladder_executor import (
-                            FAKLadderExecutor,
-                        )
-                        from adapters.execution.trade_recorder import (
-                            DBTradeRecorder as TradeRecorder,
-                        )
-
-                        _paper = os.environ.get("PAPER_MODE", "true").lower() == "true"
-                        _executor = (
-                            PaperExecutor()
-                            if _paper
-                            else FAKLadderExecutor(
-                                poly_client=self._poly_client,
-                            )
-                        )
-                        _recorder = (
-                            TradeRecorder(
-                                db_client=self._db,
-                                order_manager=self._order_manager,
-                            )
-                            if self._db
-                            else None
-                        )
-
-                        from adapters.clock.system_clock import SystemClock
-
-                        _execute_uc = ExecuteTradeUseCase(
-                            polymarket=self._poly_client,
-                            order_executor=_executor,
-                            risk_manager=self._risk_manager,
-                            window_state=getattr(self, "_window_state_repo", None),
-                            alerter=self._alerter,
-                            trade_recorder=_recorder,
-                            clock=SystemClock(),
-                            paper_mode=_paper,
-                        )
-                        log.info(
-                            "orchestrator.execute_trade_uc_wired", paper_mode=_paper
-                        )
-                    except Exception as exc:
-                        log.warning(
-                            "orchestrator.execute_trade_uc_error", error=str(exc)[:200]
-                        )
 
                 # Wire decision repo for per-eval strategy_decisions writes
                 _decision_repo = None
@@ -585,7 +539,7 @@ class Orchestrator:
                 self._strategy_registry = StrategyRegistry(
                     config_dir,
                     self._data_surface_mgr,
-                    execute_trade_uc=_execute_uc,
+                    execute_trade_uc=None,  # DEFERRED to start()
                     alerter=self._alerter,
                     decision_repo=_decision_repo,
                 )
@@ -762,6 +716,53 @@ class Orchestrator:
         except Exception as exc:
             log.warning("orchestrator.reconcile_uc_failed", error=str(exc)[:200])
             self._reconcile_uc = None
+
+        if self._reconcile_uc and self._strategy_registry:
+            if os.environ.get("ENGINE_REGISTRY_EXECUTE", "false").lower() == "true":
+                try:
+                    from use_cases.execute_trade import ExecuteTradeUseCase
+                    from adapters.execution.paper_executor import PaperExecutor
+                    from adapters.execution.fak_ladder_executor import (
+                        FAKLadderExecutor,
+                    )
+                    from adapters.execution.trade_recorder import (
+                        DBTradeRecorder as TradeRecorder,
+                    )
+                    from adapters.clock.system_clock import SystemClock
+
+                    _paper = self._settings.paper_mode
+                    _executor = (
+                        PaperExecutor()
+                        if _paper
+                        else FAKLadderExecutor(
+                            poly_client=self._poly_client,
+                        )
+                    )
+                    _recorder = (
+                        TradeRecorder(
+                            db_client=self._db,
+                            order_manager=self._order_manager,
+                        )
+                        if self._db
+                        else None
+                    )
+
+                    self._execute_uc = ExecuteTradeUseCase(
+                        polymarket=self._poly_client,
+                        order_executor=_executor,
+                        risk_manager=self._risk_manager,
+                        window_state=self._window_state_repo,
+                        alerter=self._alerter,
+                        trade_recorder=_recorder,
+                        clock=SystemClock(),
+                        paper_mode=_paper,
+                    )
+                    self._strategy_registry.wire_execute_uc(self._execute_uc)
+                    log.info("orchestrator.execute_trade_uc_wired", paper_mode=_paper)
+                except Exception as exc:
+                    log.warning(
+                        "orchestrator.execute_trade_uc_error", error=str(exc)[:200]
+                    )
 
         # ── TickRecorder: initialise now that pool is live ──────────────────
         try:
