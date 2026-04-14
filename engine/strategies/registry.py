@@ -329,32 +329,7 @@ class StrategyRegistry:
                     and self._execute_uc is not None
                     and window_market is not None
                 ):
-                    # Pre-trade gate check (dedup + CLOB freshness + bankroll)
-                    if self._pre_trade_gate is not None:
-                        try:
-                            _clob_price = getattr(decision, "entry_cap", None)
-                            _clob_price_ts = (decision.metadata or {}).get("clob_price_ts", 0.0) or 0.0
-                            _gate_result = await self._pre_trade_gate.check(
-                                strategy_id=name,
-                                window_ts=window_ts,
-                                clob_price=_clob_price,
-                                clob_price_ts=_clob_price_ts,
-                                proposed_stake=0,  # stake computed later in execute_trade
-                            )
-                            if not _gate_result.approved:
-                                log.info(
-                                    "registry.pre_gate_blocked",
-                                    strategy=name,
-                                    reason=_gate_result.reason,
-                                )
-                                continue
-                        except Exception as _gate_exc:
-                            log.warning(
-                                "registry.pre_gate_error",
-                                strategy=name,
-                                error=str(_gate_exc)[:200],
-                            )
-                            continue  # Fail-closed on gate error
+                    # Gate check lives exclusively in execute_trade.py (single call site)
                     try:
                         result = await self._execute_uc.execute(
                             decision=decision,

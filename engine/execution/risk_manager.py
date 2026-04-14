@@ -93,12 +93,7 @@ class RiskManager:
     ) -> tuple[bool, str]:
         """Check all risk gates. Returns (approved, reason)."""
         if not self._ready:
-            # Safety: if >120s elapsed without init, warn and allow (prevents hard lockout)
-            if time.monotonic() - self._start_ts > 120:
-                log.error("risk_manager.auto_unblocked_after_timeout")
-                self._ready = True
-            else:
-                return False, "risk_manager: not initialized — call initialize_bankroll() first"
+            return False, "risk_manager: not initialized — call initialize_bankroll() first"
         async with self._lock:
             self._maybe_reset_daily()
 

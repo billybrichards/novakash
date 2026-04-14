@@ -156,6 +156,17 @@ class ExecuteTradeUseCase:
         # Extract window key from market slug
         window_key = self._make_window_key(window_market)
 
+        if window_key.window_ts == 0:
+            logger.warning(
+                "execute_trade.invalid_window_ts",
+                extra={"slug": window_market.market_slug},
+            )
+            return _failed(
+                "invalid_window_ts: slug parse failed",
+                strategy_id=sid,
+                direction=direction,
+            )
+
         # ── Step 1: Pre-trade gate (dedup + CLOB freshness + bankroll) ───
         if self._pre_trade_gate is not None:
             _clob_price = getattr(decision, "entry_cap", None)
@@ -369,6 +380,11 @@ class ExecuteTradeUseCase:
                     "execute_trade.gate_mark_error",
                     extra={"error": str(exc)[:200]},
                 )
+        elif result.success:
+            logger.warning(
+                "execute_trade.no_gate_mark_executed",
+                extra={"strategy": decision.strategy_id, "window_ts": window_key.window_ts},
+            )
 
         # ── Step 8: Mark traded ────────────────────────────────────────
         try:
@@ -401,7 +417,7 @@ class ExecuteTradeUseCase:
                     fill_price=result.fill_price or 0.0,
                     fill_size=result.fill_size or 0.0,
                     stake_usd=result.stake_usd,
-                    order_type=result.order_type,
+                    order_type=getattr(result, "execution_mode", "UNKNOWN"),
                     btc_price=current_btc_price,
                     vpin=getattr(self, "_last_vpin", 0.0),
                     regime=getattr(self, "_last_regime", "?"),

@@ -789,6 +789,9 @@ class Orchestrator:
                     # Initialize risk manager with live balance BEFORE wiring execute use case
                     try:
                         _live_balance = await _wallet.get_live_balance()
+                        if _live_balance <= 0:
+                            log.warning("orchestrator.wallet_returned_zero", fallback=self._settings.starting_bankroll)
+                            _live_balance = self._settings.starting_bankroll
                         self._risk_manager.initialize_bankroll(_live_balance)
                     except Exception as _balance_exc:
                         log.warning("orchestrator.bankroll_init_failed", error=str(_balance_exc)[:200])
