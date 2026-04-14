@@ -246,6 +246,37 @@ class PgTradeRepository:
             )
             return []
 
+    async def resolve_trade(
+        self,
+        trade_id: str,
+        outcome: str,
+        pnl_usd: float,
+        status: str,
+    ) -> None:
+        """UPDATE trades SET outcome, pnl_usd, resolved_at, status WHERE id."""
+        if not self._pool:
+            return
+        try:
+            from datetime import datetime, timezone
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """UPDATE trades
+                       SET outcome = $1, pnl_usd = $2, status = $3,
+                           resolved_at = $4
+                       WHERE id = $5 AND outcome IS NULL""",
+                    outcome,
+                    pnl_usd,
+                    status,
+                    datetime.now(timezone.utc),
+                    int(trade_id),
+                )
+        except Exception as exc:
+            log.warning(
+                "pg_trade_repo.resolve_trade_failed",
+                trade_id=trade_id,
+                error=str(exc)[:100],
+            )
+
     async def mark_trade_expired(self, order_id: str) -> None:
         """Mark a trade as EXPIRED in the DB (used by startup reconciliation).
 
