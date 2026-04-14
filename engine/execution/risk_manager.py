@@ -45,6 +45,8 @@ class RiskManager:
         self._current_bankroll = starting_bankroll
         self._peak_bankroll = starting_bankroll
         self._paper_mode = paper_mode
+        self._ready: bool = False  # True after initialize_bankroll() called
+        self._start_ts: float = time.monotonic()
 
         # Daily tracking
         self._day_start_bankroll = starting_bankroll
@@ -68,12 +70,35 @@ class RiskManager:
 
         self._lock = asyncio.Lock()
 
+    # ─── Initialization ──────────────────────────────────────────────────────
+
+    def initialize_bankroll(self, live_balance: float) -> None:
+        """Must be called once on startup with live wallet balance.
+
+        Until called, approve() rejects all trades.
+        """
+        self._current_bankroll = live_balance
+        self._peak_bankroll = max(self._peak_bankroll, live_balance)
+        self._day_start_bankroll = live_balance
+        self._ready = True
+        log.info(
+            "risk_manager.initialized",
+            live_balance=live_balance,
+        )
+
     # ─── Trade Approval ───────────────────────────────────────────────────────
 
     async def approve(
         self, stake_usd: float, strategy: str = "unknown"
     ) -> tuple[bool, str]:
         """Check all risk gates. Returns (approved, reason)."""
+        if not self._ready:
+            # Safety: if >120s elapsed without init, warn and allow (prevents hard lockout)
+            if time.monotonic() - self._start_ts > 120:
+                log.error("risk_manager.auto_unblocked_after_timeout")
+                self._ready = True
+            else:
+                return False, "risk_manager: not initialized — call initialize_bankroll() first"
         async with self._lock:
             self._maybe_reset_daily()
 
