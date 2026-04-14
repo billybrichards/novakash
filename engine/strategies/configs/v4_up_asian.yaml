@@ -1,6 +1,6 @@
 name: v4_up_asian
 version: "2.0.0"
-mode: GHOST
+mode: LIVE
 asset: BTC
 timescale: 5m
 
@@ -13,6 +13,8 @@ gates:
     params: { min_dist: 0.10, max_dist: 0.20 }
   - type: session_hours
     params: { hours_utc: [23, 0, 1, 2] }
+  - type: trade_advised
+    params: {}
 
 sizing:
   type: fixed_kelly

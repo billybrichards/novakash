@@ -1,6 +1,6 @@
 name: v4_up_basic
 version: "1.0.0"
-mode: GHOST
+mode: LIVE
 asset: BTC
 timescale: 5m
 
@@ -11,6 +11,8 @@ gates:
     params: { direction: UP }
   - type: confidence
     params: { min_dist: 0.10 }
+  - type: trade_advised
+    params: {}
 
 sizing:
   type: fixed_kelly
