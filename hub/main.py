@@ -40,6 +40,9 @@ from api.schema import router as schema_router
 # CFG-02/03: DB-backed config schema + read-only API
 from api.config_v2 import router as config_v2_router
 
+# AGENT-OPS: Claude Agent SDK background task runners
+from api.agent_ops import router as agent_ops_router
+
 log = structlog.get_logger(__name__)
 
 
@@ -236,6 +239,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 log.info("hub.config_seed_done", per_service=counts)
             except Exception as cfg_exc:
                 log.warning("hub.config_schema_migration_error", error=str(cfg_exc))
+            # AGENT-OPS: ensure agent_tasks table exists
+            await session.execute(
+                text("""
+                CREATE TABLE IF NOT EXISTS agent_tasks (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    agent_type TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    result TEXT,
+                    error TEXT,
+                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    completed_at TIMESTAMPTZ
+                )
+            """)
+            )
+            await session.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS agent_tasks_started_idx "
+                    "ON agent_tasks (started_at DESC)"
+                )
+            )
             # SP-05: ensure strategy_decisions table exists
             try:
                 await session.execute(
@@ -333,6 +356,8 @@ app.include_router(audit_tasks_router, prefix="/api", tags=["audit-tasks"])
 app.include_router(schema_router, prefix="/api", tags=["schema"])
 # CFG-02/03: DB-backed config (read-only in this PR; writes ship in CFG-04)
 app.include_router(config_v2_router, prefix="/api", tags=["config-v2"])
+# AGENT-OPS: Claude Agent SDK background task runners
+app.include_router(agent_ops_router, prefix="/api", tags=["agent-ops"])
 
 
 @app.get("/health", tags=["health"])

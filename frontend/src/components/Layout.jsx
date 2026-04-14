@@ -61,6 +61,7 @@ const NAV_SECTIONS = [
       { path: '/config', label: 'Config', icon: 'Cf', sectionDedupe: 'system' },
       { path: '/audit', label: 'Audit', icon: 'A' },
       { path: '/notes', label: 'Notes', icon: 'N' },
+      { path: '/ops', label: 'Agent Ops', icon: 'Ao' },
     ],
   },
 ];

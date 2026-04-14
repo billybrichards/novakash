@@ -52,6 +52,7 @@ import GatePipelineMonitor from './pages/polymarket/GatePipelineMonitor.jsx';
 import DataHealth from './pages/polymarket/DataHealth.jsx';
 import StrategyCommand from './pages/polymarket/StrategyCommand.jsx';
 import SignalComparison from './pages/SignalComparison.jsx';
+import AgentOps from './pages/AgentOps.jsx';
 
 /**
  * AppErrorBoundary — catches any render-time JS errors and shows a visible
@@ -177,6 +178,7 @@ export default function App() {
             <Route path="polymarket/data-health" element={<DataHealth />} />
             <Route path="polymarket/command" element={<StrategyCommand />} />
             <Route path="signal-comparison" element={<SignalComparison />} />
+            <Route path="ops" element={<AgentOps />} />
           </Route>
 
           {/* 404 fallback */}
