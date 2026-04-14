@@ -5,7 +5,7 @@ Larger positions, wider stops, longer holds to capture sustained moves.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Dict, Any
 
 from margin_engine.application.services.strategy import Strategy, TradeDecision
 from margin_engine.domain.value_objects import V4Snapshot
@@ -34,6 +34,19 @@ class TrendStrategyConfig:
     # Minimum expected move to consider (bps)
     min_expected_move_bps: float = 30.0
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TrendStrategyConfig":
+        """Create config from YAML dict."""
+        return cls(
+            min_probability=data.get("min_probability", 0.55),
+            size_mult=data.get("size_mult", 1.2),
+            stop_loss_bps=data.get("stop_loss_bps", 150),
+            take_profit_bps=data.get("take_profit_bps", 200),
+            hold_minutes=data.get("hold_minutes", 60),
+            trailing_stop=data.get("trailing_stop", True),
+            min_expected_move_bps=data.get("min_expected_move_bps", 30.0),
+        )
+
 
 class TrendStrategy(Strategy):
     """
@@ -48,8 +61,17 @@ class TrendStrategy(Strategy):
     - Take profit at 2% target
     """
 
-    def __init__(self, config: Optional[TrendStrategyConfig] = None):
-        self.config = config or TrendStrategyConfig()
+    def __init__(
+        self,
+        config: Optional[TrendStrategyConfig] = None,
+        config_dict: Optional[Dict[str, Any]] = None,
+    ):
+        if config is not None:
+            self.config = config
+        elif config_dict is not None:
+            self.config = TrendStrategyConfig.from_dict(config_dict)
+        else:
+            self.config = TrendStrategyConfig()
 
     def decide(self, v4: V4Snapshot) -> TradeDecision:
         """

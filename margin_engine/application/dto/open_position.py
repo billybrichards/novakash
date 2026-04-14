@@ -3,7 +3,7 @@ DTOs for OpenPosition use case.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from margin_engine.domain.entities.portfolio import Portfolio
 from margin_engine.domain.entities.position import Position
@@ -16,6 +16,10 @@ from margin_engine.domain.ports import (
     V4SnapshotPort,
 )
 from margin_engine.domain.value_objects import V4Snapshot
+
+# Forward reference for StrategyRegistry to avoid circular import
+if TYPE_CHECKING:
+    from margin_engine.strategies.registry import StrategyRegistry
 
 
 @dataclass
@@ -35,9 +39,15 @@ class OpenPositionInput:
     probability_port: ProbabilityPort
     signal_port: SignalPort
 
+    # Strategy registry (YAML-configurable strategies)
+    strategy_registry: Optional["StrategyRegistry"] = None
+
     # v4 integration
     v4_snapshot_port: Optional[V4SnapshotPort] = None
     engine_use_v4_actions: bool = False
+
+    # Strategy registry (YAML-configurable strategies)
+    # Note: Already defined above, just adding comment for clarity
 
     # v4 strategy config
     v4_primary_timescale: str = "15m"

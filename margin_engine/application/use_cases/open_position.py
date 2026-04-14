@@ -64,6 +64,7 @@ class OpenPositionUseCase:
         self._alerts = input.alerts
         self._probability_port = input.probability_port
         self._signal_port = input.signal_port
+        self._strategy_registry = input.strategy_registry
         self._v4_port = input.v4_snapshot_port
         self._engine_use_v4_actions = input.engine_use_v4_actions
         self._v4_timescales = input.v4_timescales

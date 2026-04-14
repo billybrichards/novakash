@@ -1,0 +1,29 @@
+# Strategy: Regime Trend Following
+# For TRENDING_UP and TRENDING_DOWN regimes
+# Larger positions, wider stops, longer holds to capture sustained moves
+
+name: regime_trend
+version: "1.0.0"
+mode: ACTIVE  # ACTIVE | DRY_RUN | DISABLED
+asset: BTC
+timescale: 15m
+
+params:
+  # Entry threshold: minimum probability to enter
+  min_probability: 0.55
+
+  # Position sizing
+  size_mult: 1.2  # 20% larger positions in trending regimes
+
+  # Stop loss and take profit (basis points)
+  stop_loss_bps: 150  # 1.5% wider stops
+  take_profit_bps: 200  # 2.0% target
+
+  # Holding period
+  hold_minutes: 60  # Hold for 1 hour in trends
+
+  # Trailing stop enabled
+  trailing_stop: true
+
+  # Minimum expected move to consider (bps)
+  min_expected_move_bps: 30.0

@@ -1,0 +1,28 @@
+# Strategy: Fee-Aware Continuation
+# Fee-aware continuation decision system for position management
+# Uses fee-adjusted PnL for continuation decisions
+
+name: fee_aware_continuation
+version: "1.0.0"
+mode: ACTIVE  # ACTIVE | DRY_RUN | DISABLED
+asset: BTC
+timescale: 15m
+
+params:
+  # Fee rate per side (default 0.1%)
+  fee_rate: 0.001
+
+  # Partial take-profit threshold (50% of TP)
+  partial_tp_threshold: 0.5
+
+  # Partial close size (50%)
+  partial_close_pct: 0.5
+
+  # Weak signal threshold for partial close
+  conviction_min: 0.15
+
+  # Hold extension multiplier for strong signals
+  hold_extension_mult: 1.5
+
+  # Minimum timescales aligned for continuation
+  min_timescales_aligned: 2

@@ -1,0 +1,26 @@
+# Strategy: Cascade Fade
+# Fades liquidation cascades by betting against the liquidation wave
+# Higher risk strategy (cascades can continue)
+
+name: cascade_fade
+version: "1.0.0"
+mode: ACTIVE  # ACTIVE | DRY_RUN | DISABLED
+asset: BTC
+timescale: 15m
+
+params:
+  # Minimum cascade strength to consider fading
+  min_cascade_strength: 0.5
+
+  # Position sizing (half size due to higher risk)
+  size_mult: 0.5
+
+  # Stop loss and take profit (basis points)
+  stop_loss_bps: 300  # 3% stop (very wide)
+  take_profit_bps: 100  # 1% target (quick)
+
+  # Holding period
+  hold_minutes: 10  # Very short hold
+
+  # Cooldown after cascade ends
+  cooldown_seconds: 900  # 15 min cooldown

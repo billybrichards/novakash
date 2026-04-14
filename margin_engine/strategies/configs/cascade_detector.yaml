@@ -1,0 +1,22 @@
+# Strategy: Cascade Detector
+# State machine for liquidation cascade detection
+# Analyzes V4 snapshot cascade data to determine cascade state and entry quality
+
+name: cascade_detector
+version: "1.0.0"
+mode: ACTIVE  # ACTIVE | DRY_RUN | DISABLED
+asset: BTC
+timescale: 15m
+
+params:
+  # Cascade strength thresholds
+  strength_idle_threshold: 0.3  # Below this = IDLE
+  strength_bet_threshold: 0.5   # Below this = COOLDOWN
+  strength_premium_threshold: 0.7  # Above this = PREMIUM entry
+
+  # State machine settings
+  enable_cascade_state: true
+  enable_bet_state: true
+
+  # Direction determination
+  use_composite_v3: true

@@ -1,0 +1,51 @@
+# Strategy: Regime Adaptive Router
+# Routes to appropriate strategy based on regime
+# Combines trend, mean reversion, and no-trade strategies
+
+name: regime_adaptive
+version: "1.0.0"
+mode: ACTIVE  # ACTIVE | DRY_RUN | DISABLED
+asset: BTC
+timescale: 15m
+
+# Embedded strategy configs
+strategies:
+  trend:
+    name: regime_trend
+    enabled: true
+    params:
+      min_probability: 0.55
+      size_mult: 1.2
+      stop_loss_bps: 150
+      take_profit_bps: 200
+      hold_minutes: 60
+      trailing_stop: true
+      min_expected_move_bps: 30.0
+
+  mean_reversion:
+    name: regime_mean_reversion
+    enabled: true
+    params:
+      entry_threshold: 0.70
+      size_mult: 0.8
+      stop_loss_bps: 80
+      take_profit_bps: 50
+      hold_minutes: 15
+      min_fade_conviction: 0.15
+
+  no_trade:
+    name: regime_no_trade
+    enabled: true
+    params:
+      allow_trade: false
+      size_mult: 0.1
+      stop_loss_bps: 100
+      take_profit_bps: 50
+      hold_minutes: 10
+
+# Router settings
+router:
+  # Allow speculative trades in CHOPPY/NO_EDGE
+  allow_no_edge_trade: false
+  # Size multiplier for speculative trades
+  no_edge_size_mult: 0.1

@@ -1,0 +1,26 @@
+# Strategy: Regime Mean Reversion
+# For MEAN_REVERTING regime
+# Fade extremes with smaller positions, tighter stops, quick profits
+
+name: regime_mean_reversion
+version: "1.0.0"
+mode: ACTIVE  # ACTIVE | DRY_RUN | DISABLED
+asset: BTC
+timescale: 15m
+
+params:
+  # Entry threshold: wait for extreme probability (70%+ or 30%-)
+  entry_threshold: 0.70
+
+  # Position sizing
+  size_mult: 0.8  # 20% smaller positions (fade is riskier)
+
+  # Stop loss and take profit (basis points)
+  stop_loss_bps: 80  # 0.8% tighter stops
+  take_profit_bps: 50  # 0.5% quick profit target
+
+  # Holding period
+  hold_minutes: 15  # Quick 15-minute hold
+
+  # Minimum probability of the fade being correct (15%+ is acceptable for fade)
+  min_fade_conviction: 0.15

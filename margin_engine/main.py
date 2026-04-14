@@ -328,6 +328,20 @@ async def run() -> None:
             settings.engine_use_v4_actions,
         )
 
+    # ── Strategy Registry (YAML-configurable strategies) ──
+    from margin_engine.strategies import StrategyRegistry
+
+    strategy_registry = StrategyRegistry(
+        config_dir=settings.strategy_config_dir,
+        v4_port=v4_adapter,
+    )
+    strategy_registry.load_all()
+    logger.info(
+        "strategy_registry.loaded",
+        active=strategy_registry.get_active_strategies(),
+        all=strategy_registry.get_strategy_names(),
+    )
+
     # ── Use Cases ──
     from margin_engine.application.use_cases.open_position import OpenPositionUseCase
     from margin_engine.application.use_cases.manage_positions import (
@@ -341,6 +355,8 @@ async def run() -> None:
         alerts=alerts,
         probability_port=probability_adapter,
         signal_port=signal_adapter,
+        # ── Strategy Registry (YAML-configurable strategies) ──
+        strategy_registry=strategy_registry,
         # ── v4 integration (PR B) — falls back to legacy when v4_adapter is None ──
         v4_snapshot_port=v4_adapter,
         engine_use_v4_actions=settings.engine_use_v4_actions,
