@@ -1,0 +1,28 @@
+# Strategy: Quantile Var Sizer
+# Position sizing based on quantile-derived risk metrics
+# Uses TimesFM quantiles for dynamic stop loss and take profit
+
+name: quantile_var_sizer
+version: "1.0.0"
+mode: ACTIVE  # ACTIVE | DRY_RUN | DISABLED
+asset: BTC
+timescale: 15m
+
+params:
+  # Quantile for stop loss (p10 for LONG, p90 for SHORT)
+  stop_loss_quantile: 0.10
+
+  # Quantile for take profit (p90 for LONG, p10 for SHORT)
+  take_profit_quantile: 0.90
+
+  # Multiplier for quantile distance
+  quantile_multiplier: 1.25
+
+  # Size modifier based on quantile spread
+  size_modifier: 1.0
+
+  # Maximum position size (USD)
+  max_position_usd: 5000
+
+  # Minimum quantile confidence (None = disabled)
+  min_quantile_confidence: null

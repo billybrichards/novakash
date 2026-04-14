@@ -87,6 +87,16 @@ export default function SignalPanel({ snapshot }) {
           <div style={{ textAlign: 'center', padding: '16px 0' }}>
             <div style={{ fontSize: 9, color: T.textMuted, marginBottom: 4 }}>Waiting for v3 signal feed...</div>
             <div style={{ fontSize: 8, color: T.textDim }}>Signals will appear once the TimesFM connection is established</div>
+            <div style={{ marginTop: 10 }}>
+              <a
+                href="https://github.com/billybrichards/novakash/wiki/Signal-Pipeline"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontSize: 9, color: T.cyan, textDecoration: 'none' }}
+              >
+                Documentation →
+              </a>
+            </div>
           </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>

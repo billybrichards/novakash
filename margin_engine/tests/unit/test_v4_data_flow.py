@@ -20,18 +20,21 @@ from margin_engine.domain.entities.portfolio import Portfolio
 from margin_engine.domain.entities.position import Position
 from margin_engine.domain.ports import ExchangePort, V4SnapshotPort
 from margin_engine.domain.value_objects import (
-    Cascade,
-    Consensus,
-    MacroBias,
     Money,
     Price,
     PositionState,
-    Quantiles,
     TradeSide,
-    V4Snapshot,
-    TimescalePayload,
 )
-from margin_engine.use_cases.open_position import OpenPositionUseCase
+from margin_engine.domain.value_objects import (
+    Cascade,
+    Consensus,
+    MacroBias,
+    Quantiles,
+    TimescalePayload,
+    V4Snapshot,
+)
+from margin_engine.application.use_cases.open_position import OpenPositionUseCase
+from margin_engine.application.dto import OpenPositionInput
 
 
 # ─── Fixtures ──────────────────────────────────────────────────────────────
@@ -536,21 +539,23 @@ class TestV4GateDispatcher:
         mock_v4_port.get_latest = AsyncMock(return_value=mock_v4_snapshot_cold_start)
 
         use_case = OpenPositionUseCase(
-            exchange=mock_exchange,
-            portfolio=mock_portfolio,
-            repository=AsyncMock(),
-            alerts=AsyncMock(),
-            probability_port=AsyncMock(),
-            signal_port=AsyncMock(),
-            v4_snapshot_port=mock_v4_port,
-            engine_use_v4_actions=True,
-            v4_primary_timescale="15m",
+            input=OpenPositionInput(
+                exchange=mock_exchange,
+                portfolio=mock_portfolio,
+                repository=AsyncMock(),
+                alerts=AsyncMock(),
+                probability_port=AsyncMock(),
+                signal_port=AsyncMock(),
+                v4_snapshot_port=mock_v4_port,
+                engine_use_v4_actions=True,
+                v4_primary_timescale="15m",
+            )
         )
 
         result = await use_case.execute()
 
         # Should skip due to not_tradeable
-        assert result is None
+        assert result.position is None
 
     @pytest.mark.asyncio
     async def test_gate_consensus_fail(self, mock_exchange, mock_portfolio):
@@ -582,21 +587,23 @@ class TestV4GateDispatcher:
         mock_v4_port.get_latest = AsyncMock(return_value=v4_snapshot)
 
         use_case = OpenPositionUseCase(
-            exchange=mock_exchange,
-            portfolio=mock_portfolio,
-            repository=AsyncMock(),
-            alerts=AsyncMock(),
-            probability_port=AsyncMock(),
-            signal_port=AsyncMock(),
-            v4_snapshot_port=mock_v4_port,
-            engine_use_v4_actions=True,
-            v4_primary_timescale="15m",
+            input=OpenPositionInput(
+                exchange=mock_exchange,
+                portfolio=mock_portfolio,
+                repository=AsyncMock(),
+                alerts=AsyncMock(),
+                probability_port=AsyncMock(),
+                signal_port=AsyncMock(),
+                v4_snapshot_port=mock_v4_port,
+                engine_use_v4_actions=True,
+                v4_primary_timescale="15m",
+            )
         )
 
         result = await use_case.execute()
 
         # Should skip due to consensus_fail
-        assert result is None
+        assert result.position is None
 
     @pytest.mark.asyncio
     async def test_gate_conviction_below_threshold(self, mock_exchange, mock_portfolio):
@@ -632,22 +639,24 @@ class TestV4GateDispatcher:
         mock_v4_port.get_latest = AsyncMock(return_value=v4_snapshot)
 
         use_case = OpenPositionUseCase(
-            exchange=mock_exchange,
-            portfolio=mock_portfolio,
-            repository=AsyncMock(),
-            alerts=AsyncMock(),
-            probability_port=AsyncMock(),
-            signal_port=AsyncMock(),
-            v4_snapshot_port=mock_v4_port,
-            engine_use_v4_actions=True,
-            v4_primary_timescale="15m",
-            v4_entry_edge=0.10,
+            input=OpenPositionInput(
+                exchange=mock_exchange,
+                portfolio=mock_portfolio,
+                repository=AsyncMock(),
+                alerts=AsyncMock(),
+                probability_port=AsyncMock(),
+                signal_port=AsyncMock(),
+                v4_snapshot_port=mock_v4_port,
+                engine_use_v4_actions=True,
+                v4_primary_timescale="15m",
+                v4_entry_edge=0.10,
+            )
         )
 
         result = await use_case.execute()
 
         # Should skip due to conviction_below_threshold
-        assert result is None
+        assert result.position is None
 
     @pytest.mark.asyncio
     async def test_gate_expected_move_below_fee_wall(
@@ -685,23 +694,25 @@ class TestV4GateDispatcher:
         mock_v4_port.get_latest = AsyncMock(return_value=v4_snapshot)
 
         use_case = OpenPositionUseCase(
-            exchange=mock_exchange,
-            portfolio=mock_portfolio,
-            repository=AsyncMock(),
-            alerts=AsyncMock(),
-            probability_port=AsyncMock(),
-            signal_port=AsyncMock(),
-            v4_snapshot_port=mock_v4_port,
-            engine_use_v4_actions=True,
-            v4_primary_timescale="15m",
-            v4_entry_edge=0.10,
-            v4_min_expected_move_bps=15.0,
+            input=OpenPositionInput(
+                exchange=mock_exchange,
+                portfolio=mock_portfolio,
+                repository=AsyncMock(),
+                alerts=AsyncMock(),
+                probability_port=AsyncMock(),
+                signal_port=AsyncMock(),
+                v4_snapshot_port=mock_v4_port,
+                engine_use_v4_actions=True,
+                v4_primary_timescale="15m",
+                v4_entry_edge=0.10,
+                v4_min_expected_move_bps=15.0,
+            )
         )
 
         result = await use_case.execute()
 
         # Should skip due to expected_move_below_fee_wall
-        assert result is None
+        assert result.position is None
 
     @pytest.mark.asyncio
     async def test_v4_path_disabled_falls_back_to_v2(
@@ -717,21 +728,23 @@ class TestV4GateDispatcher:
         sig_port.get_latest_signal = AsyncMock(return_value=None)
 
         use_case = OpenPositionUseCase(
-            exchange=mock_exchange,
-            portfolio=mock_portfolio,
-            repository=AsyncMock(),
-            alerts=AsyncMock(),
-            probability_port=prob_port,
-            signal_port=sig_port,
-            v4_snapshot_port=mock_v4_port,
-            engine_use_v4_actions=False,  # V4 disabled
-            v4_primary_timescale="15m",
+            input=OpenPositionInput(
+                exchange=mock_exchange,
+                portfolio=mock_portfolio,
+                repository=AsyncMock(),
+                alerts=AsyncMock(),
+                probability_port=prob_port,
+                signal_port=sig_port,
+                v4_snapshot_port=mock_v4_port,
+                engine_use_v4_actions=False,  # V4 disabled
+                v4_primary_timescale="15m",
+            )
         )
 
         result = await use_case.execute()
 
         # Should use v2 path (returns None because v2 probability is None)
-        assert result is None
+        assert result.position is None
 
 
 # ─── Tests: Database Writes ───────────────────────────────────────────────

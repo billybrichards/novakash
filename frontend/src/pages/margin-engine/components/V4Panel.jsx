@@ -333,6 +333,16 @@ export default function V4Panel({ snapshot }) {
           <div style={{ textAlign: 'center', padding: '16px 0' }}>
             <div style={{ fontSize: 9, color: T.textMuted, marginBottom: 4 }}>Waiting for v4 fusion snapshot...</div>
             <div style={{ fontSize: 8, color: T.textDim }}>Calls /api/v4/snapshot every 4s</div>
+            <div style={{ marginTop: 10 }}>
+              <a
+                href="https://github.com/billybrichards/novakash/wiki/V4-Fusion-Surface"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontSize: 9, color: T.cyan, textDecoration: 'none' }}
+              >
+                Documentation →
+              </a>
+            </div>
           </div>
         ) : (
           <div style={{

@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { T } from './constants.js';
+import { SIGNAL_COLORS } from './constants.js';
 
 /**
  * TradeTimelinePanel — paginated, filterable per-trade history.
@@ -56,10 +57,6 @@ const EXIT_REASON_OPTIONS = [
 // Legacy and v4 reasons that share semantic meaning get the same color
 // (e.g., STOP_LOSS and CONSENSUS_FAIL both red), so the color alone
 // communicates "was this a risk-gate trip or a signal-based exit".
-// Orange for REGIME_DETERIORATED is the only novel color — the T theme
-// doesn't export T.orange by default, so we fall back to a literal hex
-// that sits between amber and red on the warning spectrum.
-const T_ORANGE = '#f97316';
 const EXIT_REASON_COLOR = {
   TAKE_PROFIT: T.green,           // winner exit
   STOP_LOSS: T.red,               // loser exit
@@ -67,7 +64,7 @@ const EXIT_REASON_COLOR = {
   MAX_HOLD_TIME: T.amber,         // time-based exit, not signal-driven
   SIGNAL_REVERSAL: T.purple,      // legacy composite flip
   PROBABILITY_REVERSAL: T.purple, // v4 ML signal flip
-  REGIME_DETERIORATED: T_ORANGE,  // market state change
+  REGIME_DETERIORATED: T.orange,  // market state change
   CONSENSUS_FAIL: T.red,          // risk/infra gate
   MACRO_GATE_FLIP: T.purple,      // Claude flipped
   EVENT_GUARD: T.amber,           // preemptive, not loss-driven
@@ -77,6 +74,47 @@ const EXIT_REASON_COLOR = {
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────
+
+function exportToCSV(rows) {
+  if (!rows || rows.length === 0) {
+    alert('No trade data available to export. Please wait for positions to close or adjust filters.');
+    return;
+  }
+
+  const headers = [
+    'id', 'asset', 'side', 'strategy_version', 'opened_at', 'closed_at',
+    'entry_price', 'exit_price', 'notional', 'collateral', 'leverage',
+    'entry_signal_score', 'entry_timescale', 'v4_entry_regime', 'v4_entry_macro_bias',
+    'v4_entry_consensus_safe', 'exit_reason', 'hold_duration_s', 'continuation_count',
+    'realised_pnl', 'entry_commission', 'exit_commission', 'total_commission',
+    'stop_loss_price', 'take_profit_price', 'venue'
+  ];
+
+  const csvRows = rows.map(trade => {
+    return headers.map(header => {
+      let value = trade[header] ?? '';
+      const str = String(value);
+      // Prevent CSV formula injection (=, +, -, @ at start)
+      const safeStr = str.startsWith('=') || str.startsWith('+') || str.startsWith('-') || str.startsWith('@')
+        ? `"${str}"`
+        : str;
+      // Escape quotes and wrap in quotes if contains comma
+      const finalStr = safeStr.includes(',') ? `"${safeStr.replace(/"/g, '""')}"` : safeStr;
+      return finalStr;
+    }).join(',');
+  });
+
+  const csv = [headers.join(','), ...csvRows].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  const url = URL.createObjectURL(blob);
+  link.setAttribute('href', url);
+  link.setAttribute('download', `trades_${new Date().toISOString().slice(0, 10)}.csv`);
+  link.style.visibility = 'hidden';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
 
 function formatTimestamp(iso) {
   if (!iso) return '—';
@@ -118,7 +156,7 @@ function formatBps(notional, fee) {
 
 // ── Sub-components ────────────────────────────────────────────────────────
 
-function FilterBar({ filters, onChange, loading }) {
+function FilterBar({ filters, onChange, loading, onExport }) {
   const wrap = {
     display: 'flex', gap: 8, padding: 12, flexWrap: 'wrap',
     background: T.headerBg, borderBottom: `1px solid ${T.cardBorder}`,
@@ -155,6 +193,18 @@ function FilterBar({ filters, onChange, loading }) {
       >
         {EXIT_REASON_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>
+      <button
+        onClick={onExport}
+        disabled={loading}
+        style={{
+          fontSize: 10, padding: '5px 10px', borderRadius: 4,
+          background: 'rgba(6,182,212,0.15)', color: T.cyan,
+          border: `1px solid rgba(6,182,212,0.3)`, fontFamily: T.mono, fontWeight: 700,
+          cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.6 : 1,
+        }}
+      >
+        CSV Export
+      </button>
       {loading && (
         <span style={{ fontSize: 9, color: T.textMuted, alignSelf: 'center' }}>
           Loading…
@@ -456,6 +506,12 @@ export default function TradeTimelinePanel({ api }) {
     setPage(0);
   };
 
+  const handleExport = () => {
+    if (data.rows && data.rows.length > 0) {
+      exportToCSV(data.rows);
+    }
+  };
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -513,7 +569,7 @@ export default function TradeTimelinePanel({ api }) {
         )}
       </div>
 
-      <FilterBar filters={filters} onChange={handleFilterChange} loading={loading} />
+      <FilterBar filters={filters} onChange={handleFilterChange} loading={loading} onExport={handleExport} />
       <SummaryStats rows={data.rows} total={data.total} />
 
       {error && (
@@ -532,6 +588,16 @@ export default function TradeTimelinePanel({ api }) {
           </div>
           <div style={{ fontSize: 9, color: T.textDim }}>
             Try clearing filters or wait for the engine to close positions
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <a
+              href="https://github.com/billybrichards/novakash/wiki/Trade-Timeline"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ fontSize: 9, color: T.cyan, textDecoration: 'none' }}
+            >
+              Documentation →
+            </a>
           </div>
         </div>
       )}

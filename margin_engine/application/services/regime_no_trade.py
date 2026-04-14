@@ -6,7 +6,7 @@ Safest approach: don't trade when there's no clear edge.
 
 from typing import Optional
 
-from margin_engine.domain.strategy import Strategy, TradeDecision
+from margin_engine.application.services.strategy import Strategy, TradeDecision
 from margin_engine.domain.value_objects import V4Snapshot
 
 

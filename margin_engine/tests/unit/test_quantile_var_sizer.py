@@ -14,7 +14,7 @@ from margin_engine.domain.value_objects import (
     TimescalePayload,
     V4Snapshot,
 )
-from margin_engine.services.quantile_var_sizer import (
+from margin_engine.application.services.quantile_var_sizer import (
     calculate_var,
     calculate_var_from_payload,
     _calculate_size_mult,

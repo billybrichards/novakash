@@ -5,6 +5,7 @@ function PositionRow({ position }) {
   const pnl = position.realised_pnl || position.unrealised_pnl || 0;
   const isOpen = position.state === 'OPEN';
   const isWin = pnl > 0;
+  const totalCommission = (position.entry_commission || 0) + (position.exit_commission || 0);
 
   return (
     <tr style={{ borderBottom: `1px solid ${T.cardBorder}` }}>
@@ -26,6 +27,26 @@ function PositionRow({ position }) {
       <td style={{ padding: '8px 10px', fontSize: 10, fontFamily: T.mono, color: isWin ? T.green : T.red }}>
         {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
       </td>
+      <td style={{ padding: '8px 10px', fontSize: 9, fontFamily: T.mono, color: T.textMuted }}>
+        {position.strategy_version ? position.strategy_version.slice(0, 10) : '—'}
+      </td>
+      <td style={{ padding: '8px 10px', fontSize: 9, fontFamily: T.mono, color: T.textMuted }}>
+        {position.v4_entry_regime || position.v4_entry_macro_bias || '—'}
+        {position.v4_entry_regime && (
+          <div style={{ fontSize: 7, opacity: 0.7 }}>
+            {position.v4_entry_macro_bias && `· ${position.v4_entry_macro_bias}`}
+            {position.v4_entry_consensus_safe != null && ` · ${position.v4_entry_consensus_safe ? 'safe' : 'unsafe'}`}
+          </div>
+        )}
+      </td>
+      <td style={{ padding: '8px 10px', fontSize: 9, fontFamily: T.mono, color: totalCommission > 0 ? T.text : T.textMuted }}>
+        {totalCommission > 0 ? `${totalCommission.toFixed(4)} ($${totalCommission.toFixed(2)})` : '—'}
+        {position.entry_commission > 0 && (
+          <div style={{ fontSize: 7, opacity: 0.7 }}>
+            in:${position.entry_commission.toFixed(3)} out:${position.exit_commission?.toFixed(3) || 0}
+          </div>
+        )}
+      </td>
       <td style={{ padding: '8px 10px', fontSize: 10 }}>
         <span style={{
           padding: '2px 6px', borderRadius: 3, fontSize: 8, fontWeight: 700,
@@ -35,6 +56,21 @@ function PositionRow({ position }) {
       </td>
       <td style={{ padding: '8px 10px', fontSize: 9, color: T.textMuted }}>
         {position.exit_reason || (isOpen ? '—' : 'unknown')}
+        {isOpen && position.continuation_count > 0 && (
+          <div style={{ fontSize: 7, color: T.cyan }}>
+            continued {position.continuation_count}×
+          </div>
+        )}
+        {position.stop_loss_price && (
+          <div style={{ fontSize: 7, color: T.red }}>
+            SL: ${position.stop_loss_price.toFixed(2)}
+          </div>
+        )}
+        {position.take_profit_price && (
+          <div style={{ fontSize: 7, color: T.green }}>
+            TP: ${position.take_profit_price.toFixed(2)}
+          </div>
+        )}
       </td>
     </tr>
   );
@@ -60,7 +96,7 @@ export default function PositionsPanel({ positions }) {
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr style={{ background: T.headerBg }}>
-              {['ID', 'Side', 'Entry', 'Notional', 'P&L', 'State', 'Exit Reason'].map(h => (
+              {['ID', 'Side', 'Entry', 'Notional', 'P&L', 'Strategy', 'v4 Context', 'Fees', 'State', 'Exit Reason'].map(h => (
                 <th key={h} style={{ padding: '6px 10px', fontSize: 8, fontWeight: 700, color: T.textMuted, textAlign: 'left', letterSpacing: '0.08em' }}>{h}</th>
               ))}
             </tr>

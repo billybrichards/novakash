@@ -1,0 +1,27 @@
+# Strategy: Continuation Alignment
+# Multi-timescale continuation alignment checking
+# Checks if multiple timescales (5m, 15m, 1h, 4h) support continuing position
+
+name: continuation_alignment
+version: "1.0.0"
+mode: ACTIVE  # ACTIVE | DRY_RUN | DISABLED
+asset: BTC
+timescale: 15m
+
+params:
+  # Timescales to check for alignment
+  timescales:
+    - 5m
+    - 15m
+    - 1h
+    - 4h
+
+  # Minimum number of aligned timescales for continuation
+  min_aligned_count: 2
+
+  # Hold time extension multiplier based on alignment
+  hold_extension_base: 1.0
+  hold_extension_per_aligned: 0.25  # +25% per aligned timescale
+
+  # Probability threshold for alignment (0.5 = neutral)
+  alignment_threshold: 0.5

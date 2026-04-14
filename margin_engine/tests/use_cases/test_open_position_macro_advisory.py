@@ -18,6 +18,7 @@ Scope (verbatim from the plan file):
   6. MacroBias.for_timescale('5m') empty → None, populated → dict
   7. _parse_macro({"timescale_map": {...}}) populates field correctly
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -29,23 +30,25 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from margin_engine.domain.value_objects import (
-    Consensus,
-    FillResult,
-    MacroBias,
     Money,
     Price,
+    TradeSide,
+    Consensus,
+    MacroBias,
     Quantiles,
     TimescalePayload,
-    TradeSide,
     V4Snapshot,
     _parse_macro,
 )
-from margin_engine.use_cases.open_position import OpenPositionUseCase
+from margin_engine.domain.ports import FillResult
+from margin_engine.application.use_cases.open_position import OpenPositionUseCase
+from margin_engine.application.dto import OpenPositionInput
 
 
 # ──────────────────────────────────────────────────────────────────────────
 # Test fixtures — minimal V4Snapshot builders
 # ──────────────────────────────────────────────────────────────────────────
+
 
 def _build_payload(
     *,
@@ -72,7 +75,11 @@ def _build_payload(
         expected_move_bps=expected_move_bps,
         window_close_ts=1776400000,
         quantiles_at_close=Quantiles(
-            p10=69500.0, p25=69700.0, p50=70200.0, p75=70600.0, p90=71000.0,
+            p10=69500.0,
+            p25=69700.0,
+            p50=70200.0,
+            p75=70600.0,
+            p90=71000.0,
         ),
     )
 
@@ -147,27 +154,29 @@ def _build_use_case(
     v4_port = MagicMock()
 
     uc = OpenPositionUseCase(
-        exchange=exchange,
-        portfolio=portfolio,
-        repository=repo,
-        alerts=alerts,
-        probability_port=probability_port,
-        signal_port=signal_port,
-        v4_snapshot_port=v4_port,
-        engine_use_v4_actions=True,
-        v4_primary_timescale="15m",
-        v4_timescales=("15m",),
-        v4_entry_edge=0.10,
-        v4_min_expected_move_bps=15.0,
-        v4_allow_mean_reverting=False,
-        v4_macro_mode=macro_mode,
-        v4_macro_hard_veto_confidence_floor=macro_conf_floor,
-        v4_macro_advisory_size_mult_on_conflict=advisory_haircut,
-        v4_allow_no_edge_if_exp_move_bps_gte=allow_no_edge_gte,
-        fee_rate_per_side=0.00045,
-        bet_fraction=0.02,
-        venue="hyperliquid",
-        strategy_version="v2-probability",
+        input=OpenPositionInput(
+            exchange=exchange,
+            portfolio=portfolio,
+            repository=repo,
+            alerts=alerts,
+            probability_port=probability_port,
+            signal_port=signal_port,
+            v4_snapshot_port=v4_port,
+            engine_use_v4_actions=True,
+            v4_primary_timescale="15m",
+            v4_timescales=("15m",),
+            v4_entry_edge=0.10,
+            v4_min_expected_move_bps=15.0,
+            v4_allow_mean_reverting=False,
+            v4_macro_mode=macro_mode,
+            v4_macro_hard_veto_confidence_floor=macro_conf_floor,
+            v4_macro_advisory_size_mult_on_conflict=advisory_haircut,
+            v4_allow_no_edge_if_exp_move_bps_gte=allow_no_edge_gte,
+            fee_rate_per_side=0.00045,
+            bet_fraction=0.02,
+            venue="hyperliquid",
+            strategy_version="v2-probability",
+        )
     )
     return uc, exchange
 
@@ -175,6 +184,7 @@ def _build_use_case(
 # ──────────────────────────────────────────────────────────────────────────
 # MacroBias per-horizon map tests
 # ──────────────────────────────────────────────────────────────────────────
+
 
 class TestMacroBiasTimescaleMap:
     """The `timescale_map` field added in Phase A — Phase C consumers rely
@@ -188,9 +198,9 @@ class TestMacroBiasTimescaleMap:
     def test_populated_map_returns_dict(self):
         macro = MacroBias(
             timescale_map={
-                "5m":  {"bias": "BEAR", "confidence": 72},
+                "5m": {"bias": "BEAR", "confidence": 72},
                 "15m": {"bias": "NEUTRAL", "confidence": 45},
-                "1h":  {"bias": "BULL", "confidence": 60},
+                "1h": {"bias": "BULL", "confidence": 60},
             }
         )
         assert macro.for_timescale("5m") == {"bias": "BEAR", "confidence": 72}
@@ -204,10 +214,10 @@ class TestMacroBiasTimescaleMap:
             "confidence": 45,
             "direction_gate": "ALLOW_ALL",
             "timescale_map": {
-                "5m":  {"bias": "NEUTRAL", "confidence": 35},
+                "5m": {"bias": "NEUTRAL", "confidence": 35},
                 "15m": {"bias": "NEUTRAL", "confidence": 40},
-                "1h":  {"bias": "BEAR",    "confidence": 55},
-                "4h":  {"bias": "BULL",    "confidence": 60},
+                "1h": {"bias": "BEAR", "confidence": 55},
+                "4h": {"bias": "BULL", "confidence": 60},
             },
         }
         macro = _parse_macro(raw)
@@ -233,6 +243,7 @@ class TestMacroBiasTimescaleMap:
 # ──────────────────────────────────────────────────────────────────────────
 # Advisory / veto dispatch at entry
 # ──────────────────────────────────────────────────────────────────────────
+
 
 def _bear_macro(confidence: int) -> MacroBias:
     """Qwen BEAR / SKIP_UP at the given confidence — the exact shape that
@@ -264,7 +275,8 @@ class TestOpenPositionMacroAdvisory:
         the candidate must NOT skip, and the size multiplier must be
         reduced by the advisory haircut (0.75)."""
         uc, exchange = _build_use_case(
-            macro_mode="advisory", advisory_haircut=0.75,
+            macro_mode="advisory",
+            advisory_haircut=0.75,
         )
         snap = _build_snapshot(macro=_bear_macro(80))
 
@@ -274,18 +286,19 @@ class TestOpenPositionMacroAdvisory:
         # Core assertion: the advisory haircut log message fired —
         # this is the signal that macro_conflict was set and consumed.
         assert any(
-            "macro advisory conflict" in rec.message
-            for rec in caplog.records
+            "macro advisory conflict" in rec.message for rec in caplog.records
         ), "Advisory haircut log line not emitted"
         # Order was attempted (not blocked)
-        assert exchange.place_market_order.called, \
+        assert exchange.place_market_order.called, (
             "Advisory mode must NOT block the entry — order should have fired"
+        )
         # Verify the haircut actually made it into the notional calc —
         # portfolio.can_open_position is called with the haircut collateral
         called_with = uc._portfolio.can_open_position.call_args.args[0]
         # starting_capital=500 * bet_fraction=0.02 * size_mod=1.0 * haircut=0.75 = 7.5
-        assert called_with.amount == pytest.approx(7.5, abs=0.01), \
+        assert called_with.amount == pytest.approx(7.5, abs=0.01), (
             f"Expected 500 * 0.02 * 1.0 * 0.75 = 7.5, got {called_with.amount}"
+        )
 
     @pytest.mark.asyncio
     async def test_advisory_low_conf_conflict_is_noop(self, caplog):
@@ -294,7 +307,9 @@ class TestOpenPositionMacroAdvisory:
         conflicts. Default size_mult = 1.0 from MacroBias (not the
         haircut). Entry proceeds at full size."""
         uc, exchange = _build_use_case(
-            macro_mode="advisory", macro_conf_floor=80, advisory_haircut=0.75,
+            macro_mode="advisory",
+            macro_conf_floor=80,
+            advisory_haircut=0.75,
         )
         snap = _build_snapshot(macro=_bear_macro(60))
 
@@ -316,27 +331,32 @@ class TestOpenPositionMacroAdvisory:
         """Veto + confidence=85 + BEAR/SKIP_UP + LONG:
         entry must be blocked with a _veto skip reason. No order fired."""
         uc, exchange = _build_use_case(
-            macro_mode="veto", macro_conf_floor=80,
+            macro_mode="veto",
+            macro_conf_floor=80,
         )
         snap = _build_snapshot(macro=_bear_macro(85))
 
         with caplog.at_level(logging.INFO):
             result = await uc._execute_v4(snap)
 
-        assert result is None, "Veto mode must block the entry"
-        assert not exchange.place_market_order.called, \
+        assert result is None or result.position is None, (
+            "Veto mode must block the entry"
+        )
+        assert not exchange.place_market_order.called, (
             "No order should fire when macro vetoed"
+        )
         # Check the specific skip reason landed in the logs
-        assert any(
-            "macro_skip_up_veto" in rec.message for rec in caplog.records
-        ), "Expected macro_skip_up_veto in skip log"
+        assert any("macro_skip_up_veto" in rec.message for rec in caplog.records), (
+            "Expected macro_skip_up_veto in skip log"
+        )
 
     @pytest.mark.asyncio
     async def test_veto_low_conf_conflict_passes_through(self, caplog):
         """Veto + confidence=70 (below floor) + BEAR/SKIP_UP + LONG:
         gate does not fire because confidence < floor. Entry proceeds."""
         uc, exchange = _build_use_case(
-            macro_mode="veto", macro_conf_floor=80,
+            macro_mode="veto",
+            macro_conf_floor=80,
         )
         snap = _build_snapshot(macro=_bear_macro(70))
 
@@ -344,8 +364,9 @@ class TestOpenPositionMacroAdvisory:
             result = await uc._execute_v4(snap)
 
         # Entry NOT blocked because confidence < floor
-        assert exchange.place_market_order.called, \
+        assert exchange.place_market_order.called, (
             "Below-floor macro must not veto even in veto mode"
+        )
         assert result is not None
 
     @pytest.mark.asyncio
@@ -353,8 +374,10 @@ class TestOpenPositionMacroAdvisory:
         """Veto mode, macro is NEUTRAL/ALLOW_ALL — gate is a no-op."""
         uc, exchange = _build_use_case(macro_mode="veto")
         neutral = MacroBias(
-            bias="NEUTRAL", confidence=90,
-            direction_gate="ALLOW_ALL", status="ok",
+            bias="NEUTRAL",
+            confidence=90,
+            direction_gate="ALLOW_ALL",
+            status="ok",
         )
         snap = _build_snapshot(macro=neutral)
 
@@ -367,6 +390,7 @@ class TestOpenPositionMacroAdvisory:
 # ──────────────────────────────────────────────────────────────────────────
 # NO_EDGE override
 # ──────────────────────────────────────────────────────────────────────────
+
 
 class TestNoEdgeOverride:
     """The experimental `v4_allow_no_edge_if_exp_move_bps_gte` flag."""
@@ -388,10 +412,8 @@ class TestNoEdgeOverride:
         with caplog.at_level(logging.INFO):
             result = await uc._execute_v4(snap)
 
-        assert result is None
-        assert any(
-            "not_tradeable" in rec.message for rec in caplog.records
-        )
+        assert result is None or result.position is None
+        assert any("not_tradeable" in rec.message for rec in caplog.records)
 
     @pytest.mark.asyncio
     async def test_no_edge_override_on_allows_entry(self, caplog):
@@ -415,9 +437,7 @@ class TestNoEdgeOverride:
             await uc._execute_v4(snap)
 
         # Override log fired (the primary thing under test)
-        assert any(
-            "NO_EDGE override applied" in rec.message for rec in caplog.records
-        )
+        assert any("NO_EDGE override applied" in rec.message for rec in caplog.records)
         # Entry proceeded all the way to order placement
         assert exchange.place_market_order.called
 
@@ -440,9 +460,11 @@ class TestNoEdgeOverride:
         with caplog.at_level(logging.INFO):
             result = await uc._execute_v4(snap)
 
-        assert result is None
+        assert result is None or result.position is None
         assert any("NO_EDGE override applied" in rec.message for rec in caplog.records)
-        assert any("expected_move_below_fee_wall" in rec.message for rec in caplog.records)
+        assert any(
+            "expected_move_below_fee_wall" in rec.message for rec in caplog.records
+        )
         assert not exchange.place_market_order.called
 
     @pytest.mark.asyncio
@@ -451,7 +473,8 @@ class TestNoEdgeOverride:
         candidate still skips with not_tradeable."""
         uc, _ = _build_use_case(allow_no_edge_gte=3.0)
         payload = _build_payload(
-            regime="NO_EDGE", expected_move_bps=2.0,
+            regime="NO_EDGE",
+            expected_move_bps=2.0,
         )
         snap = _build_snapshot(
             macro=MacroBias(bias="NEUTRAL", status="ok"),
@@ -461,7 +484,7 @@ class TestNoEdgeOverride:
         with caplog.at_level(logging.INFO):
             result = await uc._execute_v4(snap)
 
-        assert result is None
+        assert result is None or result.position is None
         assert not any(
             "NO_EDGE override applied" in rec.message for rec in caplog.records
         )

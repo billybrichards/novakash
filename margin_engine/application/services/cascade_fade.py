@@ -14,11 +14,11 @@ Higher risk strategy (cascades can continue), so:
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 
-from margin_engine.domain.strategy import Strategy, TradeDecision
+from margin_engine.application.services.strategy import Strategy, TradeDecision
 from margin_engine.domain.value_objects import V4Snapshot
-from margin_engine.services.cascade_detector import (
+from margin_engine.application.services.cascade_detector import (
     analyze_cascade,
     CascadeState,
     CascadeInfo,
@@ -45,6 +45,18 @@ class CascadeFadeConfig:
     # Cooldown after cascade ends
     cooldown_seconds: int = 900  # 15 min cooldown
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CascadeFadeConfig":
+        """Create config from YAML dict."""
+        return cls(
+            min_cascade_strength=data.get("min_cascade_strength", 0.5),
+            size_mult=data.get("size_mult", 0.5),
+            stop_loss_bps=data.get("stop_loss_bps", 300),
+            take_profit_bps=data.get("take_profit_bps", 100),
+            hold_minutes=data.get("hold_minutes", 10),
+            cooldown_seconds=data.get("cooldown_seconds", 900),
+        )
+
 
 class CascadeFadeStrategy(Strategy):
     """
@@ -63,8 +75,17 @@ class CascadeFadeStrategy(Strategy):
     - LATE (< 0.5): No trade
     """
 
-    def __init__(self, config: Optional[CascadeFadeConfig] = None):
-        self.config = config or CascadeFadeConfig()
+    def __init__(
+        self,
+        config: Optional[CascadeFadeConfig] = None,
+        config_dict: Optional[Dict[str, Any]] = None,
+    ):
+        if config is not None:
+            self.config = config
+        elif config_dict is not None:
+            self.config = CascadeFadeConfig.from_dict(config_dict)
+        else:
+            self.config = CascadeFadeConfig()
         self._last_cascade_end: Optional[datetime] = None
 
     def decide(self, v4: V4Snapshot) -> TradeDecision:

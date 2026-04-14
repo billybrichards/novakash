@@ -5,9 +5,9 @@ Fade extremes with smaller positions, tighter stops, quick profits.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Dict, Any
 
-from margin_engine.domain.strategy import Strategy, TradeDecision
+from margin_engine.application.services.strategy import Strategy, TradeDecision
 from margin_engine.domain.value_objects import V4Snapshot
 
 
@@ -31,6 +31,18 @@ class MeanReversionConfig:
     # Minimum probability of the fade being correct (15%+ is acceptable for fade)
     min_fade_conviction: float = 0.15
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MeanReversionConfig":
+        """Create config from YAML dict."""
+        return cls(
+            entry_threshold=data.get("entry_threshold", 0.70),
+            size_mult=data.get("size_mult", 0.8),
+            stop_loss_bps=data.get("stop_loss_bps", 80),
+            take_profit_bps=data.get("take_profit_bps", 50),
+            hold_minutes=data.get("hold_minutes", 15),
+            min_fade_conviction=data.get("min_fade_conviction", 0.15),
+        )
+
 
 class MeanReversionStrategy(Strategy):
     """
@@ -46,8 +58,17 @@ class MeanReversionStrategy(Strategy):
     - Short hold time (15 min)
     """
 
-    def __init__(self, config: Optional[MeanReversionConfig] = None):
-        self.config = config or MeanReversionConfig()
+    def __init__(
+        self,
+        config: Optional[MeanReversionConfig] = None,
+        config_dict: Optional[Dict[str, Any]] = None,
+    ):
+        if config is not None:
+            self.config = config
+        elif config_dict is not None:
+            self.config = MeanReversionConfig.from_dict(config_dict)
+        else:
+            self.config = MeanReversionConfig()
 
     def decide(self, v4: V4Snapshot) -> TradeDecision:
         """

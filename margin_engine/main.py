@@ -14,6 +14,7 @@ The main loop:
      b. Manage open positions (stops, trailing, expiry, reversals)
   3. Graceful shutdown on SIGINT/SIGTERM
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -39,7 +40,11 @@ logger = logging.getLogger("margin_engine")
 async def run() -> None:
     """Main async entry point — wires adapters and runs the trading loop."""
     settings = MarginSettings()
-    logger.info("Margin engine starting (paper_mode=%s, leverage=%dx)", settings.paper_mode, settings.leverage)
+    logger.info(
+        "Margin engine starting (paper_mode=%s, leverage=%dx)",
+        settings.paper_mode,
+        settings.leverage,
+    )
 
     # ── Database ──
     dsn = settings.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
@@ -47,10 +52,15 @@ async def run() -> None:
 
     # ── Repositories ──
     from margin_engine.adapters.persistence.pg_repository import PgPositionRepository
+
     repo = PgPositionRepository(pool)
     await repo.ensure_table()
 
-    from margin_engine.adapters.persistence.pg_log_repository import PgLogRepository, AsyncPgLogHandler
+    from margin_engine.adapters.persistence.pg_log_repository import (
+        PgLogRepository,
+        AsyncPgLogHandler,
+    )
+
     log_repo = PgLogRepository(pool)
     await log_repo.ensure_table()
 
@@ -62,8 +72,10 @@ async def run() -> None:
     # Passive signal recorder — writes every composite_score to margin_signals
     # for offline edge analysis. Write-only; trading never reads this table.
     from margin_engine.adapters.persistence.pg_signal_repository import (
-        PgSignalRepository, AsyncPgSignalRecorder,
+        PgSignalRepository,
+        AsyncPgSignalRecorder,
     )
+
     signal_repo = PgSignalRepository(pool)
     await signal_repo.ensure_table()
     signal_recorder = AsyncPgSignalRecorder(signal_repo, asyncio.get_running_loop())
@@ -77,7 +89,9 @@ async def run() -> None:
     #   live  + hyperliquid → NotImplementedError (signing layer is a follow-up)
     venue = settings.exchange_venue
     paper = settings.paper_mode
-    price_feed = None  # set in the HL paper branch only — must be reachable from shutdown
+    price_feed = (
+        None  # set in the HL paper branch only — must be reachable from shutdown
+    )
     effective_fee_rate: float | None = None
     effective_spread_bps: float | None = None
 
@@ -100,6 +114,7 @@ async def run() -> None:
         # restart, or (b) explicitly set MARGIN_ALLOW_BROKEN_PAPER_BINANCE=1
         # for a one-off case where they genuinely want the frozen-$80k behavior.
         import os
+
         if os.environ.get("MARGIN_ALLOW_BROKEN_PAPER_BINANCE") != "1":
             raise RuntimeError(
                 "margin_engine: paper+binance wiring is broken (DQ-06). "
@@ -111,6 +126,7 @@ async def run() -> None:
                 "only if you explicitly want the broken behavior."
             )
         from margin_engine.adapters.exchange.paper import PaperExchangeAdapter
+
         effective_fee_rate = settings.effective_paper_fee_rate
         effective_spread_bps = settings.effective_paper_spread_bps
         exchange = PaperExchangeAdapter(
@@ -123,7 +139,8 @@ async def run() -> None:
             "DQ-06: Using PAPER exchange (Binance model) with frozen $80k price — "
             "MARGIN_ALLOW_BROKEN_PAPER_BINANCE=1 override is set. "
             "fee=%.5f/side spread=%.2fbp",
-            effective_fee_rate, effective_spread_bps,
+            effective_fee_rate,
+            effective_spread_bps,
         )
 
     elif paper and venue == "hyperliquid":
@@ -131,6 +148,7 @@ async def run() -> None:
         from margin_engine.adapters.exchange.hyperliquid_price_feed import (
             HyperliquidPriceFeed,
         )
+
         effective_fee_rate = settings.effective_paper_fee_rate
         effective_spread_bps = settings.effective_paper_spread_bps
         price_feed = HyperliquidPriceFeed(
@@ -149,11 +167,13 @@ async def run() -> None:
         price_feed_source = "hyperliquid"
         logger.info(
             "Using PAPER exchange (Hyperliquid model): fee=%.5f/side spread=%.2fbp",
-            effective_fee_rate, effective_spread_bps,
+            effective_fee_rate,
+            effective_spread_bps,
         )
 
     elif (not paper) and venue == "binance":
         from margin_engine.adapters.exchange.binance_margin import BinanceMarginAdapter
+
         exchange = BinanceMarginAdapter(
             api_key=settings.binance_api_key,
             private_key_path=settings.binance_private_key_path,
@@ -219,6 +239,7 @@ async def run() -> None:
 
     # ── Signal adapter ──
     from margin_engine.adapters.signal.ws_signal import WsSignalAdapter
+
     signal_adapter = WsSignalAdapter(
         url=settings.timesfm_ws_url,
         on_message=signal_recorder.record,
@@ -229,13 +250,22 @@ async def run() -> None:
     from margin_engine.adapters.alert.telegram import TelegramAlertAdapter
 
     class NoopAlerts:
-        async def send_trade_opened(self, p): pass
-        async def send_trade_closed(self, p): pass
-        async def send_kill_switch(self, r): pass
-        async def send_error(self, m): logger.warning("Alert: %s", m)
+        async def send_trade_opened(self, p):
+            pass
+
+        async def send_trade_closed(self, p):
+            pass
+
+        async def send_kill_switch(self, r):
+            pass
+
+        async def send_error(self, m):
+            logger.warning("Alert: %s", m)
 
     if settings.telegram_enabled and settings.telegram_bot_token:
-        alerts = TelegramAlertAdapter(settings.telegram_bot_token, settings.telegram_chat_id)
+        alerts = TelegramAlertAdapter(
+            settings.telegram_bot_token, settings.telegram_chat_id
+        )
     else:
         alerts = NoopAlerts()
 
@@ -262,6 +292,7 @@ async def run() -> None:
 
     # ── Probability adapter (v2 ML direction signal) ──
     from margin_engine.adapters.signal.probability_http import ProbabilityHttpAdapter
+
     probability_adapter = ProbabilityHttpAdapter(
         base_url=settings.probability_http_url,
         asset=settings.probability_asset,
@@ -280,6 +311,7 @@ async def run() -> None:
     # behavior change. PR B wires it into both use cases behind the
     # settings.engine_use_v4_actions feature flag.
     from margin_engine.adapters.signal.v4_snapshot_http import V4SnapshotHttpAdapter
+
     v4_adapter: Optional[V4SnapshotHttpAdapter] = None
     if settings.v4_snapshot_url:
         v4_adapter = V4SnapshotHttpAdapter(
@@ -296,9 +328,25 @@ async def run() -> None:
             settings.engine_use_v4_actions,
         )
 
+    # ── Strategy Registry (YAML-configurable strategies) ──
+    from margin_engine.strategies import StrategyRegistry
+
+    strategy_registry = StrategyRegistry(
+        config_dir=settings.strategy_config_dir,
+        v4_port=v4_adapter,
+    )
+    strategy_registry.load_all()
+    logger.info(
+        "strategy_registry.loaded",
+        active=strategy_registry.get_active_strategies(),
+        all=strategy_registry.get_strategy_names(),
+    )
+
     # ── Use Cases ──
-    from margin_engine.use_cases.open_position import OpenPositionUseCase
-    from margin_engine.use_cases.manage_positions import ManagePositionsUseCase
+    from margin_engine.application.use_cases.open_position import OpenPositionUseCase
+    from margin_engine.application.use_cases.manage_positions import (
+        ManagePositionsUseCase,
+    )
 
     open_uc = OpenPositionUseCase(
         exchange=exchange,
@@ -307,6 +355,8 @@ async def run() -> None:
         alerts=alerts,
         probability_port=probability_adapter,
         signal_port=signal_adapter,
+        # ── Strategy Registry (YAML-configurable strategies) ──
+        strategy_registry=strategy_registry,
         # ── v4 integration (PR B) — falls back to legacy when v4_adapter is None ──
         v4_snapshot_port=v4_adapter,
         engine_use_v4_actions=settings.engine_use_v4_actions,
@@ -360,6 +410,7 @@ async def run() -> None:
     # Pass position_repo so /history works, and execution_info_fn so /status
     # surfaces venue/fee/price-feed health for the dashboard.
     from margin_engine.presentation.api.routes.status import StatusServer
+
     status_server = StatusServer(
         portfolio,
         exchange,
@@ -386,7 +437,8 @@ async def run() -> None:
         "regime gate |composite_%s|>=%.2f, conviction>=%.2f",
         settings.probability_timescale,
         f"seconds_to_close={settings.probability_seconds_to_close}",
-        settings.regime_timescale, settings.regime_threshold,
+        settings.regime_timescale,
+        settings.regime_threshold,
         settings.probability_min_conviction,
     )
 
@@ -411,7 +463,8 @@ async def run() -> None:
                 for pos in closed:
                     logger.info(
                         "Position %s closed: PnL=%.2f (%s)",
-                        pos.id, pos.realised_pnl,
+                        pos.id,
+                        pos.realised_pnl,
                         pos.exit_reason.value if pos.exit_reason else "unknown",
                     )
 
@@ -438,9 +491,11 @@ async def run() -> None:
                             info.get("primary_status"),
                             info.get("primary_regime"),
                             f"{info.get('primary_probability_up'):.3f}"
-                            if info.get("primary_probability_up") is not None else "?",
+                            if info.get("primary_probability_up") is not None
+                            else "?",
                             f"{info.get('primary_expected_move_bps'):.1f}bps"
-                            if info.get("primary_expected_move_bps") is not None else "?",
+                            if info.get("primary_expected_move_bps") is not None
+                            else "?",
                         )
                     else:
                         logger.warning(

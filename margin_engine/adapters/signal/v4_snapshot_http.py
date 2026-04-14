@@ -44,6 +44,7 @@ Design choices worth calling out:
    consumes `get_latest()` yet. Flipping the flag in PR B wires the
    adapter into `OpenPositionUseCase` and `ManagePositionsUseCase`.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -124,12 +125,16 @@ class V4SnapshotHttpAdapter(V4SnapshotPort):
             logger.info(
                 "V4SnapshotHttpAdapter connected: %s asset=%s timescales=%s "
                 "poll=%.1fs freshness=%.1fs",
-                self._url, self._asset, self._timescales_csv,
-                self._poll_interval_s, self._freshness_s,
+                self._url,
+                self._asset,
+                self._timescales_csv,
+                self._poll_interval_s,
+                self._freshness_s,
             )
 
         self._task = asyncio.create_task(
-            self._poll_loop(), name="v4-snapshot-poll",
+            self._poll_loop(),
+            name="v4-snapshot-poll",
         )
 
     async def disconnect(self) -> None:
@@ -200,8 +205,10 @@ class V4SnapshotHttpAdapter(V4SnapshotPort):
                 "ever_succeeded": self._ever_succeeded,
             }
 
-        primary_ts = "15m" if "15m" in snap.timescales else (
-            next(iter(snap.timescales), None) if snap.timescales else None
+        primary_ts = (
+            "15m"
+            if "15m" in snap.timescales
+            else (next(iter(snap.timescales), None) if snap.timescales else None)
         )
         primary_payload = snap.timescales.get(primary_ts) if primary_ts else None
 
@@ -219,8 +226,12 @@ class V4SnapshotHttpAdapter(V4SnapshotPort):
             "primary_ts": primary_ts,
             "primary_status": primary_payload.status if primary_payload else None,
             "primary_regime": primary_payload.regime if primary_payload else None,
-            "primary_probability_up": primary_payload.probability_up if primary_payload else None,
-            "primary_expected_move_bps": primary_payload.expected_move_bps if primary_payload else None,
+            "primary_probability_up": primary_payload.probability_up
+            if primary_payload
+            else None,
+            "primary_expected_move_bps": primary_payload.expected_move_bps
+            if primary_payload
+            else None,
             "ever_succeeded": self._ever_succeeded,
         }
 
@@ -236,7 +247,8 @@ class V4SnapshotHttpAdapter(V4SnapshotPort):
         while not self._stop.is_set():
             try:
                 await asyncio.wait_for(
-                    self._stop.wait(), timeout=self._poll_interval_s,
+                    self._stop.wait(),
+                    timeout=self._poll_interval_s,
                 )
             except asyncio.TimeoutError:
                 pass  # expected "next tick" branch
@@ -253,7 +265,8 @@ class V4SnapshotHttpAdapter(V4SnapshotPort):
                 # we catch it here so one bad tick doesn't kill the loop.
                 logger.warning(
                     "V4SnapshotHttpAdapter poll loop unexpected error: %s",
-                    e, exc_info=True,
+                    e,
+                    exc_info=True,
                 )
 
     async def _poll_once(self) -> None:
@@ -280,7 +293,8 @@ class V4SnapshotHttpAdapter(V4SnapshotPort):
                     body_preview = (await resp.text())[:200]
                     logger.warning(
                         "V4SnapshotHttpAdapter HTTP %d: %s",
-                        resp.status, body_preview,
+                        resp.status,
+                        body_preview,
                     )
                     return
                 payload = await resp.json()
@@ -290,7 +304,8 @@ class V4SnapshotHttpAdapter(V4SnapshotPort):
         except Exception as e:
             logger.warning(
                 "V4SnapshotHttpAdapter unexpected network error: %s",
-                e, exc_info=True,
+                e,
+                exc_info=True,
             )
             return
 
@@ -307,7 +322,8 @@ class V4SnapshotHttpAdapter(V4SnapshotPort):
         except Exception as e:
             logger.warning(
                 "V4SnapshotHttpAdapter: parse failed: %s",
-                e, exc_info=True,
+                e,
+                exc_info=True,
             )
             return
 

@@ -1,0 +1,23 @@
+# Strategy: Regime No Trade
+# For CHOPPY and NO_EDGE regimes
+# Default: no trades, optional speculative trades with small size
+
+name: regime_no_trade
+version: "1.0.0"
+mode: ACTIVE  # ACTIVE | DRY_RUN | DISABLED
+asset: BTC
+timescale: 15m
+
+params:
+  # Allow speculative trades in CHOPPY/NO_EDGE
+  allow_trade: false
+
+  # Size multiplier for speculative trades
+  size_mult: 0.1
+
+  # Stop loss and take profit (basis points) for speculative trades
+  stop_loss_bps: 100  # 1.0% stop
+  take_profit_bps: 50  # 0.5% target
+
+  # Holding period
+  hold_minutes: 10  # Very short hold for speculative trades

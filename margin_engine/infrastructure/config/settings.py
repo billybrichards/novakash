@@ -173,6 +173,10 @@ class MarginSettings(BaseSettings):
     regime_no_trade_allow: bool = False
     regime_no_trade_size_mult: float = 0.1
 
+    # ── Strategy Registry (YAML-configurable strategies) ──
+    # Directory containing YAML strategy config files
+    strategy_config_dir: str = "strategies/configs"
+
     # ── ME-STRAT-05: Cascade Fade Strategy ──
     # Feature flag to enable cascade fade strategy
     cascade_fade_enabled: bool = False
@@ -224,13 +228,14 @@ class MarginSettings(BaseSettings):
     # ── Sizing ──
     # Paper mode → can size larger than live-ready defaults to generate
     # meaningful P&L signal while we validate the new strategy.
+<<<<<<< HEAD
     starting_capital: float = 1000.0  # paper mode starting bankroll
     leverage: int = 3  # down from 5 while validating
     bet_fraction: float = 0.02  # 2% per trade, down from 5%
 
     # ── Risk ──
     max_open_positions: int = 1  # one at a time — clean attribution
-max_exposure_pct: float = 0.80   # 80% max exposure per position
+    max_exposure_pct: float = 0.80  # 80% max exposure per position
     daily_loss_limit_pct: float = 0.10
     consecutive_loss_cooldown: int = 3
     cooldown_seconds: int = 600

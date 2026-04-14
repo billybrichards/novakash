@@ -1,6 +1,7 @@
 """
 Tests: Fee-aware continuation decision logic.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -17,7 +18,7 @@ from margin_engine.domain.value_objects import (
     TimescalePayload,
     Cascade,
 )
-from margin_engine.services.fee_aware_continuation import (
+from margin_engine.application.services.fee_aware_continuation import (
     calculate_fee_adjusted_pnl,
     get_tp_progress,
     should_take_partial_profit,
@@ -27,7 +28,7 @@ from margin_engine.services.fee_aware_continuation import (
     fee_aware_continuation_decision,
     ContinuationDecision,
 )
-from margin_engine.services.continuation_alignment import (
+from margin_engine.application.services.continuation_alignment import (
     get_timescale_agreement,
     get_regime_quality,
 )
@@ -139,7 +140,7 @@ class TestShouldTakePartialProfit:
                     regime="TRENDING_UP",
                     cascade=Cascade(),
                 )
-            }
+            },
         )
         close_pct = should_take_partial_profit(pos, 50750.0, v4)
         assert close_pct == 0.25
@@ -162,7 +163,7 @@ class TestShouldTakePartialProfit:
                     regime="CHOPPY",
                     cascade=Cascade(),
                 )
-            }
+            },
         )
         # At 50% with weak signal, may return None or 0.5
         close_pct = should_take_partial_profit(pos, 50500.0, v4)
@@ -186,7 +187,7 @@ class TestShouldTakePartialProfit:
                     regime="TRENDING_UP",
                     cascade=Cascade(),
                 )
-            }
+            },
         )
         close_pct = should_take_partial_profit(pos, 50250.0, v4)
         assert close_pct is None
@@ -223,11 +224,19 @@ class TestCheckContinuationAlignment:
             asset="BTC",
             ts=datetime.now().timestamp(),
             timescales={
-                "5m": TimescalePayload(timescale="5m", status="ok", probability_up=0.60, cascade=Cascade()),
-                "15m": TimescalePayload(timescale="15m", status="ok", probability_up=0.65, cascade=Cascade()),
-                "1h": TimescalePayload(timescale="1h", status="ok", probability_up=0.55, cascade=Cascade()),
-                "4h": TimescalePayload(timescale="4h", status="ok", probability_up=0.70, cascade=Cascade()),
-            }
+                "5m": TimescalePayload(
+                    timescale="5m", status="ok", probability_up=0.60, cascade=Cascade()
+                ),
+                "15m": TimescalePayload(
+                    timescale="15m", status="ok", probability_up=0.65, cascade=Cascade()
+                ),
+                "1h": TimescalePayload(
+                    timescale="1h", status="ok", probability_up=0.55, cascade=Cascade()
+                ),
+                "4h": TimescalePayload(
+                    timescale="4h", status="ok", probability_up=0.70, cascade=Cascade()
+                ),
+            },
         )
         result = check_continuation_alignment(v4, pos)
         assert result.aligned_count == 4
@@ -240,11 +249,19 @@ class TestCheckContinuationAlignment:
             asset="BTC",
             ts=datetime.now().timestamp(),
             timescales={
-                "5m": TimescalePayload(timescale="5m", status="ok", probability_up=0.40, cascade=Cascade()),
-                "15m": TimescalePayload(timescale="15m", status="ok", probability_up=0.65, cascade=Cascade()),
-                "1h": TimescalePayload(timescale="1h", status="ok", probability_up=0.55, cascade=Cascade()),
-                "4h": TimescalePayload(timescale="4h", status="ok", probability_up=0.70, cascade=Cascade()),
-            }
+                "5m": TimescalePayload(
+                    timescale="5m", status="ok", probability_up=0.40, cascade=Cascade()
+                ),
+                "15m": TimescalePayload(
+                    timescale="15m", status="ok", probability_up=0.65, cascade=Cascade()
+                ),
+                "1h": TimescalePayload(
+                    timescale="1h", status="ok", probability_up=0.55, cascade=Cascade()
+                ),
+                "4h": TimescalePayload(
+                    timescale="4h", status="ok", probability_up=0.70, cascade=Cascade()
+                ),
+            },
         )
         result = check_continuation_alignment(v4, pos)
         assert result.aligned_count == 3
@@ -257,11 +274,19 @@ class TestCheckContinuationAlignment:
             asset="BTC",
             ts=datetime.now().timestamp(),
             timescales={
-                "5m": TimescalePayload(timescale="5m", status="ok", probability_up=0.40, cascade=Cascade()),
-                "15m": TimescalePayload(timescale="15m", status="ok", probability_up=0.65, cascade=Cascade()),
-                "1h": TimescalePayload(timescale="1h", status="ok", probability_up=0.45, cascade=Cascade()),
-                "4h": TimescalePayload(timescale="4h", status="ok", probability_up=0.70, cascade=Cascade()),
-            }
+                "5m": TimescalePayload(
+                    timescale="5m", status="ok", probability_up=0.40, cascade=Cascade()
+                ),
+                "15m": TimescalePayload(
+                    timescale="15m", status="ok", probability_up=0.65, cascade=Cascade()
+                ),
+                "1h": TimescalePayload(
+                    timescale="1h", status="ok", probability_up=0.45, cascade=Cascade()
+                ),
+                "4h": TimescalePayload(
+                    timescale="4h", status="ok", probability_up=0.70, cascade=Cascade()
+                ),
+            },
         )
         result = check_continuation_alignment(v4, pos)
         assert result.aligned_count == 2
@@ -274,11 +299,19 @@ class TestCheckContinuationAlignment:
             asset="BTC",
             ts=datetime.now().timestamp(),
             timescales={
-                "5m": TimescalePayload(timescale="5m", status="ok", probability_up=0.40, cascade=Cascade()),
-                "15m": TimescalePayload(timescale="15m", status="ok", probability_up=0.45, cascade=Cascade()),
-                "1h": TimescalePayload(timescale="1h", status="ok", probability_up=0.48, cascade=Cascade()),
-                "4h": TimescalePayload(timescale="4h", status="ok", probability_up=0.42, cascade=Cascade()),
-            }
+                "5m": TimescalePayload(
+                    timescale="5m", status="ok", probability_up=0.40, cascade=Cascade()
+                ),
+                "15m": TimescalePayload(
+                    timescale="15m", status="ok", probability_up=0.45, cascade=Cascade()
+                ),
+                "1h": TimescalePayload(
+                    timescale="1h", status="ok", probability_up=0.48, cascade=Cascade()
+                ),
+                "4h": TimescalePayload(
+                    timescale="4h", status="ok", probability_up=0.42, cascade=Cascade()
+                ),
+            },
         )
         result = check_continuation_alignment(v4, pos)
         assert result.aligned_count == 0
@@ -293,11 +326,23 @@ class TestCalculateHoldExtension:
             asset="BTC",
             ts=datetime.now().timestamp(),
             timescales={
-                "5m": TimescalePayload(timescale="5m", status="ok", probability_up=0.70, cascade=Cascade()),
-                "15m": TimescalePayload(timescale="15m", status="ok", probability_up=0.75, regime="TRENDING_UP", cascade=Cascade()),
-                "1h": TimescalePayload(timescale="1h", status="ok", probability_up=0.68, cascade=Cascade()),
-                "4h": TimescalePayload(timescale="4h", status="ok", probability_up=0.72, cascade=Cascade()),
-            }
+                "5m": TimescalePayload(
+                    timescale="5m", status="ok", probability_up=0.70, cascade=Cascade()
+                ),
+                "15m": TimescalePayload(
+                    timescale="15m",
+                    status="ok",
+                    probability_up=0.75,
+                    regime="TRENDING_UP",
+                    cascade=Cascade(),
+                ),
+                "1h": TimescalePayload(
+                    timescale="1h", status="ok", probability_up=0.68, cascade=Cascade()
+                ),
+                "4h": TimescalePayload(
+                    timescale="4h", status="ok", probability_up=0.72, cascade=Cascade()
+                ),
+            },
         )
         extension = calculate_hold_extension(v4, pos, max_extension=2.0)
         assert extension == 2.0
@@ -315,7 +360,7 @@ class TestCalculateHoldExtension:
                     regime="CHOPPY",
                     cascade=Cascade(),
                 )
-            }
+            },
         )
         extension = calculate_hold_extension(v4, pos, min_conviction=0.10)
         assert extension == 0.5
@@ -326,11 +371,23 @@ class TestCalculateHoldExtension:
             asset="BTC",
             ts=datetime.now().timestamp(),
             timescales={
-                "5m": TimescalePayload(timescale="5m", status="ok", probability_up=0.45, cascade=Cascade()),
-                "15m": TimescalePayload(timescale="15m", status="ok", probability_up=0.60, regime="MEAN_REVERTING", cascade=Cascade()),
-                "1h": TimescalePayload(timescale="1h", status="ok", probability_up=0.55, cascade=Cascade()),
-                "4h": TimescalePayload(timescale="4h", status="ok", probability_up=0.54, cascade=Cascade()),
-            }
+                "5m": TimescalePayload(
+                    timescale="5m", status="ok", probability_up=0.45, cascade=Cascade()
+                ),
+                "15m": TimescalePayload(
+                    timescale="15m",
+                    status="ok",
+                    probability_up=0.60,
+                    regime="MEAN_REVERTING",
+                    cascade=Cascade(),
+                ),
+                "1h": TimescalePayload(
+                    timescale="1h", status="ok", probability_up=0.55, cascade=Cascade()
+                ),
+                "4h": TimescalePayload(
+                    timescale="4h", status="ok", probability_up=0.54, cascade=Cascade()
+                ),
+            },
         )
         extension = calculate_hold_extension(v4, pos)
         assert 0.5 <= extension <= 2.0
@@ -352,11 +409,23 @@ class TestFeeAwareContinuationDecision:
             asset="BTC",
             ts=datetime.now().timestamp(),
             timescales={
-                "5m": TimescalePayload(timescale="5m", status="ok", probability_up=0.70, cascade=Cascade()),
-                "15m": TimescalePayload(timescale="15m", status="ok", probability_up=0.75, regime="TRENDING_UP", cascade=Cascade()),
-                "1h": TimescalePayload(timescale="1h", status="ok", probability_up=0.72, cascade=Cascade()),
-                "4h": TimescalePayload(timescale="4h", status="ok", probability_up=0.68, cascade=Cascade()),
-            }
+                "5m": TimescalePayload(
+                    timescale="5m", status="ok", probability_up=0.70, cascade=Cascade()
+                ),
+                "15m": TimescalePayload(
+                    timescale="15m",
+                    status="ok",
+                    probability_up=0.75,
+                    regime="TRENDING_UP",
+                    cascade=Cascade(),
+                ),
+                "1h": TimescalePayload(
+                    timescale="1h", status="ok", probability_up=0.72, cascade=Cascade()
+                ),
+                "4h": TimescalePayload(
+                    timescale="4h", status="ok", probability_up=0.68, cascade=Cascade()
+                ),
+            },
         )
         result = fee_aware_continuation_decision(
             position=pos,
@@ -382,11 +451,19 @@ class TestFeeAwareContinuationDecision:
             asset="BTC",
             ts=datetime.now().timestamp(),
             timescales={
-                "5m": TimescalePayload(timescale="5m", status="ok", probability_up=0.40, cascade=Cascade()),
-                "15m": TimescalePayload(timescale="15m", status="ok", probability_up=0.45, cascade=Cascade()),
-                "1h": TimescalePayload(timescale="1h", status="ok", probability_up=0.48, cascade=Cascade()),
-                "4h": TimescalePayload(timescale="4h", status="ok", probability_up=0.42, cascade=Cascade()),
-            }
+                "5m": TimescalePayload(
+                    timescale="5m", status="ok", probability_up=0.40, cascade=Cascade()
+                ),
+                "15m": TimescalePayload(
+                    timescale="15m", status="ok", probability_up=0.45, cascade=Cascade()
+                ),
+                "1h": TimescalePayload(
+                    timescale="1h", status="ok", probability_up=0.48, cascade=Cascade()
+                ),
+                "4h": TimescalePayload(
+                    timescale="4h", status="ok", probability_up=0.42, cascade=Cascade()
+                ),
+            },
         )
         result = fee_aware_continuation_decision(
             position=pos,
@@ -412,11 +489,23 @@ class TestFeeAwareContinuationDecision:
             asset="BTC",
             ts=datetime.now().timestamp(),
             timescales={
-                "5m": TimescalePayload(timescale="5m", status="ok", probability_up=0.55, cascade=Cascade()),
-                "15m": TimescalePayload(timescale="15m", status="ok", probability_up=0.58, regime="MEAN_REVERTING", cascade=Cascade()),
-                "1h": TimescalePayload(timescale="1h", status="ok", probability_up=0.56, cascade=Cascade()),
-                "4h": TimescalePayload(timescale="4h", status="ok", probability_up=0.54, cascade=Cascade()),
-            }
+                "5m": TimescalePayload(
+                    timescale="5m", status="ok", probability_up=0.55, cascade=Cascade()
+                ),
+                "15m": TimescalePayload(
+                    timescale="15m",
+                    status="ok",
+                    probability_up=0.58,
+                    regime="MEAN_REVERTING",
+                    cascade=Cascade(),
+                ),
+                "1h": TimescalePayload(
+                    timescale="1h", status="ok", probability_up=0.56, cascade=Cascade()
+                ),
+                "4h": TimescalePayload(
+                    timescale="4h", status="ok", probability_up=0.54, cascade=Cascade()
+                ),
+            },
         )
         result = fee_aware_continuation_decision(
             position=pos,
@@ -477,11 +566,19 @@ class TestAlignmentScore:
             asset="BTC",
             ts=datetime.now().timestamp(),
             timescales={
-                "5m": TimescalePayload(timescale="5m", status="ok", probability_up=0.60, cascade=Cascade()),
-                "15m": TimescalePayload(timescale="15m", status="ok", probability_up=0.65, cascade=Cascade()),
-                "1h": TimescalePayload(timescale="1h", status="ok", probability_up=0.45, cascade=Cascade()),
-                "4h": TimescalePayload(timescale="4h", status="ok", probability_up=0.70, cascade=Cascade()),
-            }
+                "5m": TimescalePayload(
+                    timescale="5m", status="ok", probability_up=0.60, cascade=Cascade()
+                ),
+                "15m": TimescalePayload(
+                    timescale="15m", status="ok", probability_up=0.65, cascade=Cascade()
+                ),
+                "1h": TimescalePayload(
+                    timescale="1h", status="ok", probability_up=0.45, cascade=Cascade()
+                ),
+                "4h": TimescalePayload(
+                    timescale="4h", status="ok", probability_up=0.70, cascade=Cascade()
+                ),
+            },
         )
         breakdown = get_timescale_agreement(v4, pos)
         assert len(breakdown) == 4
