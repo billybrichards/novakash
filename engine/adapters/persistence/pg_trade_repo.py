@@ -226,7 +226,7 @@ class PgTradeRepository:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
                     """SELECT id, order_id, direction, stake_usd, entry_price,
-                              execution_mode, metadata,
+                              execution_mode, metadata, strategy,
                               COALESCE(metadata->>'asset', 'BTC') AS asset,
                               metadata->>'window_ts' AS window_ts,
                               created_at

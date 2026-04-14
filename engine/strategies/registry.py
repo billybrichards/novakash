@@ -415,64 +415,49 @@ class StrategyRegistry:
         decisions: list[StrategyDecision],
         surface: FullDataSurface,
     ) -> None:
-        """Send consolidated window summary to Telegram — all 5 strategies."""
+        """Send compact haiku-style window summary to Telegram."""
         try:
-            history_by_strategy: dict[str, list[Any]] = {}
-            if self._decision_repo is not None and hasattr(
-                self._decision_repo, "get_decisions_for_window"
-            ):
-                try:
-                    history = await self._decision_repo.get_decisions_for_window(
-                        surface.asset, window_ts
-                    )
-                    for record in history:
-                        history_by_strategy.setdefault(record.strategy_id, []).append(
-                            record
-                        )
-                except Exception as exc:
-                    log.warning("registry.summary_history_error", error=str(exc)[:200])
+            # ── Line 1: market context ─────────────────────────────────────
+            vpin_str = f"VPIN {surface.vpin:.2f}" if surface.vpin is not None else ""
+            regime_str = surface.regime or ""
+            regime_tag = f"{vpin_str} {regime_str}".strip() if vpin_str or regime_str else ""
+            delta_str = f"Δ{surface.delta_pct * 100:+.2f}%" if surface.delta_pct is not None else "Δ?"
+            line1 = f"🕐 {surface.asset} 5m | T-{eval_offset}s | {delta_str}"
+            if regime_tag:
+                line1 += f" | {regime_tag}"
 
-            lines = [
-                "📋 *Strategy Engine v2 — Window Summary*",
-                "━━━━━━━━━━━━━━━━━━━━━━━━━",
-                f"Window: {surface.asset} 5m | T-{eval_offset}s",
-                f"BTC: ${surface.current_price:,.2f} | Δ {surface.delta_pct * 100:+.3f}%",
-                f"VPIN: {surface.vpin:.3f} | {surface.regime}",
-            ]
+            # ── Line 2: per-strategy decisions (LIVE strategies first) ──────
+            strategy_parts = []
+            live_trades = []
+            for d in decisions:
+                cfg = self._configs.get(d.strategy_id)
+                mode = cfg.mode if cfg else "?"
+                sid = d.strategy_id  # e.g. "v4_fusion"
+                if d.action == "TRADE":
+                    strategy_parts.append(f"*{sid}* {mode}→TRADE {d.direction}")
+                    if mode == "LIVE":
+                        live_trades.append(f"{sid} {d.direction}")
+                elif d.action == "SKIP":
+                    reason = (d.skip_reason or "skip")[:30]
+                    strategy_parts.append(f"{sid} {mode}→SKIP({reason})")
+                else:
+                    strategy_parts.append(f"{sid} {mode}→ERR")
 
+            line2 = " | ".join(strategy_parts) if strategy_parts else "no strategies"
+
+            lines = [line1, line2]
+
+            # ── Optional line 3: model signal when available ───────────────
             if surface.v2_probability_up is not None:
                 dist = abs(surface.v2_probability_up - 0.5)
                 dir_label = "UP" if surface.v2_probability_up > 0.5 else "DOWN"
-                lines.append(
-                    f"Model: P(UP)={surface.v2_probability_up:.3f} → *{dir_label}* (dist={dist:.3f})"
-                )
+                lines.append(f"Model P(UP)={surface.v2_probability_up:.2f} → {dir_label} dist={dist:.2f}")
 
-            lines.append("")
-
-            for d in decisions:
-                cfg = self._configs.get(d.strategy_id)
-                mode_tag = f"({cfg.mode})" if cfg else "(?)"
-                history_summary = self._summarize_window_history(
-                    history_by_strategy.get(d.strategy_id, []), d
-                )
-
-                if d.action == "TRADE":
-                    lines.append(
-                        f"✅ *{d.strategy_id}* {mode_tag} → TRADE {d.direction}"
-                    )
-                elif d.action == "SKIP":
-                    reason_short = (d.skip_reason or "")[:60]
-                    lines.append(f"⏭ {d.strategy_id} {mode_tag} → SKIP: {reason_short}")
-                else:
-                    lines.append(f"❌ {d.strategy_id} {mode_tag} → ERROR")
-
-                if history_summary:
-                    lines.append(f"   history: {history_summary}")
-
+            msg = "\n".join(lines)
             if hasattr(self._alerter, "send_raw_message"):
-                await self._alerter.send_raw_message("\n".join(lines))
+                await self._alerter.send_raw_message(msg)
             elif hasattr(self._alerter, "send_system_alert"):
-                await self._alerter.send_system_alert("\n".join(lines))
+                await self._alerter.send_system_alert(msg)
         except Exception as exc:
             log.warning("registry.summary_alert_error", error=str(exc)[:200])
 

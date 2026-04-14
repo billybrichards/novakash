@@ -173,12 +173,15 @@ class ReconcilePositionsUseCase:
                 )
 
                 try:
-                    pnl_str = f"+${pnl:.2f}" if outcome == "WIN" else f"${pnl:.2f}"
+                    emoji = "✅" if outcome == "WIN" else "❌"
+                    pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+                    strategy_name = trade.get("strategy") or "unknown"
+                    # Compute BTC delta direction from actual vs trade direction
+                    btc_dir = actual_direction.upper()  # what BTC actually did
+                    # e.g. trade direction DOWN, actual DOWN → BTC fell = "BTC closed ↓"
+                    btc_arrow = "↓" if btc_dir == "DOWN" else "↑"
                     await self._alerts.send_system_alert(
-                        f"{'WIN' if outcome == 'WIN' else 'LOSS'} -- Paper Trade Resolved\n"
-                        f"Direction: {direction} vs Oracle: {actual_direction}\n"
-                        f"Stake: ${stake:.2f} | P&L: {pnl_str}\n"
-                        f"Source: window_snapshots.actual_direction"
+                        f"{emoji} {outcome} {pnl_str} | {strategy_name} {direction} | BTC closed {btc_arrow}"
                     )
                 except Exception:
                     pass  # never let Telegram break reconciliation
@@ -334,22 +337,13 @@ class ReconcilePositionsUseCase:
         entry_price: float,
         cost: float,
     ) -> None:
-        """Send a Telegram notification for the resolution."""
+        """Send a compact Telegram notification for a live position resolution."""
         try:
             outcome = position.outcome
-            pnl_str = f"+${pnl:.2f}" if outcome == "WIN" else f"${pnl:.2f}"
-            emoji = "WIN" if outcome == "WIN" else "LOSS"
-            source = "CLOB Reconciler" if matched_trade_id else "CLOB Reconciler (unmatched)"
-
-            msg = (
-                f"{emoji} -- Position Resolved\n"
-                f"Condition: {position.condition_id[:20]}\n"
-                f"Resolution: {outcome}\n"
-                f"Shares: {shares:.2f} @ ${entry_price:.4f}\n"
-                f"Cost: ${cost:.2f}\n"
-                f"P&L: {pnl_str}\n"
-                f"Source: {source}"
-            )
+            emoji = "✅" if outcome == "WIN" else "❌"
+            pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+            match_note = "" if matched_trade_id else " (unmatched)"
+            msg = f"{emoji} {outcome} {pnl_str} | LIVE{match_note} | cost ${cost:.2f}"
             await self._alerts.send_system_alert(msg)
         except Exception:
             pass  # never let Telegram break reconciliation

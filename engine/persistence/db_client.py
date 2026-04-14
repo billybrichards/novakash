@@ -1120,16 +1120,26 @@ class DBClient:
         except Exception:
             return None
 
-    async def get_latest_clob_prices(self, asset: str = "BTC") -> dict | None:
-        """Get the most recent CLOB book prices for an asset."""
+    async def get_latest_clob_prices(self, asset: str = "BTC", max_age_seconds: int = 30) -> dict | None:
+        """Get the most recent CLOB book prices for an asset.
+
+        Args:
+            asset: Asset symbol (default: "BTC")
+            max_age_seconds: Reject rows older than this many seconds (default: 30).
+                             Prevents stale pre-restart rows from being used as
+                             entry caps after an engine restart.
+        """
         if not self._pool:
             return None
         try:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchrow(
                     "SELECT up_best_bid, up_best_ask, down_best_bid, down_best_ask "
-                    "FROM ticks_clob WHERE asset = $1 ORDER BY ts DESC LIMIT 1",
+                    "FROM ticks_clob WHERE asset = $1 "
+                    "  AND ts > NOW() - ($2 || ' seconds')::interval "
+                    "ORDER BY ts DESC LIMIT 1",
                     asset,
+                    str(max_age_seconds),
                 )
                 if row:
                     return {

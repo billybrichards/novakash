@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -98,13 +99,16 @@ class CLOBFeed:
             if up_best_ask and down_best_ask:
                 mid = round((up_best_ask + (1.0 - down_best_ask)) / 2, 4)
 
-            # Update in-memory cache on every poll tick
+            # Update in-memory cache on every poll tick.
+            # last_updated lets callers detect a stale cache after restart
+            # (e.g. reject if time.time() - last_updated > 30s).
             self.latest_clob = {
                 "clob_up_bid": up_best_bid,
                 "clob_up_ask": up_best_ask,
                 "clob_down_bid": down_best_bid,
                 "clob_down_ask": down_best_ask,
                 "clob_implied_up": mid,
+                "last_updated": time.time(),
             }
 
             log.info(
