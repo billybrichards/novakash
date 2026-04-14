@@ -28,7 +28,7 @@ import re
 import sys
 from pathlib import Path
 
-import requests
+import httpx as requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
 

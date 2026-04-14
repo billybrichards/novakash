@@ -175,6 +175,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     "ON audit_tasks_dev (dedupe_key) WHERE dedupe_key IS NOT NULL"
                 )
             )
+            # Ensure constraint exists for ON CONFLICT (dedupe_key) — needed when
+            # dedupe_key is always set (e.g. audit_checklist seed). The partial index
+            # above only works with ON CONFLICT ... WHERE, so add a full constraint too.
+            await session.execute(text(
+                "DO $$ BEGIN "
+                "  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='audit_tasks_dev_dedupe_key_uniq') THEN "
+                "    ALTER TABLE audit_tasks_dev ADD CONSTRAINT audit_tasks_dev_dedupe_key_uniq UNIQUE (dedupe_key); "
+                "  END IF; "
+                "END $$"
+            ))
             await session.execute(
                 text(
                     "CREATE INDEX IF NOT EXISTS audit_tasks_dev_status_priority_idx "

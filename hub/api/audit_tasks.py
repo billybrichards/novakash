@@ -172,7 +172,12 @@ async def create_task(
             :dedupe_key, :payload, :metadata, :created_by, :updated_by, :status_reason
         )
         ON CONFLICT (dedupe_key) DO UPDATE
-          SET updated_at = NOW(), status_reason = EXCLUDED.status_reason
+          SET updated_at = NOW(),
+              title = EXCLUDED.title,
+              severity = EXCLUDED.severity,
+              category = EXCLUDED.category,
+              priority = EXCLUDED.priority,
+              status_reason = EXCLUDED.status_reason
         RETURNING *
     """
     params = {
