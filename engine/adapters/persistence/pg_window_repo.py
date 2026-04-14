@@ -835,17 +835,17 @@ class PgWindowRepository(WindowStateRepository):
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute("""CREATE TABLE IF NOT EXISTS window_states (
-                    window_key VARCHAR(64) PRIMARY KEY, asset VARCHAR(10) NOT NULL,
-                    window_ts BIGINT NOT NULL, duration_secs INTEGER NOT NULL DEFAULT 300,
-                    traded_at TIMESTAMPTZ, traded_order_id TEXT, resolved_at TIMESTAMPTZ,
-                    resolved_outcome TEXT, resolved_pnl_usd NUMERIC,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+                    id SERIAL PRIMARY KEY, asset VARCHAR(10) NOT NULL,
+                    window_ts BIGINT NOT NULL, timeframe VARCHAR(10) NOT NULL DEFAULT '5m',
+                    order_id TEXT, traded_at TIMESTAMPTZ,
+                    resolved_at TIMESTAMPTZ, outcome VARCHAR(10),
+                    actual_direction VARCHAR(10),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (asset, window_ts, timeframe))""")
                 await conn.execute("""CREATE INDEX IF NOT EXISTS idx_window_states_traded_at
                     ON window_states (traded_at) WHERE traded_at IS NOT NULL""")
                 await conn.execute("""CREATE INDEX IF NOT EXISTS idx_window_states_resolved_at
                     ON window_states (resolved_at) WHERE resolved_at IS NOT NULL""")
-                await conn.execute("""CREATE INDEX IF NOT EXISTS idx_window_states_asset_ts
-                    ON window_states (asset, window_ts)""")
             log.info("db.window_states_table_ensured")
         except Exception as exc:
             log.error("db.ensure_window_states_table_failed", error=str(exc)[:200])
@@ -856,8 +856,10 @@ class PgWindowRepository(WindowStateRepository):
         try:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchval(
-                    "SELECT EXISTS(SELECT 1 FROM window_states WHERE window_key = $1)",
-                    str(key),
+                    "SELECT EXISTS(SELECT 1 FROM window_states WHERE asset = $1 AND window_ts = $2 AND timeframe = $3 AND order_id IS NOT NULL)",
+                    key.asset,
+                    key.window_ts,
+                    key.timeframe,
                 )
                 return bool(row)
         except Exception as exc:
@@ -867,83 +869,70 @@ class PgWindowRepository(WindowStateRepository):
     async def mark_traded(self, key: WindowKey, order_id: str) -> None:
         if not self._pool:
             return
-        key_str = str(key)
-        parts = key_str.rsplit("-", 1)
-        asset = parts[0] if len(parts) == 2 else "BTC"
-        try:
-            window_ts = int(parts[1]) if len(parts) == 2 else 0
-        except ValueError:
-            window_ts = 0
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     """
-                    INSERT INTO window_states (window_key, asset, window_ts, traded_at, traded_order_id)
+                    INSERT INTO window_states (asset, window_ts, timeframe, traded_at, order_id)
                     VALUES ($1, $2, $3, $4, $5)
-                    ON CONFLICT (window_key) DO UPDATE
-                        SET traded_order_id = EXCLUDED.traded_order_id
-                        WHERE window_states.traded_order_id IS NULL
-                           OR window_states.traded_order_id = 'pending'
+                    ON CONFLICT (asset, window_ts, timeframe) DO UPDATE
+                        SET order_id = EXCLUDED.order_id
+                        WHERE window_states.order_id IS NULL
+                           OR window_states.order_id = 'pending'
                 """,
-                    key_str,
-                    asset,
-                    window_ts,
+                    key.asset,
+                    key.window_ts,
+                    key.timeframe,
                     datetime.now(timezone.utc),
                     order_id,
                 )
             log.debug(
                 "db.mark_traded",
-                key=key_str,
+                key=str(key),
                 order_id=order_id[:20] if order_id else None,
             )
         except Exception as exc:
-            log.warning("db.mark_traded_failed", key=key_str, error=str(exc)[:120])
+            log.warning("db.mark_traded_failed", key=str(key), error=str(exc)[:120])
 
     async def try_claim_trade(self, key: WindowKey) -> bool:
         if not self._pool:
             return True
-        key_str = str(key)
-        parts = key_str.rsplit("-", 1)
-        asset = parts[0] if len(parts) == 2 else "BTC"
-        try:
-            window_ts = int(parts[1]) if len(parts) == 2 else 0
-        except ValueError:
-            window_ts = 0
         try:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchval(
                     """
-                    INSERT INTO window_states (window_key, asset, window_ts, traded_at, traded_order_id)
+                    INSERT INTO window_states (asset, window_ts, timeframe, traded_at, order_id)
                     VALUES ($1, $2, $3, $4, 'pending')
-                    ON CONFLICT (window_key) DO NOTHING
+                    ON CONFLICT (asset, window_ts, timeframe) DO NOTHING
                     RETURNING 1
                     """,
-                    key_str,
-                    asset,
-                    window_ts,
+                    key.asset,
+                    key.window_ts,
+                    key.timeframe,
                     datetime.now(timezone.utc),
                 )
                 claimed = bool(row)
-            log.debug("db.try_claim_trade", key=key_str, claimed=claimed)
+            log.debug("db.try_claim_trade", key=str(key), claimed=claimed)
             return claimed
         except Exception as exc:
-            log.warning("db.try_claim_trade_failed", key=key_str, error=str(exc)[:120])
+            log.warning("db.try_claim_trade_failed", key=str(key), error=str(exc)[:120])
             return False
 
     async def clear_trade_claim(self, key: WindowKey) -> None:
         if not self._pool:
             return
-        key_str = str(key)
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
-                    "DELETE FROM window_states WHERE window_key = $1 AND traded_order_id = 'pending'",
-                    key_str,
+                    "DELETE FROM window_states WHERE asset = $1 AND window_ts = $2 AND timeframe = $3 AND order_id = 'pending'",
+                    key.asset,
+                    key.window_ts,
+                    key.timeframe,
                 )
-            log.debug("db.clear_trade_claim", key=key_str)
+            log.debug("db.clear_trade_claim", key=str(key))
         except Exception as exc:
             log.warning(
-                "db.clear_trade_claim_failed", key=key_str, error=str(exc)[:120]
+                "db.clear_trade_claim_failed", key=str(key), error=str(exc)[:120]
             )
 
     async def was_resolved(self, key: WindowKey) -> bool:
@@ -954,8 +943,10 @@ class PgWindowRepository(WindowStateRepository):
                 row = await conn.fetchval(
                     """
                     SELECT EXISTS(SELECT 1 FROM window_states
-                    WHERE window_key = $1 AND resolved_at IS NOT NULL)""",
-                    str(key),
+                    WHERE asset = $1 AND window_ts = $2 AND timeframe = $3 AND resolved_at IS NOT NULL)""",
+                    key.asset,
+                    key.window_ts,
+                    key.timeframe,
                 )
                 return bool(row)
         except Exception as exc:
@@ -965,19 +956,20 @@ class PgWindowRepository(WindowStateRepository):
     async def mark_resolved(self, key: WindowKey, outcome: WindowOutcome) -> None:
         if not self._pool:
             return
-        key_str = str(key)
         outcome_str = str(outcome) if outcome is not None else None
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
-                    "UPDATE window_states SET resolved_at = $2, resolved_outcome = $3 WHERE window_key = $1",
-                    key_str,
+                    "UPDATE window_states SET resolved_at = $2, outcome = $3 WHERE asset = $1 AND window_ts = $4 AND timeframe = $5",
+                    key.asset,
                     datetime.now(timezone.utc),
                     outcome_str,
+                    key.window_ts,
+                    key.timeframe,
                 )
-            log.debug("db.mark_resolved", key=key_str, outcome=outcome_str)
+            log.debug("db.mark_resolved", key=str(key), outcome=outcome_str)
         except Exception as exc:
-            log.warning("db.mark_resolved_failed", key=key_str, error=str(exc)[:120])
+            log.warning("db.mark_resolved_failed", key=str(key), error=str(exc)[:120])
 
     async def load_recent_traded(self, hours: int) -> set[WindowKey]:
         if not self._pool:
@@ -985,10 +977,13 @@ class PgWindowRepository(WindowStateRepository):
         try:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
-                    "SELECT window_key FROM window_states WHERE traded_at > NOW() - ($1 || ' hours')::interval",
-                    str(hours),
+                    "SELECT asset, window_ts, timeframe FROM window_states WHERE traded_at > NOW() - ($1 || ' hours')::interval",
+                    hours,
                 )
-                keys: set[WindowKey] = {r["window_key"] for r in rows}
+                keys: set[WindowKey] = {
+                    WindowKey(row["asset"], row["window_ts"], row["timeframe"])
+                    for row in rows
+                }
                 log.info("db.load_recent_traded", count=len(keys), hours=hours)
                 return keys
         except Exception as exc:

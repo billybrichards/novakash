@@ -23,33 +23,43 @@ from typing import Optional
 # Shared identity types
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class WindowKey:
     """Unique identifier for a 5-minute binary-options window."""
+
     asset: str
     window_ts: int
     timeframe: str = "5m"
+
+    def __str__(self) -> str:
+        """Canonical string representation: BTC-1776201300-15m."""
+        return f"{self.asset}-{self.window_ts}-{self.timeframe}"
 
 
 # ---------------------------------------------------------------------------
 # Market feed types (consumed by EvaluateWindowUseCase -- still stubs)
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class Tick:
     """Single price observation from a market feed."""
+
     pass
 
 
 @dataclass(frozen=True)
 class WindowClose:
     """Event emitted when a 5-minute window closes."""
+
     pass
 
 
 @dataclass(frozen=True)
 class DeltaSet:
     """Per-source delta triple (CL/TI/BIN) for a window."""
+
     pass
 
 
@@ -57,27 +67,32 @@ class DeltaSet:
 # Signal / evaluation types (consumed by EvaluateWindowUseCase -- still stubs)
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class SignalEvaluation:
     """One row of the signal_evaluations audit table."""
+
     pass
 
 
 @dataclass(frozen=True)
 class ClobSnapshot:
     """Point-in-time snapshot of a CLOB order book."""
+
     pass
 
 
 @dataclass(frozen=True)
 class GateAuditRow:
     """Audit row recording which gates ran and their results."""
+
     pass
 
 
 @dataclass(frozen=True)
 class WindowSnapshot:
     """Full snapshot of a window for backfill and UI hydration."""
+
     pass
 
 
@@ -85,12 +100,14 @@ class WindowSnapshot:
 # Polymarket trading types
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class FillResult:
     """Result of a CLOB order placement (filled size, price, fees).
 
     Fields populated by PolymarketClientPort.place_order().
     """
+
     order_id: str
     filled_size: float
     filled_price: float
@@ -104,6 +121,7 @@ class WindowMarket:
 
     Contains the up/down CLOB token IDs needed for order placement.
     """
+
     condition_id: str
     up_token_id: str
     down_token_id: str
@@ -114,12 +132,14 @@ class WindowMarket:
 @dataclass(frozen=True)
 class OrderBook:
     """Live CLOB order book for a single token."""
+
     pass
 
 
 # ---------------------------------------------------------------------------
 # Manual-trade types (consumed by ExecuteManualTradeUseCase)
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class PendingTrade:
@@ -128,8 +148,9 @@ class PendingTrade:
     Produced by PolymarketClientPort.poll_pending_trades().
     Maps to the manual_trades DB table row.
     """
+
     trade_id: str
-    direction: str          # "UP" or "DOWN"
+    direction: str  # "UP" or "DOWN"
     entry_price: float
     stake_usd: float
     window_ts: int
@@ -143,8 +164,9 @@ class ManualTradeOutcome:
 
     Produced by ExecuteManualTradeUseCase.drain_once().
     """
+
     trade_id: str
-    status: str             # "open", "failed_no_token", "failed: <reason>"
+    status: str  # "open", "failed_no_token", "failed: <reason>"
     clob_order_id: Optional[str] = None
     paper: bool = False
     token_source: Optional[str] = None  # "recent_windows" | "market_data_db"
@@ -154,15 +176,18 @@ class ManualTradeOutcome:
 # Trade decision / skip types (consumed by EvaluateWindowUseCase -- stubs)
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class TradeDecision:
     """Structured decision output from the gate pipeline."""
+
     pass
 
 
 @dataclass(frozen=True)
 class SkipSummary:
     """Consolidated skip summary for a window where all offsets were skipped."""
+
     pass
 
 
@@ -170,14 +195,16 @@ class SkipSummary:
 # Heartbeat / sitrep types (consumed by PublishHeartbeatUseCase)
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class SitrepPayload:
     """5-minute SITREP payload for the heartbeat Telegram message.
 
     Built by PublishHeartbeatUseCase.tick() every 5 minutes.
     """
-    engine_status: str              # "ACTIVE" | "KILLED"
-    mode_label: str                 # "PAPER" | "LIVE"
+
+    engine_status: str  # "ACTIVE" | "KILLED"
+    mode_label: str  # "PAPER" | "LIVE"
     wallet_balance: float
     daily_pnl: float
     starting_bankroll: float
@@ -209,6 +236,7 @@ class HeartbeatRow:
 
     Written by PublishHeartbeatUseCase.tick() every 10 seconds.
     """
+
     engine_status: str
     current_balance: float
     peak_balance: float
@@ -224,17 +252,20 @@ class HeartbeatRow:
 # Window lifecycle types
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class WindowOutcome:
     """Outcome of a resolved window (win/loss/push, PnL)."""
-    outcome: str            # "WIN" | "LOSS" | "PUSH"
+
+    outcome: str  # "WIN" | "LOSS" | "PUSH"
     pnl_usd: float
-    resolved_at: float      # Unix epoch
+    resolved_at: float  # Unix epoch
 
 
 # ---------------------------------------------------------------------------
 # Reconciliation types (consumed by ReconcilePositionsUseCase)
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class PositionOutcome:
@@ -242,9 +273,10 @@ class PositionOutcome:
 
     Produced by PolymarketClientPort or the reconciler's position poll.
     """
+
     condition_id: str
     token_id: str
-    outcome: str            # "WIN" | "LOSS"
+    outcome: str  # "WIN" | "LOSS"
     size: float
     avg_price: float
     cost: float
@@ -258,11 +290,12 @@ class ResolutionResult:
 
     Produced by ReconcilePositionsUseCase.resolve_one().
     """
+
     condition_id: str
     matched_trade_id: Optional[str]
-    outcome: str            # "WIN" | "LOSS"
+    outcome: str  # "WIN" | "LOSS"
     pnl_usd: float
-    status: str             # "RESOLVED_WIN" | "RESOLVED_LOSS"
+    status: str  # "RESOLVED_WIN" | "RESOLVED_LOSS"
     token_id: Optional[str] = None
     match_method: Optional[str] = None  # "exact" | "prefix" | "cost_fallback"
 
@@ -273,10 +306,11 @@ class ReconcileResult:
 
     Produced by ReconcilePositionsUseCase.execute().
     """
-    live_resolved: int    # live positions resolved via CLOB API
-    paper_resolved: int   # paper trades resolved via oracle
-    paper_skipped: int    # paper trades skipped (window not resolved yet)
-    errors: int           # exceptions caught during resolution
+
+    live_resolved: int  # live positions resolved via CLOB API
+    paper_resolved: int  # paper trades resolved via oracle
+    paper_skipped: int  # paper trades skipped (window not resolved yet)
+    errors: int  # exceptions caught during resolution
     windows_labeled: int = 0  # windows stamped with actual_direction for ML training
 
 
@@ -284,12 +318,14 @@ class ReconcileResult:
 # Risk / wallet types (consumed by PublishHeartbeatUseCase)
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class RiskStatus:
     """Read-only snapshot of the risk manager's current state.
 
     Produced by RiskManagerPort.get_status().
     """
+
     current_bankroll: float
     peak_bankroll: float
     drawdown_pct: float
@@ -304,6 +340,7 @@ class RiskStatus:
 @dataclass(frozen=True)
 class WalletSnapshot:
     """Point-in-time wallet balance snapshot."""
+
     balance_usdc: float
     timestamp: float
 
@@ -311,6 +348,7 @@ class WalletSnapshot:
 # ---------------------------------------------------------------------------
 # Strategy Port types (SP-01 through SP-05)
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class StrategyContext:
@@ -321,6 +359,7 @@ class StrategyContext:
     unused fields are None.  This is the SINGLE input contract --
     strategies never reach outside this object for data.
     """
+
     # Identity
     asset: str
     window_ts: int
@@ -331,17 +370,17 @@ class StrategyContext:
     delta_chainlink: Optional[float]
     delta_tiingo: Optional[float]
     delta_binance: Optional[float]
-    delta_pct: float                    # Primary delta (source-selected)
-    delta_source: str                   # "tiingo_rest_candle" | "chainlink" | etc.
+    delta_pct: float  # Primary delta (source-selected)
+    delta_source: str  # "tiingo_rest_candle" | "chainlink" | etc.
 
     # Market state
     current_price: float
     open_price: float
     vpin: float
-    regime: str                         # "CALM" | "NORMAL" | "TRANSITION" | "CASCADE"
+    regime: str  # "CALM" | "NORMAL" | "TRANSITION" | "CASCADE"
 
     # CoinGlass
-    cg_snapshot: Optional[object]       # CoinGlassEnhancedFeed.snapshot
+    cg_snapshot: Optional[object]  # CoinGlassEnhancedFeed.snapshot
 
     # TWAP
     twap_delta: Optional[float]
@@ -371,20 +410,21 @@ class StrategyDecision:
     Every strategy returns exactly one of these per evaluate() call.
     The use case uses ``action`` to determine what happens next.
     """
-    action: str                         # "TRADE" | "SKIP" | "ERROR"
-    direction: Optional[str]            # "UP" | "DOWN" | None (if SKIP/ERROR)
-    confidence: Optional[str]           # "DECISIVE" | "HIGH" | "MODERATE" | "LOW" | None
-    confidence_score: Optional[float]   # 0.0-1.0 numeric confidence
+
+    action: str  # "TRADE" | "SKIP" | "ERROR"
+    direction: Optional[str]  # "UP" | "DOWN" | None (if SKIP/ERROR)
+    confidence: Optional[str]  # "DECISIVE" | "HIGH" | "MODERATE" | "LOW" | None
+    confidence_score: Optional[float]  # 0.0-1.0 numeric confidence
 
     # Entry pricing
-    entry_cap: Optional[float]          # Max acceptable CLOB price (e.g. 0.65)
-    collateral_pct: Optional[float]     # Fraction of bankroll to risk (V4 sizing)
+    entry_cap: Optional[float]  # Max acceptable CLOB price (e.g. 0.65)
+    collateral_pct: Optional[float]  # Fraction of bankroll to risk (V4 sizing)
 
     # Audit trail
     strategy_id: str
     strategy_version: str
-    entry_reason: str                   # Human-readable, e.g. "v10_DUNE_TRANSITION_T120_FAK"
-    skip_reason: Optional[str]          # Why SKIP/ERROR, None if TRADE
+    entry_reason: str  # Human-readable, e.g. "v10_DUNE_TRANSITION_T120_FAK"
+    skip_reason: Optional[str]  # Why SKIP/ERROR, None if TRADE
 
     # Strategy-specific metadata (JSON-serializable dict)
     metadata: dict = field(default_factory=dict)
@@ -396,15 +436,16 @@ class V4Snapshot:
 
     Immutable -- V4FusionStrategy reads fields but never mutates.
     """
+
     probability_up: float
-    conviction_score: float             # 0.0-1.0
-    regime: str                         # "calm_trend" | "volatile_trend" | "chop" | "risk_off"
+    conviction_score: float  # 0.0-1.0
+    regime: str  # "calm_trend" | "volatile_trend" | "chop" | "risk_off"
     regime_confidence: float
     regime_persistence: float
-    regime_transition: Optional[dict]   # Transition probability matrix
+    regime_transition: Optional[dict]  # Transition probability matrix
 
     # Recommended action
-    recommended_side: Optional[str]     # "UP" | "DOWN" | None
+    recommended_side: Optional[str]  # "UP" | "DOWN" | None
     recommended_collateral_pct: Optional[float]
     recommended_sl_pct: Optional[float]
     recommended_tp_pct: Optional[float]
@@ -412,17 +453,19 @@ class V4Snapshot:
     recommended_conviction_score: Optional[float]
 
     # Sub-signals
-    sub_signals: dict                   # 7 sub-signal values
-    consensus: dict                     # 6 source consensus + safe_to_trade
-    macro: dict                         # Qwen/LightGBM bias, direction_gate, size_modifier
-    quantiles: dict                     # p10-p90
+    sub_signals: dict  # 7 sub-signal values
+    consensus: dict  # 6 source consensus + safe_to_trade
+    macro: dict  # Qwen/LightGBM bias, direction_gate, size_modifier
+    quantiles: dict  # p10-p90
 
     # Fields with defaults (must come after non-default fields)
     probability_raw: Optional[float] = None  # uncalibrated LightGBM score
-    conviction: str = "NONE"           # "NONE" | "LOW" | "MEDIUM" | "HIGH"
+    conviction: str = "NONE"  # "NONE" | "LOW" | "MEDIUM" | "HIGH"
 
     # Polymarket live recommended outcome (clean venue-specific block)
-    polymarket_outcome: Optional[dict] = None  # direction, trade_advised, confidence, extras
+    polymarket_outcome: Optional[dict] = (
+        None  # direction, trade_advised, confidence, extras
+    )
 
     # Metadata
     timescale: str = "5m"
@@ -437,10 +480,11 @@ class StrategyRegistration:
     mode='LIVE'; the rest are 'GHOST'.  Switchable at runtime
     via ConfigPort or env var.
     """
+
     strategy_id: str
-    mode: str                           # "LIVE" | "GHOST"
-    enabled: bool                       # False = don't even evaluate
-    priority: int                       # Tie-breaking for display order
+    mode: str  # "LIVE" | "GHOST"
+    enabled: bool  # False = don't even evaluate
+    priority: int  # Tie-breaking for display order
 
 
 @dataclass(frozen=True)
@@ -451,6 +495,7 @@ class StrategyDecisionRecord:
     enabled strategy (LIVE and GHOST).  This is the Strategy Lab's
     source of truth.
     """
+
     # Identity
     strategy_id: str
     strategy_version: str
@@ -458,10 +503,10 @@ class StrategyDecisionRecord:
     window_ts: int
     timeframe: str
     eval_offset: Optional[int]
-    mode: str                           # "LIVE" | "GHOST"
+    mode: str  # "LIVE" | "GHOST"
 
     # Decision
-    action: str                         # "TRADE" | "SKIP" | "ERROR"
+    action: str  # "TRADE" | "SKIP" | "ERROR"
     direction: Optional[str]
     confidence: Optional[str]
     confidence_score: Optional[float]
@@ -477,27 +522,30 @@ class StrategyDecisionRecord:
     fill_size: Optional[float] = None
 
     # Audit
-    metadata_json: str = "{}"           # JSON-serialized strategy metadata
-    evaluated_at: float = 0.0           # Unix epoch
+    metadata_json: str = "{}"  # JSON-serialized strategy metadata
+    evaluated_at: float = 0.0  # Unix epoch
 
 
 @dataclass
 class EvaluateStrategiesResult:
     """Output of EvaluateStrategiesUseCase.execute()."""
-    live_decision: Optional[StrategyDecision]   # None if LIVE strategy skipped
-    all_decisions: list                          # All strategies' outputs
-    context: Optional[StrategyContext]           # Shared input (for audit)
-    window_key: str                             # "{asset}-{window_ts}"
-    already_traded: bool                        # True if was_traded check hit
+
+    live_decision: Optional[StrategyDecision]  # None if LIVE strategy skipped
+    all_decisions: list  # All strategies' outputs
+    context: Optional[StrategyContext]  # Shared input (for audit)
+    window_key: str  # "{asset}-{window_ts}"
+    already_traded: bool  # True if was_traded check hit
 
 
 # ---------------------------------------------------------------------------
 # Execution types (consumed by ExecuteTradeUseCase -- SP-06 / CA-01 Phase 4)
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class ExecutionRequest:
     """Input to ExecuteTradeUseCase. Built from StrategyDecision + market state."""
+
     # Identity
     asset: str
     window_ts: int
@@ -506,14 +554,14 @@ class ExecutionRequest:
     # Decision (from strategy)
     strategy_id: str
     strategy_version: str
-    direction: str              # "UP" | "DOWN"
-    confidence: Optional[str]   # "DECISIVE" | "HIGH" | "MODERATE" | "LOW"
+    direction: str  # "UP" | "DOWN"
+    confidence: Optional[str]  # "DECISIVE" | "HIGH" | "MODERATE" | "LOW"
     confidence_score: Optional[float]
     entry_reason: str
 
     # Pricing
-    entry_cap: float            # Max acceptable CLOB price (e.g. 0.65)
-    price_floor: float = 0.30   # Min acceptable price
+    entry_cap: float  # Max acceptable CLOB price (e.g. 0.65)
+    price_floor: float = 0.30  # Min acceptable price
 
     # Sizing (from strategy decision)
     collateral_pct: Optional[float] = None
@@ -535,6 +583,7 @@ class ExecutionRequest:
 @dataclass(frozen=True)
 class StakeCalculation:
     """Result of stake sizing calculation."""
+
     base_stake: float
     price_multiplier: float
     adjusted_stake: float
@@ -546,6 +595,7 @@ class StakeCalculation:
 @dataclass(frozen=True)
 class ExecutionResult:
     """Output of ExecuteTradeUseCase."""
+
     success: bool
     order_id: Optional[str] = None
     fill_price: Optional[float] = None
@@ -554,7 +604,7 @@ class ExecutionResult:
     fee_usd: float = 0.0
 
     # Execution metadata
-    execution_mode: str = "none"   # "fak" | "rfq" | "gtc" | "paper" | "none"
+    execution_mode: str = "none"  # "fak" | "rfq" | "gtc" | "paper" | "none"
     fak_attempts: int = 0
     fak_prices: list = field(default_factory=list)
 
@@ -577,6 +627,7 @@ class ExecutionResult:
 @dataclass(frozen=True)
 class PreTradeCheckResult:
     """Result of the pre-execution gate. approved=False means SKIP."""
+
     approved: bool
     reason: str
     live_bankroll: float = 0.0
