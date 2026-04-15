@@ -750,3 +750,74 @@ class PreTradeCheckResult:
     reason: str
     live_bankroll: float = 0.0
     clob_price_age_s: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Window Summary VO (PR C — clean-arch extraction of telegram grouping)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SummaryDecisionLine:
+    """One per-strategy row rendered in the window summary.
+
+    Populated by :class:`BuildWindowSummaryUseCase` (see
+    ``engine/use_cases/build_window_summary.py``) from the list of
+    :class:`StrategyDecision` emitted for a single eval offset. Rendered
+    to Telegram text by the adapter formatter.
+    """
+
+    strategy_id: str
+    mode: str  # "LIVE" | "GHOST" | "?"
+    text: str  # fully-formatted line body (without indent / emoji prefix)
+
+
+@dataclass(frozen=True)
+class WindowSummaryContext:
+    """Structured input to the Telegram window-summary formatter.
+
+    Replaces the ad-hoc ``decision_lines`` list + ``decisions_text``
+    string that used to live inline in ``StrategyRegistry`` (registry.py
+    L670-775). The use case produces this VO; the adapter renders it
+    to text. Registry becomes thin.
+
+    Field contract:
+
+    - ``window_ts``         — unix-seconds of window open
+    - ``eval_offset``       — T-minus seconds at this eval (countdown)
+    - ``timescale``         — "5m" | "15m"
+    - ``open_price``        — window open price (None if unavailable)
+    - ``current_price``     — live BTC price at eval moment (None ok)
+    - ``eligible``          — LIVE strategies that returned TRADE this offset
+    - ``blocked_signal``    — LIVE SKIPs from signal gates (confidence, delta, etc.)
+    - ``blocked_exec_timing`` — LIVE SKIPs from execution-safety "too late" hooks
+    - ``off_window``        — LIVE SKIPs from YAML timing gate or custom
+                               "outside window" hook
+    - ``already_traded``    — LIVE strategies that already traded at an
+                               earlier offset this window (contradiction-killer)
+    - ``ghost_shadow``      — GHOST strategies (collapsed summary)
+    - ``sources_agree``     — pre-formatted cross-source agreement tag
+    """
+
+    window_ts: int
+    eval_offset: int
+    timescale: str
+    open_price: Optional[float]
+    current_price: Optional[float]
+    eligible: tuple["SummaryDecisionLine", ...]
+    blocked_signal: tuple["SummaryDecisionLine", ...]
+    blocked_exec_timing: tuple["SummaryDecisionLine", ...]
+    off_window: tuple["SummaryDecisionLine", ...]
+    already_traded: tuple["SummaryDecisionLine", ...]
+    ghost_shadow: tuple["SummaryDecisionLine", ...]
+    sources_agree: str = ""
+
+    def has_any_actionable(self) -> bool:
+        """True if any LIVE bucket has content."""
+        return bool(
+            self.eligible
+            or self.blocked_signal
+            or self.blocked_exec_timing
+            or self.off_window
+            or self.already_traded
+        )

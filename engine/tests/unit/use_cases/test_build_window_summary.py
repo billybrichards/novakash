@@ -1,0 +1,216 @@
+"""Unit tests for BuildWindowSummaryUseCase (PR C).
+
+Covers the three concrete fixes from the audit that the use case must
+preserve:
+
+1. LIVE-only actionable buckets (GHOST goes to shadow).
+2. exec-too-late vs outside-window split (must not conflate).
+3. "Already traded this window" earlier-trade surfacing.
+
+Plus the formatter adapter round-trip.
+"""
+from __future__ import annotations
+
+import os
+import sys
+from dataclasses import dataclass, field
+from types import SimpleNamespace
+
+_engine = os.path.join(os.path.dirname(__file__), "..", "..", "..")
+if _engine not in sys.path:
+    sys.path.insert(0, _engine)
+
+from adapters.alert.window_summary_formatter import format_window_summary
+from domain.value_objects import StrategyDecision
+from use_cases.build_window_summary import BuildWindowSummaryUseCase
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────
+
+
+def _decision(sid, action="SKIP", direction=None, skip_reason=None, confidence=None):
+    return StrategyDecision(
+        action=action,
+        direction=direction,
+        confidence=confidence,
+        confidence_score=None,
+        entry_cap=None,
+        collateral_pct=None,
+        strategy_id=sid,
+        strategy_version="test",
+        entry_reason="",
+        skip_reason=skip_reason,
+        metadata={},
+    )
+
+
+def _cfg(mode, timing=None):
+    gates = []
+    if timing is not None:
+        gates.append({"type": "timing", "params": {"min_offset": timing[0], "max_offset": timing[1]}})
+    return SimpleNamespace(mode=mode, gates=gates, version="1.0.0")
+
+
+def _prior_record(sid, eval_offset, action="TRADE"):
+    return SimpleNamespace(strategy_id=sid, action=action, eval_offset=eval_offset)
+
+
+# ── Test cases ────────────────────────────────────────────────────────────
+
+
+def test_live_only_in_actionable_buckets():
+    uc = BuildWindowSummaryUseCase()
+    decisions = [
+        _decision("v10_gate", action="TRADE", direction="DOWN", confidence="HIGH"),
+        _decision("v4_ghost", action="TRADE", direction="UP"),
+    ]
+    configs = {
+        "v10_gate": _cfg("LIVE"),
+        "v4_ghost": _cfg("GHOST"),
+    }
+    ctx = uc.execute(
+        window_ts=1, eval_offset=120, timescale="5m",
+        open_price=100.0, current_price=101.0,
+        sources_agree="YES (DOWN)",
+        decisions=decisions, configs=configs,
+    )
+    assert len(ctx.eligible) == 1
+    assert ctx.eligible[0].strategy_id == "v10_gate"
+    # Ghost TRADE does NOT appear in eligible — collapsed into shadow
+    assert all(r.strategy_id != "v4_ghost" for r in ctx.eligible)
+    assert len(ctx.ghost_shadow) == 1
+    assert ctx.ghost_shadow[0].strategy_id == "v4_ghost"
+
+
+def test_exec_too_late_vs_outside_window_split():
+    uc = BuildWindowSummaryUseCase()
+    decisions = [
+        # Custom exec-safety hook: "too late (<70s)" — not an outside-window
+        _decision("v4_fusion",
+                  skip_reason="polymarket: timing=optimal T-62 -- too late (<70s), skip"),
+        # YAML timing gate: "outside [...]"
+        _decision("v15m_fusion",
+                  skip_reason="timing: T-62 outside [240, 480]"),
+        # Custom hook variant: "timing=late -- outside window" — MUST go to off_window,
+        # not exec-timing (was the bug pre-PR-A).
+        _decision("v4_downonly",
+                  skip_reason="polymarket: timing=late -- outside window"),
+    ]
+    configs = {
+        "v4_fusion": _cfg("LIVE"),
+        "v15m_fusion": _cfg("LIVE", timing=(240, 480)),
+        "v4_downonly": _cfg("LIVE"),
+    }
+    ctx = uc.execute(
+        window_ts=1, eval_offset=62, timescale="5m",
+        open_price=None, current_price=None,
+        sources_agree="",
+        decisions=decisions, configs=configs,
+    )
+    assert [r.strategy_id for r in ctx.blocked_exec_timing] == ["v4_fusion"]
+    off_ids = sorted(r.strategy_id for r in ctx.off_window)
+    assert off_ids == ["v15m_fusion", "v4_downonly"]
+    # Bounds annotation appears on the v15m line
+    v15m_text = next(r.text for r in ctx.off_window if r.strategy_id == "v15m_fusion")
+    assert "[T-240..T-480]" in v15m_text
+
+
+def test_already_traded_earlier_suppresses_off_window():
+    uc = BuildWindowSummaryUseCase()
+    # LIVE strategy that's now OFF-WINDOW at T-62, but had TRADED earlier at T-312
+    decisions = [_decision("v15m_gate", skip_reason="timing: T-62 outside [200, 400]")]
+    configs = {"v15m_gate": _cfg("LIVE", timing=(200, 400))}
+    prior = [_prior_record("v15m_gate", eval_offset=312)]
+    ctx = uc.execute(
+        window_ts=1, eval_offset=62, timescale="15m",
+        open_price=None, current_price=None,
+        sources_agree="",
+        decisions=decisions, configs=configs,
+        prior_decisions=prior,
+    )
+    # Must NOT show as off-window — show as "already traded at T-312"
+    assert ctx.off_window == ()
+    assert len(ctx.already_traded) == 1
+    assert "T-312" in ctx.already_traded[0].text
+
+
+def test_prior_trades_at_equal_or_smaller_offset_ignored():
+    # Trades at offsets <= current must not count — those are AFTER or AT now.
+    uc = BuildWindowSummaryUseCase()
+    decisions = [_decision("v10_gate", skip_reason="some other reason")]
+    configs = {"v10_gate": _cfg("LIVE")}
+    prior = [
+        _prior_record("v10_gate", eval_offset=62),  # equal to now
+        _prior_record("v10_gate", eval_offset=30),  # after now
+    ]
+    ctx = uc.execute(
+        window_ts=1, eval_offset=62, timescale="5m",
+        open_price=None, current_price=None,
+        sources_agree="",
+        decisions=decisions, configs=configs,
+        prior_decisions=prior,
+    )
+    assert ctx.already_traded == ()
+    assert len(ctx.blocked_signal) == 1
+
+
+def test_formatter_roundtrip_has_all_sections():
+    uc = BuildWindowSummaryUseCase()
+    decisions = [
+        _decision("v10_gate", action="TRADE", direction="DOWN", confidence="HIGH"),
+        _decision("v4_basic", skip_reason="confidence: dist=0.074 < 0.12"),
+        _decision("v4_fusion", skip_reason="polymarket: too late (<70s), skip"),
+        _decision("v15m_fusion", skip_reason="timing: T-62 outside [240, 480]"),
+        _decision("v15m_gate", skip_reason="timing: T-62 outside [200, 400]"),
+        _decision("v4_up_asian", action="TRADE", direction="UP"),
+    ]
+    configs = {
+        "v10_gate": _cfg("LIVE"),
+        "v4_basic": _cfg("LIVE"),
+        "v4_fusion": _cfg("LIVE"),
+        "v15m_fusion": _cfg("LIVE", timing=(240, 480)),
+        "v15m_gate": _cfg("LIVE", timing=(200, 400)),
+        "v4_up_asian": _cfg("GHOST"),
+    }
+    prior = [_prior_record("v15m_gate", eval_offset=312)]
+    ctx = uc.execute(
+        window_ts=1_700_000_000, eval_offset=62, timescale="5m",
+        open_price=74_252.10, current_price=74_430.80,
+        sources_agree="YES (DOWN)",
+        decisions=decisions, configs=configs,
+        prior_decisions=prior,
+    )
+    text = format_window_summary(ctx)
+    # Header
+    assert "Open $74,252.10" in text
+    assert "Now $74,430.80" in text
+    assert "T-62" in text
+    assert "YES (DOWN)" in text
+    # Every section title
+    assert "Eligible now (tradable):" in text
+    assert "Blocked by signal:" in text
+    assert "Blocked by execution timing:" in text
+    assert "Off-window this offset:" in text
+    assert "Already traded this window:" in text
+    assert "Inactive (GHOST shadow):" in text
+    # Already-traded wins over off-window for v15m_gate
+    assert "traded at T-312" in text
+
+
+def test_formatter_omits_empty_sections():
+    uc = BuildWindowSummaryUseCase()
+    # Only a single TRADE, nothing else
+    decisions = [_decision("v10_gate", action="TRADE", direction="UP")]
+    configs = {"v10_gate": _cfg("LIVE")}
+    ctx = uc.execute(
+        window_ts=1, eval_offset=120, timescale="5m",
+        open_price=100.0, current_price=101.0,
+        sources_agree="",
+        decisions=decisions, configs=configs,
+    )
+    text = format_window_summary(ctx)
+    assert "Eligible now (tradable):" in text
+    assert "Blocked by signal:" not in text
+    assert "Blocked by execution timing:" not in text
+    assert "Off-window this offset:" not in text
+    assert "Inactive (GHOST shadow):" not in text
