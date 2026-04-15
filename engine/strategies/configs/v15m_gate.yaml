@@ -6,7 +6,7 @@ timescale: 15m
 
 gates:
   - type: timing
-    params: { min_offset: 15, max_offset: 900 }
+    params: { min_offset: 200, max_offset: 400 }
   - type: source_agreement
     params: { min_sources: 2, spot_only: false }
   - type: delta_magnitude

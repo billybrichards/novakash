@@ -10,7 +10,7 @@ timescale: 5m
 
 gates: []
 
-hooks_file: v4_fusion.py
+hooks_file: v4_fusion_v5_9.py
 pre_gate_hook: evaluate_polymarket_v2
 
 sizing:
