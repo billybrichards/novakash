@@ -79,6 +79,11 @@ class ReconcilePositionsUseCase:
         self._alerts = alerts
         self._clock = clock
         self._haiku = HaikuSummarizer()
+        # Pending per-resolution alert payloads, flushed as one batched
+        # Telegram summary at the end of each execute() call. Replaces
+        # the old per-position spam (10+ messages per reconcile pass).
+        self._pending_live_alerts: list[dict] = []
+        self._pending_paper_alerts: list[dict] = []
 
     async def execute(
         self,
@@ -89,6 +94,10 @@ class ReconcilePositionsUseCase:
         ``positions`` — list of PositionOutcome from poly_client.get_position_outcomes().
         Pass ``[]`` in paper mode (no real CLOB positions exist).
         """
+        # Reset pending alert buffers — fresh summary per execute() pass.
+        self._pending_live_alerts = []
+        self._pending_paper_alerts = []
+
         live_resolved = 0
         errors = 0
 
@@ -110,6 +119,12 @@ class ReconcilePositionsUseCase:
             logger.warning("reconciler.label_windows_error", error=str(exc)[:100])
 
         paper_resolved, paper_skipped, paper_errors = await self._resolve_paper_batch()
+
+        # Flush batched Telegram summary (one message for LIVE + paper).
+        try:
+            await self._flush_resolution_alerts()
+        except Exception as exc:
+            logger.debug("reconciler.flush_alerts_failed", error=str(exc)[:120])
 
         return ReconcileResult(
             live_resolved=live_resolved,
@@ -340,16 +355,22 @@ class ReconcilePositionsUseCase:
         entry_price: float,
         cost: float,
     ) -> None:
-        """Send a compact Telegram notification for a live position resolution."""
-        try:
-            outcome = position.outcome
-            emoji = "✅" if outcome == "WIN" else "❌"
-            pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
-            match_note = "" if matched_trade_id else " (unmatched)"
-            msg = f"{emoji} {outcome} {pnl_str} | LIVE{match_note} | cost ${cost:.2f}"
-            await self._alerts.send_system_alert(msg)
-        except Exception:
-            pass  # never let Telegram break reconciliation
+        """Queue a live position resolution for the batched end-of-pass summary.
+
+        Previously sent one Telegram message per position — N positions
+        in one reconcile pass = N spammed messages (see audit). Now
+        appends to ``self._pending_live_alerts`` and the final batched
+        summary is emitted by ``_flush_resolution_alerts``.
+        """
+        self._pending_live_alerts.append(
+            {
+                "outcome": position.outcome,
+                "pnl": float(pnl),
+                "cost": float(cost),
+                "matched": matched_trade_id is not None,
+                "condition_id": position.condition_id,
+            }
+        )
 
     async def _send_resolution_alert(
         self,
@@ -360,67 +381,92 @@ class ReconcilePositionsUseCase:
         stake: float,
         shares: float,
     ) -> None:
-        """Send a Haiku-powered resolution alert for a paper trade.
+        """Queue a paper-trade resolution for the batched end-of-pass summary.
 
-        Builds context from the trade dict and calls the summarizer.
-        Falls back to a simple one-liner if anything fails.
+        Previously invoked ``HaikuSummarizer.summarize_resolution`` per
+        trade, which (a) fired a separate Telegram message per trade
+        (spam) and (b) burned one Haiku API call per trade. Now appends
+        to ``self._pending_paper_alerts`` and ``_flush_resolution_alerts``
+        emits one batched message.
         """
-        from datetime import datetime, timezone
-
-        strategy_name = trade.get("strategy") or "unknown"
-        direction = (trade.get("direction") or "?").upper()
-        raw_ts = trade.get("window_ts")
-        entry_price = float(trade.get("entry_price") or 0)
-
-        # Format window time
-        window_time = "?"
-        if raw_ts:
-            try:
-                window_time = datetime.fromtimestamp(
-                    int(raw_ts), tz=timezone.utc
-                ).strftime("%H:%M")
-            except (ValueError, OSError):
-                pass
-
-        # Build trade result line
-        emoji = "\u2705" if outcome == "WIN" else "\u274c"
-        pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
-
-        trade_result_line = (
-            f"{emoji} {outcome} {pnl_str} | {strategy_name} {direction}"
+        self._pending_paper_alerts.append(
+            {
+                "strategy": trade.get("strategy") or "unknown",
+                "direction": (trade.get("direction") or "?").upper(),
+                "outcome": outcome,
+                "pnl": float(pnl),
+                "stake": float(stake),
+                "shares": float(shares),
+                "actual_direction": (actual_direction or "?").upper(),
+            }
         )
-        if stake > 0:
-            return_val = shares if outcome == "WIN" else 0.0
-            trade_result_line += (
-                f" | ${stake:.2f} stake \u2192 ${return_val:.2f} return"
+
+    async def _flush_resolution_alerts(self) -> None:
+        """Emit ONE batched Telegram summary of this pass's resolutions.
+
+        Rollup pattern:
+            *Reconcile pass* — LIVE: 6 WIN / 2 LOSS (net +$8.45)
+                               Paper: 3 WIN / 1 LOSS (net +$1.80)
+            Top: ✅ +$2.94 cost $3.19  ✅ +$2.79 cost $4.18  ❌ -$3.49 cost $3.49
+
+        Caps the per-item detail at 12 to keep the message under Telegram's
+        4096-char limit even on heavy pass days. When nothing to report,
+        stays silent (no "0 resolutions" noise).
+        """
+        live = self._pending_live_alerts
+        paper = self._pending_paper_alerts
+        if not live and not paper:
+            return
+
+        lines: list[str] = ["*Reconcile pass*"]
+
+        if live:
+            wins = [a for a in live if a["outcome"] == "WIN"]
+            losses = [a for a in live if a["outcome"] == "LOSS"]
+            unmatched = sum(1 for a in live if not a["matched"])
+            net = sum(a["pnl"] for a in live)
+            unmatched_tag = f", {unmatched} unmatched" if unmatched else ""
+            lines.append(
+                f"LIVE: {len(wins)} WIN / {len(losses)} LOSS{unmatched_tag} "
+                f"(net {'+' if net >= 0 else ''}${net:.2f})"
             )
+            # Per-item details (cap at 12 to respect Telegram limits)
+            detail_cap = 12
+            for a in live[:detail_cap]:
+                emoji = "✅" if a["outcome"] == "WIN" else "❌"
+                pnl_str = (
+                    f"+${a['pnl']:.2f}" if a["pnl"] >= 0 else f"-${abs(a['pnl']):.2f}"
+                )
+                unmatched_tag = " (unmatched)" if not a["matched"] else ""
+                lines.append(
+                    f"  {emoji} {a['outcome']} {pnl_str}{unmatched_tag} "
+                    f"cost ${a['cost']:.2f}"
+                )
+            if len(live) > detail_cap:
+                lines.append(f"  … +{len(live) - detail_cap} more")
 
-        # Compute delta from open/close if available
-        open_price = trade.get("open_price")
-        close_price = trade.get("close_price")
-        delta_pct = None
-        if open_price and close_price:
-            try:
-                delta_pct = f"{((float(close_price) - float(open_price)) / float(open_price)) * 100:+.3f}"
-            except (ValueError, ZeroDivisionError):
-                pass
+        if paper:
+            wins = [a for a in paper if a["outcome"] == "WIN"]
+            losses = [a for a in paper if a["outcome"] == "LOSS"]
+            net = sum(a["pnl"] for a in paper)
+            lines.append(
+                f"Paper: {len(wins)} WIN / {len(losses)} LOSS "
+                f"(net {'+' if net >= 0 else ''}${net:.2f})"
+            )
+            detail_cap = 8
+            for a in paper[:detail_cap]:
+                emoji = "✅" if a["outcome"] == "WIN" else "❌"
+                pnl_str = (
+                    f"+${a['pnl']:.2f}" if a["pnl"] >= 0 else f"-${abs(a['pnl']):.2f}"
+                )
+                lines.append(
+                    f"  {emoji} {a['strategy']} {a['direction']} "
+                    f"{pnl_str} (stake ${a['stake']:.2f})"
+                )
+            if len(paper) > detail_cap:
+                lines.append(f"  … +{len(paper) - detail_cap} more")
 
-        context = {
-            "window_time": window_time,
-            "actual_direction": actual_direction.upper(),
-            "oracle_source": "Chainlink",
-            "open_price": open_price or "?",
-            "close_price": close_price or "?",
-            "delta_pct": delta_pct,
-            "trades_text": (
-                f"{strategy_name}: bet {direction}, stake ${stake:.2f}, "
-                f"entry {entry_price:.3f}, outcome {outcome}, PnL {pnl_str}"
-            ),
-            "ghost_text": "N/A",
-            "trade_result_lines": [trade_result_line],
-        }
-
-        msg = await self._haiku.summarize_resolution(context)
+        msg = "\n".join(lines)
 
         if hasattr(self._alerts, "send_raw_message"):
             await self._alerts.send_raw_message(msg)
