@@ -101,6 +101,13 @@ class StubTradesPoolDBClient:
     ) -> list[dict]:
         return [r.as_dict() for r in self._rows[:limit]]
 
+    async def fetch_trades_joined_poly_fills(
+        self,
+        since=None,
+        limit: int = 200,
+    ) -> list:
+        return []
+
     async def update_trade_sot(
         self,
         trade_id,
