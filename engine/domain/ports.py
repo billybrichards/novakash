@@ -267,66 +267,18 @@ class PolymarketClientPort(abc.ABC):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 4.5  AlerterPort
+# 4.5  AlerterPort  (moved to use_cases/ports/ — re-exported for compat)
 # ═══════════════════════════════════════════════════════════════════════════
 
-
-class AlerterPort(abc.ABC):
-    """Telegram and any future alert channels.
-
-    Wraps today's ``alerts.telegram.TelegramAlerter``.  The concrete
-    adapter delegates to the existing class so Phase 2 is purely
-    structural.
-    """
-
-    @abc.abstractmethod
-    async def send_system_alert(self, message: str) -> None:
-        """System-level alert (mode switch, kill switch, manual-trade
-        failure).  No formatting -- plain text.
-        """
-        ...
-
-    @abc.abstractmethod
-    async def send_trade_alert(
-        self,
-        window: WindowKey,
-        decision: TradeDecision,
-    ) -> None:
-        """Structured trade-decision alert with Markdown formatting."""
-        ...
-
-    @abc.abstractmethod
-    async def send_skip_summary(
-        self,
-        window: WindowKey,
-        summary: SkipSummary,
-    ) -> None:
-        """Consolidated all-offsets-skipped summary at T-0."""
-        ...
-
-    @abc.abstractmethod
-    async def send_heartbeat_sitrep(self, sitrep: SitrepPayload) -> None:
-        """5-minute SITREP message published by ``PublishHeartbeatUseCase``."""
-        ...
-
+# Moved to use_cases/ports/ — re-exported here for backward compat
+from use_cases.ports.alerter import AlerterPort  # noqa: F401
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 4.6  Clock
+# 4.6  Clock  (moved to use_cases/ports/ — re-exported for compat)
 # ═══════════════════════════════════════════════════════════════════════════
 
-
-class Clock(abc.ABC):
-    """Time source -- allows deterministic testing.
-
-    Identical to ``margin_engine.domain.ports.ClockPort`` -- same
-    interface intentionally so a future consolidation can use the same
-    port.
-    """
-
-    @abc.abstractmethod
-    def now(self) -> float:
-        """Unix epoch seconds."""
-        ...
+# Moved to use_cases/ports/ — re-exported here for backward compat
+from use_cases.ports.clock import Clock  # noqa: F401
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -582,24 +534,11 @@ class TradeRepository(abc.ABC):
 
 
 # =====================================================================
-# 4.10  RiskManagerPort  (Phase 2 -- PublishHeartbeatUseCase)
+# 4.10  RiskManagerPort  (moved to use_cases/ports/ — re-exported for compat)
 # =====================================================================
 
-
-class RiskManagerPort(abc.ABC):
-    """Read-only view of the risk manager's state.
-
-    The concrete adapter wraps ``execution.risk_manager.RiskManager`` and
-    exposes a frozen RiskStatus value object.  Write operations
-    (record_outcome, sync_bankroll) live on the adapter, not the port,
-    because they are infrastructure-level side effects triggered by the
-    orchestrator -- not by use-case logic.
-    """
-
-    @abc.abstractmethod
-    def get_status(self) -> RiskStatus:
-        """Return a frozen snapshot of the current risk state."""
-        ...
+# Moved to use_cases/ports/ — re-exported here for backward compat
+from use_cases.ports.risk import RiskManagerPort  # noqa: F401
 
 
 # =====================================================================
@@ -851,63 +790,9 @@ class WindowTraceRepository(abc.ABC):
 
 
 # =====================================================================
-# 4.16  OrderExecutionPort  (SP-06 -- ExecuteTradeUseCase)
+# 4.16  OrderExecutionPort  (moved to use_cases/ports/ — re-exported for compat)
+# 4.17  TradeRecorderPort   (moved to use_cases/ports/ — re-exported for compat)
 # =====================================================================
 
-
-class OrderExecutionPort(abc.ABC):
-    """Abstracts the order execution strategy (FAK ladder, GTC, paper).
-
-    Different from PolymarketClientPort which is the raw CLOB API.
-    This port encapsulates the multi-step execution logic:
-    FAK ladder -> RFQ -> GTC fallback.
-
-    Implementations:
-      - FAKLadderExecutor: FAK ladder -> RFQ -> GTC fallback (live)
-      - PaperExecutor: Simulate fill at cap with small random slippage
-    """
-
-    @abc.abstractmethod
-    async def execute_order(
-        self,
-        token_id: str,
-        side: str,  # "YES" | "NO"
-        stake_usd: float,
-        entry_cap: float,
-        price_floor: float,
-    ) -> ExecutionResult:
-        """Execute a single order using the configured strategy.
-
-        Returns an ExecutionResult with fill details or failure info.
-        MUST NOT raise -- all exceptions are caught and returned as
-        ExecutionResult(success=False, failure_reason=...).
-        """
-        ...
-
-
-# =====================================================================
-# 4.17  TradeRecorderPort  (SP-06 -- ExecuteTradeUseCase)
-# =====================================================================
-
-
-class TradeRecorderPort(abc.ABC):
-    """Records executed trades to the trades table + window_snapshots.
-
-    Extracted from the scattered DB writes in five_min_vpin._execute_trade.
-    Consolidates: order_manager.register_order, db.update_window_trade_placed,
-    and the metadata dict construction.
-    """
-
-    @abc.abstractmethod
-    async def record_trade(
-        self,
-        decision: StrategyDecision,
-        result: ExecutionResult,
-        stake: StakeCalculation,
-    ) -> None:
-        """Persist a completed trade to the trades table.
-
-        Fire-and-forget safe -- callers may wrap in asyncio.create_task.
-        MUST NOT raise.
-        """
-        ...
+# Moved to use_cases/ports/ — re-exported here for backward compat
+from use_cases.ports.execution import OrderExecutionPort, TradeRecorderPort  # noqa: F401

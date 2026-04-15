@@ -28,12 +28,11 @@ import logging
 from typing import Optional
 
 from domain.ports import (
-    AlerterPort,
-    Clock,
     ManualTradeRepository,
     PolymarketClientPort,
     WindowStateRepository,
 )
+from use_cases.ports import AlerterPort, Clock
 from domain.value_objects import (
     FillResult,
     ManualTradeOutcome,
