@@ -64,13 +64,16 @@ class BuildWindowSummaryUseCase:
             persisted at an earlier eval offset. Iterated once — any
             iterable is fine.
         """
-        traded_earlier = self._collect_prior_trades(prior_decisions, eval_offset)
+        prior_list = list(prior_decisions)
+        traded_earlier = self._collect_prior_trades(prior_list, eval_offset)
+        prior_skips = self._collect_prior_skips(prior_list, eval_offset)
 
         eligible: list[SummaryDecisionLine] = []
         blocked_signal: list[SummaryDecisionLine] = []
         blocked_exec_timing: list[SummaryDecisionLine] = []
         off_window: list[SummaryDecisionLine] = []
         already_traded: list[SummaryDecisionLine] = []
+        window_expired: list[SummaryDecisionLine] = []
         ghost_shadow: list[SummaryDecisionLine] = []
 
         for d in decisions:
@@ -100,15 +103,32 @@ class BuildWindowSummaryUseCase:
                 continue
 
             reason = d.skip_reason or "unknown"
+            bounds = self._timing_bounds(cfg)
+            window_closed = (
+                bounds is not None and eval_offset < bounds[0]
+            )
 
             if earlier_off is not None:
                 already_traded.append(
                     SummaryDecisionLine(sid, mode, f"traded at T-{earlier_off}")
                 )
+            elif (
+                self._is_exec_too_late(reason) or self._is_outside_window(reason)
+            ) and window_closed:
+                # Strategy's eligible window has ended without a trade — the
+                # "too late" / "outside window" reason at this offset is
+                # circular. Surface the dominant in-window blocker instead.
+                bounds_str = f"T-{bounds[1]}..T-{bounds[0]}"
+                summary_tail = self._summarize_prior_skips(prior_skips.get(sid, []))
+                body = f"window {bounds_str} expired"
+                if summary_tail:
+                    body += f" — {summary_tail}"
+                else:
+                    body += " — never evaluated in-window"
+                window_expired.append(SummaryDecisionLine(sid, mode, body))
             elif self._is_exec_too_late(reason):
                 blocked_exec_timing.append(SummaryDecisionLine(sid, mode, reason))
             elif self._is_outside_window(reason):
-                bounds = self._timing_bounds(cfg)
                 suffix = f" [T-{bounds[0]}..T-{bounds[1]}]" if bounds else ""
                 off_window.append(
                     SummaryDecisionLine(sid, mode, f"outside window{suffix}")
@@ -128,6 +148,7 @@ class BuildWindowSummaryUseCase:
             off_window=tuple(off_window),
             already_traded=tuple(already_traded),
             ghost_shadow=tuple(ghost_shadow),
+            window_expired=tuple(window_expired),
             sources_agree=sources_agree,
         )
 
@@ -155,6 +176,75 @@ class BuildWindowSummaryUseCase:
             if existing is None or off > existing:
                 by_sid[rec.strategy_id] = off
         return by_sid
+
+    @classmethod
+    def _collect_prior_skips(
+        cls,
+        prior_decisions: Iterable[Any],
+        current_offset: int,
+    ) -> dict[str, list[tuple[int, str]]]:
+        """Map strategy_id -> list of (eval_offset, skip_reason) for prior
+        SKIP records that fell inside-window relative to now.
+
+        Only SKIPs at offsets > current_offset (earlier in real time, since
+        T- countdown) are considered. ERRORs and the trivial final-offset
+        "too late / outside window" reasons are filtered — we want the
+        in-window blockers that actually explain why the strategy sat on
+        its hands.
+        """
+        by_sid: dict[str, list[tuple[int, str]]] = {}
+        for rec in prior_decisions:
+            if getattr(rec, "action", None) != "SKIP":
+                continue
+            off = getattr(rec, "eval_offset", None)
+            if off is None or off <= current_offset:
+                continue
+            reason = getattr(rec, "skip_reason", None) or ""
+            if not reason:
+                continue
+            # Skip the circular reasons that inspired this fix — those
+            # don't explain why the strategy never fired.
+            if cls._is_exec_too_late(reason) or cls._is_outside_window(reason):
+                continue
+            by_sid.setdefault(rec.strategy_id, []).append((int(off), reason))
+        return by_sid
+
+    @classmethod
+    def _summarize_prior_skips(
+        cls,
+        skips: list[tuple[int, str]],
+    ) -> str:
+        """Render dominant in-window skip reason as a single tail string.
+
+        Returns '' if no usable in-window skips exist. Otherwise groups by
+        normalized category (text before first ':'), picks the most common,
+        and annotates with count + representative offsets.
+
+        Example output: ``confidence x3 (T-180, T-150, T-120)``
+        """
+        if not skips:
+            return ""
+        # Group by category prefix.
+        groups: dict[str, list[tuple[int, str]]] = {}
+        for off, reason in skips:
+            cat = reason.split(":", 1)[0].strip() or reason[:24]
+            groups.setdefault(cat, []).append((off, reason))
+        # Dominant category = most occurrences, ties broken by earliest offset.
+        cat, items = max(
+            groups.items(),
+            key=lambda kv: (len(kv[1]), max(o for o, _ in kv[1])),
+        )
+        items_sorted = sorted(items, key=lambda p: -p[0])  # T-180 before T-90
+        offsets = ", ".join(f"T-{o}" for o, _ in items_sorted[:4])
+        suffix = "" if len(items_sorted) <= 4 else ", …"
+        count = len(items_sorted)
+        # If only one distinct category across all skips, lead with a sample
+        # reason excerpt so the user sees the concrete blocker text.
+        sample = items_sorted[0][1]
+        sample_trim = sample if len(sample) <= 60 else sample[:57] + "…"
+        if len(groups) == 1:
+            return f"{sample_trim} ×{count} ({offsets}{suffix})"
+        return f"{cat} ×{count} ({offsets}{suffix})"
 
     @staticmethod
     def _is_exec_too_late(reason: str) -> bool:

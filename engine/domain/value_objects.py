@@ -790,9 +790,18 @@ class WindowSummaryContext:
     - ``current_price``     — live BTC price at eval moment (None ok)
     - ``eligible``          — LIVE strategies that returned TRADE this offset
     - ``blocked_signal``    — LIVE SKIPs from signal gates (confidence, delta, etc.)
-    - ``blocked_exec_timing`` — LIVE SKIPs from execution-safety "too late" hooks
+    - ``blocked_exec_timing`` — LIVE SKIPs from execution-safety "too late"
+                               hooks that fired WHILE the strategy was still
+                               in its eligible window (rare — final-offset
+                               "too late" is moved to ``window_expired``)
     - ``off_window``        — LIVE SKIPs from YAML timing gate or custom
-                               "outside window" hook
+                               "outside window" hook at a non-final offset
+    - ``window_expired``    — LIVE strategies whose eligible window closed
+                               without a trade. Line body summarizes the
+                               dominant in-window skip reason from prior
+                               offsets (so "why didn't it trade?" is answered
+                               with actual blockers, not the trivial
+                               "<70s too late" at final offset).
     - ``already_traded``    — LIVE strategies that already traded at an
                                earlier offset this window (contradiction-killer)
     - ``ghost_shadow``      — GHOST strategies (collapsed summary)
@@ -810,6 +819,7 @@ class WindowSummaryContext:
     off_window: tuple["SummaryDecisionLine", ...]
     already_traded: tuple["SummaryDecisionLine", ...]
     ghost_shadow: tuple["SummaryDecisionLine", ...]
+    window_expired: tuple["SummaryDecisionLine", ...] = ()
     sources_agree: str = ""
 
     def has_any_actionable(self) -> bool:
@@ -820,6 +830,7 @@ class WindowSummaryContext:
             or self.blocked_exec_timing
             or self.off_window
             or self.already_traded
+            or self.window_expired
         )
 
 

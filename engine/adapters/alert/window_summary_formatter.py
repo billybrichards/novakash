@@ -69,6 +69,7 @@ def format_window_summary(ctx: WindowSummaryContext) -> str:
     _section("Blocked by signal:", ctx.blocked_signal)
     _section("Blocked by execution timing:", ctx.blocked_exec_timing)
     _section("Off-window this offset:", ctx.off_window)
+    _section("Window expired without trade:", ctx.window_expired)
     _section("Already traded this window:", ctx.already_traded)
 
     if ctx.ghost_shadow:

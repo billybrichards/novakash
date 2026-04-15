@@ -51,8 +51,13 @@ def _cfg(mode, timing=None):
     return SimpleNamespace(mode=mode, gates=gates, version="1.0.0")
 
 
-def _prior_record(sid, eval_offset, action="TRADE"):
-    return SimpleNamespace(strategy_id=sid, action=action, eval_offset=eval_offset)
+def _prior_record(sid, eval_offset, action="TRADE", skip_reason=None):
+    return SimpleNamespace(
+        strategy_id=sid,
+        action=action,
+        eval_offset=eval_offset,
+        skip_reason=skip_reason,
+    )
 
 
 # ── Test cases ────────────────────────────────────────────────────────────
@@ -107,12 +112,15 @@ def test_exec_too_late_vs_outside_window_split():
         sources_agree="",
         decisions=decisions, configs=configs,
     )
+    # v4_fusion has no timing bounds → exec_timing bucket (window-state unknown)
     assert [r.strategy_id for r in ctx.blocked_exec_timing] == ["v4_fusion"]
-    off_ids = sorted(r.strategy_id for r in ctx.off_window)
-    assert off_ids == ["v15m_fusion", "v4_downonly"]
-    # Bounds annotation appears on the v15m line
-    v15m_text = next(r.text for r in ctx.off_window if r.strategy_id == "v15m_fusion")
-    assert "[T-240..T-480]" in v15m_text
+    # v15m_fusion has bounds (240,480); at T-62 window closed → window_expired
+    assert [r.strategy_id for r in ctx.window_expired] == ["v15m_fusion"]
+    v15m_text = ctx.window_expired[0].text
+    assert "T-480..T-240" in v15m_text
+    # v4_downonly has no bounds → off_window (YAML-style outside-window reason)
+    off_ids = [r.strategy_id for r in ctx.off_window]
+    assert off_ids == ["v4_downonly"]
 
 
 def test_already_traded_earlier_suppresses_off_window():
@@ -154,6 +162,99 @@ def test_prior_trades_at_equal_or_smaller_offset_ignored():
     assert len(ctx.blocked_signal) == 1
 
 
+def test_window_expired_reframes_too_late_at_final_offset():
+    """At T-62, strategy window T-180..T-70 has passed. 'too late (<70s)'
+    is circular — reclassify into window_expired with dominant prior skip."""
+    uc = BuildWindowSummaryUseCase()
+    decisions = [
+        _decision(
+            "v4_fusion",
+            skip_reason="polymarket: timing=optimal T-62 -- too late (<70s), skip",
+        ),
+    ]
+    configs = {"v4_fusion": _cfg("LIVE", timing=(70, 180))}
+    prior = [
+        _prior_record(
+            "v4_fusion", 180, action="SKIP",
+            skip_reason="confidence: dist=0.074 < 0.12",
+        ),
+        _prior_record(
+            "v4_fusion", 150, action="SKIP",
+            skip_reason="confidence: dist=0.081 < 0.12",
+        ),
+        _prior_record(
+            "v4_fusion", 120, action="SKIP",
+            skip_reason="confidence: dist=0.095 < 0.12",
+        ),
+    ]
+    ctx = uc.execute(
+        window_ts=1, eval_offset=62, timescale="5m",
+        open_price=None, current_price=None,
+        sources_agree="",
+        decisions=decisions, configs=configs,
+        prior_decisions=prior,
+    )
+    assert ctx.blocked_exec_timing == ()
+    assert len(ctx.window_expired) == 1
+    body = ctx.window_expired[0].text
+    assert "window T-180..T-70 expired" in body
+    assert "×3" in body
+    assert "T-180" in body and "T-150" in body and "T-120" in body
+
+
+def test_window_expired_with_no_prior_skips_shows_never_evaluated():
+    uc = BuildWindowSummaryUseCase()
+    decisions = [
+        _decision(
+            "v4_fusion",
+            skip_reason="polymarket: timing=optimal T-62 -- too late (<70s), skip",
+        ),
+    ]
+    configs = {"v4_fusion": _cfg("LIVE", timing=(70, 180))}
+    ctx = uc.execute(
+        window_ts=1, eval_offset=62, timescale="5m",
+        open_price=None, current_price=None,
+        sources_agree="",
+        decisions=decisions, configs=configs,
+        prior_decisions=(),
+    )
+    assert len(ctx.window_expired) == 1
+    assert "never evaluated in-window" in ctx.window_expired[0].text
+
+
+def test_window_expired_prior_too_late_reasons_filtered():
+    """Prior 'too late' skips must NOT feed the dominant-reason summary."""
+    uc = BuildWindowSummaryUseCase()
+    decisions = [
+        _decision(
+            "v4_fusion",
+            skip_reason="polymarket: too late (<70s), skip",
+        ),
+    ]
+    configs = {"v4_fusion": _cfg("LIVE", timing=(70, 180))}
+    prior = [
+        _prior_record(
+            "v4_fusion", 180, action="SKIP",
+            skip_reason="polymarket: too late (<70s), skip",
+        ),
+        _prior_record(
+            "v4_fusion", 150, action="SKIP",
+            skip_reason="confidence: dist=0.08 < 0.12",
+        ),
+    ]
+    ctx = uc.execute(
+        window_ts=1, eval_offset=62, timescale="5m",
+        open_price=None, current_price=None,
+        sources_agree="",
+        decisions=decisions, configs=configs,
+        prior_decisions=prior,
+    )
+    assert len(ctx.window_expired) == 1
+    body = ctx.window_expired[0].text
+    assert "confidence" in body
+    assert "×1" in body
+
+
 def test_formatter_roundtrip_has_all_sections():
     uc = BuildWindowSummaryUseCase()
     decisions = [
@@ -190,7 +291,8 @@ def test_formatter_roundtrip_has_all_sections():
     assert "Eligible now (tradable):" in text
     assert "Blocked by signal:" in text
     assert "Blocked by execution timing:" in text
-    assert "Off-window this offset:" in text
+    # v15m_fusion (timing 240..480) at T-62 → window_expired, not off_window
+    assert "Window expired without trade:" in text
     assert "Already traded this window:" in text
     assert "Inactive (GHOST shadow):" in text
     # Already-traded wins over off-window for v15m_gate
