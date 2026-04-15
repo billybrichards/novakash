@@ -43,6 +43,18 @@ from domain.value_objects import (
 logger = logging.getLogger(__name__)
 
 
+def _rs(risk_status, key: str, default=None):
+    """Dict-or-dataclass accessor.
+
+    Real ``RiskManager.get_status()`` returns ``dict``; unit tests build a
+    ``RiskStatus`` dataclass. Support both without tying this use case to
+    either shape.
+    """
+    if isinstance(risk_status, dict):
+        return risk_status.get(key, default)
+    return getattr(risk_status, key, default)
+
+
 class EngineStateReader(Protocol):
     """Read-only view of live engine state for heartbeat assembly.
 
@@ -157,10 +169,9 @@ class PublishHeartbeatUseCase:
                     await self._send_sitrep(risk_status)
 
         except Exception as exc:
-            logger.error(
-                "heartbeat.tick_error",
-                extra={"error": str(exc)},
-            )
+            # exc_info=True so the traceback lands in the structlog stdlib
+            # bridge (extra= was being dropped by the processor).
+            logger.error("heartbeat.tick_error: %s", str(exc), exc_info=True)
 
     async def _write_heartbeat(self, risk_status: RiskStatus) -> None:
         """Persist a HeartbeatRow to the system_state table."""
@@ -175,18 +186,18 @@ class PublishHeartbeatUseCase:
 
         config_snapshot = {
             "wallet_balance_usdc": self._cached_wallet_balance,
-            "daily_pnl": risk_status.daily_pnl,
-            "consecutive_losses": risk_status.consecutive_losses,
-            "paper_mode": risk_status.paper_mode,
-            "kill_switch_active": risk_status.kill_switch_active,
+            "daily_pnl": _rs(risk_status, "daily_pnl", 0.0),
+            "consecutive_losses": _rs(risk_status, "consecutive_losses", 0),
+            "paper_mode": _rs(risk_status, "paper_mode", True),
+            "kill_switch_active": _rs(risk_status, "kill_switch_active", False),
             "runtime_config": runtime_snapshot,
         }
 
         row = HeartbeatRow(
             engine_status="running",
-            current_balance=risk_status.current_bankroll,
-            peak_balance=risk_status.peak_bankroll,
-            drawdown_pct=risk_status.drawdown_pct,
+            current_balance=_rs(risk_status, "current_bankroll", 0.0),
+            peak_balance=_rs(risk_status, "peak_bankroll", 0.0),
+            drawdown_pct=_rs(risk_status, "drawdown_pct", 0.0),
             last_vpin=self._engine_state.vpin,
             last_cascade_state=self._engine_state.cascade_state,
             active_positions=self._engine_state.open_positions_count,
@@ -208,15 +219,15 @@ class PublishHeartbeatUseCase:
 
             wallet = (
                 self._cached_wallet_balance
-                or risk_status.current_bankroll
+                or _rs(risk_status, "current_bankroll", 0.0)
                 or 0.0
             )
 
             payload = SitrepPayload(
-                engine_status="KILLED" if risk_status.kill_switch_active else "ACTIVE",
+                engine_status="KILLED" if _rs(risk_status, "kill_switch_active", False) else "ACTIVE",
                 mode_label="PAPER" if self._engine_state.paper_mode else "LIVE",
                 wallet_balance=wallet,
-                daily_pnl=risk_status.daily_pnl,
+                daily_pnl=_rs(risk_status, "daily_pnl", 0.0),
                 starting_bankroll=self._engine_state.starting_bankroll,
                 wins_today=wins_today,
                 losses_today=losses_today,
@@ -225,8 +236,8 @@ class PublishHeartbeatUseCase:
                 vpin_regime=vpin_regime,
                 btc_price=self._engine_state.btc_price,
                 open_positions=self._engine_state.open_positions_count,
-                drawdown_pct=risk_status.drawdown_pct,
-                kill_switch_active=risk_status.kill_switch_active,
+                drawdown_pct=_rs(risk_status, "drawdown_pct", 0.0),
+                kill_switch_active=_rs(risk_status, "kill_switch_active", False),
             )
 
             await self._alerts.send_heartbeat_sitrep(payload)

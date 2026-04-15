@@ -120,6 +120,31 @@ async def test_set_wallet_balance_lands_in_config_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_tick_tolerates_dict_risk_status():
+    """Real RiskManager.get_status() returns dict, not RiskStatus dataclass.
+    The use case must handle both without AttributeError."""
+    p = Ports()
+    # Replace the dataclass RiskStatus with the dict shape production uses
+    p.risk_manager.get_status = MagicMock(return_value={
+        "current_bankroll": 100.0,
+        "peak_bankroll": 110.0,
+        "drawdown_pct": 5.0,
+        "daily_pnl": 2.5,
+        "consecutive_losses": 0,
+        "paper_mode": True,
+        "kill_switch_active": False,
+        "is_killed": False,
+    })
+    uc = p.uc(sitrep_interval=1)
+    await uc.tick()  # Would raise AttributeError pre-fix
+
+    p.system_state_repo.write_heartbeat.assert_called_once()
+    row = p.system_state_repo.write_heartbeat.call_args.args[0]
+    assert row.current_balance == 100.0
+    assert row.config_snapshot["daily_pnl"] == 2.5
+
+
+@pytest.mark.asyncio
 async def test_tick_writes_runtime_config_to_snapshot():
     """runtime_config must be present in system_state.config for Hub/FE readers."""
     p = Ports()
