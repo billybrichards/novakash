@@ -43,6 +43,52 @@
 - [x] Phase 3: add query use case and Telegram formatter based on grouped traces
 - [x] Phase 4: add resolution linkage + post-window review card / API endpoint
 
+## SOT Reconciler + Strategy Audit — 2026-04-15
+
+### Findings (diagnosed 20:00 UTC)
+
+**Strategy performance (last ~200 trades, resolved only):**
+| Strategy | W/L | WR | P&L |
+|---|---|---|---|
+| v4_fusion | 13W/5L | 72.2% | +$15.29 |
+| v4_fusion_v5_9 | 2W/4L | 33.3% | +$2.28 |
+| v15m_gate | 1W/2L | 33.3% | +$0.11 |
+| v15m_fusion | 1W/10L | 9.1% | -$30.61 |
+| v15m_fusion_v5_9 | 0W/3L | 0.0% | -$3.46 |
+
+**Status:** v15m_fusion already GHOST in YAML. v15m_fusion_v5_9 being ghosted (separate agent/PR).
+
+---
+
+### Bug 1: POLY-SOT false-positive alerts (trades 4688/4689)
+**Root cause:** data-api propagation lag. Polymarket's data-api takes several minutes to show GTC resting fills. The SOT reconciler fires `engine_optimistic` after 10 min with no poly_fills match — but the fill just hasn't hit data-api yet. Cost-fallback correctly resolved both trades at 19:40/19:44 UTC; SOT alert fired 12 min later at 19:52 UTC.
+
+**Fix needed:** Before firing `engine_optimistic` alert, check if the trade already has a `resolution_source = 'cost_fallback'` or equivalent flag set. If resolved via cost_fallback, suppress the SOT alert — the outcome is known.
+- [ ] Add `resolution_source` check in `_fire_sot_alert` or `_compare_to_polymarket_onchain` to suppress alerts for cost_fallback-resolved trades
+- [ ] OR extend the grace period from 10min to 20min (data-api lag for GTC fills)
+
+### Bug 2: agrees=0 forever (diverged=41, engine_optimistic=59 per 100-trade pass)
+**Root cause:** Two separate problems:
+- **engine_optimistic=59** — recent fills not yet in poly_fills (data-api lag). Normal.
+- **diverged=41** — JOIN does find poly_fills rows but `entry_price` vs on-chain fill price differs >0.5% for GTC resting orders. Entry price = ask at order placement; fill price = actual CLOB match price. These legitimately differ.
+
+**Fix needed:**
+- [ ] Use `fill_price` (populated by reconciler when trade resolves) instead of `entry_price` for SOT price comparison. `fill_price` reflects actual execution, not the ask at placement.
+- [ ] OR increase `sot_price_tolerance_pct` from 0.5% to 2-3% for GTC resting orders (`execution_mode = 'gtc_resting'`)
+
+### Bug 3: reconciler.no_trade_match spam (cosmetic)
+**Root cause:** Orphan on-chain fills from pre-$1-stake era (~$3-$4 cost trades) in Polymarket data-api. Reconciler finds them every pass, can't link to any trade_bible row.
+
+**Fix needed:**
+- [ ] Filter data-api fetch to `since` = engine launch date (or first live trade date ~2026-04-12)
+- [ ] OR add a `known_orphan_condition_ids` set that suppresses repeated no_trade_match warnings for seen condition_ids
+
+### Bug 4: five_min_vpin fetch_failed spam (cosmetic)
+`v2.probability.fetch_failed` firing repeatedly — TimesFM/QWEN connection resets.
+- [ ] Add exponential backoff + circuit breaker to `v2.probability` fetch so it doesn't spam the log on every window tick
+
+---
+
 ## Redeemer Controls + Reconciliation Fix Plan — 2026-04-15
 
 ### Goal
