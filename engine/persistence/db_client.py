@@ -2940,3 +2940,33 @@ class DBClient:
                 )
         except Exception as exc:
             log.warning("db.write_clob_book_snapshot_failed", error=str(exc)[:200])
+
+
+class DBClientLegacyShim:
+    """Thin delegate to pg_*_repo adapters.
+
+    Wraps the existing DBClient to provide the same interface while
+    routing calls to the correct adapter. Delete once orchestrator is
+    retired (Phase 5).
+
+    The orchestrator accesses self._db._pool directly — this shim
+    exposes it as a property for backward compat.
+    """
+
+    def __init__(self, db_client: "DBClient") -> None:
+        self._inner = db_client
+
+    @property
+    def _pool(self):
+        """Expose pool for backward compat — orchestrator passes this to other components."""
+        return self._inner._pool
+
+    async def connect(self) -> None:
+        return await self._inner.connect()
+
+    async def close(self) -> None:
+        return await self._inner.close()
+
+    def __getattr__(self, name: str):
+        """Fall through to inner DBClient for any method not explicitly delegated."""
+        return getattr(self._inner, name)

@@ -57,7 +57,7 @@ from execution.opinion_client import OpinionClient
 from execution.order_manager import OrderManager
 from execution.polymarket_client import PolymarketClient
 from execution.risk_manager import RiskManager
-from persistence.db_client import DBClient
+from persistence.db_client import DBClient, DBClientLegacyShim
 from persistence.tick_recorder import TickRecorder
 from signals.arb_scanner import ArbScanner
 from signals.cascade_detector import CascadeDetector
@@ -123,7 +123,7 @@ class Orchestrator:
         log.info("orchestrator.init", paper_mode=settings.paper_mode)
 
         # ── Persistence ────────────────────────────────────────────────────────
-        self._db = DBClient(settings=settings)
+        self._db = DBClientLegacyShim(DBClient(settings=settings))
         # TickRecorder is wired to the pool after connect() in start()
         self._tick_recorder: Optional[TickRecorder] = None
 
