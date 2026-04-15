@@ -1,12 +1,12 @@
 name: v15m_gate
 version: "1.0.0"
-mode: GHOST
+mode: LIVE
 asset: BTC
 timescale: 15m
 
 gates:
   - type: timing
-    params: { min_offset: 15, max_offset: 900 }
+    params: { min_offset: 200, max_offset: 400 }
   - type: source_agreement
     params: { min_sources: 2, spot_only: false }
   - type: delta_magnitude
@@ -19,7 +19,6 @@ gates:
     params: { min_dist: 0.12 }
   - type: dynamic_cap
     params: { default_cap: 0.65 }
-    params: {}
 
 hooks_file: v15m_gate.py
 post_gate_hook: classify_confidence

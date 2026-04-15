@@ -1,6 +1,6 @@
 name: v4_fusion
 version: "4.2.0"
-mode: LIVE
+mode: GHOST
 asset: BTC
 timescale: 5m
 

@@ -1,0 +1,19 @@
+name: v4_fusion_v5_9
+version: "5.0.0"
+mode: LIVE
+asset: BTC
+timescale: 5m
+
+# v5.9 optimized config - uses new model with 8192 context, quantile features, v3 signals
+# Reduced edge threshold slightly to increase trade frequency while maintaining quality
+# Based on latest backtest showing better performance at T-60 to T-120 window
+
+gates: []
+
+hooks_file: v4_fusion_v5_9.py
+pre_gate_hook: evaluate_polymarket_v2
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.028
+  max_collateral_pct: 0.12

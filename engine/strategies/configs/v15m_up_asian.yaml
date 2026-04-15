@@ -1,6 +1,6 @@
 name: v15m_up_asian
 version: "1.0.0"
-mode: LIVE
+mode: GHOST
 asset: BTC
 timescale: 15m
 

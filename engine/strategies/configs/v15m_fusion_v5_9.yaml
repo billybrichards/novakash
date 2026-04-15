@@ -1,0 +1,17 @@
+name: v15m_fusion_v5_9
+version: "2.0.0"
+mode: LIVE
+asset: BTC
+timescale: 15m
+
+gates:
+  - type: timing
+    params: { min_offset: 240, max_offset: 480 }
+
+hooks_file: v15m_fusion_v5_9.py
+pre_gate_hook: evaluate_polymarket_v2
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.022
+  max_collateral_pct: 0.10
