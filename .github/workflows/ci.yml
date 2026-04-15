@@ -111,6 +111,39 @@ jobs:
           fi
           echo "Canonical imports OK."
 
+  engine-tests-fast:
+    name: Engine - fast tests + execution coverage gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            engine/requirements.txt
+            engine/requirements-test.txt
+
+      - name: Install dependencies
+        run: pip install -r engine/requirements.txt -r engine/requirements-test.txt
+
+      - name: Fast tests + execution-path coverage gate
+        working-directory: engine
+        run: |
+          pytest tests/unit/use_cases tests/use_cases tests/test_pg_execution_guard.py \
+            -m "not slow and not integration" \
+            -n auto \
+            --maxfail=5 \
+            --cov=use_cases.reconcile_positions \
+            --cov=use_cases.execute_trade \
+            --cov=use_cases.execute_manual_trade \
+            --cov=use_cases.publish_heartbeat \
+            --cov=use_cases.build_window_summary \
+            --cov=adapters.persistence.pg_execution_guard \
+            --cov-fail-under=90 \
+            --cov-report=term-missing
+
   frontend:
     name: Frontend - build
     runs-on: ubuntu-latest
