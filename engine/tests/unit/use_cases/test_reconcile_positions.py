@@ -118,7 +118,10 @@ async def test_no_match_returns_none():
 
     assert result is None
     p.trade_repo.resolve_trade.assert_not_called()
-    p.alerts.send_system_alert.assert_called_once()
+    # resolve_one() queues the alert into _pending_live_alerts (batched pattern)
+    # and does NOT call send_system_alert directly — that fires only in execute()
+    # via _flush_resolution_alerts. Assert not called here to guard against regression.
+    p.alerts.send_system_alert.assert_not_called()
 
 
 @pytest.mark.asyncio
