@@ -252,7 +252,7 @@ async def test_engine_optimistic_engine_executed_polymarket_no_record(monkeypatc
     assert summary.alerts_fired == 1
     assert len(alerter.messages) == 1
     msg = alerter.messages[0]
-    assert "ENGINE OPTIMISTIC" in msg or "engine_optimistic" in msg.lower()
+    assert "engine claims fill" in msg.lower() or "engine_optimistic" in msg.lower()
     # The trades alert is tagged AUTO so the operator can tell it apart
     # from the manual_trades alert.
     assert "AUTO" in msg
@@ -295,7 +295,7 @@ async def test_diverged_fill_price_mismatch_beyond_tolerance(monkeypatch):
     assert summary.alerts_fired == 1
     assert len(alerter.messages) == 1
     msg = alerter.messages[0]
-    assert "DIVERGED" in msg or "diverged" in msg.lower()
+    assert "fill mismatch" in msg.lower() or "diverged" in msg.lower()
     assert len(db.updates) == 1
     assert db.updates[0]["sot_reconciliation_state"] == "diverged"
     notes = db.updates[0]["sot_reconciliation_notes"] or ""

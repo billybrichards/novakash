@@ -1237,13 +1237,17 @@ class CLOBReconciler:
             and confirmed_price is not None
             and engine_fill_price > 0
         ):
-            price_pct = (
-                abs(confirmed_price - engine_fill_price) / engine_fill_price * 100.0
-            )
+            price_gap = confirmed_price - engine_fill_price
+            price_pct = abs(price_gap) / engine_fill_price * 100.0
             if price_pct > self._sot_price_tolerance_pct:
+                # Cents gap first (easy to reason about), relative% second.
+                # The old "price diff 115%" framing was confusing — a 115%
+                # relative diff on a 30¢ vs 65¢ pair looks alarming but the
+                # absolute gap is 35¢.
                 divergence_notes.append(
-                    f"price diff {price_pct:.2f}% (engine={engine_fill_price:.4f} "
-                    f"poly={confirmed_price:.4f})"
+                    f"engine fill ${engine_fill_price:.4f} vs Polymarket "
+                    f"${confirmed_price:.4f} (Δ {price_gap:+.4f}, "
+                    f"{price_pct:.1f}% of engine)"
                 )
 
         if (
@@ -1397,11 +1401,13 @@ class CLOBReconciler:
             and poly_price is not None
             and engine_price > 0
         ):
-            price_pct = abs(poly_price - engine_price) / engine_price * 100.0
+            price_gap = poly_price - engine_price
+            price_pct = abs(price_gap) / engine_price * 100.0
             if price_pct > self._sot_price_tolerance_pct:
                 divergence_notes.append(
-                    f"price diff {price_pct:.2f}% "
-                    f"(engine={engine_price:.4f} poly={poly_price:.4f})"
+                    f"engine fill ${engine_price:.4f} vs Polymarket "
+                    f"${poly_price:.4f} (Δ {price_gap:+.4f}, "
+                    f"{price_pct:.1f}% of engine)"
                 )
 
         # Size: engine may not have a size populated on historical rows. If
@@ -1745,13 +1751,25 @@ class CLOBReconciler:
         # Tag the table so the operator knows which surface fired
         # without having to dig into the trade ID format.
         table_label = "AUTO" if table == "trades" else "MANUAL"
+        # Friendlier state label — the old `title` was just state.upper()
+        # which made the header circular ("divergence: DIVERGED"). Map
+        # to plain-English verdicts so the operator can skim.
+        state_label = {
+            "diverged": "fill mismatch",
+            "engine_optimistic": "engine claims fill, on-chain has none",
+            "orphan": "Polymarket fill, no engine record",
+            "reconciled": "reconciled",
+        }.get(state, state.replace("_", " "))
+
         msg = (
-            f"{emoji} *POLY-SOT divergence: {title}*\n"
+            f"{emoji} *POLY-SOT divergence* — {state_label}\n"
             f"{table_label} trade `{tid_display}` · {direction} · {stake_str}\n"
             f"Engine status: `{engine_status}`\n"
             f"Notes: {notes}\n"
             f"\n"
-            f"_Source: SOT reconciler — Polymarket CLOB is authoritative_"
+            f"_Source: SOT reconciler — Polymarket CLOB is authoritative._\n"
+            f"_Downstream WIN/LOSS alerts may still reflect the engine "
+            f"snapshot; the on-chain values above are ground truth._"
         )
         try:
             await self._alerter.send_raw_message(msg)
