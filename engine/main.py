@@ -1,17 +1,14 @@
 """
 Engine Entry Point
 
-Bootstraps configuration, logging, and the Orchestrator,
+Bootstraps configuration, logging, and the engine,
 then runs until shutdown.
 """
-
 import asyncio
 import os
 import structlog
 
 # Load .env into os.environ BEFORE any module reads os.environ
-# (pydantic-settings loads .env into settings.* but NOT os.environ;
-#  runtime_config.py uses os.environ.get() directly)
 try:
     from dotenv import load_dotenv as _ldenv
     _ldenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"), override=True)
@@ -20,7 +17,8 @@ except ImportError:
 
 from config.settings import settings
 from config.logging import configure_logging
-from strategies.orchestrator import Orchestrator
+from infrastructure.composition import CompositionRoot
+from infrastructure.runtime import EngineRuntime
 
 
 async def main() -> None:
@@ -28,8 +26,8 @@ async def main() -> None:
     log = structlog.get_logger(__name__)
     log.info("engine.starting", paper_mode=settings.paper_mode)
 
-    orch = Orchestrator(settings=settings)
-    await orch.run()
+    root = CompositionRoot(settings=settings)
+    await EngineRuntime(root).run()
 
 
 if __name__ == "__main__":
