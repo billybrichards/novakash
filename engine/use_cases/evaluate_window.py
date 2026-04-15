@@ -6,15 +6,16 @@ Audit IDs: CA-01, CA-02, CA-03.
 """
 
 from __future__ import annotations
-import asyncio, json, os, time
+import os, time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any, Optional
 import structlog
 from config.constants import FIVE_MIN_EVAL_OFFSETS
 from config.runtime_config import runtime
 from data.feeds.polymarket_5min import WindowInfo
 from data.models import MarketState
+from domain.value_objects import Asset, Timeframe
+from use_cases.ports.price_gateway import PriceGateway
 from use_cases.gates import (
     GateContext,
     GatePipeline,
@@ -83,6 +84,7 @@ class EvaluateWindowUseCase:
         vpin_calculator=None,
         claude_evaluator=None,
         fetch_current_price_fn=None,
+        price_gateway: Optional[PriceGateway] = None,
         fetch_fresh_gamma_fn=None,
     ):
         self._db = db_client
@@ -96,6 +98,7 @@ class EvaluateWindowUseCase:
         self._vpin = vpin_calculator
         self._claude_eval = claude_evaluator
         self._fetch_current_price = fetch_current_price_fn
+        self._price_gateway = price_gateway
         self._fetch_fresh_gamma_price = fetch_fresh_gamma_fn
         self._traded_windows: set[str] = set()
         self._last_executed_window: Optional[str] = None
@@ -128,14 +131,14 @@ class EvaluateWindowUseCase:
             return EvaluateWindowResult(
                 signal=None, window_snapshot={}, skip_reason="already_traded"
             )
-        if window.asset == "BTC":
-            current_price = float(state.btc_price) if state.btc_price else None
+        if window.asset == "BTC" and state.btc_price:
+            current_price = float(state.btc_price)
+        elif self._price_gateway is not None:
+            current_price = await self._price_gateway.get_current_price(Asset(window.asset))
+        elif self._fetch_current_price:  # legacy fallback during migration
+            current_price = await self._fetch_current_price(window.asset)
         else:
-            current_price = (
-                await self._fetch_current_price(window.asset)
-                if self._fetch_current_price
-                else None
-            )
+            current_price = None
         if current_price is None:
             return EvaluateWindowResult(
                 signal=None, window_snapshot={}, skip_reason="no_current_price"
@@ -148,42 +151,17 @@ class EvaluateWindowUseCase:
         delta_binance = (current_price - open_price) / open_price * 100
         _tiingo_open = _tiingo_close = delta_tiingo = None
         _tiingo_candle_source = "none"
-        _tiingo_api_key = os.environ.get(
-            "TIINGO_API_KEY", "3f4456e457a4184d76c58a1320d8e1b214c3ab16"
-        )
-        try:
-            import aiohttp
-
-            _ts_s = datetime.fromtimestamp(window.window_ts, tz=timezone.utc).strftime(
-                "%Y-%m-%dT%H:%M:%SZ"
+        if self._price_gateway is not None:
+            _candle = await self._price_gateway.get_window_candle(
+                Asset(window.asset),
+                window.window_ts,
+                Timeframe(getattr(window, "duration_secs", 300)),
             )
-            _ts_e = datetime.fromtimestamp(
-                window.window_ts + 300, tz=timezone.utc
-            ).strftime("%Y-%m-%dT%H:%M:%SZ")
-            url = (
-                f"https://api.tiingo.com/tiingo/crypto/prices?tickers={window.asset.lower()}usd"
-                f"&startDate={_ts_s}&endDate={_ts_e}&resampleFreq=5min&token={_tiingo_api_key}"
-            )
-            async with aiohttp.ClientSession() as s:
-                async with s.get(url, timeout=aiohttp.ClientTimeout(total=3.0)) as r:
-                    if r.status == 200:
-                        d = await r.json()
-                        if d and isinstance(d, list) and len(d) > 0:
-                            pd = d[0].get("priceData", [])
-                            if pd:
-                                _tiingo_open = float(pd[0].get("open", 0) or 0) or None
-                                _tiingo_close = (
-                                    float(pd[-1].get("close", 0) or 0) or None
-                                )
-                                if _tiingo_open and _tiingo_close and _tiingo_open > 0:
-                                    delta_tiingo = (
-                                        (_tiingo_close - _tiingo_open)
-                                        / _tiingo_open
-                                        * 100
-                                    )
-                                    _tiingo_candle_source = "rest_candle"
-        except Exception:
-            pass
+            if _candle is not None:
+                _tiingo_open = _candle.open_price
+                _tiingo_close = _candle.close_price
+                delta_tiingo = _candle.delta_pct()
+                _tiingo_candle_source = _candle.source
         if delta_tiingo is None and self._db:
             try:
                 p = await self._db.get_latest_tiingo_price(window.asset)

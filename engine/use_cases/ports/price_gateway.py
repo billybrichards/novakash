@@ -8,7 +8,7 @@ from __future__ import annotations
 import abc
 from typing import Optional
 
-from engine.domain.value_objects import Asset, PriceCandle, Timeframe
+from domain.value_objects import Asset, PriceCandle, Timeframe
 
 
 class PriceGateway(abc.ABC):
