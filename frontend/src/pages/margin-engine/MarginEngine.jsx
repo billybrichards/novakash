@@ -404,8 +404,10 @@ export default function MarginEngine() {
         </div>
       )}
       {activeTab === 'trades' && (
-        {/* Full DB history with per-trade entry/exit conditions */}
-        <TradeTimelinePanel api={api} />
+        <>
+          {/* Full DB history with per-trade entry/exit conditions */}
+          <TradeTimelinePanel api={api} />
+        </>
       )}
     </div>
   );
