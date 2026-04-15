@@ -737,7 +737,7 @@ class Orchestrator:
             self._reconcile_uc = None
 
         if self._reconcile_uc and self._strategy_registry:
-            if os.environ.get("ENGINE_REGISTRY_EXECUTE", "false").lower() == "true":
+            if os.environ.get("ENGINE_REGISTRY_EXECUTE", "true").lower() == "true":
                 try:
                     from use_cases.execute_trade import ExecuteTradeUseCase
                     from adapters.execution.paper_executor import PaperExecutor

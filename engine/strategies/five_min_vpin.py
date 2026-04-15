@@ -312,7 +312,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                     v81_entry_cap=entry_cap,
                     entry_reason=f"strategy_port_{sp_decision.get('strategy_id', '?')}",
                 )
-                await self._execute_trade(state, signal)
+                log.warning("legacy_execute_trade.removed", note="clean path permanent — this should not be reached")
                 return
             except Exception as exc:
                 import structlog
@@ -461,9 +461,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             os.environ.get("ENGINE_USE_CLEAN_EVALUATE_WINDOW", "true").lower() != "false"
             and self._evaluate_uc is not None
         ):
-            result = await self._evaluate_uc.execute(window, state)
-            if result.signal is not None:
-                await self._execute_trade(state, result.signal)
+            await self._evaluate_uc.execute(window, state)
             return
         # -- End Phase 3 delegation --
 
@@ -1178,7 +1176,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 # gate_audit writes retired — gate_check_traces is the successor
 
                 # EXECUTE the trade immediately — don't fall through to v9 code
-                await self._execute_trade(state, signal)
+                log.warning("legacy_execute_trade.removed", note="clean path permanent — this should not be reached")
                 return  # Done — one trade per window
             else:
                 signal = None
@@ -2560,7 +2558,7 @@ class FiveMinVPINStrategy(BaseStrategy):
             asyncio.create_task(_send_trade_alert())
 
         # Execute trade
-        await self._execute_trade(state, signal)
+        log.warning("legacy_execute_trade.removed", note="clean path permanent — this should not be reached")
 
         # Claude AI evaluation (non-blocking, 1min timeout)
         # Fetches FRESH Gamma price before evaluation so Claude sees real-time data
