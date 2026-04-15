@@ -16,13 +16,21 @@ from typing import Dict, List, Optional
 
 import structlog
 
-from domain.value_objects import (  # noqa: F401 — re-export for backward compat
-    Order,
-    OrderStatus,
+from domain.entities import Order, OrderStatus  # noqa: F401 — re-export for backward compat
+from config.constants import (  # noqa: F401 — re-export for backward compat
     POLY_WINDOW_SECONDS,
     OPINION_WINDOW_SECONDS,
     MIN_BTC_MOVE_PCT,
 )
+
+__all__ = [
+    "OrderManager",
+    "Order",
+    "OrderStatus",
+    "POLY_WINDOW_SECONDS",
+    "OPINION_WINDOW_SECONDS",
+    "MIN_BTC_MOVE_PCT",
+]
 
 logger = structlog.get_logger(__name__)
 
