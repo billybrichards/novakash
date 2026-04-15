@@ -31,14 +31,10 @@ from dataclasses import replace
 from typing import Optional
 
 from domain.ports import (
-    AlerterPort,
-    Clock,
-    OrderExecutionPort,
     PolymarketClientPort,
-    RiskManagerPort,
-    TradeRecorderPort,
     WindowStateRepository,
 )
+from use_cases.ports import AlerterPort, Clock, OrderExecutionPort, RiskManagerPort, TradeRecorderPort
 from domain.value_objects import (
     ExecutionResult,
     RiskStatus,

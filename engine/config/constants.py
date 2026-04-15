@@ -16,6 +16,10 @@ def _env_int(key: str, default: int) -> int:
 
 # ── Polymarket / Window ──
 POLY_WINDOW_SECONDS: int = _env_int("POLY_WINDOW_SECONDS", 300)
+OPINION_WINDOW_SECONDS: int = _env_int("OPINION_WINDOW_SECONDS", 900)  # 15 minutes
+
+# Minimum BTC price move to count as directional win (paper mode)
+MIN_BTC_MOVE_PCT: float = _env_float("MIN_BTC_MOVE_PCT", 0.0001)  # 0.01% — effectively zero for 5-min
 
 # ── Fee Multipliers ──
 POLYMARKET_CRYPTO_FEE_MULT: float = _env_float("POLYMARKET_FEE_MULT", 0.072)

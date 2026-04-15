@@ -12,81 +12,27 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
-from enum import Enum
 from typing import Dict, List, Optional
 
 import structlog
 
+from domain.entities import Order, OrderStatus  # noqa: F401 — re-export for backward compat
+from config.constants import (  # noqa: F401 — re-export for backward compat
+    POLY_WINDOW_SECONDS,
+    OPINION_WINDOW_SECONDS,
+    MIN_BTC_MOVE_PCT,
+)
+
+__all__ = [
+    "OrderManager",
+    "Order",
+    "OrderStatus",
+    "POLY_WINDOW_SECONDS",
+    "OPINION_WINDOW_SECONDS",
+    "MIN_BTC_MOVE_PCT",
+]
+
 logger = structlog.get_logger(__name__)
-
-# Window lengths for paper-mode expiry
-POLY_WINDOW_SECONDS: int = 300    # 5 minutes
-OPINION_WINDOW_SECONDS: int = 900  # 15 minutes
-
-# Minimum BTC price move to count as directional win (paper mode)
-# For 5-min markets: no minimum — any move counts (matches Polymarket oracle)
-# For cascade/other: small threshold to avoid noise
-MIN_BTC_MOVE_PCT: float = 0.0001  # 0.01% — effectively zero for 5-min
-
-
-class OrderStatus(str, Enum):
-    """Lifecycle states for a tracked order."""
-    OPEN = "OPEN"
-    FILLED = "FILLED"
-    RESOLVED_WIN = "RESOLVED_WIN"
-    RESOLVED_LOSS = "RESOLVED_LOSS"
-    CANCELLED = "CANCELLED"
-    EXPIRED = "EXPIRED"
-
-
-@dataclass
-class Order:
-    """Represents a single order across either venue.
-
-    Attributes:
-        order_id: Venue-assigned (or paper) order identifier.
-        venue: "polymarket" or "opinion".
-        strategy: Strategy that placed the order, e.g. "arb", "vpin_cascade".
-        direction: "YES" or "NO".
-        price: Fill price as a decimal string (e.g. "0.5123").
-        stake_usd: USD risked.
-        status: Current lifecycle state.
-        created_at: Unix timestamp of order creation.
-        resolved_at: Unix timestamp of resolution (None if still open).
-        outcome: "WIN" or "LOSS" after resolution.
-        payout_usd: USD received on resolution.
-        btc_entry_price: BTC/USD price at the time of order placement.
-        window_seconds: Duration of the prediction window in seconds.
-        market_id: Venue-specific market identifier.
-    """
-    order_id: str
-    venue: str                       # "polymarket" | "opinion"
-    strategy: str                    # "arb" | "vpin_cascade" | ...
-    direction: str                   # "YES" | "NO"
-    price: str
-    stake_usd: float
-    status: OrderStatus = OrderStatus.OPEN
-    created_at: float = field(default_factory=time.time)
-    resolved_at: Optional[float] = None
-    outcome: Optional[str] = None    # "WIN" | "LOSS"
-    payout_usd: Optional[float] = None
-    pnl_usd: Optional[float] = None
-    fee_usd: float = 0.0
-    btc_entry_price: Optional[float] = None
-    window_seconds: int = POLY_WINDOW_SECONDS
-    market_id: str = ""
-    metadata: dict = field(default_factory=dict)
-
-    @property
-    def market_slug(self) -> str:
-        """Alias for market_id — used by db_client.write_trade."""
-        return self.market_id
-
-    @property
-    def entry_price(self) -> str:
-        """Alias for price — used by db_client.write_trade."""
-        return self.price
 
 
 class OrderManager:

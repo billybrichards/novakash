@@ -821,3 +821,11 @@ class WindowSummaryContext:
             or self.off_window
             or self.already_traded
         )
+
+
+# ---------------------------------------------------------------------------
+# Order / execution tracking types
+# ---------------------------------------------------------------------------
+# Order and OrderStatus are domain ENTITIES (mutable, stateful) — see
+# domain/entities.py.  The window constants live in config/constants.py.
+# Both are re-exported from execution.order_manager for backward compat.
