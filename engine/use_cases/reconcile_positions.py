@@ -36,11 +36,10 @@ from typing import Any, Optional
 
 from alerts.haiku_summarizer import HaikuSummarizer
 from domain.ports import (
-    AlerterPort,
-    Clock,
     TradeRepository,
     WindowStateRepository,
 )
+from use_cases.ports import AlerterPort, Clock
 from domain.value_objects import (
     PositionOutcome,
     ReconcileResult,
