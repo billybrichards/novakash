@@ -419,7 +419,7 @@ function HoldExtensionAnalysis({ positions }) {
         />
         <Metric
           label="Max Hold"
-          value={`${positions.length > 0 ? `${Math.max(...positions.map(p => p.hold_time_ms || 0) / 1000).toFixed(0)}s` : '—'}`}
+          value={`${positions.length > 0 ? `${(Math.max(...positions.map(p => p.hold_time_ms || 0)) / 1000).toFixed(0)}s` : '—'}`}
           color={T.text}
         />
         <Metric
