@@ -20,13 +20,13 @@ if TYPE_CHECKING:
 from domain.value_objects import StrategyDecision
 
 _STRATEGY_ID = "v15m_fusion"
-_VERSION = "1.0.0"
+_VERSION = "1.1.0"
 
 # Conviction -> minimum distance from 0.5 (legacy path only)
 _CONVICTION_THRESHOLDS = {
-    "HIGH": 0.12,
-    "MEDIUM": 0.15,
-    "LOW": 0.20,
+    "HIGH": 0.15,
+    "MEDIUM": 0.18,
+    "LOW": 0.22,
     "NONE": 1.0,
 }
 
@@ -103,14 +103,14 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
     gates.append(_gate("timing", True, f"timing={timing} in [180,250]"))
 
     # Confidence gate
-    if distance < 0.12:
-        gates.append(_gate("confidence", False, f"dist={distance:.3f} < 0.12"))
+    if distance < 0.15:
+        gates.append(_gate("confidence", False, f"dist={distance:.3f} < 0.15"))
         return _skip(
-            f"polymarket: p_up={confidence:.3f} dist={distance:.3f} < 0.12 threshold",
+            f"polymarket: p_up={confidence:.3f} dist={distance:.3f} < 0.15 threshold",
             gates,
         )
 
-    gates.append(_gate("confidence", True, f"dist={distance:.3f} >= 0.12"))
+    gates.append(_gate("confidence", True, f"dist={distance:.3f} >= 0.15"))
 
     # trade_advised disabled for 15m — TimesFM assembler's regime/fee gates are
     # calibrated for 5m and incorrectly block high-conviction 15m signals.
@@ -165,11 +165,11 @@ def _evaluate_poly_legacy(surface: "FullDataSurface") -> StrategyDecision:
     direction = surface.v4_recommended_side or ("UP" if p_up > 0.5 else "DOWN")
     gates: list[dict] = []
 
-    if distance < 0.12:
-        gates.append(_gate("confidence", False, f"dist={distance:.3f} < 0.12"))
-        return _skip(f"polymarket_legacy: dist={distance:.3f} < 0.12", gates)
+    if distance < 0.15:
+        gates.append(_gate("confidence", False, f"dist={distance:.3f} < 0.15"))
+        return _skip(f"polymarket_legacy: dist={distance:.3f} < 0.15", gates)
 
-    gates.append(_gate("confidence", True, f"dist={distance:.3f} >= 0.12"))
+    gates.append(_gate("confidence", True, f"dist={distance:.3f} >= 0.15"))
 
     # Macro gate
     macro_gate = surface.v4_macro_direction_gate

@@ -47,6 +47,7 @@ def _register_gates() -> None:
     from strategies.gates.regime import RegimeGate
     from strategies.gates.macro_direction import MacroDirectionGate
     from strategies.gates.trade_advised import TradeAdvisedGate
+    from strategies.gates.entry_price_floor import EntryPriceFloorGate
 
     _GATE_REGISTRY.update(
         {
@@ -64,6 +65,7 @@ def _register_gates() -> None:
             "regime": RegimeGate,
             "macro_direction": MacroDirectionGate,
             "trade_advised": TradeAdvisedGate,
+            "entry_price_floor": EntryPriceFloorGate,
         }
     )
 
@@ -860,9 +862,28 @@ class StrategyRegistry:
         if config.pre_gate_hook:
             hook_fn = self._hooks.get(name, {}).get(config.pre_gate_hook)
             if hook_fn:
-                result = hook_fn(surface)
-                if result is not None:
-                    return result  # Hook handled it (TRADE or SKIP)
+                hook_result = hook_fn(surface)
+                if hook_result is not None:
+                    if hook_result.action == "SKIP":
+                        return hook_result  # Hook skipped — honour immediately
+                    # Hook returned TRADE — run YAML gates as post-filters
+                    for gate in self._pipelines[name]:
+                        gate_result = gate.evaluate(surface)
+                        if not gate_result.passed:
+                            return StrategyDecision(
+                                action="SKIP",
+                                direction=hook_result.direction,
+                                confidence=hook_result.confidence,
+                                confidence_score=hook_result.confidence_score,
+                                entry_cap=hook_result.entry_cap,
+                                collateral_pct=hook_result.collateral_pct,
+                                strategy_id=name,
+                                strategy_version=config.version,
+                                entry_reason="",
+                                skip_reason=f"post_hook_gate {gate_result.gate_name}: {gate_result.reason}",
+                                metadata={**hook_result.metadata, "post_hook_gate_failed": gate_result.gate_name},
+                            )
+                    return hook_result  # All post-hook gates passed
 
         # Run gate pipeline
         gate_results: list[GateResult] = []
