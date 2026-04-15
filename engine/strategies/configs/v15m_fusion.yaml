@@ -13,7 +13,7 @@ gates:
   - type: entry_price_floor
     params:
       direction: DOWN
-      min_distance: 0.12  # DOWN entries need >= 0.12 distance (same as confidence threshold)
+      min_distance: 0.20  # DOWN entries need >= 0.20 distance — stricter than general 0.15 threshold
 
 hooks_file: v15m_fusion.py
 pre_gate_hook: evaluate_polymarket_v2
