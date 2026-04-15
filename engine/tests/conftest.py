@@ -28,10 +28,13 @@ REPO_ROOT = ENGINE_ROOT.parent                         # repo root
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
-# Remove repo root if present — it enables `from domain.x import Y`
+# Remove repo root if present — it enables `from engine.domain.x import Y`
 # which collides with the bare form and creates dual-loaded module copies.
 # Phase 2 enforces the bare form via CI grep; this is defense in depth.
-if str(REPO_ROOT) in sys.path:
+# Note: pytest may re-add REPO_ROOT because engine/__init__.py makes it
+# look like a package. We use `while` to strip all occurrences now and
+# the session fixture below re-strips after pytest finishes its own setup.
+while str(REPO_ROOT) in sys.path:
     sys.path.remove(str(REPO_ROOT))
 
 # --- TestSettings env bootstrap -------------------------------------------
@@ -74,6 +77,22 @@ collect_ignore = [
 
 # --- pytest configuration -------------------------------------------------
 import pytest  # noqa: E402  (after sys.path munging)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _enforce_canonical_sys_path():
+    """Re-strip REPO_ROOT from sys.path after pytest finishes its own setup.
+
+    pytest adds the parent of any package-style directory (one with __init__.py)
+    to sys.path. Since engine/__init__.py exists, pytest adds the repo root.
+    The module-level code above strips it at conftest import time, but pytest
+    may re-insert it during its collection phase (before fixtures run). This
+    session fixture runs once after collection is complete and removes any
+    remaining instances.
+    """
+    while str(REPO_ROOT) in sys.path:
+        sys.path.remove(str(REPO_ROOT))
+    yield
 
 
 def pytest_configure(config: pytest.Config) -> None:
