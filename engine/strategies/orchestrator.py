@@ -4822,7 +4822,7 @@ class Orchestrator:
                         # 1 analysis per 60 seconds to avoid API spam.
                         if self._post_resolution_evaluator:
                             try:
-                                # Fetch eval ticks from gate_audit / in-memory history
+                                # Fetch eval ticks from gate_check_traces / in-memory history
                                 _eval_ticks = []
                                 # Try in-memory window_eval_history first (most complete)
                                 if self._five_min_strategy:
@@ -4832,7 +4832,7 @@ class Orchestrator:
                                             _wkey, []
                                         )
                                     )
-                                # Fall back to DB gate_audit table
+                                # Fall back to DB gate_check_traces table
                                 if not _eval_ticks:
                                     _eval_ticks = (
                                         await self._db.get_eval_ticks_for_window(

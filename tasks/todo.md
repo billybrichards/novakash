@@ -34,7 +34,7 @@
 
 ### Why This Replaces Current Confusion
 - [ ] Current `strategy_decisions` is decision-centric and stores a lot of context, but only one final skip reason per strategy eval
-- [ ] Current `gate_audit` is too coarse and not strategy-scoped enough for operator review
+- [x] `gate_audit` was too coarse and not strategy-scoped — retired 2026-04-15, superseded by `gate_check_traces`
 - [ ] The new model is window-centric and can answer: what data we had, what each gate saw, what failed, what passed, what traded, and whether that was correct later
 
 ### Delivery Order

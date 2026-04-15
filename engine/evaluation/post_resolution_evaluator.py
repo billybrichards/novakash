@@ -76,7 +76,7 @@ class PostResolutionEvaluator:
             asset:             e.g. "BTC"
             timeframe:         e.g. "5m"
             oracle_direction:  "UP" or "DOWN"
-            eval_ticks:        List of eval tick dicts (from window_eval_history or gate_audit)
+            eval_ticks:        List of eval tick dicts (from window_eval_history or gate_check_traces)
                                Each tick: {offset, skip_reason, v2_probability, vpin, delta_pct,
                                            clob_ask, confidence, regime}
 
@@ -198,7 +198,10 @@ class PostResolutionEvaluator:
         asset: str,
         timeframe: str,
     ) -> list:
-        """Fetch eval ticks from gate_audit table for a given window."""
+        """Fetch eval ticks from gate_check_traces for a given window.
+
+        Supersedes the legacy gate_audit read path.
+        """
         if not self._db or not self._db._pool:
             return []
         try:
@@ -206,18 +209,18 @@ class PostResolutionEvaluator:
                 rows = await conn.fetch(
                     """
                     SELECT
-                        eval_offset   AS offset,
+                        eval_offset        AS offset,
                         skip_reason,
-                        vpin,
-                        delta_pct,
-                        regime,
-                        gate_failed,
-                        gate_passed
-                    FROM gate_audit
+                        passed             AS gate_passed,
+                        reason             AS gate_failed,
+                        observed_json->>'vpin'      AS vpin,
+                        observed_json->>'delta_pct' AS delta_pct,
+                        observed_json->>'regime'    AS regime
+                    FROM gate_check_traces
                     WHERE window_ts = $1
                       AND asset     = $2
                       AND timeframe = $3
-                    ORDER BY eval_offset DESC
+                    ORDER BY eval_offset DESC, gate_order ASC
                     """,
                     window_ts,
                     asset,

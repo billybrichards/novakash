@@ -1,0 +1,13 @@
+-- Retire gate_audit: superseded by gate_check_traces (see feat/trace PR)
+--
+-- This file is intentionally commented out for safety.
+-- Run only after confirming that gate_check_traces is fully populated
+-- and that no read/write paths still reference gate_audit.
+--
+-- Verification query before running:
+--   SELECT COUNT(*) FROM gate_check_traces;   -- should be non-zero
+--   SELECT MAX(evaluated_at) FROM gate_audit;  -- should be in the past
+--
+-- Operator: uncomment the statement below and execute manually.
+--
+-- DROP TABLE IF EXISTS gate_audit;

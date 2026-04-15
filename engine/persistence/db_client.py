@@ -2275,116 +2275,14 @@ class DBClient:
             log.error("db.update_shadow_resolution_failed", error=str(exc))
 
     async def write_gate_audit(self, data: dict) -> None:
-        """
-        Write a gate audit record for every window evaluation (v8.0).
+        """Retired — gate_audit superseded by gate_check_traces (feat/trace PR).
 
-        Records all gate pass/fail results so signal analysis can identify which
-        gate is blocking trades and whether skipped windows would have been winners.
-
-        Args:
-            data: dict with keys matching gate_audit table columns.
+        This method is intentionally a no-op.  All gate-check persistence now goes
+        through the WindowTraceRepository (pg_window_trace_repo) which writes to
+        ``gate_check_traces``.  The legacy ``gate_audit`` table remains in the DB
+        until the operator manually executes migrations/retire_gate_audit_table.sql.
         """
-        if not self._pool:
-            return
-        try:
-            async with self._pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO gate_audit (
-                        window_ts, asset, timeframe, engine_version,
-                        delta_source, eval_offset,
-                        open_price, tiingo_open, tiingo_close,
-                        delta_tiingo, delta_binance, delta_chainlink, delta_pct,
-                        vpin, regime,
-                        gate_vpin, gate_delta, gate_cg, gate_floor, gate_cap,
-                        gate_passed, gate_failed, gates_passed_list,
-                        decision, skip_reason
-                    ) VALUES (
-                        $1, $2, $3, $4,
-                        $5, $25,
-                        $6, $7, $8,
-                        $9, $10, $11, $12,
-                        $13, $14,
-                        $15, $16, $17, $18, $19,
-                        $20, $21, $22,
-                        $23, $24
-                    )
-                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
-                        engine_version      = EXCLUDED.engine_version,
-                        delta_source        = EXCLUDED.delta_source,
-                        open_price          = EXCLUDED.open_price,
-                        tiingo_open         = EXCLUDED.tiingo_open,
-                        tiingo_close        = EXCLUDED.tiingo_close,
-                        delta_tiingo        = EXCLUDED.delta_tiingo,
-                        delta_binance       = EXCLUDED.delta_binance,
-                        delta_chainlink     = EXCLUDED.delta_chainlink,
-                        delta_pct           = EXCLUDED.delta_pct,
-                        vpin                = EXCLUDED.vpin,
-                        regime              = EXCLUDED.regime,
-                        gate_vpin           = EXCLUDED.gate_vpin,
-                        gate_delta          = EXCLUDED.gate_delta,
-                        gate_cg             = EXCLUDED.gate_cg,
-                        gate_floor          = EXCLUDED.gate_floor,
-                        gate_cap            = EXCLUDED.gate_cap,
-                        gate_passed         = EXCLUDED.gate_passed,
-                        gate_failed         = EXCLUDED.gate_failed,
-                        gates_passed_list   = EXCLUDED.gates_passed_list,
-                        decision            = EXCLUDED.decision,
-                        skip_reason         = EXCLUDED.skip_reason,
-                        evaluated_at        = NOW()
-                    """,
-                    int(data.get("window_ts", 0)),
-                    data.get("asset", "BTC"),
-                    data.get("timeframe", "5m"),
-                    data.get("engine_version", "v8.0"),
-                    data.get("delta_source"),
-                    float(data["open_price"])
-                    if data.get("open_price") is not None
-                    else None,
-                    float(data["tiingo_open"])
-                    if data.get("tiingo_open") is not None
-                    else None,
-                    float(data["tiingo_close"])
-                    if data.get("tiingo_close") is not None
-                    else None,
-                    float(data["delta_tiingo"])
-                    if data.get("delta_tiingo") is not None
-                    else None,
-                    float(data["delta_binance"])
-                    if data.get("delta_binance") is not None
-                    else None,
-                    float(data["delta_chainlink"])
-                    if data.get("delta_chainlink") is not None
-                    else None,
-                    float(data["delta_pct"])
-                    if data.get("delta_pct") is not None
-                    else None,
-                    float(data["vpin"]) if data.get("vpin") is not None else None,
-                    data.get("regime"),
-                    str(data["gate_vpin"])
-                    if data.get("gate_vpin") is not None
-                    else None,  # VARCHAR
-                    str(data["gate_delta"])
-                    if data.get("gate_delta") is not None
-                    else None,  # VARCHAR
-                    bool(data["gate_cg"])
-                    if data.get("gate_cg") is not None
-                    else None,  # BOOLEAN
-                    str(data["gate_floor"])
-                    if data.get("gate_floor") is not None
-                    else None,  # VARCHAR
-                    str(data["gate_cap"])
-                    if data.get("gate_cap") is not None
-                    else None,  # VARCHAR
-                    bool(data.get("gate_passed", False)),
-                    data.get("gate_failed"),
-                    data.get("gates_passed_list"),
-                    data.get("decision", "SKIP"),
-                    data.get("skip_reason"),
-                    data.get("eval_offset"),
-                )
-        except Exception as exc:
-            log.warning("db.write_gate_audit_failed", error=str(exc)[:200])
+        return  # no-op
 
     async def write_signal_evaluation(self, data: dict) -> None:
         """
@@ -2820,9 +2718,11 @@ class DBClient:
         asset: str,
         timeframe: str,
     ) -> list:
-        """
-        Fetch all evaluation ticks for a window from gate_audit table.
-        Falls back to constructing from window_eval_history if gate_audit is empty.
+        """Fetch all evaluation ticks for a window from gate_check_traces.
+
+        Supersedes the legacy gate_audit read path.  Returns one dict per
+        (eval_offset, gate_order) row, shaped to match the downstream
+        post_resolution_evaluator contract.
         """
         if not self._pool:
             return []
@@ -2833,17 +2733,18 @@ class DBClient:
                     SELECT
                         eval_offset        AS offset,
                         skip_reason,
-                        vpin,
-                        delta_pct,
-                        regime,
-                        gate_failed,
-                        gate_passed,
-                        decision
-                    FROM gate_audit
+                        passed             AS gate_passed,
+                        passed             AS gate_passed,
+                        reason             AS gate_failed,
+                        action             AS decision,
+                        observed_json->>'vpin'      AS vpin,
+                        observed_json->>'delta_pct' AS delta_pct,
+                        observed_json->>'regime'    AS regime
+                    FROM gate_check_traces
                     WHERE window_ts = $1
                       AND asset     = $2
                       AND timeframe = $3
-                    ORDER BY eval_offset DESC NULLS LAST
+                    ORDER BY eval_offset DESC NULLS LAST, gate_order ASC
                     """,
                     window_ts,
                     asset,
