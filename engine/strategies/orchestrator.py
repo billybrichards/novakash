@@ -3576,10 +3576,32 @@ class Orchestrator:
     # ── Builder Relayer Redeemer Loop ───────────────────────────────────────
 
     async def _redeemer_loop(self) -> None:
-        """Quota-aware auto-redeem loop via Builder Relayer."""
+        """Quota-aware auto-redeem loop via Builder Relayer.
+
+        Cooldown early-exit: when the relayer has tripped a 429 cooldown,
+        short-circuit the whole loop body. This avoids burning the
+        data-api positions scan + web3 balance RPC every 15 min while a
+        ~24 h cooldown is in effect. The redeemer itself already guards
+        each individual call internally; this is the outer guard.
+
+        Polymarket quota reset semantics: the 429 response body carries
+        `resets in N seconds`, which ``_parse_reset_seconds`` feeds into
+        ``_rate_limit_until``. It is a **rolling** window (not a midnight
+        UTC reset), so we honour whatever the server returns rather than
+        synthesising a fixed reset hour.
+        """
         REDEEM_INTERVAL = 900
         while not self._shutdown_event.is_set():
             try:
+                # Cooldown early-exit: skip entire cycle (incl. cache-update scan)
+                # while in 429 cooldown. Redeemer internals already guard every
+                # call site; this prevents extra data-api hits and log noise.
+                cd_status = self._redeemer.cooldown_status()
+                if cd_status.get("active"):
+                    self._redeemer._log_cooldown_active()
+                    await asyncio.sleep(REDEEM_INTERVAL)
+                    continue
+
                 manual_request = None
                 quota_used_today = 0
                 try:
