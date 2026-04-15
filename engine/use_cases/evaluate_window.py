@@ -15,7 +15,7 @@ from config.constants import FIVE_MIN_EVAL_OFFSETS
 from config.runtime_config import runtime
 from data.feeds.polymarket_5min import WindowInfo
 from data.models import MarketState
-from signals.gates import (
+from use_cases.gates import (
     GateContext,
     GatePipeline,
     PipelineResult,
