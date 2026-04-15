@@ -837,9 +837,11 @@ gh pr merge --squash
 
 ---
 
+**Phase 2 baseline:** 12 `from engine.` imports in tests/ as of commit ba4c2e9. One additional in prod code (strategies/five_min_vpin.py). Zero `import engine.X` form found.
+
 ### Task 2.1: Grep test imports using the `engine.` prefix
 
-- [ ] **Step 1: Enumerate offenders**
+- [x] **Step 1: Enumerate offenders**
 
 Run:
 ```bash
