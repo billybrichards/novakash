@@ -275,10 +275,18 @@ class PositionRedeemer:
     def _trip_cooldown(self, exc_str: str) -> None:
         """Enter cooldown after detecting a rate-limit error.
 
-        Parses the 'resets in N seconds' value from the error string via
-        `_parse_reset_seconds`. If no parse is possible, falls back to
-        `_DEFAULT_COOLDOWN_SECONDS` (5 minutes). Always logs the transition
-        so an operator can see exactly how long the cooldown will last.
+        Reset semantics — important: Polymarket's Builder Relayer uses a
+        **rolling 24 h quota window**, not a midnight-UTC reset. The 429
+        response body includes ``resets in N seconds`` which is the exact
+        authoritative countdown from the server's perspective. We parse
+        that via ``_parse_reset_seconds`` and trust it literally — there
+        is no point computing our own reset time.
+
+        If no reset value can be parsed (malformed error), we fall back
+        to ``_DEFAULT_COOLDOWN_SECONDS`` (5 min) which is intentionally
+        short so we don't starve ourselves on ambiguous errors. Always
+        logs the transition so an operator can see exactly how long the
+        cooldown will last.
         """
         reset_seconds = _parse_reset_seconds(exc_str) or _DEFAULT_COOLDOWN_SECONDS
         now = datetime.now(timezone.utc)
