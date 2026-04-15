@@ -15,7 +15,9 @@ which fields the contract requires.
 
 from __future__ import annotations
 
+import time as _time
 from dataclasses import dataclass, field
+from enum import Enum as _Enum
 from typing import Optional
 
 
@@ -826,10 +828,6 @@ class WindowSummaryContext:
 # ---------------------------------------------------------------------------
 # Order / execution tracking types (moved from execution.order_manager — CA-01)
 # ---------------------------------------------------------------------------
-
-import time as _time
-from enum import Enum as _Enum
-
 
 # Window lengths for paper-mode expiry
 POLY_WINDOW_SECONDS: int = 300    # 5 minutes
