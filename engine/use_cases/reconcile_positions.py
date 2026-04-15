@@ -17,8 +17,8 @@ Resolves both live and paper trades in a single pass via ``execute()``:
     compare against trade direction to determine WIN/LOSS, update row.
 
 Wired into ``Orchestrator._sot_reconciler_loop`` as a third pass after
-the two SOT passes. Called every 2 minutes. Live path gated on
-``ENGINE_USE_RECONCILE_UC=true`` + ``not paper_mode``.
+the two SOT passes. Called every 2 minutes. Live path runs unconditionally
+when ``not paper_mode``; paper path always runs.
 
 Port dependencies (all from ``engine/domain/ports.py``):
   - TradeRepository -- find_by_token_id, find_by_token_prefix,
