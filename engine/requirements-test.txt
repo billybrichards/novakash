@@ -1,0 +1,13 @@
+# engine/requirements-test.txt
+# Test-only dependencies. Kept separate from requirements.txt so the
+# production container image stays minimal.
+
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-xdist>=3.6.0
+pytest-cov>=5.0.0
+pytest-env>=1.1.0
+aiosqlite>=0.20.0
+pyyaml>=6.0              # Used by strategy config loader; missing causes collection error
+structlog>=24.1.0        # Used by engine logging; missing causes collection error
+freezegun>=1.5.0         # Time-freezing for heartbeat/reconcile tests
