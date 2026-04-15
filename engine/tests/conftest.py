@@ -3,7 +3,7 @@
 Engine modules use absolute bare imports (`from domain.ports import X`,
 `from use_cases.reconcile_positions import Y`) so the test process needs
 `engine/` on sys.path. The PARENT of engine/ must NOT be on sys.path —
-that would enable `from engine.domain.ports import X` style imports,
+that would enable `from domain.ports import X` style imports,
 causing the same symbols to load twice under different module paths
 (dual-load). The `engine.X`-vs-`X` dual-load is the root cause of the
 `test_publish_heartbeat` isinstance quirk; Phase 2 sweeps test imports
@@ -28,7 +28,7 @@ REPO_ROOT = ENGINE_ROOT.parent                         # repo root
 if str(ENGINE_ROOT) not in sys.path:
     sys.path.insert(0, str(ENGINE_ROOT))
 
-# Remove repo root if present — it enables `from engine.domain.x import Y`
+# Remove repo root if present — it enables `from domain.x import Y`
 # which collides with the bare form and creates dual-loaded module copies.
 # Phase 2 enforces the bare form via CI grep; this is defense in depth.
 if str(REPO_ROOT) in sys.path:

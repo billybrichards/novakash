@@ -7,13 +7,13 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from engine.domain.value_objects import (
+from domain.value_objects import (
     FillResult,
     ManualTradeOutcome,
     PendingTrade,
     WindowMarket,
 )
-from engine.use_cases.execute_manual_trade import ExecuteManualTradeUseCase
+from use_cases.execute_manual_trade import ExecuteManualTradeUseCase
 
 
 def _pending(

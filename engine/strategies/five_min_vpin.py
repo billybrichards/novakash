@@ -29,7 +29,7 @@ from decimal import Decimal
 from typing import Optional, Callable, Awaitable, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from engine.domain.ports import WindowStateRepository
+    from domain.ports import WindowStateRepository
 
 import structlog
 

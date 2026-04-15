@@ -16,7 +16,7 @@ if _engine not in sys.path:
 # Set required env vars before any engine imports trigger Settings()
 os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test")
 
-from engine.domain.value_objects import (
+from domain.value_objects import (
     StrategyContext,
     StrategyDecision,
     StrategyDecisionRecord,

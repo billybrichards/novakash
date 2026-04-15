@@ -56,7 +56,7 @@ def pool(conn):
 
 @pytest.fixture
 def repo(pool):
-    from engine.adapters.persistence.pg_window_repo import PgWindowRepository
+    from adapters.persistence.pg_window_repo import PgWindowRepository
 
     return PgWindowRepository(pool)
 
@@ -81,7 +81,7 @@ class TestWasTraded:
         )
 
     def test_no_pool(self):
-        from engine.adapters.persistence.pg_window_repo import PgWindowRepository
+        from adapters.persistence.pg_window_repo import PgWindowRepository
 
         key = make_window_key("X", 1, "5m")
         assert (

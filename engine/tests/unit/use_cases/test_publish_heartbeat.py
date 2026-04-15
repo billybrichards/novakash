@@ -8,12 +8,12 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from typing import Optional
 
-from engine.domain.value_objects import (
+from domain.value_objects import (
     HeartbeatRow,
     RiskStatus,
     SitrepPayload,
 )
-from engine.use_cases.publish_heartbeat import PublishHeartbeatUseCase
+from use_cases.publish_heartbeat import PublishHeartbeatUseCase
 
 
 def _risk(

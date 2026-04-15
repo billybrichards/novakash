@@ -11,7 +11,7 @@ _engine = os.path.join(os.path.dirname(__file__), "..", "..", "..")
 if _engine not in sys.path:
     sys.path.insert(0, _engine)
 
-from engine.domain.value_objects import StrategyContext, StrategyDecision, V4Snapshot
+from domain.value_objects import StrategyContext, StrategyDecision, V4Snapshot
 
 
 def _make_snapshot(**overrides) -> V4Snapshot:
