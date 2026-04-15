@@ -916,55 +916,13 @@ class DuneConfidenceGate:
 
         seconds_to_close = ctx.eval_offset or 60
         try:
-            from signals.v2_feature_body import (
-                V5FeatureBody,
-                build_v5_feature_body,
-                confidence_from_result,
-            )
+            from signals.v2_feature_body import confidence_from_result
 
-            # Prefer the strategy-built body attached to GateContext —
-            # this is the single source of truth for feature extraction
-            # and guarantees the DUNE gate sees the exact same feature
-            # vector the v8.1 fetch sees. If it's missing (old callers,
-            # unit tests, etc.), fall back to rebuilding from the
-            # enriched GateContext scalars. The fallback may have lower
-            # coverage but uses the same `build_v5_feature_body` helper
-            # so the extraction logic is never duplicated.
-            #
-            # Gate booleans in the v10 pipeline have different semantics
-            # than the v8.0 `signal_evaluations` columns the v5 model
-            # trained on, so they stay None here regardless of which
-            # path we take — the scorer gets NaN for those and
-            # LightGBM's missing-default branch handles it exactly as
-            # in training.
-            _gate_features: Optional[V5FeatureBody] = None
-            if isinstance(ctx.v5_features, V5FeatureBody):
-                _gate_features = ctx.v5_features
-            else:
-                _gate_features = build_v5_feature_body(
-                    eval_offset=float(seconds_to_close),
-                    vpin=ctx.vpin,
-                    delta_pct=ctx.delta_pct,
-                    twap_delta=ctx.twap_delta,
-                    clob_up_price=ctx.gamma_up_price,
-                    clob_down_price=ctx.gamma_down_price,
-                    binance_price=ctx.current_price,
-                    chainlink_price=ctx.chainlink_price,
-                    tiingo_close=ctx.tiingo_close,
-                    delta_binance=ctx.delta_binance,
-                    delta_chainlink=ctx.delta_chainlink,
-                    delta_tiingo=ctx.delta_tiingo,
-                    regime=ctx.regime,
-                    delta_source=ctx.delta_source,
-                    prev_v2_probability_up=ctx.prev_v2_probability_up,
-                    # gate_* intentionally omitted — see note above.
-                )
-
+            # v5.9 scorer does its own feature assembly — GET-only, no push.
             _model = os.environ.get("V10_DUNE_MODEL", "oak")
-            result = await self._client.score_with_features(
+            result = await self._client.get_probability(
                 asset=ctx.asset,
                 seconds_to_close=seconds_to_close,
-                features=_gate_features,
                 model=_model,
             )
         except Exception as exc:
