@@ -131,4 +131,63 @@ class Settings(BaseSettings):
     )
 
 
-settings = Settings()
+
+
+class TestSettings(Settings):
+    """Test defaults — NEVER instantiate in production paths.
+
+    Subclasses Settings so every required field gets a safe default.
+    Imported only by the test suite (tests/conftest.py and fixtures/).
+    """
+    database_url: str = "sqlite+aiosqlite:///:memory:"
+    poly_private_key: str = "test"
+    poly_api_key: str = "test"
+    poly_api_secret: str = "test"
+    poly_api_passphrase: str = "test"
+    poly_funder_address: str = "0x0000000000000000000000000000000000000000"
+    opinion_api_key: str = "test"
+    opinion_wallet_key: str = "test"
+    binance_api_key: str = "test"
+    binance_api_secret: str = "test"
+    coinglass_api_key: str = "test"
+    openrouter_api_key: str = "test"
+    tiingo_api_key: str = "test"
+    polygon_rpc_url: str = "https://test.invalid"
+    telegram_bot_token: str = "test"
+    telegram_chat_id: str = "0"
+    starting_bankroll: float = 500.0
+    paper_mode: bool = True
+
+
+_settings: Settings | None = None
+
+
+def get_settings() -> Settings:
+    """Return the singleton Settings instance, loading lazily."""
+    global _settings
+    if _settings is None:
+        _settings = Settings()
+    return _settings
+
+
+def _reset_settings_for_tests() -> None:
+    """Test helper — clears the cached singleton. Not for prod use."""
+    global _settings
+    _settings = None
+
+
+class _LazySettingsProxy:
+    """Backwards-compat shim for `from config.settings import settings`.
+
+    Forwards attribute access to the lazily-loaded real Settings object.
+    Existing call sites that do `settings.database_url` keep working without
+    needing the refactor in Phase 1 Task 1.3 — that task is cleanup.
+    """
+    def __getattr__(self, name: str):
+        return getattr(get_settings(), name)
+
+    def __setattr__(self, name: str, value) -> None:
+        setattr(get_settings(), name, value)
+
+
+settings = _LazySettingsProxy()  # type: ignore[assignment]
