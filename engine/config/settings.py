@@ -4,6 +4,8 @@ Engine Settings — Pydantic BaseSettings
 All configuration is loaded from environment variables / .env file.
 """
 
+import threading
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -160,13 +162,16 @@ class TestSettings(Settings):
 
 
 _settings: Settings | None = None
+_settings_lock = threading.Lock()
 
 
 def get_settings() -> Settings:
-    """Return the singleton Settings instance, loading lazily."""
+    """Return the singleton Settings instance, loading lazily (thread-safe)."""
     global _settings
     if _settings is None:
-        _settings = Settings()
+        with _settings_lock:
+            if _settings is None:
+                _settings = Settings()
     return _settings
 
 
@@ -183,6 +188,8 @@ class _LazySettingsProxy:
     Existing call sites that do `settings.database_url` keep working without
     needing the refactor in Phase 1 Task 1.3 — that task is cleanup.
     """
+    __slots__ = ()
+
     def __getattr__(self, name: str):
         return getattr(get_settings(), name)
 

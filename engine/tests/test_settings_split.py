@@ -23,17 +23,17 @@ def test_test_settings_instantiates_without_env(monkeypatch):
     assert s.paper_mode is True
 
 
-def test_get_settings_returns_settings_instance():
+def test_get_settings_returns_settings_instance(monkeypatch):
     """get_settings() returns a Settings (not TestSettings) in prod mode."""
-    from config.settings import Settings, get_settings
-    # Set DATABASE_URL so prod Settings() validates
-    import os
-    os.environ["DATABASE_URL"] = "postgresql://test"
+    from config.settings import Settings, get_settings, _reset_settings_for_tests
+
+    _reset_settings_for_tests()
+    monkeypatch.setenv("DATABASE_URL", "postgresql://test")
     try:
         s = get_settings()
         assert isinstance(s, Settings)
     finally:
-        del os.environ["DATABASE_URL"]
+        _reset_settings_for_tests()
 
 
 def test_module_level_settings_is_lazy():
