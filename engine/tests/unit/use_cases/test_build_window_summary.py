@@ -44,11 +44,17 @@ def _decision(sid, action="SKIP", direction=None, skip_reason=None, confidence=N
     )
 
 
-def _cfg(mode, timing=None):
+def _cfg(mode, timing=None, pre_gate_hook=None, timescale=None):
     gates = []
     if timing is not None:
         gates.append({"type": "timing", "params": {"min_offset": timing[0], "max_offset": timing[1]}})
-    return SimpleNamespace(mode=mode, gates=gates, version="1.0.0")
+    return SimpleNamespace(
+        mode=mode,
+        gates=gates,
+        version="1.0.0",
+        pre_gate_hook=pre_gate_hook,
+        timescale=timescale,
+    )
 
 
 def _prior_record(sid, eval_offset, action="TRADE", skip_reason=None):
@@ -316,3 +322,153 @@ def test_formatter_omits_empty_sections():
     assert "Blocked by execution timing:" not in text
     assert "Off-window this offset:" not in text
     assert "Inactive (GHOST shadow):" not in text
+
+
+# ── Poly v2 synthetic bounds (v4_fusion / v15m_fusion family) ─────────────
+
+
+def test_v4_fusion_poly_v2_hook_synthetic_bounds_5m():
+    """v4_fusion has gates=[] + pre_gate_hook=evaluate_polymarket_v2 + timescale=5m.
+    At T-62 (< 70), the skip reason is 'polymarket: timing=early T-62 -- too
+    late (<70s), skip' which the old code bucketed as blocked_exec_timing
+    (circular). With synthetic bounds (70, 180), the reclassifier recognises
+    the window has closed and surfaces the real prior blocker."""
+    uc = BuildWindowSummaryUseCase()
+    decisions = [
+        _decision(
+            "v4_fusion",
+            skip_reason="polymarket: timing=early T-62 -- too late (<70s), skip",
+        ),
+    ]
+    configs = {
+        "v4_fusion": _cfg(
+            "LIVE",
+            pre_gate_hook="evaluate_polymarket_v2",
+            timescale="5m",
+        ),
+    }
+    # Prior in-window blocker at T-120 — the real reason
+    prior = [
+        _prior_record(
+            "v4_fusion",
+            eval_offset=120,
+            action="SKIP",
+            skip_reason="consensus not safe_to_trade",
+        ),
+    ]
+    ctx = uc.execute(
+        window_ts=1_700_000_000,
+        eval_offset=62,
+        timescale="5m",
+        open_price=74_252.10,
+        current_price=74_430.80,
+        sources_agree="NO (mixed)",
+        decisions=decisions,
+        configs=configs,
+        prior_decisions=prior,
+    )
+    # Must reclassify to window_expired (not blocked_exec_timing)
+    assert len(ctx.window_expired) == 1
+    assert len(ctx.blocked_exec_timing) == 0
+    assert "window T-180..T-70 expired" in ctx.window_expired[0].text
+    assert "consensus not safe_to_trade" in ctx.window_expired[0].text
+
+
+def test_v15m_fusion_poly_v2_hook_synthetic_bounds():
+    """v15m_fusion has same YAML shape but timescale=15m → bounds (180, 250)."""
+    uc = BuildWindowSummaryUseCase()
+    decisions = [
+        _decision(
+            "v15m_fusion",
+            skip_reason="polymarket: timing=late -- outside window",
+        ),
+    ]
+    configs = {
+        "v15m_fusion": _cfg(
+            "LIVE",
+            pre_gate_hook="evaluate_polymarket_v2",
+            timescale="15m",
+        ),
+    }
+    # At T-120, we're past the 15m strategy's lower bound (180) — window closed
+    ctx = uc.execute(
+        window_ts=1,
+        eval_offset=120,
+        timescale="15m",
+        open_price=100.0,
+        current_price=101.0,
+        sources_agree="",
+        decisions=decisions,
+        configs=configs,
+        prior_decisions=[],
+    )
+    assert len(ctx.window_expired) == 1
+    assert "window T-250..T-180 expired" in ctx.window_expired[0].text
+    # No prior skips → "never evaluated in-window" fallback
+    assert "never evaluated in-window" in ctx.window_expired[0].text
+
+
+def test_poly_v2_hook_in_window_still_surfaces_signal_blocker():
+    """If eval_offset is still inside synthetic bounds, the reclassifier
+    should NOT fire — real skip reason (confidence) goes to blocked_signal."""
+    uc = BuildWindowSummaryUseCase()
+    decisions = [
+        _decision(
+            "v4_fusion",
+            skip_reason="polymarket: p_up=0.610 dist=0.110 < 0.12 threshold",
+        ),
+    ]
+    configs = {
+        "v4_fusion": _cfg(
+            "LIVE",
+            pre_gate_hook="evaluate_polymarket_v2",
+            timescale="5m",
+        ),
+    }
+    # T-120 is inside (70, 180) → window still open
+    ctx = uc.execute(
+        window_ts=1,
+        eval_offset=120,
+        timescale="5m",
+        open_price=100.0,
+        current_price=101.0,
+        sources_agree="",
+        decisions=decisions,
+        configs=configs,
+        prior_decisions=[],
+    )
+    assert len(ctx.window_expired) == 0
+    assert len(ctx.blocked_signal) == 1
+    assert "dist=0.110 < 0.12" in ctx.blocked_signal[0].text
+
+
+def test_poly_v2_hook_unknown_timescale_returns_no_bounds():
+    """Synthetic bounds only defined for 5m and 15m. Other timescales fall
+    back to None — old 'too late' path preserved (no worse than pre-PR)."""
+    uc = BuildWindowSummaryUseCase()
+    decisions = [
+        _decision(
+            "v_mystery",
+            skip_reason="polymarket: timing=optimal T-15 -- too late (<20s), skip",
+        ),
+    ]
+    configs = {
+        "v_mystery": _cfg(
+            "LIVE",
+            pre_gate_hook="evaluate_polymarket_v2",
+            timescale="30m",  # unsupported
+        ),
+    }
+    ctx = uc.execute(
+        window_ts=1,
+        eval_offset=15,
+        timescale="30m",
+        open_price=100.0,
+        current_price=101.0,
+        sources_agree="",
+        decisions=decisions,
+        configs=configs,
+        prior_decisions=[],
+    )
+    assert len(ctx.window_expired) == 0
+    assert len(ctx.blocked_exec_timing) == 1
