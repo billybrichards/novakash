@@ -228,7 +228,6 @@ class MarginSettings(BaseSettings):
     # ── Sizing ──
     # Paper mode → can size larger than live-ready defaults to generate
     # meaningful P&L signal while we validate the new strategy.
-<<<<<<< HEAD
     starting_capital: float = 1000.0  # paper mode starting bankroll
     leverage: int = 3  # down from 5 while validating
     bet_fraction: float = 0.02  # 2% per trade, down from 5%
