@@ -12,7 +12,7 @@ import random
 import time
 import uuid
 
-from domain.ports import OrderExecutionPort
+from use_cases.ports.execution import OrderExecutionPort
 from domain.value_objects import ExecutionResult
 
 # Polymarket binary options fee

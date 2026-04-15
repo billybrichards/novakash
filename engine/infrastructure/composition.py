@@ -448,6 +448,13 @@ class CompositionRoot:
         else:
             log.info("orchestrator.strategy_port_disabled")
 
+        # ── ProcessFiveMinWindowUseCase ────────────────────────────────────────
+        from use_cases.process_five_min_window import ProcessFiveMinWindowUseCase
+        self._process_window_uc = ProcessFiveMinWindowUseCase(
+            strategy=self._five_min_strategy,
+            shadow_strategies=[],
+        )
+
         # ── Strategy Engine v2: Config-first registry (behind feature flag) ──
         # When enabled, runs the new YAML-config-based registry in parallel
         # with the existing EvaluateStrategiesUseCase for decision comparison.
@@ -603,4 +610,31 @@ class CompositionRoot:
         self._polymarket_feed = PolymarketWebSocketFeed(
             token_ids=token_ids,
             on_book=None,
+        )
+
+        # ── Heartbeat use cases ────────────────────────────────────────────────
+        from use_cases.publish_heartbeat import PublishHeartbeatUseCase
+        from adapters.persistence.pg_system_repo import PgSystemRepository
+        from adapters.clock.system_clock import SystemClock
+        from adapters.engine_state_reader import EngineStateReaderAdapter
+        from use_cases.run_heartbeat_tick import RunHeartbeatTickUseCase
+
+        self._pg_system_repo = PgSystemRepository(pool=None)  # pool injected in start()
+        self._engine_state_reader = EngineStateReaderAdapter(settings=settings)
+        self._publish_heartbeat_uc = PublishHeartbeatUseCase(
+            risk_manager=self._risk_manager,
+            system_state_repo=self._pg_system_repo,
+            alerts=self._alerter,
+            clock=SystemClock(),
+            engine_state=self._engine_state_reader,
+            sitrep_interval=9999,  # runtime's rich sitrep handles Telegram; this UC owns DB write only
+        )
+        self._run_heartbeat_tick_uc = RunHeartbeatTickUseCase(
+            publish_heartbeat_uc=self._publish_heartbeat_uc,
+            engine_state_reader=self._engine_state_reader,
+            aggregator=self._aggregator,
+            risk_manager=self._risk_manager,
+            order_manager=self._order_manager,
+            poly_client=self._poly_client,
+            settings=settings,
         )

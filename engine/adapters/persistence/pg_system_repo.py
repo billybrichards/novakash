@@ -91,6 +91,37 @@ class PgSystemRepository:
             log.error("db.update_system_state_failed", error=str(exc))
             raise
 
+    async def write_heartbeat(self, row) -> None:
+        """Persist a HeartbeatRow to system_state. Delegates to update_system_state."""
+        await self.update_system_state(
+            engine_status=row.engine_status,
+            current_balance=row.current_balance,
+            peak_balance=row.peak_balance,
+            current_drawdown_pct=row.drawdown_pct,
+            last_vpin=row.last_vpin,
+            last_cascade_state=row.last_cascade_state,
+            active_positions=row.active_positions,
+            config=row.config_snapshot,
+        )
+
+    async def get_daily_record(self):
+        """Return (wins_today, losses_today) from trade_bible."""
+        if not self._pool:
+            return 0, 0
+        try:
+            async with self._pool.acquire() as conn:
+                wins = await conn.fetchval(
+                    "SELECT COUNT(*) FROM trade_bible WHERE trade_outcome='WIN' AND is_live=true "
+                    "AND resolved_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC')"
+                ) or 0
+                losses = await conn.fetchval(
+                    "SELECT COUNT(*) FROM trade_bible WHERE trade_outcome='LOSS' AND is_live=true "
+                    "AND resolved_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC')"
+                ) or 0
+                return int(wins), int(losses)
+        except Exception:
+            return 0, 0
+
     async def update_heartbeat(self) -> None:
         """Update last_heartbeat to NOW() without touching other fields.
 

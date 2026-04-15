@@ -125,18 +125,29 @@ class PublishHeartbeatUseCase:
         self._wallet_check_counter: int = 0
         self._cached_wallet_balance: Optional[float] = None
 
+    def set_wallet_balance(self, balance: Optional[float]) -> None:
+        """Inject wallet balance refreshed by the caller (RunHeartbeatTickUseCase).
+
+        Keeps the two use cases in sync without coupling — the heartbeat tick
+        owns the poly_client poll cadence; this UC just needs the latest value
+        to write into system_state.config and the SITREP payload.
+        """
+        self._cached_wallet_balance = balance
+
     async def tick(self) -> None:
         """Called every heartbeat interval (10s).
 
         1. Read risk state
         2. Write HeartbeatRow to DB
-        3. Update feed status
-        4. Every sitrep_interval ticks: build and send SITREP
+        3. Every sitrep_interval ticks: build and send SITREP
+
+        Feed-connectivity writes remain in the runtime (it owns the feed
+        objects and their real `.connected` state); this UC only persists
+        risk + balance + runtime_config to system_state.
         """
         try:
             risk_status = self._risk_manager.get_status()
             await self._write_heartbeat(risk_status)
-            await self._update_feed_status()
 
             self._tick_count += 1
             if self._tick_count >= self._sitrep_interval:
@@ -153,12 +164,22 @@ class PublishHeartbeatUseCase:
 
     async def _write_heartbeat(self, risk_status: RiskStatus) -> None:
         """Persist a HeartbeatRow to the system_state table."""
+        # Lazy import: config.__init__ triggers settings validation which
+        # fails in unit tests without env vars. Import at call site instead.
+        try:
+            from config.runtime_config import runtime as _runtime
+            runtime_snapshot = _runtime.snapshot()
+        except Exception as exc:
+            logger.debug("heartbeat.runtime_snapshot_failed", extra={"error": str(exc)[:120]})
+            runtime_snapshot = {}
+
         config_snapshot = {
             "wallet_balance_usdc": self._cached_wallet_balance,
             "daily_pnl": risk_status.daily_pnl,
             "consecutive_losses": risk_status.consecutive_losses,
             "paper_mode": risk_status.paper_mode,
             "kill_switch_active": risk_status.kill_switch_active,
+            "runtime_config": runtime_snapshot,
         }
 
         row = HeartbeatRow(
@@ -174,17 +195,6 @@ class PublishHeartbeatUseCase:
         )
 
         await self._system_state_repo.write_heartbeat(row)
-
-    async def _update_feed_status(self) -> None:
-        """Update feed connectivity flags in the system_state table."""
-        feeds = self._engine_state.feed_status
-        await self._system_state_repo.update_feed_status(
-            binance=feeds.get("binance", False),
-            coinglass=feeds.get("coinglass", False),
-            chainlink=feeds.get("chainlink", False),
-            polymarket=feeds.get("polymarket", False),
-            opinion=feeds.get("opinion", False),
-        )
 
     async def _send_sitrep(self, risk_status: RiskStatus) -> None:
         """Build and send a 5-minute SITREP to Telegram."""

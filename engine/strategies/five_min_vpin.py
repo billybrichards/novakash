@@ -339,6 +339,14 @@ class FiveMinVPINStrategy(BaseStrategy):
         if hasattr(self, "_recent_windows") and len(self._recent_windows) > max_size:
             self._recent_windows = self._recent_windows[-max_size:]
 
+    async def on_window(self, window) -> None:
+        """Hook for ProcessFiveMinWindowUseCase.
+        Queue management is handled by the caller via append_pending_window /
+        append_recent_window. This method is a no-op placeholder — concrete
+        evaluation runs through the strategy registry (evaluate_all).
+        """
+        pass
+
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
