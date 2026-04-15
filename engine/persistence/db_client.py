@@ -19,7 +19,7 @@ import asyncpg
 import structlog
 
 from config.settings import Settings
-from execution.order_manager import Order
+from domain.value_objects import Order
 
 log = structlog.get_logger(__name__)
 
