@@ -267,18 +267,12 @@ class PolymarketClientPort(abc.ABC):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 4.5  AlerterPort  (moved to use_cases/ports/ — re-exported for compat)
+# 4.5  AlerterPort  (canonical location: use_cases/ports/alerter.py)
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Moved to use_cases/ports/ — re-exported here for backward compat
-from use_cases.ports.alerter import AlerterPort  # noqa: F401
-
 # ═══════════════════════════════════════════════════════════════════════════
-# 4.6  Clock  (moved to use_cases/ports/ — re-exported for compat)
+# 4.6  Clock  (canonical location: use_cases/ports/clock.py)
 # ═══════════════════════════════════════════════════════════════════════════
-
-# Moved to use_cases/ports/ — re-exported here for backward compat
-from use_cases.ports.clock import Clock  # noqa: F401
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -534,11 +528,8 @@ class TradeRepository(abc.ABC):
 
 
 # =====================================================================
-# 4.10  RiskManagerPort  (moved to use_cases/ports/ — re-exported for compat)
+# 4.10  RiskManagerPort  (canonical location: use_cases/ports/risk.py)
 # =====================================================================
-
-# Moved to use_cases/ports/ — re-exported here for backward compat
-from use_cases.ports.risk import RiskManagerPort  # noqa: F401
 
 
 # =====================================================================
@@ -790,9 +781,6 @@ class WindowTraceRepository(abc.ABC):
 
 
 # =====================================================================
-# 4.16  OrderExecutionPort  (moved to use_cases/ports/ — re-exported for compat)
-# 4.17  TradeRecorderPort   (moved to use_cases/ports/ — re-exported for compat)
+# 4.16  OrderExecutionPort  (canonical location: use_cases/ports/execution.py)
+# 4.17  TradeRecorderPort   (canonical location: use_cases/ports/execution.py)
 # =====================================================================
-
-# Moved to use_cases/ports/ — re-exported here for backward compat
-from use_cases.ports.execution import OrderExecutionPort, TradeRecorderPort  # noqa: F401

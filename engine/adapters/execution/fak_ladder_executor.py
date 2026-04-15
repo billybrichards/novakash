@@ -19,7 +19,8 @@ import time
 from decimal import Decimal
 from typing import Any, Optional
 
-from domain.ports import OrderExecutionPort, PolymarketClientPort
+from use_cases.ports.execution import OrderExecutionPort
+from domain.ports import PolymarketClientPort
 from domain.value_objects import ExecutionResult
 
 logger = logging.getLogger(__name__)

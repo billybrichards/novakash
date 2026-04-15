@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from domain.ports import AlerterPort
+from use_cases.ports.alerter import AlerterPort
 from domain.value_objects import (
     SitrepPayload,
     SkipSummary,

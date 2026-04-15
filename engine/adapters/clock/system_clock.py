@@ -16,7 +16,7 @@ import time
 
 import structlog
 
-from domain.ports import Clock
+from use_cases.ports.clock import Clock
 
 log = structlog.get_logger(__name__)
 
