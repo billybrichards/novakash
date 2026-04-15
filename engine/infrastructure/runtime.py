@@ -684,8 +684,16 @@ class EngineRuntime:
         )
 
         # 8. Builder Relayer redeemer (live mode only)
+        # playwright_state hosts redeemer quota + cooldown persistence, so
+        # ensure the table exists before the redeemer loop starts — even
+        # when the Playwright browser automation is disabled (Montreal
+        # live config). Prior bug: ensure_playwright_tables() was gated on
+        # self._playwright, so live boxes without browser automation never
+        # created quota_used_today / cooldown_until columns and every
+        # redeemer write errored with "column does not exist".
         if not self._settings.paper_mode:
             try:
+                await self._db.ensure_playwright_tables()
                 await self._redeemer.connect()
                 self._tasks.append(
                     asyncio.create_task(self._redeemer_loop(), name="redeemer:sweep")

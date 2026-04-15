@@ -19,6 +19,7 @@ from strategies.gates.dynamic_cap import DynamicCapGate
 from strategies.gates.regime import RegimeGate
 from strategies.gates.macro_direction import MacroDirectionGate
 from strategies.gates.trade_advised import TradeAdvisedGate
+from strategies.gates.entry_price_floor import EntryPriceFloorGate
 
 __all__ = [
     "Gate",
@@ -37,4 +38,5 @@ __all__ = [
     "RegimeGate",
     "MacroDirectionGate",
     "TradeAdvisedGate",
+    "EntryPriceFloorGate",
 ]
