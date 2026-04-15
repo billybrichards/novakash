@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+from dataclasses import replace
 from pathlib import Path
 
 
@@ -25,9 +26,11 @@ _VERSION = "5.0.0"
 
 
 def _rewrite(decision):
-    decision.strategy_id = _STRATEGY_ID
-    decision.strategy_version = _VERSION
-    return decision
+    return replace(
+        decision,
+        strategy_id=_STRATEGY_ID,
+        strategy_version=_VERSION,
+    )
 
 
 def evaluate_polymarket_v2(surface):
