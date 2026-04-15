@@ -438,7 +438,7 @@ class EvaluateWindowUseCase:
         twap_result,
         skip_trade: bool = False,
     ):
-        if window_key in self._traded_windows:
+        if not skip_trade and window_key in self._traded_windows:
             return None
         from signals.v2_feature_body import build_v5_feature_body
 
