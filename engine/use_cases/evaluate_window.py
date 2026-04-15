@@ -123,11 +123,11 @@ class EvaluateWindowUseCase:
         return window_key in self._traded_windows
 
     async def execute(
-        self, window: WindowInfo, state: MarketState
+        self, window: WindowInfo, state: MarketState, *, skip_trade: bool = False
     ) -> EvaluateWindowResult:
         window_key = f"{window.asset}-{window.window_ts}"
         eval_offset = getattr(window, "eval_offset", None)
-        if window_key in self._traded_windows:
+        if not skip_trade and window_key in self._traded_windows:
             return EvaluateWindowResult(
                 signal=None, window_snapshot={}, skip_reason="already_traded"
             )
@@ -274,6 +274,7 @@ class EvaluateWindowUseCase:
                 _psu=_psu,
                 _snap_regime=_snap_regime,
                 twap_result=twap_result,
+                skip_trade=skip_trade,
             )
             if signal is not None:
                 return EvaluateWindowResult(
@@ -408,9 +409,14 @@ class EvaluateWindowUseCase:
             return EvaluateWindowResult(
                 signal=None, window_snapshot=ws, skip_reason=_skip
             )
-        self._traded_windows.add(window_key)
-        self._last_executed_window = window_key
-        return EvaluateWindowResult(signal=signal, window_snapshot=ws, skip_reason=None)
+        if not skip_trade:
+            self._traded_windows.add(window_key)
+            self._last_executed_window = window_key
+        return EvaluateWindowResult(
+            signal=signal,
+            window_snapshot=ws,
+            skip_reason="shadow_only" if skip_trade else None,
+        )
 
     async def _run_v10_pipeline(
         self,
@@ -430,6 +436,7 @@ class EvaluateWindowUseCase:
         _psu,
         _snap_regime,
         twap_result,
+        skip_trade: bool = False,
     ):
         if window_key in self._traded_windows:
             return None
@@ -509,8 +516,9 @@ class EvaluateWindowUseCase:
                 entry_reason=f"v10_DUNE_{_snap_regime}_T{ctx.eval_offset}_{_ot}{_cgt}",
                 v81_entry_cap=pr.cap or 0.65,
             )
-            self._traded_windows.add(window_key)
-            self._last_executed_window = window_key
+            if not skip_trade:
+                self._traded_windows.add(window_key)
+                self._last_executed_window = window_key
             signal._v10_gate_data = self._extract_v10_gate_data(pr, _snap_regime)
             if self._db:
                 try:

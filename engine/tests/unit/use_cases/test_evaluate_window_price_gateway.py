@@ -55,3 +55,12 @@ def test_price_gateway_is_optional():
     from use_cases.evaluate_window import EvaluateWindowUseCase
     uc = EvaluateWindowUseCase()
     assert uc._price_gateway is None
+
+
+def test_execute_accepts_skip_trade_kwarg():
+    """skip_trade is a valid keyword argument on execute."""
+    import inspect
+    from use_cases.evaluate_window import EvaluateWindowUseCase
+    sig = inspect.signature(EvaluateWindowUseCase.execute)
+    assert "skip_trade" in sig.parameters
+    assert sig.parameters["skip_trade"].default is False
