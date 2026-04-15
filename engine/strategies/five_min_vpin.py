@@ -2952,18 +2952,10 @@ class FiveMinVPINStrategy(BaseStrategy):
 
         return "NONE"
 
-    # ─── _execute_from_signal DELETED (v10 cleanup) ────────────────────────
-    # 430 lines of dead continuous evaluator code removed.
-    # Was never called — the active execution path is _execute_trade() below.
-
-    # ─── Guardrail Helpers ─────────────────────────────────────────────────
-    # NOTE: _execute_from_signal() deleted in v10 cleanup (was 430 lines, never called)
-    #       The active execution path is _execute_trade() below.
-    #       See git history for the removed code if needed.
-
-    DEAD_CODE_REMOVED = True  # marker — see git history for _execute_from_signal
-
     # ─── Guardrail Helpers ────────────────────────────────────────────────────
+    # NOTE: _execute_from_signal() deleted in v10 cleanup (was 430 lines, never called)
+    #       Trade execution moved to use-case layer in Phase 2 clean-arch.
+    #       See git history for removed code if needed.
 
     def _check_rate_limit(self) -> tuple[bool, str]:
         """

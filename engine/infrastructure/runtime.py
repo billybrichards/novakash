@@ -1563,9 +1563,9 @@ class EngineRuntime:
                                 entry_cap=live.entry_cap,
                             )
                             # Pass the port's decision directly to execution.
-                            # We set _sp_trade_decision on five_min_strategy so
-                            # _evaluate_window() sees it and skips re-evaluation,
-                            # going straight to _execute_trade().
+                            # NOTE: _sp_trade_decision is set here for legacy compatibility
+                            # but the consumer in evaluate_window() was removed in Task 2.1
+                            # (see git history). The trade goes through ExecuteTradeUseCase.
                             if self._five_min_strategy:
                                 self._five_min_strategy._sp_trade_decision = {
                                     "direction": live.direction,
