@@ -270,7 +270,7 @@ async def test_engine_optimistic_engine_executed_polymarket_no_record(monkeypatc
     # Telegram alert was sent — must mention engine optimistic / divergence
     assert len(alerter.messages) == 1
     msg = alerter.messages[0]
-    assert "ENGINE OPTIMISTIC" in msg or "engine_optimistic" in msg.lower()
+    assert "engine claims fill" in msg.lower() or "engine_optimistic" in msg.lower()
     assert "manual_bbbbbbbbbbbbbbbb"[:16] in msg
     # DB stamped with state='engine_optimistic'
     assert len(db.updates) == 1
@@ -311,12 +311,12 @@ async def test_diverged_fill_price_mismatch_beyond_tolerance(monkeypatch):
     assert summary.alerts_fired == 1
     assert len(alerter.messages) == 1
     msg = alerter.messages[0]
-    assert "DIVERGED" in msg or "diverged" in msg.lower()
-    # Notes should mention the price diff
+    assert "fill mismatch" in msg.lower() or "diverged" in msg.lower()
+    # Notes should mention the engine-vs-Polymarket fill comparison
     assert len(db.updates) == 1
     assert db.updates[0]["sot_reconciliation_state"] == "diverged"
     notes = db.updates[0]["sot_reconciliation_notes"] or ""
-    assert "price diff" in notes.lower()
+    assert "engine fill" in notes.lower() and "polymarket" in notes.lower()
 
 
 # ─── Case 4: UNRECONCILED — Polymarket order not yet terminal ───────────────
