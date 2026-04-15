@@ -174,6 +174,7 @@ class PositionRedeemer:
         proxy_address: str,
         paper_mode: bool = True,
         builder_key: Optional[str] = None,
+        attempts_repo: Optional[object] = None,
     ) -> None:
         self._rpc_url = rpc_url
         self._private_key = private_key
@@ -205,6 +206,14 @@ class PositionRedeemer:
             os.environ.get("REDEEM_DAILY_LIMIT", "100") or 100
         )
         self._last_loss_sweep_at: Optional[datetime] = None
+
+        # Optional attempts repo — when wired, redeem_position() skips any
+        # condition_id with >= REDEEM_MAX_FAILURES_24H failed attempts in
+        # the last 24 h, preventing hot-loops on stuck positions.
+        self._attempts_repo = attempts_repo
+        self._max_failures_24h: int = int(
+            os.environ.get("REDEEM_MAX_FAILURES_24H", "3") or 3
+        )
 
     @property
     def daily_quota_limit(self) -> int:
@@ -630,7 +639,38 @@ class PositionRedeemer:
         # without consuming a relayer quota unit or spamming the log.
         if self._in_cooldown():
             self._log_cooldown_active()
+            if self._attempts_repo is not None:
+                try:
+                    await self._attempts_repo.record(
+                        condition_id=condition_id,
+                        outcome="COOLDOWN",
+                        error=self._rate_limit_reason[:200] if self._rate_limit_reason else None,
+                    )
+                except Exception:
+                    pass
             return False
+
+        # ── Stuck-position gate: skip condition_ids that keep failing ─────
+        # Prevents hot-loops on a position that errors every sweep — e.g.
+        # chain-level revert, malformed calldata, wrong indexSets. After
+        # REDEEM_MAX_FAILURES_24H (default 3) FAILED attempts in 24 h, stop
+        # trying until 24 h of silence passes.
+        if self._attempts_repo is not None:
+            try:
+                recent = await self._attempts_repo.recent_failures(
+                    condition_id=condition_id, hours=24
+                )
+                if recent >= self._max_failures_24h:
+                    self._log.warning(
+                        "redeemer.skip_repeated_failures",
+                        condition=condition_id[:20] + "...",
+                        recent_failures=recent,
+                        threshold=self._max_failures_24h,
+                    )
+                    return False
+            except Exception:
+                # Never let the attempts repo crash the sweep.
+                pass
 
         try:
             from web3 import Web3
@@ -691,6 +731,17 @@ class PositionRedeemer:
                 tx_hash=tx_hash,
             )
 
+            if self._attempts_repo is not None:
+                try:
+                    await self._attempts_repo.record(
+                        condition_id=condition_id,
+                        outcome="SUCCESS" if success else "FAILED",
+                        tx_hash=tx_hash,
+                        error=None if success else "poll_did_not_confirm",
+                    )
+                except Exception:
+                    pass
+
             return success
 
         except Exception as exc:
@@ -699,6 +750,15 @@ class PositionRedeemer:
                 # Trip global cooldown — every other pending redemption
                 # in this sweep will now short-circuit at `_in_cooldown()`.
                 self._trip_cooldown(exc_str)
+                if self._attempts_repo is not None:
+                    try:
+                        await self._attempts_repo.record(
+                            condition_id=condition_id,
+                            outcome="COOLDOWN",
+                            error=exc_str[:200],
+                        )
+                    except Exception:
+                        pass
             else:
                 # Real error, not a rate limit. Log at error level so it
                 # triggers alerts; the cooldown path logs at warning.
@@ -707,6 +767,15 @@ class PositionRedeemer:
                     condition=condition_id[:20] + "...",
                     error=exc_str[:200],
                 )
+                if self._attempts_repo is not None:
+                    try:
+                        await self._attempts_repo.record(
+                            condition_id=condition_id,
+                            outcome="FAILED",
+                            error=exc_str[:500],
+                        )
+                    except Exception:
+                        pass
             return False
 
     async def redeem_all(self) -> dict:

@@ -431,6 +431,48 @@ class WalletBalancePort(abc.ABC):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 4.7b  RedeemAttemptsRepository  (PR D)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class RedeemAttemptsRepository(abc.ABC):
+    """Track every Builder Relayer redeem attempt so the Redeemer can
+    skip condition_ids that are repeatedly failing.
+
+    The concrete Postgres implementation lives in
+    ``engine/adapters/persistence/pg_redeem_attempts.py`` and backs the
+    ``redeem_attempts`` table (migration: add_redeem_attempts_table.sql).
+
+    Outcome is one of ``"SUCCESS" | "FAILED" | "COOLDOWN"``. The Redeemer
+    should only record ``FAILED`` entries against the skip threshold —
+    ``COOLDOWN`` rows exist for observability and should NOT count as
+    genuine failures (they just mean "we were blocked by 429").
+    """
+
+    @abc.abstractmethod
+    async def record(
+        self,
+        condition_id: str,
+        outcome: str,
+        tx_hash: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Insert one attempt row."""
+        ...
+
+    @abc.abstractmethod
+    async def recent_failures(
+        self,
+        condition_id: str,
+        hours: int = 24,
+    ) -> int:
+        """Count ``FAILED`` attempts for ``condition_id`` within the
+        trailing ``hours`` window. ``COOLDOWN`` and ``SUCCESS`` rows do
+        NOT count. Returns 0 if the DB pool is unavailable (never raises)."""
+        ...
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 4.8  ConfigPort  (deferred -- tracked as CFG-01)
 # ═══════════════════════════════════════════════════════════════════════════
 

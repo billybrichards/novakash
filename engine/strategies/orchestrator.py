@@ -211,6 +211,14 @@ class Orchestrator:
 
         # ── Builder Relayer Redeemer ──────────────────────────────────────────
         from execution.redeemer import PositionRedeemer
+        from adapters.persistence.pg_redeem_attempts import (
+            PgRedeemAttemptsRepository,
+        )
+
+        # Attempts repo backs the "skip condition_ids with >=3 failed
+        # attempts in 24h" gate in redeem_position(). Passing the DBClient
+        # lets the repo pull the shared pool lazily — survives DB reconnects.
+        redeem_attempts_repo = PgRedeemAttemptsRepository(db_client=self._db)
 
         self._redeemer = PositionRedeemer(
             rpc_url=settings.polygon_rpc_url,
@@ -218,6 +226,7 @@ class Orchestrator:
             proxy_address=settings.poly_funder_address,
             paper_mode=settings.paper_mode,
             builder_key=settings.builder_key or os.environ.get("BUILDER_KEY", ""),
+            attempts_repo=redeem_attempts_repo,
         )
 
         # ── Playwright browser automation (replaces on-chain redeemer) ────────
