@@ -4287,15 +4287,11 @@ class Orchestrator:
             except Exception as exc:
                 log.error("sot_reconciler_loop.trades_pass_error", error=str(exc)[:200])
 
-            # Paper + live resolution via ReconcilePositionsUseCase
+            # Paper + live resolution via ReconcilePositionsUseCase (always-on)
             if getattr(self, "_reconcile_uc", None):
                 try:
                     positions = []
-                    _use_live_uc = (
-                        os.environ.get("ENGINE_USE_RECONCILE_UC", "false").lower()
-                        == "true"
-                    )
-                    if _use_live_uc and not self._settings.paper_mode:
+                    if not self._settings.paper_mode:
                         try:
                             from domain.value_objects import PositionOutcome
 
