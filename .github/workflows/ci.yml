@@ -4,8 +4,9 @@ name: CI
 #   - Missing imports / bad refactors in margin_engine
 #   - Broken Hub proxy imports
 #   - Frontend build failures
+#   - engine/ imports via engine. prefix (dual-load isinstance bug)
 #
-# Three jobs run in parallel on every PR touching develop or main.
+# Jobs run in parallel on every PR touching develop or main.
 # No path filters by design — a frontend-only PR that breaks hub imports
 # will still fail fast at PR time rather than on the production box.
 #
@@ -90,6 +91,25 @@ jobs:
         run: |
           python -c "import main"
           python -c "import api.margin"
+
+  engine-canonical-imports:
+    name: Engine - canonical imports lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail if any file imports via engine. prefix
+        run: |
+          set -e
+          # Match only actual import statements (lines starting with optional
+          # whitespace then from/import) — not comments or string literals.
+          offenders=$(grep -rn "^\s*from engine\.\|^\s*import engine\." engine/ --include="*.py" || true)
+          if [ -n "$offenders" ]; then
+            echo "::error::Found imports via 'engine.' prefix. Use bare imports (from domain.X, not from engine.domain.X)."
+            echo "$offenders"
+            exit 1
+          fi
+          echo "Canonical imports OK."
 
   frontend:
     name: Frontend - build
