@@ -63,11 +63,7 @@ from signals.arb_scanner import ArbScanner
 from signals.cascade_detector import CascadeDetector
 from signals.regime_classifier import RegimeClassifier
 from signals.vpin import VPINCalculator
-from strategies.sub_dollar_arb import SubDollarArbStrategy
-from strategies.vpin_cascade import VPINCascadeStrategy
 from strategies.five_min_vpin import FiveMinVPINStrategy
-from strategies.timesfm_only import TimesFMOnlyStrategy
-from strategies.timesfm_multi_entry import TimesFMMultiEntryStrategy
 from signals.twap_delta import TWAPTracker
 from signals.timesfm_client import TimesFMClient
 
@@ -123,8 +119,6 @@ class Orchestrator:
 
         # ── TimesFM Client (v6.0, initialized early for FiveMinVPIN alerts) ──
         self._timesfm_client: Optional[TimesFMClient] = None
-        self._timesfm_strategy: Optional[TimesFMOnlyStrategy] = None
-        self._timesfm_multi: Optional[TimesFMMultiEntryStrategy] = None
 
         log.info("orchestrator.init", paper_mode=settings.paper_mode)
 
@@ -278,17 +272,7 @@ class Orchestrator:
             log.info("orchestrator.post_resolution_evaluator_enabled")
 
         # ── Strategies ─────────────────────────────────────────────────────────
-        self._arb_strategy = SubDollarArbStrategy(
-            order_manager=self._order_manager,
-            risk_manager=self._risk_manager,
-            poly_client=self._poly_client,
-        )
-        self._cascade_strategy = VPINCascadeStrategy(
-            order_manager=self._order_manager,
-            risk_manager=self._risk_manager,
-            poly_client=self._poly_client,
-            opinion_client=self._opinion_client,
-        )
+        # Legacy arb/cascade/timesfm strategies retired — registry handles all execution.
 
         # 5-minute Polymarket strategy (optional)
         self._five_min_strategy = None
@@ -904,8 +888,7 @@ class Orchestrator:
             await self._risk_manager.set_paper_bankroll(self._settings.paper_bankroll)
 
         # 3. Start strategies
-        await self._arb_strategy.start()
-        await self._cascade_strategy.start()
+        # Legacy arb/cascade/timesfm strategies retired — registry handles execution.
 
         # Start 5-min feed and strategy if enabled
         if self._five_min_feed and self._five_min_strategy:
@@ -913,15 +896,6 @@ class Orchestrator:
             self._tasks.append(
                 asyncio.create_task(self._five_min_feed.start(), name="feed:five_min")
             )
-
-        # Start v6.0 TimesFM-only strategy if enabled
-        if self._timesfm_strategy:
-            await self._timesfm_strategy.start()
-
-        # Start multi-entry TimesFM strategy
-        if self._timesfm_multi:
-            self._timesfm_multi.set_aggregator(self._aggregator)
-            await self._timesfm_multi.start()
 
         if self._fifteen_min_feed:
             self._tasks.append(
@@ -1304,14 +1278,8 @@ class Orchestrator:
             await self._playwright.stop()
 
         # Stop strategies
-        await self._arb_strategy.stop()
-        await self._cascade_strategy.stop()
+        # Legacy arb/cascade/timesfm strategies retired — registry handles execution.
 
-        # Stop v6.0 TimesFM strategy
-        if self._timesfm_strategy:
-            await self._timesfm_strategy.stop()
-        if self._timesfm_multi:
-            await self._timesfm_multi.stop()
         # Stop 5-min strategy and feed
         if self._five_min_strategy:
             await self._five_min_strategy.stop()
@@ -2290,7 +2258,7 @@ class Orchestrator:
                 if not (
                     self._use_strategy_registry
                     and self._strategy_registry is not None
-                    and os.environ.get("ENGINE_REGISTRY_EXECUTE", "false").lower()
+                    and os.environ.get("ENGINE_REGISTRY_EXECUTE", "true").lower()
                     == "true"
                 ):
                     # Legacy fallback path only.
@@ -2304,26 +2272,6 @@ class Orchestrator:
                     state=state_value,
                 )
             self._five_min_strategy.trim_recent_windows(20)
-
-    # ─── v6.0 TimesFM Window Evaluation ──────────────────────────────────────
-
-    async def _evaluate_timesfm_window(self, window) -> None:
-        """
-        Evaluate a window with the v6.0 TimesFM-only strategy.
-        Runs in parallel with v5.7c — independent paper trades.
-        """
-        try:
-            state = await self._aggregator.get_state()
-            # Register window for token ID lookup in TimesFM strategy
-            if self._timesfm_strategy:
-                self._timesfm_strategy._recent_windows.append(window)
-                if len(self._timesfm_strategy._recent_windows) > 20:
-                    self._timesfm_strategy._recent_windows = (
-                        self._timesfm_strategy._recent_windows[-20:]
-                    )
-                await self._timesfm_strategy.evaluate_window(window, state)
-        except Exception as exc:
-            log.warning("timesfm.evaluate_error", asset=window.asset, error=str(exc))
 
     # ─── Order Resolution Callback ────────────────────────────────────────────
 
@@ -3844,7 +3792,7 @@ class Orchestrator:
 
         Strategies run concurrently per state update.
         """
-        strategies = [self._arb_strategy, self._cascade_strategy]
+        strategies = []
 
         # Add 5-min strategy if enabled
         if self._five_min_strategy:
