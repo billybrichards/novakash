@@ -667,80 +667,191 @@ class StrategyRegistry:
             # Source agreement
             sources_agree = self._check_source_agreement(surface)
 
-            # Build per-strategy decision lines with YAML config context
-            decision_lines = []
-            decisions_text_parts = []
-            trade_lines = []
-            blocked_signal_lines = []
-            blocked_timing_lines = []
-            off_window_strategies = []
+            # Prior trades in this window (per-strategy earliest TRADE offset)
+            # Resolves the "Inactive this offset → later LOSS" contradiction:
+            # a LIVE strategy that already traded at an earlier offset moves to
+            # the "Already traded this window" bucket instead of being shown as
+            # inactive at the current (post-trade) offset.
+            traded_earlier: dict[str, int] = {}
+            if self._decision_repo is not None:
+                try:
+                    prior = await self._decision_repo.get_decisions_for_window(
+                        asset=getattr(surface, "asset", "BTC"),
+                        window_ts=window_ts,
+                    )
+                    for rec in prior:
+                        if rec.action != "TRADE":
+                            continue
+                        off = rec.eval_offset
+                        if off is None or off <= eval_offset:
+                            continue
+                        existing = traded_earlier.get(rec.strategy_id)
+                        if existing is None or off > existing:
+                            traded_earlier[rec.strategy_id] = off
+                except Exception as exc:
+                    log.debug(
+                        "registry.summary_prior_lookup_error",
+                        error=str(exc)[:120],
+                    )
+
+            # Build per-strategy decision lines with YAML config context.
+            # Buckets split LIVE vs GHOST: only LIVE strategies surface in the
+            # actionable sections; GHOST strategies collapse to a single
+            # "Inactive (GHOST shadow)" line so the operator feed is not spammed.
+            decision_lines: list[str] = []
+            decisions_text_parts: list[str] = []
+            eligible_live: list[str] = []
+            blocked_signal_live: list[str] = []
+            blocked_exec_timing_live: list[str] = []
+            off_window_live: list[str] = []
+            already_traded_live: list[str] = []
+            ghost_shadow: list[str] = []
+
+            def _timing_bounds(cfg_obj) -> Optional[tuple[int, int]]:
+                if not cfg_obj or not getattr(cfg_obj, "gates", None):
+                    return None
+                for g in cfg_obj.gates:
+                    gtype = g.get("type") if isinstance(g, dict) else getattr(g, "type", None)
+                    if gtype != "timing":
+                        continue
+                    params = g.get("params", {}) if isinstance(g, dict) else getattr(g, "params", {}) or {}
+                    lo = params.get("min_offset")
+                    hi = params.get("max_offset")
+                    if lo is not None and hi is not None:
+                        return (int(lo), int(hi))
+                return None
+
+            def _is_exec_too_late(reason: str) -> bool:
+                # Execution-safety "too late" hooks (e.g. v4_fusion <70s) — must
+                # NOT match the YAML timing-gate outside-window reason.
+                return "too late" in reason and "outside window" not in reason
+
+            def _is_outside_window(reason: str) -> bool:
+                # YAML timing gate: "timing: T-N outside [min, max]"
+                if reason.startswith("timing:") and " outside [" in reason:
+                    return True
+                # Custom hook variant: "polymarket: timing=late -- outside window"
+                if "outside window" in reason:
+                    return True
+                return False
+
             for d in decisions:
                 cfg = self._configs.get(d.strategy_id)
                 mode = cfg.mode if cfg else "?"
                 sid = d.strategy_id
+                bounds = _timing_bounds(cfg)
+                bounds_str = f"[T-{bounds[0]}..T-{bounds[1]}]" if bounds else ""
 
-                # Build gate config summary for Haiku context
+                # Gate summary for Haiku context (unchanged)
                 gate_summary = ""
                 if cfg and hasattr(cfg, "gates") and cfg.gates:
                     gate_parts = []
                     for g in cfg.gates:
-                        gtype = getattr(g, "type", str(g))
-                        params = getattr(g, "params", {})
+                        gtype = getattr(g, "type", str(g)) if not isinstance(g, dict) else g.get("type", "?")
+                        params = getattr(g, "params", {}) if not isinstance(g, dict) else g.get("params", {})
                         gate_parts.append(f"{gtype}({params})")
                     gate_summary = " | ".join(gate_parts)
 
+                # GHOST strategies: always collapse into shadow list regardless of
+                # outcome. Operator doesn't need per-ghost per-offset noise.
+                if mode == "GHOST":
+                    tag = ""
+                    if d.action == "TRADE":
+                        tag = f" (ghost-TRADE {d.direction})"
+                    ghost_shadow.append(f"{sid}{tag}")
+                    decisions_text_parts.append(
+                        f"{sid} (GHOST) [gates: {gate_summary}]: "
+                        f"{d.action} {d.direction or ''} — {d.skip_reason or d.entry_reason or ''}"
+                    )
+                    continue
+
+                # LIVE strategies: route into actionable buckets
+                earlier_off = traded_earlier.get(sid)
                 if d.action == "TRADE":
-                    line = f"  {sid} ({mode}): TRADE {d.direction}"
+                    line = f"  {sid} (LIVE): TRADE {d.direction}"
                     if d.confidence:
                         line += f" | conf={d.confidence}"
-                    trade_lines.append(line)
+                    eligible_live.append(line)
                     decisions_text_parts.append(
-                        f"{sid} ({mode}) [gates: {gate_summary}]: "
+                        f"{sid} (LIVE) [gates: {gate_summary}]: "
                         f"TRADING {d.direction}, confidence={d.confidence or '?'}"
                     )
                 elif d.action == "SKIP":
                     reason = d.skip_reason or "unknown"
-                    # Pure timing-window misses are usually noise in Telegram.
-                    # Collapse them into one "off-window" summary later.
-                    if reason.startswith("timing:") and " outside [" in reason:
-                        off_window_strategies.append(f"{sid} ({mode})")
-                    elif "too late" in reason or "timing=late" in reason:
-                        blocked_timing_lines.append(f"  {sid} ({mode}): {reason}")
-                    else:
-                        line = f"  {sid} ({mode}): {reason}"
-                        blocked_signal_lines.append(line)
+                    # If this LIVE strategy already traded earlier in the same
+                    # window, surface that instead of the current skip reason.
+                    if earlier_off is not None:
+                        already_traded_live.append(
+                            f"  {sid} (LIVE): traded at T-{earlier_off}"
+                        )
                         decisions_text_parts.append(
-                            f"{sid} ({mode}) [gates: {gate_summary}]: SKIPPED — {reason}"
+                            f"{sid} (LIVE): already traded this window at T-{earlier_off}"
+                        )
+                    elif _is_exec_too_late(reason):
+                        blocked_exec_timing_live.append(f"  {sid} (LIVE): {reason}")
+                        decisions_text_parts.append(
+                            f"{sid} (LIVE) [gates: {gate_summary}]: "
+                            f"EXEC TIMING — {reason}"
+                        )
+                    elif _is_outside_window(reason):
+                        suffix = f" {bounds_str}" if bounds_str else ""
+                        off_window_live.append(f"{sid} (LIVE){suffix}")
+                    else:
+                        blocked_signal_live.append(f"  {sid} (LIVE): {reason}")
+                        decisions_text_parts.append(
+                            f"{sid} (LIVE) [gates: {gate_summary}]: SKIPPED — {reason}"
                         )
                 else:
-                    blocked_signal_lines.append(f"  {sid} ({mode}): ERROR")
-                    decisions_text_parts.append(f"{sid} ({mode}): Error")
+                    blocked_signal_live.append(f"  {sid} (LIVE): ERROR")
+                    decisions_text_parts.append(f"{sid} (LIVE): Error")
 
-            if trade_lines:
-                decision_lines.append("Eligible now:")
-                decision_lines.extend(trade_lines)
+            # Window header: open price + bounds for context
+            open_p = getattr(surface, "open_price", None)
+            cur_p = getattr(surface, "current_price", None)
+            if open_p:
+                header_bits = [f"Open ${open_p:,.2f}"]
+                if cur_p:
+                    header_bits.append(f"Now ${cur_p:,.2f}")
+                header_bits.append(f"T-{eval_offset}")
+                decision_lines.append(" | ".join(header_bits))
+                decision_lines.append("")
 
-            if blocked_signal_lines:
+            if eligible_live:
+                decision_lines.append("Eligible now (tradable):")
+                decision_lines.extend(eligible_live)
+
+            if blocked_signal_live:
                 if decision_lines:
                     decision_lines.append("")
                 decision_lines.append("Blocked by signal:")
-                decision_lines.extend(blocked_signal_lines)
+                decision_lines.extend(blocked_signal_live)
 
-            if blocked_timing_lines:
+            if blocked_exec_timing_live:
                 if decision_lines:
                     decision_lines.append("")
-                decision_lines.append("Blocked by timing:")
-                decision_lines.extend(blocked_timing_lines)
+                decision_lines.append("Blocked by execution timing:")
+                decision_lines.extend(blocked_exec_timing_live)
 
-            if off_window_strategies:
-                joined = ", ".join(off_window_strategies)
+            if off_window_live:
                 if decision_lines:
                     decision_lines.append("")
-                decision_lines.append(f"Inactive this offset:")
-                decision_lines.append(f"  {joined}")
+                decision_lines.append("Off-window this offset:")
+                decision_lines.append(f"  {', '.join(off_window_live)}")
                 decisions_text_parts.append(
-                    "off-window strategies this eval: " + joined
+                    "off-window LIVE strategies this eval: " + ", ".join(off_window_live)
                 )
+
+            if already_traded_live:
+                if decision_lines:
+                    decision_lines.append("")
+                decision_lines.append("Already traded this window:")
+                decision_lines.extend(already_traded_live)
+
+            if ghost_shadow:
+                if decision_lines:
+                    decision_lines.append("")
+                decision_lines.append("Inactive (GHOST shadow):")
+                decision_lines.append(f"  {', '.join(ghost_shadow)}")
 
             # Infer timescale from decisions (15m strategies have v15m_ prefix)
             inferred_tf = (
