@@ -107,6 +107,7 @@ def _parse_reset_seconds(exc_str: str) -> Optional[int]:
         return None
     return n
 
+
 # ── Contract Addresses (Polygon Mainnet) ──────────────────────────────────────
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
@@ -178,7 +179,11 @@ class PositionRedeemer:
         self._private_key = private_key
         self._proxy_address = proxy_address
         self._paper_mode = paper_mode
-        self._builder_key = builder_key or os.environ.get("BUILDER_API_KEY", "") or os.environ.get("BUILDER_KEY", "")
+        self._builder_key = (
+            builder_key
+            or os.environ.get("BUILDER_API_KEY", "")
+            or os.environ.get("BUILDER_KEY", "")
+        )
         self._builder_secret = os.environ.get("BUILDER_SECRET", "")
         self._builder_passphrase = os.environ.get("BUILDER_PASSPHRASE", "")
         self._w3 = None
@@ -196,6 +201,39 @@ class PositionRedeemer:
         # Throttle for "cooldown active" log lines so the engine log
         # doesn't fill up during a multi-hour 429 window.
         self._last_cooldown_log_at: Optional[datetime] = None
+        self._daily_quota_limit: int = int(
+            os.environ.get("REDEEM_DAILY_LIMIT", "100") or 100
+        )
+        self._last_loss_sweep_at: Optional[datetime] = None
+
+    @property
+    def daily_quota_limit(self) -> int:
+        return self._daily_quota_limit
+
+    def cooldown_status(self) -> dict:
+        if not self._rate_limit_until:
+            return {
+                "active": False,
+                "remaining_seconds": 0,
+                "resets_at": None,
+                "reason": "",
+            }
+        now = datetime.now(timezone.utc)
+        return {
+            "active": self._in_cooldown(),
+            "remaining_seconds": max(
+                0, int((self._rate_limit_until - now).total_seconds())
+            ),
+            "resets_at": self._rate_limit_until.isoformat(),
+            "reason": self._rate_limit_reason,
+        }
+
+    def losses_due(self, interval_hours: int = 24) -> bool:
+        if self._last_loss_sweep_at is None:
+            return True
+        return datetime.now(timezone.utc) - self._last_loss_sweep_at >= timedelta(
+            hours=interval_hours
+        )
 
     # ── Cooldown helpers ──────────────────────────────────────────────────────
 
@@ -294,10 +332,13 @@ class PositionRedeemer:
             from py_builder_signing_sdk.config import BuilderConfig
 
             if not self._builder_key:
-                self._log.warning("redeemer.no_builder_key", hint="Set BUILDER_KEY env var")
+                self._log.warning(
+                    "redeemer.no_builder_key", hint="Set BUILDER_KEY env var"
+                )
                 return
 
             from py_builder_signing_sdk.sdk_types import BuilderApiKeyCreds
+
             creds = BuilderApiKeyCreds(
                 key=self._builder_key,
                 secret=self._builder_secret,
@@ -307,6 +348,7 @@ class PositionRedeemer:
                 local_builder_creds=creds,
             )
             from py_builder_relayer_client.models import RelayerTxType
+
             self._relay_client = RelayClient(
                 relayer_url="https://relayer-v2.polymarket.com",
                 chain_id=137,
@@ -335,7 +377,11 @@ class PositionRedeemer:
             self._log.debug("redeemer.usdc_balance_error", error=str(exc))
             return 0.0
 
-    async def fetch_redeemable_positions(self) -> list[dict]:
+    async def fetch_redeemable_positions(
+        self,
+        outcomes: Optional[set[str]] = None,
+        limit: Optional[int] = None,
+    ) -> list[dict]:
         """
         Fetch positions from Polymarket data API and filter for redeemable ones.
 
@@ -359,9 +405,13 @@ class PositionRedeemer:
             headers = {"User-Agent": "NovakashEngine/1.0"}
 
             async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=15)
+                ) as resp:
                     if resp.status != 200:
-                        self._log.warning("redeemer.positions_api_error", status=resp.status)
+                        self._log.warning(
+                            "redeemer.positions_api_error", status=resp.status
+                        )
                         return []
                     positions = await resp.json()
 
@@ -390,7 +440,7 @@ class PositionRedeemer:
                 avg_price = float(p.get("avgPrice", 0))
                 pnl = (size * cur_price) - (size * avg_price)
 
-                redeemable.append({
+                row = {
                     "conditionId": condition_id,
                     "size": size,
                     "avgPrice": avg_price,
@@ -399,7 +449,20 @@ class PositionRedeemer:
                     "pnl": pnl,
                     "tokenId": p.get("tokenId", ""),
                     "asset": p.get("asset", ""),
-                })
+                }
+                if outcomes is None or outcome in outcomes:
+                    redeemable.append(row)
+
+            # Prioritise cash-returning wins and larger-value positions first.
+            redeemable.sort(
+                key=lambda p: (
+                    0 if p["outcome"] == "WIN" else 1,
+                    -(p["size"] * p["curPrice"]),
+                    -abs(p["pnl"]),
+                )
+            )
+            if limit is not None:
+                redeemable = redeemable[:limit]
 
             self._log.info(
                 "redeemer.scan_complete",
@@ -413,6 +476,138 @@ class PositionRedeemer:
         except Exception as exc:
             self._log.error("redeemer.scan_error", error=str(exc))
             return []
+
+    def _empty_result(self, redeem_type: str) -> dict:
+        return {
+            "redeem_type": redeem_type,
+            "scanned": 0,
+            "redeemed": 0,
+            "failed": 0,
+            "wins": 0,
+            "losses": 0,
+            "total_pnl": 0.0,
+            "total_value": 0.0,
+            "usdc_before": 0.0,
+            "usdc_after": 0.0,
+            "tx_hashes": [],
+            "details": [],
+            "paper_mode": self._paper_mode,
+        }
+
+    async def _redeem_positions(
+        self,
+        *,
+        positions: list[dict],
+        redeem_type: str,
+    ) -> dict:
+        if self._paper_mode:
+            return self._empty_result(redeem_type)
+        if self._in_cooldown():
+            self._log_cooldown_active()
+            result = self._empty_result(redeem_type)
+            result.update(self.cooldown_status())
+            result["paper_mode"] = False
+            return result
+
+        usdc_before = await self.get_usdc_balance()
+        if not positions:
+            result = self._empty_result(redeem_type)
+            result.update(
+                {
+                    "usdc_before": usdc_before,
+                    "usdc_after": usdc_before,
+                    "paper_mode": False,
+                }
+            )
+            return result
+
+        redeemed = 0
+        failed = 0
+        wins = 0
+        losses = 0
+        total_pnl = 0.0
+        total_value = 0.0
+        details: list[dict] = []
+
+        for pos in positions:
+            try:
+                success = await self.redeem_position(pos["conditionId"])
+                details.append(
+                    {
+                        "conditionId": pos["conditionId"],
+                        "outcome": pos["outcome"],
+                        "pnl": pos["pnl"],
+                        "success": success,
+                    }
+                )
+                if success:
+                    redeemed += 1
+                    total_pnl += pos["pnl"]
+                    total_value += pos["size"] * pos["curPrice"]
+                    if pos["outcome"] == "WIN":
+                        wins += 1
+                    else:
+                        losses += 1
+                else:
+                    failed += 1
+            except Exception as exc:
+                self._log.error(
+                    "redeemer.sweep_position_error",
+                    condition=pos.get("conditionId", "?")[:20],
+                    error=str(exc),
+                )
+                failed += 1
+                details.append(
+                    {
+                        "conditionId": pos.get("conditionId"),
+                        "outcome": pos.get("outcome"),
+                        "pnl": pos.get("pnl"),
+                        "success": False,
+                        "error": str(exc)[:120],
+                    }
+                )
+            await asyncio.sleep(2)
+
+        usdc_after = await self.get_usdc_balance()
+        self._log.info(
+            "redeemer.sweep_complete",
+            redeem_type=redeem_type,
+            redeemed=redeemed,
+            wins=wins,
+            losses=losses,
+            failed=failed,
+            total_pnl=f"${total_pnl:.2f}",
+            usdc_change=f"${usdc_after - usdc_before:.2f}",
+        )
+        return {
+            "redeem_type": redeem_type,
+            "scanned": len(positions),
+            "redeemed": redeemed,
+            "failed": failed,
+            "wins": wins,
+            "losses": losses,
+            "total_pnl": total_pnl,
+            "total_value": total_value,
+            "usdc_before": usdc_before,
+            "usdc_after": usdc_after,
+            "tx_hashes": [],
+            "details": details,
+            "paper_mode": False,
+        }
+
+    async def redeem_wins(self, max_positions: int = 2) -> dict:
+        positions = await self.fetch_redeemable_positions(
+            outcomes={"WIN"}, limit=max_positions
+        )
+        return await self._redeem_positions(positions=positions, redeem_type="wins")
+
+    async def redeem_losses(self, max_positions: int = 25) -> dict:
+        positions = await self.fetch_redeemable_positions(
+            outcomes={"LOSS"}, limit=max_positions
+        )
+        result = await self._redeem_positions(positions=positions, redeem_type="losses")
+        self._last_loss_sweep_at = datetime.now(timezone.utc)
+        return result
 
     async def redeem_position(self, condition_id: str) -> bool:
         """
@@ -447,9 +642,9 @@ class PositionRedeemer:
             # Build redeemPositions calldata
             fn = self._ctf.functions.redeemPositions(
                 Web3.to_checksum_address(USDC_ADDRESS),
-                zero_bytes32,   # parentCollectionId (0 for root collection)
-                cid_bytes,      # conditionId
-                [1, 2],         # indexSets: YES=1, NO=2
+                zero_bytes32,  # parentCollectionId (0 for root collection)
+                cid_bytes,  # conditionId
+                [1, 2],  # indexSets: YES=1, NO=2
             )
             calldata = fn._encode_transaction_data()
 
@@ -461,9 +656,7 @@ class PositionRedeemer:
             )
 
             # Execute via relay (synchronous SDK call — handles signing internally)
-            response = await asyncio.to_thread(
-                self._relay_client.execute, [txn]
-            )
+            response = await asyncio.to_thread(self._relay_client.execute, [txn])
 
             tx_id = getattr(response, "transactionId", None)
             tx_hash = getattr(response, "transactionHash", None)
@@ -485,8 +678,8 @@ class PositionRedeemer:
                 tx_id,
                 ["CONFIRMED"],
                 "FAILED",
-                20,     # max_polls
-                3000,   # poll_frequency ms
+                20,  # max_polls
+                3000,  # poll_frequency ms
             )
 
             success = bool(confirmed)
@@ -537,109 +730,5 @@ class PositionRedeemer:
             "paper_mode": bool,
         }
         """
-        if self._paper_mode:
-            return {
-                "scanned": 0,
-                "redeemed": 0,
-                "failed": 0,
-                "wins": 0,
-                "losses": 0,
-                "total_pnl": 0.0,
-                "usdc_before": 0.0,
-                "usdc_after": 0.0,
-                "tx_hashes": [],
-                "paper_mode": True,
-            }
-
-        # Pre-flight cooldown check: if we already know we're rate-limited,
-        # skip the scan entirely so we don't even burn a positions-API call.
-        if self._in_cooldown():
-            self._log_cooldown_active()
-            return {
-                "scanned": 0,
-                "redeemed": 0,
-                "failed": 0,
-                "wins": 0,
-                "losses": 0,
-                "total_pnl": 0.0,
-                "usdc_before": 0.0,
-                "usdc_after": 0.0,
-                "tx_hashes": [],
-                "paper_mode": False,
-                "cooldown_active": True,
-                "cooldown_remaining_seconds": int(
-                    (self._rate_limit_until - datetime.now(timezone.utc)).total_seconds()
-                ) if self._rate_limit_until else 0,
-            }
-
-        usdc_before = await self.get_usdc_balance()
-
         positions = await self.fetch_redeemable_positions()
-        if not positions:
-            return {
-                "scanned": 0,
-                "redeemed": 0,
-                "failed": 0,
-                "wins": 0,
-                "losses": 0,
-                "total_pnl": 0.0,
-                "usdc_before": usdc_before,
-                "usdc_after": usdc_before,
-                "tx_hashes": [],
-                "paper_mode": False,
-            }
-
-        redeemed = 0
-        failed = 0
-        wins = 0
-        losses = 0
-        total_pnl = 0.0
-        tx_hashes: list[str] = []
-
-        for pos in positions:
-            try:
-                success = await self.redeem_position(pos["conditionId"])
-                if success:
-                    redeemed += 1
-                    total_pnl += pos["pnl"]
-                    if pos["outcome"] == "WIN":
-                        wins += 1
-                    else:
-                        losses += 1
-                else:
-                    failed += 1
-            except Exception as exc:
-                self._log.error(
-                    "redeemer.sweep_position_error",
-                    condition=pos.get("conditionId", "?")[:20],
-                    error=str(exc),
-                )
-                failed += 1
-
-            # Small delay between redemptions to avoid relay rate limits
-            await asyncio.sleep(2)
-
-        usdc_after = await self.get_usdc_balance()
-
-        self._log.info(
-            "redeemer.sweep_complete",
-            redeemed=redeemed,
-            wins=wins,
-            losses=losses,
-            failed=failed,
-            total_pnl=f"${total_pnl:.2f}",
-            usdc_change=f"${usdc_after - usdc_before:.2f}",
-        )
-
-        return {
-            "scanned": len(positions),
-            "redeemed": redeemed,
-            "failed": failed,
-            "wins": wins,
-            "losses": losses,
-            "total_pnl": total_pnl,
-            "usdc_before": usdc_before,
-            "usdc_after": usdc_after,
-            "tx_hashes": tx_hashes,
-            "paper_mode": False,
-        }
+        return await self._redeem_positions(positions=positions, redeem_type="all")

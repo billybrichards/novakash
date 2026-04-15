@@ -2753,6 +2753,12 @@ class Orchestrator:
                             if not want_paper and self._redeemer:
                                 try:
                                     self._redeemer._paper_mode = False
+                                    try:
+                                        self._redeemer._log = log.bind(
+                                            component="redeemer", paper_mode=False
+                                        )
+                                    except Exception:
+                                        pass
                                     await self._redeemer.connect()
                                     self._tasks.append(
                                         asyncio.create_task(
@@ -3570,34 +3576,119 @@ class Orchestrator:
     # ── Builder Relayer Redeemer Loop ───────────────────────────────────────
 
     async def _redeemer_loop(self) -> None:
-        """Auto-redeem settled positions every 5 minutes via Builder Relayer."""
-        REDEEM_INTERVAL = 300
+        """Quota-aware auto-redeem loop via Builder Relayer."""
+        REDEEM_INTERVAL = 900
         while not self._shutdown_event.is_set():
             try:
-                # Check for manual redeem request from Hub
+                manual_request = None
+                quota_used_today = 0
                 try:
-                    if await self._db.check_redeem_requested():
-                        log.info("orchestrator.manual_redeem_triggered")
+                    manual_request = await self._db.pop_redeem_request()
+                except Exception:
+                    pass
+                try:
+                    quota_used_today = await self._db.get_redeem_quota_usage_today()
                 except Exception:
                     pass
 
-                result = await self._redeemer.redeem_all()
+                try:
+                    cash = await self._redeemer.get_usdc_balance()
+                    portfolio = await self._poly_client.get_portfolio_value()
+                    positions = await self._poly_client.get_position_outcomes()
+                    redeemable_all = await self._redeemer.fetch_redeemable_positions()
+                    cooldown = self._redeemer.cooldown_status()
+                    await self._db.update_playwright_state(
+                        logged_in=False,
+                        browser_alive=False,
+                        usdc_balance=cash,
+                        positions_value=max(0.0, float(portfolio) - float(cash)),
+                        positions_json=list(positions.values())
+                        if isinstance(positions, dict)
+                        else positions,
+                        redeemable_json=redeemable_all,
+                        history_json=[],
+                        quota_used_today=quota_used_today,
+                        quota_limit=self._redeemer.daily_quota_limit,
+                        cooldown_until=cooldown.get("resets_at"),
+                        cooldown_reason=cooldown.get("reason"),
+                    )
+                except Exception as exc:
+                    log.debug(
+                        "orchestrator.redeemer_cache_update_failed",
+                        error=str(exc)[:120],
+                    )
+
+                if manual_request == "wins":
+                    result = await self._redeemer.redeem_wins(max_positions=10)
+                elif manual_request == "losses":
+                    result = await self._redeemer.redeem_losses(max_positions=25)
+                elif manual_request == "all":
+                    result = await self._redeemer.redeem_all()
+                elif quota_used_today >= max(0, self._redeemer.daily_quota_limit - 20):
+                    log.warning(
+                        "orchestrator.redeemer_budget_guard",
+                        quota_used_today=quota_used_today,
+                        daily_limit=self._redeemer.daily_quota_limit,
+                    )
+                    result = {
+                        "redeem_type": "wins",
+                        "scanned": 0,
+                        "redeemed": 0,
+                        "failed": 0,
+                        "wins": 0,
+                        "losses": 0,
+                        "total_pnl": 0.0,
+                        "usdc_before": 0.0,
+                        "usdc_after": 0.0,
+                        "details": [],
+                    }
+                else:
+                    result = await self._redeemer.redeem_wins(max_positions=2)
+                    if self._redeemer.losses_due(interval_hours=24):
+                        loss_result = await self._redeemer.redeem_losses(
+                            max_positions=10
+                        )
+                        result = {
+                            **result,
+                            "redeem_type": "wins+losses",
+                            "scanned": result.get("scanned", 0)
+                            + loss_result.get("scanned", 0),
+                            "redeemed": result.get("redeemed", 0)
+                            + loss_result.get("redeemed", 0),
+                            "failed": result.get("failed", 0)
+                            + loss_result.get("failed", 0),
+                            "wins": result.get("wins", 0) + loss_result.get("wins", 0),
+                            "losses": result.get("losses", 0)
+                            + loss_result.get("losses", 0),
+                            "total_pnl": result.get("total_pnl", 0.0)
+                            + loss_result.get("total_pnl", 0.0),
+                            "usdc_before": result.get("usdc_before", 0.0),
+                            "usdc_after": loss_result.get(
+                                "usdc_after", result.get("usdc_after", 0.0)
+                            ),
+                            "details": (
+                                result.get("details", [])
+                                + loss_result.get("details", [])
+                            ),
+                        }
 
                 # Always notify on sweep results
                 if self._alerter:
                     try:
                         redeemed = result.get("redeemed", 0)
                         failed = result.get("failed", 0)
-                        total = result.get("total_positions", 0)
+                        total = result.get("scanned", 0)
                         wins = result.get("wins", 0)
                         losses = result.get("losses", 0)
                         pnl = result.get("total_pnl", 0)
-                        usdc = result.get("usdc_change", 0)
+                        usdc = float(result.get("usdc_after", 0) or 0) - float(
+                            result.get("usdc_before", 0) or 0
+                        )
 
                         if redeemed > 0 or failed > 0:
                             await self._alerter._send_with_id(
                                 f"🔄 *REDEMPTION SWEEP* 🔴 LIVE\n\n"
-                                f"Positions: `{total}` | Redeemed: `{redeemed}` | Failed: `{failed}`\n"
+                                f"Type: `{result.get('redeem_type', 'all')}` | Positions: `{total}` | Redeemed: `{redeemed}` | Failed: `{failed}`\n"
                                 f"Wins: `{wins}` | Losses: `{losses}`\n"
                                 f"P&L: `${pnl:+.2f}` | USDC change: `${usdc:+.2f}`\n"
                             )

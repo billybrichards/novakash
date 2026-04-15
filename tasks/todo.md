@@ -43,6 +43,37 @@
 - [ ] Phase 3: add query use case and Telegram formatter based on grouped traces
 - [ ] Phase 4: add resolution linkage + post-window review card / API endpoint
 
+## Redeemer Controls + Reconciliation Fix Plan — 2026-04-15
+
+### Goal
+- [ ] Fix live reconciliation so resolved positions map back to trades reliably
+- [ ] Make redeemer quota-aware for 100 relayer tx/day
+- [ ] Expose manual redeem controls and wallet stats through Hub API and frontend top bar
+
+### Clean Architecture Slices
+- [ ] Domain: keep redemption policy decisions as pure rules (wins frequent, losses deferred, quota budget)
+- [ ] Application: add explicit redeem request / status use cases instead of wiring UI directly to persistence flags
+- [ ] Infrastructure: implement PG trade lookup by token_id and redemption control storage
+- [ ] Presentation: Hub API endpoints + frontend top bar controls only call use cases / repos, no embedded trading logic
+
+### Backend Implementation
+- [ ] Add `PgTradeRepository.find_by_token_id` to fix reconciler live resolution bug
+- [ ] Extend redeem control storage with request type (`wins`, `losses`, `all`) and quota/status metadata
+- [ ] Add daily quota accounting from redeem events / attempts
+- [ ] Change auto policy: redeem wins every 15m, max 2 per sweep, losses daily/manual only
+- [ ] Add structured redeemer status payload: cash, portfolio, open positions, redeemable wins, redeemable losses, cooldown, quota used today
+
+### Hub API
+- [ ] `GET /api/system/redeemer-status`
+- [ ] `POST /api/system/redeem/wins`
+- [ ] `POST /api/system/redeem/losses`
+- [ ] `POST /api/system/redeem/all`
+
+### Frontend Top Bar
+- [ ] Add compact wallet card in app top bar with cash / portfolio / open positions / redeemable wins / redeemable losses / cooldown
+- [ ] Add buttons: `Redeem Wins`, `Redeem Losses`, `Redeem All`
+- [ ] Surface cooldown/quota warnings clearly so operators understand when redemptions are deferred
+
 ### Review Notes
 - Current Telegram summaries over-emphasize obvious timing misses because only final skip reasons are surfaced.
 - The better model is window-centric: one row per eval tick, many per-strategy decision rows, many per-gate check rows, then one final outcome row.
