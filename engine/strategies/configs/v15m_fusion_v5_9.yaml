@@ -1,6 +1,6 @@
 name: v15m_fusion_v5_9
 version: "2.0.0"
-mode: LIVE
+mode: GHOST
 asset: BTC
 timescale: 15m
 
