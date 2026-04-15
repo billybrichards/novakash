@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.jwt import TokenData
@@ -24,6 +24,10 @@ router = APIRouter()
 
 class PaperModeRequest(BaseModel):
     enabled: bool
+
+
+class RedeemRequest(BaseModel):
+    redeem_type: str = "all"
 
 
 @router.get("/system/status")
@@ -136,3 +140,111 @@ async def set_paper_mode(
 
     mode = "enabled" if body.enabled else "disabled"
     return {"success": True, "message": f"Paper mode {mode}"}
+
+
+@router.get("/system/redeemer-status")
+async def get_redeemer_status(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    state_row = (
+        (
+            await session.execute(
+                text(
+                    """
+                SELECT usdc_balance, positions_value, positions_json, redeemable_json,
+                       quota_used_today, quota_limit, cooldown_until, cooldown_reason, updated_at
+                FROM playwright_state WHERE id = 1
+                """
+                )
+            )
+        )
+        .mappings()
+        .first()
+    )
+    latest_event = (
+        (
+            await session.execute(
+                text(
+                    """
+                SELECT redeem_type, redeemed_count, failed_count, total_value, details_json, created_at
+                FROM redeem_events ORDER BY created_at DESC LIMIT 1
+                """
+                )
+            )
+        )
+        .mappings()
+        .first()
+    )
+
+    if not state_row:
+        return {"success": False, "detail": "Redeemer state not available yet"}
+
+    positions = state_row["positions_json"] or []
+    redeemable = state_row["redeemable_json"] or []
+    redeemable_wins = [p for p in redeemable if p.get("outcome") == "WIN"]
+    redeemable_losses = [p for p in redeemable if p.get("outcome") == "LOSS"]
+    return {
+        "success": True,
+        "data": {
+            "cash_balance": state_row["usdc_balance"] or 0.0,
+            "positions_value": state_row["positions_value"] or 0.0,
+            "portfolio_value": (state_row["usdc_balance"] or 0.0)
+            + (state_row["positions_value"] or 0.0),
+            "open_positions": len(positions),
+            "redeemable_wins": len(redeemable_wins),
+            "redeemable_losses": len(redeemable_losses),
+            "quota_used_today": state_row["quota_used_today"] or 0,
+            "quota_limit": state_row["quota_limit"] or 100,
+            "cooldown_until": state_row["cooldown_until"].isoformat()
+            if state_row["cooldown_until"]
+            else None,
+            "cooldown_reason": state_row["cooldown_reason"] or "",
+            "latest_event": dict(latest_event) if latest_event else None,
+            "updated_at": state_row["updated_at"].isoformat()
+            if state_row["updated_at"]
+            else None,
+        },
+    }
+
+
+@router.post("/system/redeem/wins")
+async def request_redeem_wins(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    await session.execute(
+        text(
+            "UPDATE playwright_state SET redeem_requested = TRUE, redeem_request_type = 'wins', updated_at = NOW() WHERE id = 1"
+        )
+    )
+    await session.commit()
+    return {"success": True, "message": "Manual win redemption requested"}
+
+
+@router.post("/system/redeem/losses")
+async def request_redeem_losses(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    await session.execute(
+        text(
+            "UPDATE playwright_state SET redeem_requested = TRUE, redeem_request_type = 'losses', updated_at = NOW() WHERE id = 1"
+        )
+    )
+    await session.commit()
+    return {"success": True, "message": "Manual loss redemption requested"}
+
+
+@router.post("/system/redeem/all")
+async def request_redeem_all(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    await session.execute(
+        text(
+            "UPDATE playwright_state SET redeem_requested = TRUE, redeem_request_type = 'all', updated_at = NOW() WHERE id = 1"
+        )
+    )
+    await session.commit()
+    return {"success": True, "message": "Manual full redemption requested"}

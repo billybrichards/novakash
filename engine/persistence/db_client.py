@@ -39,7 +39,7 @@ class DBClient:
 
     def __init__(self, settings: Settings) -> None:
         # Use lowercase field from settings (pydantic model)
-                # Strip SQLAlchemy dialect prefix if present (asyncpg needs plain postgresql://)
+        # Strip SQLAlchemy dialect prefix if present (asyncpg needs plain postgresql://)
         dsn = settings.database_url
         if dsn.startswith("postgresql+asyncpg://"):
             dsn = dsn.replace("postgresql+asyncpg://", "postgresql://", 1)
@@ -149,7 +149,8 @@ class DBClient:
             if self._listen_callback and self._listen_channel:
                 try:
                     await self._listen_conn.remove_listener(
-                        self._listen_channel, self._listen_callback,
+                        self._listen_channel,
+                        self._listen_callback,
                     )
                 except Exception as exc:
                     log.debug("db.remove_listener_failed", error=str(exc))
@@ -233,6 +234,7 @@ class DBClient:
         try:
             # Convert unix float timestamps → datetime for TIMESTAMPTZ columns
             from datetime import datetime, timezone
+
             created_dt = (
                 datetime.fromtimestamp(order.created_at, tz=timezone.utc)
                 if isinstance(order.created_at, (int, float))
@@ -442,7 +444,14 @@ class DBClient:
             log.error("db.update_heartbeat_failed", error=str(exc))
             # Don't re-raise — heartbeat failure is not fatal
 
-    async def update_gamma_prices(self, window_ts: int, asset: str, timeframe: str, gamma_up: float, gamma_down: float) -> None:
+    async def update_gamma_prices(
+        self,
+        window_ts: int,
+        asset: str,
+        timeframe: str,
+        gamma_up: float,
+        gamma_down: float,
+    ) -> None:
         """Store fresh T-60 Gamma prices to window_snapshot."""
         if not self._pool:
             return
@@ -450,7 +459,11 @@ class DBClient:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     "UPDATE window_snapshots SET gamma_up_price = $1, gamma_down_price = $2 WHERE window_ts = $3 AND asset = $4 AND timeframe = $5",
-                    gamma_up, gamma_down, window_ts, asset, timeframe
+                    gamma_up,
+                    gamma_down,
+                    window_ts,
+                    asset,
+                    timeframe,
                 )
         except Exception:
             pass
@@ -465,7 +478,10 @@ class DBClient:
                     "SELECT paper_enabled, live_enabled FROM system_state WHERE id = 1"
                 )
                 if row:
-                    return {"paper_enabled": row["paper_enabled"], "live_enabled": row["live_enabled"]}
+                    return {
+                        "paper_enabled": row["paper_enabled"],
+                        "live_enabled": row["live_enabled"],
+                    }
         except Exception:
             pass
         return None
@@ -516,10 +532,10 @@ class DBClient:
 
         set_clause = ", ".join(updates)
         query = f"""
-            INSERT INTO system_state (id, engine_status, {', '.join(
-                c.split(' = ')[0] for c in updates
-            )})
-            VALUES (1, 'running', {', '.join(f'${i+1}' for i in range(len(params)))})
+            INSERT INTO system_state (id, engine_status, {
+            ", ".join(c.split(" = ")[0] for c in updates)
+        })
+            VALUES (1, 'running', {", ".join(f"${i + 1}" for i in range(len(params)))})
             ON CONFLICT (id) DO UPDATE SET {set_clause}
         """
 
@@ -550,19 +566,35 @@ class DBClient:
                     history_json JSONB DEFAULT '[]'::jsonb,
                     screenshot_png BYTEA,
                     redeem_requested BOOLEAN DEFAULT FALSE,
+                    redeem_request_type TEXT DEFAULT 'all',
+                    quota_used_today INTEGER DEFAULT 0,
+                    quota_limit INTEGER DEFAULT 100,
+                    cooldown_until TIMESTAMPTZ,
+                    cooldown_reason TEXT,
                     updated_at TIMESTAMPTZ DEFAULT NOW()
                 );
                 INSERT INTO playwright_state (id) VALUES (1) ON CONFLICT DO NOTHING;
             """)
             await conn.execute("""
+                ALTER TABLE playwright_state ADD COLUMN IF NOT EXISTS redeem_request_type TEXT DEFAULT 'all';
+                ALTER TABLE playwright_state ADD COLUMN IF NOT EXISTS quota_used_today INTEGER DEFAULT 0;
+                ALTER TABLE playwright_state ADD COLUMN IF NOT EXISTS quota_limit INTEGER DEFAULT 100;
+                ALTER TABLE playwright_state ADD COLUMN IF NOT EXISTS cooldown_until TIMESTAMPTZ;
+                ALTER TABLE playwright_state ADD COLUMN IF NOT EXISTS cooldown_reason TEXT;
+            """)
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS redeem_events (
                     id SERIAL PRIMARY KEY,
+                    redeem_type TEXT DEFAULT 'all',
                     redeemed_count INTEGER DEFAULT 0,
                     failed_count INTEGER DEFAULT 0,
                     total_value DOUBLE PRECISION DEFAULT 0,
                     details_json JSONB DEFAULT '[]'::jsonb,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
+            """)
+            await conn.execute("""
+                ALTER TABLE redeem_events ADD COLUMN IF NOT EXISTS redeem_type TEXT DEFAULT 'all';
             """)
         log.info("db.playwright_tables_ensured")
 
@@ -576,6 +608,10 @@ class DBClient:
         redeemable_json: Optional[list] = None,
         history_json: Optional[list] = None,
         screenshot_png: Optional[bytes] = None,
+        quota_used_today: Optional[int] = None,
+        quota_limit: Optional[int] = None,
+        cooldown_until: Optional[datetime] = None,
+        cooldown_reason: Optional[str] = None,
     ) -> None:
         """Upsert the playwright_state singleton row."""
         if not self._pool:
@@ -590,15 +626,25 @@ class DBClient:
                             usdc_balance = $3, positions_value = $4,
                             positions_json = $5, redeemable_json = $6,
                             history_json = $7, screenshot_png = $8,
+                            quota_used_today = COALESCE($9, quota_used_today),
+                            quota_limit = COALESCE($10, quota_limit),
+                            cooldown_until = COALESCE($11, cooldown_until),
+                            cooldown_reason = COALESCE($12, cooldown_reason),
                             updated_at = NOW()
                         WHERE id = 1
                         """,
-                        logged_in, browser_alive,
-                        usdc_balance, positions_value,
+                        logged_in,
+                        browser_alive,
+                        usdc_balance,
+                        positions_value,
                         json.dumps(positions_json or []),
                         json.dumps(redeemable_json or []),
                         json.dumps(history_json or []),
                         screenshot_png,
+                        quota_used_today,
+                        quota_limit,
+                        cooldown_until,
+                        cooldown_reason,
                     )
                 else:
                     await conn.execute(
@@ -608,17 +654,57 @@ class DBClient:
                             usdc_balance = $3, positions_value = $4,
                             positions_json = $5, redeemable_json = $6,
                             history_json = $7,
+                            quota_used_today = COALESCE($8, quota_used_today),
+                            quota_limit = COALESCE($9, quota_limit),
+                            cooldown_until = COALESCE($10, cooldown_until),
+                            cooldown_reason = COALESCE($11, cooldown_reason),
                             updated_at = NOW()
                         WHERE id = 1
                         """,
-                        logged_in, browser_alive,
-                        usdc_balance, positions_value,
+                        logged_in,
+                        browser_alive,
+                        usdc_balance,
+                        positions_value,
                         json.dumps(positions_json or []),
                         json.dumps(redeemable_json or []),
                         json.dumps(history_json or []),
+                        quota_used_today,
+                        quota_limit,
+                        cooldown_until,
+                        cooldown_reason,
                     )
         except Exception as e:
             log.error("db.playwright_state.error", error=str(e))
+
+    async def request_redeem(self, redeem_type: str = "all") -> None:
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE playwright_state SET redeem_requested = TRUE, redeem_request_type = $1, updated_at = NOW() WHERE id = 1",
+                    redeem_type,
+                )
+        except Exception as e:
+            log.error("db.request_redeem.error", error=str(e))
+
+    async def pop_redeem_request(self) -> Optional[str]:
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT redeem_requested, redeem_request_type FROM playwright_state WHERE id = 1"
+                )
+                if row and row["redeem_requested"]:
+                    redeem_type = row["redeem_request_type"] or "all"
+                    await conn.execute(
+                        "UPDATE playwright_state SET redeem_requested = FALSE, redeem_request_type = 'all' WHERE id = 1"
+                    )
+                    return redeem_type
+        except Exception as e:
+            log.error("db.pop_redeem_request.error", error=str(e))
+        return None
 
     async def check_redeem_requested(self) -> bool:
         """Check if a manual redeem was requested via Hub API."""
@@ -646,9 +732,10 @@ class DBClient:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     """
-                    INSERT INTO redeem_events (redeemed_count, failed_count, total_value, details_json)
-                    VALUES ($1, $2, $3, $4)
+                    INSERT INTO redeem_events (redeem_type, redeemed_count, failed_count, total_value, details_json)
+                    VALUES ($1, $2, $3, $4, $5)
                     """,
+                    result.get("redeem_type", "all"),
                     result.get("redeemed", 0),
                     result.get("failed", 0),
                     result.get("total_value", 0.0),
@@ -656,6 +743,36 @@ class DBClient:
                 )
         except Exception as e:
             log.error("db.redeem_event.error", error=str(e))
+
+    async def get_redeem_quota_usage_today(self) -> int:
+        if not self._pool:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchval(
+                    """
+                    SELECT COALESCE(SUM(redeemed_count + failed_count), 0)
+                    FROM redeem_events
+                    WHERE created_at >= date_trunc('day', NOW())
+                    """
+                )
+                return int(row or 0)
+        except Exception as e:
+            log.error("db.redeem_quota_usage.error", error=str(e))
+            return 0
+
+    async def get_latest_redeem_event(self) -> Optional[dict]:
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT redeem_type, redeemed_count, failed_count, total_value, details_json, created_at FROM redeem_events ORDER BY created_at DESC LIMIT 1"
+                )
+                return dict(row) if row else None
+        except Exception as e:
+            log.error("db.latest_redeem_event.error", error=str(e))
+            return None
 
     # ─── Window Snapshots ────────────────────────────────────────────────────
 
@@ -755,7 +872,9 @@ class DBClient:
                     ("shadow_trade_entry_price", "DOUBLE PRECISION"),
                 ]:
                     try:
-                        await conn.execute(f"ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS {col} {col_type}")
+                        await conn.execute(
+                            f"ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS {col} {col_type}"
+                        )
                     except Exception:
                         pass  # Column already exists or not supported
             log.info("db.window_tables_ensured")
@@ -1007,8 +1126,13 @@ class DBClient:
         if not self._pool:
             return
         valid_cols = {
-            "chainlink_open", "chainlink_close", "tiingo_open", "tiingo_close",
-            "poly_resolved_outcome", "poly_up_price_final", "poly_down_price_final",
+            "chainlink_open",
+            "chainlink_close",
+            "tiingo_open",
+            "tiingo_close",
+            "poly_resolved_outcome",
+            "poly_up_price_final",
+            "poly_down_price_final",
         }
         updates = []
         params = []
@@ -1025,7 +1149,10 @@ class DBClient:
                 await conn.execute(
                     f"UPDATE window_snapshots SET {', '.join(updates)} "
                     f"WHERE window_ts = $1 AND asset = $2 AND timeframe = $3",
-                    window_ts, asset, timeframe, *params,
+                    window_ts,
+                    asset,
+                    timeframe,
+                    *params,
                 )
         except Exception as exc:
             log.error("db.update_window_prices_failed", error=str(exc)[:80])
@@ -1064,7 +1191,10 @@ class DBClient:
                 await conn.execute(
                     f"UPDATE window_snapshots SET {', '.join(updates)} "
                     f"WHERE window_ts = $1 AND asset = $2 AND timeframe = $3",
-                    window_ts, asset, timeframe, *params,
+                    window_ts,
+                    asset,
+                    timeframe,
+                    *params,
                 )
         except Exception as exc:
             log.error("db.update_window_resolution_extras_failed", error=str(exc)[:80])
@@ -1114,13 +1244,17 @@ class DBClient:
                         "macro_bias": row["bias"],
                         "macro_confidence": f"{row['confidence']}%",
                         "macro_gate": row["direction_gate"],
-                        "macro_reasoning": row["reasoning"][:100] if row["reasoning"] else "",
+                        "macro_reasoning": row["reasoning"][:100]
+                        if row["reasoning"]
+                        else "",
                     }
                 return None
         except Exception:
             return None
 
-    async def get_latest_clob_prices(self, asset: str = "BTC", max_age_seconds: int = 30) -> dict | None:
+    async def get_latest_clob_prices(
+        self, asset: str = "BTC", max_age_seconds: int = 30
+    ) -> dict | None:
         """Get the most recent CLOB book prices for an asset.
 
         Args:
@@ -1143,10 +1277,18 @@ class DBClient:
                 )
                 if row:
                     return {
-                        "clob_up_bid": float(row["up_best_bid"]) if row["up_best_bid"] else None,
-                        "clob_up_ask": float(row["up_best_ask"]) if row["up_best_ask"] else None,
-                        "clob_down_bid": float(row["down_best_bid"]) if row["down_best_bid"] else None,
-                        "clob_down_ask": float(row["down_best_ask"]) if row["down_best_ask"] else None,
+                        "clob_up_bid": float(row["up_best_bid"])
+                        if row["up_best_bid"]
+                        else None,
+                        "clob_up_ask": float(row["up_best_ask"])
+                        if row["up_best_ask"]
+                        else None,
+                        "clob_down_bid": float(row["down_best_bid"])
+                        if row["down_best_bid"]
+                        else None,
+                        "clob_down_ask": float(row["down_best_ask"])
+                        if row["down_best_ask"]
+                        else None,
                     }
                 return None
         except Exception:
@@ -1184,6 +1326,7 @@ class DBClient:
             return []
         try:
             from datetime import timezone, timedelta
+
             cutoff = datetime.now(timezone.utc) - timedelta(hours=hours_back)
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
@@ -1213,6 +1356,7 @@ class DBClient:
             return
         try:
             from datetime import timezone
+
             async with self._pool.acquire() as conn:
                 # Guard: do not expire trades with confirmed fills
                 row = await conn.fetchrow(
@@ -1238,7 +1382,10 @@ class DBClient:
                     datetime.now(timezone.utc),
                     order_id,
                 )
-            log.info("db.trade_marked_expired", order_id=order_id[:24] if len(order_id) > 24 else order_id)
+            log.info(
+                "db.trade_marked_expired",
+                order_id=order_id[:24] if len(order_id) > 24 else order_id,
+            )
         except Exception as exc:
             log.error("db.mark_trade_expired_failed", order_id=order_id, error=str(exc))
 
@@ -1255,6 +1402,7 @@ class DBClient:
             meta = trade_row.get("metadata") or {}
             if isinstance(meta, str):
                 import json as _j
+
                 try:
                     meta = _j.loads(meta)
                 except Exception:
@@ -1300,6 +1448,7 @@ class DBClient:
             return
         try:
             from datetime import timezone
+
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     """UPDATE trades
@@ -1325,7 +1474,11 @@ class DBClient:
                 pnl_usd=round(pnl_usd, 2),
             )
         except Exception as exc:
-            log.error("db.paper_trade_resolve_failed", order_id=order_id[:32], error=str(exc)[:100])
+            log.error(
+                "db.paper_trade_resolve_failed",
+                order_id=order_id[:32],
+                error=str(exc)[:100],
+            )
 
     # ─── Manual Trade Queue (v5.8 Dashboard) ─────────────────────────────
 
@@ -1349,7 +1502,10 @@ class DBClient:
             return []
 
     async def get_token_ids_from_market_data(
-        self, asset: str, window_ts: int, timeframe: str = "5m",
+        self,
+        asset: str,
+        window_ts: int,
+        timeframe: str = "5m",
     ) -> dict | None:
         """LT-02: fallback lookup for CLOB token_ids when the in-memory
         ring buffer in FiveMinVPINStrategy._recent_windows doesn't have
@@ -1369,7 +1525,8 @@ class DBClient:
             return None
         try:
             async with self._pool.acquire() as conn:
-                row = await conn.fetchrow("""
+                row = await conn.fetchrow(
+                    """
                     SELECT up_token_id, down_token_id
                     FROM market_data
                     WHERE asset = $1
@@ -1379,7 +1536,11 @@ class DBClient:
                       AND down_token_id IS NOT NULL
                     ORDER BY ABS(window_ts - $3::bigint) ASC
                     LIMIT 1
-                """, asset, timeframe, int(window_ts))
+                """,
+                    asset,
+                    timeframe,
+                    int(window_ts),
+                )
                 if row and row["up_token_id"] and row["down_token_id"]:
                     return {
                         "up_token_id": row["up_token_id"],
@@ -1391,8 +1552,12 @@ class DBClient:
             return None
 
     async def update_manual_trade_status(
-        self, trade_id: str, status: str, pnl_usd: float = None,
-        outcome_direction: str = None, clob_order_id: str = None,
+        self,
+        trade_id: str,
+        status: str,
+        pnl_usd: float = None,
+        outcome_direction: str = None,
+        clob_order_id: str = None,
     ) -> None:
         """Update a manual trade after execution or resolution.
 
@@ -1408,15 +1573,25 @@ class DBClient:
         try:
             async with self._pool.acquire() as conn:
                 if pnl_usd is not None:
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE manual_trades
                         SET status = $1, pnl_usd = $2, outcome_direction = $3, resolved_at = NOW()
                         WHERE trade_id = $4
-                    """, status, pnl_usd, outcome_direction, trade_id)
+                    """,
+                        status,
+                        pnl_usd,
+                        outcome_direction,
+                        trade_id,
+                    )
                 else:
-                    await conn.execute("""
+                    await conn.execute(
+                        """
                         UPDATE manual_trades SET status = $1 WHERE trade_id = $2
-                    """, status, trade_id)
+                    """,
+                        status,
+                        trade_id,
+                    )
                 # POLY-SOT: persist the CLOB order ID separately if provided.
                 # Wrapped in its own UPDATE so a missing column on a stale
                 # database (operator hasn't run the migration yet) silently
@@ -1425,12 +1600,16 @@ class DBClient:
                 # next pass via the `unreconciled` path.
                 if clob_order_id:
                     try:
-                        await conn.execute("""
+                        await conn.execute(
+                            """
                             UPDATE manual_trades
                             SET polymarket_order_id = $1
                             WHERE trade_id = $2
                               AND (polymarket_order_id IS NULL OR polymarket_order_id = '')
-                        """, clob_order_id, trade_id)
+                        """,
+                            clob_order_id,
+                            trade_id,
+                        )
                     except Exception as col_exc:
                         log.warning(
                             "db.manual_trade_polymarket_order_id_update_failed",
@@ -1502,7 +1681,9 @@ class DBClient:
             log.warning("db.ensure_manual_trades_sot_columns_failed", error=str(exc))
 
     async def fetch_manual_trades_for_sot_check(
-        self, since: Optional[datetime] = None, limit: int = 100,
+        self,
+        since: Optional[datetime] = None,
+        limit: int = 100,
     ) -> list[dict]:
         """Return recent manual_trades rows that the SOT reconciler should
         re-verify against Polymarket.
@@ -1561,7 +1742,9 @@ class DBClient:
                 )
                 return [dict(r) for r in rows]
         except Exception as exc:
-            log.warning("db.fetch_manual_trades_for_sot_check_failed", error=str(exc)[:200])
+            log.warning(
+                "db.fetch_manual_trades_for_sot_check_failed", error=str(exc)[:200]
+            )
             return []
 
     async def update_manual_trade_sot(
@@ -1670,7 +1853,9 @@ class DBClient:
             log.warning("db.ensure_trades_sot_columns_failed", error=str(exc))
 
     async def fetch_trades_for_sot_check(
-        self, since: Optional[datetime] = None, limit: int = 100,
+        self,
+        since: Optional[datetime] = None,
+        limit: int = 100,
     ) -> list[dict]:
         """Return recent automatic-trade rows that the SOT reconciler should
         re-verify against Polymarket.
@@ -1797,7 +1982,9 @@ class DBClient:
                 error=str(exc)[:200],
             )
 
-    async def get_window_close(self, window_ts: int, asset: str, timeframe: str) -> float:
+    async def get_window_close(
+        self, window_ts: int, asset: str, timeframe: str
+    ) -> float:
         """Get the close price for a resolved window from window_snapshots."""
         if not self._pool:
             return 0.0
@@ -1805,13 +1992,17 @@ class DBClient:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchval(
                     "SELECT close_price FROM window_snapshots WHERE window_ts = $1 AND asset = $2 AND timeframe = $3",
-                    window_ts, asset, timeframe
+                    window_ts,
+                    asset,
+                    timeframe,
                 )
                 return float(row) if row else 0.0
         except Exception:
             return 0.0
 
-    async def update_window_trade_placed(self, window_ts: int, asset: str, timeframe: str) -> None:
+    async def update_window_trade_placed(
+        self, window_ts: int, asset: str, timeframe: str
+    ) -> None:
         """Mark a window_snapshot as having a trade placed."""
         if not self._pool:
             return
@@ -1819,17 +2010,37 @@ class DBClient:
             async with self._pool.acquire() as conn:
                 result = await conn.execute(
                     "UPDATE window_snapshots SET trade_placed = TRUE WHERE window_ts = $1 AND asset = $2 AND timeframe = $3",
-                    window_ts, asset, timeframe
+                    window_ts,
+                    asset,
+                    timeframe,
                 )
                 import structlog
-                structlog.get_logger().info("db.trade_placed_updated", window_ts=window_ts, asset=asset, result=result)
+
+                structlog.get_logger().info(
+                    "db.trade_placed_updated",
+                    window_ts=window_ts,
+                    asset=asset,
+                    result=result,
+                )
         except Exception as exc:
             import structlog
-            structlog.get_logger().error("db.trade_placed_update_failed", window_ts=window_ts, asset=asset, error=str(exc))
+
+            structlog.get_logger().error(
+                "db.trade_placed_update_failed",
+                window_ts=window_ts,
+                asset=asset,
+                error=str(exc),
+            )
 
     async def update_window_fok_data(
-        self, window_ts: int, asset: str, timeframe: str,
-        execution_mode: str, fok_attempts: int, fok_fill_step: int, clob_fill_price: float,
+        self,
+        window_ts: int,
+        asset: str,
+        timeframe: str,
+        execution_mode: str,
+        fok_attempts: int,
+        fok_fill_step: int,
+        clob_fill_price: float,
     ) -> None:
         """Write FOK execution details to window_snapshot after a successful fill."""
         if not self._pool:
@@ -1841,14 +2052,24 @@ class DBClient:
                        SET execution_mode = $4, fok_attempts = $5,
                            fok_fill_step = $6, clob_fill_price = $7
                        WHERE window_ts = $1 AND asset = $2 AND timeframe = $3""",
-                    window_ts, asset, timeframe,
-                    execution_mode, fok_attempts, fok_fill_step, clob_fill_price,
+                    window_ts,
+                    asset,
+                    timeframe,
+                    execution_mode,
+                    fok_attempts,
+                    fok_fill_step,
+                    clob_fill_price,
                 )
         except Exception as exc:
             import structlog
-            structlog.get_logger().error("db.fok_data_update_failed", window_ts=window_ts, error=str(exc))
 
-    async def update_window_skip_reason(self, window_ts: int, asset: str, timeframe: str, skip_reason: str) -> None:
+            structlog.get_logger().error(
+                "db.fok_data_update_failed", window_ts=window_ts, error=str(exc)
+            )
+
+    async def update_window_skip_reason(
+        self, window_ts: int, asset: str, timeframe: str, skip_reason: str
+    ) -> None:
         """Update skip_reason on a window_snapshot after evaluation."""
         if not self._pool:
             return
@@ -1856,7 +2077,10 @@ class DBClient:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     "UPDATE window_snapshots SET skip_reason = $1 WHERE window_ts = $2 AND asset = $3 AND timeframe = $4",
-                    skip_reason, window_ts, asset, timeframe
+                    skip_reason,
+                    window_ts,
+                    asset,
+                    timeframe,
                 )
         except Exception:
             pass
@@ -1882,13 +2106,23 @@ class DBClient:
                     int(data.get("window_ts", 0)),
                     data.get("stage", ""),
                     data.get("direction"),
-                    float(data.get("confidence", 0)) if data.get("confidence") is not None else None,
-                    bool(data.get("agreement")) if data.get("agreement") is not None else None,
+                    float(data.get("confidence", 0))
+                    if data.get("confidence") is not None
+                    else None,
+                    bool(data.get("agreement"))
+                    if data.get("agreement") is not None
+                    else None,
                     data.get("action"),
                     data.get("notes"),
-                    float(data.get("chainlink_price")) if data.get("chainlink_price") is not None else None,
-                    float(data.get("tiingo_price")) if data.get("tiingo_price") is not None else None,
-                    float(data.get("binance_price")) if data.get("binance_price") is not None else None,
+                    float(data.get("chainlink_price"))
+                    if data.get("chainlink_price") is not None
+                    else None,
+                    float(data.get("tiingo_price"))
+                    if data.get("tiingo_price") is not None
+                    else None,
+                    float(data.get("binance_price"))
+                    if data.get("binance_price") is not None
+                    else None,
                 )
         except Exception as exc:
             log.debug("db.write_countdown_evaluation_failed", error=str(exc)[:120])
@@ -1898,15 +2132,19 @@ class DBClient:
         Write a Claude evaluation to countdown_evaluations (compatibility shim).
         Maps claude_evaluator's write_evaluation call to the countdown_evaluations table.
         """
-        await self.write_countdown_evaluation({
-            "window_ts": int(data.get("timestamp", 0)),
-            "stage": "claude_eval",
-            "direction": data.get("direction"),
-            "confidence": data.get("confidence"),
-            "agreement": data.get("trade_placed"),
-            "action": "TRADE" if data.get("trade_placed") else "SKIP",
-            "notes": data.get("analysis", "")[:2000] if data.get("analysis") else None,
-        })
+        await self.write_countdown_evaluation(
+            {
+                "window_ts": int(data.get("timestamp", 0)),
+                "stage": "claude_eval",
+                "direction": data.get("direction"),
+                "confidence": data.get("confidence"),
+                "agreement": data.get("trade_placed"),
+                "action": "TRADE" if data.get("trade_placed") else "SKIP",
+                "notes": data.get("analysis", "")[:2000]
+                if data.get("analysis")
+                else None,
+            }
+        )
 
     # ─── Shadow Trade Resolution ──────────────────────────────────────────────
 
@@ -2100,20 +2338,44 @@ class DBClient:
                     data.get("timeframe", "5m"),
                     data.get("engine_version", "v8.0"),
                     data.get("delta_source"),
-                    float(data["open_price"]) if data.get("open_price") is not None else None,
-                    float(data["tiingo_open"]) if data.get("tiingo_open") is not None else None,
-                    float(data["tiingo_close"]) if data.get("tiingo_close") is not None else None,
-                    float(data["delta_tiingo"]) if data.get("delta_tiingo") is not None else None,
-                    float(data["delta_binance"]) if data.get("delta_binance") is not None else None,
-                    float(data["delta_chainlink"]) if data.get("delta_chainlink") is not None else None,
-                    float(data["delta_pct"]) if data.get("delta_pct") is not None else None,
+                    float(data["open_price"])
+                    if data.get("open_price") is not None
+                    else None,
+                    float(data["tiingo_open"])
+                    if data.get("tiingo_open") is not None
+                    else None,
+                    float(data["tiingo_close"])
+                    if data.get("tiingo_close") is not None
+                    else None,
+                    float(data["delta_tiingo"])
+                    if data.get("delta_tiingo") is not None
+                    else None,
+                    float(data["delta_binance"])
+                    if data.get("delta_binance") is not None
+                    else None,
+                    float(data["delta_chainlink"])
+                    if data.get("delta_chainlink") is not None
+                    else None,
+                    float(data["delta_pct"])
+                    if data.get("delta_pct") is not None
+                    else None,
                     float(data["vpin"]) if data.get("vpin") is not None else None,
                     data.get("regime"),
-                    str(data["gate_vpin"]) if data.get("gate_vpin") is not None else None,  # VARCHAR
-                    str(data["gate_delta"]) if data.get("gate_delta") is not None else None,  # VARCHAR
-                    bool(data["gate_cg"]) if data.get("gate_cg") is not None else None,  # BOOLEAN
-                    str(data["gate_floor"]) if data.get("gate_floor") is not None else None,  # VARCHAR
-                    str(data["gate_cap"]) if data.get("gate_cap") is not None else None,  # VARCHAR
+                    str(data["gate_vpin"])
+                    if data.get("gate_vpin") is not None
+                    else None,  # VARCHAR
+                    str(data["gate_delta"])
+                    if data.get("gate_delta") is not None
+                    else None,  # VARCHAR
+                    bool(data["gate_cg"])
+                    if data.get("gate_cg") is not None
+                    else None,  # BOOLEAN
+                    str(data["gate_floor"])
+                    if data.get("gate_floor") is not None
+                    else None,  # VARCHAR
+                    str(data["gate_cap"])
+                    if data.get("gate_cap") is not None
+                    else None,  # VARCHAR
                     bool(data.get("gate_passed", False)),
                     data.get("gate_failed"),
                     data.get("gates_passed_list"),
@@ -2127,10 +2389,10 @@ class DBClient:
     async def write_signal_evaluation(self, data: dict) -> None:
         """
         Write comprehensive signal evaluation data for every window evaluation point.
-        
+
         Captures ALL signal data at each eval_offset: all price sources, all deltas,
         OAK full probability surface (quantiles), all gates, and market microstructure.
-        
+
         Args:
             data: dict with keys matching signal_evaluations table columns.
         """
@@ -2206,41 +2468,91 @@ class DBClient:
                     data.get("asset", "BTC"),
                     data.get("timeframe", "5m"),
                     data.get("eval_offset"),
-                    float(data["clob_up_bid"]) if data.get("clob_up_bid") is not None else None,
-                    float(data["clob_up_ask"]) if data.get("clob_up_ask") is not None else None,
-                    float(data["clob_down_bid"]) if data.get("clob_down_bid") is not None else None,
-                    float(data["clob_down_ask"]) if data.get("clob_down_ask") is not None else None,
-                    float(data["binance_price"]) if data.get("binance_price") is not None else None,
-                    float(data["tiingo_open"]) if data.get("tiingo_open") is not None else None,
-                    float(data["tiingo_close"]) if data.get("tiingo_close") is not None else None,
-                    float(data["chainlink_price"]) if data.get("chainlink_price") is not None else None,
-                    float(data["delta_pct"]) if data.get("delta_pct") is not None else None,
-                    float(data["delta_tiingo"]) if data.get("delta_tiingo") is not None else None,
-                    float(data["delta_binance"]) if data.get("delta_binance") is not None else None,
-                    float(data["delta_chainlink"]) if data.get("delta_chainlink") is not None else None,
+                    float(data["clob_up_bid"])
+                    if data.get("clob_up_bid") is not None
+                    else None,
+                    float(data["clob_up_ask"])
+                    if data.get("clob_up_ask") is not None
+                    else None,
+                    float(data["clob_down_bid"])
+                    if data.get("clob_down_bid") is not None
+                    else None,
+                    float(data["clob_down_ask"])
+                    if data.get("clob_down_ask") is not None
+                    else None,
+                    float(data["binance_price"])
+                    if data.get("binance_price") is not None
+                    else None,
+                    float(data["tiingo_open"])
+                    if data.get("tiingo_open") is not None
+                    else None,
+                    float(data["tiingo_close"])
+                    if data.get("tiingo_close") is not None
+                    else None,
+                    float(data["chainlink_price"])
+                    if data.get("chainlink_price") is not None
+                    else None,
+                    float(data["delta_pct"])
+                    if data.get("delta_pct") is not None
+                    else None,
+                    float(data["delta_tiingo"])
+                    if data.get("delta_tiingo") is not None
+                    else None,
+                    float(data["delta_binance"])
+                    if data.get("delta_binance") is not None
+                    else None,
+                    float(data["delta_chainlink"])
+                    if data.get("delta_chainlink") is not None
+                    else None,
                     data.get("delta_source"),
                     float(data["vpin"]) if data.get("vpin") is not None else None,
                     data.get("regime"),
-                    float(data["clob_spread"]) if data.get("clob_spread") is not None else None,
-                    float(data["clob_mid"]) if data.get("clob_mid") is not None else None,
-                    float(data["v2_probability_up"]) if data.get("v2_probability_up") is not None else None,
+                    float(data["clob_spread"])
+                    if data.get("clob_spread") is not None
+                    else None,
+                    float(data["clob_mid"])
+                    if data.get("clob_mid") is not None
+                    else None,
+                    float(data["v2_probability_up"])
+                    if data.get("v2_probability_up") is not None
+                    else None,
                     data.get("v2_direction"),
-                    bool(data["v2_agrees"]) if data.get("v2_agrees") is not None else None,
-                    bool(data["v2_high_conf"]) if data.get("v2_high_conf") is not None else None,
+                    bool(data["v2_agrees"])
+                    if data.get("v2_agrees") is not None
+                    else None,
+                    bool(data["v2_high_conf"])
+                    if data.get("v2_high_conf") is not None
+                    else None,
                     data.get("v2_model_version"),
-                    data.get("v2_quantiles"),  # JSONB (already serialized as JSON string)
+                    data.get(
+                        "v2_quantiles"
+                    ),  # JSONB (already serialized as JSON string)
                     data.get("v2_quantiles_at_close"),  # JSONB
-                    bool(data["gate_vpin_passed"]) if data.get("gate_vpin_passed") is not None else None,
-                    bool(data["gate_delta_passed"]) if data.get("gate_delta_passed") is not None else None,
-                    bool(data["gate_cg_passed"]) if data.get("gate_cg_passed") is not None else None,
-                    bool(data["gate_twap_passed"]) if data.get("gate_twap_passed") is not None else None,
-                    bool(data["gate_timesfm_passed"]) if data.get("gate_timesfm_passed") is not None else None,
+                    bool(data["gate_vpin_passed"])
+                    if data.get("gate_vpin_passed") is not None
+                    else None,
+                    bool(data["gate_delta_passed"])
+                    if data.get("gate_delta_passed") is not None
+                    else None,
+                    bool(data["gate_cg_passed"])
+                    if data.get("gate_cg_passed") is not None
+                    else None,
+                    bool(data["gate_twap_passed"])
+                    if data.get("gate_twap_passed") is not None
+                    else None,
+                    bool(data["gate_timesfm_passed"])
+                    if data.get("gate_timesfm_passed") is not None
+                    else None,
                     bool(data.get("gate_passed", False)),
                     data.get("gate_failed"),
                     data.get("decision", "SKIP"),
-                    float(data["twap_delta"]) if data.get("twap_delta") is not None else None,
+                    float(data["twap_delta"])
+                    if data.get("twap_delta") is not None
+                    else None,
                     data.get("twap_direction"),
-                    bool(data["twap_gamma_agree"]) if data.get("twap_gamma_agree") is not None else None
+                    bool(data["twap_gamma_agree"])
+                    if data.get("twap_gamma_agree") is not None
+                    else None,
                 )
         except Exception as exc:
             log.warning("db.write_signal_evaluation_failed", error=str(exc)[:200])
@@ -2343,7 +2655,8 @@ class DBClient:
             return
         try:
             async with self._pool.acquire() as conn:
-                await conn.execute("""
+                await conn.execute(
+                    """
                     INSERT INTO window_predictions (
                         window_ts, asset, timeframe,
                         tiingo_open, tiingo_close,
@@ -2393,22 +2706,29 @@ class DBClient:
         except Exception as exc:
             log.warning("db.write_window_prediction_failed", error=str(exc)[:120])
 
-    async def update_window_prediction_outcome(self, window_ts: int, asset: str,
-                                                oracle_winner: str) -> None:
+    async def update_window_prediction_outcome(
+        self, window_ts: int, asset: str, oracle_winner: str
+    ) -> None:
         """After oracle resolution, update the prediction with actual outcome."""
         if not self._pool:
             return
         try:
             async with self._pool.acquire() as conn:
                 _winner = oracle_winner.upper()
-                await conn.execute("""
+                await conn.execute(
+                    """
                     UPDATE window_predictions SET
                         oracle_winner = $4::varchar,
                         tiingo_correct = (tiingo_direction = $4::varchar),
                         chainlink_correct = (chainlink_direction = $4::varchar),
                         our_signal_correct = (our_signal_direction = $4::varchar)
                     WHERE window_ts = $1 AND asset = $2 AND timeframe = $3
-                """, window_ts, asset, "5m", oracle_winner.upper())
+                """,
+                    window_ts,
+                    asset,
+                    "5m",
+                    oracle_winner.upper(),
+                )
         except Exception as exc:
             log.warning("db.update_prediction_outcome_failed", error=str(exc)[:120])
 
@@ -2453,10 +2773,16 @@ class DBClient:
                         ai_post_analysis  = EXCLUDED.ai_post_analysis,
                         analysed_at       = NOW()
                     """,
-                    window_ts, asset, timeframe,
-                    oracle_direction, n_ticks,
-                    missed_profit, blocked_loss,
-                    cap_too_tight, gate_rec, ai_text[:4000] if ai_text else None,
+                    window_ts,
+                    asset,
+                    timeframe,
+                    oracle_direction,
+                    n_ticks,
+                    missed_profit,
+                    blocked_loss,
+                    cap_too_tight,
+                    gate_rec,
+                    ai_text[:4000] if ai_text else None,
                 )
                 # Update summary columns in window_snapshots
                 await conn.execute(
@@ -2474,7 +2800,9 @@ class DBClient:
                     blocked_loss,
                     cap_too_tight,
                     gate_rec,
-                    window_ts, asset, timeframe,
+                    window_ts,
+                    asset,
+                    timeframe,
                 )
             log.debug(
                 "db.post_resolution_stored",
@@ -2517,7 +2845,9 @@ class DBClient:
                       AND timeframe = $3
                     ORDER BY eval_offset DESC NULLS LAST
                     """,
-                    window_ts, asset, timeframe,
+                    window_ts,
+                    asset,
+                    timeframe,
                 )
                 return [dict(r) for r in rows]
         except Exception as exc:
@@ -2527,7 +2857,7 @@ class DBClient:
     async def write_clob_execution_log(self, data: dict) -> None:
         """
         Log comprehensive CLOB execution data for every FOK attempt, GTC placement, fill, or kill.
-        
+
         Captures: target price/size, CLOB state at execution, execution mode, ladder attempts,
         fill details, error messages, and latency.
         """
@@ -2561,23 +2891,39 @@ class DBClient:
                     data.get("direction", "BUY"),
                     data.get("strategy"),
                     data.get("eval_offset"),
-                    float(data["target_price"]) if data.get("target_price") is not None else None,
-                    float(data["target_size"]) if data.get("target_size") is not None else None,
-                    float(data["max_price"]) if data.get("max_price") is not None else None,
-                    float(data["min_price"]) if data.get("min_price") is not None else None,
-                    float(data["clob_best_ask"]) if data.get("clob_best_ask") is not None else None,
-                    float(data["clob_best_bid"]) if data.get("clob_best_bid") is not None else None,
+                    float(data["target_price"])
+                    if data.get("target_price") is not None
+                    else None,
+                    float(data["target_size"])
+                    if data.get("target_size") is not None
+                    else None,
+                    float(data["max_price"])
+                    if data.get("max_price") is not None
+                    else None,
+                    float(data["min_price"])
+                    if data.get("min_price") is not None
+                    else None,
+                    float(data["clob_best_ask"])
+                    if data.get("clob_best_ask") is not None
+                    else None,
+                    float(data["clob_best_bid"])
+                    if data.get("clob_best_bid") is not None
+                    else None,
                     data.get("execution_mode", "FOK"),
                     data.get("fok_attempt_num"),
                     data.get("fok_max_attempts"),
                     data.get("status", "submitted"),
-                    float(data["fill_price"]) if data.get("fill_price") is not None else None,
-                    float(data["fill_size"]) if data.get("fill_size") is not None else None,
+                    float(data["fill_price"])
+                    if data.get("fill_price") is not None
+                    else None,
+                    float(data["fill_size"])
+                    if data.get("fill_size") is not None
+                    else None,
                     data.get("order_id"),
                     data.get("error_code"),
                     data.get("error_message"),
                     data.get("latency_ms"),
-                    data.get("metadata", {})
+                    data.get("metadata", {}),
                 )
         except Exception as exc:
             log.warning("db.write_clob_execution_log_failed", error=str(exc)[:200])
@@ -2602,15 +2948,27 @@ class DBClient:
                     """,
                     data.get("execution_log_id"),
                     data.get("attempt_num"),
-                    float(data["attempt_price"]) if data.get("attempt_price") is not None else None,
-                    float(data["attempt_size"]) if data.get("attempt_size") is not None else None,
-                    float(data["clob_best_ask"]) if data.get("clob_best_ask") is not None else None,
-                    float(data["clob_best_bid"]) if data.get("clob_best_bid") is not None else None,
+                    float(data["attempt_price"])
+                    if data.get("attempt_price") is not None
+                    else None,
+                    float(data["attempt_size"])
+                    if data.get("attempt_size") is not None
+                    else None,
+                    float(data["clob_best_ask"])
+                    if data.get("clob_best_ask") is not None
+                    else None,
+                    float(data["clob_best_bid"])
+                    if data.get("clob_best_bid") is not None
+                    else None,
                     data.get("status", "attempted"),
-                    float(data["fill_size"]) if data.get("fill_size") is not None else None,
-                    float(data["fill_price"]) if data.get("fill_price") is not None else None,
+                    float(data["fill_size"])
+                    if data.get("fill_size") is not None
+                    else None,
+                    float(data["fill_price"])
+                    if data.get("fill_price") is not None
+                    else None,
                     data.get("error_message"),
-                    data.get("attempt_duration_ms")
+                    data.get("attempt_duration_ms"),
                 )
         except Exception as exc:
             log.warning("db.write_fok_ladder_attempt_failed", error=str(exc)[:200])
@@ -2641,21 +2999,43 @@ class DBClient:
                     int(data.get("window_ts", 0)),
                     data.get("up_token_id"),
                     data.get("down_token_id"),
-                    float(data["up_best_bid"]) if data.get("up_best_bid") is not None else None,
-                    float(data["up_best_ask"]) if data.get("up_best_ask") is not None else None,
-                    float(data["up_bid_depth"]) if data.get("up_bid_depth") is not None else None,
-                    float(data["up_ask_depth"]) if data.get("up_ask_depth") is not None else None,
-                    float(data["down_best_bid"]) if data.get("down_best_bid") is not None else None,
-                    float(data["down_best_ask"]) if data.get("down_best_ask") is not None else None,
-                    float(data["down_bid_depth"]) if data.get("down_bid_depth") is not None else None,
-                    float(data["down_ask_depth"]) if data.get("down_ask_depth") is not None else None,
-                    float(data["up_spread"]) if data.get("up_spread") is not None else None,
-                    float(data["down_spread"]) if data.get("down_spread") is not None else None,
-                    float(data["mid_price"]) if data.get("mid_price") is not None else None,
+                    float(data["up_best_bid"])
+                    if data.get("up_best_bid") is not None
+                    else None,
+                    float(data["up_best_ask"])
+                    if data.get("up_best_ask") is not None
+                    else None,
+                    float(data["up_bid_depth"])
+                    if data.get("up_bid_depth") is not None
+                    else None,
+                    float(data["up_ask_depth"])
+                    if data.get("up_ask_depth") is not None
+                    else None,
+                    float(data["down_best_bid"])
+                    if data.get("down_best_bid") is not None
+                    else None,
+                    float(data["down_best_ask"])
+                    if data.get("down_best_ask") is not None
+                    else None,
+                    float(data["down_bid_depth"])
+                    if data.get("down_bid_depth") is not None
+                    else None,
+                    float(data["down_ask_depth"])
+                    if data.get("down_ask_depth") is not None
+                    else None,
+                    float(data["up_spread"])
+                    if data.get("up_spread") is not None
+                    else None,
+                    float(data["down_spread"])
+                    if data.get("down_spread") is not None
+                    else None,
+                    float(data["mid_price"])
+                    if data.get("mid_price") is not None
+                    else None,
                     data.get("up_bids_top5", []),
                     data.get("up_asks_top5", []),
                     data.get("down_bids_top5", []),
-                    data.get("down_asks_top5", [])
+                    data.get("down_asks_top5", []),
                 )
         except Exception as exc:
             log.warning("db.write_clob_book_snapshot_failed", error=str(exc)[:200])

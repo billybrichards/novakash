@@ -284,6 +284,103 @@ function ConfigDropdown({ onClose }) {
   );
 }
 
+function RedeemerStatusBar() {
+  const api = useApi();
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api.get('/system/redeemer-status');
+      setData(res.data?.data || null);
+    } catch {
+      setData(null);
+    }
+  }, [api]);
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 30000);
+    return () => clearInterval(id);
+  }, [load]);
+
+  const trigger = async (kind) => {
+    try {
+      setBusy(kind);
+      await api.post(`/system/redeem/${kind}`);
+      await load();
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const chip = (label, value, color = 'rgba(255,255,255,0.7)') => (
+    <div style={{
+      padding: '4px 8px',
+      borderRadius: 999,
+      background: 'rgba(255,255,255,0.04)',
+      border: '1px solid rgba(255,255,255,0.06)',
+      fontSize: 10,
+      fontFamily: 'IBM Plex Mono, monospace',
+      color,
+      display: 'flex',
+      gap: 6,
+      whiteSpace: 'nowrap',
+    }}>
+      <span style={{ opacity: 0.6 }}>{label}</span>
+      <span>{value}</span>
+    </div>
+  );
+
+  const btn = (label, kind, color) => (
+    <button
+      onClick={() => trigger(kind)}
+      disabled={busy !== ''}
+      style={{
+        padding: '6px 10px',
+        borderRadius: 8,
+        border: `1px solid ${color}55`,
+        background: `${color}12`,
+        color,
+        fontSize: 11,
+        fontFamily: 'IBM Plex Mono, monospace',
+        cursor: busy ? 'wait' : 'pointer',
+        opacity: busy && busy !== kind ? 0.5 : 1,
+      }}
+    >
+      {busy === kind ? '...' : label}
+    </button>
+  );
+
+  if (!data) return null;
+
+  const cooldownActive = Boolean(data.cooldown_until);
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      padding: '6px 10px',
+      borderRadius: 12,
+      background: 'rgba(255,255,255,0.03)',
+      border: '1px solid rgba(255,255,255,0.06)',
+      maxWidth: '62vw',
+      overflowX: 'auto',
+    }}>
+      {chip('cash', `$${Number(data.cash_balance || 0).toFixed(2)}`, '#4ade80')}
+      {chip('portfolio', `$${Number(data.portfolio_value || 0).toFixed(2)}`, '#06b6d4')}
+      {chip('pos', data.open_positions || 0)}
+      {chip('wins', data.redeemable_wins || 0, '#facc15')}
+      {chip('losses', data.redeemable_losses || 0, '#fb7185')}
+      {chip('quota', `${data.quota_used_today || 0}/${data.quota_limit || 100}`, (data.quota_used_today || 0) > ((data.quota_limit || 100) - 20) ? '#f87171' : '#c084fc')}
+      {cooldownActive && chip('cooldown', 'active', '#f87171')}
+      {btn('Redeem Wins', 'wins', '#4ade80')}
+      {btn('Redeem Losses', 'losses', '#fb7185')}
+      {btn('Redeem All', 'all', '#f59e0b')}
+    </div>
+  );
+}
+
 // ── Config pill button in top bar ────────────────────────────────────────────
 function ConfigPill() {
   const api = useApi();
@@ -542,8 +639,9 @@ export default function Layout() {
           </Link>
         </div>
 
-        {/* Right: theme toggle + config pill + live toggle */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {/* Right: redeemer stats + theme toggle + config pill + live toggle */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <RedeemerStatusBar />
           <ThemeToggle />
           <div className="config-pill-wrapper">
             <ConfigPill />

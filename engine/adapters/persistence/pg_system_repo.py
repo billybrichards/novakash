@@ -125,7 +125,10 @@ class PgSystemRepository:
                     "SELECT paper_enabled, live_enabled FROM system_state WHERE id = 1"
                 )
                 if row:
-                    return {"paper_enabled": row["paper_enabled"], "live_enabled": row["live_enabled"]}
+                    return {
+                        "paper_enabled": row["paper_enabled"],
+                        "live_enabled": row["live_enabled"],
+                    }
         except Exception:
             pass
         return None
@@ -177,10 +180,10 @@ class PgSystemRepository:
 
         set_clause = ", ".join(updates)
         query = f"""
-            INSERT INTO system_state (id, engine_status, {', '.join(
-                c.split(' = ')[0] for c in updates
-            )})
-            VALUES (1, 'running', {', '.join(f'${i+1}' for i in range(len(params)))})
+            INSERT INTO system_state (id, engine_status, {
+            ", ".join(c.split(" = ")[0] for c in updates)
+        })
+            VALUES (1, 'running', {", ".join(f"${i + 1}" for i in range(len(params)))})
             ON CONFLICT (id) DO UPDATE SET {set_clause}
         """
 
@@ -214,13 +217,26 @@ class PgSystemRepository:
                     history_json JSONB DEFAULT '[]'::jsonb,
                     screenshot_png BYTEA,
                     redeem_requested BOOLEAN DEFAULT FALSE,
+                    redeem_request_type TEXT DEFAULT 'all',
+                    quota_used_today INTEGER DEFAULT 0,
+                    quota_limit INTEGER DEFAULT 100,
+                    cooldown_until TIMESTAMPTZ,
+                    cooldown_reason TEXT,
                     updated_at TIMESTAMPTZ DEFAULT NOW()
                 );
                 INSERT INTO playwright_state (id) VALUES (1) ON CONFLICT DO NOTHING;
             """)
             await conn.execute("""
+                ALTER TABLE playwright_state ADD COLUMN IF NOT EXISTS redeem_request_type TEXT DEFAULT 'all';
+                ALTER TABLE playwright_state ADD COLUMN IF NOT EXISTS quota_used_today INTEGER DEFAULT 0;
+                ALTER TABLE playwright_state ADD COLUMN IF NOT EXISTS quota_limit INTEGER DEFAULT 100;
+                ALTER TABLE playwright_state ADD COLUMN IF NOT EXISTS cooldown_until TIMESTAMPTZ;
+                ALTER TABLE playwright_state ADD COLUMN IF NOT EXISTS cooldown_reason TEXT;
+            """)
+            await conn.execute("""
                 CREATE TABLE IF NOT EXISTS redeem_events (
                     id SERIAL PRIMARY KEY,
+                    redeem_type TEXT DEFAULT 'all',
                     redeemed_count INTEGER DEFAULT 0,
                     failed_count INTEGER DEFAULT 0,
                     total_value DOUBLE PRECISION DEFAULT 0,
@@ -228,6 +244,9 @@ class PgSystemRepository:
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 );
             """)
+            await conn.execute(
+                "ALTER TABLE redeem_events ADD COLUMN IF NOT EXISTS redeem_type TEXT DEFAULT 'all'"
+            )
         log.info("db.playwright_tables_ensured")
 
     async def update_playwright_state(
@@ -240,6 +259,10 @@ class PgSystemRepository:
         redeemable_json: Optional[list] = None,
         history_json: Optional[list] = None,
         screenshot_png: Optional[bytes] = None,
+        quota_used_today: Optional[int] = None,
+        quota_limit: Optional[int] = None,
+        cooldown_until: Optional[str] = None,
+        cooldown_reason: Optional[str] = None,
     ) -> None:
         """Upsert the playwright_state singleton row.
 
@@ -257,15 +280,25 @@ class PgSystemRepository:
                             usdc_balance = $3, positions_value = $4,
                             positions_json = $5, redeemable_json = $6,
                             history_json = $7, screenshot_png = $8,
+                            quota_used_today = COALESCE($9, quota_used_today),
+                            quota_limit = COALESCE($10, quota_limit),
+                            cooldown_until = COALESCE($11, cooldown_until),
+                            cooldown_reason = COALESCE($12, cooldown_reason),
                             updated_at = NOW()
                         WHERE id = 1
                         """,
-                        logged_in, browser_alive,
-                        usdc_balance, positions_value,
+                        logged_in,
+                        browser_alive,
+                        usdc_balance,
+                        positions_value,
                         json.dumps(positions_json or []),
                         json.dumps(redeemable_json or []),
                         json.dumps(history_json or []),
                         screenshot_png,
+                        quota_used_today,
+                        quota_limit,
+                        cooldown_until,
+                        cooldown_reason,
                     )
                 else:
                     await conn.execute(
@@ -275,17 +308,57 @@ class PgSystemRepository:
                             usdc_balance = $3, positions_value = $4,
                             positions_json = $5, redeemable_json = $6,
                             history_json = $7,
+                            quota_used_today = COALESCE($8, quota_used_today),
+                            quota_limit = COALESCE($9, quota_limit),
+                            cooldown_until = COALESCE($10, cooldown_until),
+                            cooldown_reason = COALESCE($11, cooldown_reason),
                             updated_at = NOW()
                         WHERE id = 1
                         """,
-                        logged_in, browser_alive,
-                        usdc_balance, positions_value,
+                        logged_in,
+                        browser_alive,
+                        usdc_balance,
+                        positions_value,
                         json.dumps(positions_json or []),
                         json.dumps(redeemable_json or []),
                         json.dumps(history_json or []),
+                        quota_used_today,
+                        quota_limit,
+                        cooldown_until,
+                        cooldown_reason,
                     )
         except Exception as e:
             log.error("db.playwright_state.error", error=str(e))
+
+    async def request_redeem(self, redeem_type: str = "all") -> None:
+        if not self._pool:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE playwright_state SET redeem_requested = TRUE, redeem_request_type = $1, updated_at = NOW() WHERE id = 1",
+                    redeem_type,
+                )
+        except Exception as e:
+            log.error("db.request_redeem.error", error=str(e))
+
+    async def pop_redeem_request(self) -> Optional[str]:
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT redeem_requested, redeem_request_type FROM playwright_state WHERE id = 1"
+                )
+                if row and row["redeem_requested"]:
+                    redeem_type = row["redeem_request_type"] or "all"
+                    await conn.execute(
+                        "UPDATE playwright_state SET redeem_requested = FALSE, redeem_request_type = 'all' WHERE id = 1"
+                    )
+                    return redeem_type
+        except Exception as e:
+            log.error("db.pop_redeem_request.error", error=str(e))
+        return None
 
     async def check_redeem_requested(self) -> bool:
         """Check if a manual redeem was requested via Hub API.
@@ -319,9 +392,10 @@ class PgSystemRepository:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     """
-                    INSERT INTO redeem_events (redeemed_count, failed_count, total_value, details_json)
-                    VALUES ($1, $2, $3, $4)
+                    INSERT INTO redeem_events (redeem_type, redeemed_count, failed_count, total_value, details_json)
+                    VALUES ($1, $2, $3, $4, $5)
                     """,
+                    result.get("redeem_type", "all"),
                     result.get("redeemed", 0),
                     result.get("failed", 0),
                     result.get("total_value", 0.0),
@@ -329,6 +403,32 @@ class PgSystemRepository:
                 )
         except Exception as e:
             log.error("db.redeem_event.error", error=str(e))
+
+    async def get_redeem_quota_usage_today(self) -> int:
+        if not self._pool:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchval(
+                    "SELECT COALESCE(SUM(redeemed_count + failed_count), 0) FROM redeem_events WHERE created_at >= date_trunc('day', NOW())"
+                )
+                return int(row or 0)
+        except Exception as e:
+            log.error("db.redeem_quota_usage.error", error=str(e))
+            return 0
+
+    async def get_latest_redeem_event(self) -> Optional[dict]:
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT redeem_type, redeemed_count, failed_count, total_value, details_json, created_at FROM redeem_events ORDER BY created_at DESC LIMIT 1"
+                )
+                return dict(row) if row else None
+        except Exception as e:
+            log.error("db.latest_redeem_event.error", error=str(e))
+            return None
 
     # -- Price Lookups -------------------------------------------------------
 
@@ -386,7 +486,9 @@ class PgSystemRepository:
                         "macro_bias": row["bias"],
                         "macro_confidence": f"{row['confidence']}%",
                         "macro_gate": row["direction_gate"],
-                        "macro_reasoning": row["reasoning"][:100] if row["reasoning"] else "",
+                        "macro_reasoning": row["reasoning"][:100]
+                        if row["reasoning"]
+                        else "",
                     }
                 return None
         except Exception:
@@ -408,10 +510,18 @@ class PgSystemRepository:
                 )
                 if row:
                     return {
-                        "clob_up_bid": float(row["up_best_bid"]) if row["up_best_bid"] else None,
-                        "clob_up_ask": float(row["up_best_ask"]) if row["up_best_ask"] else None,
-                        "clob_down_bid": float(row["down_best_bid"]) if row["down_best_bid"] else None,
-                        "clob_down_ask": float(row["down_best_ask"]) if row["down_best_ask"] else None,
+                        "clob_up_bid": float(row["up_best_bid"])
+                        if row["up_best_bid"]
+                        else None,
+                        "clob_up_ask": float(row["up_best_ask"])
+                        if row["up_best_ask"]
+                        else None,
+                        "clob_down_bid": float(row["down_best_bid"])
+                        if row["down_best_bid"]
+                        else None,
+                        "clob_down_ask": float(row["down_best_ask"])
+                        if row["down_best_ask"]
+                        else None,
                     }
                 return None
         except Exception:

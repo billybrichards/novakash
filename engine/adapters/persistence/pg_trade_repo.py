@@ -259,6 +259,7 @@ class PgTradeRepository:
             return
         try:
             from datetime import datetime, timezone
+
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     """UPDATE trades
@@ -342,6 +343,105 @@ class PgTradeRepository:
             log.info("db.v8_trade_columns_ensured")
         except Exception as exc:
             log.warning("db.ensure_v8_trade_columns_failed", error=str(exc))
+
+    async def find_by_token_id(self, token_id: str) -> Optional[dict]:
+        """Find most recent unresolved/open trade by exact token_id match."""
+        if not self._pool or not token_id:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT id,
+                           strategy,
+                           direction,
+                           stake_usd,
+                           entry_price,
+                           metadata,
+                           created_at,
+                           COALESCE(metadata->>'asset', 'BTC') AS asset,
+                           metadata->>'window_ts' AS window_ts,
+                           COALESCE(metadata->>'token_id', metadata->>'asset', '') AS token_id
+                    FROM trades
+                    WHERE outcome IS NULL
+                      AND COALESCE(metadata->>'token_id', metadata->>'asset', '') = $1
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    token_id,
+                )
+                return dict(row) if row else None
+        except Exception as exc:
+            log.warning("pg_trade_repo.find_by_token_id_failed", error=str(exc)[:120])
+            return None
+
+    async def find_by_token_prefix(self, token_id: str) -> Optional[dict]:
+        """Fallback prefix match for token ids that were truncated/stored inconsistently."""
+        if not self._pool or not token_id or len(token_id) < 12:
+            return None
+        try:
+            prefix = token_id[:24]
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT id,
+                           strategy,
+                           direction,
+                           stake_usd,
+                           entry_price,
+                           metadata,
+                           created_at,
+                           COALESCE(metadata->>'asset', 'BTC') AS asset,
+                           metadata->>'window_ts' AS window_ts,
+                           COALESCE(metadata->>'token_id', metadata->>'asset', '') AS token_id
+                    FROM trades
+                    WHERE outcome IS NULL
+                      AND COALESCE(metadata->>'token_id', metadata->>'asset', '') LIKE $1
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    f"{prefix}%",
+                )
+                return dict(row) if row else None
+        except Exception as exc:
+            log.warning(
+                "pg_trade_repo.find_by_token_prefix_failed", error=str(exc)[:120]
+            )
+            return None
+
+    async def find_by_approximate_cost(self, cost: float) -> Optional[dict]:
+        """Loose fallback by trade stake when token matching fails."""
+        if not self._pool or cost <= 0:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT id,
+                           strategy,
+                           direction,
+                           stake_usd,
+                           entry_price,
+                           metadata,
+                           created_at,
+                           COALESCE(metadata->>'asset', 'BTC') AS asset,
+                           metadata->>'window_ts' AS window_ts,
+                           COALESCE(metadata->>'token_id', metadata->>'asset', '') AS token_id
+                    FROM trades
+                    WHERE outcome IS NULL
+                      AND ABS(COALESCE(stake_usd, 0) - $1) <= 0.15
+                    ORDER BY ABS(COALESCE(stake_usd, 0) - $1) ASC, created_at DESC
+                    LIMIT 1
+                    """,
+                    float(cost),
+                )
+                return dict(row) if row else None
+        except Exception as exc:
+            log.warning(
+                "pg_trade_repo.find_by_approximate_cost_failed",
+                error=str(exc)[:120],
+            )
+            return None
 
     # -- Manual Trade Queue (v5.8 Dashboard) --------------------------------
 
