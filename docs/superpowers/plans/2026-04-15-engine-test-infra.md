@@ -764,13 +764,9 @@ git commit -m "test(engine): fix residual collection errors — <details>"
 
 If zero residual issues: skip this step.
 
-- [ ] **Step 5: Log Phase 1 result in plan**
+- [x] **Step 5: Log Phase 1 result in plan**
 
-Add a line to `docs/superpowers/plans/2026-04-15-engine-test-infra.md` under Phase 1:
-
-```markdown
-**Phase 1 result (YYYY-MM-DD):** N tests collected, 0 collection errors.
-```
+**Phase 1 result (2026-04-15):** 479 tests collected, 0 collection errors (down from 14 pre-existing errors). Two stale-import test files (`test_cascade.py`, `test_gate_pipeline_immutable.py`) deferred to Phase 4 via `collect_ignore`.
 
 Commit:
 ```bash
