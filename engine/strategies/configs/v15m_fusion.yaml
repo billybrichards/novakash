@@ -1,5 +1,5 @@
 name: v15m_fusion
-version: "1.0.0"
+version: "1.1.0"
 mode: GHOST
 asset: BTC
 timescale: 15m
@@ -7,6 +7,13 @@ timescale: 15m
 gates:
   - type: timing
     params: { min_offset: 180, max_offset: 250 }
+  - type: session_hours
+    params:
+      block_hours_utc: [14, 15, 16, 17, 18, 19]  # block US session (14:00-19:59 UTC)
+  - type: entry_price_floor
+    params:
+      direction: DOWN
+      min_distance: 0.20  # DOWN entries need >= 0.20 distance — stricter than general 0.15 threshold
 
 hooks_file: v15m_fusion.py
 pre_gate_hook: evaluate_polymarket_v2
