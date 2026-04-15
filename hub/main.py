@@ -43,6 +43,7 @@ from api.config_v2 import router as config_v2_router
 # AGENT-OPS: Claude Agent SDK background task runners
 from api.agent_ops import router as agent_ops_router
 from api.strategy_decisions import router as strategy_decisions_router
+from api.window_traces import router as window_traces_router
 
 log = structlog.get_logger(__name__)
 
@@ -375,6 +376,7 @@ app.include_router(agent_ops_router, prefix="/api", tags=["agent-ops"])
 app.include_router(
     strategy_decisions_router, prefix="/api", tags=["strategy-decisions"]
 )
+app.include_router(window_traces_router, prefix="/api", tags=["window-traces"])
 
 
 @app.get("/health", tags=["health"])

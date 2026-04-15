@@ -5,6 +5,7 @@ to the ``strategy_decisions`` table.
 
 Audit: SP-05.
 """
+
 from __future__ import annotations
 
 import json
@@ -26,7 +27,9 @@ class PgStrategyDecisionRepository(StrategyDecisionRepository):
     Accepts an ``asyncpg.Pool`` -- the same pool the legacy ``DBClient`` uses.
     """
 
-    def __init__(self, pool: Optional[asyncpg.Pool] = None, db_client: Optional[object] = None) -> None:
+    def __init__(
+        self, pool: Optional[asyncpg.Pool] = None, db_client: Optional[object] = None
+    ) -> None:
         self._pool = pool
         self._db_client = db_client  # fallback: extract pool lazily from DBClient
 
@@ -154,10 +157,79 @@ class PgStrategyDecisionRepository(StrategyDecisionRepository):
                     fill_price=r["fill_price"],
                     fill_size=r["fill_size"],
                     metadata_json=r["metadata_json"] or "{}",
-                    evaluated_at=r["evaluated_at"].timestamp() if r["evaluated_at"] else 0.0,
+                    evaluated_at=r["evaluated_at"].timestamp()
+                    if r["evaluated_at"]
+                    else 0.0,
                 )
                 for r in rows
             ]
         except Exception as exc:
             log.warning("pg_strategy_decisions.read_error", error=str(exc)[:200])
+            return []
+
+    async def get_decisions_in_range(
+        self,
+        *,
+        asset: str,
+        timeframe: str,
+        strategy_id: str,
+        start_window_ts: int,
+        end_window_ts: int,
+    ) -> list[StrategyDecisionRecord]:
+        pool = self._get_pool()
+        if not pool:
+            return []
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT strategy_id, strategy_version, asset, window_ts,
+                           timeframe, eval_offset, mode,
+                           action, direction, confidence, confidence_score,
+                           entry_cap, collateral_pct, entry_reason, skip_reason,
+                           executed, order_id, fill_price, fill_size,
+                           metadata_json::text, evaluated_at
+                    FROM strategy_decisions
+                    WHERE asset = $1
+                      AND timeframe = $2
+                      AND strategy_id = $3
+                      AND window_ts BETWEEN $4 AND $5
+                    ORDER BY window_ts DESC, eval_offset DESC
+                    """,
+                    asset,
+                    timeframe,
+                    strategy_id,
+                    start_window_ts,
+                    end_window_ts,
+                )
+            return [
+                StrategyDecisionRecord(
+                    strategy_id=r["strategy_id"],
+                    strategy_version=r["strategy_version"],
+                    asset=r["asset"],
+                    window_ts=r["window_ts"],
+                    timeframe=r["timeframe"],
+                    eval_offset=r["eval_offset"],
+                    mode=r["mode"],
+                    action=r["action"],
+                    direction=r["direction"],
+                    confidence=r["confidence"],
+                    confidence_score=r["confidence_score"],
+                    entry_cap=r["entry_cap"],
+                    collateral_pct=r["collateral_pct"],
+                    entry_reason=r["entry_reason"],
+                    skip_reason=r["skip_reason"],
+                    executed=r["executed"],
+                    order_id=r["order_id"],
+                    fill_price=r["fill_price"],
+                    fill_size=r["fill_size"],
+                    metadata_json=r["metadata_json"] or "{}",
+                    evaluated_at=r["evaluated_at"].timestamp()
+                    if r["evaluated_at"]
+                    else 0.0,
+                )
+                for r in rows
+            ]
+        except Exception as exc:
+            log.warning("pg_strategy_decisions.read_range_error", error=str(exc)[:200])
             return []

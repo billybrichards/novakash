@@ -19,16 +19,17 @@ import asyncio
 import time
 from typing import Optional
 
-import aiohttp
 import structlog
+
+from llm.openrouter import chat_completion
 
 log = structlog.get_logger(__name__)
 
-STAKE_USD = 8.0       # Assumed stake for P&L calculation
-FEE_MULT = 0.98       # 2% fee on winnings
-ANALYSIS_COOLDOWN = 60.0   # Seconds between analyses (rate limit)
+STAKE_USD = 8.0  # Assumed stake for P&L calculation
+FEE_MULT = 0.98  # 2% fee on winnings
+ANALYSIS_COOLDOWN = 60.0  # Seconds between analyses (rate limit)
 MAX_WINDOW_AGE_SECS = 900  # Only analyse windows from last 15 minutes (900s)
-SONNET_MODEL = "claude-sonnet-4-6"
+SONNET_MODEL = "qwen/qwen-2.5-7b-instruct"
 SONNET_MAX_TOKENS = 200
 SYSTEM_PROMPT = (
     "You are a quantitative trading analyst reviewing 5-min Polymarket prediction market "
@@ -48,10 +49,12 @@ class PostResolutionEvaluator:
     def __init__(
         self,
         api_key: str,
+        model: str = SONNET_MODEL,
         db_client=None,
         alerter=None,
     ) -> None:
         self._api_key = api_key
+        self._model = model
         self._db = db_client
         self._alerter = alerter
         self._last_analysis_ts: float = 0.0
@@ -116,11 +119,11 @@ class PostResolutionEvaluator:
 
         # Aggregate P&L stats
         missed_profit = sum(
-            t["hypothetical_pnl"] for t in enriched_ticks
-            if t.get("would_win") is True
+            t["hypothetical_pnl"] for t in enriched_ticks if t.get("would_win") is True
         )
         blocked_loss = sum(
-            abs(t["hypothetical_pnl"]) for t in enriched_ticks
+            abs(t["hypothetical_pnl"])
+            for t in enriched_ticks
             if t.get("would_win") is False
         )
         cap_too_tight = _detect_cap_too_tight(enriched_ticks)
@@ -131,6 +134,7 @@ class PostResolutionEvaluator:
         # ── Call Sonnet ────────────────────────────────────────────────────────
         ai_text = await _call_sonnet(
             api_key=self._api_key,
+            model=self._model,
             prompt=prompt,
         )
         if not ai_text:
@@ -227,6 +231,7 @@ class PostResolutionEvaluator:
 
 # ─── Module-level helpers ─────────────────────────────────────────────────────
 
+
 def _enrich_ticks(ticks: list, oracle_direction: str) -> list:
     """
     For each tick, compute hypothetical P&L if we'd entered at the clob_ask.
@@ -279,7 +284,9 @@ def _detect_cap_too_tight(enriched_ticks: list) -> bool:
     """
     for t in enriched_ticks:
         skip_reason = (t.get("skip_reason") or "").upper()
-        if ("CLOB CAP" in skip_reason or "CAP:" in skip_reason) and t.get("would_win") is True:
+        if ("CLOB CAP" in skip_reason or "CAP:" in skip_reason) and t.get(
+            "would_win"
+        ) is True:
             return True
     return False
 
@@ -287,7 +294,10 @@ def _detect_cap_too_tight(enriched_ticks: list) -> bool:
 def _build_prompt(window_ts: int, oracle_direction: str, enriched_ticks: list) -> str:
     """Build the Sonnet evaluation prompt."""
     from datetime import datetime, timezone
-    window_time = datetime.fromtimestamp(window_ts, tz=timezone.utc).strftime("%H:%M UTC")
+
+    window_time = datetime.fromtimestamp(window_ts, tz=timezone.utc).strftime(
+        "%H:%M UTC"
+    )
     window_id = f"window_{window_ts}"
 
     lines = [
@@ -325,8 +335,14 @@ def _build_prompt(window_ts: int, oracle_direction: str, enriched_ticks: list) -
     # Count outcomes
     n_wins = sum(1 for t in enriched_ticks if t.get("would_win") is True)
     n_losses = sum(1 for t in enriched_ticks if t.get("would_win") is False)
-    missed = sum(t["hypothetical_pnl"] for t in enriched_ticks if t.get("would_win") is True)
-    avoided = sum(abs(t["hypothetical_pnl"]) for t in enriched_ticks if t.get("would_win") is False)
+    missed = sum(
+        t["hypothetical_pnl"] for t in enriched_ticks if t.get("would_win") is True
+    )
+    avoided = sum(
+        abs(t["hypothetical_pnl"])
+        for t in enriched_ticks
+        if t.get("would_win") is False
+    )
 
     lines += [
         f"",
@@ -348,40 +364,35 @@ def _extract_gate_recommendation(ai_text: str) -> Optional[str]:
         return None
     # Look for key action phrases
     lower = ai_text.lower()
-    for keyword in ["raise", "lower", "increase", "decrease", "adjust", "tighten", "relax"]:
+    for keyword in [
+        "raise",
+        "lower",
+        "increase",
+        "decrease",
+        "adjust",
+        "tighten",
+        "relax",
+    ]:
         if keyword in lower:
             # Return first 150 chars of analysis as recommendation
             return ai_text[:150].strip()
     return None
 
 
-async def _call_sonnet(api_key: str, prompt: str) -> Optional[str]:
-    """Call claude-sonnet-4-6 and return the response text."""
+async def _call_sonnet(api_key: str, model: str, prompt: str) -> Optional[str]:
+    """Call OpenRouter and return the response text."""
     if not api_key:
         return None
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.anthropic.com/v1/messages",
-                json={
-                    "model": SONNET_MODEL,
-                    "max_tokens": SONNET_MAX_TOKENS,
-                    "system": SYSTEM_PROMPT,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                timeout=aiohttp.ClientTimeout(total=20),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("content", [{}])[0].get("text", "").strip()
-                body = await resp.text()
-                log.warning("sonnet.api_error", status=resp.status, body=body[:100])
-                return None
+        return await chat_completion(
+            api_key=api_key,
+            model=model,
+            prompt=prompt,
+            system_prompt=SYSTEM_PROMPT,
+            max_tokens=SONNET_MAX_TOKENS,
+            temperature=0.2,
+            timeout_s=20,
+        )
     except asyncio.TimeoutError:
         log.warning("sonnet.timeout")
         return None

@@ -36,6 +36,7 @@ from domain.value_objects import (
     ExecutionResult,
     FillResult,
     GateAuditRow,
+    GateCheckTrace,
     HeartbeatRow,
     OrderBook,
     PendingTrade,
@@ -47,14 +48,19 @@ from domain.value_objects import (
     StrategyContext,
     StrategyDecision,
     StrategyDecisionRecord,
+    StrategyEvaluationTrace,
+    StrategyWindowAnalysis,
     Tick,
     TradeDecision,
     V4Snapshot,
     WindowClose,
+    WindowEvaluationTrace,
     WindowKey,
     WindowMarket,
+    WindowOutcomeTrace,
     WindowOutcome,
     WindowSnapshot,
+    WindowTraceView,
 )
 
 
@@ -722,6 +728,75 @@ class StrategyDecisionRepository(abc.ABC):
         window_ts: int,
     ) -> list[StrategyDecisionRecord]:
         """Read all strategy decisions for a window (for Strategy Lab)."""
+        ...
+
+    @abc.abstractmethod
+    async def get_decisions_in_range(
+        self,
+        *,
+        asset: str,
+        timeframe: str,
+        strategy_id: str,
+        start_window_ts: int,
+        end_window_ts: int,
+    ) -> list[StrategyDecisionRecord]:
+        """Read strategy decisions for a strategy across a window range."""
+        ...
+
+
+class WindowTraceRepository(abc.ABC):
+    """Persists structured per-window/per-gate decision traces.
+
+    Complements ``strategy_decisions`` by storing the shared window signal
+    surface and per-gate check records needed for operator review.
+    """
+
+    @abc.abstractmethod
+    async def ensure_tables(self) -> None:
+        """Create any required trace tables if missing."""
+        ...
+
+    @abc.abstractmethod
+    async def write_window_evaluation_trace(self, trace: WindowEvaluationTrace) -> None:
+        """Persist one shared window evaluation trace row."""
+        ...
+
+    @abc.abstractmethod
+    async def get_window_evaluation_trace(
+        self,
+        asset: str,
+        window_ts: int,
+        timeframe: str,
+        eval_offset: Optional[int] = None,
+    ) -> Optional[WindowEvaluationTrace]:
+        """Read one shared window evaluation trace row."""
+        ...
+
+    @abc.abstractmethod
+    async def write_gate_check_traces(self, traces: list[GateCheckTrace]) -> None:
+        """Persist all gate checks for one or more strategy evaluations."""
+        ...
+
+    @abc.abstractmethod
+    async def get_gate_check_traces(
+        self,
+        asset: str,
+        window_ts: int,
+        timeframe: str,
+    ) -> list[GateCheckTrace]:
+        """Read all gate-check traces for a window."""
+        ...
+
+    @abc.abstractmethod
+    async def get_window_evaluation_traces_in_range(
+        self,
+        *,
+        asset: str,
+        timeframe: str,
+        start_window_ts: int,
+        end_window_ts: int,
+    ) -> list[WindowEvaluationTrace]:
+        """Read shared window evaluation traces across a window range."""
         ...
 
 

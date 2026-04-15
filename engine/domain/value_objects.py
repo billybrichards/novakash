@@ -96,6 +96,124 @@ class WindowSnapshot:
     pass
 
 
+@dataclass(frozen=True)
+class WindowEvaluationTrace:
+    """Shared signal surface for one window evaluation tick.
+
+    One row per ``(asset, window_ts, timeframe, eval_offset)``.
+    This is the window-centric source of truth for what the engine saw
+    before individual strategies evaluated.
+    """
+
+    asset: str
+    window_ts: int
+    timeframe: str
+    eval_offset: Optional[int]
+    surface_data: dict = field(default_factory=dict)
+    assembled_at: float = 0.0
+
+
+@dataclass(frozen=True)
+class StrategyEvaluationTrace:
+    """Structured strategy-level decision for one evaluation tick.
+
+    Current persistence is handled by ``strategy_decisions``. This value
+    object defines the cleaner long-term contract for application/use-case
+    code that wants a domain-level strategy trace.
+    """
+
+    strategy_id: str
+    strategy_version: str
+    asset: str
+    window_ts: int
+    timeframe: str
+    eval_offset: Optional[int]
+    mode: str
+    action: str
+    direction: Optional[str]
+    confidence: Optional[str]
+    confidence_score: Optional[float]
+    entry_cap: Optional[float]
+    collateral_pct: Optional[float]
+    entry_reason: str
+    skip_reason: Optional[str]
+    metadata: dict = field(default_factory=dict)
+    evaluated_at: float = 0.0
+
+
+@dataclass(frozen=True)
+class GateCheckTrace:
+    """Structured outcome for one gate check within a strategy evaluation."""
+
+    asset: str
+    window_ts: int
+    timeframe: str
+    eval_offset: Optional[int]
+    strategy_id: str
+    gate_order: int
+    gate_name: str
+    passed: bool
+    mode: str
+    action: str
+    direction: Optional[str]
+    reason: str = ""
+    skip_reason: Optional[str] = None
+    observed_data: dict = field(default_factory=dict)
+    config_data: dict = field(default_factory=dict)
+    evaluated_at: float = 0.0
+
+
+@dataclass(frozen=True)
+class WindowOutcomeTrace:
+    """Resolved outcome linked back to a window and any executed trade."""
+
+    asset: str
+    window_ts: int
+    timeframe: str
+    actual_direction: Optional[str]
+    outcome: Optional[str]
+    pnl_usd: Optional[float]
+    order_id: Optional[str] = None
+    strategy_id: Optional[str] = None
+    resolved_at: float = 0.0
+
+
+@dataclass(frozen=True)
+class WindowTraceView:
+    """Aggregated read model for one window evaluation trace."""
+
+    asset: str
+    window_ts: int
+    timeframe: str
+    eval_offset: Optional[int]
+    surface_data: dict = field(default_factory=dict)
+    strategy_decisions: list = field(default_factory=list)
+    gate_checks: list = field(default_factory=list)
+    eligible_now: list[str] = field(default_factory=list)
+    blocked_by_signal: list[str] = field(default_factory=list)
+    blocked_by_timing: list[str] = field(default_factory=list)
+    inactive_this_offset: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class StrategyWindowAnalysis:
+    """Grouped analysis of one strategy over many window evaluation ticks."""
+
+    strategy_id: str
+    timeframe: str
+    asset: str
+    total_evaluations: int
+    tradeable_evaluations: int
+    non_tradeable_evaluations: int
+    executed_trades: int
+    inactive_evaluations: int = 0
+    blocked_by_timing: int = 0
+    blocked_by_signal: int = 0
+    latest_surface_examples: list[dict] = field(default_factory=list)
+    recent_tradeable_examples: list[dict] = field(default_factory=list)
+    recent_non_tradeable_examples: list[dict] = field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Polymarket trading types
 # ---------------------------------------------------------------------------

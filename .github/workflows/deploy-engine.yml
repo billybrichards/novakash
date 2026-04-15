@@ -275,7 +275,8 @@ jobs:
             echo "TIMESFM_URL=http://${DEPLOY_TIMESFM_HOST}:8080"
             echo "POLYGON_RPC_URL=https://polygon-bor-rpc.publicnode.com"
             echo "TIINGO_API_KEY=${DEPLOY_TIINGO_API_KEY}"
-            echo "ANTHROPIC_API_KEY=${DEPLOY_ANTHROPIC_API_KEY}"
+            echo "OPENROUTER_API_KEY=${DEPLOY_OPENROUTER_API_KEY}"
+            echo "OPENROUTER_MODEL=${DEPLOY_OPENROUTER_MODEL}"
             echo ""
             echo "# AI Analysis"
             echo "QWEN_HOST=194.228.55.129"
@@ -307,7 +308,8 @@ jobs:
           DEPLOY_TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
           DEPLOY_TIMESFM_HOST: ${{ secrets.TIMESFM_HOST }}
           DEPLOY_QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
-          DEPLOY_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DEPLOY_OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DEPLOY_OPENROUTER_MODEL: ${{ vars.OPENROUTER_MODEL || 'qwen/qwen-2.5-7b-instruct' }}
           DEPLOY_BUILDER_API_KEY: ${{ secrets.BUILDER_API_KEY }}
           DEPLOY_BUILDER_SECRET: ${{ secrets.BUILDER_SECRET }}
           DEPLOY_BUILDER_PASSPHRASE: ${{ secrets.BUILDER_PASSPHRASE }}
