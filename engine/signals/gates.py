@@ -13,7 +13,10 @@ from use_cases.gates.pipeline import (  # explicit for IDEs / type checkers
     DeltaMagnitudeGate,
     TakerFlowGate,
     CGConfirmationGate,
+    DuneConfidenceGate,
     SpreadGate,
     DynamicCapGate,
     CoinGlassVetoGate,
+    GateContextDelta,
+    EMPTY_DELTA,
 )
