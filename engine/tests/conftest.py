@@ -96,7 +96,7 @@ def _enforce_canonical_sys_path():
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Register custom markers + pytest-asyncio mode."""
+    """Register custom markers."""
     config.addinivalue_line("markers", "unit: pure domain/VO test, no I/O")
     config.addinivalue_line("markers", "use_case: use case test with mocked ports")
     config.addinivalue_line(
