@@ -157,7 +157,7 @@ class TelegramAlerter:
     Constructor args:
       bot_token       — Telegram bot token
       chat_id         — Telegram chat/user ID
-      anthropic_api_key — Claude API key for AI assessments (preferred over os.environ)
+      openrouter_api_key — OpenRouter API key for AI assessments
       alerts_paper    — send alerts for paper trades (default: True)
       alerts_live     — send alerts for live trades (default: False)
       paper_mode      — current mode flag
@@ -169,7 +169,7 @@ class TelegramAlerter:
         self,
         bot_token: str,
         chat_id: str,
-        anthropic_api_key: str = "",
+        openrouter_api_key: str = "",
         alerts_paper: bool = True,
         alerts_live: bool = False,
         paper_mode: bool = True,
@@ -187,24 +187,31 @@ class TelegramAlerter:
         self._poly_client = poly_client
 
         # Prefer passed-in key, fall back to env, then settings
-        self._anthropic_api_key = (
-            anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "") or ""
+        self._openrouter_api_key = (
+            openrouter_api_key or os.environ.get("OPENROUTER_API_KEY", "") or ""
+        )
+        self._openrouter_model = os.environ.get(
+            "OPENROUTER_MODEL", "qwen/qwen-2.5-7b-instruct"
         )
 
         # Try to get from pydantic settings if not set
-        if not self._anthropic_api_key:
+        if not self._openrouter_api_key:
             try:
                 from config.settings import settings
 
-                self._anthropic_api_key = settings.anthropic_api_key or ""
+                self._openrouter_api_key = settings.openrouter_api_key or ""
+                self._openrouter_model = (
+                    settings.openrouter_model or self._openrouter_model
+                )
             except Exception:
                 pass
 
         self._log = log.bind(component="TelegramAlerter")
 
-        # Dual AI system: Claude primary, Qwen122b fallback
+        # Dual AI system: OpenRouter primary, Qwen fallback
         self._ai = DualAIAssessment(
-            anthropic_key=self._anthropic_api_key,
+            openrouter_key=self._openrouter_api_key,
+            openrouter_model=self._openrouter_model,
             qwen_host=os.environ.get("QWEN_HOST", "ollama-ssh1"),
             qwen_port=int(os.environ.get("QWEN_PORT", "11434")),
             log=self._log,
@@ -216,7 +223,7 @@ class TelegramAlerter:
             self._log.info(
                 "telegram.configured",
                 paper_mode=paper_mode,
-                has_claude=bool(self._anthropic_api_key),
+                has_openrouter=bool(self._openrouter_api_key),
             )
 
     # ── Trade Decision + AI Analysis (Dual-AI) ────────────────────────────────
@@ -2230,9 +2237,9 @@ class TelegramAlerter:
     ) -> str:
         """
         Generate 2-sentence trade assessment via Claude.
-        Uses settings.anthropic_api_key (loaded from .env) — not os.environ.
+        Uses OpenRouter for the 2-sentence trade assessment.
         """
-        if not self._anthropic_api_key:
+        if not self._openrouter_api_key:
             return ""
         try:
             meta = order.metadata or {}
@@ -2298,26 +2305,18 @@ class TelegramAlerter:
                 f"1 sentence: was this a good entry? Key factor in the {outcome.lower()}."
             )
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://api.anthropic.com/v1/messages",
-                    json={
-                        "model": "claude-sonnet-4-6",
-                        "max_tokens": 100,
-                        "system": "You are a crypto trading analyst for Polymarket 5-min prediction markets. The engine uses Tiingo as primary delta source (oracle-aligned). Be concise.",
-                        "messages": [{"role": "user", "content": prompt}],
-                    },
-                    headers={
-                        "x-api-key": self._anthropic_api_key,
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json",
-                    },
-                    timeout=aiohttp.ClientTimeout(total=15),
-                ) as resp:
-                    if resp.status != 200:
-                        return ""
-                    data = await resp.json()
-                    return data.get("content", [{}])[0].get("text", "").strip()
+            from llm.openrouter import chat_completion
+
+            text = await chat_completion(
+                api_key=self._openrouter_api_key,
+                model=self._openrouter_model,
+                prompt=prompt,
+                system_prompt="You are a crypto trading analyst for Polymarket 5-min prediction markets. The engine uses Tiingo as primary delta source (oracle-aligned). Be concise.",
+                max_tokens=100,
+                temperature=0.2,
+                timeout_s=15,
+            )
+            return text or ""
 
         except asyncio.TimeoutError:
             return ""
@@ -2709,16 +2708,18 @@ def _agree_bar_fn(n: int, total: int = 3) -> str:
 
 # ─── Dual AI Fallback System ────────────────────────────────────────────────
 class DualAIAssessment:
-    """Claude primary, Qwen122b fallback for redundancy."""
+    """OpenRouter primary, Qwen fallback for redundancy."""
 
     def __init__(
         self,
-        anthropic_key: str,
+        openrouter_key: str,
+        openrouter_model: str = "qwen/qwen-2.5-7b-instruct",
         qwen_host: str = "ollama-ssh1",
         qwen_port: int = 11434,
         log=None,
     ):
-        self.anthropic_key = anthropic_key
+        self.openrouter_key = openrouter_key
+        self.openrouter_model = openrouter_model
         self.qwen_host = qwen_host
         self.qwen_port = qwen_port
         self.log = log
@@ -2726,19 +2727,19 @@ class DualAIAssessment:
     async def assess(self, prompt: str, timeout_s: int = 8) -> tuple[str, str]:
         """
         Get AI assessment with fallback.
-        Returns (text, source) where source = "claude" | "qwen" | "timeout" | "error"
+        Returns (text, source) where source = "openrouter" | "qwen" | "timeout" | "error"
         """
-        # Try Claude first (if key available)
-        if self.anthropic_key:
+        # Try OpenRouter first (if key available)
+        if self.openrouter_key:
             try:
-                text = await self._claude(prompt, timeout_s=timeout_s)
-                return text, "claude"
+                text = await self._openrouter(prompt, timeout_s=timeout_s)
+                return text, "openrouter"
             except asyncio.TimeoutError:
                 if self.log:
-                    self.log.warning("ai.claude_timeout")
+                    self.log.warning("ai.openrouter_timeout")
             except Exception as e:
                 if self.log:
-                    self.log.warning("ai.claude_error", error=str(e)[:100])
+                    self.log.warning("ai.openrouter_error", error=str(e)[:100])
 
         # Fallback: Qwen122b
         try:
@@ -2753,31 +2754,21 @@ class DualAIAssessment:
                 self.log.warning("ai.qwen_error", error=str(e)[:100])
             return "[AI analysis unavailable - see trade decision above]", "error"
 
-    async def _claude(self, prompt: str, timeout_s: int = 8) -> str:
-        """Call Claude via Anthropic API."""
-        url = "https://api.anthropic.com/v1/messages"
-        headers = {
-            "x-api-key": self.anthropic_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        }
-        payload = {
-            "model": "claude-sonnet-4-6",
-            "max_tokens": 200,
-            "messages": [{"role": "user", "content": prompt}],
-        }
+    async def _openrouter(self, prompt: str, timeout_s: int = 8) -> str:
+        """Call OpenRouter via its OpenAI-compatible API."""
+        from llm.openrouter import chat_completion
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=timeout_s),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data["content"][0]["text"]
-                raise Exception(f"Status {resp.status}")
+        text = await chat_completion(
+            api_key=self.openrouter_key,
+            model=self.openrouter_model,
+            prompt=prompt,
+            max_tokens=200,
+            temperature=0.2,
+            timeout_s=timeout_s,
+        )
+        if not text:
+            raise Exception("OpenRouter returned empty response")
+        return text
 
     async def _qwen(self, prompt: str, timeout_s: int = 45) -> str:
         """Call Qwen122b — supports both Ollama (/api/generate) and OpenAI (/v1) endpoints.

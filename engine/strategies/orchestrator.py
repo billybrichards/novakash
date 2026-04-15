@@ -144,7 +144,7 @@ class Orchestrator:
             alerts_paper=settings.telegram_alerts_paper,
             alerts_live=settings.telegram_alerts_live,
             paper_mode=settings.paper_mode,
-            anthropic_api_key=settings.anthropic_api_key,  # fix: pass key explicitly (pydantic doesn't inject into os.environ)
+            openrouter_api_key=settings.openrouter_api_key,
         )
 
         # ── Signal Processors ──────────────────────────────────────────────────
@@ -248,9 +248,10 @@ class Orchestrator:
 
         # ── Claude Opus 4.6 AI Evaluator ─────────────────────────────────────
         self._claude_evaluator = None
-        if settings.anthropic_api_key:
+        if settings.openrouter_api_key:
             self._claude_evaluator = ClaudeEvaluator(
-                api_key=settings.anthropic_api_key,
+                api_key=settings.openrouter_api_key,
+                model=settings.openrouter_model,
                 alerter=self._alerter,
                 db_client=self._db,
             )
@@ -258,9 +259,10 @@ class Orchestrator:
 
         # ── Post-Resolution AI Evaluator (Sonnet, runs after shadow resolution) ─
         self._post_resolution_evaluator = None
-        if settings.anthropic_api_key:
+        if settings.openrouter_api_key:
             self._post_resolution_evaluator = PostResolutionEvaluator(
-                api_key=settings.anthropic_api_key,
+                api_key=settings.openrouter_api_key,
+                model=settings.openrouter_model,
                 db_client=self._db,
                 alerter=self._alerter,
             )
@@ -524,12 +526,19 @@ class Orchestrator:
 
                 # Wire decision repo for per-eval strategy_decisions writes
                 _decision_repo = None
+                _trace_repo = None
                 try:
                     from adapters.persistence.pg_strategy_decisions import (
                         PgStrategyDecisionRepository,
                     )
+                    from adapters.persistence.pg_window_trace_repo import (
+                        PgWindowTraceRepository,
+                    )
 
                     _decision_repo = PgStrategyDecisionRepository(
+                        db_client=self._db,
+                    )
+                    _trace_repo = PgWindowTraceRepository(
                         db_client=self._db,
                     )
                 except Exception as exc:
@@ -544,6 +553,7 @@ class Orchestrator:
                     execute_trade_uc=None,  # DEFERRED to start()
                     alerter=self._alerter,
                     decision_repo=_decision_repo,
+                    trace_repo=_trace_repo,
                 )
                 self._strategy_registry.load_all()
                 log.info(
@@ -702,6 +712,16 @@ class Orchestrator:
             await self._db.ensure_window_tables()
         except Exception as exc:
             log.warning("orchestrator.ensure_window_tables_failed", error=str(exc))
+
+        try:
+            if self._strategy_registry and getattr(
+                self._strategy_registry, "_trace_repo", None
+            ):
+                await self._strategy_registry._trace_repo.ensure_tables()
+        except Exception as exc:
+            log.warning(
+                "orchestrator.ensure_window_trace_tables_failed", error=str(exc)[:200]
+            )
 
         # ── Reconcile UC: wire after pool is live ──────────────────────────────
         try:
@@ -1744,7 +1764,7 @@ class Orchestrator:
                         _ticks = [window.open_price, _btc]
                     # AI commentary (non-blocking, best-effort)
                     _ai = None
-                    if self._alerter._anthropic_api_key:
+                    if self._alerter._openrouter_api_key:
                         try:
                             # v8.0: Tiingo-based prompt, Sonnet model, adequate tokens
                             _dir_word = "UP" if _d > 0 else "DOWN"
@@ -1756,32 +1776,17 @@ class Orchestrator:
                                 f"CLOB: UP ${_snap_gamma_up:.2f} / DOWN ${_snap_gamma_down:.2f}. "
                                 f"1 sentence: signal strength and key risk."
                             )
-                            import aiohttp as _ah
+                            from llm.openrouter import chat_completion
 
-                            async with _ah.ClientSession() as _sess:
-                                async with _sess.post(
-                                    "https://api.anthropic.com/v1/messages",
-                                    json={
-                                        "model": "claude-sonnet-4-6",
-                                        "max_tokens": 150,
-                                        "system": "You are a crypto trading analyst for Polymarket 5-min prediction markets. Be concise. 1-2 sentences max.",
-                                        "messages": [
-                                            {"role": "user", "content": _prompt}
-                                        ],
-                                    },
-                                    headers={
-                                        "x-api-key": self._alerter._anthropic_api_key,
-                                        "anthropic-version": "2023-06-01",
-                                    },
-                                    timeout=_ah.ClientTimeout(total=8),
-                                ) as _r:
-                                    if _r.status == 200:
-                                        _d2 = await _r.json()
-                                        _ai = (
-                                            _d2.get("content", [{}])[0]
-                                            .get("text", "")
-                                            .strip()
-                                        )
+                            _ai = await chat_completion(
+                                api_key=self._alerter._openrouter_api_key,
+                                model=self._alerter._openrouter_model,
+                                prompt=_prompt,
+                                system_prompt="You are a crypto trading analyst for Polymarket 5-min prediction markets. Be concise. 1-2 sentences max.",
+                                max_tokens=150,
+                                temperature=0.2,
+                                timeout_s=8,
+                            )
                         except Exception:
                             pass
                     return (

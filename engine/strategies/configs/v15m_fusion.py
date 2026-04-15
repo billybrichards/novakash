@@ -33,6 +33,26 @@ _CONVICTION_THRESHOLDS = {
 _TRADEABLE_REGIMES = {"calm_trend", "volatile_trend"}
 
 
+def _gate(name: str, passed: bool, reason: str) -> dict:
+    return {"gate": name, "passed": passed, "reason": reason}
+
+
+def _skip(reason: str, gate_results: Optional[list[dict]] = None) -> StrategyDecision:
+    return StrategyDecision(
+        action="SKIP",
+        direction=None,
+        confidence=None,
+        confidence_score=None,
+        entry_cap=None,
+        collateral_pct=None,
+        strategy_id=_STRATEGY_ID,
+        strategy_version=_VERSION,
+        entry_reason="",
+        skip_reason=reason,
+        metadata={"gate_results": gate_results or []},
+    )
+
+
 def evaluate_polymarket_v2(surface: "FullDataSurface") -> Optional[StrategyDecision]:
     """Full V4 fusion evaluation ported from V4FusionStrategy.
 
@@ -64,6 +84,7 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
     distance = surface.poly_confidence_distance or abs(confidence - 0.5)
     reason = surface.poly_reason or "unknown"
     max_entry = surface.poly_max_entry_price
+    gates: list[dict] = []
 
     # Replace server timing label with offset-based derivation (server may be 5m-calibrated)
     offset = surface.eval_offset or 0
@@ -76,13 +97,20 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
 
     # Too early / too late
     if timing in ("early", "late"):
-        return _skip(f"polymarket: timing={timing} -- outside window")
+        gates.append(_gate("timing", False, f"timing={timing} outside trade window"))
+        return _skip(f"polymarket: timing={timing} -- outside window", gates)
+
+    gates.append(_gate("timing", True, f"timing={timing} in [180,250]"))
 
     # Confidence gate
     if distance < 0.12:
+        gates.append(_gate("confidence", False, f"dist={distance:.3f} < 0.12"))
         return _skip(
-            f"polymarket: p_up={confidence:.3f} dist={distance:.3f} < 0.12 threshold"
+            f"polymarket: p_up={confidence:.3f} dist={distance:.3f} < 0.12 threshold",
+            gates,
         )
+
+    gates.append(_gate("confidence", True, f"dist={distance:.3f} >= 0.12"))
 
     # trade_advised disabled for 15m — TimesFM assembler's regime/fee gates are
     # calibrated for 5m and incorrectly block high-conviction 15m signals.
@@ -91,15 +119,23 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
     #     return _skip(f"polymarket: {reason} (timing={timing}, dist={distance:.3f})")
 
     if not direction:
-        return _skip("polymarket: no direction")
+        gates.append(_gate("direction", False, "no direction"))
+        return _skip("polymarket: no direction", gates)
+
+    gates.append(_gate("direction", True, f"direction={direction}"))
 
     # Macro direction gate
     macro_gate = surface.v4_macro_direction_gate
     if macro_gate and macro_gate not in ("ALLOW_ALL", None):
         if macro_gate == "LONG_ONLY" and direction == "DOWN":
-            return _skip("macro direction_gate=LONG_ONLY blocks DOWN")
+            gates.append(_gate("macro_direction", False, "LONG_ONLY blocks DOWN"))
+            return _skip("macro direction_gate=LONG_ONLY blocks DOWN", gates)
         if macro_gate == "SHORT_ONLY" and direction == "UP":
-            return _skip("macro direction_gate=SHORT_ONLY blocks UP")
+            gates.append(_gate("macro_direction", False, "SHORT_ONLY blocks UP"))
+            return _skip("macro direction_gate=SHORT_ONLY blocks UP", gates)
+
+    if macro_gate:
+        gates.append(_gate("macro_direction", True, f"{macro_gate} allows {direction}"))
 
     return StrategyDecision(
         action="TRADE",
@@ -113,6 +149,7 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
         entry_reason=f"polymarket_{reason}_T{surface.eval_offset}",
         skip_reason=None,
         metadata={
+            "gate_results": gates,
             "poly_direction": direction,
             "poly_confidence_distance": distance,
             "poly_timing": timing,
@@ -126,17 +163,26 @@ def _evaluate_poly_legacy(surface: "FullDataSurface") -> StrategyDecision:
     p_up = surface.v2_probability_up or 0.5
     distance = abs(p_up - 0.5)
     direction = surface.v4_recommended_side or ("UP" if p_up > 0.5 else "DOWN")
+    gates: list[dict] = []
 
     if distance < 0.12:
-        return _skip(f"polymarket_legacy: dist={distance:.3f} < 0.12")
+        gates.append(_gate("confidence", False, f"dist={distance:.3f} < 0.12"))
+        return _skip(f"polymarket_legacy: dist={distance:.3f} < 0.12", gates)
+
+    gates.append(_gate("confidence", True, f"dist={distance:.3f} >= 0.12"))
 
     # Macro gate
     macro_gate = surface.v4_macro_direction_gate
     if macro_gate and macro_gate not in ("ALLOW_ALL", None):
         if macro_gate == "LONG_ONLY" and direction == "DOWN":
-            return _skip("macro direction_gate=LONG_ONLY blocks DOWN")
+            gates.append(_gate("macro_direction", False, "LONG_ONLY blocks DOWN"))
+            return _skip("macro direction_gate=LONG_ONLY blocks DOWN", gates)
         if macro_gate == "SHORT_ONLY" and direction == "UP":
-            return _skip("macro direction_gate=SHORT_ONLY blocks UP")
+            gates.append(_gate("macro_direction", False, "SHORT_ONLY blocks UP"))
+            return _skip("macro direction_gate=SHORT_ONLY blocks UP", gates)
+
+    if macro_gate:
+        gates.append(_gate("macro_direction", True, f"{macro_gate} allows {direction}"))
 
     collateral_pct = surface.v4_recommended_collateral_pct
     if collateral_pct is not None and surface.v4_macro_size_modifier:
@@ -154,6 +200,7 @@ def _evaluate_poly_legacy(surface: "FullDataSurface") -> StrategyDecision:
         entry_reason=f"polymarket_legacy_dist{distance:.2f}_T{surface.eval_offset}",
         skip_reason=None,
         metadata={
+            "gate_results": gates,
             "v2_probability_up": p_up,
             "v4_regime": surface.v4_regime,
         },
@@ -164,24 +211,38 @@ def _evaluate_legacy(surface: "FullDataSurface") -> StrategyDecision:
     """Legacy margin-engine path (non-polymarket templates)."""
     # Gate 1: Regime
     regime = surface.v4_regime
+    gates: list[dict] = []
     if regime and regime not in _TRADEABLE_REGIMES:
-        return _skip(f"regime={regime} not tradeable")
+        gates.append(_gate("regime", False, f"regime={regime} not tradeable"))
+        return _skip(f"regime={regime} not tradeable", gates)
+
+    gates.append(_gate("regime", True, f"regime={regime} tradeable"))
 
     # Gate 2: Consensus
     if not surface.v4_consensus_safe_to_trade:
-        return _skip("consensus not safe_to_trade")
+        gates.append(_gate("consensus", False, "consensus not safe_to_trade"))
+        return _skip("consensus not safe_to_trade", gates)
+
+    gates.append(_gate("consensus", True, "safe_to_trade=true"))
 
     # Gate 3: Conviction threshold
     p_up = surface.v2_probability_up
     if p_up is None:
-        return _skip("no probability_up")
+        gates.append(_gate("confidence", False, "no probability_up"))
+        return _skip("no probability_up", gates)
     distance = abs(p_up - 0.5)
     conviction = surface.v4_conviction or "NONE"
     min_dist = _CONVICTION_THRESHOLDS.get(conviction, 1.0)
     if distance < min_dist:
-        return _skip(
-            f"conviction={conviction} requires dist={min_dist:.2f}, got {distance:.2f}"
+        gates.append(
+            _gate("confidence", False, f"dist={distance:.2f} < {min_dist:.2f}")
         )
+        return _skip(
+            f"conviction={conviction} requires dist={min_dist:.2f}, got {distance:.2f}",
+            gates,
+        )
+
+    gates.append(_gate("confidence", True, f"dist={distance:.2f} >= {min_dist:.2f}"))
 
     # Gate 4: Direction
     direction = surface.v4_recommended_side
@@ -192,9 +253,14 @@ def _evaluate_legacy(surface: "FullDataSurface") -> StrategyDecision:
     macro_gate = surface.v4_macro_direction_gate
     if macro_gate and macro_gate not in ("ALLOW_ALL", None):
         if macro_gate == "LONG_ONLY" and direction == "DOWN":
-            return _skip("macro direction_gate=LONG_ONLY blocks DOWN")
+            gates.append(_gate("macro_direction", False, "LONG_ONLY blocks DOWN"))
+            return _skip("macro direction_gate=LONG_ONLY blocks DOWN", gates)
         if macro_gate == "SHORT_ONLY" and direction == "UP":
-            return _skip("macro direction_gate=SHORT_ONLY blocks UP")
+            gates.append(_gate("macro_direction", False, "SHORT_ONLY blocks UP"))
+            return _skip("macro direction_gate=SHORT_ONLY blocks UP", gates)
+
+    if macro_gate:
+        gates.append(_gate("macro_direction", True, f"{macro_gate} allows {direction}"))
 
     collateral_pct = surface.v4_recommended_collateral_pct
     if collateral_pct is not None and surface.v4_macro_size_modifier:
@@ -212,24 +278,9 @@ def _evaluate_legacy(surface: "FullDataSurface") -> StrategyDecision:
         entry_reason=(f"v4_{conviction}_{regime}_T{surface.eval_offset}_p{p_up:.2f}"),
         skip_reason=None,
         metadata={
+            "gate_results": gates,
             "v2_probability_up": p_up,
             "v4_regime": regime,
             "v4_conviction": conviction,
         },
-    )
-
-
-def _skip(reason: str) -> StrategyDecision:
-    return StrategyDecision(
-        action="SKIP",
-        direction=None,
-        confidence=None,
-        confidence_score=None,
-        entry_cap=None,
-        collateral_pct=None,
-        strategy_id=_STRATEGY_ID,
-        strategy_version=_VERSION,
-        entry_reason="",
-        skip_reason=reason,
-        metadata={},
     )

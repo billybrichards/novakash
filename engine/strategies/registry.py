@@ -11,7 +11,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -19,7 +19,7 @@ import structlog
 import yaml
 
 from alerts.haiku_summarizer import HaikuSummarizer
-from domain.value_objects import StrategyDecision
+from domain.value_objects import GateCheckTrace, StrategyDecision, WindowEvaluationTrace
 from strategies.data_surface import DataSurfaceManager, FullDataSurface
 from strategies.gates.base import Gate, GateResult
 
@@ -114,12 +114,14 @@ class StrategyRegistry:
         execute_trade_uc: Any = None,
         alerter: Any = None,
         decision_repo: Any = None,
+        trace_repo: Any = None,
     ):
         self._config_dir = Path(config_dir)
         self._data_surface = data_surface
         self._execute_uc = execute_trade_uc
         self._alerter = alerter
         self._decision_repo = decision_repo  # PgStrategyDecisionRepository
+        self._trace_repo = trace_repo
         self._configs: dict[str, StrategyConfig] = {}
         self._pipelines: dict[str, list[Gate]] = {}
         self._hooks: dict[str, dict[str, Callable]] = {}
@@ -271,6 +273,12 @@ class StrategyRegistry:
         window_tf = getattr(window, "timeframe", "5m")
         surface = self._data_surface.get_surface(window, eval_offset)
 
+        if self._trace_repo is not None:
+            try:
+                self._write_window_trace(surface)
+            except Exception as exc:
+                log.warning("registry.window_trace_error", error=str(exc)[:200])
+
         decisions = []
         for name, config in self._configs.items():
             if config.mode == "DISABLED":
@@ -326,6 +334,20 @@ class StrategyRegistry:
                     except Exception as _e:
                         log.warning(
                             "registry.decision_record_error", error=str(_e)[:200]
+                        )
+
+                if self._trace_repo is not None:
+                    try:
+                        self._write_gate_traces(
+                            config=config,
+                            surface=surface,
+                            decision=decision,
+                        )
+                    except Exception as _e:
+                        log.warning(
+                            "registry.gate_trace_error",
+                            strategy=name,
+                            error=str(_e)[:200],
                         )
 
                 # Execute LIVE trades when use case is wired
@@ -421,6 +443,182 @@ class StrategyRegistry:
 
         return decisions
 
+    def _write_window_trace(self, surface: FullDataSurface) -> None:
+        import asyncio
+
+        trace = WindowEvaluationTrace(
+            asset=surface.asset,
+            window_ts=surface.window_ts,
+            timeframe=surface.timescale,
+            eval_offset=surface.eval_offset,
+            surface_data=self._surface_trace_data(surface),
+            assembled_at=surface.assembled_at,
+        )
+        task = asyncio.create_task(
+            self._trace_repo.write_window_evaluation_trace(trace)
+        )
+        task.add_done_callback(
+            self._log_async_write_error("registry.window_trace_write_error")
+        )
+
+    def _write_gate_traces(
+        self,
+        *,
+        config: StrategyConfig,
+        surface: FullDataSurface,
+        decision: StrategyDecision,
+    ) -> None:
+        import asyncio
+
+        traces = self._build_gate_check_traces(
+            config=config,
+            surface=surface,
+            decision=decision,
+        )
+        if not traces:
+            return
+        task = asyncio.create_task(self._trace_repo.write_gate_check_traces(traces))
+        task.add_done_callback(
+            self._log_async_write_error(
+                "registry.gate_trace_write_error", strategy=decision.strategy_id
+            )
+        )
+
+    def _log_async_write_error(self, event: str, **context: Any) -> Callable:
+        def _cb(task) -> None:
+            if not task.cancelled() and task.exception():
+                log.warning(event, error=str(task.exception())[:200], **context)
+
+        return _cb
+
+    def _build_gate_check_traces(
+        self,
+        *,
+        config: StrategyConfig,
+        surface: FullDataSurface,
+        decision: StrategyDecision,
+    ) -> list[GateCheckTrace]:
+        gate_results = (decision.metadata or {}).get("gate_results") or []
+        traces: list[GateCheckTrace] = []
+        evaluated_at = time.time()
+
+        if gate_results:
+            for idx, result in enumerate(gate_results):
+                gate_name = str(result.get("gate") or f"gate_{idx}")
+                traces.append(
+                    GateCheckTrace(
+                        asset=surface.asset,
+                        window_ts=surface.window_ts,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        strategy_id=decision.strategy_id,
+                        gate_order=idx,
+                        gate_name=gate_name,
+                        passed=bool(result.get("passed")),
+                        mode=config.mode,
+                        action=decision.action,
+                        direction=decision.direction,
+                        reason=str(result.get("reason") or ""),
+                        skip_reason=decision.skip_reason,
+                        observed_data=self._gate_observed_data(
+                            gate_name, surface, decision
+                        ),
+                        config_data=self._gate_config_data(config, idx, gate_name),
+                        evaluated_at=evaluated_at,
+                    )
+                )
+            return traces
+
+        traces.append(
+            GateCheckTrace(
+                asset=surface.asset,
+                window_ts=surface.window_ts,
+                timeframe=surface.timescale,
+                eval_offset=surface.eval_offset,
+                strategy_id=decision.strategy_id,
+                gate_order=0,
+                gate_name="custom_logic",
+                passed=decision.action == "TRADE",
+                mode=config.mode,
+                action=decision.action,
+                direction=decision.direction,
+                reason=decision.skip_reason or decision.entry_reason,
+                skip_reason=decision.skip_reason,
+                observed_data=self._gate_observed_data(
+                    "custom_logic", surface, decision
+                ),
+                config_data={
+                    "hook": config.pre_gate_hook or config.post_gate_hook or "custom"
+                },
+                evaluated_at=evaluated_at,
+            )
+        )
+        return traces
+
+    def _gate_config_data(
+        self,
+        config: StrategyConfig,
+        gate_index: int,
+        gate_name: str,
+    ) -> dict:
+        if gate_index < len(config.gates):
+            gate_def = config.gates[gate_index]
+            return {
+                "type": gate_def.get("type"),
+                "params": gate_def.get("params", {}),
+            }
+        return {"type": gate_name, "params": {}}
+
+    def _surface_trace_data(self, surface: FullDataSurface) -> dict:
+        return asdict(surface)
+
+    def _gate_observed_data(
+        self,
+        gate_name: str,
+        surface: FullDataSurface,
+        decision: StrategyDecision,
+    ) -> dict:
+        buy_ratio = None
+        if (
+            surface.cg_taker_buy_vol is not None
+            and surface.cg_taker_sell_vol is not None
+        ):
+            total = (surface.cg_taker_buy_vol or 0.0) + (
+                surface.cg_taker_sell_vol or 0.0
+            )
+            if total > 0:
+                buy_ratio = (surface.cg_taker_buy_vol or 0.0) / total
+
+        observed = {
+            "eval_offset": surface.eval_offset,
+            "delta_pct": surface.delta_pct,
+            "abs_delta_pct": abs(surface.delta_pct or 0.0),
+            "vpin": surface.vpin,
+            "regime": surface.regime,
+            "v2_probability_up": surface.v2_probability_up,
+            "poly_direction": surface.poly_direction,
+            "poly_confidence_distance": surface.poly_confidence_distance,
+            "poly_timing": surface.poly_timing,
+            "poly_trade_advised": surface.poly_trade_advised,
+            "entry_cap": decision.entry_cap,
+            "cg_buy_ratio": buy_ratio,
+            "clob_up_ask": surface.clob_up_ask,
+            "clob_down_ask": surface.clob_down_ask,
+            "clob_implied_up": surface.clob_implied_up,
+        }
+
+        if gate_name == "direction":
+            observed["actual_direction"] = decision.direction or surface.poly_direction
+        elif gate_name == "spread":
+            if surface.clob_up_ask is not None and surface.clob_down_ask is not None:
+                observed["combined_ask"] = surface.clob_up_ask + surface.clob_down_ask
+        elif gate_name == "taker_flow":
+            observed["cg_taker_buy_vol"] = surface.cg_taker_buy_vol
+            observed["cg_taker_sell_vol"] = surface.cg_taker_sell_vol
+        elif gate_name == "confidence":
+            observed["confidence_score"] = decision.confidence_score
+        return observed
+
     async def _send_window_summary(
         self,
         window_ts: int,
@@ -472,6 +670,10 @@ class StrategyRegistry:
             # Build per-strategy decision lines with YAML config context
             decision_lines = []
             decisions_text_parts = []
+            trade_lines = []
+            blocked_signal_lines = []
+            blocked_timing_lines = []
+            off_window_strategies = []
             for d in decisions:
                 cfg = self._configs.get(d.strategy_id)
                 mode = cfg.mode if cfg else "?"
@@ -491,21 +693,54 @@ class StrategyRegistry:
                     line = f"  {sid} ({mode}): TRADE {d.direction}"
                     if d.confidence:
                         line += f" | conf={d.confidence}"
-                    decision_lines.append(line)
+                    trade_lines.append(line)
                     decisions_text_parts.append(
                         f"{sid} ({mode}) [gates: {gate_summary}]: "
                         f"TRADING {d.direction}, confidence={d.confidence or '?'}"
                     )
                 elif d.action == "SKIP":
                     reason = d.skip_reason or "unknown"
-                    line = f"  {sid} ({mode}): Skipped -- {reason}"
-                    decision_lines.append(line)
-                    decisions_text_parts.append(
-                        f"{sid} ({mode}) [gates: {gate_summary}]: SKIPPED — {reason}"
-                    )
+                    # Pure timing-window misses are usually noise in Telegram.
+                    # Collapse them into one "off-window" summary later.
+                    if reason.startswith("timing:") and " outside [" in reason:
+                        off_window_strategies.append(f"{sid} ({mode})")
+                    elif "too late" in reason or "timing=late" in reason:
+                        blocked_timing_lines.append(f"  {sid} ({mode}): {reason}")
+                    else:
+                        line = f"  {sid} ({mode}): {reason}"
+                        blocked_signal_lines.append(line)
+                        decisions_text_parts.append(
+                            f"{sid} ({mode}) [gates: {gate_summary}]: SKIPPED — {reason}"
+                        )
                 else:
-                    decision_lines.append(f"  {sid} ({mode}): ERROR")
+                    blocked_signal_lines.append(f"  {sid} ({mode}): ERROR")
                     decisions_text_parts.append(f"{sid} ({mode}): Error")
+
+            if trade_lines:
+                decision_lines.append("Eligible now:")
+                decision_lines.extend(trade_lines)
+
+            if blocked_signal_lines:
+                if decision_lines:
+                    decision_lines.append("")
+                decision_lines.append("Blocked by signal:")
+                decision_lines.extend(blocked_signal_lines)
+
+            if blocked_timing_lines:
+                if decision_lines:
+                    decision_lines.append("")
+                decision_lines.append("Blocked by timing:")
+                decision_lines.extend(blocked_timing_lines)
+
+            if off_window_strategies:
+                joined = ", ".join(off_window_strategies)
+                if decision_lines:
+                    decision_lines.append("")
+                decision_lines.append(f"Inactive this offset:")
+                decision_lines.append(f"  {joined}")
+                decisions_text_parts.append(
+                    "off-window strategies this eval: " + joined
+                )
 
             # Infer timescale from decisions (15m strategies have v15m_ prefix)
             inferred_tf = (

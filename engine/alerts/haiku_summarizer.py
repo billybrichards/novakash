@@ -1,11 +1,8 @@
-"""Haiku-powered window summary generator for Telegram alerts.
+"""LLM-powered window summary generator for Telegram alerts.
 
-Uses Claude Haiku to produce human-readable 2-3 sentence summaries of
-5-minute BTC trading windows. Falls back to a template-based summary
+Uses OpenRouter to produce human-readable 2-3 sentence summaries of
+BTC trading windows. Falls back to a template-based summary
 if the API call fails (rate limit, key missing, timeout).
-
-Never blocks the asyncio event loop -- runs the synchronous Anthropic
-SDK call in a thread executor.
 """
 
 from __future__ import annotations
@@ -13,55 +10,28 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
 import structlog
 
+from llm.openrouter import chat_completion
+
 log = structlog.get_logger(__name__)
-
-# Lazy-loaded to avoid import errors when anthropic is not installed
-_anthropic_module: Any = None
-
-
-def _get_anthropic():
-    global _anthropic_module
-    if _anthropic_module is None:
-        try:
-            import anthropic
-            _anthropic_module = anthropic
-        except ImportError:
-            _anthropic_module = None
-    return _anthropic_module
 
 
 class HaikuSummarizer:
-    """Generate human-readable window summaries via Claude Haiku.
+    """Generate human-readable window summaries via OpenRouter.
 
     Two entry points:
     - summarize_evaluation(): called at T-62 with strategy decisions
     - summarize_resolution(): called when a window resolves with outcome
     """
 
-    def __init__(self, api_key: Optional[str] = None):
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        self._client: Any = None
-
-    def _ensure_client(self) -> bool:
-        """Lazily create the Anthropic client. Returns True if available."""
-        if self._client is not None:
-            return True
-        if not self._api_key:
-            return False
-        anthropic = _get_anthropic()
-        if anthropic is None:
-            log.warning("haiku_summarizer.no_anthropic_sdk")
-            return False
-        try:
-            self._client = anthropic.Anthropic(api_key=self._api_key)
-            return True
-        except Exception as exc:
-            log.warning("haiku_summarizer.client_init_error", error=str(exc)[:200])
-            return False
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+        self._api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        self._model = model or os.environ.get(
+            "OPENROUTER_MODEL", "qwen/qwen-2.5-7b-instruct"
+        )
 
     # ── T-62 Window Evaluation Summary ─────────────────────────────────────
 
@@ -71,14 +41,21 @@ class HaikuSummarizer:
         Called at T-62 (final evaluation offset) with the full data surface
         and strategy decision results.
         """
-        if not self._ensure_client():
+        if not self._api_key:
             return self._fallback_evaluation(context)
 
         prompt = self._build_evaluation_prompt(context)
         try:
-            summary = await asyncio.get_event_loop().run_in_executor(
-                None, self._call_haiku, prompt
+            summary = await chat_completion(
+                api_key=self._api_key,
+                model=self._model,
+                prompt=prompt,
+                max_tokens=220,
+                temperature=0.2,
+                timeout_s=15,
             )
+            if not summary:
+                return self._fallback_evaluation(context)
             return self._format_evaluation_message(context, summary)
         except Exception as exc:
             log.warning("haiku_summarizer.eval_api_error", error=str(exc)[:200])
@@ -87,23 +64,23 @@ class HaikuSummarizer:
     def _build_evaluation_prompt(self, ctx: dict) -> str:
         # Build full signal surface block
         surface_lines = [
-            f"  CLOB: up_ask={ctx.get('clob_up_ask','?')} dn_ask={ctx.get('clob_dn_ask','?')} mid={ctx.get('clob_mid','?')}",
-            f"  Trade advised: {ctx.get('trade_advised','?')} | V4 consensus: {ctx.get('v4_consensus','?')} | V2 dir: {ctx.get('v2_direction','?')}",
-            f"  Open price: ${ctx.get('open_price','?')} | Macro bias: {ctx.get('macro_bias','?')}",
+            f"  CLOB: up_ask={ctx.get('clob_up_ask', '?')} dn_ask={ctx.get('clob_dn_ask', '?')} mid={ctx.get('clob_mid', '?')}",
+            f"  Trade advised: {ctx.get('trade_advised', '?')} | V4 consensus: {ctx.get('v4_consensus', '?')} | V2 dir: {ctx.get('v2_direction', '?')}",
+            f"  Open price: ${ctx.get('open_price', '?')} | Macro bias: {ctx.get('macro_bias', '?')}",
         ]
         surface_block = "\n".join(surface_lines)
 
         return (
             f"You are a crypto trading analyst. Write a concise Telegram window summary.\n\n"
-            f"=== BTC {ctx.get('timescale','5m')} | {ctx.get('window_time','?')} UTC ===\n"
-            f"Delta: {ctx.get('delta_pct','?')}% | VPIN: {ctx.get('vpin','?')} | Regime: {ctx.get('regime','?')}\n"
-            f"Model: P(UP)={ctx.get('p_up','?')} dist={ctx.get('dist','?')} → {ctx.get('model_direction','?')}\n"
-            f"Chainlink: {ctx.get('chainlink_delta','?')}% | Tiingo: {ctx.get('tiingo_delta','?')}% | Sources agree: {ctx.get('sources_agree','?')}\n"
+            f"=== BTC {ctx.get('timescale', '5m')} | {ctx.get('window_time', '?')} UTC ===\n"
+            f"Delta: {ctx.get('delta_pct', '?')}% | VPIN: {ctx.get('vpin', '?')} | Regime: {ctx.get('regime', '?')}\n"
+            f"Model: P(UP)={ctx.get('p_up', '?')} dist={ctx.get('dist', '?')} → {ctx.get('model_direction', '?')}\n"
+            f"Chainlink: {ctx.get('chainlink_delta', '?')}% | Tiingo: {ctx.get('tiingo_delta', '?')}% | Sources agree: {ctx.get('sources_agree', '?')}\n"
             f"Full surface:\n{surface_block}\n\n"
             f"=== Strategy decisions (each includes its gate config) ===\n"
-            f"{ctx.get('decisions_text','none')}\n\n"
+            f"{ctx.get('decisions_text', 'none')}\n\n"
             f"Write TWO parts separated by exactly '---':\n\n"
-            f"PART 1 (1 sentence): Market read — what BTC is doing this window and why the model favors {ctx.get('model_direction','?')}. Include the key signal values.\n\n"
+            f"PART 1 (1 sentence): Market read — what BTC is doing this window and why the model favors {ctx.get('model_direction', '?')}. Include the key signal values.\n\n"
             f"PART 2: For EACH strategy, write '• [name]: [one plain-English sentence]' explaining:\n"
             f"  - If SKIPPED: WHY it skipped in human terms based on its specific gates and the current signal values (e.g. 'confidence dist=0.07 needs 0.12+', not just 'low confidence')\n"
             f"  - If TRADED: what signal triggered it and at what values\n"
@@ -113,9 +90,11 @@ class HaikuSummarizer:
 
     def _format_evaluation_message(self, ctx: dict, ai_summary: str) -> str:
         """Build the final Telegram message. ai_summary has PART1 --- PART2 format."""
-        delta_str = f"{ctx.get('delta_pct', '?')}%" if ctx.get('delta_pct') is not None else "?"
-        vpin_str = f"VPIN {ctx['vpin']:.2f}" if ctx.get('vpin') is not None else ""
-        header = f"\U0001f550 BTC {ctx.get('timescale','5m')} | {ctx.get('window_time', '?')} UTC | \u0394{delta_str}"
+        delta_str = (
+            f"{ctx.get('delta_pct', '?')}%" if ctx.get("delta_pct") is not None else "?"
+        )
+        vpin_str = f"VPIN {ctx['vpin']:.2f}" if ctx.get("vpin") is not None else ""
+        header = f"\U0001f550 BTC {ctx.get('timescale', '5m')} | {ctx.get('window_time', '?')} UTC | \u0394{delta_str}"
         if vpin_str:
             header += f" | {vpin_str}"
 
@@ -124,7 +103,9 @@ class HaikuSummarizer:
             parts_split = ai_summary.split("---", 1)
             market_read = parts_split[0].strip()
             strategy_analysis = parts_split[1].strip()
-            return "\n".join([header, "", f"\U0001f4ca {market_read}", "", strategy_analysis])
+            return "\n".join(
+                [header, "", f"\U0001f4ca {market_read}", "", strategy_analysis]
+            )
         else:
             # Fallback: AI didn't use separator, show as-is + template strategies
             strategy_lines = ctx.get("decision_lines", [])
@@ -136,11 +117,13 @@ class HaikuSummarizer:
 
     def _fallback_evaluation(self, ctx: dict) -> str:
         """Template-based fallback when Haiku API is unavailable."""
-        delta_str = f"{ctx.get('delta_pct', '?')}%" if ctx.get('delta_pct') is not None else "?"
-        vpin_str = f"VPIN {ctx['vpin']:.2f}" if ctx.get('vpin') is not None else ""
+        delta_str = (
+            f"{ctx.get('delta_pct', '?')}%" if ctx.get("delta_pct") is not None else "?"
+        )
+        vpin_str = f"VPIN {ctx['vpin']:.2f}" if ctx.get("vpin") is not None else ""
         regime = ctx.get("regime", "?")
 
-        header = f"\U0001f550 BTC {ctx.get('timescale','5m')} | {ctx.get('window_time', '?')} UTC | \u0394{delta_str}"
+        header = f"\U0001f550 BTC {ctx.get('timescale', '5m')} | {ctx.get('window_time', '?')} UTC | \u0394{delta_str}"
         if vpin_str:
             header += f" | {vpin_str}"
 
@@ -181,14 +164,21 @@ class HaikuSummarizer:
 
         Called when the reconciler resolves a window's actual direction.
         """
-        if not self._ensure_client():
+        if not self._api_key:
             return self._fallback_resolution(context)
 
         prompt = self._build_resolution_prompt(context)
         try:
-            summary = await asyncio.get_event_loop().run_in_executor(
-                None, self._call_haiku, prompt
+            summary = await chat_completion(
+                api_key=self._api_key,
+                model=self._model,
+                prompt=prompt,
+                max_tokens=220,
+                temperature=0.2,
+                timeout_s=15,
             )
+            if not summary:
+                return self._fallback_resolution(context)
             return self._format_resolution_message(context, summary)
         except Exception as exc:
             log.warning("haiku_summarizer.resolution_api_error", error=str(exc)[:200])
@@ -213,10 +203,12 @@ class HaikuSummarizer:
         """Build the final resolution Telegram message."""
         actual = ctx.get("actual_direction", "?")
         arrow = "\u2193" if actual == "DOWN" else "\u2191"
-        delta_str = f"{ctx.get('delta_pct', '?')}%" if ctx.get('delta_pct') is not None else "?"
+        delta_str = (
+            f"{ctx.get('delta_pct', '?')}%" if ctx.get("delta_pct") is not None else "?"
+        )
 
         header = (
-            f"\u2705 BTC {ctx.get('timescale','5m')} | {ctx.get('window_time', '?')} UTC | "
+            f"\u2705 BTC {ctx.get('timescale', '5m')} | {ctx.get('window_time', '?')} UTC | "
             f"RESOLVED {actual} {arrow}"
         )
 
@@ -239,10 +231,12 @@ class HaikuSummarizer:
         """Template-based fallback for resolution messages."""
         actual = ctx.get("actual_direction", "?")
         arrow = "\u2193" if actual == "DOWN" else "\u2191"
-        delta_str = f"{ctx.get('delta_pct', '?')}%" if ctx.get('delta_pct') is not None else "?"
+        delta_str = (
+            f"{ctx.get('delta_pct', '?')}%" if ctx.get("delta_pct") is not None else "?"
+        )
 
         header = (
-            f"\u2705 BTC {ctx.get('timescale','5m')} | {ctx.get('window_time', '?')} UTC | "
+            f"\u2705 BTC {ctx.get('timescale', '5m')} | {ctx.get('window_time', '?')} UTC | "
             f"RESOLVED {actual} {arrow}"
         )
 
