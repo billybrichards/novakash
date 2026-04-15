@@ -47,6 +47,7 @@ def _register_gates() -> None:
     from strategies.gates.regime import RegimeGate
     from strategies.gates.macro_direction import MacroDirectionGate
     from strategies.gates.trade_advised import TradeAdvisedGate
+    from strategies.gates.entry_price_floor import EntryPriceFloorGate
 
     _GATE_REGISTRY.update(
         {
@@ -64,6 +65,7 @@ def _register_gates() -> None:
             "regime": RegimeGate,
             "macro_direction": MacroDirectionGate,
             "trade_advised": TradeAdvisedGate,
+            "entry_price_floor": EntryPriceFloorGate,
         }
     )
 
