@@ -167,9 +167,13 @@ class SignalRepository(abc.ABC):
 
     Replaces the scattered ``DBClient.write_window_snapshot``,
     ``write_evaluation``, ``write_signal_evaluation``,
-    ``write_gate_audit``, ``write_clob_book_snapshot``,
+    ``write_clob_book_snapshot``,
     ``write_fok_ladder_attempt`` methods -- each of those becomes one
     ``save_*`` method on this repository.
+
+    Note: ``write_gate_audit`` was retired.  Gate-check persistence now uses
+    ``WindowTraceRepository.save_gate_check_traces`` which writes to
+    ``gate_check_traces``.
     """
 
     @abc.abstractmethod
@@ -186,10 +190,14 @@ class SignalRepository(abc.ABC):
         """Persist one :class:`ClobSnapshot` VO to ``clob_book_snapshots`` table."""
         ...
 
-    @abc.abstractmethod
-    async def write_gate_audit(self, audit: GateAuditRow) -> None:
-        """Persist one :class:`GateAuditRow` with the gates-that-ran tuple."""
-        ...
+    async def write_gate_audit(self, audit: "GateAuditRow") -> None:
+        """Retired — gate_audit superseded by gate_check_traces (feat/trace PR).
+
+        Kept as a concrete no-op so callers that still reference it at runtime
+        do not raise AttributeError.  All gate-check writes should use
+        ``WindowTraceRepository.save_gate_check_traces`` instead.
+        """
+        return  # no-op
 
     @abc.abstractmethod
     async def write_window_snapshot(self, snapshot: WindowSnapshot) -> None:

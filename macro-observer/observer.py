@@ -840,11 +840,12 @@ async def fetch_window_context(pool: asyncpg.Pool, window_ts: int, asset: str = 
             "SELECT * FROM window_snapshots WHERE window_ts=$1 AND asset=$2 AND timeframe='5m'",
             window_ts, asset
         )
-        # Gate audit (all checkpoints)
+        # Gate check traces (all checkpoints) — supersedes legacy gate_audit
         ctx["gates"] = await conn.fetch(
-            "SELECT eval_offset, decision, gate_failed, vpin, delta_pct "
-            "FROM gate_audit WHERE window_ts=$1 AND asset=$2 "
-            "ORDER BY eval_offset DESC",
+            "SELECT eval_offset, action AS decision, reason AS gate_failed, "
+            "observed_json->>'vpin' AS vpin, observed_json->>'delta_pct' AS delta_pct "
+            "FROM gate_check_traces WHERE window_ts=$1 AND asset=$2 "
+            "ORDER BY eval_offset DESC, gate_order ASC",
             window_ts, asset
         )
         # Trade (if any)

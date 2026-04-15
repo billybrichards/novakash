@@ -204,88 +204,12 @@ class PgSignalRepository(SignalRepository):
             log.warning("db.write_clob_book_snapshot_failed", error=str(exc)[:200])
 
     async def write_gate_audit(self, data: dict) -> None:  # type: ignore[override]
-        """Persist one gate audit record for a window evaluation.
+        """Retired — gate_audit superseded by gate_check_traces (feat/trace PR).
 
-        Verbatim SQL from ``DBClient.write_gate_audit``.
+        Intentionally a no-op.  Gate-check persistence now goes through
+        WindowTraceRepository which writes to ``gate_check_traces``.
         """
-        # TODO: TECH_DEBT - accept GateAuditRow VO once Phase 1 populates its fields
-        if not self._pool:
-            return
-        try:
-            async with self._pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO gate_audit (
-                        window_ts, asset, timeframe, engine_version,
-                        delta_source, eval_offset,
-                        open_price, tiingo_open, tiingo_close,
-                        delta_tiingo, delta_binance, delta_chainlink, delta_pct,
-                        vpin, regime,
-                        gate_vpin, gate_delta, gate_cg, gate_floor, gate_cap,
-                        gate_passed, gate_failed, gates_passed_list,
-                        decision, skip_reason
-                    ) VALUES (
-                        $1, $2, $3, $4,
-                        $5, $25,
-                        $6, $7, $8,
-                        $9, $10, $11, $12,
-                        $13, $14,
-                        $15, $16, $17, $18, $19,
-                        $20, $21, $22,
-                        $23, $24
-                    )
-                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
-                        engine_version      = EXCLUDED.engine_version,
-                        delta_source        = EXCLUDED.delta_source,
-                        open_price          = EXCLUDED.open_price,
-                        tiingo_open         = EXCLUDED.tiingo_open,
-                        tiingo_close        = EXCLUDED.tiingo_close,
-                        delta_tiingo        = EXCLUDED.delta_tiingo,
-                        delta_binance       = EXCLUDED.delta_binance,
-                        delta_chainlink     = EXCLUDED.delta_chainlink,
-                        delta_pct           = EXCLUDED.delta_pct,
-                        vpin                = EXCLUDED.vpin,
-                        regime              = EXCLUDED.regime,
-                        gate_vpin           = EXCLUDED.gate_vpin,
-                        gate_delta          = EXCLUDED.gate_delta,
-                        gate_cg             = EXCLUDED.gate_cg,
-                        gate_floor          = EXCLUDED.gate_floor,
-                        gate_cap            = EXCLUDED.gate_cap,
-                        gate_passed         = EXCLUDED.gate_passed,
-                        gate_failed         = EXCLUDED.gate_failed,
-                        gates_passed_list   = EXCLUDED.gates_passed_list,
-                        decision            = EXCLUDED.decision,
-                        skip_reason         = EXCLUDED.skip_reason,
-                        evaluated_at        = NOW()
-                    """,
-                    int(data.get("window_ts", 0)),
-                    data.get("asset", "BTC"),
-                    data.get("timeframe", "5m"),
-                    data.get("engine_version", "v8.0"),
-                    data.get("delta_source"),
-                    float(data["open_price"]) if data.get("open_price") is not None else None,
-                    float(data["tiingo_open"]) if data.get("tiingo_open") is not None else None,
-                    float(data["tiingo_close"]) if data.get("tiingo_close") is not None else None,
-                    float(data["delta_tiingo"]) if data.get("delta_tiingo") is not None else None,
-                    float(data["delta_binance"]) if data.get("delta_binance") is not None else None,
-                    float(data["delta_chainlink"]) if data.get("delta_chainlink") is not None else None,
-                    float(data["delta_pct"]) if data.get("delta_pct") is not None else None,
-                    float(data["vpin"]) if data.get("vpin") is not None else None,
-                    data.get("regime"),
-                    str(data["gate_vpin"]) if data.get("gate_vpin") is not None else None,  # VARCHAR
-                    str(data["gate_delta"]) if data.get("gate_delta") is not None else None,  # VARCHAR
-                    bool(data["gate_cg"]) if data.get("gate_cg") is not None else None,  # BOOLEAN
-                    str(data["gate_floor"]) if data.get("gate_floor") is not None else None,  # VARCHAR
-                    str(data["gate_cap"]) if data.get("gate_cap") is not None else None,  # VARCHAR
-                    bool(data.get("gate_passed", False)),
-                    data.get("gate_failed"),
-                    data.get("gates_passed_list"),
-                    data.get("decision", "SKIP"),
-                    data.get("skip_reason"),
-                    data.get("eval_offset"),
-                )
-        except Exception as exc:
-            log.warning("db.write_gate_audit_failed", error=str(exc)[:200])
+        return  # no-op
 
     async def write_window_snapshot(self, snapshot: dict) -> None:  # type: ignore[override]
         """Persist a 5m/15m window evaluation snapshot.

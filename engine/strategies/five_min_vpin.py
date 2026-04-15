@@ -1175,33 +1175,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                             "db.v10_trade_snapshot_failed", error=str(_snap_exc)[:80]
                         )
 
-                # Write gate_audit for v10 TRADE (v9 path writes its own, v10 was skipping)
-                if self._db:
-                    try:
-                        asyncio.create_task(
-                            self._db.write_gate_audit(
-                                {
-                                    "window_ts": window.window_ts,
-                                    "asset": window.asset,
-                                    "timeframe": "5m",
-                                    "engine_version": "v10.3",
-                                    "direction": direction,
-                                    "delta_pct": delta_pct,
-                                    "delta_tiingo": ctx.delta_tiingo,
-                                    "delta_binance": ctx.delta_binance,
-                                    "delta_chainlink": ctx.delta_chainlink,
-                                    "vpin": current_vpin,
-                                    "regime": _snap_regime,
-                                    "gate_passed": True,
-                                    "decision": "TRADE",
-                                    "eval_offset": ctx.eval_offset,
-                                    "v2_probability_up": ctx.dune_probability_up,
-                                    "v2_direction": ctx.dune_direction,
-                                }
-                            )
-                        )
-                    except Exception:
-                        pass
+                # gate_audit writes retired — gate_check_traces is the successor
 
                 # EXECUTE the trade immediately — don't fall through to v9 code
                 await self._execute_trade(state, signal)
@@ -1231,38 +1205,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                         )
                     except Exception:
                         pass
-                # Write gate_audit for v10 SKIP (includes direction the model would have picked)
-                if self._db:
-                    try:
-                        _skip_dir = ctx.agreed_direction or ctx.dune_direction
-                        asyncio.create_task(
-                            self._db.write_gate_audit(
-                                {
-                                    "window_ts": window.window_ts,
-                                    "asset": window.asset,
-                                    "timeframe": "5m",
-                                    "engine_version": "v10.3",
-                                    "direction": _skip_dir,
-                                    "delta_pct": delta_pct,
-                                    "delta_tiingo": ctx.delta_tiingo,
-                                    "delta_binance": ctx.delta_binance,
-                                    "delta_chainlink": ctx.delta_chainlink,
-                                    "vpin": current_vpin,
-                                    "regime": _snap_regime,
-                                    "gate_passed": False,
-                                    "gate_failed": pipe_result.failed_gate or "unknown",
-                                    "decision": "SKIP",
-                                    "skip_reason": (pipe_result.skip_reason or "")[
-                                        :500
-                                    ],
-                                    "eval_offset": getattr(window, "eval_offset", None),
-                                    "v2_probability_up": ctx.dune_probability_up,
-                                    "v2_direction": ctx.dune_direction,
-                                }
-                            )
-                        )
-                    except Exception:
-                        pass
+                # gate_audit writes retired — gate_check_traces is the successor
                 # v10 skip: don't fall through to v9 code — return after writing snapshot
                 # (the window_snapshot write happens below, so we must NOT return here)
         else:
@@ -1939,7 +1882,7 @@ class FiveMinVPINStrategy(BaseStrategy):
                 )
                 if not _twap_gate_blocked_actual and _twap_gate_would_block_audit:
                     # Would have blocked but gate is disabled — log shadow block
-                    pass  # recorded in gate_audit via twap_gate_shadow_block field
+                    pass  # shadow block — recorded via gate_check_traces
                 if not _twap_gate_blocked_actual:
                     _gates_passed.append("twap_gamma")
                 else:
@@ -1959,64 +1902,10 @@ class FiveMinVPINStrategy(BaseStrategy):
                         _gate_failed_name = "timesfm"
 
                 _all_passed = signal is not None
-                asyncio.create_task(
-                    self._db.write_gate_audit(
-                        {
-                            "window_ts": window.window_ts,
-                            "asset": window.asset,
-                            "timeframe": tf,
-                            "engine_version": "v8.0",
-                            "delta_source": _price_source_used,
-                            "open_price": open_price,
-                            "tiingo_open": _tiingo_open,
-                            "tiingo_close": _tiingo_close,
-                            "delta_tiingo": delta_tiingo,
-                            "delta_binance": delta_binance,
-                            "delta_chainlink": delta_chainlink,
-                            "delta_pct": delta_pct,
-                            "vpin": current_vpin,
-                            "regime": _snap_regime,
-                            "gate_vpin": _vpin_gate_result,
-                            "gate_delta": _delta_gate_result,
-                            "gate_cg": _cg_gate_passed,
-                            "gate_floor": None,  # Floor check happens post-signal in execution
-                            "gate_cap": None,  # Cap check happens post-signal in execution
-                            # v8.0 Phase 3: TWAP + TimesFM gate results (actual + shadow)
-                            "gate_twap_gamma": not _twap_gate_blocked_actual,
-                            "gate_twap_gamma_shadow": _twap_gate_would_block_audit,
-                            "gate_timesfm": not _timesfm_gate_blocked_actual,
-                            "gate_timesfm_shadow": _timesfm_would_block,
-                            "twap_override_active": runtime.twap_override_enabled,
-                            "twap_gamma_gate_active": runtime.twap_gamma_gate_enabled,
-                            "timesfm_gate_active": runtime.timesfm_agreement_enabled,
-                            "gate_passed": _all_passed,
-                            "gate_failed": _gate_failed_name,
-                            "gates_passed_list": ",".join(_gates_passed)
-                            if _gates_passed
-                            else "",
-                            "decision": "TRADE" if _all_passed else "SKIP",
-                            "skip_reason": None
-                            if _all_passed
-                            else _actual_skip_reason[:500],
-                            "eval_offset": eval_offset,
-                            # v8.1: OAK v2.2 data (may be None if not evaluated yet)
-                            "v2_probability_up": window_snapshot.get(
-                                "v2_probability_up"
-                            ),
-                            "v2_direction": window_snapshot.get("v2_direction"),
-                            "v2_agrees": window_snapshot.get("v2_agrees"),
-                            "v2_high_conf": window_snapshot.get("v2_direction")
-                            is not None
-                            and (
-                                window_snapshot.get("v2_probability_up", 0) > 0.65
-                                or window_snapshot.get("v2_probability_up", 1) < 0.35
-                            ),
-                        }
-                    )
-                )
+                # gate_audit writes retired — gate_check_traces is the successor
             except Exception as _gate_exc:
                 self._log.warning(
-                    "db.gate_audit_write_failed", error=str(_gate_exc)[:100]
+                    "db.gate_signal_write_failed", error=str(_gate_exc)[:100]
                 )
 
         # ── Comprehensive signal evaluation capture ──

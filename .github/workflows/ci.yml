@@ -48,8 +48,8 @@ jobs:
           python -c "import margin_engine.adapters.signal.probability_http"
           python -c "import margin_engine.adapters.signal.v4_snapshot_http"
           python -c "import margin_engine.adapters.signal.ws_signal"
-          python -c "import margin_engine.use_cases.open_position"
-          python -c "import margin_engine.use_cases.manage_positions"
+          python -c "import margin_engine.application.use_cases.open_position"
+          python -c "import margin_engine.application.use_cases.manage_positions"
 
       - name: Settings validator smoke test
         env:

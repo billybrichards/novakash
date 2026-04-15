@@ -503,29 +503,29 @@ SCHEMA_CATALOG: dict[str, SchemaEntry] = {
     "gate_audit": {
         "service": "engine",
         "category": "polymarket",
-        "status": "legacy",
-        "sot_class": "LEGACY",
-        "data_flow": "gate_pipeline -> gate_audit (superseded by signal_evaluations)",
+        "status": "retired",
+        "sot_class": "RETIRED",
+        "data_flow": "gate_pipeline -> gate_audit (RETIRED — superseded by gate_check_traces)",
         "purpose": (
-            "v8.0 per-window gate pass/fail audit trail. Predates "
-            "signal_evaluations which captures the same information at "
-            "finer granularity (per eval_offset rather than per window). "
-            "Still written as a backup but new analysis should read "
-            "signal_evaluations instead."
+            "v8.0 per-window gate pass/fail audit trail. Retired in favour of "
+            "gate_check_traces (feat/trace PR) which captures the same information "
+            "at finer granularity (per eval_offset + per gate_order, strategy-scoped). "
+            "All write paths are now no-ops.  Read paths redirect to gate_check_traces. "
+            "The table itself remains in the DB until the operator manually executes "
+            "migrations/retire_gate_audit_table.sql."
         ),
-        "writers": [
-            "engine/persistence/db_client.py::write_gate_audit",
-        ],
+        "writers": [],
         "readers": [
-            "scripts/export_truth_dataset.py (cross-check vs signal_evaluations)",
+            "scripts/export_truth_dataset.py (legacy cross-check — consider migrating to gate_check_traces)",
         ],
         "recency_column": "evaluated_at",
         "docs": [
             "migrations/add_gate_audit_table.sql",
+            "migrations/retire_gate_audit_table.sql",
         ],
         "notes": (
-            "UNIQUE (window_ts, asset, timeframe). Superseded by "
-            "signal_evaluations which has the eval_offset axis."
+            "RETIRED 2026-04-15.  Superseded by gate_check_traces which is "
+            "strategy-scoped and tracks individual gate results per eval_offset."
         ),
     },
     "trade_bible": {

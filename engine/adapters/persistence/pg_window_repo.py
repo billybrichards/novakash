@@ -653,9 +653,11 @@ class PgWindowRepository(WindowStateRepository):
         asset: str,
         timeframe: str,
     ) -> list:
-        """Fetch all evaluation ticks for a window from gate_audit table.
+        """Fetch all evaluation ticks for a window from gate_check_traces.
 
-        Verbatim SQL from ``DBClient.get_eval_ticks_for_window``.
+        Supersedes the legacy gate_audit read path.  Returns one dict per
+        (eval_offset, gate_order) row shaped to match the downstream
+        post_resolution_evaluator contract.
         """
         if not self._pool:
             return []
@@ -666,17 +668,17 @@ class PgWindowRepository(WindowStateRepository):
                     SELECT
                         eval_offset        AS offset,
                         skip_reason,
-                        vpin,
-                        delta_pct,
-                        regime,
-                        gate_failed,
-                        gate_passed,
-                        decision
-                    FROM gate_audit
+                        passed             AS gate_passed,
+                        reason             AS gate_failed,
+                        action             AS decision,
+                        observed_json->>'vpin'      AS vpin,
+                        observed_json->>'delta_pct' AS delta_pct,
+                        observed_json->>'regime'    AS regime
+                    FROM gate_check_traces
                     WHERE window_ts = $1
                       AND asset     = $2
                       AND timeframe = $3
-                    ORDER BY eval_offset DESC NULLS LAST
+                    ORDER BY eval_offset DESC NULLS LAST, gate_order ASC
                     """,
                     window_ts,
                     asset,

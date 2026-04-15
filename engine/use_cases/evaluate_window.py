@@ -576,26 +576,7 @@ class EvaluateWindowUseCase:
                     )
                 except Exception:
                     pass
-                try:
-                    asyncio.create_task(
-                        self._db.write_gate_audit(
-                            {
-                                "window_ts": window.window_ts,
-                                "asset": window.asset,
-                                "timeframe": "5m",
-                                "engine_version": "v10.3",
-                                "direction": direction,
-                                "delta_pct": delta_pct,
-                                "vpin": current_vpin,
-                                "regime": _snap_regime,
-                                "gate_passed": True,
-                                "decision": "TRADE",
-                                "eval_offset": ctx.eval_offset,
-                            }
-                        )
-                    )
-                except Exception:
-                    pass
+                # gate_audit writes retired — gate_check_traces is the successor
             return signal
         else:
             self._last_skip_reason = pr.skip_reason or "v10 gate failed"

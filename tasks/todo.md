@@ -3,45 +3,45 @@
 ## Gate Audit + Window Decision Trace Plan — 2026-04-15
 
 ### Plan
-- [ ] Add a first-class per-evaluation trace schema for every window tick, strategy, and gate result
-- [ ] Record raw signal surface at eval time: delta_pct, model probability/dist, VPIN, regime, source deltas, CLOB prices, spread, buy_ratio
-- [ ] Record per-strategy decision payload: mode, action, direction, confidence, entry cap, skip_reason, eval_offset, timeframe
-- [ ] Record per-gate results in structured form, not only the final failed gate: gate_name, passed, threshold/config, observed_value, explanation
-- [ ] Link each evaluation trace to executed trade rows and final resolved outcome for the same window
-- [ ] Add query/API shape for per-window review so Telegram/UI can show: eligible now, blocked by signal, off-window, traded, resolved outcome
+- [x] Add a first-class per-evaluation trace schema for every window tick, strategy, and gate result
+- [x] Record raw signal surface at eval time: delta_pct, model probability/dist, VPIN, regime, source deltas, CLOB prices, spread, buy_ratio
+- [x] Record per-strategy decision payload: mode, action, direction, confidence, entry cap, skip_reason, eval_offset, timeframe
+- [x] Record per-gate results in structured form, not only the final failed gate: gate_name, passed, threshold/config, observed_value, explanation
+- [x] Link each evaluation trace to executed trade rows and final resolved outcome for the same window
+- [x] Add query/API shape for per-window review so Telegram/UI can show: eligible now, blocked by signal, off-window, traded, resolved outcome
 
 ### Clean Architecture Implementation Slices
-- [ ] Domain: add immutable value objects for `WindowEvaluationTrace`, `StrategyEvaluationTrace`, `GateCheckTrace`, and `WindowOutcomeTrace`
-- [ ] Application: add `RecordWindowTraceUseCase` that accepts one evaluation surface and all strategy/gate outcomes and persists them through ports
-- [ ] Application: add `GetWindowTraceUseCase` that returns a window-centric view for Telegram/UI/reporting
-- [ ] Ports: extend persistence contracts with a dedicated trace repository instead of adding another ad hoc JSON field
-- [ ] Infrastructure: add Postgres tables/repositories for window traces, strategy traces, gate checks, and outcome linkage
-- [ ] Presentation: replace current per-strategy skip dump with a grouped window narrative derived from the trace query
+- [x] Domain: add immutable value objects for `WindowEvaluationTrace`, `StrategyEvaluationTrace`, `GateCheckTrace`, and `WindowOutcomeTrace`
+- [x] Application: add `RecordWindowTraceUseCase` that accepts one evaluation surface and all strategy/gate outcomes and persists them through ports
+- [x] Application: add `GetWindowTraceUseCase` that returns a window-centric view for Telegram/UI/reporting
+- [x] Ports: extend persistence contracts with a dedicated trace repository instead of adding another ad hoc JSON field
+- [x] Infrastructure: add Postgres tables/repositories for window traces, strategy traces, gate checks, and outcome linkage
+- [x] Presentation: replace current per-strategy skip dump with a grouped window narrative derived from the trace query
 
 ### Proposed Trace Model
-- [ ] `window_evaluation_traces`: one row per `(asset, window_ts, timeframe, eval_offset)` containing the shared signal surface
-- [ ] `strategy_evaluation_traces`: one row per strategy per eval tick containing mode, action, direction, confidence, entry cap, skip reason, and trade-advised flag
-- [ ] `gate_check_traces`: one row per gate check per strategy eval containing gate order, gate name, passed flag, configured threshold/config, observed values, and human explanation
-- [ ] `window_outcome_traces`: one row per resolved window linking oracle outcome, executed order, PnL, and post-resolution judgment
+- [x] `window_evaluation_traces`: one row per `(asset, window_ts, timeframe, eval_offset)` containing the shared signal surface
+- [x] `strategy_evaluation_traces`: one row per strategy per eval tick containing mode, action, direction, confidence, entry cap, skip reason, and trade-advised flag
+- [x] `gate_check_traces`: one row per gate check per strategy eval containing gate order, gate name, passed flag, configured threshold/config, observed values, and human explanation
+- [x] `window_outcome_traces`: one row per resolved window linking oracle outcome, executed order, PnL, and post-resolution judgment
 
 ### Notification / UI Target Shape
-- [ ] At T-62 (or equivalent final eval), show grouped output instead of raw skip spam:
-- [ ] `Eligible now`: strategies whose timing window is active and which reached a real signal decision
-- [ ] `Blocked by signal`: confidence / spread / delta / taker-flow / cap blockers with actual observed values
-- [ ] `Blocked by execution timing`: e.g. `live entry requires >= T-70, current T-62`
-- [ ] `Inactive this offset`: strategies simply not in their configured time window
-- [ ] After resolution, show `What happened`: executed strategy, ghost strategies that also would have traded, gate trace summary, and final outcome/PnL
+- [x] At T-62 (or equivalent final eval), show grouped output instead of raw skip spam:
+- [x] `Eligible now`: strategies whose timing window is active and which reached a real signal decision
+- [x] `Blocked by signal`: confidence / spread / delta / taker-flow / cap blockers with actual observed values
+- [x] `Blocked by execution timing`: e.g. `live entry requires >= T-70, current T-62`
+- [x] `Inactive this offset`: strategies simply not in their configured time window
+- [x] After resolution, show `What happened`: executed strategy, ghost strategies that also would have traded, gate trace summary, and final outcome/PnL
 
 ### Why This Replaces Current Confusion
-- [ ] Current `strategy_decisions` is decision-centric and stores a lot of context, but only one final skip reason per strategy eval
-- [ ] Current `gate_audit` is too coarse and not strategy-scoped enough for operator review
-- [ ] The new model is window-centric and can answer: what data we had, what each gate saw, what failed, what passed, what traded, and whether that was correct later
+- [x] Current `strategy_decisions` is decision-centric and stores a lot of context, but only one final skip reason per strategy eval
+- [x] `gate_audit` was too coarse and not strategy-scoped — retired 2026-04-15 (PR #192), superseded by `gate_check_traces`
+- [x] The new model is window-centric and can answer: what data we had, what each gate saw, what failed, what passed, what traded, and whether that was correct later
 
 ### Delivery Order
-- [ ] Phase 1: schema + value objects + repository + recorder use case
-- [ ] Phase 2: wire trace recording into strategy evaluation and v10 gate pipeline
-- [ ] Phase 3: add query use case and Telegram formatter based on grouped traces
-- [ ] Phase 4: add resolution linkage + post-window review card / API endpoint
+- [x] Phase 1: schema + value objects + repository + recorder use case
+- [x] Phase 2: wire trace recording into strategy evaluation and v10 gate pipeline
+- [x] Phase 3: add query use case and Telegram formatter based on grouped traces
+- [x] Phase 4: add resolution linkage + post-window review card / API endpoint
 
 ## Redeemer Controls + Reconciliation Fix Plan — 2026-04-15
 
@@ -332,3 +332,14 @@ sizing:
 **Effort:** 3-4 days (Week 5, optional)
 
 **Status:** Planned in Phase 6 of refactoring plan
+
+---
+
+## 2026-04-15 Cleanup pass
+
+Marked gate_audit/window-trace schema section (lines 6–44) as complete — all plan, clean-arch slices, trace model, notification shape, and delivery order items were delivered.
+
+PRs shipped today:
+- **PR #190** — Retire CLOBReconciler dual path (`ENGINE_USE_RECONCILE_UC` made permanent, legacy branch removed)
+- **PR #191** — Fix test stubs (`fetch_trades` / `manual_trades_joined_poly_fills` signatures aligned)
+- **PR #192** — Retire `gate_audit` table (no-op wrappers removed, writes migrated to `gate_check_traces`)

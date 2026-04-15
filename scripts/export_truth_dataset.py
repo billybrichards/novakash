@@ -3,7 +3,7 @@
 Export a ground-truth trading dataset as CSV files.
 
 Pulls every `poly_fills` row from the last N hours and joins the
-correlated signal context across `signal_evaluations`, `gate_audit`,
+correlated signal context across `signal_evaluations`, `gate_audit` (retired — see gate_check_traces),
 `window_snapshots`, `trade_bible`, and `trades`. Writes multiple CSVs
 to `docs/truth_dataset/` so you can feed them into pandas/duckdb/ML
 pipelines without touching Railway directly.
@@ -274,6 +274,9 @@ def export_signal_evaluations(conn, since: datetime) -> list[dict[str, Any]]:
 
 
 def export_gate_audit(conn, since: datetime) -> list[dict[str, Any]]:
+    # DEPRECATED: gate_audit is retired (2026-04-15). Superseded by gate_check_traces.
+    # This function remains to export historical rows still in the DB.
+    # New analysis should query gate_check_traces instead.
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """

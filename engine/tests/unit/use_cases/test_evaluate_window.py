@@ -29,7 +29,7 @@ def _make_db():
     db.get_latest_macro_signal = AsyncMock(return_value={"macro_bias": "NEUTRAL", "macro_confidence": "0.5", "macro_gate": "", "macro_reasoning": ""})
     db.write_window_snapshot = AsyncMock()
     db.write_signal_evaluation = AsyncMock()
-    db.write_gate_audit = AsyncMock()
+    db.write_gate_audit = AsyncMock()  # retired no-op — kept to avoid AttributeError in legacy call sites
     db.write_window_prediction = AsyncMock()
     db.update_window_skip_reason = AsyncMock()
     db.load_recent_traded_windows = AsyncMock(return_value=set())
