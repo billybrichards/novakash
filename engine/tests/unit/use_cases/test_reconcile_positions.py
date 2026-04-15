@@ -509,8 +509,13 @@ class TestExecute:
         assert isinstance(result, ReconcileResult)
         assert result.errors >= 1
 
-    def test_flush_alerts_sends_via_send_system_alert(self):
-        """_flush_resolution_alerts sends batched message when there are pending alerts."""
+    def test_flush_alerts_sends_batched_message(self):
+        """_flush_resolution_alerts sends batched message via send_raw_message.
+
+        AsyncMock auto-creates any attribute access, so hasattr(mock, "send_raw_message")
+        is always True — _flush_resolution_alerts always takes the send_raw_message branch
+        in tests. Assert the exact path rather than a disjunction that never fails.
+        """
         uc, trade_repo = self._make_uc()
         trade_repo.find_by_token_id.return_value = _match()
         alerts = uc._alerts
@@ -519,12 +524,11 @@ class TestExecute:
         pos = _pos(outcome="WIN")
         asyncio.run(uc.execute([pos]))
 
-        # At least one of the alert methods must have been called
-        called = (
-            alerts.send_system_alert.called
-            or alerts.send_raw_message.called
-        )
-        assert called
+        # send_raw_message is the branch taken: hasattr(AsyncMock, anything) is True
+        alerts.send_raw_message.assert_called_once()
+        msg = alerts.send_raw_message.call_args.args[0]
+        assert "Reconcile" in msg
+        alerts.send_system_alert.assert_not_called()
 
     def test_flush_alerts_silent_when_no_alerts(self):
         """_flush_resolution_alerts is silent when no resolutions occurred."""
