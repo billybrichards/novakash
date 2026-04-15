@@ -15,7 +15,8 @@ try:
 except ImportError:
     pass
 
-from config.settings import settings
+from config.settings import get_settings
+settings = get_settings()
 from config.logging import configure_logging
 from infrastructure.composition import CompositionRoot
 from infrastructure.runtime import EngineRuntime

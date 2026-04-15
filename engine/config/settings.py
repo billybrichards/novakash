@@ -179,22 +179,3 @@ def _reset_settings_for_tests() -> None:
     """Test helper — clears the cached singleton. Not for prod use."""
     global _settings
     _settings = None
-
-
-class _LazySettingsProxy:
-    """Backwards-compat shim for `from config.settings import settings`.
-
-    Forwards attribute access to the lazily-loaded real Settings object.
-    Existing call sites that do `settings.database_url` keep working without
-    needing the refactor in Phase 1 Task 1.3 — that task is cleanup.
-    """
-    __slots__ = ()
-
-    def __getattr__(self, name: str):
-        return getattr(get_settings(), name)
-
-    def __setattr__(self, name: str, value) -> None:
-        setattr(get_settings(), name, value)
-
-
-settings = _LazySettingsProxy()  # type: ignore[assignment]
