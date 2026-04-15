@@ -101,6 +101,8 @@ class EngineRuntime:
         self._timesfm_client = root._timesfm_client
         self._use_strategy_port = root._use_strategy_port
         self._evaluate_strategies_uc = root._evaluate_strategies_uc
+        self._process_window_uc = root._process_window_uc
+        self._run_heartbeat_tick_uc = root._run_heartbeat_tick_uc
         self._strategy_registry = root._strategy_registry
         self._use_strategy_registry = getattr(root, "_use_strategy_registry", False)
         self._data_surface_mgr = getattr(root, "_data_surface_mgr", None)
@@ -231,6 +233,9 @@ class EngineRuntime:
             log.warning(
                 "orchestrator.ensure_window_trace_tables_failed", error=str(exc)[:200]
             )
+
+        # ── Inject pool into heartbeat repo (pool available after connect()) ─────
+        self._root._pg_system_repo._pool = self._db._pool
 
         # ── Reconcile UC: wire after pool is live ──────────────────────────────
         try:
@@ -1115,10 +1120,9 @@ class EngineRuntime:
         if self._tick_recorder and window.up_price is not None:
             asyncio.create_task(self._tick_recorder.record_gamma_price(window))
 
-        # Forward to strategy — store for token ID lookup
+        # Forward to strategy via use case (queue management)
         if self._five_min_strategy:
-            self._five_min_strategy.append_pending_window(window)
-            self._five_min_strategy.append_recent_window(window)
+            await self._process_window_uc.execute(window)
 
             # TWAP: Start tracking on ACTIVE, add price ticks on every signal
             if state_value == "ACTIVE" and window.open_price:
@@ -2009,9 +2013,6 @@ class EngineRuntime:
 
     async def _heartbeat_loop(self) -> None:
         """Every 10s: update system state and feed connection flags in DB."""
-        # Wallet balance refresh counter (fetch every 6th heartbeat = ~60s)
-        _wallet_check_counter = 0
-        _cached_wallet_balance: float | None = None
         # Sitrep counter (send every 30th heartbeat = ~5 minutes)
         _sitrep_counter = 0
         _sitrep_trades_total = 0
@@ -2019,59 +2020,21 @@ class EngineRuntime:
 
         while not self._shutdown_event.is_set():
             try:
-                # ── Sync runtime config from DB (trading_configs table) ────
-                # Pulls the active config for current mode every heartbeat.
-                # DB values overlay env var defaults — hot reload without restart.
+                # ── Sync runtime config from DB (hot reload) ─────────────
                 if self._db._pool:
                     await runtime.sync(
                         self._db._pool,
                         paper_mode=self._settings.paper_mode,
                     )
 
+                # ── Heartbeat DB write + feed status (via use case) ───────
+                await self._run_heartbeat_tick_uc.execute()
+
+                # ── Keep local refs for sitrep (use case caches these) ────
                 risk_status = self._risk_manager.get_status()
                 state = await self._aggregator.get_state()
-
                 open_orders = await self._order_manager.get_open_orders()
-
-                # Fetch Polymarket wallet balance periodically (~every 60s)
-                _wallet_check_counter += 1
-                if _wallet_check_counter >= 6:
-                    _wallet_check_counter = 0
-                    if not self._settings.paper_mode:
-                        # Live mode: sync from real Polymarket wallet (cash only)
-                        try:
-                            _cached_wallet_balance = (
-                                await self._poly_client.get_balance()
-                            )
-                            await self._risk_manager.sync_bankroll(
-                                _cached_wallet_balance
-                            )
-                        except Exception as exc:
-                            log.debug("heartbeat.wallet_balance_error", error=str(exc))
-                    else:
-                        # Paper mode: use risk manager's tracked bankroll for sitrep
-                        _cached_wallet_balance = risk_status.get("current_bankroll", 0)
-
-                # Build config snapshot with wallet + risk extras + runtime config
-                config_snapshot = {
-                    "wallet_balance_usdc": _cached_wallet_balance,
-                    "daily_pnl": risk_status.get("daily_pnl", 0),
-                    "consecutive_losses": risk_status.get("consecutive_losses", 0),
-                    "paper_mode": risk_status.get("paper_mode", True),
-                    "kill_switch_active": risk_status.get("kill_switch_active", False),
-                    "runtime_config": runtime.snapshot(),
-                }
-
-                await self._db.update_system_state(
-                    engine_status="running",
-                    current_balance=risk_status["current_bankroll"],
-                    peak_balance=risk_status["peak_bankroll"],
-                    current_drawdown_pct=risk_status["drawdown_pct"],
-                    last_vpin=state.vpin.value if state.vpin else None,
-                    last_cascade_state=state.cascade.state if state.cascade else None,
-                    active_positions=len(open_orders),
-                    config=config_snapshot,
-                )
+                _cached_wallet_balance = self._run_heartbeat_tick_uc._cached_wallet_balance
 
                 # ── Mode sync: read paper/live toggles from DB ──────────────
                 # The frontend toggle updates system_state.paper_enabled/live_enabled
