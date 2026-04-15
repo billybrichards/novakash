@@ -262,9 +262,11 @@ class BuildWindowSummaryUseCase:
 
     @staticmethod
     def _timing_bounds(cfg_obj: Any) -> Optional[tuple[int, int]]:
-        if not cfg_obj or not getattr(cfg_obj, "gates", None):
+        if not cfg_obj:
             return None
-        for g in cfg_obj.gates:
+
+        # Primary: explicit YAML "type: timing" gate with min_offset/max_offset.
+        for g in getattr(cfg_obj, "gates", None) or []:
             gtype = g.get("type") if isinstance(g, dict) else getattr(g, "type", None)
             if gtype != "timing":
                 continue
@@ -277,4 +279,21 @@ class BuildWindowSummaryUseCase:
             hi = params.get("max_offset")
             if lo is not None and hi is not None:
                 return (int(lo), int(hi))
+
+        # Fallback: strategies using the Polymarket v2 hook
+        # (``evaluate_polymarket_v2``) encode their trade window in code, not
+        # YAML gates. Surface synthetic bounds so the window-expired
+        # reclassifier and the "outside window" suffix can light up instead of
+        # landing on the circular "too late <70s" blocker at the final offset.
+        #
+        # Values mirror the hard floors/ceilings enforced in the hook itself:
+        #   5m  → v4_fusion.py:91 hard-skip if offset < 70; optimal ≤ 180
+        #   15m → v15m_fusion.py:91 derives timing from offset, optimal = [180, 250]
+        if getattr(cfg_obj, "pre_gate_hook", None) == "evaluate_polymarket_v2":
+            timescale = getattr(cfg_obj, "timescale", None)
+            if timescale == "5m":
+                return (70, 180)
+            if timescale == "15m":
+                return (180, 250)
+
         return None
