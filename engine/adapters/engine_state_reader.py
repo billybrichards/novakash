@@ -20,20 +20,21 @@ class EngineStateReaderAdapter:
         self._btc_price: float = 0.0
         self._open_positions: int = 0
         self._cascade_state: Optional[str] = None
-        self._feed_status: dict[str, bool] = {}
 
     def update(
         self,
         state: Any,
         open_positions: int,
-        feed_status: dict[str, bool],
     ) -> None:
-        """Refresh cached state. Call before publish_heartbeat_uc.tick()."""
+        """Refresh cached state. Call before publish_heartbeat_uc.tick().
+
+        Feed connectivity is NOT cached here — the runtime owns the feed
+        objects and writes update_feed_status() directly each tick.
+        """
         self._vpin = float(state.vpin.value) if getattr(state, "vpin", None) else 0.0
         self._btc_price = float(state.btc_price) if getattr(state, "btc_price", None) else 0.0
         self._open_positions = open_positions
         self._cascade_state = state.cascade.state if getattr(state, "cascade", None) else None
-        self._feed_status = feed_status
 
     @property
     def vpin(self) -> float:
@@ -61,4 +62,5 @@ class EngineStateReaderAdapter:
 
     @property
     def feed_status(self) -> dict[str, bool]:
-        return self._feed_status
+        # Retained for protocol compatibility; runtime writes feeds directly.
+        return {}

@@ -99,14 +99,35 @@ async def test_tick_writes_heartbeat():
 
 
 @pytest.mark.asyncio
-async def test_tick_updates_feed_status():
+async def test_tick_does_not_touch_feed_status():
+    """Feed connectivity writes are owned by the runtime (feed objects live
+    there). PublishHeartbeatUseCase should NOT call update_feed_status."""
     p = Ports()
     await p.uc().tick()
 
-    p.system_state_repo.update_feed_status.assert_called_once_with(
-        binance=True, coinglass=True, chainlink=False,
-        polymarket=True, opinion=True,
-    )
+    p.system_state_repo.update_feed_status.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_set_wallet_balance_lands_in_config_snapshot():
+    p = Ports()
+    uc = p.uc()
+    uc.set_wallet_balance(123.45)
+    await uc.tick()
+
+    row = p.system_state_repo.write_heartbeat.call_args.args[0]
+    assert row.config_snapshot["wallet_balance_usdc"] == 123.45
+
+
+@pytest.mark.asyncio
+async def test_tick_writes_runtime_config_to_snapshot():
+    """runtime_config must be present in system_state.config for Hub/FE readers."""
+    p = Ports()
+    await p.uc().tick()
+
+    row = p.system_state_repo.write_heartbeat.call_args.args[0]
+    assert "runtime_config" in row.config_snapshot
+    assert isinstance(row.config_snapshot["runtime_config"], dict)
 
 
 @pytest.mark.asyncio

@@ -3,11 +3,13 @@
 Extracted from EngineRuntime._heartbeat_loop.
 Responsibilities per tick:
   - Refresh EngineStateReaderAdapter cache (aggregator state + open orders)
-  - Wallet balance refresh every 6 ticks (~60s)
-  - Delegate DB write + feed status update to PublishHeartbeatUseCase.tick()
+  - Wallet balance refresh every 6 ticks (~60s), push into PublishHeartbeatUseCase
+  - Delegate DB write (system_state heartbeat row + SITREP) to PublishHeartbeatUseCase
 
-Mode sync (paper/live toggle) and rich sitrep Telegram remain in runtime
-as infrastructure/presentation concerns.
+Out of scope (stays in runtime):
+  - Feed connectivity writes (runtime owns feed objects and their .connected flags)
+  - Mode sync (paper/live DB toggle)
+  - Rich Telegram sitrep (400-line presentation layer)
 """
 from __future__ import annotations
 
@@ -64,21 +66,9 @@ class RunHeartbeatTickUseCase:
         except Exception:
             pass
 
-        # Feed status from aggregator (best-effort)
-        feed_status: dict = {}
-        try:
-            feed_status = {
-                "binance": bool(getattr(state, "binance_connected", False)),
-                "coinglass": bool(getattr(state, "coinglass_connected", False)),
-                "chainlink": bool(getattr(state, "chainlink_connected", False)),
-                "polymarket": bool(getattr(state, "polymarket_connected", False)),
-                "opinion": bool(getattr(state, "opinion_connected", False)),
-            }
-        except Exception:
-            pass
-
-        # Refresh sync-property cache for PublishHeartbeatUseCase
-        self._engine_state_reader.update(state, open_positions, feed_status)
+        # Refresh sync-property cache for PublishHeartbeatUseCase.
+        # Feed connectivity is written separately by the runtime (owns feed objs).
+        self._engine_state_reader.update(state, open_positions)
 
         # Wallet balance refresh every 6 ticks (~60s)
         self._wallet_counter += 1
@@ -97,7 +87,14 @@ class RunHeartbeatTickUseCase:
                 except Exception:
                     pass
 
-        # Delegate DB write + feed status update to PublishHeartbeatUseCase
+        # Sync wallet balance into PublishHeartbeatUseCase so it lands in
+        # system_state.config.wallet_balance_usdc and the SITREP payload.
+        try:
+            self._publish_uc.set_wallet_balance(self._cached_wallet_balance)
+        except Exception:
+            pass
+
+        # Delegate DB write + SITREP to PublishHeartbeatUseCase
         try:
             await self._publish_uc.tick()
         except Exception as exc:
