@@ -54,9 +54,9 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
     """Polymarket v2 evaluation -- clean venue-specific recommendation.
 
     Timing gates:
-      - early (>T-400): hard skip
-      - optimal (T-100 to T-400): trade if confidence passes
-      - late (<T-100): hard skip
+      - early (>T-250): hard skip
+      - optimal (T-180 to T-250): trade if confidence passes
+      - late (<T-180): hard skip
     """
     direction = surface.poly_direction
     trade_advised = surface.poly_trade_advised or False
@@ -67,9 +67,9 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
 
     # Replace server timing label with offset-based derivation (server may be 5m-calibrated)
     offset = surface.eval_offset or 0
-    if offset > 400:
+    if offset > 250:
         timing = "early"
-    elif offset >= 100:
+    elif offset >= 180:
         timing = "optimal"
     else:
         timing = "late"

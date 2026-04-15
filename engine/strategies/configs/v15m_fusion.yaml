@@ -6,7 +6,7 @@ timescale: 15m
 
 gates:
   - type: timing
-    params: { min_offset: 100, max_offset: 400 }
+    params: { min_offset: 180, max_offset: 250 }
 
 hooks_file: v15m_fusion.py
 pre_gate_hook: evaluate_polymarket_v2
