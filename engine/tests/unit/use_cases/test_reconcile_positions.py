@@ -476,3 +476,60 @@ class TestExecute:
         uc, _ = self._make_uc()
         result = asyncio.run(uc.execute([]))
         assert isinstance(result, ReconcileResult)
+
+    def test_live_position_reaches_trade_repo_resolve(self):
+        """Port contract: live positions must reach trade_repo.resolve_trade.
+        Guards against #207-class stale-import silent-drop of TRADE path."""
+        trade = _match()
+        uc, trade_repo = self._make_uc()
+        trade_repo.find_by_token_id.return_value = trade
+        pos = _pos(outcome="WIN")
+
+        from domain.value_objects import ReconcileResult
+        result = asyncio.run(uc.execute([pos]))
+        assert isinstance(result, ReconcileResult)
+        assert result.live_resolved == 1
+        trade_repo.resolve_trade.assert_awaited_once()
+
+    def test_zero_positions_resolve_trade_not_called(self):
+        """Port contract: no positions -> trade_repo.resolve_trade never called."""
+        uc, trade_repo = self._make_uc()
+        asyncio.run(uc.execute([]))
+        trade_repo.resolve_trade.assert_not_awaited()
+
+    def test_live_position_error_increments_errors(self):
+        """Exception during live resolution is counted in ReconcileResult.errors."""
+        uc, trade_repo = self._make_uc()
+        # Make resolve_one raise by having find_by_token_id raise
+        trade_repo.find_by_token_id.side_effect = RuntimeError("DB down")
+
+        from domain.value_objects import ReconcileResult
+        pos = _pos(outcome="WIN")
+        result = asyncio.run(uc.execute([pos]))
+        assert isinstance(result, ReconcileResult)
+        assert result.errors >= 1
+
+    def test_flush_alerts_sends_via_send_system_alert(self):
+        """_flush_resolution_alerts sends batched message when there are pending alerts."""
+        uc, trade_repo = self._make_uc()
+        trade_repo.find_by_token_id.return_value = _match()
+        alerts = uc._alerts
+
+        # Execute with a live position to populate _pending_live_alerts
+        pos = _pos(outcome="WIN")
+        asyncio.run(uc.execute([pos]))
+
+        # At least one of the alert methods must have been called
+        called = (
+            alerts.send_system_alert.called
+            or alerts.send_raw_message.called
+        )
+        assert called
+
+    def test_flush_alerts_silent_when_no_alerts(self):
+        """_flush_resolution_alerts is silent when no resolutions occurred."""
+        uc, _ = self._make_uc()
+        alerts = uc._alerts
+        asyncio.run(uc.execute([]))  # No positions, no paper trades
+        alerts.send_system_alert.assert_not_called()
+        alerts.send_raw_message.assert_not_called()

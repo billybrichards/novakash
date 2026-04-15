@@ -559,3 +559,158 @@ async def test_alert_paper_mode_label():
 
     alert_kwargs = mocks["alerter"].send_strategy_trade_alert.call_args.kwargs
     assert alert_kwargs["paper_mode"] is True
+
+
+# ─── Port-contract + regression tests ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_port_contract_approved_trade_reaches_executor():
+    """Port contract: approved decision -> executor.execute_order called once
+    + recorder.record_trade called once. Guards against execution-path dropout."""
+    uc, mocks = _build_use_case()
+    result = await uc.execute(
+        decision=_make_decision(direction="DOWN"),
+        window_market=_make_window_market(),
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    assert result.success
+    mocks["executor"].execute_order.assert_called_once()
+    mocks["recorder"].record_trade.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_port_contract_risk_rejected_skips_executor():
+    """Port contract: risk-rejected trade must NOT reach the executor.
+    Guards against #207-class silent execution path dropout."""
+    risk = _make_risk_status(kill_switch_active=True)
+    uc, mocks = _build_use_case(risk_status=risk)
+    result = await uc.execute(
+        decision=_make_decision(),
+        window_market=_make_window_market(),
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    assert not result.success
+    mocks["executor"].execute_order.assert_not_called()
+    mocks["recorder"].record_trade.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dedup_via_was_traded_fallback_path():
+    """When window_state has no try_claim_trade, fall back to was_traded().
+    Covers the elif branch (lines 169-174) for older window_state impls."""
+    from use_cases.execute_trade import ExecuteTradeUseCase
+
+    class LegacyWindowState:
+        """Window state without try_claim_trade (older impl)."""
+        async def was_traded(self, key):
+            return True  # Already traded
+
+        async def mark_traded(self, key, order_id):
+            pass
+
+    mock_risk = MagicMock()
+    mock_risk.get_status.return_value = _make_risk_status()
+
+    uc = ExecuteTradeUseCase(
+        polymarket=AsyncMock(),
+        order_executor=AsyncMock(),
+        risk_manager=mock_risk,
+        window_state=LegacyWindowState(),
+        alerter=AsyncMock(),
+        trade_recorder=AsyncMock(),
+        clock=FakeClock(),
+        paper_mode=True,
+    )
+    result = await uc.execute(
+        decision=_make_decision(),
+        window_market=_make_window_market(),
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    assert not result.success
+    assert result.failure_reason == "already_traded"
+
+
+@pytest.mark.asyncio
+async def test_execution_error_clears_trade_claim():
+    """Executor exception -> clear_trade_claim called so window can be retried."""
+    clock = FakeClock(1000.0)
+    uc, mocks = _build_use_case(clock=clock)
+    mocks["executor"].execute_order.side_effect = RuntimeError("CLOB timeout")
+    mocks["window_state"].clear_trade_claim = AsyncMock()
+
+    result = await uc.execute(
+        decision=_make_decision(),
+        window_market=_make_window_market(),
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    assert not result.success
+    assert "execution_error" in result.failure_reason
+    mocks["window_state"].clear_trade_claim.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_fill_clears_trade_claim():
+    """Failed fill (success=False) -> clear_trade_claim so dedup doesn't block retry."""
+    fail_fill = _make_fill_result(success=False, failure_reason="no_liquidity")
+    uc, mocks = _build_use_case(fill_result=fail_fill)
+    mocks["window_state"].clear_trade_claim = AsyncMock()
+
+    result = await uc.execute(
+        decision=_make_decision(),
+        window_market=_make_window_market(),
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    assert not result.success
+    assert result.failure_reason == "no_liquidity"
+    mocks["window_state"].clear_trade_claim.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_fallback_to_send_system_alert_when_no_rich_alert():
+    """When alerter has no send_strategy_trade_alert, falls back to
+    _format_trade_alert + send_system_alert. Covers lines 384-396."""
+    uc, mocks = _build_use_case()
+    # Strip the rich-alert method so the fallback branch runs
+    del mocks["alerter"].send_strategy_trade_alert
+
+    result = await uc.execute(
+        decision=_make_decision(direction="DOWN"),
+        window_market=_make_window_market(),
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    assert result.success
+    mocks["alerter"].send_system_alert.assert_called_once()
+    alert_text = mocks["alerter"].send_system_alert.call_args.args[0]
+    assert "TRADE" in alert_text
+    assert "v4_down_only" in alert_text
+
+
+@pytest.mark.asyncio
+async def test_format_trade_alert_paper_prefix():
+    """_format_trade_alert includes PAPER MODE prefix when paper_mode=True."""
+    uc, _ = _build_use_case()
+    decision = _make_decision(direction="DOWN", strategy_id="v4_test")
+    fill = _make_fill_result(
+        fill_price=0.55, fill_size=18.0, stake_usd=10.0,
+        execution_start=1000.0, execution_end=1001.5,
+    )
+    msg = uc._format_trade_alert(decision, fill, stake=None, btc_price=84000.0, open_price=84100.0)
+    assert "PAPER MODE" in msg
+    assert "v4_test" in msg
+
+
+@pytest.mark.asyncio
+async def test_format_trade_alert_failure_reason():
+    """_format_trade_alert includes failure reason when fill fails."""
+    uc, _ = _build_use_case()
+    decision = _make_decision(direction="DOWN")
+    fill = _make_fill_result(success=False, failure_reason="no_liquidity")
+    msg = uc._format_trade_alert(decision, fill, stake=None, btc_price=84000.0, open_price=84100.0)
+    assert "no_liquidity" in msg
