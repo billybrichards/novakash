@@ -116,6 +116,7 @@ class EngineRuntime:
         self._clob_feed = root._clob_feed
         self._polymarket_feed = root._polymarket_feed
         self._tick_recorder = root._tick_recorder
+        self._collect_dense_signals_uc = getattr(root, "_collect_dense_signals_uc", None)
 
         # ── Runtime-only state (was previously at top of Orchestrator.__init__) ─
         self._shutdown_event = asyncio.Event()
@@ -424,6 +425,21 @@ class EngineRuntime:
                     self._fifteen_min_feed.start(), name="feed:fifteen_min"
                 )
             )
+
+        # ── Dense signal collection tick loop (every 2s) ─────────────────────
+        if self._collect_dense_signals_uc is not None:
+            async def _dense_tick_loop():
+                while True:
+                    try:
+                        await self._collect_dense_signals_uc.tick()
+                    except Exception as exc:
+                        log.warning("dense.tick_error", error=str(exc)[:200])
+                    await asyncio.sleep(2.0)
+
+            self._tasks.append(
+                asyncio.create_task(_dense_tick_loop(), name="dense_signal_collector")
+            )
+            log.info("dense_signal_collector.started")
 
         # 4. Start feed tasks
         self._tasks.append(
