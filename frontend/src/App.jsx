@@ -54,6 +54,7 @@ import StrategyCommand from './pages/polymarket/StrategyCommand.jsx';
 import FifteenMinMonitor from './pages/FifteenMinMonitor.jsx';
 import SignalComparison from './pages/SignalComparison.jsx';
 import AgentOps from './pages/AgentOps.jsx';
+import Telegram from './pages/Telegram.jsx';
 
 /**
  * AppErrorBoundary — catches any render-time JS errors and shows a visible
@@ -181,6 +182,7 @@ export default function App() {
             <Route path="polymarket/15min" element={<FifteenMinMonitor />} />
             <Route path="signal-comparison" element={<SignalComparison />} />
             <Route path="ops" element={<AgentOps />} />
+            <Route path="telegram" element={<Telegram />} />
           </Route>
 
           {/* 404 fallback */}

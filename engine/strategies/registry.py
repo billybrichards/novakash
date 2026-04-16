@@ -817,8 +817,98 @@ class StrategyRegistry:
                 await self._alerter.send_raw_message(msg)
             elif hasattr(self._alerter, "send_system_alert"):
                 await self._alerter.send_system_alert(msg)
+
+            # Task 7.5: loud STRATEGY MISSED WINDOW alert for any LIVE
+            # strategy that was never evaluated in-window. Isolated try
+            # so a failure here can't break the summary send above.
+            try:
+                await self._dispatch_missed_window_alerts(summary_ctx)
+            except Exception as exc:
+                log.warning(
+                    "registry.missed_window_dispatch_error",
+                    error=str(exc)[:200],
+                )
         except Exception as exc:
             log.warning("registry.summary_alert_error", error=str(exc)[:200])
+
+    async def _dispatch_missed_window_alerts(
+        self,
+        summary_ctx: "WindowSummaryContext",
+    ) -> None:
+        """Fire :meth:`TelegramAlerter.send_strategy_missed_window` once per
+        LIVE strategy that landed in ``window_expired`` with the explicit
+        "never evaluated in-window" body — i.e. zero in-window evaluations.
+
+        Diagnostic context (sibling-eval rate, first-eval offset) is
+        computed here from the same VO so the alert can answer
+        "engine paused vs strategy-specific config bug" in 5 seconds.
+
+        PAPER strategies are intentionally excluded — they may legitimately
+        have eval gaps and must not trigger this loud alert.
+        """
+        alerter = self._alerter
+        if alerter is None or not hasattr(alerter, "send_strategy_missed_window"):
+            return
+
+        # Strategies the operator wants alerted on.
+        targets = [
+            line for line in summary_ctx.window_expired
+            if line.mode == "LIVE" and "never evaluated in-window" in (line.text or "")
+        ]
+        if not targets:
+            return
+
+        # Per-bucket distinct LIVE strategy_ids (excluding ghost_shadow and
+        # window_expired by design — siblings_evaluated is "did we see any
+        # in-window decision?", not "did anything happen at all?").
+        evaluated_buckets = (
+            summary_ctx.eligible,
+            summary_ctx.already_traded,
+            summary_ctx.blocked_signal,
+            summary_ctx.blocked_exec_timing,
+            summary_ctx.off_window,
+        )
+        evaluated_live_ids: set[str] = {
+            line.strategy_id
+            for bucket in evaluated_buckets
+            for line in bucket
+            if line.mode == "LIVE"
+        }
+        # Total LIVE strategies = evaluated set ∪ window_expired (LIVE only).
+        # ghost_shadow stays excluded — siblings_total counts LIVE peers.
+        all_live_ids: set[str] = set(evaluated_live_ids) | {
+            line.strategy_id
+            for line in summary_ctx.window_expired
+            if line.mode == "LIVE"
+        }
+
+        for line in targets:
+            sid = line.strategy_id
+            cfg = self._configs.get(sid)
+            bounds = self._build_summary_uc._timing_bounds(cfg)
+            bounds_str = (
+                f"T-{bounds[1]}..T-{bounds[0]}"
+                if bounds is not None
+                else "unknown"
+            )
+            siblings_evaluated = len(evaluated_live_ids - {sid})
+            siblings_total = len(all_live_ids - {sid})
+            try:
+                await alerter.send_strategy_missed_window(
+                    strategy_id=sid,
+                    mode=line.mode,
+                    window_ts=summary_ctx.window_ts,
+                    bounds_str=bounds_str,
+                    siblings_evaluated=siblings_evaluated,
+                    siblings_total=siblings_total,
+                    first_eval_offset=summary_ctx.eval_offset,
+                )
+            except Exception as exc:
+                log.warning(
+                    "registry.missed_window_alert_send_error",
+                    strategy_id=sid,
+                    error=str(exc)[:200],
+                )
 
     @staticmethod
     def _check_source_agreement(surface: FullDataSurface) -> str:

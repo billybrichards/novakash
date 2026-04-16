@@ -131,6 +131,8 @@ class EngineRuntime:
         self._window_state_repo = None
         self._trade_repo_adapter = None
         self._live_gate_alerted = False
+        # Edge-detector for relayer cooldown TG alerts (Task 6).
+        self._relayer_cooldown_active: bool = False
 
         # ── Patch callbacks CompositionRoot left as None ─────────────────────
         # These reference EngineRuntime methods, so they can only be wired
@@ -720,6 +722,22 @@ class EngineRuntime:
                 log.info("orchestrator.redeemer_started")
             except Exception as e:
                 log.error("orchestrator.redeemer_start_failed", error=str(e))
+
+        # Position snapshot loop — runs in BOTH paper and live mode so the
+        # operator always has ground-truth wallet + pending visibility,
+        # even in paper mode (where stale caches are equally dangerous).
+        # `_send_position_snapshot` no-ops cleanly if redeemer is None.
+        if self._redeemer is not None:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._position_snapshot_loop(),
+                    name="position_snapshot",
+                )
+            )
+            log.info(
+                "orchestrator.position_snapshot_loop_started",
+                paper_mode=self._settings.paper_mode,
+            )
 
         # 9. Playwright automation (balance / screenshot only — redeem handled by redeemer)
         if self._playwright:
@@ -2207,7 +2225,13 @@ class EngineRuntime:
                                         error=str(exc)[:100],
                                     )
 
-                            # Start redeemer if switching TO live
+                            # Start redeemer if switching TO live — guard against
+                            # double-registration on repeated paper→live flips.
+                            # Prior bug: each flip appended new tasks without
+                            # cancelling prior ones; N flips = N concurrent
+                            # redeemer + snapshot loops racing to write
+                            # poly_pending_wins. Now we skip any loop already
+                            # running under its canonical task name.
                             if not want_paper and self._redeemer:
                                 try:
                                     self._redeemer._paper_mode = False
@@ -2218,11 +2242,25 @@ class EngineRuntime:
                                     except Exception:
                                         pass
                                     await self._redeemer.connect()
-                                    self._tasks.append(
-                                        asyncio.create_task(
-                                            self._redeemer_loop(), name="redeemer:sweep"
+                                    live_names = {
+                                        t.get_name()
+                                        for t in self._tasks
+                                        if not t.done()
+                                    }
+                                    if "redeemer:sweep" not in live_names:
+                                        self._tasks.append(
+                                            asyncio.create_task(
+                                                self._redeemer_loop(),
+                                                name="redeemer:sweep",
+                                            )
                                         )
-                                    )
+                                    if "position_snapshot" not in live_names:
+                                        self._tasks.append(
+                                            asyncio.create_task(
+                                                self._position_snapshot_loop(),
+                                                name="position_snapshot",
+                                            )
+                                        )
                                     log.info(
                                         "orchestrator.redeemer_started_on_mode_switch"
                                     )
@@ -3051,6 +3089,47 @@ class EngineRuntime:
         REDEEM_INTERVAL = 900
         while not self._shutdown_event.is_set():
             try:
+                # Edge-detect relayer cooldown state changes — one-shot alerts only.
+                # Runs BEFORE the early-exit so the leading edge fires the cycle AFTER
+                # the sweep that tripped it, and the trailing edge fires when cooldown
+                # clears (one iteration before the sweep resumes normal operation).
+                if self._redeemer:
+                    cd = self._redeemer.cooldown_status()
+                    was_active, now_active = self._relayer_cooldown_active, bool(cd.get("active"))
+                    if now_active and not was_active and self._alerter:
+                        quota_used = (
+                            await self._db.count_redeems_today()
+                            if hasattr(self._db, "count_redeems_today")
+                            else 0
+                        )
+                        quota_left = max(0, self._redeemer.daily_quota_limit - quota_used)
+                        try:
+                            await self._alerter.send_relayer_cooldown(
+                                cd, quota_left, self._redeemer.daily_quota_limit
+                            )
+                        except Exception as exc:
+                            log.warning(
+                                "orchestrator.relayer_cooldown_alert_failed",
+                                error=str(exc)[:120],
+                            )
+                    elif was_active and not now_active and self._alerter:
+                        quota_used = (
+                            await self._db.count_redeems_today()
+                            if hasattr(self._db, "count_redeems_today")
+                            else 0
+                        )
+                        quota_left = max(0, self._redeemer.daily_quota_limit - quota_used)
+                        try:
+                            await self._alerter.send_relayer_resumed(
+                                quota_left, self._redeemer.daily_quota_limit
+                            )
+                        except Exception as exc:
+                            log.warning(
+                                "orchestrator.relayer_resumed_alert_failed",
+                                error=str(exc)[:120],
+                            )
+                    self._relayer_cooldown_active = now_active
+
                 # Cooldown early-exit: skip entire cycle (incl. cache-update scan)
                 # while in 429 cooldown. Redeemer internals already guard every
                 # call site; this prevents extra data-api hits and log noise.
@@ -3181,24 +3260,81 @@ class EngineRuntime:
                         )
 
                         if redeemed > 0 or failed > 0:
-                            await self._alerter._send_with_id(
-                                f"🔄 *REDEMPTION SWEEP* 🔴 LIVE\n\n"
-                                f"Type: `{result.get('redeem_type', 'all')}` | Positions: `{total}` | Redeemed: `{redeemed}` | Failed: `{failed}`\n"
-                                f"Wins: `{wins}` | Losses: `{losses}`\n"
-                                f"P&L: `${pnl:+.2f}` | USDC change: `${usdc:+.2f}`\n"
+                            cd = (
+                                self._redeemer.cooldown_status()
+                                if self._redeemer
+                                else {"active": False}
                             )
-                    except Exception:
-                        pass
+                            failed_details = result.get("failed_details", []) or []
+                            failed_lines = ""
+                            if failed_details:
+                                rows = "\n".join(
+                                    f"  • `{(d.get('condition_id') or '?')[:12]}…` `{(d.get('error') or '?')[:40]}`"
+                                    for d in failed_details[:5]
+                                )
+                                extra = (
+                                    f"\n  …+{len(failed_details) - 5} more"
+                                    if len(failed_details) > 5
+                                    else ""
+                                )
+                                failed_lines = f"\n*Failures:*\n{rows}{extra}"
+
+                            cooldown_line = ""
+                            if cd.get("active"):
+                                from alerts.positions import _fmt_age
+                                cooldown_line = (
+                                    f"\n🚫 RELAYER COOLDOWN — resets in "
+                                    f"`{_fmt_age(int(cd.get('remaining_seconds', 0)))}`"
+                                )
+
+                            await self._alerter._send_with_id(
+                                f"🔄 *REDEMPTION SWEEP* 🔴 LIVE\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"Type: `{result.get('redeem_type', 'all')}` | Scanned: `{total}`\n"
+                                f"Redeemed: `{redeemed}` | Failed: `{failed}`\n"
+                                f"Wins: `{wins}` | Losses: `{losses}`\n"
+                                f"P&L: `${pnl:+.2f}` | USDC change: `${usdc:+.2f}`"
+                                f"{failed_lines}"
+                                f"{cooldown_line}"
+                            )
+                    except Exception as exc:
+                        # Observability path — loss of this alert hides the ONLY
+                        # signal that a sweep happened. ERROR-log so Sentry /
+                        # log alerting catches it instead of silently dropping.
+                        # (2026-04-16 incident taught us: `except: pass` in the
+                        # observability layer hides bugs everywhere else.)
+                        log.error(
+                            "orchestrator.redeem_sweep_alert_failed",
+                            error=str(exc)[:200],
+                        )
 
                 if result.get("redeemed", 0) > 0:
                     try:
                         await self._db.write_redeem_event(result)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.error(
+                            "orchestrator.write_redeem_event_failed",
+                            error=str(exc)[:200],
+                        )
                     try:
                         await self._alerter.send_redeem_alert(result)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.error(
+                            "orchestrator.send_redeem_alert_failed",
+                            error=str(exc)[:200],
+                        )
+
+                # After every sweep — send a fresh snapshot so the user sees the
+                # pending-wins list shrink in real time. If this fails the sweep
+                # still completed — do NOT let observability crash the operation,
+                # but do NOT hide the failure either.
+                try:
+                    await self._send_position_snapshot()
+                except Exception as exc:
+                    log.error(
+                        "orchestrator.post_sweep_snapshot_failed",
+                        error=str(exc)[:200],
+                    )
 
             except Exception as e:
                 log.error("orchestrator.redeemer_loop.error", error=str(e))
@@ -3211,6 +3347,88 @@ class EngineRuntime:
                 break
             except asyncio.TimeoutError:
                 pass
+
+    # ── Position Snapshot Loop ──────────────────────────────────────────────
+
+    async def _position_snapshot_loop(self) -> None:
+        """
+        Periodic position snapshot — every 15 min plus immediately after
+        every redemption sweep. Cheap (no relayer hit) since pending_wins
+        just reads positions already cached by the redeemer scan.
+        """
+        SNAPSHOT_INTERVAL = 900  # 15 min
+        while not self._shutdown_event.is_set():
+            try:
+                await self._send_position_snapshot()
+            except Exception as e:
+                log.error("orchestrator.snapshot_loop.error", error=str(e))
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=SNAPSHOT_INTERVAL,
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    async def _send_position_snapshot(self) -> None:
+        """
+        Build the snapshot from current state + push to Telegram.
+        Also called on-demand from Hub via _check_snapshot_requested().
+        """
+        if not (self._alerter and self._redeemer):
+            return
+        from alerts.positions import build_snapshot
+        from datetime import datetime, timezone
+
+        wallet_usdc = 0.0
+        if self._poly_client and hasattr(self._poly_client, "get_balance"):
+            try:
+                wallet_usdc = float(await self._poly_client.get_balance() or 0)
+            except Exception as exc:
+                log.warning("snapshot.wallet_balance_failed", error=str(exc)[:120])
+
+        pending = await self._redeemer.pending_wins_summary()
+        cooldown = self._redeemer.cooldown_status()
+        quota_used = (
+            await self._db.count_redeems_today()
+            if hasattr(self._db, "count_redeems_today")
+            else 0
+        )
+        open_orders = []
+        if self._poly_client and hasattr(self._poly_client, "get_open_orders"):
+            try:
+                open_orders = await self._poly_client.get_open_orders() or []
+            except Exception as exc:
+                log.warning("snapshot.open_orders_failed", error=str(exc)[:120])
+
+        snap = build_snapshot(
+            wallet_usdc=wallet_usdc,
+            pending_wins=pending,
+            open_orders=open_orders,
+            cooldown=cooldown,
+            daily_quota_limit=self._redeemer.daily_quota_limit,
+            quota_used_today=quota_used,
+            now_utc=datetime.now(timezone.utc).isoformat(),
+        )
+
+        # Persist snapshot state to DB for Hub /api/positions/snapshot endpoint.
+        # Done BEFORE the alerter call so DB rows are written even if Telegram
+        # is down. Failures are logged but do not block the Telegram send.
+        try:
+            await self._db.upsert_pending_wins(pending)
+            await self._db.upsert_redeemer_state(
+                cooldown,
+                self._redeemer.daily_quota_limit,
+                quota_used,
+            )
+        except Exception as exc:
+            log.warning(
+                "orchestrator.snapshot_persist_failed", error=str(exc)[:120]
+            )
+
+        await self._alerter.send_position_snapshot(snap)
 
     # ── Playwright Loops ────────────────────────────────────────────────────
 

@@ -219,6 +219,119 @@ class PositionRedeemer:
     def daily_quota_limit(self) -> int:
         return self._daily_quota_limit
 
+    async def _scan_redeemable_positions(self) -> list[dict]:
+        """
+        Read-only scan of currently redeemable WIN positions.
+
+        Returns a list of ``{condition_id, value, resolved_at}`` dicts —
+        the projection consumed by ``pending_wins_summary()``.
+
+        Implementation notes:
+          - Delegates to ``fetch_redeemable_positions(outcomes={"WIN"})``
+            so both the actual sweep (``redeem_wins``) and this read-only
+            view see the SAME set of positions. No drift between what we
+            REPORT as pending and what we WOULD redeem.
+          - Does NOT submit any redeem transactions and does NOT consume
+            a relayer quota unit (the underlying call only hits the
+            Polymarket data API).
+          - ``resolved_at`` is sourced from the position's ``endDate``
+            field (ISO-8601 string returned by data-api.polymarket.com
+            for resolved markets). When absent or unparseable we leave
+            it as ``None`` so the caller can decide how to render
+            "unknown overdue".
+        """
+        rows = await self.fetch_redeemable_positions(outcomes={"WIN"})
+        out: list[dict] = []
+        for r in rows:
+            resolved_at: Optional[datetime] = None
+            end_date_raw = r.get("endDate") or r.get("end_date")
+            if isinstance(end_date_raw, datetime):
+                resolved_at = (
+                    end_date_raw if end_date_raw.tzinfo else end_date_raw.replace(tzinfo=timezone.utc)
+                )
+            elif isinstance(end_date_raw, str) and end_date_raw:
+                try:
+                    parsed = datetime.fromisoformat(end_date_raw.replace("Z", "+00:00"))
+                    resolved_at = (
+                        parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+                    )
+                except ValueError:
+                    resolved_at = None
+            elif isinstance(end_date_raw, (int, float)) and end_date_raw > 0:
+                # Polymarket sometimes returns endDate as a unix-millisecond
+                # number; fall back to seconds if the value looks small.
+                ts = float(end_date_raw)
+                if ts > 1e12:
+                    ts /= 1000.0
+                try:
+                    resolved_at = datetime.fromtimestamp(ts, tz=timezone.utc)
+                except (OSError, ValueError, OverflowError):
+                    resolved_at = None
+            value = float(r.get("size", 0.0)) * float(r.get("curPrice", 0.0))
+            out.append(
+                {
+                    "condition_id": r.get("conditionId", ""),
+                    "value": value,
+                    "resolved_at": resolved_at,
+                }
+            )
+        return out
+
+    async def pending_wins_summary(
+        self,
+        now: Optional[datetime] = None,
+    ) -> list[dict]:
+        """
+        Return the list of redeemable positions that have NOT yet been
+        redeemed, each annotated with how long it has been waiting since
+        market resolution.
+
+        Used by the position-snapshot Telegram alert and the Hub
+        ``/api/positions/snapshot`` endpoint. Read-only — does NOT trigger
+        redemption and does NOT consume a relayer quota unit.
+
+        Output schema (one entry per pending win) matches the
+        ``PendingWin`` TypedDict consumed by ``alerts.positions.build_snapshot``::
+
+            {
+                "condition_id": str,
+                "value": float,            # USD value still locked in the position
+                "window_end_utc": str | None,  # ISO-8601 of market resolution
+                "overdue_seconds": int,    # seconds since resolution (≥ 0)
+            }
+
+        Sort order: descending ``overdue_seconds`` (worst overdue first).
+        Positions without a known ``resolved_at`` get ``overdue_seconds=0``
+        and float to the bottom of the list.
+        """
+        now = now or datetime.now(timezone.utc)
+        try:
+            positions = await self._scan_redeemable_positions()
+        except Exception as exc:
+            self._log.warning(
+                "redeemer.pending_summary_scan_failed", error=str(exc)[:120]
+            )
+            return []
+
+        out: list[dict] = []
+        for p in positions:
+            resolved_at = p.get("resolved_at")
+            if resolved_at is None:
+                overdue = 0
+            else:
+                overdue = max(0, int((now - resolved_at).total_seconds()))
+            out.append(
+                {
+                    "condition_id": p["condition_id"],
+                    "value": float(p.get("value", 0.0)),
+                    "window_end_utc": resolved_at.isoformat() if resolved_at else None,
+                    "overdue_seconds": overdue,
+                }
+            )
+        # Newest-first → oldest first (worst overdue at the top of the list)
+        out.sort(key=lambda x: x["overdue_seconds"], reverse=True)
+        return out
+
     def cooldown_status(self) -> dict:
         if not self._rate_limit_until:
             return {
@@ -466,6 +579,11 @@ class PositionRedeemer:
                     "pnl": pnl,
                     "tokenId": p.get("tokenId", ""),
                     "asset": p.get("asset", ""),
+                    # Preserve resolution timestamp so _scan_redeemable_positions()
+                    # can compute overdue_seconds for the OVERDUE Telegram marker.
+                    # Polymarket data-api uses `endDate` (ISO-8601 string); fall
+                    # back to `endDateIso` defensively in case the schema shifts.
+                    "endDate": p.get("endDate") or p.get("endDateIso"),
                 }
                 if outcomes is None or outcome in outcomes:
                     redeemable.append(row)
@@ -508,6 +626,7 @@ class PositionRedeemer:
             "usdc_after": 0.0,
             "tx_hashes": [],
             "details": [],
+            "failed_details": [],
             "paper_mode": self._paper_mode,
         }
 
@@ -545,6 +664,7 @@ class PositionRedeemer:
         total_pnl = 0.0
         total_value = 0.0
         details: list[dict] = []
+        failed_details: list[dict] = []
 
         for pos in positions:
             try:
@@ -567,6 +687,12 @@ class PositionRedeemer:
                         losses += 1
                 else:
                     failed += 1
+                    failed_details.append(
+                        {
+                            "condition_id": pos.get("conditionId"),
+                            "error": "relayer returned non-success",
+                        }
+                    )
             except Exception as exc:
                 self._log.error(
                     "redeemer.sweep_position_error",
@@ -581,6 +707,12 @@ class PositionRedeemer:
                         "pnl": pos.get("pnl"),
                         "success": False,
                         "error": str(exc)[:120],
+                    }
+                )
+                failed_details.append(
+                    {
+                        "condition_id": pos.get("conditionId"),
+                        "error": str(exc)[:80],
                     }
                 )
             await asyncio.sleep(2)
@@ -609,6 +741,7 @@ class PositionRedeemer:
             "usdc_after": usdc_after,
             "tx_hashes": [],
             "details": details,
+            "failed_details": failed_details,
             "paper_mode": False,
         }
 

@@ -940,6 +940,7 @@ class TelegramAlerter:
         gamma_at_fill: Optional[dict] = None,
         gamma_at_decision: Optional[dict] = None,
         ai_text: Optional[str] = None,
+        fills: Optional[list] = None,
     ) -> Optional[int]:
         """
         ③ 💰 FILLED — On CLOB MATCHED: shares, fill price, cost, gamma comparison, AI.
@@ -947,6 +948,10 @@ class TelegramAlerter:
         order: Order object with order_id, direction, stake_usd
         gamma_at_fill: {"gamma_up": x, "gamma_down": y}
         gamma_at_decision: Gamma at T-70 for comparison
+        fills: Optional list of per-fill dicts (price, size, tx) for the same
+            condition_id within the FAK window. When len(fills) > 1, a
+            🧩 FAK split block is rendered listing each fill. When None or
+            len <= 1, the output is byte-identical to the pre-Task-5 format.
         """
         try:
             direction = "DOWN" if getattr(order, "direction", "") == "NO" else "UP"
@@ -969,6 +974,22 @@ class TelegramAlerter:
             if fok_step is not None and fok_attempts is not None:
                 fok_line = f"⚡ FOK step `{fok_step}/{fok_attempts}`\n"
 
+            # Multi-fill block — only when the engine passes a fills list of len > 1.
+            # A FAK order can split across the layered ask book and produce multiple
+            # poly_fills rows for the same condition_id at the same timestamp; this
+            # makes that visible instead of collapsing it into a single aggregated number.
+            multi_block = ""
+            if fills and len(fills) > 1:
+                rows = "\n".join(
+                    f"  • `${float(f['price']):.4f}` × `{float(f['size']):.2f}`"
+                    for f in fills[:6]
+                )
+                extra = f"\n  …+{len(fills) - 6} more" if len(fills) > 6 else ""
+                multi_block = (
+                    f"🧩 *FAK split* — {len(fills)} fills, same condition_id\n"
+                    f"{rows}{extra}\n"
+                )
+
             text = (
                 f"💰 *FILLED* — BTC 5m {direction} | {self._engine_version}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -976,6 +997,7 @@ class TelegramAlerter:
                 f"Cost: `${cost:.2f}` | R/R `1:{rr}`\n"
                 f"If WIN: `+${profit_if_win:.2f}`\n"
                 f"{fok_line}"
+                f"{multi_block}"
                 f"Source: `{src_short}` | Mode: `{'gtc' if not fok_step else 'fok'}`\n"
             )
             msg_id = await self._send_with_id(text)
@@ -985,6 +1007,118 @@ class TelegramAlerter:
             return msg_id
         except Exception as exc:
             self._log.warning("telegram.send_order_filled_failed", error=str(exc)[:100])
+            return None
+
+    async def send_position_snapshot(self, snap: dict) -> Optional[int]:
+        """
+        📊 POSITION SNAPSHOT — periodic + on-demand visibility on wallet,
+        pending wins, relayer cooldown, and open orders. The dict comes
+        from alerts.positions.build_snapshot().
+        """
+        try:
+            from alerts.positions import render_snapshot_text
+            text = render_snapshot_text(snap)
+            msg_id = await self._send_with_id(text)
+            await self._log_notification(
+                "position_snapshot", text, telegram_message_id=msg_id
+            )
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_position_snapshot_failed", error=str(exc)[:100])
+            return None
+
+    async def send_relayer_cooldown(
+        self,
+        cooldown: dict,
+        quota_remaining: int,
+        daily_quota_limit: int,
+    ) -> Optional[int]:
+        """🚫 Builder-relayer 429 quota tripped — fired once on the leading edge."""
+        try:
+            from alerts.positions import _fmt_age
+            text = (
+                f"🚫 *RELAYER COOLDOWN* — paused\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Resets in: `{_fmt_age(int(cooldown.get('remaining_seconds', 0)))}`\n"
+                f"Resets at: `{cooldown.get('resets_at') or '?'}`\n"
+                f"Quota: `{quota_remaining}/{daily_quota_limit}`\n"
+                f"Reason: `{(cooldown.get('reason') or '?')[:80]}`\n"
+                f"Pending wins will redeem when cooldown clears."
+            )
+            msg_id = await self._send_with_id(text)
+            await self._log_notification("relayer_cooldown", text, telegram_message_id=msg_id)
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_relayer_cooldown_failed", error=str(exc)[:100])
+            return None
+
+    async def send_relayer_resumed(
+        self,
+        quota_remaining: int,
+        daily_quota_limit: int,
+    ) -> Optional[int]:
+        """✅ Fired once on the trailing edge when cooldown clears."""
+        try:
+            text = (
+                f"✅ *RELAYER RESUMED*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Quota: `{quota_remaining}/{daily_quota_limit}`\n"
+                f"Catching up pending wins on next sweep."
+            )
+            msg_id = await self._send_with_id(text)
+            await self._log_notification("relayer_resumed", text, telegram_message_id=msg_id)
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_relayer_resumed_failed", error=str(exc)[:100])
+            return None
+
+    async def send_strategy_missed_window(
+        self,
+        strategy_id: str,
+        mode: str,
+        window_ts: int,
+        bounds_str: str,
+        siblings_evaluated: int,
+        siblings_total: int,
+        first_eval_offset: int | None = None,
+    ) -> Optional[int]:
+        """🚨 LIVE strategy was never evaluated inside its eligible window.
+
+        Diagnostic carries enough to triage in 5 seconds: bounds, sibling
+        eval rate (engine-alive proxy), and the offset of the first eval
+        we DID see (usually post-window 'too late').
+        """
+        try:
+            from datetime import datetime, timezone
+            ts_str = datetime.fromtimestamp(window_ts, tz=timezone.utc).strftime("%H:%M UTC")
+            siblings_line = (
+                f"Sibling LIVE strategies evaluated this window: `{siblings_evaluated}/{siblings_total}`"
+            )
+            cause_hint = ""
+            if siblings_evaluated == 0 and siblings_total > 0:
+                cause_hint = "\n⚠️ NO siblings evaluated either — engine likely paused/restarting."
+            elif siblings_evaluated == siblings_total and siblings_total > 0:
+                cause_hint = "\n⚠️ All siblings evaluated — issue is strategy-specific (config/registry)."
+            first_line = (
+                f"\nFirst eval seen: `T-{first_eval_offset}` (post-window)"
+                if first_eval_offset is not None else ""
+            )
+            text = (
+                f"🚨 *STRATEGY MISSED WINDOW* — LIVE\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Strategy: `{strategy_id}` ({mode})\n"
+                f"Window: `{ts_str}` | Eligible: `{bounds_str}`\n"
+                f"{siblings_line}"
+                f"{cause_hint}"
+                f"{first_line}"
+            )
+            msg_id = await self._send_with_id(text)
+            await self._log_notification(
+                "strategy_missed_window", text, telegram_message_id=msg_id
+            )
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_strategy_missed_window_failed", error=str(exc)[:100])
             return None
 
     async def send_trade_result(

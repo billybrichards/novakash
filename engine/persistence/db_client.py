@@ -785,6 +785,96 @@ class DBClient:
             log.error("db.latest_redeem_event.error", error=str(e))
             return None
 
+    # ─── Position Snapshot Tables (Hub /api/positions/snapshot) ──────────────
+    # Tables: poly_pending_wins, redeemer_state
+    # Migration: hub/db/migrations/versions/20260416_01_pending_wins.sql
+
+    async def upsert_pending_wins(self, wins: list[dict]) -> None:
+        """Replace the pending_wins set with the supplied list (atomic).
+
+        ``wins`` items follow the schema returned by
+        ``PositionRedeemer.pending_wins_summary()``:
+            {"condition_id": str, "value": float,
+             "window_end_utc": str|None, "overdue_seconds": int}
+
+        Items with ``window_end_utc=None`` are skipped (column is NOT NULL).
+        """
+        if not self._pool:
+            return
+        rows: list[tuple] = []
+        for w in wins or []:
+            wend = w.get("window_end_utc")
+            if not wend:
+                continue
+            # Coerce ISO-8601 string → datetime so asyncpg has a stable cast.
+            if isinstance(wend, str):
+                # datetime.fromisoformat() in Py3.11+ handles trailing 'Z'.
+                try:
+                    wend_dt = datetime.fromisoformat(wend.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+            else:
+                wend_dt = wend
+            rows.append((str(w["condition_id"]), float(w.get("value") or 0.0), wend_dt))
+
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("DELETE FROM poly_pending_wins")
+                if rows:
+                    await conn.executemany(
+                        "INSERT INTO poly_pending_wins (condition_id, value, window_end_utc) "
+                        "VALUES ($1, $2, $3)",
+                        rows,
+                    )
+
+    async def upsert_redeemer_state(
+        self,
+        cooldown: dict,
+        daily_quota_limit: int,
+        quota_used_today: int,
+    ) -> None:
+        """Append a redeemer_state row capturing the current cooldown + quota."""
+        if not self._pool:
+            return
+        resets_at = cooldown.get("resets_at") if cooldown else None
+        if isinstance(resets_at, str):
+            try:
+                resets_at = datetime.fromisoformat(resets_at.replace("Z", "+00:00"))
+            except ValueError:
+                resets_at = None
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO redeemer_state "
+                "(cooldown_active, cooldown_remaining_seconds, cooldown_resets_at, "
+                " cooldown_reason, daily_quota_limit, quota_used_today) "
+                "VALUES ($1, $2, $3, $4, $5, $6)",
+                bool((cooldown or {}).get("active")),
+                int((cooldown or {}).get("remaining_seconds") or 0),
+                resets_at,
+                (cooldown or {}).get("reason") or "",
+                int(daily_quota_limit),
+                int(quota_used_today),
+            )
+
+    async def count_redeems_today(self) -> int:
+        """Count redeem ATTEMPT rows from start of today UTC.
+
+        Reads from ``redeem_attempts`` (see migrations/add_redeem_attempts_table.sql).
+        Returns 0 if the pool is not connected or the query fails.
+        """
+        if not self._pool:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT COUNT(*) AS c FROM redeem_attempts "
+                    "WHERE attempted_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC')"
+                )
+                return int(row["c"] or 0) if row else 0
+        except Exception as e:
+            log.warning("db.count_redeems_today.error", error=str(e)[:120])
+            return 0
+
     # ─── Window Snapshots ────────────────────────────────────────────────────
 
     async def ensure_window_tables(self) -> None:
@@ -3047,6 +3137,48 @@ class DBClient:
                 )
         except Exception as exc:
             log.warning("db.write_clob_book_snapshot_failed", error=str(exc)[:200])
+
+    async def fetch_recent_fills_for_condition(
+        self,
+        condition_id: Optional[str],
+        within_seconds: int = 60,
+    ) -> list[dict]:
+        """Return poly_fills rows for `condition_id` matched in the last
+        `within_seconds`, ordered oldest-first.
+
+        Used by the multi-fill (FAK split) detector in the engine before it
+        calls `TelegramAlerter.send_order_filled`. A FAK order can split
+        across the layered ask book and produce multiple poly_fills rows
+        for the same condition_id at the same timestamp; we want to surface
+        each leg in the alert.
+
+        Returns an empty list when condition_id is falsy, the pool isn't
+        connected, or anything goes wrong — callers treat absence of fills
+        as "no split block to render".
+        """
+        if not condition_id or not self._pool:
+            return []
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT price, size, transaction_hash AS tx
+                    FROM poly_fills
+                    WHERE condition_id = $1
+                      AND match_time_utc >= NOW() - make_interval(secs => $2)
+                    ORDER BY match_time_utc ASC
+                    """,
+                    condition_id,
+                    int(within_seconds),
+                )
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            log.warning(
+                "db.fetch_recent_fills_for_condition_failed",
+                error=str(exc)[:200],
+                condition_id=condition_id,
+            )
+            return []
 
 
 class DBClientLegacyShim:
