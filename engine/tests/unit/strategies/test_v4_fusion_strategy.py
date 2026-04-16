@@ -103,11 +103,12 @@ class TestV4FusionStrategy:
 
     @pytest.mark.asyncio
     async def test_skip_on_bad_regime(self):
-        """Regime not in tradeable set -> SKIP."""
+        """Regime not in tradeable set -> SKIP (legacy path, recommended_side=None)."""
         from adapters.strategies.v4_fusion_strategy import V4FusionStrategy
         strategy = V4FusionStrategy()
 
-        snap = _make_snapshot(regime="chop")
+        # recommended_side=None forces legacy path (avoids polymarket routing)
+        snap = _make_snapshot(regime="chop", recommended_side=None)
         decision = await strategy.evaluate(_make_ctx(v4_snapshot=snap))
 
         assert decision.action == "SKIP"
@@ -115,11 +116,12 @@ class TestV4FusionStrategy:
 
     @pytest.mark.asyncio
     async def test_skip_on_unsafe_consensus(self):
-        """Consensus not safe -> SKIP."""
+        """Consensus not safe -> SKIP (legacy path, recommended_side=None)."""
         from adapters.strategies.v4_fusion_strategy import V4FusionStrategy
         strategy = V4FusionStrategy()
 
-        snap = _make_snapshot(consensus={"safe_to_trade": False})
+        # recommended_side=None forces legacy path (avoids polymarket routing)
+        snap = _make_snapshot(consensus={"safe_to_trade": False}, recommended_side=None)
         decision = await strategy.evaluate(_make_ctx(v4_snapshot=snap))
 
         assert decision.action == "SKIP"
@@ -127,12 +129,13 @@ class TestV4FusionStrategy:
 
     @pytest.mark.asyncio
     async def test_skip_on_low_conviction(self):
-        """Conviction too low for the threshold -> SKIP."""
+        """Conviction too low for the threshold -> SKIP (legacy path, recommended_side=None)."""
         from adapters.strategies.v4_fusion_strategy import V4FusionStrategy
         strategy = V4FusionStrategy()
 
+        # recommended_side=None forces legacy path (avoids polymarket routing)
         # MEDIUM requires distance >= 0.15, p_up=0.55 gives distance=0.05
-        snap = _make_snapshot(probability_up=0.55, conviction="MEDIUM")
+        snap = _make_snapshot(probability_up=0.55, conviction="MEDIUM", recommended_side=None)
         decision = await strategy.evaluate(_make_ctx(v4_snapshot=snap))
 
         assert decision.action == "SKIP"
@@ -141,19 +144,21 @@ class TestV4FusionStrategy:
 
     @pytest.mark.asyncio
     async def test_skip_on_macro_direction_mismatch(self):
-        """Macro gate disagrees with direction -> SKIP."""
+        """Macro gate blocks trade direction -> SKIP (legacy path, recommended_side=None)."""
         from adapters.strategies.v4_fusion_strategy import V4FusionStrategy
         strategy = V4FusionStrategy()
 
-        # p_up=0.68 -> direction UP, but macro says DOWN
+        # recommended_side=None forces legacy path (avoids polymarket routing)
+        # p_up=0.68 -> direction UP, SHORT_ONLY blocks UP
         snap = _make_snapshot(
             probability_up=0.68,
-            macro={"direction_gate": "DOWN", "size_modifier": 1.0},
+            recommended_side=None,
+            macro={"direction_gate": "SHORT_ONLY", "size_modifier": 1.0},
         )
         decision = await strategy.evaluate(_make_ctx(v4_snapshot=snap))
 
         assert decision.action == "SKIP"
-        assert "macro direction_gate=DOWN vs UP" in decision.skip_reason
+        assert "macro direction_gate=SHORT_ONLY blocks UP" in decision.skip_reason
 
     @pytest.mark.asyncio
     async def test_direction_inferred_from_probability(self):
@@ -189,13 +194,15 @@ class TestV4FusionStrategy:
 
     @pytest.mark.asyncio
     async def test_none_conviction_never_trades(self):
-        """Conviction NONE has threshold 1.0 -- never trades."""
+        """Conviction NONE has threshold 1.0 -- never trades (legacy path, recommended_side=None)."""
         from adapters.strategies.v4_fusion_strategy import V4FusionStrategy
         strategy = V4FusionStrategy()
 
+        # recommended_side=None forces legacy path (avoids polymarket routing)
         snap = _make_snapshot(
             probability_up=0.99,
             conviction="NONE",
+            recommended_side=None,
         )
         decision = await strategy.evaluate(_make_ctx(v4_snapshot=snap))
 
