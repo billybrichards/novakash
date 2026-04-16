@@ -717,6 +717,12 @@ class EngineRuntime:
                 self._tasks.append(
                     asyncio.create_task(self._redeemer_loop(), name="redeemer:sweep")
                 )
+                self._tasks.append(
+                    asyncio.create_task(
+                        self._position_snapshot_loop(),
+                        name="position_snapshot",
+                    )
+                )
                 log.info("orchestrator.redeemer_started")
             except Exception as e:
                 log.error("orchestrator.redeemer_start_failed", error=str(e))
@@ -3200,6 +3206,13 @@ class EngineRuntime:
                     except Exception:
                         pass
 
+                # After every sweep — send a fresh snapshot so the user sees the
+                # pending-wins list shrink in real time.
+                try:
+                    await self._send_position_snapshot()
+                except Exception:
+                    pass
+
             except Exception as e:
                 log.error("orchestrator.redeemer_loop.error", error=str(e))
 
@@ -3211,6 +3224,72 @@ class EngineRuntime:
                 break
             except asyncio.TimeoutError:
                 pass
+
+    # ── Position Snapshot Loop ──────────────────────────────────────────────
+
+    async def _position_snapshot_loop(self) -> None:
+        """
+        Periodic position snapshot — every 15 min plus immediately after
+        every redemption sweep. Cheap (no relayer hit) since pending_wins
+        just reads positions already cached by the redeemer scan.
+        """
+        SNAPSHOT_INTERVAL = 900  # 15 min
+        while not self._shutdown_event.is_set():
+            try:
+                await self._send_position_snapshot()
+            except Exception as e:
+                log.error("orchestrator.snapshot_loop.error", error=str(e))
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_event.wait()),
+                    timeout=SNAPSHOT_INTERVAL,
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    async def _send_position_snapshot(self) -> None:
+        """
+        Build the snapshot from current state + push to Telegram.
+        Also called on-demand from Hub via _check_snapshot_requested().
+        """
+        if not (self._alerter and self._redeemer):
+            return
+        from alerts.positions import build_snapshot
+        from datetime import datetime, timezone
+
+        wallet_usdc = 0.0
+        if self._poly_client and hasattr(self._poly_client, "get_balance"):
+            try:
+                wallet_usdc = float(await self._poly_client.get_balance() or 0)
+            except Exception:
+                pass
+
+        pending = await self._redeemer.pending_wins_summary()
+        cooldown = self._redeemer.cooldown_status()
+        quota_used = (
+            await self._db.count_redeems_today()
+            if hasattr(self._db, "count_redeems_today")
+            else 0
+        )
+        open_orders = []
+        if self._poly_client and hasattr(self._poly_client, "get_open_orders"):
+            try:
+                open_orders = await self._poly_client.get_open_orders() or []
+            except Exception:
+                pass
+
+        snap = build_snapshot(
+            wallet_usdc=wallet_usdc,
+            pending_wins=pending,
+            open_orders=open_orders,
+            cooldown=cooldown,
+            daily_quota_limit=self._redeemer.daily_quota_limit,
+            quota_used_today=quota_used,
+            now_utc=datetime.now(timezone.utc).isoformat(),
+        )
+        await self._alerter.send_position_snapshot(snap)
 
     # ── Playwright Loops ────────────────────────────────────────────────────
 
