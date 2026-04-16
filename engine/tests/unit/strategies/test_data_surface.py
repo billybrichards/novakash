@@ -101,14 +101,14 @@ class TestDataSurfaceManager:
         assert surface.delta_chainlink is not None
         assert abs(surface.delta_chainlink - 490 / 84000) < 1e-6
 
-    def test_primary_delta_tiingo_first(self):
+    def test_primary_delta_chainlink_first_for_5m(self):
         mgr = self._make_manager()
         window = FakeWindow(open_price=84000.0)
         surface = mgr.get_surface(window, 120)
 
-        # Tiingo is first priority
-        assert surface.delta_source == "tiingo_rest_candle"
-        assert abs(surface.delta_pct - 480 / 84000) < 1e-6
+        # For 5m Polymarket markets chainlink is primary (it IS the resolution oracle)
+        assert surface.delta_source == "chainlink"
+        assert abs(surface.delta_pct - 490 / 84000) < 1e-6
 
     def test_clob_from_feed_cache(self):
         mgr = self._make_manager()

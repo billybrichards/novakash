@@ -197,7 +197,8 @@ class TelegramAlerter:
         # Try to get from pydantic settings if not set
         if not self._openrouter_api_key:
             try:
-                from config.settings import settings
+                from config.settings import get_settings
+                settings = get_settings()
 
                 self._openrouter_api_key = settings.openrouter_api_key or ""
                 self._openrouter_model = (

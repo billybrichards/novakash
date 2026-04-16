@@ -29,7 +29,7 @@ from decimal import Decimal
 from typing import Optional, Callable, Awaitable, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from engine.domain.ports import WindowStateRepository
+    from domain.ports import WindowStateRepository
 
 import structlog
 
@@ -59,12 +59,10 @@ log = structlog.get_logger(__name__)
 # T-240 (89.5% WR) → cap $0.55 | T-180 (86.4%) → $0.60
 # T-120 (84.3%) → $0.65        | T-60  (78.8%) → $0.73 (current)
 # Feature-flagged via V2_EARLY_ENTRY_ENABLED env var.
-import os as _os
-
-_CAP_T240 = float(_os.environ.get("V81_CAP_T240", "0.55"))
-_CAP_T180 = float(_os.environ.get("V81_CAP_T180", "0.60"))
-_CAP_T120 = float(_os.environ.get("V81_CAP_T120", "0.65"))
-_CAP_T60 = float(_os.environ.get("V81_CAP_T60", "0.73"))
+_CAP_T240 = float(os.environ.get("V81_CAP_T240", "0.55"))
+_CAP_T180 = float(os.environ.get("V81_CAP_T180", "0.60"))
+_CAP_T120 = float(os.environ.get("V81_CAP_T120", "0.65"))
+_CAP_T60 = float(os.environ.get("V81_CAP_T60", "0.73"))
 
 
 def _get_v81_cap(offset: int) -> float:

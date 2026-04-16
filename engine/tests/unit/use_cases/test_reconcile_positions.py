@@ -58,7 +58,7 @@ async def test_exact_match_win():
     result = await p.uc().resolve_one(_pos(outcome="WIN"))
 
     assert result is not None
-    assert result.outcome == "WIN"
+    assert result.outcome == "RESOLVED_WIN"
     assert result.status == "RESOLVED_WIN"
     assert result.matched_trade_id == "trade-001"
     assert result.match_method == "exact"
@@ -76,7 +76,7 @@ async def test_exact_match_loss():
 
     result = await p.uc().resolve_one(_pos(outcome="LOSS"))
 
-    assert result.outcome == "LOSS"
+    assert result.outcome == "RESOLVED_LOSS"
     assert result.status == "RESOLVED_LOSS"
     assert result.pnl_usd == -5.0
 
@@ -118,7 +118,10 @@ async def test_no_match_returns_none():
 
     assert result is None
     p.trade_repo.resolve_trade.assert_not_called()
-    p.alerts.send_system_alert.assert_called_once()
+    # resolve_one() queues the alert into _pending_live_alerts (batched pattern)
+    # and does NOT call send_system_alert directly — that fires only in execute()
+    # via _flush_resolution_alerts. Assert not called here to guard against regression.
+    p.alerts.send_system_alert.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -166,7 +169,7 @@ async def test_alert_failure_does_not_break_resolution():
     result = await p.uc().resolve_one(_pos(outcome="WIN"))
 
     assert result is not None
-    assert result.outcome == "WIN"
+    assert result.outcome == "RESOLVED_WIN"
 
 
 @pytest.mark.asyncio
@@ -178,7 +181,7 @@ async def test_mark_resolved_failure_non_fatal():
     result = await p.uc().resolve_one(_pos(outcome="LOSS"))
 
     assert result is not None
-    assert result.outcome == "LOSS"
+    assert result.outcome == "RESOLVED_LOSS"
     p.trade_repo.resolve_trade.assert_called_once()
 
 
@@ -473,3 +476,64 @@ class TestExecute:
         uc, _ = self._make_uc()
         result = asyncio.run(uc.execute([]))
         assert isinstance(result, ReconcileResult)
+
+    def test_live_position_reaches_trade_repo_resolve(self):
+        """Port contract: live positions must reach trade_repo.resolve_trade.
+        Guards against #207-class stale-import silent-drop of TRADE path."""
+        trade = _match()
+        uc, trade_repo = self._make_uc()
+        trade_repo.find_by_token_id.return_value = trade
+        pos = _pos(outcome="WIN")
+
+        from domain.value_objects import ReconcileResult
+        result = asyncio.run(uc.execute([pos]))
+        assert isinstance(result, ReconcileResult)
+        assert result.live_resolved == 1
+        trade_repo.resolve_trade.assert_awaited_once()
+
+    def test_zero_positions_resolve_trade_not_called(self):
+        """Port contract: no positions -> trade_repo.resolve_trade never called."""
+        uc, trade_repo = self._make_uc()
+        asyncio.run(uc.execute([]))
+        trade_repo.resolve_trade.assert_not_awaited()
+
+    def test_live_position_error_increments_errors(self):
+        """Exception during live resolution is counted in ReconcileResult.errors."""
+        uc, trade_repo = self._make_uc()
+        # Make resolve_one raise by having find_by_token_id raise
+        trade_repo.find_by_token_id.side_effect = RuntimeError("DB down")
+
+        from domain.value_objects import ReconcileResult
+        pos = _pos(outcome="WIN")
+        result = asyncio.run(uc.execute([pos]))
+        assert isinstance(result, ReconcileResult)
+        assert result.errors >= 1
+
+    def test_flush_alerts_sends_batched_message(self):
+        """_flush_resolution_alerts sends batched message via send_raw_message.
+
+        AsyncMock auto-creates any attribute access, so hasattr(mock, "send_raw_message")
+        is always True — _flush_resolution_alerts always takes the send_raw_message branch
+        in tests. Assert the exact path rather than a disjunction that never fails.
+        """
+        uc, trade_repo = self._make_uc()
+        trade_repo.find_by_token_id.return_value = _match()
+        alerts = uc._alerts
+
+        # Execute with a live position to populate _pending_live_alerts
+        pos = _pos(outcome="WIN")
+        asyncio.run(uc.execute([pos]))
+
+        # send_raw_message is the branch taken: hasattr(AsyncMock, anything) is True
+        alerts.send_raw_message.assert_called_once()
+        msg = alerts.send_raw_message.call_args.args[0]
+        assert "Reconcile" in msg
+        alerts.send_system_alert.assert_not_called()
+
+    def test_flush_alerts_silent_when_no_alerts(self):
+        """_flush_resolution_alerts is silent when no resolutions occurred."""
+        uc, _ = self._make_uc()
+        alerts = uc._alerts
+        asyncio.run(uc.execute([]))  # No positions, no paper trades
+        alerts.send_system_alert.assert_not_called()
+        alerts.send_raw_message.assert_not_called()

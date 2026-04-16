@@ -4,6 +4,8 @@ Engine Settings — Pydantic BaseSettings
 All configuration is loaded from environment variables / .env file.
 """
 
+import threading
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -131,4 +133,49 @@ class Settings(BaseSettings):
     )
 
 
-settings = Settings()
+
+
+class TestSettings(Settings):
+    """Test defaults — NEVER instantiate in production paths.
+
+    Subclasses Settings so every required field gets a safe default.
+    Imported only by the test suite (tests/conftest.py and fixtures/).
+    """
+    database_url: str = "sqlite+aiosqlite:///:memory:"
+    poly_private_key: str = "test"
+    poly_api_key: str = "test"
+    poly_api_secret: str = "test"
+    poly_api_passphrase: str = "test"
+    poly_funder_address: str = "0x0000000000000000000000000000000000000000"
+    opinion_api_key: str = "test"
+    opinion_wallet_key: str = "test"
+    binance_api_key: str = "test"
+    binance_api_secret: str = "test"
+    coinglass_api_key: str = "test"
+    openrouter_api_key: str = "test"
+    tiingo_api_key: str = "test"
+    polygon_rpc_url: str = "https://test.invalid"
+    telegram_bot_token: str = "test"
+    telegram_chat_id: str = "0"
+    starting_bankroll: float = 500.0
+    paper_mode: bool = True
+
+
+_settings: Settings | None = None
+_settings_lock = threading.Lock()
+
+
+def get_settings() -> Settings:
+    """Return the singleton Settings instance, loading lazily (thread-safe)."""
+    global _settings
+    if _settings is None:
+        with _settings_lock:
+            if _settings is None:
+                _settings = Settings()
+    return _settings
+
+
+def _reset_settings_for_tests() -> None:
+    """Test helper — clears the cached singleton. Not for prod use."""
+    global _settings
+    _settings = None

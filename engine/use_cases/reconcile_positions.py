@@ -300,7 +300,7 @@ class ReconcilePositionsUseCase:
         return ResolutionResult(
             condition_id=position.condition_id,
             matched_trade_id=trade_id,
-            outcome=outcome,
+            outcome=status,  # "RESOLVED_WIN" | "RESOLVED_LOSS" per domain contract
             pnl_usd=trade_pnl,
             status=status,
             token_id=match.get("token_id"),

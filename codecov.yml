@@ -1,0 +1,21 @@
+# codecov.yml
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 2%            # allow 2% drop without failing
+        base: auto
+    patch:
+      default:
+        target: 80%              # new code should be >=80% covered
+
+flags:
+  engine-nightly:
+    paths:
+      - engine/
+
+ignore:
+  - "engine/tests/"
+  - "engine/scripts/"
+  - "**/__init__.py"

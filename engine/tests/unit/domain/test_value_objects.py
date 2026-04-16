@@ -1,6 +1,6 @@
 """Unit tests for engine.domain.value_objects -- Phase 1 (CA-01, CA-02)."""
 import math, pytest
-from engine.domain.value_objects import (ClobSnapshot, DeltaSet, FillResult, GateAuditRow, HeartbeatRow, ManualTradeOutcome, OrderBook, PendingTrade, PositionOutcome, ResolutionResult, RiskStatus, SignalEvaluation, SitrepPayload, SkipSummary, Tick, TradeDecision, WalletSnapshot, WindowClose, WindowKey, WindowMarket, WindowOutcome, WindowSnapshot)
+from domain.value_objects import (ClobSnapshot, DeltaSet, FillResult, GateAuditRow, HeartbeatRow, ManualTradeOutcome, OrderBook, PendingTrade, PositionOutcome, ResolutionResult, RiskStatus, SignalEvaluation, SitrepPayload, SkipSummary, Tick, TradeDecision, WalletSnapshot, WindowClose, WindowKey, WindowMarket, WindowOutcome, WindowSnapshot)
 
 class TestWindowKey:
     def test_happy(self): wk = WindowKey(asset="BTC", window_ts=1712345678); assert wk.key == "BTC-1712345678" and wk.timeframe == "5m"

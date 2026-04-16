@@ -66,7 +66,7 @@ def registry():
 class TestV4DownOnly:
     def test_loads(self, registry):
         assert "v4_down_only" in registry.strategy_names
-        assert registry.configs["v4_down_only"].mode == "LIVE"
+        assert registry.configs["v4_down_only"].mode == "GHOST"
 
     def test_trade_down_in_window(self, registry):
         surface = _make_surface(
@@ -119,7 +119,7 @@ class TestV4UpBasic:
     def test_trade_up_in_window(self, registry):
         surface = _make_surface(
             eval_offset=120, poly_direction="UP",
-            poly_confidence_distance=0.12,
+            poly_confidence_distance=0.16,  # min_dist raised to 0.15 on 2026-04-14
             v2_probability_up=0.62,
         )
         decision = registry._evaluate_one(
@@ -139,10 +139,10 @@ class TestV4UpBasic:
         assert decision.action == "SKIP"
 
     def test_wider_timing_than_down(self, registry):
-        """v4_up_basic accepts T-60, which v4_down_only rejects."""
+        """v4_up_basic accepts T-65, which v4_down_only rejects."""
         surface = _make_surface(
             eval_offset=65, poly_direction="UP",
-            poly_confidence_distance=0.12,
+            poly_confidence_distance=0.16,  # min_dist raised to 0.15 on 2026-04-14
         )
         decision = registry._evaluate_one(
             "v4_up_basic", registry.configs["v4_up_basic"], surface
@@ -198,6 +198,8 @@ class TestV4Fusion:
             poly_direction="DOWN", poly_trade_advised=True,
             poly_confidence=0.38, poly_confidence_distance=0.12,
             poly_timing="optimal",
+            # Chainlink must agree with trade direction (it IS the resolution oracle)
+            delta_chainlink=-0.005,
         )
         decision = registry._evaluate_one(
             "v4_fusion", registry.configs["v4_fusion"], surface

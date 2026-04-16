@@ -86,16 +86,18 @@ class TestEvaluateWindowUseCase:
         assert uc.was_traded("BTC-222")
         assert not uc.was_traded("BTC-333")
 
-    def test_v10_pipeline_passes_without_dune_client(self):
+    @pytest.mark.asyncio
+    async def test_v10_pipeline_passes_without_dune_client(self):
         # Without a DUNE client, DuneConfidenceGate passes by default.
         # The pipeline passes all 8 gates and returns a TRADE signal.
         with patch.dict(os.environ, {"V10_DUNE_ENABLED": "true"}):
             uc = _make_uc()
-            result = asyncio.get_event_loop().run_until_complete(uc.execute(_make_window(), _make_state()))
+            result = await uc.execute(_make_window(), _make_state())
             assert result.signal is not None
             assert result.signal.direction is not None
 
-    def test_v10_trade_with_mock_pipeline(self):
+    @pytest.mark.asyncio
+    async def test_v10_trade_with_mock_pipeline(self):
         mock_pr = MagicMock()
         mock_pr.passed = True
         mock_pr.direction = "UP"
@@ -107,7 +109,7 @@ class TestEvaluateWindowUseCase:
         with patch.dict(os.environ, {"V10_DUNE_ENABLED": "true"}):
             uc = _make_uc()
             with patch("use_cases.evaluate_window.GatePipeline.evaluate", return_value=mock_pr):
-                result = asyncio.get_event_loop().run_until_complete(uc.execute(_make_window(), _make_state()))
+                result = await uc.execute(_make_window(), _make_state())
         assert result.signal is not None
         assert result.signal.direction == "UP"
 
