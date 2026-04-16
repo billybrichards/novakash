@@ -1151,6 +1151,19 @@ class CLOBReconciler:
             }
 
         # Path 2: no matching poly_fills row.
+        #
+        # Audit #192 (2026-04-16): the alert threshold stays at 10 min
+        # but ``reconcile_trades_sot`` now runs one last single-row
+        # poly_fills re-query immediately BEFORE firing the alert — see
+        # the call to ``db.fetch_poly_fill_for_trade`` there. The JOIN
+        # that produced ``fill=None`` may have been computed seconds ago;
+        # the poly_fills_reconciler worker polls data-api upstream and
+        # may have landed the row in between. A single-row lookup costs
+        # no upstream quota. If that re-check finds the fill, the
+        # decision is re-run with it (agrees / diverged) and the alert
+        # is suppressed with a ``poly_sot_indexing_lag_recovered`` log
+        # line. This caught the 2026-04-16 phantoms #4755/#4756/#4757
+        # (age 11-12min, wallet delta matched stake exactly).
         if fill is None:
             age_minutes = _row_age_minutes(trade)
             if age_minutes is not None and age_minutes <= 10.0:
@@ -1168,6 +1181,7 @@ class CLOBReconciler:
                     "should_alert": False,
                 }
             # Older than 10 minutes with no on-chain fill — real divergence.
+            # Caller may still suppress via the audit-#192 re-check hook.
             age_str = (
                 f"{age_minutes:.1f}min" if age_minutes is not None else "unknown age"
             )
@@ -1467,11 +1481,73 @@ class CLOBReconciler:
                 summary.paper += 1
 
             if decision.get("should_alert"):
-                if await self._fire_sot_alert(
-                    trade_id, state, decision.get("notes") or "", trade_row,
-                    table="trades",
-                ):
-                    summary.alerts_fired += 1
+                # Audit #192 last-chance re-check: before firing the
+                # alert, re-query poly_fills for this specific trade.
+                # The JOIN we walked earlier may have been computed
+                # seconds ago; in the meantime poly_fills_reconciler
+                # might have landed the missing row. A single-row DB
+                # lookup is microseconds and costs no upstream quota —
+                # free insurance against spurious POLY-SOT alerts.
+                if state == "engine_optimistic":
+                    recheck_fill = await db.fetch_poly_fill_for_trade(
+                        market_slug=trade_row.get("market_slug") or "",
+                        poly_outcome=trade_row.get("poly_outcome") or "",
+                        trade_created_at=trade_row.get("created_at"),
+                    )
+                    if recheck_fill is not None:
+                        self._log.info(
+                            "reconcile_trades_sot.poly_sot_indexing_lag_recovered",
+                            trade_id=trade_id,
+                            fill_tx=recheck_fill.get("transaction_hash"),
+                        )
+                        # Re-run the decision with the fresh fill so the
+                        # row lands in the right bucket (agrees or diverged)
+                        # rather than engine_optimistic.
+                        try:
+                            decision = self._compare_to_polymarket_onchain(
+                                trade_row, recheck_fill
+                            )
+                        except Exception as exc:
+                            self._log.warning(
+                                "reconcile_trades_sot.recheck_compare_failed",
+                                trade_id=trade_id,
+                                error=str(exc)[:200],
+                            )
+                        else:
+                            state = decision["state"]
+                            await db.update_trade_sot(
+                                trade_id=trade_id,
+                                polymarket_confirmed_status=decision["confirmed_status"],
+                                polymarket_confirmed_fill_price=decision["confirmed_price"],
+                                polymarket_confirmed_size=decision["confirmed_size"],
+                                polymarket_confirmed_at=decision["confirmed_at"],
+                                sot_reconciliation_state=state,
+                                sot_reconciliation_notes=decision["notes"],
+                                polymarket_tx_hash=decision.get("tx_hash"),
+                            )
+                            # Summary counters were incremented under the
+                            # old state; decrement + re-increment to stay
+                            # accurate. engine_optimistic is what we had.
+                            summary.engine_optimistic -= 1
+                            if state == "agrees":
+                                summary.agrees += 1
+                                self._sot_alerted_trade_ids.discard(
+                                    f"trades:{trade_id}"
+                                )
+                            elif state == "diverged":
+                                summary.diverged += 1
+                            elif state == "unreconciled":
+                                summary.unreconciled += 1
+                            else:
+                                # Shouldn't happen but stay honest.
+                                summary.errors += 1
+
+                if decision.get("should_alert"):
+                    if await self._fire_sot_alert(
+                        trade_id, state, decision.get("notes") or "", trade_row,
+                        table="trades",
+                    ):
+                        summary.alerts_fired += 1
 
             row_record["state"] = state
             summary.rows.append(row_record)
@@ -2206,3 +2282,64 @@ class _TradesPoolDBClient:
                 error=str(exc)[:200],
             )
             return []
+
+    async def fetch_poly_fill_for_trade(
+        self,
+        market_slug: str,
+        poly_outcome: str,
+        trade_created_at: datetime,
+    ) -> Optional[dict]:
+        """POLY-SOT-e (audit #192): re-query a single trade's poly_fills row.
+
+        Used by the retry-with-backoff guard in ``reconcile_trades_sot``:
+        before firing an ``engine_optimistic`` alert for a trade whose
+        JOIN returned no fill, we re-try this lookup 2-3× over ~4 min to
+        let data-api.polymarket.com/activity catch up on indexing. The
+        query mirrors the LATERAL JOIN in ``fetch_trades_joined_poly_fills``
+        exactly — same outcome mapping, same ±10 min match window, same
+        ``ORDER BY ABS(...)`` tie-breaker — so a hit here would have been
+        a hit there had the row landed in time.
+
+        Returns the ``fill_dict`` in the shape ``_compare_to_polymarket_onchain``
+        expects, or None if still missing.
+        """
+        if not self._pool:
+            return None
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT transaction_hash, price, size, cost_usd,
+                           match_time_utc, condition_id, outcome, side
+                    FROM poly_fills
+                    WHERE market_slug = $1
+                      AND outcome = $2
+                      AND side = 'BUY'
+                      AND match_time_utc BETWEEN $3::timestamptz - INTERVAL '10 minutes'
+                                             AND $3::timestamptz + INTERVAL '10 minutes'
+                    ORDER BY ABS(EXTRACT(EPOCH FROM (match_time_utc - $3::timestamptz)))
+                    LIMIT 1
+                    """,
+                    market_slug,
+                    poly_outcome,
+                    trade_created_at,
+                )
+                if row is None:
+                    return None
+                return {
+                    "transaction_hash": row["transaction_hash"],
+                    "poly_price": row["price"],
+                    "poly_size": row["size"],
+                    "poly_cost_usd": row["cost_usd"],
+                    "match_time_utc": row["match_time_utc"],
+                    "condition_id": row["condition_id"],
+                    "outcome": row["outcome"],
+                    "side": row["side"],
+                }
+        except Exception as exc:
+            log.warning(
+                "reconcile_trades_sot.poly_fill_single_lookup_failed",
+                market_slug=market_slug,
+                error=str(exc)[:200],
+            )
+            return None

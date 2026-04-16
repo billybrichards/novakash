@@ -60,6 +60,8 @@ def _trade_dict(
         "execution_mode": execution_mode,
         "is_live": True,
         "created_at": created_at,
+        "market_slug": f"btc-updown-5m-{trade_id}",
+        "poly_outcome": "Up",
         "polymarket_confirmed_status": None,
         "polymarket_confirmed_fill_price": None,
         "polymarket_confirmed_size": None,
@@ -90,9 +92,25 @@ def _fill_dict(
 class StubTradesPoolDBClient:
     """Test stand-in for `_TradesPoolDBClient`."""
 
-    def __init__(self, joined_rows: list[tuple[dict, Optional[dict]]]) -> None:
+    def __init__(
+        self,
+        joined_rows: list[tuple[dict, Optional[dict]]],
+        *,
+        recheck_fills: Optional[dict] = None,
+    ) -> None:
+        """
+        ``recheck_fills``: map of ``market_slug -> fill_dict`` used by the
+        audit-#192 last-chance single-row re-query. When a trade whose
+        JOIN returned ``None`` is about to fire an alert,
+        ``reconcile_trades_sot`` calls ``fetch_poly_fill_for_trade`` — if
+        the market_slug is in this map, the stub returns the fill and
+        the alert is suppressed. Default ``None`` = re-check always misses
+        (matches pre-audit-#192 behaviour for the existing tests).
+        """
         self._rows = joined_rows
         self.updates: list[dict] = []
+        self._recheck_fills = recheck_fills or {}
+        self.recheck_calls: list[str] = []
 
     async def fetch_trades_joined_poly_fills(
         self,
@@ -100,6 +118,17 @@ class StubTradesPoolDBClient:
         limit: int = 200,
     ) -> list[tuple[dict, Optional[dict]]]:
         return list(self._rows[:limit])
+
+    async def fetch_poly_fill_for_trade(
+        self,
+        market_slug: str,
+        poly_outcome: str,
+        trade_created_at,
+    ) -> Optional[dict]:
+        """Audit #192 single-row re-query. Returns whichever fill dict
+        the test registered for this market_slug, or None."""
+        self.recheck_calls.append(market_slug)
+        return self._recheck_fills.get(market_slug)
 
     async def fetch_trades_for_sot_check(
         self,
@@ -160,8 +189,10 @@ class StubAlerter:
 def _make_reconciler(
     monkeypatch,
     joined_rows: list[tuple[dict, Optional[dict]]],
+    *,
+    recheck_fills: Optional[dict] = None,
 ) -> tuple[CLOBReconciler, StubTradesPoolDBClient, StubAlerter]:
-    db_stub = StubTradesPoolDBClient(joined_rows)
+    db_stub = StubTradesPoolDBClient(joined_rows, recheck_fills=recheck_fills)
     alerter_stub = StubAlerter()
 
     monkeypatch.setattr(
@@ -591,3 +622,78 @@ async def test_backfill_no_order_id_old_row_tags_no_order_id(monkeypatch):
         recent_row, poly, rec, rate_limit_ms=0, table="manual_trades"
     )
     assert state2 == "skipped"
+
+
+# ─── Audit #192: POLY-SOT last-chance re-check ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_audit_192_recheck_suppresses_alert_when_fill_lands_late(monkeypatch):
+    """Audit #192 regression: 15-min-old trade with no fill in the JOIN,
+    but the single-row re-check finds the fill (indexing lag recovered
+    between JOIN and alert dispatch). Alert MUST be suppressed and the
+    trade transitions from engine_optimistic to agrees.
+
+    Real-world shape: 2026-04-16 phantoms #4755/#4756/#4757 all had
+    wallet delta matching stake exactly, confirming the fill was on-chain
+    — poly_fills_reconciler just hadn't landed it when the JOIN ran.
+    """
+    trade = _trade_dict(
+        trade_id=4755,
+        status="FILLED",
+        entry_price=0.5658,
+        fill_price=0.5658,
+        fill_size=7.97,
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=12),
+    )
+    slug = trade["market_slug"]
+    # The JOIN has no fill (phantom), but the re-check finds one.
+    late_fill = _fill_dict(poly_price=0.5670, poly_size=7.97)
+    rec, db, alerter = _make_reconciler(
+        monkeypatch,
+        [(trade, None)],
+        recheck_fills={slug: late_fill},
+    )
+
+    summary = await rec.reconcile_trades_sot()
+
+    assert summary.checked == 1
+    # Re-check fired.
+    assert slug in db.recheck_calls, "fetch_poly_fill_for_trade must be called"
+    # Alert was suppressed — the trade is now `agrees`, not engine_optimistic.
+    assert summary.alerts_fired == 0, "late-lands fill must suppress POLY-SOT alert"
+    assert len(alerter.messages) == 0
+    assert summary.engine_optimistic == 0
+    assert summary.agrees == 1
+    # DB was updated twice: once engine_optimistic, then re-written as agrees.
+    assert len(db.updates) == 2
+    assert db.updates[0]["sot_reconciliation_state"] == "engine_optimistic"
+    assert db.updates[1]["sot_reconciliation_state"] == "agrees"
+
+
+@pytest.mark.asyncio
+async def test_audit_192_recheck_still_missing_fires_alert(monkeypatch):
+    """Audit #192: if the re-check also misses, the alert STILL fires.
+    This is the genuine-phantom case (#4731 class) where there really
+    is no on-chain record."""
+    trade = _trade_dict(
+        trade_id=4731,
+        status="FILLED",
+        entry_price=0.62,
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=20),
+    )
+    slug = trade["market_slug"]
+    # recheck_fills empty for this slug → re-check returns None.
+    rec, db, alerter = _make_reconciler(
+        monkeypatch,
+        [(trade, None)],
+        recheck_fills={},
+    )
+
+    summary = await rec.reconcile_trades_sot()
+
+    assert summary.checked == 1
+    assert slug in db.recheck_calls, "re-check must always run before alert"
+    assert summary.alerts_fired == 1, "genuine phantom must still alert"
+    assert summary.engine_optimistic == 1
+    assert len(alerter.messages) == 1
