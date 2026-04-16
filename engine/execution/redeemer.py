@@ -57,6 +57,25 @@ _RATE_LIMIT_MARKERS = ("429", "quota exceeded", "units remaining")
 _RESET_REGEX = re.compile(r"resets?\s+in\s+(\d+)\s*seconds?", re.IGNORECASE)
 _DEFAULT_COOLDOWN_SECONDS = 300  # 5 minutes when we can't parse the header
 
+# ── Exponential backoff on top of the server-reported cooldown ────────────────
+#
+# Even after tripping the 24 h quota cooldown, each additional 429 inside the
+# same cooldown window burns one unit (Polymarket Relayer observed behaviour —
+# 2026-04-10). To prevent the engine from "hot-looping" on a 429 and eroding
+# tomorrow's quota, we layer a per-session exponential backoff ON TOP OF
+# ``_rate_limit_until`` (the server-reported cooldown).
+#
+# Formula: ``min(BASE * 2^N, CAP)`` where N = consecutive 429 count.
+# N resets to 0 on any non-429 success.
+#
+# BASE=30s, CAP=30min. With BASE=30s the first 429 yields 30s, the second 60s,
+# the third 2m, etc., capping at 30m after ~6 consecutive 429s. The CAP is
+# significantly shorter than a typical ``resets in N seconds`` countdown
+# (often several hours), so the outer cooldown dominates — the backoff only
+# kicks in if the redeemer tripped a 429 without a parseable reset header.
+_BACKOFF_BASE_SECONDS = 30
+_BACKOFF_CAP_SECONDS = 30 * 60  # 30 min
+
 
 def _is_rate_limit_error(exc_str: str) -> bool:
     """True if the error string looks like a Polygon Relayer rate-limit response.
@@ -207,6 +226,14 @@ class PositionRedeemer:
         )
         self._last_loss_sweep_at: Optional[datetime] = None
 
+        # Exponential-backoff state layered ON TOP OF _rate_limit_until.
+        # ``_consecutive_429`` is the count of consecutive 429s in this
+        # session — resets to 0 on any non-429 success. ``_backoff_until``
+        # is an absolute UTC deadline; while now() < this value the
+        # redeemer short-circuits (alongside the server-reported cooldown).
+        self._consecutive_429: int = 0
+        self._backoff_until: Optional[datetime] = None
+
         # Optional attempts repo — when wired, redeem_position() skips any
         # condition_id with >= REDEEM_MAX_FAILURES_24H failed attempts in
         # the last 24 h, preventing hot-loops on stuck positions.
@@ -333,22 +360,51 @@ class PositionRedeemer:
         return out
 
     def cooldown_status(self) -> dict:
+        """Current relayer cooldown + backoff state.
+
+        The base four keys (``active``, ``remaining_seconds``, ``resets_at``,
+        ``reason``) describe the server-reported 24 h quota cooldown —
+        contract callers have been consuming since 2026-04-10 and must NOT
+        change shape.
+
+        Task #196 additively extends this with backoff fields so downstream
+        (Hub snapshot row, Telegram position card, FE bar) can surface why
+        the redeemer skipped a tick when the base cooldown says "inactive"
+        but we're still inside an exponential-backoff window:
+
+          - ``backoff_active``            (bool)
+          - ``backoff_remaining_seconds`` (int, 0 when inactive)
+          - ``consecutive_429_count``     (int, resets on non-429 success)
+        """
+        now = datetime.now(timezone.utc)
+        backoff_remaining = 0
+        backoff_active = self._in_backoff()
+        if backoff_active and self._backoff_until is not None:
+            backoff_remaining = max(
+                0, int((self._backoff_until - now).total_seconds())
+            )
+
+        base: dict
         if not self._rate_limit_until:
-            return {
+            base = {
                 "active": False,
                 "remaining_seconds": 0,
                 "resets_at": None,
                 "reason": "",
             }
-        now = datetime.now(timezone.utc)
-        return {
-            "active": self._in_cooldown(),
-            "remaining_seconds": max(
-                0, int((self._rate_limit_until - now).total_seconds())
-            ),
-            "resets_at": self._rate_limit_until.isoformat(),
-            "reason": self._rate_limit_reason,
-        }
+        else:
+            base = {
+                "active": self._in_cooldown(),
+                "remaining_seconds": max(
+                    0, int((self._rate_limit_until - now).total_seconds())
+                ),
+                "resets_at": self._rate_limit_until.isoformat(),
+                "reason": self._rate_limit_reason,
+            }
+        base["backoff_active"] = backoff_active
+        base["backoff_remaining_seconds"] = backoff_remaining
+        base["consecutive_429_count"] = int(self._consecutive_429)
+        return base
 
     def losses_due(self, interval_hours: int = 24) -> bool:
         if self._last_loss_sweep_at is None:
@@ -409,6 +465,10 @@ class PositionRedeemer:
         short so we don't starve ourselves on ambiguous errors. Always
         logs the transition so an operator can see exactly how long the
         cooldown will last.
+
+        Also trips exponential backoff (Task #196). The backoff is
+        layered on top of the server cooldown — whichever is longer
+        actually gates the next redeem attempt. See ``_trip_backoff``.
         """
         reset_seconds = _parse_reset_seconds(exc_str) or _DEFAULT_COOLDOWN_SECONDS
         now = datetime.now(timezone.utc)
@@ -422,6 +482,78 @@ class PositionRedeemer:
             parsed_from_error=bool(_parse_reset_seconds(exc_str)),
             reason_preview=exc_str[:120],
         )
+        # Increment consecutive 429 count + compute next backoff window.
+        self._trip_backoff()
+
+    # ── Exponential-backoff helpers (Task #196) ──────────────────────────────
+    #
+    # The server-reported cooldown (``_rate_limit_until``) tells us WHEN the
+    # Polymarket Relayer says our 24h quota will refresh. But even inside
+    # that window, each additional redeem call still burns 1 unit and still
+    # returns 429. To avoid shaving future-day quota on retries we ALSO
+    # track a per-session exponential backoff window.
+    #
+    # Reset rule: any successful non-429 redeem_position call resets
+    # ``_consecutive_429`` to 0 and clears ``_backoff_until``. See
+    # ``_clear_backoff_on_success``.
+
+    def _in_backoff(self) -> bool:
+        """True iff we are currently inside a backoff window.
+
+        Lazily clears expired state so callers never see stale deadlines.
+        """
+        if self._backoff_until is None:
+            return False
+        now = datetime.now(timezone.utc)
+        if now >= self._backoff_until:
+            # Window elapsed — clear, but keep ``_consecutive_429`` intact.
+            # The counter only resets on a SUCCESS, not on mere timeout,
+            # so repeated failures keep doubling.
+            self._backoff_until = None
+            return False
+        return True
+
+    def _trip_backoff(self) -> None:
+        """Increment the consecutive-429 counter and arm the next backoff.
+
+        Sleep duration = ``min(BASE * 2^(N-1), CAP)`` where N is the NEW
+        count after incrementing. So:
+          - 1st 429 → 30s
+          - 2nd 429 → 60s
+          - 3rd 429 → 2m
+          - …
+          - 7th 429+ → 30m (cap)
+        """
+        self._consecutive_429 += 1
+        # N>=1 here because we just incremented. 2^(N-1) starts at 1.
+        sleep_seconds = min(
+            _BACKOFF_CAP_SECONDS,
+            _BACKOFF_BASE_SECONDS * (2 ** (self._consecutive_429 - 1)),
+        )
+        now = datetime.now(timezone.utc)
+        self._backoff_until = now + timedelta(seconds=sleep_seconds)
+        self._log.warning(
+            "redeemer.backoff_tripped",
+            consecutive_429=self._consecutive_429,
+            sleep_seconds=sleep_seconds,
+            backoff_until=self._backoff_until.isoformat(),
+            cap_reached=(sleep_seconds >= _BACKOFF_CAP_SECONDS),
+        )
+
+    def _clear_backoff_on_success(self) -> None:
+        """Reset the consecutive-429 counter + clear the backoff window.
+
+        Called from ``redeem_position`` when the relayer returns a non-429
+        result (either success or a different error). Keeps the counter
+        sticky across timeouts so a real fix is required to reset.
+        """
+        if self._consecutive_429 > 0 or self._backoff_until is not None:
+            self._log.info(
+                "redeemer.backoff_cleared",
+                had_consecutive_429=self._consecutive_429,
+            )
+        self._consecutive_429 = 0
+        self._backoff_until = None
 
     async def connect(self) -> None:
         """Initialise web3 and Builder Relayer client."""
@@ -791,6 +923,36 @@ class PositionRedeemer:
                     pass
             return False
 
+        # ── Backoff gate (Task #196): skip if we're inside an exponential
+        # backoff window from a recent 429 but the server-reported
+        # cooldown has already drained. Returns False without consuming
+        # a relayer quota unit. This is the critical path: before this
+        # gate, every tick during cooldown burned an extra 429 unit
+        # against tomorrow's quota.
+        if self._in_backoff():
+            now = datetime.now(timezone.utc)
+            remaining = (
+                max(0, int((self._backoff_until - now).total_seconds()))
+                if self._backoff_until
+                else 0
+            )
+            self._log.info(
+                "redeemer.backoff_skip",
+                condition=condition_id[:20] + "...",
+                remaining_seconds=remaining,
+                consecutive_429=self._consecutive_429,
+            )
+            if self._attempts_repo is not None:
+                try:
+                    await self._attempts_repo.record(
+                        condition_id=condition_id,
+                        outcome="BACKOFF",
+                        error=f"backoff remaining={remaining}s N={self._consecutive_429}",
+                    )
+                except Exception:
+                    pass
+            return False
+
         # ── Stuck-position gate: skip condition_ids that keep failing ─────
         # Prevents hot-loops on a position that errors every sweep — e.g.
         # chain-level revert, malformed calldata, wrong indexSets. After
@@ -872,6 +1034,13 @@ class PositionRedeemer:
                 tx_hash=tx_hash,
             )
 
+            # Task #196: any non-429 completion resets the backoff window.
+            # Reaching the poll_until_state result means the relayer
+            # ACCEPTED the submit (no 429), regardless of whether on-chain
+            # settlement confirmed — so treat it as a successful "not
+            # rate-limited" exchange with the relayer.
+            self._clear_backoff_on_success()
+
             if self._attempts_repo is not None:
                 try:
                     await self._attempts_repo.record(
@@ -890,6 +1059,8 @@ class PositionRedeemer:
             if _is_rate_limit_error(exc_str):
                 # Trip global cooldown — every other pending redemption
                 # in this sweep will now short-circuit at `_in_cooldown()`.
+                # _trip_cooldown() also increments the backoff counter
+                # (Task #196) so repeated 429s double the skip window.
                 self._trip_cooldown(exc_str)
                 if self._attempts_repo is not None:
                     try:

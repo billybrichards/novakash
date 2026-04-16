@@ -833,7 +833,14 @@ class DBClient:
         daily_quota_limit: int,
         quota_used_today: int,
     ) -> None:
-        """Append a redeemer_state row capturing the current cooldown + quota."""
+        """Append a redeemer_state row capturing the current cooldown + quota.
+
+        Task #196 also records backoff visibility (``backoff_active``,
+        ``backoff_remaining_seconds``, ``consecutive_429_count``) when those
+        keys are present on ``cooldown``. Missing keys default to 0/False,
+        preserving backward compatibility with older callers that never
+        set them.
+        """
         if not self._pool:
             return
         resets_at = cooldown.get("resets_at") if cooldown else None
@@ -842,18 +849,23 @@ class DBClient:
                 resets_at = datetime.fromisoformat(resets_at.replace("Z", "+00:00"))
             except ValueError:
                 resets_at = None
+        cd = cooldown or {}
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO redeemer_state "
                 "(cooldown_active, cooldown_remaining_seconds, cooldown_resets_at, "
-                " cooldown_reason, daily_quota_limit, quota_used_today) "
-                "VALUES ($1, $2, $3, $4, $5, $6)",
-                bool((cooldown or {}).get("active")),
-                int((cooldown or {}).get("remaining_seconds") or 0),
+                " cooldown_reason, daily_quota_limit, quota_used_today, "
+                " backoff_active, backoff_remaining_seconds, consecutive_429_count) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                bool(cd.get("active")),
+                int(cd.get("remaining_seconds") or 0),
                 resets_at,
-                (cooldown or {}).get("reason") or "",
+                cd.get("reason") or "",
                 int(daily_quota_limit),
                 int(quota_used_today),
+                bool(cd.get("backoff_active")),
+                int(cd.get("backoff_remaining_seconds") or 0),
+                int(cd.get("consecutive_429_count") or 0),
             )
 
     async def count_redeems_today(self) -> int:

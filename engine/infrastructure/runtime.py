@@ -13,6 +13,7 @@ import asyncio
 import os
 import signal as _signal
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -133,6 +134,10 @@ class EngineRuntime:
         self._live_gate_alerted = False
         # Edge-detector for relayer cooldown TG alerts (Task 6).
         self._relayer_cooldown_active: bool = False
+        # Dedup timestamp for Task #198 pending-wins-overdue Telegram alert.
+        # The alert fires at most once per hour to avoid spamming when NegRisk
+        # auto-redeem is stuck — see _send_position_snapshot().
+        self._last_pending_overdue_alert_at: Optional[datetime] = None
 
         # ── Patch callbacks CompositionRoot left as None ─────────────────────
         # These reference EngineRuntime methods, so they can only be wired
@@ -3145,6 +3150,21 @@ class EngineRuntime:
                     await asyncio.sleep(REDEEM_INTERVAL)
                     continue
 
+                # Backoff early-exit (Task #196): if the server-reported
+                # cooldown has drained but we're still inside the exponential
+                # backoff window from a recent 429, skip this whole tick so
+                # we don't even attempt a redeem call. Each redeem attempt
+                # during 429 costs 1 quota unit against the next rolling
+                # window — exactly what this task is designed to prevent.
+                if cd_status.get("backoff_active"):
+                    log.info(
+                        "redeemer.backoff_skip",
+                        remaining_seconds=int(cd_status.get("backoff_remaining_seconds") or 0),
+                        consecutive_429=int(cd_status.get("consecutive_429_count") or 0),
+                    )
+                    await asyncio.sleep(REDEEM_INTERVAL)
+                    continue
+
                 manual_request = None
                 quota_used_today = 0
                 try:
@@ -3417,6 +3437,78 @@ class EngineRuntime:
             )
 
         await self._alerter.send_position_snapshot(snap)
+
+        # Task #198 — pending-wins-overdue alert.
+        # Fire when BOTH thresholds cross:
+        #   - any pending win has been waiting > 30 min since window close, AND
+        #   - aggregate pending USD > $30.
+        # Dedupe to at most once per 60 min so NegRisk slow-down doesn't spam
+        # Telegram. Fire-and-forget — a failed alert must not break the
+        # snapshot loop (that would hide the visibility issue entirely).
+        try:
+            await self._maybe_send_pending_overdue_alert(pending, snap)
+        except Exception as exc:
+            log.error(
+                "orchestrator.pending_overdue_alert_failed",
+                error=str(exc)[:200],
+            )
+
+    # ── Task #198: pending-wins-overdue alert ────────────────────────────────
+    _OVERDUE_AGE_SECONDS = 30 * 60   # 30 min — single-position threshold
+    _OVERDUE_TOTAL_USD = 30.0        # $30 — aggregate pending value threshold
+    _OVERDUE_DEDUP_SECONDS = 60 * 60  # 60 min — at-most-once-per-hour
+
+    async def _maybe_send_pending_overdue_alert(
+        self,
+        pending: list[dict],
+        snap: dict,
+    ) -> None:
+        """Fire Telegram overdue alert if both thresholds AND dedup pass.
+
+        Thresholds (Task #198):
+          - ≥1 pending win with ``overdue_seconds > 1800`` (30 min)
+          - ``pending_total_usd > $30``
+
+        Dedup: ``self._last_pending_overdue_alert_at`` is set on fire and
+        suppresses subsequent sends for 60 min. When both thresholds are
+        crossed continuously, the operator still gets hourly reminders,
+        but a 2-min recovery blip won't reset the clock prematurely.
+        """
+        if not self._alerter:
+            return
+        overdue_positions = [
+            w for w in (pending or [])
+            if int(w.get("overdue_seconds", 0)) > self._OVERDUE_AGE_SECONDS
+        ]
+        if not overdue_positions:
+            return
+        pending_total = float(snap.get("pending_total_usd", 0.0) or 0.0)
+        if pending_total <= self._OVERDUE_TOTAL_USD:
+            return
+
+        now = datetime.now(timezone.utc)
+        last = self._last_pending_overdue_alert_at
+        if last is not None and (now - last).total_seconds() < self._OVERDUE_DEDUP_SECONDS:
+            # Within the dedup window — log but don't resend. The debug log
+            # is cheap visibility for ops ("alert already suppressed").
+            log.debug(
+                "orchestrator.pending_overdue_alert_suppressed",
+                seconds_since_last=int((now - last).total_seconds()),
+                overdue_count=len(overdue_positions),
+                pending_total_usd=round(pending_total, 2),
+            )
+            return
+
+        await self._alerter.send_pending_overdue(
+            pending_wins=overdue_positions,
+            pending_total_usd=pending_total,
+        )
+        self._last_pending_overdue_alert_at = now
+        log.info(
+            "orchestrator.pending_overdue_alert_sent",
+            overdue_count=len(overdue_positions),
+            pending_total_usd=round(pending_total, 2),
+        )
 
     # ── Playwright Loops ────────────────────────────────────────────────────
 

@@ -1072,6 +1072,71 @@ class TelegramAlerter:
             self._log.warning("telegram.send_relayer_resumed_failed", error=str(exc)[:100])
             return None
 
+    async def send_pending_overdue(
+        self,
+        pending_wins: list[dict],
+        pending_total_usd: float,
+    ) -> Optional[int]:
+        """⏰ *PENDING WINS OVERDUE* — NegRisk auto-redeem is running slow.
+
+        Task #198 (P6 MED) — fires when both:
+          - any single pending win has ``overdue_seconds > 1800`` (30 min), AND
+          - aggregate ``pending_total_usd > $30``.
+
+        These two thresholds together catch the "NegRisk cron is stuck" case
+        before the operator notices from the position card. The caller is
+        responsible for dedup (at-most-once per hour) — this helper just
+        renders and sends.
+
+        Payload: up to 10 overdue positions ordered newest-first-stuck (so
+        oldest overdue appears at the top). Each row shows short
+        condition_id, USD value, and age-since-resolution.
+        """
+        try:
+            from alerts.positions import _fmt_age
+
+            # Filter + sort so the alert content matches the alert condition.
+            # Caller already passes pending_wins with overdue_seconds set by
+            # pending_wins_summary(); we re-sort newest-first here so the
+            # rendered list is stable regardless of caller order.
+            overdue = [
+                w for w in pending_wins
+                if int(w.get("overdue_seconds", 0)) > 1800
+            ]
+            overdue.sort(key=lambda w: int(w.get("overdue_seconds", 0)), reverse=True)
+            shown = overdue[:10]
+
+            lines = [
+                "⏰ *PENDING WINS OVERDUE*",
+                "━━━━━━━━━━━━━━━━━━━━━━",
+                (
+                    f"`{len(overdue)}` overdue (>30min) | "
+                    f"pending: `${pending_total_usd:.2f}`"
+                ),
+                "",
+            ]
+            for w in shown:
+                cid = str(w.get("condition_id", ""))
+                short = (cid[:10] + "…") if len(cid) > 12 else (cid or "?")
+                value = float(w.get("value", 0.0) or 0.0)
+                age = _fmt_age(int(w.get("overdue_seconds", 0)))
+                lines.append(f"  • `{short}` `${value:.2f}` overdue `{age}`")
+            if len(overdue) > len(shown):
+                lines.append(f"  …+{len(overdue) - len(shown)} more")
+            lines.append("")
+            lines.append(
+                "NegRisk auto-redeem is slow — quota intact, monitor only."
+            )
+            text = "\n".join(lines)
+            msg_id = await self._send_with_id(text)
+            await self._log_notification(
+                "pending_overdue", text, telegram_message_id=msg_id
+            )
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_pending_overdue_failed", error=str(exc)[:100])
+            return None
+
     async def send_strategy_missed_window(
         self,
         strategy_id: str,
