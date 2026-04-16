@@ -719,15 +719,25 @@ class EngineRuntime:
                 self._tasks.append(
                     asyncio.create_task(self._redeemer_loop(), name="redeemer:sweep")
                 )
-                self._tasks.append(
-                    asyncio.create_task(
-                        self._position_snapshot_loop(),
-                        name="position_snapshot",
-                    )
-                )
                 log.info("orchestrator.redeemer_started")
             except Exception as e:
                 log.error("orchestrator.redeemer_start_failed", error=str(e))
+
+        # Position snapshot loop — runs in BOTH paper and live mode so the
+        # operator always has ground-truth wallet + pending visibility,
+        # even in paper mode (where stale caches are equally dangerous).
+        # `_send_position_snapshot` no-ops cleanly if redeemer is None.
+        if self._redeemer is not None:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._position_snapshot_loop(),
+                    name="position_snapshot",
+                )
+            )
+            log.info(
+                "orchestrator.position_snapshot_loop_started",
+                paper_mode=self._settings.paper_mode,
+            )
 
         # 9. Playwright automation (balance / screenshot only — redeem handled by redeemer)
         if self._playwright:
@@ -2215,7 +2225,13 @@ class EngineRuntime:
                                         error=str(exc)[:100],
                                     )
 
-                            # Start redeemer if switching TO live
+                            # Start redeemer if switching TO live — guard against
+                            # double-registration on repeated paper→live flips.
+                            # Prior bug: each flip appended new tasks without
+                            # cancelling prior ones; N flips = N concurrent
+                            # redeemer + snapshot loops racing to write
+                            # poly_pending_wins. Now we skip any loop already
+                            # running under its canonical task name.
                             if not want_paper and self._redeemer:
                                 try:
                                     self._redeemer._paper_mode = False
@@ -2226,16 +2242,25 @@ class EngineRuntime:
                                     except Exception:
                                         pass
                                     await self._redeemer.connect()
-                                    self._tasks.append(
-                                        asyncio.create_task(
-                                            self._redeemer_loop(), name="redeemer:sweep"
+                                    live_names = {
+                                        t.get_name()
+                                        for t in self._tasks
+                                        if not t.done()
+                                    }
+                                    if "redeemer:sweep" not in live_names:
+                                        self._tasks.append(
+                                            asyncio.create_task(
+                                                self._redeemer_loop(),
+                                                name="redeemer:sweep",
+                                            )
                                         )
-                                    )
-                                    self._tasks.append(
-                                        asyncio.create_task(
-                                            self._position_snapshot_loop(), name="position_snapshot"
+                                    if "position_snapshot" not in live_names:
+                                        self._tasks.append(
+                                            asyncio.create_task(
+                                                self._position_snapshot_loop(),
+                                                name="position_snapshot",
+                                            )
                                         )
-                                    )
                                     log.info(
                                         "orchestrator.redeemer_started_on_mode_switch"
                                     )
@@ -3272,25 +3297,44 @@ class EngineRuntime:
                                 f"{failed_lines}"
                                 f"{cooldown_line}"
                             )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        # Observability path — loss of this alert hides the ONLY
+                        # signal that a sweep happened. ERROR-log so Sentry /
+                        # log alerting catches it instead of silently dropping.
+                        # (2026-04-16 incident taught us: `except: pass` in the
+                        # observability layer hides bugs everywhere else.)
+                        log.error(
+                            "orchestrator.redeem_sweep_alert_failed",
+                            error=str(exc)[:200],
+                        )
 
                 if result.get("redeemed", 0) > 0:
                     try:
                         await self._db.write_redeem_event(result)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.error(
+                            "orchestrator.write_redeem_event_failed",
+                            error=str(exc)[:200],
+                        )
                     try:
                         await self._alerter.send_redeem_alert(result)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.error(
+                            "orchestrator.send_redeem_alert_failed",
+                            error=str(exc)[:200],
+                        )
 
                 # After every sweep — send a fresh snapshot so the user sees the
-                # pending-wins list shrink in real time.
+                # pending-wins list shrink in real time. If this fails the sweep
+                # still completed — do NOT let observability crash the operation,
+                # but do NOT hide the failure either.
                 try:
                     await self._send_position_snapshot()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.error(
+                        "orchestrator.post_sweep_snapshot_failed",
+                        error=str(exc)[:200],
+                    )
 
             except Exception as e:
                 log.error("orchestrator.redeemer_loop.error", error=str(e))

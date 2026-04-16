@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 import structlog
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth.jwt import TokenData
@@ -35,6 +36,20 @@ from db.database import get_session
 log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/positions", tags=["positions"])
+
+
+def _is_missing_table_error(exc: Exception) -> bool:
+    """True when the underlying driver says 'relation does not exist'.
+
+    Postgres (asyncpg) returns `UndefinedTableError`, wrapped by SQLAlchemy
+    as `ProgrammingError` with pgcode '42P01'. Matching on pgcode is more
+    precise than string-sniffing and survives asyncpg version changes.
+    """
+    if not isinstance(exc, ProgrammingError):
+        return False
+    orig = getattr(exc, "orig", None)
+    sqlstate = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return sqlstate == "42P01"
 
 
 @router.get("/snapshot")
@@ -60,6 +75,12 @@ async def get_snapshot(
       quota_used_today   — calls used so far today
       quota_remaining    — max(0, limit - used)
     """
+    # Track which source tables are absent so the frontend can surface
+    # "migration not applied" visibly instead of rendering all-zeros as if
+    # the system were healthy. (TimesFM incident 2026-04-16 taught us:
+    # silent fallback indistinguishable from healthy state = hidden outage.)
+    missing_tables: list[str] = []
+
     # ─── Wallet ──────────────────────────────────────────────────────────────
     wallet_usdc = 0.0
     try:
@@ -73,8 +94,15 @@ async def get_snapshot(
         ).mappings().first()
         if wallet_row:
             wallet_usdc = float(wallet_row["usdc_balance"])
-    except Exception as exc:  # noqa: BLE001 — defensive: missing table → zero
-        log.warning("positions.wallet_query_failed", error=str(exc)[:120])
+    except Exception as exc:  # noqa: BLE001
+        if _is_missing_table_error(exc):
+            missing_tables.append("poly_wallet_balance")
+            log.warning("positions.wallet_table_missing")
+        else:
+            log.error(
+                "positions.wallet_query_failed", error=str(exc)[:200]
+            )
+            raise  # non-schema DB errors must propagate to a 500
 
     # ─── Pending wins (Task 9 will create this table) ────────────────────────
     pending: list[dict] = []
@@ -92,7 +120,12 @@ async def get_snapshot(
         ).mappings().all()
         pending = [_serialise_pending_row(r) for r in pending_rows]
     except Exception as exc:  # noqa: BLE001
-        log.warning("positions.pending_query_failed", error=str(exc)[:120])
+        if _is_missing_table_error(exc):
+            missing_tables.append("poly_pending_wins")
+            log.warning("positions.pending_table_missing")
+        else:
+            log.error("positions.pending_query_failed", error=str(exc)[:200])
+            raise
 
     pending_total = round(sum(float(r["value"]) for r in pending), 2)
     overdue_count = sum(
@@ -116,7 +149,14 @@ async def get_snapshot(
         if rs_row:
             rs = dict(rs_row)
     except Exception as exc:  # noqa: BLE001
-        log.warning("positions.redeemer_state_query_failed", error=str(exc)[:120])
+        if _is_missing_table_error(exc):
+            missing_tables.append("redeemer_state")
+            log.warning("positions.redeemer_state_table_missing")
+        else:
+            log.error(
+                "positions.redeemer_state_query_failed", error=str(exc)[:200]
+            )
+            raise
 
     resets_at_raw = rs.get("cooldown_resets_at")
     cooldown = {
@@ -145,6 +185,14 @@ async def get_snapshot(
         "daily_quota_limit": daily_quota_limit,
         "quota_used_today": quota_used_today,
         "quota_remaining": quota_remaining,
+        # _meta carries "the data you see is NOT trustworthy because X".
+        # Frontend reads _meta.missing_tables to show a red "migration
+        # missing" banner instead of pretending the all-zeros payload is
+        # healthy. data_stale=true whenever ANY source table is missing.
+        "_meta": {
+            "missing_tables": missing_tables,
+            "data_stale": len(missing_tables) > 0,
+        },
     }
 
 

@@ -26,11 +26,26 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import ProgrammingError
 
 from api.positions import router
 from auth.jwt import TokenData
 from auth.middleware import get_current_user
 from db.database import get_session
+
+
+class _FakeUndefinedTable(Exception):
+    """Mimics asyncpg.UndefinedTableError: has a `sqlstate` attr = '42P01'."""
+
+    sqlstate = "42P01"
+
+
+def _missing_table_error(table_name: str) -> ProgrammingError:
+    """Build a SQLAlchemy ProgrammingError whose `.orig` reports pgcode 42P01,
+    the real shape raised by Postgres when a SELECT hits a missing relation.
+    """
+    orig = _FakeUndefinedTable(f'relation "{table_name}" does not exist')
+    return ProgrammingError("SELECT ...", params={}, orig=orig)
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -66,7 +81,11 @@ def _make_session(*, wallet=None, pending=None, redeemer=None, raise_on=None):
         stage = call_order[idx] if idx < len(call_order) else "extra"
 
         if stage in raise_on:
-            raise RuntimeError(f"relation does not exist: {stage}")
+            # Match the real shape: SQLAlchemy ProgrammingError with
+            # pgcode 42P01 (undefined_table). The endpoint discriminates
+            # between "missing table" (degraded 200 + _meta) and other
+            # DB errors (500).
+            raise _missing_table_error(stage)
 
         result = MagicMock()
         rows = fixtures.get(stage, [])
@@ -168,9 +187,12 @@ def test_snapshot_returns_expected_shape_with_data():
 
 def test_snapshot_handles_all_tables_missing():
     """Endpoint must NOT 500 when poly_wallet_balance / poly_pending_wins /
-    redeemer_state don't exist yet (Task 9 creates them). Defensive
-    try/except inside the handler converts the DB error into zero/empty
-    defaults so the Telegram top bar can still render."""
+    redeemer_state don't exist yet. Per-table queries discriminate between
+    "missing table" (pgcode 42P01 → degraded 200 with _meta sentinel) and
+    other DB errors (propagate to 500). A degraded payload surfaces the
+    absent tables under `_meta.missing_tables` so the frontend can render
+    a red "migration missing" banner instead of an all-zero "healthy" UI.
+    """
     session = _make_session(raise_on={"wallet", "pending", "redeemer"})
     client = TestClient(_build_app(session))
 
@@ -198,9 +220,20 @@ def test_snapshot_handles_all_tables_missing():
     assert body["quota_used_today"] == 0
     assert body["quota_remaining"] == 100
 
+    # _meta must flag the degraded state so the frontend doesn't render
+    # all-zeros as if the system were healthy (2026-04-16 TimesFM lesson).
+    assert body["_meta"]["data_stale"] is True
+    assert set(body["_meta"]["missing_tables"]) == {
+        "poly_wallet_balance",
+        "poly_pending_wins",
+        "redeemer_state",
+    }
+
 
 def test_snapshot_handles_empty_tables():
-    """Tables exist but contain no rows — should still return all keys."""
+    """Tables exist but contain no rows — should still return all keys and
+    NOT flag data_stale (the tables are just genuinely empty, not missing).
+    """
     session = _make_session(wallet=None, pending=[], redeemer=None)
     client = TestClient(_build_app(session))
 
@@ -215,3 +248,59 @@ def test_snapshot_handles_empty_tables():
     assert body["pending_count"] == 0
     assert body["effective_balance"] == 0.0
     assert body["cooldown"]["active"] is False
+
+    # Empty != missing — tables exist, no degraded flag.
+    assert body["_meta"]["data_stale"] is False
+    assert body["_meta"]["missing_tables"] == []
+
+
+def test_snapshot_propagates_non_schema_db_errors():
+    """If a query fails for a reason OTHER than missing-table (auth,
+    network, column drift), we MUST 500 rather than quietly returning
+    zeros. Narrower exception handling prevents the TimesFM-shaped
+    "silent fallback indistinguishable from healthy" trap.
+    """
+    # Use a custom session whose execute raises a generic RuntimeError.
+    session = MagicMock()
+
+    async def fake_execute(*_a, **_k):
+        raise RuntimeError("connection refused")
+
+    session.execute = AsyncMock(side_effect=fake_execute)
+    client = TestClient(_build_app(session), raise_server_exceptions=False)
+
+    res = client.get("/api/positions/snapshot")
+    assert res.status_code == 500, res.text
+
+
+def test_snapshot_partial_table_missing():
+    """Only `poly_pending_wins` missing — wallet + redeemer_state present.
+    Frontend still gets real wallet + cooldown values; only pending goes
+    to zero. _meta lists exactly one missing table.
+    """
+    now = datetime.now(timezone.utc)
+    session = _make_session(
+        wallet={"usdc_balance": 50.0},
+        pending=[],
+        redeemer={
+            "cooldown_active": False,
+            "cooldown_remaining_seconds": 0,
+            "cooldown_resets_at": None,
+            "cooldown_reason": "",
+            "daily_quota_limit": 100,
+            "quota_used_today": 3,
+        },
+        raise_on={"pending"},
+    )
+    client = TestClient(_build_app(session))
+
+    res = client.get("/api/positions/snapshot")
+    assert res.status_code == 200, res.text
+    body = res.json()
+
+    assert body["wallet_usdc"] == 50.0
+    assert body["pending_wins"] == []
+    assert body["pending_count"] == 0
+    assert body["quota_used_today"] == 3
+    assert body["_meta"]["data_stale"] is True
+    assert body["_meta"]["missing_tables"] == ["poly_pending_wins"]
