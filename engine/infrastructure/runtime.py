@@ -131,6 +131,8 @@ class EngineRuntime:
         self._window_state_repo = None
         self._trade_repo_adapter = None
         self._live_gate_alerted = False
+        # Edge-detector for relayer cooldown TG alerts (Task 6).
+        self._relayer_cooldown_active: bool = False
 
         # ── Patch callbacks CompositionRoot left as None ─────────────────────
         # These reference EngineRuntime methods, so they can only be wired
@@ -3062,6 +3064,47 @@ class EngineRuntime:
         REDEEM_INTERVAL = 900
         while not self._shutdown_event.is_set():
             try:
+                # Edge-detect relayer cooldown state changes — one-shot alerts only.
+                # Runs BEFORE the early-exit so the leading edge fires the cycle AFTER
+                # the sweep that tripped it, and the trailing edge fires when cooldown
+                # clears (one iteration before the sweep resumes normal operation).
+                if self._redeemer:
+                    cd = self._redeemer.cooldown_status()
+                    was_active, now_active = self._relayer_cooldown_active, bool(cd.get("active"))
+                    if now_active and not was_active and self._alerter:
+                        quota_used = (
+                            await self._db.count_redeems_today()
+                            if hasattr(self._db, "count_redeems_today")
+                            else 0
+                        )
+                        quota_left = max(0, self._redeemer.daily_quota_limit - quota_used)
+                        try:
+                            await self._alerter.send_relayer_cooldown(
+                                cd, quota_left, self._redeemer.daily_quota_limit
+                            )
+                        except Exception as exc:
+                            log.warning(
+                                "orchestrator.relayer_cooldown_alert_failed",
+                                error=str(exc)[:120],
+                            )
+                    elif was_active and not now_active and self._alerter:
+                        quota_used = (
+                            await self._db.count_redeems_today()
+                            if hasattr(self._db, "count_redeems_today")
+                            else 0
+                        )
+                        quota_left = max(0, self._redeemer.daily_quota_limit - quota_used)
+                        try:
+                            await self._alerter.send_relayer_resumed(
+                                quota_left, self._redeemer.daily_quota_limit
+                            )
+                        except Exception as exc:
+                            log.warning(
+                                "orchestrator.relayer_resumed_alert_failed",
+                                error=str(exc)[:120],
+                            )
+                    self._relayer_cooldown_active = now_active
+
                 # Cooldown early-exit: skip entire cycle (incl. cache-update scan)
                 # while in 429 cooldown. Redeemer internals already guard every
                 # call site; this prevents extra data-api hits and log noise.

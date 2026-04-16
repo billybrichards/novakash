@@ -1027,6 +1027,51 @@ class TelegramAlerter:
             self._log.warning("telegram.send_position_snapshot_failed", error=str(exc)[:100])
             return None
 
+    async def send_relayer_cooldown(
+        self,
+        cooldown: dict,
+        quota_remaining: int,
+        daily_quota_limit: int,
+    ) -> Optional[int]:
+        """🚫 Builder-relayer 429 quota tripped — fired once on the leading edge."""
+        try:
+            from alerts.positions import _fmt_age
+            text = (
+                f"🚫 *RELAYER COOLDOWN* — paused\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Resets in: `{_fmt_age(int(cooldown.get('remaining_seconds', 0)))}`\n"
+                f"Resets at: `{cooldown.get('resets_at') or '?'}`\n"
+                f"Quota: `{quota_remaining}/{daily_quota_limit}`\n"
+                f"Reason: `{(cooldown.get('reason') or '?')[:80]}`\n"
+                f"Pending wins will redeem when cooldown clears."
+            )
+            msg_id = await self._send_with_id(text)
+            await self._log_notification("relayer_cooldown", text, telegram_message_id=msg_id)
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_relayer_cooldown_failed", error=str(exc)[:100])
+            return None
+
+    async def send_relayer_resumed(
+        self,
+        quota_remaining: int,
+        daily_quota_limit: int,
+    ) -> Optional[int]:
+        """✅ Fired once on the trailing edge when cooldown clears."""
+        try:
+            text = (
+                f"✅ *RELAYER RESUMED*\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Quota: `{quota_remaining}/{daily_quota_limit}`\n"
+                f"Catching up pending wins on next sweep."
+            )
+            msg_id = await self._send_with_id(text)
+            await self._log_notification("relayer_resumed", text, telegram_message_id=msg_id)
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_relayer_resumed_failed", error=str(exc)[:100])
+            return None
+
     async def send_trade_result(
         self,
         order,
