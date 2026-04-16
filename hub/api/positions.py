@@ -62,7 +62,7 @@ async def get_snapshot(
 
     Shape (13 keys):
       now_utc            — ISO timestamp the snapshot was built at
-      wallet_usdc        — latest USDC balance from poly_wallet_balance
+      wallet_usdc        — latest USDC balance from wallet_snapshots
       pending_wins       — list of {condition_id, value, window_end_utc, overdue_seconds}
       pending_count      — len(pending_wins)
       pending_total_usd  — sum of pending_wins[].value
@@ -82,21 +82,26 @@ async def get_snapshot(
     missing_tables: list[str] = []
 
     # ─── Wallet ──────────────────────────────────────────────────────────────
+    # wallet_snapshots is the canonical wallet table — written every
+    # 90 s by the CLOB reconciler loop (engine.reconciliation). PR #219
+    # originally referenced `poly_wallet_balance`, which doesn't exist
+    # and is never written — the endpoint returned 500 on any request
+    # until this fix. Daisy 2026-04-16.
     wallet_usdc = 0.0
     try:
         wallet_row = (
             await session.execute(
                 text(
-                    "SELECT usdc_balance FROM poly_wallet_balance "
-                    "ORDER BY observed_at DESC LIMIT 1"
+                    "SELECT balance_usdc FROM wallet_snapshots "
+                    "ORDER BY recorded_at DESC LIMIT 1"
                 )
             )
         ).mappings().first()
         if wallet_row:
-            wallet_usdc = float(wallet_row["usdc_balance"])
+            wallet_usdc = float(wallet_row["balance_usdc"])
     except Exception as exc:  # noqa: BLE001
         if _is_missing_table_error(exc):
-            missing_tables.append("poly_wallet_balance")
+            missing_tables.append("wallet_snapshots")
             log.warning("positions.wallet_table_missing")
         else:
             log.error(

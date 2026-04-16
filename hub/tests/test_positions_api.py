@@ -136,7 +136,8 @@ EXPECTED_KEYS = (
 def test_snapshot_returns_expected_shape_with_data():
     """All 12 spec keys plus now_utc must be present and typed correctly."""
     now = datetime.now(timezone.utc)
-    wallet = {"usdc_balance": 123.45}
+    # Real canonical wallet table column name (balance_usdc, not usdc_balance).
+    wallet = {"balance_usdc": 123.45}
     pending = [
         {
             "condition_id": "0xaaa",
@@ -224,7 +225,7 @@ def test_snapshot_handles_all_tables_missing():
     # all-zeros as if the system were healthy (2026-04-16 TimesFM lesson).
     assert body["_meta"]["data_stale"] is True
     assert set(body["_meta"]["missing_tables"]) == {
-        "poly_wallet_balance",
+        "wallet_snapshots",
         "poly_pending_wins",
         "redeemer_state",
     }
@@ -280,7 +281,7 @@ def test_snapshot_partial_table_missing():
     """
     now = datetime.now(timezone.utc)
     session = _make_session(
-        wallet={"usdc_balance": 50.0},
+        wallet={"balance_usdc": 50.0},
         pending=[],
         redeemer={
             "cooldown_active": False,
