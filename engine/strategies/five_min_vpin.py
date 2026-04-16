@@ -91,6 +91,47 @@ V81_ENTRY_CAPS: dict[int, float] = {
 }
 
 
+def _v34_surface_fields(surface) -> dict:
+    """Extract v3/v4 surface fields into a dict for write_window_snapshot.
+
+    These are denormalised into window_snapshots columns so analysts can
+    query without extracting from window_evaluation_traces.surface_json.
+    Returns {} when surface is None (legacy call paths).
+
+    v4.4.0 (2026-04-16): added after an audit found 13 v3/v4 columns
+    defined in the schema but never populated by the writer. Data already
+    flows to window_evaluation_traces.surface_json (42k+ rows/24h); this
+    just makes it queryable as first-class columns.
+    """
+    if surface is None:
+        return {}
+    return {
+        "sub_signal_elm": getattr(surface, "v3_sub_elm", None),
+        "sub_signal_cascade": getattr(surface, "v3_sub_cascade", None),
+        "sub_signal_taker": getattr(surface, "v3_sub_taker", None),
+        "sub_signal_vpin": getattr(surface, "v3_sub_vpin", None),
+        "sub_signal_momentum": getattr(surface, "v3_sub_momentum", None),
+        "sub_signal_oi": getattr(surface, "v3_sub_oi", None),
+        "sub_signal_funding": getattr(surface, "v3_sub_funding", None),
+        "regime_confidence": getattr(surface, "v4_regime_confidence", None),
+        "regime_persistence": getattr(surface, "v4_regime_persistence", None),
+        "strategy_conviction": getattr(surface, "v4_conviction", None),
+        "strategy_conviction_score": getattr(surface, "v4_conviction_score", None),
+        "consensus_safe_to_trade": getattr(
+            surface, "v4_consensus_safe_to_trade", None
+        ),
+        "consensus_agreement_score": getattr(
+            surface, "v4_consensus_agreement_score", None
+        ),
+        "consensus_divergence_bps": getattr(
+            surface, "v4_consensus_max_divergence_bps", None
+        ),
+        "macro_bias": getattr(surface, "v4_macro_bias", None),
+        "macro_direction_gate": getattr(surface, "v4_macro_direction_gate", None),
+        "macro_size_modifier": getattr(surface, "v4_macro_size_modifier", None),
+    }
+
+
 @dataclass
 class FiveMinSignal:
     """Signal for 5-minute trading decision."""

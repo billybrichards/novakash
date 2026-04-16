@@ -310,3 +310,192 @@ class TestRegistryEvaluate:
         )
 
         assert execute_uc.calls == 2
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# v4.4.0: surface-field persistence (registry → db.update_window_surface_fields)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_v34_surface_fields_extraction():
+    """Helper extracts v3/v4 fields from FullDataSurface into the column dict."""
+    from strategies.five_min_vpin import _v34_surface_fields
+
+    surface = _make_surface(
+        v3_sub_elm=-0.6,
+        v3_sub_cascade=-1.0,
+        v3_sub_taker=0.2,
+        v3_sub_vpin=0.5,
+        v3_sub_momentum=-0.1,
+        v3_sub_oi=0.05,
+        v3_sub_funding=-0.3,
+        v4_regime="risk_off",
+        v4_regime_confidence=0.9,
+        v4_conviction="HIGH",
+        v4_conviction_score=0.85,
+        v4_consensus_safe_to_trade=False,
+        v4_consensus_agreement_score=0.4,
+        v4_consensus_max_divergence_bps=18.0,
+        v4_macro_bias="NEUTRAL",
+        v4_macro_direction_gate="ALLOW_ALL",
+        v4_macro_size_modifier=1.0,
+    )
+
+    fields = _v34_surface_fields(surface)
+
+    # Subset of expected mappings
+    assert fields["sub_signal_elm"] == -0.6
+    assert fields["sub_signal_cascade"] == -1.0
+    assert fields["strategy_conviction"] == "HIGH"
+    assert fields["strategy_conviction_score"] == 0.85
+    assert fields["consensus_safe_to_trade"] is False
+    assert fields["consensus_agreement_score"] == 0.4
+    assert fields["consensus_divergence_bps"] == 18.0
+    assert fields["macro_bias"] == "NEUTRAL"
+
+
+def test_v34_surface_fields_none_surface():
+    """Helper returns {} when surface is None (legacy call path safety)."""
+    from strategies.five_min_vpin import _v34_surface_fields
+
+    assert _v34_surface_fields(None) == {}
+
+
+class TestRegistrySurfacePersistence:
+    """Registry should call db.update_window_surface_fields when db is wired."""
+
+    @pytest.mark.asyncio
+    async def test_write_window_trace_invokes_db_surface_writer(self, tmp_path):
+        from unittest.mock import MagicMock, AsyncMock
+        import asyncio
+
+        yaml_path = tmp_path / "surf_test.yaml"
+        yaml_path.write_text(
+            yaml.dump(
+                {
+                    "name": "surf_test",
+                    "version": "1.0.0",
+                    "mode": "GHOST",
+                    "gates": [],
+                    "sizing": {"type": "fixed_kelly", "fraction": 0.025},
+                }
+            )
+        )
+
+        mgr = DataSurfaceManager(v4_base_url="http://fake")
+        mock_trace = MagicMock()
+        mock_trace.write_window_evaluation_trace = AsyncMock()
+        mock_trace.write_gate_check_traces = AsyncMock()
+
+        mock_db = MagicMock()
+        mock_db.update_window_surface_fields = AsyncMock()
+
+        registry = StrategyRegistry(
+            str(tmp_path),
+            mgr,
+            trace_repo=mock_trace,
+            db=mock_db,
+        )
+        registry.load_all()
+
+        surface = _make_surface(
+            v3_sub_elm=-0.7,
+            v4_conviction="MEDIUM",
+        )
+
+        registry._write_window_trace(surface)
+        # Yield so the fire-and-forget asyncio tasks actually run
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        mock_db.update_window_surface_fields.assert_awaited_once()
+        call = mock_db.update_window_surface_fields.await_args
+        assert call.kwargs["asset"] == "BTC"
+        assert call.kwargs["window_ts"] == surface.window_ts
+        assert call.kwargs["surface_fields"]["sub_signal_elm"] == -0.7
+        assert call.kwargs["surface_fields"]["strategy_conviction"] == "MEDIUM"
+
+    @pytest.mark.asyncio
+    async def test_write_window_trace_skips_db_when_all_fields_none(self, tmp_path):
+        """Don't fire the DB write when every v3/v4 field is None (no-op surface)."""
+        from unittest.mock import MagicMock, AsyncMock
+        import asyncio
+
+        yaml_path = tmp_path / "surf_null.yaml"
+        yaml_path.write_text(
+            yaml.dump(
+                {
+                    "name": "surf_null",
+                    "version": "1.0.0",
+                    "mode": "GHOST",
+                    "gates": [],
+                    "sizing": {"type": "fixed_kelly", "fraction": 0.025},
+                }
+            )
+        )
+        mgr = DataSurfaceManager(v4_base_url="http://fake")
+        mock_trace = MagicMock()
+        mock_trace.write_window_evaluation_trace = AsyncMock()
+        mock_db = MagicMock()
+        mock_db.update_window_surface_fields = AsyncMock()
+
+        registry = StrategyRegistry(
+            str(tmp_path), mgr, trace_repo=mock_trace, db=mock_db
+        )
+        registry.load_all()
+
+        surface = _make_surface(
+            v3_sub_elm=None,
+            v3_sub_cascade=None,
+            v3_sub_taker=None,
+            v3_sub_vpin=None,
+            v3_sub_momentum=None,
+            v3_sub_oi=None,
+            v3_sub_funding=None,
+            v4_regime_confidence=None,
+            v4_regime_persistence=None,
+            v4_conviction=None,
+            v4_conviction_score=None,
+            v4_consensus_safe_to_trade=None,
+            v4_consensus_agreement_score=None,
+            v4_consensus_max_divergence_bps=None,
+            v4_macro_bias=None,
+            v4_macro_direction_gate=None,
+            v4_macro_size_modifier=None,
+        )
+        registry._write_window_trace(surface)
+        await asyncio.sleep(0)
+
+        mock_db.update_window_surface_fields.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_write_window_trace_no_db_is_noop(self, tmp_path):
+        """When db is None the surface-fields path silently skips."""
+        from unittest.mock import MagicMock, AsyncMock
+        import asyncio
+
+        yaml_path = tmp_path / "surf_nodb.yaml"
+        yaml_path.write_text(
+            yaml.dump(
+                {
+                    "name": "surf_nodb",
+                    "version": "1.0.0",
+                    "mode": "GHOST",
+                    "gates": [],
+                    "sizing": {"type": "fixed_kelly", "fraction": 0.025},
+                }
+            )
+        )
+        mgr = DataSurfaceManager(v4_base_url="http://fake")
+        mock_trace = MagicMock()
+        mock_trace.write_window_evaluation_trace = AsyncMock()
+
+        registry = StrategyRegistry(
+            str(tmp_path), mgr, trace_repo=mock_trace, db=None
+        )
+        registry.load_all()
+
+        surface = _make_surface(v3_sub_elm=-0.5)
+        # Should not raise — db=None path just skips
+        registry._write_window_trace(surface)
+        await asyncio.sleep(0)

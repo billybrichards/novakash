@@ -117,6 +117,7 @@ class StrategyRegistry:
         alerter: Any = None,
         decision_repo: Any = None,
         trace_repo: Any = None,
+        db: Any = None,
     ):
         self._config_dir = Path(config_dir)
         self._data_surface = data_surface
@@ -124,6 +125,12 @@ class StrategyRegistry:
         self._alerter = alerter
         self._decision_repo = decision_repo  # PgStrategyDecisionRepository
         self._trace_repo = trace_repo
+        # v4.4.0: optional db handle — lets registry upsert v3/v4 surface
+        # fields onto window_snapshots rows so analysts can query the
+        # denormalised columns without JSONB extraction from
+        # window_evaluation_traces.surface_json. Stays None when not wired
+        # (tests, legacy composition paths) — writer is a no-op then.
+        self._db = db
         self._configs: dict[str, StrategyConfig] = {}
         self._pipelines: dict[str, list[Gate]] = {}
         self._hooks: dict[str, dict[str, Callable]] = {}
@@ -469,6 +476,33 @@ class StrategyRegistry:
         task.add_done_callback(
             self._log_async_write_error("registry.window_trace_write_error")
         )
+
+        # v4.4.0: also upsert denormalised v3/v4 columns into window_snapshots
+        # so SQL analysis doesn't need JSONB extraction. Fire-and-forget.
+        if self._db is not None and hasattr(
+            self._db, "update_window_surface_fields"
+        ):
+            try:
+                from strategies.five_min_vpin import _v34_surface_fields
+
+                fields = _v34_surface_fields(surface)
+            except Exception:
+                return
+            if any(v is not None for v in fields.values()):
+                surf_task = asyncio.create_task(
+                    self._db.update_window_surface_fields(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        surface_fields=fields,
+                    )
+                )
+                surf_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.surface_fields_write_error"
+                    )
+                )
 
     def _write_gate_traces(
         self,
