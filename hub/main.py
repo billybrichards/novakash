@@ -35,6 +35,7 @@ from api.analysis import router as analysis_router
 from api.margin import router as margin_router
 from api.notes import router as notes_router
 from api.audit_tasks import router as audit_tasks_router
+from api.positions import router as positions_router
 from api.schema import router as schema_router
 
 # CFG-02/03: DB-backed config schema + read-only API
@@ -366,6 +367,8 @@ app.include_router(analysis_router, prefix="/api", tags=["analysis"])
 app.include_router(margin_router, prefix="/api", tags=["margin"])
 app.include_router(notes_router, prefix="/api", tags=["notes"])
 app.include_router(audit_tasks_router, prefix="/api", tags=["audit-tasks"])
+# TG-REDEMPTION-VIS Task 8: positions snapshot for Telegram top bar
+app.include_router(positions_router, prefix="/api", tags=["positions"])
 # SCHEMA-01: /schema page — DB table inventory (catalog + live runtime stats)
 app.include_router(schema_router, prefix="/api", tags=["schema"])
 # CFG-02/03: DB-backed config (read-only in this PR; writes ship in CFG-04)
