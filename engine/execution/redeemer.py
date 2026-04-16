@@ -579,6 +579,11 @@ class PositionRedeemer:
                     "pnl": pnl,
                     "tokenId": p.get("tokenId", ""),
                     "asset": p.get("asset", ""),
+                    # Preserve resolution timestamp so _scan_redeemable_positions()
+                    # can compute overdue_seconds for the OVERDUE Telegram marker.
+                    # Polymarket data-api uses `endDate` (ISO-8601 string); fall
+                    # back to `endDateIso` defensively in case the schema shifts.
+                    "endDate": p.get("endDate") or p.get("endDateIso"),
                 }
                 if outcomes is None or outcome in outcomes:
                     redeemable.append(row)

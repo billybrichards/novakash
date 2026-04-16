@@ -74,3 +74,43 @@ async def test_pending_wins_summary_marks_overdue(monkeypatch):
         assert isinstance(row["value"], float)
     # window_end_utc is the ISO-8601 string of resolved_at
     assert summary[0]["window_end_utc"] == (now - timedelta(minutes=95)).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_pending_wins_summary_uses_real_endDate_from_fetch(monkeypatch):
+    """Integration: confirm endDate flows through fetch_redeemable_positions
+    into _scan_redeemable_positions into pending_wins_summary, so OVERDUE
+    actually fires in production. Regression guard for the original bug
+    where fetch_redeemable_positions stripped endDate before downstream
+    code could see it."""
+    r = PositionRedeemer(
+        rpc_url="https://test.invalid",
+        private_key="0x" + "0" * 64,
+        proxy_address="0x" + "0" * 40,
+        paper_mode=True,
+    )
+    now = datetime(2026, 4, 16, 11, 10, 0, tzinfo=timezone.utc)
+    fake_position_row = {
+        "conditionId": "0xfeed",
+        "size": 10.0,
+        "avgPrice": 0.55,
+        "curPrice": 1.0,
+        "outcome": "WIN",
+        "pnl": 4.50,
+        "tokenId": "12345",
+        "asset": "12345",
+        # Polymarket data-api emits ISO-8601 strings under `endDate`
+        # (see _scan_redeemable_positions which reads `r.get("endDate")`).
+        "endDate": "2026-04-16T10:10:00Z",  # 60 minutes before `now`
+    }
+    monkeypatch.setattr(
+        r,
+        "fetch_redeemable_positions",
+        AsyncMock(return_value=[fake_position_row]),
+    )
+
+    summary = await r.pending_wins_summary(now=now)
+
+    assert len(summary) == 1
+    assert summary[0]["condition_id"] == "0xfeed"
+    assert summary[0]["overdue_seconds"] == 3600  # exactly 60 min
