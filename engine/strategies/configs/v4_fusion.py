@@ -12,6 +12,7 @@ Three evaluation paths:
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -20,7 +21,7 @@ if TYPE_CHECKING:
 from domain.value_objects import StrategyDecision
 
 _STRATEGY_ID = "v4_fusion"
-_VERSION = "4.1.0"
+_VERSION = "4.3.0"
 
 # Conviction -> minimum distance from 0.5 (legacy path only)
 _CONVICTION_THRESHOLDS = {
@@ -32,9 +33,100 @@ _CONVICTION_THRESHOLDS = {
 
 _TRADEABLE_REGIMES = {"calm_trend", "volatile_trend"}
 
+# ── v4.3.0 Execution timing cutoff ───────────────────────────────────────────
+# Minimum eval_offset (seconds before window close) to allow a trade. The
+# sister repo's v2 model has peak accuracy at T-30 (86%) and T-60 (80%). Real
+# fill latency is ~600ms FOK + ~20ms network (same ca-central-1 region), so
+# we can safely trade until T-45 without risk of missing the close. The older
+# T-70 floor left ~8s of the highest-conviction band unused.
+_MIN_OFFSET_SEC = int(os.environ.get("V4_MIN_OFFSET_SEC", "45"))
+
+# ── v4.3.0 Direction-aware risk_off override ─────────────────────────────────
+# The sister repo (novakash-timesfm-repo/app/v4_strategies.py:952) short-
+# circuits ALL trades when HMM regime == risk_off, even HIGH-conviction ones.
+# During directional regime spikes (e.g. overnight rally), this leaves
+# aligned-direction wins on the table. The override allows the engine to
+# take the trade IFF: (a) sister's skip reason contains "risk_off",
+# (b) distance >= _RISK_OFF_OVERRIDE_DIST_MIN (HIGH conviction),
+# (c) Chainlink 5m delta direction agrees with the trade direction.
+# Disable by setting V4_RISK_OFF_OVERRIDE_ENABLED=false.
+_RISK_OFF_OVERRIDE_ENABLED = (
+    os.environ.get("V4_RISK_OFF_OVERRIDE_ENABLED", "true").lower() == "true"
+)
+_RISK_OFF_OVERRIDE_DIST_MIN = float(
+    os.environ.get("V4_RISK_OFF_OVERRIDE_DIST_MIN", "0.20")
+)
+
 
 def _gate(name: str, passed: bool, reason: str) -> dict:
     return {"gate": name, "passed": passed, "reason": reason}
+
+
+def _try_risk_off_override(
+    reason: str,
+    distance: float,
+    direction: Optional[str],
+    surface: "FullDataSurface",
+    gates: list[dict],
+) -> bool:
+    """Return True if the risk_off veto from the sister repo should be overridden.
+
+    Override preconditions (all required):
+      1. Feature flag V4_RISK_OFF_OVERRIDE_ENABLED is true (default true).
+      2. Sister's skip reason contains the substring 'risk_off'.
+      3. Distance from 0.5 >= _RISK_OFF_OVERRIDE_DIST_MIN (HIGH conviction).
+      4. Direction is set.
+      5. Chainlink 5m delta direction matches the trade direction.
+
+    All 5 checks append gate-trace rows so the decision path is auditable.
+    """
+    if not _RISK_OFF_OVERRIDE_ENABLED:
+        return False
+    if "risk_off" not in (reason or ""):
+        return False
+    if distance < _RISK_OFF_OVERRIDE_DIST_MIN:
+        gates.append(
+            _gate(
+                "regime_risk_off_override",
+                False,
+                f"dist={distance:.3f} < {_RISK_OFF_OVERRIDE_DIST_MIN:.2f} conviction floor",
+            )
+        )
+        return False
+    if direction is None:
+        return False
+    cl_delta = surface.delta_chainlink
+    if cl_delta is None:
+        gates.append(
+            _gate(
+                "regime_risk_off_override",
+                False,
+                "no chainlink delta to verify direction alignment",
+            )
+        )
+        return False
+    cl_direction = "UP" if cl_delta > 0 else "DOWN"
+    if cl_direction != direction:
+        gates.append(
+            _gate(
+                "regime_risk_off_override",
+                False,
+                f"chainlink={cl_direction} disagrees with trade={direction}",
+            )
+        )
+        return False
+    gates.append(
+        _gate(
+            "regime_risk_off_override",
+            True,
+            (
+                f"risk_off overridden: dist={distance:.3f} "
+                f">= {_RISK_OFF_OVERRIDE_DIST_MIN:.2f}, "
+                f"chainlink={cl_direction} aligns with trade={direction}"
+            ),
+        )
+    )
+    return True
 
 
 def _skip(reason: str, gate_results: Optional[list[dict]] = None) -> StrategyDecision:
@@ -88,14 +180,22 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
     max_entry = surface.poly_max_entry_price
     gates: list[dict] = []
 
-    # Hard skip if < 70s left — T-60 late entries fire too close to close
+    # Hard skip if < _MIN_OFFSET_SEC left (v4.3.0: default T-45, was T-70).
+    # Real fill latency is ~600ms FOK + same-region network; T-45 gives ~42s
+    # safety margin. Override via V4_MIN_OFFSET_SEC env var.
     offset = surface.eval_offset or 0
-    if offset < 70:
+    if offset < _MIN_OFFSET_SEC:
         gates.append(
-            _gate("execution_timing", False, f"T-{offset} < T-70 live minimum")
+            _gate(
+                "execution_timing",
+                False,
+                f"T-{offset} < T-{_MIN_OFFSET_SEC} live minimum",
+            )
         )
         return _skip(
-            f"polymarket: timing={timing} T-{offset} -- too late (<70s), skip", gates
+            f"polymarket: timing={timing} T-{offset} -- too late "
+            f"(<{_MIN_OFFSET_SEC}s), skip",
+            gates,
         )
 
     # Expired / too early
@@ -138,14 +238,27 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
 
     gates.append(_gate("confidence", True, f"dist={distance:.3f} >= 0.12"))
 
+    risk_off_overridden = False
     if not trade_advised:
-        gates.append(_gate("trade_advised", False, f"{reason} (timing={timing})"))
-        return _skip(
-            f"polymarket: {reason} (timing={timing}, dist={distance:.3f})",
-            gates,
-        )
+        # v4.3.0: direction-aware risk_off override. Sister repo vetoes ALL
+        # trades on regime=risk_off even when HIGH-conviction + oracle-aligned;
+        # this allows engine to proceed when preconditions in
+        # _try_risk_off_override() are met.
+        if _try_risk_off_override(reason, distance, direction, surface, gates):
+            risk_off_overridden = True
+        else:
+            gates.append(_gate("trade_advised", False, f"{reason} (timing={timing})"))
+            return _skip(
+                f"polymarket: {reason} (timing={timing}, dist={distance:.3f})",
+                gates,
+            )
 
-    gates.append(_gate("trade_advised", True, "trade_advised=true"))
+    if risk_off_overridden:
+        gates.append(
+            _gate("trade_advised", True, "trade_advised=false but risk_off_override applied")
+        )
+    else:
+        gates.append(_gate("trade_advised", True, "trade_advised=true"))
 
     if not direction:
         gates.append(_gate("direction", False, "no direction"))
@@ -188,6 +301,7 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
     if surface.delta_chainlink is not None:
         gates.append(_gate("chainlink_agreement", True, "Chainlink agrees"))
 
+    entry_reason_prefix = "polymarket_override_" if risk_off_overridden else "polymarket_"
     return StrategyDecision(
         action="TRADE",
         direction=direction,
@@ -197,7 +311,7 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
         collateral_pct=surface.v4_recommended_collateral_pct,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
-        entry_reason=f"polymarket_{reason}_T{surface.eval_offset}",
+        entry_reason=f"{entry_reason_prefix}{reason}_T{surface.eval_offset}",
         skip_reason=None,
         metadata={
             "gate_results": gates,
@@ -207,6 +321,7 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
             "v4_regime": surface.v4_regime,
             "chainlink_delta": surface.delta_chainlink,
             "chainlink_agrees": True,
+            "risk_off_overridden": risk_off_overridden,
         },
     )
 
