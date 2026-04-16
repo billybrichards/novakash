@@ -1072,6 +1072,55 @@ class TelegramAlerter:
             self._log.warning("telegram.send_relayer_resumed_failed", error=str(exc)[:100])
             return None
 
+    async def send_strategy_missed_window(
+        self,
+        strategy_id: str,
+        mode: str,
+        window_ts: int,
+        bounds_str: str,
+        siblings_evaluated: int,
+        siblings_total: int,
+        first_eval_offset: int | None = None,
+    ) -> Optional[int]:
+        """🚨 LIVE strategy was never evaluated inside its eligible window.
+
+        Diagnostic carries enough to triage in 5 seconds: bounds, sibling
+        eval rate (engine-alive proxy), and the offset of the first eval
+        we DID see (usually post-window 'too late').
+        """
+        try:
+            from datetime import datetime, timezone
+            ts_str = datetime.fromtimestamp(window_ts, tz=timezone.utc).strftime("%H:%M UTC")
+            siblings_line = (
+                f"Sibling LIVE strategies evaluated this window: `{siblings_evaluated}/{siblings_total}`"
+            )
+            cause_hint = ""
+            if siblings_evaluated == 0 and siblings_total > 0:
+                cause_hint = "\n⚠️ NO siblings evaluated either — engine likely paused/restarting."
+            elif siblings_evaluated == siblings_total and siblings_total > 0:
+                cause_hint = "\n⚠️ All siblings evaluated — issue is strategy-specific (config/registry)."
+            first_line = (
+                f"\nFirst eval seen: `T-{first_eval_offset}` (post-window)"
+                if first_eval_offset is not None else ""
+            )
+            text = (
+                f"🚨 *STRATEGY MISSED WINDOW* — LIVE\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Strategy: `{strategy_id}` ({mode})\n"
+                f"Window: `{ts_str}` | Eligible: `{bounds_str}`\n"
+                f"{siblings_line}"
+                f"{cause_hint}"
+                f"{first_line}"
+            )
+            msg_id = await self._send_with_id(text)
+            await self._log_notification(
+                "strategy_missed_window", text, telegram_message_id=msg_id
+            )
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_strategy_missed_window_failed", error=str(exc)[:100])
+            return None
+
     async def send_trade_result(
         self,
         order,
