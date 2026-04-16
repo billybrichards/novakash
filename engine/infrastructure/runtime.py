@@ -3268,8 +3268,8 @@ class EngineRuntime:
         if self._poly_client and hasattr(self._poly_client, "get_balance"):
             try:
                 wallet_usdc = float(await self._poly_client.get_balance() or 0)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("snapshot.wallet_balance_failed", error=str(exc)[:120])
 
         pending = await self._redeemer.pending_wins_summary()
         cooldown = self._redeemer.cooldown_status()
@@ -3282,8 +3282,8 @@ class EngineRuntime:
         if self._poly_client and hasattr(self._poly_client, "get_open_orders"):
             try:
                 open_orders = await self._poly_client.get_open_orders() or []
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("snapshot.open_orders_failed", error=str(exc)[:120])
 
         snap = build_snapshot(
             wallet_usdc=wallet_usdc,

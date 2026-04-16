@@ -54,3 +54,47 @@ async def test_send_position_snapshot_builds_and_sends():
     assert snap["overdue_count"] == 1
     assert snap["effective_balance"] == 140.57
     assert snap["quota_remaining"] == 93
+
+
+@pytest.mark.asyncio
+async def test_send_position_snapshot_warns_on_wallet_failure(monkeypatch):
+    """Wallet RPC failure must surface as a WARN log, not silent zeros."""
+    from infrastructure import runtime as runtime_mod
+    from infrastructure.runtime import EngineRuntime
+
+    # structlog uses PrintLoggerFactory (not stdlib), so caplog won't capture.
+    # Patch the module-level `log.warning` with a MagicMock and assert calls.
+    warn_mock = MagicMock()
+    monkeypatch.setattr(runtime_mod.log, "warning", warn_mock)
+
+    o = EngineRuntime.__new__(EngineRuntime)
+    o._shutdown_event = MagicMock()
+    o._alerter = MagicMock()
+    o._alerter.send_position_snapshot = AsyncMock(return_value=1)
+    o._redeemer = MagicMock()
+    o._redeemer.pending_wins_summary = AsyncMock(return_value=[])
+    o._redeemer.cooldown_status = MagicMock(return_value={
+        "active": False,
+        "remaining_seconds": 0,
+        "resets_at": None,
+        "reason": "",
+    })
+    o._redeemer.daily_quota_limit = 100
+    o._db = MagicMock()
+    o._db.count_redeems_today = AsyncMock(return_value=0)
+    o._poly_client = MagicMock()
+    o._poly_client.get_balance = AsyncMock(side_effect=RuntimeError("rpc down"))
+    o._poly_client.get_open_orders = AsyncMock(return_value=[])
+
+    await o._send_position_snapshot()
+
+    # Snapshot still fired (degraded but not silent)
+    o._alerter.send_position_snapshot.assert_awaited_once()
+    snap = o._alerter.send_position_snapshot.await_args.args[0]
+    assert snap["wallet_usdc"] == 0.0
+
+    # And the failure was logged loudly with the expected event key
+    events = [c.args[0] for c in warn_mock.call_args_list if c.args]
+    assert "snapshot.wallet_balance_failed" in events, (
+        f"expected snapshot.wallet_balance_failed WARN, got events={events}"
+    )
