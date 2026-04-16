@@ -212,7 +212,7 @@ class PublishHeartbeatUseCase:
         try:
             wins_today, losses_today = await self._system_state_repo.get_daily_record()
             total = wins_today + losses_today
-            win_rate = (wins_today / total * 100) if total > 0 else 0.0
+            win_rate = (wins_today / total) if total > 0 else 0.0  # fraction 0-1
 
             vpin = self._engine_state.vpin
             vpin_regime = self._classify_vpin_regime(vpin)

@@ -58,7 +58,7 @@ async def test_exact_match_win():
     result = await p.uc().resolve_one(_pos(outcome="WIN"))
 
     assert result is not None
-    assert result.outcome == "WIN"
+    assert result.outcome == "RESOLVED_WIN"
     assert result.status == "RESOLVED_WIN"
     assert result.matched_trade_id == "trade-001"
     assert result.match_method == "exact"
@@ -76,7 +76,7 @@ async def test_exact_match_loss():
 
     result = await p.uc().resolve_one(_pos(outcome="LOSS"))
 
-    assert result.outcome == "LOSS"
+    assert result.outcome == "RESOLVED_LOSS"
     assert result.status == "RESOLVED_LOSS"
     assert result.pnl_usd == -5.0
 
@@ -169,7 +169,7 @@ async def test_alert_failure_does_not_break_resolution():
     result = await p.uc().resolve_one(_pos(outcome="WIN"))
 
     assert result is not None
-    assert result.outcome == "WIN"
+    assert result.outcome == "RESOLVED_WIN"
 
 
 @pytest.mark.asyncio
@@ -181,7 +181,7 @@ async def test_mark_resolved_failure_non_fatal():
     result = await p.uc().resolve_one(_pos(outcome="LOSS"))
 
     assert result is not None
-    assert result.outcome == "LOSS"
+    assert result.outcome == "RESOLVED_LOSS"
     p.trade_repo.resolve_trade.assert_called_once()
 
 

@@ -17,7 +17,7 @@ from use_cases.publish_heartbeat import PublishHeartbeatUseCase
 
 
 def _risk(
-    current_bankroll=100.0, peak_bankroll=110.0, drawdown_pct=5.0,
+    current_bankroll=100.0, peak_bankroll=110.0, drawdown_pct=0.05,
     daily_pnl=2.50, consecutive_losses=0, paper_mode=True,
     kill_switch_active=False,
 ):
@@ -196,7 +196,7 @@ async def test_sitrep_payload_contents():
     assert payload.mode_label == "PAPER"
     assert payload.wins_today == 7
     assert payload.losses_today == 3
-    assert payload.win_rate == 70.0
+    assert abs(payload.win_rate - 0.70) < 1e-9
     assert payload.vpin == 0.55
     assert payload.btc_price == 65000.0
     assert payload.open_positions == 2
