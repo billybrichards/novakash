@@ -227,6 +227,85 @@ class TestV4Fusion:
         assert decision.action == "SKIP"
         assert "0.12" in decision.skip_reason
 
+    # ─── v4.3.0: T-45 cutoff + direction-aware risk_off override ────────────
+
+    def test_trade_t45_offset(self, registry):
+        """v4.3.0 lowers execution floor from T-70 to T-45 — T-50 should TRADE."""
+        surface = _make_surface(
+            eval_offset=50,
+            poly_direction="DOWN", poly_trade_advised=True,
+            poly_confidence=0.38, poly_confidence_distance=0.12,
+            poly_timing="optimal", delta_chainlink=-0.005,
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "TRADE"
+        assert decision.direction == "DOWN"
+
+    def test_skip_below_t45(self, registry):
+        """T-40 still too late even under v4.3.0."""
+        surface = _make_surface(
+            eval_offset=40,
+            poly_direction="DOWN", poly_trade_advised=True,
+            poly_confidence_distance=0.12, poly_timing="optimal",
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "SKIP"
+        assert "too late" in decision.skip_reason
+
+    def test_risk_off_override_trades_when_aligned(self, registry):
+        """HIGH conviction + chainlink aligns → override sister's risk_off veto."""
+        surface = _make_surface(
+            eval_offset=120,
+            poly_direction="UP", poly_trade_advised=False,  # sister veto
+            poly_confidence=0.72, poly_confidence_distance=0.22,  # HIGH
+            poly_timing="optimal",
+            poly_reason="regime_risk_off_skip",  # from sister
+            delta_chainlink=0.005,  # UP rally confirms direction
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "TRADE"
+        assert decision.direction == "UP"
+        assert decision.metadata.get("risk_off_overridden") is True
+        assert "override_" in (decision.entry_reason or "")
+
+    def test_risk_off_override_blocked_by_low_conviction(self, registry):
+        """MEDIUM conviction (dist<0.20) does NOT unlock override."""
+        surface = _make_surface(
+            eval_offset=120,
+            poly_direction="UP", poly_trade_advised=False,
+            poly_confidence=0.65, poly_confidence_distance=0.15,  # MEDIUM
+            poly_timing="optimal",
+            poly_reason="regime_risk_off_skip",
+            delta_chainlink=0.005,
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "SKIP"
+        assert "risk_off" in decision.skip_reason
+
+    def test_risk_off_override_blocked_by_chainlink_disagree(self, registry):
+        """Chainlink points opposite direction → no override."""
+        surface = _make_surface(
+            eval_offset=120,
+            poly_direction="UP", poly_trade_advised=False,
+            poly_confidence=0.72, poly_confidence_distance=0.22,  # HIGH
+            poly_timing="optimal",
+            poly_reason="regime_risk_off_skip",
+            delta_chainlink=-0.005,  # DOWN move vs UP trade
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "SKIP"
+        assert "risk_off" in decision.skip_reason
+
 
 class TestV10Gate:
     def test_loads(self, registry):
