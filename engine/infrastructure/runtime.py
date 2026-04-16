@@ -2229,6 +2229,11 @@ class EngineRuntime:
                                             self._redeemer_loop(), name="redeemer:sweep"
                                         )
                                     )
+                                    self._tasks.append(
+                                        asyncio.create_task(
+                                            self._position_snapshot_loop(), name="position_snapshot"
+                                        )
+                                    )
                                     log.info(
                                         "orchestrator.redeemer_started_on_mode_switch"
                                     )
