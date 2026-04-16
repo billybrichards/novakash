@@ -699,6 +699,20 @@ class EngineRuntime:
         if not self._settings.paper_mode:
             try:
                 await self._db.ensure_playwright_tables()
+                # Ensure redeem_attempts table exists (separate from playwright
+                # quota tracking — used by the 3-failures-in-24h backoff gate).
+                # Reaches the repo via the redeemer's attempts_repo handle.
+                _attempts_repo = getattr(self._redeemer, "_attempts_repo", None)
+                if _attempts_repo is not None and hasattr(
+                    _attempts_repo, "ensure_tables"
+                ):
+                    try:
+                        await _attempts_repo.ensure_tables()
+                    except Exception as exc:
+                        log.warning(
+                            "orchestrator.ensure_redeem_attempts_failed",
+                            error=str(exc)[:200],
+                        )
                 await self._redeemer.connect()
                 self._tasks.append(
                     asyncio.create_task(self._redeemer_loop(), name="redeemer:sweep")

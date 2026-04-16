@@ -47,6 +47,51 @@ class PgRedeemAttemptsRepository(RedeemAttemptsRepository):
             return getattr(self._db_client, "_pool", None)
         return None
 
+    async def ensure_tables(self) -> None:
+        """Create ``redeem_attempts`` table if it doesn't exist.
+
+        Called at engine startup. Idempotent — safe to re-run. Prior bug:
+        the migration at ``migrations/add_redeem_attempts_table.sql`` was
+        never applied to Montreal, so every `record()` spammed the log with
+        ``'relation "redeem_attempts" does not exist'``. Embedding the DDL
+        here mirrors the pattern used by ``pg_window_trace_repo`` and avoids
+        a separate manual migration step.
+        """
+        pool = self._get_pool()
+        if not pool:
+            return
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS redeem_attempts (
+                        id            BIGSERIAL PRIMARY KEY,
+                        condition_id  VARCHAR(80) NOT NULL,
+                        outcome       VARCHAR(20) NOT NULL,
+                        tx_hash       VARCHAR(80),
+                        error         TEXT,
+                        attempted_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_redeem_attempts_condition
+                    ON redeem_attempts (condition_id, attempted_at DESC)
+                    """
+                )
+                await conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_redeem_attempts_outcome_time
+                    ON redeem_attempts (outcome, attempted_at DESC)
+                    """
+                )
+            log.info("pg_redeem_attempts.tables_ensured")
+        except Exception as exc:
+            log.warning(
+                "pg_redeem_attempts.ensure_tables_failed", error=str(exc)[:200]
+            )
+
     async def record(
         self,
         condition_id: str,

@@ -639,14 +639,20 @@ class WindowOutcome:
         outcome: str = "PUSH",
         pnl_usd: float = 0.0,
         resolved_at: float = 0.0,
+        actual_direction: Optional[str] = None,
     ) -> None:
         if outcome not in _VALID_WINDOW_OUTCOMES:
             raise ValueError(f"outcome must be one of {_VALID_WINDOW_OUTCOMES}, got {outcome!r}")
+        if actual_direction is not None and actual_direction not in ("UP", "DOWN"):
+            raise ValueError(
+                f"actual_direction must be 'UP', 'DOWN', or None, got {actual_direction!r}"
+            )
         self.window_ts = window_ts
         self.asset = asset
         self.outcome = outcome
         self.pnl_usd = pnl_usd
         self.resolved_at = resolved_at
+        self.actual_direction = actual_direction
 
     def __str__(self) -> str:
         return self.outcome

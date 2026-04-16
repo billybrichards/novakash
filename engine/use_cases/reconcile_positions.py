@@ -238,6 +238,10 @@ class ReconcilePositionsUseCase:
                 shares=position.size,
                 entry_price=position.avg_price,
                 cost=position.cost,
+                direction=None,
+                window_ts=None,
+                match_method=None,
+                strategy=None,
             )
             return None
 
@@ -277,12 +281,28 @@ class ReconcilePositionsUseCase:
             asset = match.get("asset", "BTC")
             window_ts = match.get("window_ts")
             if window_ts:
+                # v4.4.0: infer oracle-resolved direction from trade direction
+                # + outcome so window_states.actual_direction is populated for
+                # downstream skip-outcome analysis. Inference:
+                #   trade UP   + WIN  → market UP   (signal correct)
+                #   trade UP   + LOSS → market DOWN (signal wrong)
+                #   trade DOWN + WIN  → market DOWN
+                #   trade DOWN + LOSS → market UP
+                trade_dir = (match.get("direction") or "").upper()
+                actual_direction: Optional[str] = None
+                if trade_dir in ("UP", "DOWN"):
+                    won = outcome == "WIN"
+                    if trade_dir == "UP":
+                        actual_direction = "UP" if won else "DOWN"
+                    else:
+                        actual_direction = "DOWN" if won else "UP"
                 await self._window_state.mark_resolved(
                     WindowKey(asset=asset, window_ts=int(window_ts)),
                     WindowOutcome(
                         outcome=outcome,
                         pnl_usd=trade_pnl,
                         resolved_at=self._clock.now(),
+                        actual_direction=actual_direction,
                     ),
                 )
         except Exception as exc:
@@ -295,6 +315,10 @@ class ReconcilePositionsUseCase:
             shares=trade_shares,
             entry_price=trade_entry,
             cost=trade_stake,
+            direction=match.get("direction"),
+            window_ts=match.get("window_ts"),
+            match_method=match_method,
+            strategy=match.get("strategy"),
         )
 
         return ResolutionResult(
@@ -353,6 +377,10 @@ class ReconcilePositionsUseCase:
         shares: float,
         entry_price: float,
         cost: float,
+        direction: Optional[str] = None,
+        window_ts: Optional[int] = None,
+        match_method: Optional[str] = None,
+        strategy: Optional[str] = None,
     ) -> None:
         """Queue a live position resolution for the batched end-of-pass summary.
 
@@ -360,14 +388,23 @@ class ReconcilePositionsUseCase:
         in one reconcile pass = N spammed messages (see audit). Now
         appends to ``self._pending_live_alerts`` and the final batched
         summary is emitted by ``_flush_resolution_alerts``.
+
+        v4.4.0 (2026-04-16): now carries trade direction + entry + window_ts
+        + match_method + strategy so the flushed message can show proper
+        per-trade detail and orphans can be separated from real LOSSES.
         """
         self._pending_live_alerts.append(
             {
                 "outcome": position.outcome,
                 "pnl": float(pnl),
                 "cost": float(cost),
+                "entry_price": float(entry_price) if entry_price else None,
                 "matched": matched_trade_id is not None,
                 "condition_id": position.condition_id,
+                "direction": (direction or "").upper() or None,
+                "window_ts": int(window_ts) if window_ts else None,
+                "match_method": match_method,
+                "strategy": strategy,
             }
         )
 
@@ -403,14 +440,22 @@ class ReconcilePositionsUseCase:
     async def _flush_resolution_alerts(self) -> None:
         """Emit ONE batched Telegram summary of this pass's resolutions.
 
-        Rollup pattern:
-            *Reconcile pass* — LIVE: 6 WIN / 2 LOSS (net +$8.45)
-                               Paper: 3 WIN / 1 LOSS (net +$1.80)
-            Top: ✅ +$2.94 cost $3.19  ✅ +$2.79 cost $4.18  ❌ -$3.49 cost $3.49
+        Format (v4.4.0 — matched vs orphan separated so pre-fix legacy
+        positions don't inflate the LOSS count):
 
-        Caps the per-item detail at 12 to keep the message under Telegram's
-        4096-char limit even on heavy pass days. When nothing to report,
-        stays silent (no "0 resolutions" noise).
+            *Reconcile pass*
+            LIVE matched: 2 WIN / 1 LOSS (net +$4.72)
+              ✅ WIN  UP  @ $0.55  +$4.17  cost $4.86  06:35 ET
+              ✅ WIN  UP  @ $0.54  +$3.84  cost $4.86  06:36 ET
+              ❌ LOSS UP  @ $0.51  -$4.86  cost $4.86  06:51 ET
+            Orphans: 5 (pre-#211 legacy, no DB match)
+              3 auto-redeemed wins, 2 worthless tokens
+            Paper: 3 WIN / 1 LOSS (net +$1.80)
+
+        Matched P&L is the ONLY authoritative number — orphans were
+        already settled on-chain (NegRisk auto-redeem) and their USDC is
+        in the wallet; they just can't be matched to trade rows because
+        they predate PR #211's ``strategy_id`` fix.
         """
         live = self._pending_live_alerts
         paper = self._pending_paper_alerts
@@ -420,29 +465,61 @@ class ReconcilePositionsUseCase:
         lines: list[str] = ["*Reconcile pass*"]
 
         if live:
-            wins = [a for a in live if a["outcome"] == "WIN"]
-            losses = [a for a in live if a["outcome"] == "LOSS"]
-            unmatched = sum(1 for a in live if not a["matched"])
-            net = sum(a["pnl"] for a in live)
-            unmatched_tag = f", {unmatched} unmatched" if unmatched else ""
-            lines.append(
-                f"LIVE: {len(wins)} WIN / {len(losses)} LOSS{unmatched_tag} "
-                f"(net {'+' if net >= 0 else ''}${net:.2f})"
-            )
-            # Per-item details (cap at 12 to respect Telegram limits)
-            detail_cap = 12
-            for a in live[:detail_cap]:
-                emoji = "✅" if a["outcome"] == "WIN" else "❌"
-                pnl_str = (
-                    f"+${a['pnl']:.2f}" if a["pnl"] >= 0 else f"-${abs(a['pnl']):.2f}"
+            matched = [a for a in live if a["matched"]]
+            orphans = [a for a in live if not a["matched"]]
+
+            # Matched: these are REAL resolved trades — count toward net
+            if matched:
+                m_wins = [a for a in matched if a["outcome"] == "WIN"]
+                m_losses = [a for a in matched if a["outcome"] == "LOSS"]
+                m_net = sum(a["pnl"] for a in matched)
+                net_str = (
+                    f"+${m_net:.2f}" if m_net >= 0 else f"-${abs(m_net):.2f}"
                 )
-                unmatched_tag = " (unmatched)" if not a["matched"] else ""
                 lines.append(
-                    f"  {emoji} {a['outcome']} {pnl_str}{unmatched_tag} "
-                    f"cost ${a['cost']:.2f}"
+                    f"LIVE matched: {len(m_wins)} WIN / {len(m_losses)} LOSS "
+                    f"(net {net_str})"
                 )
-            if len(live) > detail_cap:
-                lines.append(f"  … +{len(live) - detail_cap} more")
+                detail_cap = 10
+                for a in matched[:detail_cap]:
+                    emoji = "✅" if a["outcome"] == "WIN" else "❌"
+                    pnl_str = (
+                        f"+${a['pnl']:.2f}"
+                        if a["pnl"] >= 0
+                        else f"-${abs(a['pnl']):.2f}"
+                    )
+                    direction = a.get("direction") or "?"
+                    entry = a.get("entry_price")
+                    entry_str = f"@ ${entry:.3f}" if entry else ""
+                    # Window time — HH:MM UTC
+                    window_ts = a.get("window_ts")
+                    if window_ts:
+                        from datetime import datetime, timezone
+
+                        wt = datetime.fromtimestamp(
+                            int(window_ts), tz=timezone.utc
+                        ).strftime("%H:%M")
+                        wt_str = f" {wt} UTC"
+                    else:
+                        wt_str = ""
+                    lines.append(
+                        f"  {emoji} {a['outcome']:4s} {direction:4s} {entry_str:<12s} "
+                        f"{pnl_str:>8s}  cost ${a['cost']:.2f}{wt_str}"
+                    )
+                if len(matched) > detail_cap:
+                    lines.append(f"  … +{len(matched) - detail_cap} more")
+
+            # Orphans: pre-fix legacy positions — NOT counted as LOSS
+            if orphans:
+                o_wins = sum(1 for a in orphans if a["outcome"] == "WIN")
+                o_losses = sum(1 for a in orphans if a["outcome"] == "LOSS")
+                lines.append(
+                    f"Orphans: {len(orphans)} (pre-#211 legacy, no DB match)"
+                )
+                lines.append(
+                    f"  _{o_wins} auto-redeemed wins, "
+                    f"{o_losses} worthless tokens — USDC already settled_"
+                )
 
         if paper:
             wins = [a for a in paper if a["outcome"] == "WIN"]
