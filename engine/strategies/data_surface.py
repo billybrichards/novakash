@@ -238,7 +238,17 @@ class DataSurfaceManager:
         """Start background V4 pre-fetch loop."""
         import aiohttp
 
-        self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5))
+        # /v4/snapshot p99 observed 2026-04-16: 4-6s under normal CPU,
+        # 10-16s under TimesFM CPU pressure (281% sustained). A 5s
+        # timeout counted every slow response as a fetch failure →
+        # cache staleness crossed 45s threshold every few minutes →
+        # Telegram flap cycle (degraded for 51-259s, recovered for
+        # 30-60s, repeat). 15s accommodates the observed p99 while
+        # still being well below the 45s stale-alert threshold, so
+        # genuine TimesFM outages still fire the alert loudly.
+        self._session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=15)
+        )
 
         # Prime the snapshot cache before the registry starts evaluating.
         try:
