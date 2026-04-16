@@ -1088,6 +1088,100 @@ class DBClient:
             )
             # Never re-raise — DB writes must not crash the engine
 
+    async def update_window_surface_fields(
+        self,
+        *,
+        window_ts: int,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        surface_fields: dict,
+    ) -> None:
+        """Upsert v3/v4 surface columns on an existing window_snapshots row.
+
+        v4.4.0 (2026-04-16): called from StrategyRegistry._write_window_trace
+        after every window evaluation. Populates the 17 v3/v4 columns that
+        are defined in the schema but were never written by the legacy
+        ``write_window_snapshot`` path (legacy path doesn't have a
+        FullDataSurface handle, registry does).
+
+        Fire-and-forget: never raises. INSERT ... ON CONFLICT upsert so it
+        creates a minimal row if the legacy writer hasn't run yet.
+        """
+        if not self._pool:
+            return
+        if eval_offset is None:
+            eval_offset = 0
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO window_snapshots (
+                        window_ts, asset, timeframe, eval_offset,
+                        sub_signal_elm, sub_signal_cascade, sub_signal_taker,
+                        sub_signal_vpin, sub_signal_momentum,
+                        sub_signal_oi, sub_signal_funding,
+                        regime_confidence, regime_persistence,
+                        strategy_conviction, strategy_conviction_score,
+                        consensus_safe_to_trade, consensus_agreement_score,
+                        consensus_divergence_bps,
+                        macro_bias, macro_direction_gate, macro_size_modifier
+                    ) VALUES (
+                        $1,$2,$3,$4,
+                        $5,$6,$7,$8,$9,$10,$11,
+                        $12,$13,$14,$15,
+                        $16,$17,$18,
+                        $19,$20,$21
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        sub_signal_elm         = COALESCE(EXCLUDED.sub_signal_elm, window_snapshots.sub_signal_elm),
+                        sub_signal_cascade     = COALESCE(EXCLUDED.sub_signal_cascade, window_snapshots.sub_signal_cascade),
+                        sub_signal_taker       = COALESCE(EXCLUDED.sub_signal_taker, window_snapshots.sub_signal_taker),
+                        sub_signal_vpin        = COALESCE(EXCLUDED.sub_signal_vpin, window_snapshots.sub_signal_vpin),
+                        sub_signal_momentum    = COALESCE(EXCLUDED.sub_signal_momentum, window_snapshots.sub_signal_momentum),
+                        sub_signal_oi          = COALESCE(EXCLUDED.sub_signal_oi, window_snapshots.sub_signal_oi),
+                        sub_signal_funding     = COALESCE(EXCLUDED.sub_signal_funding, window_snapshots.sub_signal_funding),
+                        regime_confidence      = COALESCE(EXCLUDED.regime_confidence, window_snapshots.regime_confidence),
+                        regime_persistence     = COALESCE(EXCLUDED.regime_persistence, window_snapshots.regime_persistence),
+                        strategy_conviction    = COALESCE(EXCLUDED.strategy_conviction, window_snapshots.strategy_conviction),
+                        strategy_conviction_score = COALESCE(EXCLUDED.strategy_conviction_score, window_snapshots.strategy_conviction_score),
+                        consensus_safe_to_trade = COALESCE(EXCLUDED.consensus_safe_to_trade, window_snapshots.consensus_safe_to_trade),
+                        consensus_agreement_score = COALESCE(EXCLUDED.consensus_agreement_score, window_snapshots.consensus_agreement_score),
+                        consensus_divergence_bps = COALESCE(EXCLUDED.consensus_divergence_bps, window_snapshots.consensus_divergence_bps),
+                        macro_bias             = COALESCE(EXCLUDED.macro_bias, window_snapshots.macro_bias),
+                        macro_direction_gate   = COALESCE(EXCLUDED.macro_direction_gate, window_snapshots.macro_direction_gate),
+                        macro_size_modifier    = COALESCE(EXCLUDED.macro_size_modifier, window_snapshots.macro_size_modifier)
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    surface_fields.get("sub_signal_elm"),
+                    surface_fields.get("sub_signal_cascade"),
+                    surface_fields.get("sub_signal_taker"),
+                    surface_fields.get("sub_signal_vpin"),
+                    surface_fields.get("sub_signal_momentum"),
+                    surface_fields.get("sub_signal_oi"),
+                    surface_fields.get("sub_signal_funding"),
+                    surface_fields.get("regime_confidence"),
+                    surface_fields.get("regime_persistence"),
+                    surface_fields.get("strategy_conviction"),
+                    surface_fields.get("strategy_conviction_score"),
+                    surface_fields.get("consensus_safe_to_trade"),
+                    surface_fields.get("consensus_agreement_score"),
+                    surface_fields.get("consensus_divergence_bps"),
+                    surface_fields.get("macro_bias"),
+                    surface_fields.get("macro_direction_gate"),
+                    surface_fields.get("macro_size_modifier"),
+                )
+        except Exception as exc:
+            log.warning(
+                "db.update_window_surface_fields_failed",
+                error=str(exc)[:160],
+                asset=asset,
+                window_ts=window_ts,
+            )
+
     async def update_window_outcome(
         self,
         window_ts,

@@ -143,6 +143,28 @@ class PgWindowRepository(WindowStateRepository):
                     ("gate_failed", "VARCHAR(20)"),
                     ("shadow_trade_direction", "VARCHAR(4)"),
                     ("shadow_trade_entry_price", "DOUBLE PRECISION"),
+                    # v4.4.0 (2026-04-16): denormalise v3/v4 surface fields so
+                    # analysts can do fast SQL without extracting from the
+                    # window_evaluation_traces.surface_json JSONB. These were
+                    # defined in other migrations but never populated by the
+                    # writer — this commit wires them up end-to-end.
+                    ("sub_signal_elm", "DOUBLE PRECISION"),
+                    ("sub_signal_cascade", "DOUBLE PRECISION"),
+                    ("sub_signal_taker", "DOUBLE PRECISION"),
+                    ("sub_signal_vpin", "DOUBLE PRECISION"),
+                    ("sub_signal_momentum", "DOUBLE PRECISION"),
+                    ("sub_signal_oi", "DOUBLE PRECISION"),
+                    ("sub_signal_funding", "DOUBLE PRECISION"),
+                    ("regime_confidence", "DOUBLE PRECISION"),
+                    ("regime_persistence", "DOUBLE PRECISION"),
+                    ("strategy_conviction", "VARCHAR(10)"),
+                    ("strategy_conviction_score", "DOUBLE PRECISION"),
+                    ("consensus_safe_to_trade", "BOOLEAN"),
+                    ("consensus_agreement_score", "DOUBLE PRECISION"),
+                    ("consensus_divergence_bps", "DOUBLE PRECISION"),
+                    ("macro_bias", "VARCHAR(10)"),
+                    ("macro_direction_gate", "VARCHAR(12)"),
+                    ("macro_size_modifier", "DOUBLE PRECISION"),
                 ]:
                     try:
                         await conn.execute(

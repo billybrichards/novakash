@@ -517,6 +517,10 @@ class CompositionRoot:
                     alerter=self._alerter,
                     decision_repo=_decision_repo,
                     trace_repo=_trace_repo,
+                    # v4.4.0: registry upserts v3/v4 surface fields into
+                    # window_snapshots on every window eval so SQL analysis
+                    # works as first-class columns (not JSONB extraction).
+                    db=self._db,
                 )
                 self._strategy_registry.load_all()
                 log.info(
