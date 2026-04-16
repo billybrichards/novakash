@@ -3152,6 +3152,21 @@ class EngineRuntime:
                             ),
                         }
 
+                # v4.4.0: force CLOB to re-read on-chain USDC so downstream
+                # reconciler / risk manager don't show stale balance for up to
+                # 20 min after NegRisk auto-settles a win. Fire-and-forget —
+                # `refresh_balance_allowance()` swallows its own errors.
+                if self._poly_client and hasattr(
+                    self._poly_client, "refresh_balance_allowance"
+                ):
+                    try:
+                        await self._poly_client.refresh_balance_allowance()
+                    except Exception as exc:
+                        log.debug(
+                            "orchestrator.clob_balance_refresh_failed",
+                            error=str(exc)[:120],
+                        )
+
                 # Always notify on sweep results
                 if self._alerter:
                     try:

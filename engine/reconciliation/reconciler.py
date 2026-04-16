@@ -111,6 +111,13 @@ class CLOBReconciler:
         self._last_orphan_check: float = 0.0
         self._orphan_check_interval: float = 60.0
 
+        # v4.4.0: periodically poke CLOB to re-read on-chain USDC. Polymarket's
+        # balance indexer can lag 10-20 min after an on-chain transfer (e.g.
+        # NegRisk auto-redeem, manual deposit). Forcing a refresh on a 90s
+        # timer bounds the staleness without spamming their API.
+        self._last_balance_refresh: float = 0.0
+        self._balance_refresh_interval: float = 90.0
+
         # POLY-SOT: track which trade IDs we've already alerted on so we
         # don't spam Telegram every time the SOT loop finds the same
         # divergence. Cleared on engine restart — that's intentional, an
@@ -351,6 +358,21 @@ class CLOBReconciler:
     async def _poll_once(self) -> None:
         """Single poll iteration."""
         now = datetime.now(timezone.utc)
+
+        # v4.4.0: every _balance_refresh_interval seconds, poke CLOB to re-read
+        # on-chain USDC before we query it. Bounds staleness to ~90s instead of
+        # the 10-20 min we've seen Polymarket's indexer take to catch up after
+        # a NegRisk auto-settlement.
+        now_ts = time.time()
+        if (
+            now_ts - self._last_balance_refresh >= self._balance_refresh_interval
+            and hasattr(self._poly, "refresh_balance_allowance")
+        ):
+            try:
+                await self._poly.refresh_balance_allowance()
+            except Exception:
+                pass  # fire-and-forget; transient failures are non-fatal
+            self._last_balance_refresh = now_ts
 
         # 1. Wallet balance
         try:
