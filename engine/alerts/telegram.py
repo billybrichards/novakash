@@ -987,6 +987,24 @@ class TelegramAlerter:
             self._log.warning("telegram.send_order_filled_failed", error=str(exc)[:100])
             return None
 
+    async def send_position_snapshot(self, snap: dict) -> Optional[int]:
+        """
+        📊 POSITION SNAPSHOT — periodic + on-demand visibility on wallet,
+        pending wins, relayer cooldown, and open orders. The dict comes
+        from alerts.positions.build_snapshot().
+        """
+        try:
+            from alerts.positions import render_snapshot_text
+            text = render_snapshot_text(snap)
+            msg_id = await self._send_with_id(text)
+            await self._log_notification(
+                "position_snapshot", text, telegram_message_id=msg_id
+            )
+            return msg_id
+        except Exception as exc:
+            self._log.warning("telegram.send_position_snapshot_failed", error=str(exc)[:100])
+            return None
+
     async def send_trade_result(
         self,
         order,
