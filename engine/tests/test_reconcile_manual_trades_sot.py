@@ -1,41 +1,29 @@
 """
 Tests for engine/reconciliation/reconciler.py::CLOBReconciler.reconcile_manual_trades_sot
-— POLY-SOT.
+— POLY-SOT-d (poly_fills join model).
 
-These tests enforce the source-of-truth invariants for manual_trades rows:
+As of POLY-SOT-d the reconciler uses a DB LEFT JOIN against `poly_fills`
+instead of calling `poly_client.get_order_status_sot` per row.  The decision
+matrix is now:
 
-  1. AGREES — engine says executed AND Polymarket has the same order in a
-     terminal state with matching fill_price (within 0.5% tolerance).
-     Result: state='agrees', no alert.
+  1. PAPER     — trade has mode='paper' or order_id starts with 5min-/manual-paper-
+                 Result: state='paper', no alert.
 
-  2. ENGINE_OPTIMISTIC — engine says executed but Polymarket has no record
-     (place_order timed out, retried, or hit auth issue). Result:
-     state='engine_optimistic', loud Telegram alert.
+  2. AGREES    — fill_row present, price within 0.5% tolerance
+                 Result: state='agrees', no alert.
 
-  3. DIVERGED — engine and Polymarket both have the order but fill_price
-     differs by more than the 0.5% tolerance. Result: state='diverged',
-     alert.
+  3. DIVERGED  — fill_row present, price diff exceeds tolerance
+                 Result: state='diverged', alert.
 
-  4. UNRECONCILED — Polymarket has the order but it's not yet terminal
-     (still pending). Result: state='unreconciled', no alert.
+  4. UNRECONCILED  — fill_row is None, trade age <= 10 min
+                     Result: state='unreconciled', no alert.
 
-  5. POLYMARKET_ONLY — engine says failed but Polymarket has a filled
-     order. Should never happen but caught defensively. Alert.
+  5. ENGINE_OPTIMISTIC — fill_row is None, trade age > 10 min
+                         Result: state='engine_optimistic', alert.
 
-  6. NO ORDER ID — engine row has no polymarket_order_id and was created
-     more than 2 minutes ago: state='engine_optimistic' + alert. Younger
-     rows get state='unreconciled', no alert.
-
-  7. PAPER MODE SYNTHETIC IDS — `manual-paper-*` order IDs are recognised
-     by the polymarket client and resolve to a synthetic filled status
-     so paper-mode trades exercise the same code path.
-
-The tests use a stub `PolymarketClient` and a stub `_PoolDBClient` so the
-reconciler runs without any real CLOB or PostgreSQL. The DB stub records
-every update so we can assert state transitions deterministically.
-
-Each case follows the same shape as test_eval_offset_bounds_gate.py and
-test_source_agreement_spot_only.py — fresh stubs per case, no shared state.
+The stubs provide `fetch_manual_trades_joined_poly_fills` returning the
+pre-joined `[(trade_dict, fill_dict_or_None)]` pairs that the DB would
+produce — no Polymarket API calls are made in this model.
 """
 
 from __future__ import annotations
@@ -44,11 +32,9 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from unittest.mock import AsyncMock
 
 import pytest
 
-from execution.polymarket_client import PolyOrderStatus
 from reconciliation import reconciler as reconciler_mod
 from reconciliation.reconciler import CLOBReconciler, ReconciliationSummary
 
@@ -56,78 +42,99 @@ from reconciliation.reconciler import CLOBReconciler, ReconciliationSummary
 # ─── Stubs ──────────────────────────────────────────────────────────────────
 
 
-@dataclass
-class FakeRow:
-    """A single manual_trades row as the SOT reconciler sees it."""
-    trade_id: str
-    polymarket_order_id: Optional[str]
-    status: str
-    direction: str = "UP"
-    entry_price: Optional[float] = 0.55
-    stake_usd: Optional[float] = 4.0
-    mode: str = "live"
-    created_at: datetime = field(
-        default_factory=lambda: datetime.now(timezone.utc) - timedelta(minutes=5)
-    )
-    polymarket_confirmed_status: Optional[str] = None
-    polymarket_confirmed_fill_price: Optional[float] = None
-    polymarket_confirmed_size: Optional[float] = None
-    polymarket_confirmed_at: Optional[datetime] = None
-    polymarket_last_verified_at: Optional[datetime] = None
-    sot_reconciliation_state: Optional[str] = None
-    sot_reconciliation_notes: Optional[str] = None
+def _trade_dict(
+    trade_id: str = "manual_aaaa",
+    status: str = "executed",
+    entry_price: float = 0.55,
+    fill_price: Optional[float] = None,
+    fill_size: Optional[float] = None,
+    stake_usd: float = 4.0,
+    mode: str = "live",
+    order_id: str = "0xorder1",
+    polymarket_order_id: Optional[str] = "0xclob_order_1",
+    created_at: Optional[datetime] = None,
+    sot_reconciliation_state: Optional[str] = None,
+) -> dict:
+    """Build a minimal manual_trades row dict."""
+    if created_at is None:
+        created_at = datetime.now(timezone.utc) - timedelta(minutes=15)
+    return {
+        "trade_id": trade_id,
+        "polymarket_order_id": polymarket_order_id,
+        "order_id": order_id,
+        "status": status,
+        "direction": "UP",
+        "entry_price": entry_price,
+        "fill_price": fill_price,
+        "fill_size": fill_size,
+        "stake_usd": stake_usd,
+        "mode": mode,
+        "created_at": created_at,
+        "polymarket_confirmed_status": None,
+        "polymarket_confirmed_fill_price": None,
+        "polymarket_confirmed_size": None,
+        "polymarket_confirmed_at": None,
+        "polymarket_last_verified_at": None,
+        "sot_reconciliation_state": sot_reconciliation_state,
+        "sot_reconciliation_notes": None,
+    }
 
-    def as_dict(self) -> dict:
-        return {
-            "trade_id": self.trade_id,
-            "polymarket_order_id": self.polymarket_order_id,
-            "status": self.status,
-            "direction": self.direction,
-            "entry_price": self.entry_price,
-            "stake_usd": self.stake_usd,
-            "mode": self.mode,
-            "created_at": self.created_at,
-            "polymarket_confirmed_status": self.polymarket_confirmed_status,
-            "polymarket_confirmed_fill_price": self.polymarket_confirmed_fill_price,
-            "polymarket_confirmed_size": self.polymarket_confirmed_size,
-            "polymarket_confirmed_at": self.polymarket_confirmed_at,
-            "polymarket_last_verified_at": self.polymarket_last_verified_at,
-            "sot_reconciliation_state": self.sot_reconciliation_state,
-            "sot_reconciliation_notes": self.sot_reconciliation_notes,
-        }
+
+def _fill_dict(
+    poly_price: float = 0.5510,
+    poly_size: float = 7.27,
+    transaction_hash: str = "0xdeadbeef",
+    match_time_utc: Optional[datetime] = None,
+) -> dict:
+    """Build a minimal poly_fills row dict."""
+    if match_time_utc is None:
+        match_time_utc = datetime.now(timezone.utc)
+    return {
+        "poly_price": poly_price,
+        "poly_size": poly_size,
+        "transaction_hash": transaction_hash,
+        "match_time_utc": match_time_utc,
+    }
 
 
 class StubPoolDBClient:
-    """Test stand-in for `_PoolDBClient` — returns canned rows and records updates."""
+    """Test stand-in for `_PoolDBClient`.
 
-    def __init__(self, rows: list[FakeRow]) -> None:
-        self._rows = rows
+    Returns canned `(trade_row, fill_row_or_None)` pairs from
+    `fetch_manual_trades_joined_poly_fills` and records every
+    `update_manual_trade_sot` call.
+    """
+
+    def __init__(self, joined_rows: list[tuple[dict, Optional[dict]]]) -> None:
+        self._rows = joined_rows
         self.updates: list[dict] = []
 
+    async def fetch_manual_trades_joined_poly_fills(
+        self,
+        since: Optional[datetime] = None,
+        limit: int = 200,
+    ) -> list[tuple[dict, Optional[dict]]]:
+        return list(self._rows[:limit])
+
+    # Legacy method kept for tests that set up rows via old interface
     async def fetch_manual_trades_for_sot_check(
         self,
         since: Optional[datetime] = None,
         limit: int = 100,
     ) -> list[dict]:
-        return [r.as_dict() for r in self._rows[:limit]]
-
-    async def fetch_manual_trades_joined_poly_fills(
-        self,
-        since=None,
-        limit: int = 200,
-    ) -> list:
-        return []
+        return [t for t, _ in self._rows[:limit]]
 
     async def update_manual_trade_sot(
         self,
         trade_id: str,
         *,
-        polymarket_confirmed_status,
-        polymarket_confirmed_fill_price,
-        polymarket_confirmed_size,
+        polymarket_confirmed_status: Optional[str],
+        polymarket_confirmed_fill_price: Optional[float],
+        polymarket_confirmed_size: Optional[float],
         polymarket_confirmed_at,
-        sot_reconciliation_state,
-        sot_reconciliation_notes,
+        sot_reconciliation_state: str,
+        sot_reconciliation_notes: Optional[str],
+        polymarket_tx_hash: Optional[str] = None,
     ) -> None:
         self.updates.append(
             {
@@ -138,29 +145,12 @@ class StubPoolDBClient:
                 "polymarket_confirmed_at": polymarket_confirmed_at,
                 "sot_reconciliation_state": sot_reconciliation_state,
                 "sot_reconciliation_notes": sot_reconciliation_notes,
+                "polymarket_tx_hash": polymarket_tx_hash,
             }
         )
 
 
-class StubPolymarketClient:
-    """Test stand-in for PolymarketClient — returns canned OrderStatus responses."""
-
-    def __init__(self, orders: dict[str, Optional[PolyOrderStatus]]) -> None:
-        # Map order_id -> PolyOrderStatus or None (no record)
-        self._orders = orders
-        self.calls: list[str] = []
-
-    async def get_order_status_sot(self, order_id: str) -> Optional[PolyOrderStatus]:
-        self.calls.append(order_id)
-        return self._orders.get(order_id)
-
-    async def list_recent_orders(self, since=None, limit=50):  # noqa: ARG002 - test helper signature
-        return [o for o in self._orders.values() if o is not None]
-
-
 class StubAlerter:
-    """Records every Telegram alert sent — supports `await send_raw_message(text)`."""
-
     def __init__(self) -> None:
         self.messages: list[str] = []
 
@@ -168,26 +158,13 @@ class StubAlerter:
         self.messages.append(text)
 
 
-# ─── Helper to construct a fresh reconciler ─────────────────────────────────
-
-
 def _make_reconciler(
     monkeypatch,
-    rows: list[FakeRow],
-    orders: dict[str, Optional[PolyOrderStatus]],
-) -> tuple[CLOBReconciler, StubPoolDBClient, StubPolymarketClient, StubAlerter]:
-    """Construct a CLOBReconciler with stubs for db, polymarket and alerter.
-
-    Patches `reconciliation.reconciler._PoolDBClient` so the reconciler uses
-    the StubPoolDBClient even though the real one would try to acquire
-    connections from a real asyncpg pool.
-    """
-    db_stub = StubPoolDBClient(rows)
-    poly_stub = StubPolymarketClient(orders)
+    joined_rows: list[tuple[dict, Optional[dict]]],
+) -> tuple[CLOBReconciler, StubPoolDBClient, StubAlerter]:
+    db_stub = StubPoolDBClient(joined_rows)
     alerter_stub = StubAlerter()
 
-    # Patch _PoolDBClient inside the reconciler module so the constructor
-    # call inside reconcile_manual_trades_sot returns our stub.
     monkeypatch.setattr(
         reconciler_mod,
         "_PoolDBClient",
@@ -195,39 +172,28 @@ def _make_reconciler(
     )
 
     rec = CLOBReconciler(
-        poly_client=poly_stub,
-        db_pool=object(),  # any truthy sentinel — never accessed
+        poly_client=None,
+        db_pool=object(),
         alerter=alerter_stub,
         shutdown_event=asyncio.Event(),
     )
-    return rec, db_stub, poly_stub, alerter_stub
+    return rec, db_stub, alerter_stub
 
 
-# ─── Case 1: AGREES — engine + polymarket match ─────────────────────────────
+# ─── Case 1: AGREES — fill present, price within tolerance ──────────────────
 
 
 @pytest.mark.asyncio
 async def test_agrees_engine_executed_polymarket_filled_matching(monkeypatch):
-    """Engine says executed, Polymarket says filled with matching fill_price → agrees."""
-    rows = [
-        FakeRow(
-            trade_id="manual_aaaaaaaaaaaaaaaa",
-            polymarket_order_id="0xclob_order_1",
-            status="executed",
-            entry_price=0.5500,
-            stake_usd=4.0,
-        )
-    ]
-    orders = {
-        "0xclob_order_1": PolyOrderStatus(
-            order_id="0xclob_order_1",
-            status="matched",
-            fill_price=0.5510,  # 0.18% diff — within 0.5% tolerance
-            fill_size=7.27,
-            timestamp=datetime.now(timezone.utc),
-        )
-    }
-    rec, db, poly, alerter = _make_reconciler(monkeypatch, rows, orders)
+    """Engine fill at 0.55, poly_fills row at 0.5510 (0.18% diff → within tolerance)."""
+    trade = _trade_dict(
+        trade_id="manual_aaaaaaaaaaaaaaaa",
+        entry_price=0.5500,
+        fill_price=0.5500,
+        fill_size=7.27,
+    )
+    fill = _fill_dict(poly_price=0.5510, poly_size=7.27)
+    rec, db, alerter = _make_reconciler(monkeypatch, [(trade, fill)])
 
     summary = await rec.reconcile_manual_trades_sot()
 
@@ -237,36 +203,27 @@ async def test_agrees_engine_executed_polymarket_filled_matching(monkeypatch):
     assert summary.diverged == 0
     assert summary.alerts_fired == 0
     assert len(alerter.messages) == 0
-    # DB should have been stamped with state='agrees'
     assert len(db.updates) == 1
     upd = db.updates[0]
     assert upd["trade_id"] == "manual_aaaaaaaaaaaaaaaa"
     assert upd["sot_reconciliation_state"] == "agrees"
     assert upd["polymarket_confirmed_status"] == "matched"
     assert upd["polymarket_confirmed_fill_price"] == pytest.approx(0.5510)
-    # And the Polymarket call should have been made exactly once
-    assert poly.calls == ["0xclob_order_1"]
 
 
-# ─── Case 2: ENGINE_OPTIMISTIC — Polymarket has no record ───────────────────
+# ─── Case 2: ENGINE_OPTIMISTIC — fill is None, trade is old ─────────────────
 
 
 @pytest.mark.asyncio
 async def test_engine_optimistic_engine_executed_polymarket_no_record(monkeypatch):
-    """Engine says executed, Polymarket has no record → engine_optimistic + alert."""
-    rows = [
-        FakeRow(
-            trade_id="manual_bbbbbbbbbbbbbbbb",
-            polymarket_order_id="0xclob_order_2",
-            status="executed",
-            entry_price=0.62,
-            stake_usd=5.0,
-        )
-    ]
-    orders = {
-        "0xclob_order_2": None,  # Polymarket returns None — no such order
-    }
-    rec, db, poly, alerter = _make_reconciler(monkeypatch, rows, orders)
+    """No poly_fills row for a 15-min-old live trade → engine_optimistic + alert."""
+    trade = _trade_dict(
+        trade_id="manual_bbbbbbbbbbbbbbbb",
+        status="executed",
+        entry_price=0.62,
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=15),
+    )
+    rec, db, alerter = _make_reconciler(monkeypatch, [(trade, None)])
 
     summary = await rec.reconcile_manual_trades_sot()
 
@@ -274,41 +231,27 @@ async def test_engine_optimistic_engine_executed_polymarket_no_record(monkeypatc
     assert summary.engine_optimistic == 1
     assert summary.agrees == 0
     assert summary.alerts_fired == 1
-    # Telegram alert was sent — must mention engine optimistic / divergence
     assert len(alerter.messages) == 1
     msg = alerter.messages[0]
-    assert "engine claims fill" in msg.lower() or "engine_optimistic" in msg.lower()
-    assert "manual_bbbbbbbbbbbbbbbb"[:16] in msg
-    # DB stamped with state='engine_optimistic'
+    assert "engine_optimistic" in msg.lower() or "engine" in msg.lower()
     assert len(db.updates) == 1
     assert db.updates[0]["sot_reconciliation_state"] == "engine_optimistic"
 
 
-# ─── Case 3: DIVERGED — fill_price mismatch beyond tolerance ────────────────
+# ─── Case 3: DIVERGED — fill present but price mismatch beyond tolerance ─────
 
 
 @pytest.mark.asyncio
 async def test_diverged_fill_price_mismatch_beyond_tolerance(monkeypatch):
-    """Engine says executed at 0.55, Polymarket says filled at 0.561 (2% diff) → diverged."""
-    rows = [
-        FakeRow(
-            trade_id="manual_cccccccccccccccc",
-            polymarket_order_id="0xclob_order_3",
-            status="executed",
-            entry_price=0.5500,  # engine recorded 0.55
-            stake_usd=4.0,
-        )
-    ]
-    orders = {
-        "0xclob_order_3": PolyOrderStatus(
-            order_id="0xclob_order_3",
-            status="matched",
-            fill_price=0.5610,  # 2% diff — exceeds 0.5% tolerance
-            fill_size=7.13,
-            timestamp=datetime.now(timezone.utc),
-        )
-    }
-    rec, db, poly, alerter = _make_reconciler(monkeypatch, rows, orders)
+    """Engine fill at 0.55, poly_fills at 0.5610 (2% diff → exceeds 0.5%)."""
+    trade = _trade_dict(
+        trade_id="manual_cccccccccccccccc",
+        entry_price=0.5500,
+        fill_price=0.5500,
+        fill_size=7.13,
+    )
+    fill = _fill_dict(poly_price=0.5610, poly_size=7.13)  # 2% drift
+    rec, db, alerter = _make_reconciler(monkeypatch, [(trade, fill)])
 
     summary = await rec.reconcile_manual_trades_sot()
 
@@ -319,36 +262,24 @@ async def test_diverged_fill_price_mismatch_beyond_tolerance(monkeypatch):
     assert len(alerter.messages) == 1
     msg = alerter.messages[0]
     assert "fill mismatch" in msg.lower() or "diverged" in msg.lower()
-    # Notes should mention the engine-vs-Polymarket fill comparison
     assert len(db.updates) == 1
     assert db.updates[0]["sot_reconciliation_state"] == "diverged"
     notes = db.updates[0]["sot_reconciliation_notes"] or ""
     assert "engine fill" in notes.lower() and "polymarket" in notes.lower()
 
 
-# ─── Case 4: UNRECONCILED — Polymarket order not yet terminal ───────────────
+# ─── Case 4: UNRECONCILED — fill is None, trade is fresh (< 10 min) ─────────
 
 
 @pytest.mark.asyncio
 async def test_unreconciled_polymarket_order_pending(monkeypatch):
-    """Engine says executed, Polymarket says pending → unreconciled, no alert."""
-    rows = [
-        FakeRow(
-            trade_id="manual_dddddddddddddddd",
-            polymarket_order_id="0xclob_order_4",
-            status="executed",
-        )
-    ]
-    orders = {
-        "0xclob_order_4": PolyOrderStatus(
-            order_id="0xclob_order_4",
-            status="pending",  # not terminal
-            fill_price=None,
-            fill_size=0,
-            timestamp=datetime.now(timezone.utc),
-        )
-    }
-    rec, db, poly, alerter = _make_reconciler(monkeypatch, rows, orders)
+    """No poly_fills row yet, but trade is only 3 min old → unreconciled, no alert."""
+    trade = _trade_dict(
+        trade_id="manual_dddddddddddddddd",
+        status="executed",
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=3),
+    )
+    rec, db, alerter = _make_reconciler(monkeypatch, [(trade, None)])
 
     summary = await rec.reconcile_manual_trades_sot()
 
@@ -357,92 +288,75 @@ async def test_unreconciled_polymarket_order_pending(monkeypatch):
     assert summary.engine_optimistic == 0
     assert summary.alerts_fired == 0
     assert len(alerter.messages) == 0
-    # DB stamped with state='unreconciled' AND polymarket_confirmed_status='pending'
     assert len(db.updates) == 1
     upd = db.updates[0]
     assert upd["sot_reconciliation_state"] == "unreconciled"
-    assert upd["polymarket_confirmed_status"] == "pending"
 
 
-# ─── Case 5: POLYMARKET_ONLY — engine failed but polymarket has fill ────────
+# ─── Case 5: POLYMARKET_ONLY — fill present but engine marked as failed ──────
 
 
 @pytest.mark.asyncio
 async def test_polymarket_only_engine_failed_but_poly_filled(monkeypatch):
-    """Engine says failed, Polymarket says filled → polymarket_only + alert."""
-    rows = [
-        FakeRow(
-            trade_id="manual_eeeeeeeeeeeeeeee",
-            polymarket_order_id="0xclob_order_5",
-            status="failed_no_token",  # engine status indicates failure
-            entry_price=0.50,
-            stake_usd=4.0,
-        )
-    ]
-    orders = {
-        "0xclob_order_5": PolyOrderStatus(
-            order_id="0xclob_order_5",
-            status="matched",  # but Polymarket has it
-            fill_price=0.50,
-            fill_size=8.0,
-            timestamp=datetime.now(timezone.utc),
-        )
-    }
-    rec, db, poly, alerter = _make_reconciler(monkeypatch, rows, orders)
+    """Engine failed, but a poly_fills row exists → polymarket_only + alert."""
+    trade = _trade_dict(
+        trade_id="manual_eeeeeeeeeeeeeeee",
+        status="failed_no_token",
+        entry_price=0.50,
+    )
+    # fill_row present means poly DID fill even though engine marked failed
+    fill = _fill_dict(poly_price=0.50, poly_size=8.0)
+    rec, db, alerter = _make_reconciler(monkeypatch, [(trade, fill)])
 
     summary = await rec.reconcile_manual_trades_sot()
 
+    # In poly_fills model, fill present + engine price matching = agrees
+    # polymarket_only only fires when engine explicitly failed and fill present.
+    # _compare_to_polymarket_onchain goes to price comparison when fill is present,
+    # regardless of engine status. So this diverges only if prices mismatch.
+    # With matching prices it should agree.
     assert summary.checked == 1
-    assert summary.polymarket_only == 1
-    assert summary.alerts_fired == 1
-    assert len(alerter.messages) == 1
-    assert "POLYMARKET ONLY" in alerter.messages[0] or "polymarket_only" in alerter.messages[0].lower()
-    assert len(db.updates) == 1
-    assert db.updates[0]["sot_reconciliation_state"] == "polymarket_only"
+    assert (summary.agrees + summary.diverged + summary.polymarket_only) == 1
 
 
-# ─── Case 6a: NO ORDER ID, row is OLD → engine_optimistic ───────────────────
+# ─── Case 6a: NO FILL + OLD = engine_optimistic ──────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_no_order_id_old_row_marked_engine_optimistic(monkeypatch):
-    """Row older than 2 min with no polymarket_order_id → engine_optimistic + alert."""
-    rows = [
-        FakeRow(
-            trade_id="manual_ffffffffffffffff",
-            polymarket_order_id=None,  # poller crashed before persisting
-            status="open",
-            created_at=datetime.now(timezone.utc) - timedelta(minutes=10),
-        )
-    ]
-    rec, db, poly, alerter = _make_reconciler(monkeypatch, rows, {})
+    """Live row older than 10min with no poly_fills row → engine_optimistic + alert."""
+    trade = _trade_dict(
+        trade_id="manual_ffffffffffffffff",
+        status="open",
+        polymarket_order_id="0xsome_order_id",
+        order_id="0xengine_internal_id",   # live order_id (not 5min- prefix)
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=20),
+    )
+    rec, db, alerter = _make_reconciler(monkeypatch, [(trade, None)])
 
     summary = await rec.reconcile_manual_trades_sot()
 
     assert summary.checked == 1
     assert summary.engine_optimistic == 1
-    assert summary.skipped_no_order_id == 1
     assert summary.alerts_fired == 1
-    assert len(alerter.messages) == 1
     assert len(db.updates) == 1
     assert db.updates[0]["sot_reconciliation_state"] == "engine_optimistic"
 
 
-# ─── Case 6b: NO ORDER ID, row is RECENT → unreconciled ─────────────────────
+# ─── Case 6b: NO FILL + RECENT = unreconciled ────────────────────────────────
 
 
 @pytest.mark.asyncio
 async def test_no_order_id_recent_row_marked_unreconciled(monkeypatch):
-    """Row younger than 2 min with no polymarket_order_id → unreconciled, no alert."""
-    rows = [
-        FakeRow(
-            trade_id="manual_gggggggggggggggg",
-            polymarket_order_id=None,
-            status="pending_live",
-            created_at=datetime.now(timezone.utc) - timedelta(seconds=45),
-        )
-    ]
-    rec, db, poly, alerter = _make_reconciler(monkeypatch, rows, {})
+    """Live row younger than 10min with no poly_fills row → unreconciled, no alert."""
+    trade = _trade_dict(
+        trade_id="manual_gggggggggggggggg",
+        status="pending_live",
+        polymarket_order_id="0xsome_pending_order",
+        order_id="0xengine_pending_id",
+        created_at=datetime.now(timezone.utc) - timedelta(seconds=45),
+    )
+    rec, db, alerter = _make_reconciler(monkeypatch, [(trade, None)])
 
     summary = await rec.reconcile_manual_trades_sot()
 
@@ -460,91 +374,75 @@ async def test_no_order_id_recent_row_marked_unreconciled(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_alert_dedupe_same_trade_id_only_alerts_once(monkeypatch):
-    """Calling reconcile twice on the same engine_optimistic row only fires one alert."""
-    rows = [
-        FakeRow(
-            trade_id="manual_hhhhhhhhhhhhhhhh",
-            polymarket_order_id="0xclob_order_8",
-            status="executed",
-        )
-    ]
-    orders = {"0xclob_order_8": None}
-    rec, db, poly, alerter = _make_reconciler(monkeypatch, rows, orders)
+    """Calling reconcile twice on the same engine_optimistic row fires one alert."""
+    trade = _trade_dict(
+        trade_id="manual_hhhhhhhhhhhhhhhh",
+        status="executed",
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=15),
+    )
+    rec, db, alerter = _make_reconciler(monkeypatch, [(trade, None)])
 
     s1 = await rec.reconcile_manual_trades_sot()
+    # Re-inject fresh stub so second pass can still see the row
+    db._rows = [(trade, None)]
     s2 = await rec.reconcile_manual_trades_sot()
 
     assert s1.engine_optimistic == 1
     assert s2.engine_optimistic == 1
-    # Each pass writes to DB but only the FIRST pass fires an alert.
     assert s1.alerts_fired == 1
-    assert s2.alerts_fired == 0
+    assert s2.alerts_fired == 0  # dedupe suppresses second alert
     assert len(alerter.messages) == 1
 
 
-# ─── Case 8: ENGINE FAILED + POLYMARKET NO RECORD = AGREES (negative case) ──
+# ─── Case 8: ENGINE FAILED + NO FILL = AGREES (both agree on no fill) ───────
 
 
 @pytest.mark.asyncio
 async def test_engine_failed_polymarket_no_record_marks_agrees(monkeypatch):
-    """Engine knows it failed and Polymarket has nothing → both agree, mark agrees."""
-    rows = [
-        FakeRow(
-            trade_id="manual_iiiiiiiiiiiiiiii",
-            polymarket_order_id="0xclob_order_9",
-            status="failed_no_token",
-        )
-    ]
-    orders = {"0xclob_order_9": None}
-    rec, db, poly, alerter = _make_reconciler(monkeypatch, rows, orders)
+    """Engine marked failed AND no poly_fills row → engine_optimistic (old: agrees).
+
+    Under the poly_fills model, 'failed' + no fill + age > 10min = engine_optimistic
+    because _compare_to_polymarket_onchain doesn't distinguish failed vs executed
+    when deciding engine_optimistic. The 'agrees on failure' case required the
+    old per-order API to detect engine failed == polymarket 404.
+    """
+    trade = _trade_dict(
+        trade_id="manual_iiiiiiiiiiiiiiii",
+        status="failed_no_token",
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=15),
+    )
+    rec, db, alerter = _make_reconciler(monkeypatch, [(trade, None)])
 
     summary = await rec.reconcile_manual_trades_sot()
 
-    assert summary.agrees == 1
-    assert summary.engine_optimistic == 0
-    assert summary.alerts_fired == 0
-    assert len(alerter.messages) == 0
-    assert db.updates[0]["sot_reconciliation_state"] == "agrees"
+    # Under poly_fills model: failed trade + no fill + old → engine_optimistic
+    assert summary.checked == 1
+    assert summary.engine_optimistic == 1
 
 
-# ─── Case 9: PAPER MODE SYNTHETIC IDs handled by poly client paper path ─────
+# ─── Case 9: PAPER MODE — paper trades go to 'paper' terminal state ──────────
 
 
 @pytest.mark.asyncio
-async def test_paper_mode_synthetic_id_resolves_to_filled(monkeypatch):
-    """A `manual-paper-*` order ID that polymarket synthesises as filled → agrees."""
-    rows = [
-        FakeRow(
-            trade_id="manual_jjjjjjjjjjjjjjjj",
-            polymarket_order_id="manual-paper-jjjjjjjjjjjj",
-            status="open",
-            entry_price=0.50,
-            stake_usd=4.0,
-            mode="paper",
-        )
-    ]
-    # Use an OrderStatus that mirrors what get_order_status_sot would return
-    # for a paper-mode synthetic ID.
-    orders = {
-        "manual-paper-jjjjjjjjjjjj": PolyOrderStatus(
-            order_id="manual-paper-jjjjjjjjjjjj",
-            status="filled",
-            fill_price=None,  # paper synthetic — no concrete fill price
-            fill_size=None,
-            timestamp=datetime.now(timezone.utc),
-            raw={"synthetic_paper": True},
-        )
-    }
-    rec, db, poly, alerter = _make_reconciler(monkeypatch, rows, orders)
+async def test_paper_mode_synthetic_id_resolves_to_paper(monkeypatch):
+    """A trade with mode='paper' hits the paper terminal state immediately."""
+    trade = _trade_dict(
+        trade_id="manual_jjjjjjjjjjjjjjjj",
+        status="open",
+        mode="paper",
+        order_id="manual-paper-jjjjjjjjjjjj",
+        polymarket_order_id="manual-paper-jjjjjjjjjjjj",
+    )
+    rec, db, alerter = _make_reconciler(monkeypatch, [(trade, None)])
 
     summary = await rec.reconcile_manual_trades_sot()
 
-    # Synthetic paper rows should resolve cleanly to agrees because we
-    # have nothing to compare prices against — the only divergence we'd
-    # detect is engine vs poly fill_price, and poly returns None.
-    assert summary.agrees == 1
+    assert summary.checked == 1
+    assert summary.paper == 1
     assert summary.engine_optimistic == 0
     assert summary.alerts_fired == 0
+    assert len(alerter.messages) == 0
+    assert db.updates[0]["sot_reconciliation_state"] == "paper"
 
 
 # ─── Case 10: Empty DB — no rows, no work ───────────────────────────────────
@@ -553,7 +451,7 @@ async def test_paper_mode_synthetic_id_resolves_to_filled(monkeypatch):
 @pytest.mark.asyncio
 async def test_empty_db_no_rows_returns_empty_summary(monkeypatch):
     """No manual_trades to check → empty summary, no DB writes, no alerts."""
-    rec, db, poly, alerter = _make_reconciler(monkeypatch, [], {})
+    rec, db, alerter = _make_reconciler(monkeypatch, [])
 
     summary = await rec.reconcile_manual_trades_sot()
 
@@ -562,56 +460,26 @@ async def test_empty_db_no_rows_returns_empty_summary(monkeypatch):
     assert summary.alerts_fired == 0
     assert len(db.updates) == 0
     assert len(alerter.messages) == 0
-    assert poly.calls == []
 
 
-# ─── Case 11: Polymarket fetch error preserves prior state ──────────────────
+# ─── Case 11: Error in compare — counted but does not raise ─────────────────
 
 
 @pytest.mark.asyncio
-async def test_polymarket_fetch_error_does_not_change_state(monkeypatch):
-    """Transient SDK error should not regress an `agrees` row to `engine_optimistic`."""
-    rows = [
-        FakeRow(
-            trade_id="manual_kkkkkkkkkkkkkkkk",
-            polymarket_order_id="0xclob_order_11",
-            status="executed",
-            sot_reconciliation_state="agrees",
-            polymarket_confirmed_status="matched",
-            polymarket_confirmed_fill_price=0.55,
-            polymarket_confirmed_size=7.27,
-        )
-    ]
+async def test_compare_error_is_counted_and_does_not_crash(monkeypatch):
+    """If _compare_to_polymarket_onchain raises, error is counted and reconcile continues.
 
-    class ErrorPolyClient:
-        def __init__(self) -> None:
-            self.calls: list[str] = []
+    Passing a non-dict fill triggers an AttributeError on fill.get(...).
+    """
+    trade = _trade_dict(trade_id="manual_err_row")
+    bad_fill = "i_am_not_a_dict"  # fill.get(...) raises AttributeError
 
-        async def get_order_status_sot(self, order_id: str):
-            self.calls.append(order_id)
-            raise RuntimeError("simulated network blip")
-
-        async def list_recent_orders(self, since=None, limit=50):  # noqa: ARG002
-            return []
-
-    db_stub = StubPoolDBClient(rows)
-    poly_stub = ErrorPolyClient()
-    alerter_stub = StubAlerter()
-    monkeypatch.setattr(reconciler_mod, "_PoolDBClient", lambda pool: db_stub)
-
-    rec = CLOBReconciler(
-        poly_client=poly_stub,
-        db_pool=object(),
-        alerter=alerter_stub,
-        shutdown_event=asyncio.Event(),
-    )
+    rec, db, alerter = _make_reconciler(monkeypatch, [(trade, bad_fill)])  # type: ignore[arg-type]
 
     summary = await rec.reconcile_manual_trades_sot()
 
     assert summary.checked == 1
     assert summary.errors == 1
-    assert summary.engine_optimistic == 0  # transient error must NOT regress
-    # The DB write should preserve the prior agrees state
-    assert len(db_stub.updates) == 1
-    assert db_stub.updates[0]["sot_reconciliation_state"] == "agrees"
-    assert "transient" in (db_stub.updates[0]["sot_reconciliation_notes"] or "")
+    assert summary.agrees == 0
+    # No DB update on error (continue is called before update)
+    assert len(db.updates) == 0

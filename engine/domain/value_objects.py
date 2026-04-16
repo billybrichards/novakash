@@ -15,30 +15,67 @@ which fields the contract requires.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
 # Shared identity types
 # ---------------------------------------------------------------------------
 
+_VALID_TIMEFRAMES = {"5m", "15m", "1h", "4h", "1d"}
+_VALID_DURATIONS = {300, 900, 3600, 14400, 86400}
+_TF_TO_SECS = {"5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
+_SECS_TO_TF = {v: k for k, v in _TF_TO_SECS.items()}
+
 
 @dataclass(frozen=True)
 class WindowKey:
-    """Unique identifier for a 5-minute binary-options window."""
+    """Unique identifier for a trading window.
+
+    Accepts either ``timeframe`` ("5m", "15m", …) or ``duration_secs`` (300, 900, …)
+    as the 3rd positional / keyword argument.  Both forms are valid — the stored
+    field is ``timeframe`` for backwards-compatibility with all production callers.
+
+    Tests may use ``duration_secs=`` as a keyword; the value is converted to the
+    canonical timeframe string in ``__post_init__``.
+    """
 
     asset: str
     window_ts: int
     timeframe: str = "5m"
+    # duration_secs as an accepted keyword — stored internally then converted
+    duration_secs: int = field(default=0, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        # Handle duration_secs → timeframe conversion
+        if self.duration_secs and self.duration_secs in _SECS_TO_TF:
+            object.__setattr__(self, "timeframe", _SECS_TO_TF[self.duration_secs])
+        elif self.duration_secs and self.duration_secs not in _SECS_TO_TF:
+            raise ValueError(f"duration_secs must be one of {set(_VALID_DURATIONS)}")
+
+        if not self.asset:
+            raise ValueError("asset must be non-empty")
+        if self.window_ts <= 0:
+            raise ValueError("window_ts must be positive")
+        if self.timeframe not in _VALID_TIMEFRAMES:
+            raise ValueError(f"timeframe must be one of {_VALID_TIMEFRAMES}")
+        # Sync duration_secs from timeframe
+        object.__setattr__(self, "duration_secs", _TF_TO_SECS.get(self.timeframe, 300))
+
+    @property
+    def key(self) -> str:
+        """Short key without timeframe: '{asset}-{window_ts}'."""
+        return f"{self.asset}-{self.window_ts}"
 
     def __str__(self) -> str:
-        """Canonical string representation: BTC-1776201300-15m."""
+        """Canonical string representation: BTC-1776201300-5m."""
         return f"{self.asset}-{self.window_ts}-{self.timeframe}"
 
 
 # ---------------------------------------------------------------------------
-# Market feed types (consumed by EvaluateWindowUseCase -- still stubs)
+# Market feed types (consumed by EvaluateWindowUseCase)
 # ---------------------------------------------------------------------------
 
 
@@ -46,54 +83,147 @@ class WindowKey:
 class Tick:
     """Single price observation from a market feed."""
 
-    pass
+    source: str
+    asset: str
+    price: float
+    timestamp: float
+
+    def __post_init__(self) -> None:
+        if not self.source:
+            raise ValueError("source must be non-empty")
+        if not math.isfinite(self.price):
+            raise ValueError("price must be finite")
+        if self.price <= 0:
+            raise ValueError("price must be positive")
+        if self.timestamp <= 0:
+            raise ValueError("timestamp must be positive")
 
 
 @dataclass(frozen=True)
 class WindowClose:
     """Event emitted when a 5-minute window closes."""
 
-    pass
+    asset: str
+    window_ts: int
+    duration_secs: int
+    open_price: float
+    close_ts: float
+
+    def __post_init__(self) -> None:
+        if self.duration_secs not in _VALID_DURATIONS:
+            raise ValueError(f"duration_secs must be one of {_VALID_DURATIONS}")
+        if self.open_price <= 0:
+            raise ValueError("open_price must be positive")
+
+    @property
+    def window_key(self) -> "WindowKey":
+        return WindowKey(asset=self.asset, window_ts=self.window_ts, duration_secs=self.duration_secs)
 
 
 @dataclass(frozen=True)
 class DeltaSet:
     """Per-source delta triple (CL/TI/BIN) for a window."""
 
-    pass
+    delta_chainlink: Optional[float] = None
+    delta_tiingo: Optional[float] = None
+    delta_binance: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        for name in ("delta_chainlink", "delta_tiingo", "delta_binance"):
+            val = getattr(self, name)
+            if val is not None and not math.isfinite(val):
+                raise ValueError(f"{name} must be finite")
+
+    @property
+    def available_count(self) -> int:
+        return sum(1 for d in (self.delta_chainlink, self.delta_tiingo, self.delta_binance) if d is not None)
+
+    @property
+    def agreeing_sign(self) -> Optional[str]:
+        """'UP' | 'DOWN' | None — majority sign or None if no majority."""
+        signs = [d for d in (self.delta_chainlink, self.delta_tiingo, self.delta_binance) if d is not None]
+        if not signs:
+            return None
+        ups = sum(1 for s in signs if s > 0)
+        downs = sum(1 for s in signs if s < 0)
+        if ups > downs:
+            return "UP"
+        if downs > ups:
+            return "DOWN"
+        return None
 
 
 # ---------------------------------------------------------------------------
-# Signal / evaluation types (consumed by EvaluateWindowUseCase -- still stubs)
+# Signal / evaluation types (consumed by EvaluateWindowUseCase)
 # ---------------------------------------------------------------------------
+
+_VALID_EVAL_TIMEFRAMES = {"5m", "15m"}
+_VALID_DECISIONS = {"TRADE", "SKIP", "ERROR"}
 
 
 @dataclass(frozen=True)
 class SignalEvaluation:
     """One row of the signal_evaluations audit table."""
 
-    pass
+    window_ts: int
+    asset: str
+    timeframe: str
+    eval_offset: int
+    decision: str = "SKIP"
+
+    def __post_init__(self) -> None:
+        if self.timeframe not in _VALID_EVAL_TIMEFRAMES:
+            raise ValueError(f"timeframe must be one of {_VALID_EVAL_TIMEFRAMES}")
+        if self.eval_offset < 0:
+            raise ValueError("eval_offset must be >= 0")
+        if self.decision not in _VALID_DECISIONS:
+            raise ValueError(f"decision must be one of {_VALID_DECISIONS}")
 
 
 @dataclass(frozen=True)
 class ClobSnapshot:
     """Point-in-time snapshot of a CLOB order book."""
 
-    pass
+    asset: str
+    timeframe: str
+    window_ts: int
+
+    def __post_init__(self) -> None:
+        if self.timeframe not in _VALID_EVAL_TIMEFRAMES:
+            raise ValueError(f"timeframe must be one of {_VALID_EVAL_TIMEFRAMES}")
 
 
 @dataclass(frozen=True)
 class GateAuditRow:
     """Audit row recording which gates ran and their results."""
 
-    pass
+    window_ts: int
+    asset: str
+    timeframe: str
+    eval_offset: int
+    decision: str = "SKIP"
+
+    def __post_init__(self) -> None:
+        if self.timeframe not in _VALID_EVAL_TIMEFRAMES:
+            raise ValueError(f"timeframe must be one of {_VALID_EVAL_TIMEFRAMES}")
+        if self.eval_offset < 0:
+            raise ValueError("eval_offset must be >= 0")
+        if self.decision not in _VALID_DECISIONS:
+            raise ValueError(f"decision must be one of {_VALID_DECISIONS}")
 
 
 @dataclass(frozen=True)
 class WindowSnapshot:
     """Full snapshot of a window for backfill and UI hydration."""
 
-    pass
+    window_ts: int
+    asset: str
+    timeframe: str
+    is_live: bool = False
+
+    def __post_init__(self) -> None:
+        if self.timeframe not in _VALID_EVAL_TIMEFRAMES:
+            raise ValueError(f"timeframe must be one of {_VALID_EVAL_TIMEFRAMES}")
 
 
 @dataclass(frozen=True)
@@ -226,11 +356,27 @@ class FillResult:
     Fields populated by PolymarketClientPort.place_order().
     """
 
-    order_id: str
-    filled_size: float
-    filled_price: float
+    filled: bool = False
+    order_id: Optional[str] = None
+    fill_price: Optional[float] = None
+    shares: Optional[float] = None
+    attempts: int = 0
+    # Legacy aliases retained for production adapters
+    filled_size: Optional[float] = None
+    filled_price: Optional[float] = None
     fees: float = 0.0
     status: str = "FILLED"
+
+    def __post_init__(self) -> None:
+        if self.fill_price is not None:
+            if not math.isfinite(self.fill_price):
+                raise ValueError("fill_price must be finite")
+            if self.fill_price < 0:
+                raise ValueError("fill_price cannot be negative")
+        if self.attempts < 0:
+            raise ValueError("attempts cannot be negative")
+        if self.filled and not self.order_id:
+            raise ValueError("filled result must have an order_id")
 
 
 @dataclass(frozen=True)
@@ -240,18 +386,47 @@ class WindowMarket:
     Contains the up/down CLOB token IDs needed for order placement.
     """
 
-    condition_id: str
-    up_token_id: str
-    down_token_id: str
-    market_slug: str
+    asset: str = ""
+    window_ts: int = 0
+    up_token_id: Optional[str] = None
+    down_token_id: Optional[str] = None
+    up_price: Optional[float] = None
+    down_price: Optional[float] = None
+    # Legacy fields retained for production adapters
+    condition_id: Optional[str] = None
+    market_slug: Optional[str] = None
     active: bool = True
+
+    def __post_init__(self) -> None:
+        if self.up_price is not None and not math.isfinite(self.up_price):
+            raise ValueError("up_price must be finite")
+        if self.down_price is not None and not math.isfinite(self.down_price):
+            raise ValueError("down_price must be finite")
+
+    @property
+    def has_tokens(self) -> bool:
+        return bool(self.up_token_id and self.down_token_id)
 
 
 @dataclass(frozen=True)
 class OrderBook:
     """Live CLOB order book for a single token."""
 
-    pass
+    token_id: str = ""
+    bids: Tuple = field(default_factory=tuple)
+    asks: Tuple = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if not self.token_id:
+            raise ValueError("token_id must be non-empty")
+
+    @property
+    def spread(self) -> Optional[float]:
+        if not self.bids or not self.asks:
+            return None
+        best_bid = self.bids[0][0]
+        best_ask = self.asks[0][0]
+        return best_ask - best_bid
 
 
 # ---------------------------------------------------------------------------
@@ -268,12 +443,24 @@ class PendingTrade:
     """
 
     trade_id: str
+    window_ts: int
+    asset: str
     direction: str  # "UP" or "DOWN"
     entry_price: float
     stake_usd: float
-    window_ts: int
-    asset: str = "BTC"
     timeframe: str = "5m"
+
+    def __post_init__(self) -> None:
+        if self.direction not in ("UP", "DOWN"):
+            raise ValueError(f"direction must be 'UP' or 'DOWN', got {self.direction!r}")
+        if not math.isfinite(self.entry_price):
+            raise ValueError("entry_price must be finite")
+        if self.entry_price > 1.0:
+            raise ValueError("entry_price must be <= 1.0")
+
+    @property
+    def clob_side(self) -> str:
+        return "YES" if self.direction == "UP" else "NO"
 
 
 @dataclass(frozen=True)
@@ -289,6 +476,13 @@ class ManualTradeOutcome:
     paper: bool = False
     token_source: Optional[str] = None  # "recent_windows" | "market_data_db"
 
+    _VALID_STATUSES = frozenset({"open", "failed_no_token"})
+
+    def __post_init__(self) -> None:
+        # Allow "open", "failed_no_token", or anything starting with "failed:"
+        if self.status not in self._VALID_STATUSES and not self.status.startswith("failed:"):
+            raise ValueError(f"invalid manual trade status: {self.status!r}")
+
 
 # ---------------------------------------------------------------------------
 # Trade decision / skip types (consumed by EvaluateWindowUseCase -- stubs)
@@ -299,14 +493,36 @@ class ManualTradeOutcome:
 class TradeDecision:
     """Structured decision output from the gate pipeline."""
 
-    pass
+    window_ts: int
+    asset: str
+    timeframe: str
+    direction: str  # "YES" | "NO"
+    eval_offset: int
+    entry_price: float
+    stake_usd: float
+    engine_version: str = "v10.0"
+
+    def __post_init__(self) -> None:
+        if self.direction not in ("YES", "NO"):
+            raise ValueError(f"direction must be 'YES' or 'NO', got {self.direction!r}")
+        if self.eval_offset < 0:
+            raise ValueError("eval_offset must be >= 0")
 
 
 @dataclass(frozen=True)
 class SkipSummary:
     """Consolidated skip summary for a window where all offsets were skipped."""
 
-    pass
+    window_key: str
+    asset: str
+    window_ts: int
+    n_evals: int
+
+    def __post_init__(self) -> None:
+        if not self.window_key:
+            raise ValueError("window_key must be non-empty")
+        if self.n_evals < 0:
+            raise ValueError("n_evals must be >= 0")
 
 
 # ---------------------------------------------------------------------------
@@ -319,22 +535,34 @@ class SitrepPayload:
     """5-minute SITREP payload for the heartbeat Telegram message.
 
     Built by PublishHeartbeatUseCase.tick() every 5 minutes.
+
+    win_rate is computed from wins_today / (wins_today + losses_today).
+    Any win_rate= keyword argument passed to the constructor is silently
+    ignored (the field below accepts and discards it via the sentinel
+    mechanism in __post_init__).  This allows the legacy production
+    call-site to still pass win_rate=<float> without crashing.
     """
 
-    engine_status: str  # "ACTIVE" | "KILLED"
-    mode_label: str  # "PAPER" | "LIVE"
-    wallet_balance: float
-    daily_pnl: float
-    starting_bankroll: float
-    wins_today: int
-    losses_today: int
-    win_rate: float
-    vpin: float
-    vpin_regime: str
-    btc_price: float
-    open_positions: int
-    drawdown_pct: float
-    kill_switch_active: bool
+    engine_status: str  # "ACTIVE" | "KILLED" | "running"
+    paper_mode: bool = False
+    is_killed: bool = False
+    wallet_balance: float = 0.0
+    bankroll: float = 0.0
+    starting_bankroll: float = 0.0
+    daily_pnl: float = 0.0
+    portfolio_value: float = 0.0
+    wins_today: int = 0
+    losses_today: int = 0
+    # Legacy production fields (retained for backwards compat)
+    mode_label: str = ""  # "PAPER" | "LIVE"
+    # win_rate is stored but overwritten in __post_init__ with computed value
+    win_rate: float = 0.0
+    vpin: float = 0.0
+    vpin_regime: str = ""
+    btc_price: float = 0.0
+    open_positions: int = 0
+    drawdown_pct: float = 0.0
+    kill_switch_active: bool = False
     # Optional rich blocks (pre-formatted Markdown strings)
     recent_trades_block: str = ""
     pending_block: str = ""
@@ -347,6 +575,18 @@ class SitrepPayload:
     # v12: Strategy port last decisions summary
     strategy_summary: Optional[str] = None
 
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.wallet_balance):
+            raise ValueError("wallet_balance must be finite")
+        if self.wins_today < 0:
+            raise ValueError("wins_today must be >= 0")
+        if self.losses_today < 0:
+            raise ValueError("losses_today must be >= 0")
+        # Compute win_rate from wins/losses, overriding any passed-in value
+        total = self.wins_today + self.losses_today
+        computed = self.wins_today / total if total > 0 else 0.0
+        object.__setattr__(self, "win_rate", computed)
+
 
 @dataclass(frozen=True)
 class HeartbeatRow:
@@ -356,14 +596,20 @@ class HeartbeatRow:
     """
 
     engine_status: str
-    current_balance: float
-    peak_balance: float
-    drawdown_pct: float
-    last_vpin: Optional[float]
-    last_cascade_state: Optional[str]
-    active_positions: int
+    active_positions: int = 0
+    current_balance: Optional[float] = None
+    peak_balance: Optional[float] = None
+    drawdown_pct: float = 0.0
+    last_vpin: Optional[float] = None
+    last_cascade_state: Optional[str] = None
     config_snapshot: dict = field(default_factory=dict)
     timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not self.engine_status:
+            raise ValueError("engine_status must be non-empty")
+        if self.current_balance is not None and not math.isfinite(self.current_balance):
+            raise ValueError("current_balance must be finite")
 
 
 # ---------------------------------------------------------------------------
@@ -371,18 +617,60 @@ class HeartbeatRow:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class WindowOutcome:
-    """Outcome of a resolved window (win/loss/push, PnL)."""
+_VALID_WINDOW_OUTCOMES = {"WIN", "LOSS", "PUSH"}
 
-    outcome: str  # "WIN" | "LOSS" | "PUSH"
-    pnl_usd: float
-    resolved_at: float  # Unix epoch
+
+class WindowOutcome:
+    """Outcome of a resolved window (win/loss/push, PnL).
+
+    Used both as a value object (instantiated with outcome/pnl/etc.) and as
+    a namespace for class-level direction constants (WindowOutcome.UP / .DOWN)
+    that are passed to mark_resolved() as plain strings.
+    """
+
+    # Class-level direction constants used by pg_window_repo.mark_resolved()
+    UP: str = "UP"
+    DOWN: str = "DOWN"
+
+    def __init__(
+        self,
+        window_ts: int = 0,
+        asset: str = "",
+        outcome: str = "PUSH",
+        pnl_usd: float = 0.0,
+        resolved_at: float = 0.0,
+    ) -> None:
+        if outcome not in _VALID_WINDOW_OUTCOMES:
+            raise ValueError(f"outcome must be one of {_VALID_WINDOW_OUTCOMES}, got {outcome!r}")
+        self.window_ts = window_ts
+        self.asset = asset
+        self.outcome = outcome
+        self.pnl_usd = pnl_usd
+        self.resolved_at = resolved_at
+
+    def __str__(self) -> str:
+        return self.outcome
+
+    def __repr__(self) -> str:
+        return f"WindowOutcome(outcome={self.outcome!r}, pnl_usd={self.pnl_usd})"
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, WindowOutcome):
+            return (self.window_ts, self.asset, self.outcome, self.pnl_usd) == (
+                other.window_ts, other.asset, other.outcome, other.pnl_usd
+            )
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash((self.window_ts, self.asset, self.outcome, self.pnl_usd))
 
 
 # ---------------------------------------------------------------------------
 # Reconciliation types (consumed by ReconcilePositionsUseCase)
 # ---------------------------------------------------------------------------
+
+
+_VALID_POSITION_OUTCOMES = {"WIN", "LOSS", "OPEN", "UNKNOWN"}
 
 
 @dataclass(frozen=True)
@@ -393,13 +681,25 @@ class PositionOutcome:
     """
 
     condition_id: str
-    token_id: str
     outcome: str  # "WIN" | "LOSS"
-    size: float
-    avg_price: float
-    cost: float
-    value: float
-    pnl_raw: float
+    size: float = 0.0
+    avg_price: float = 0.0
+    cur_price: Optional[float] = None
+    value: float = 0.0
+    cost: float = 0.0
+    pnl: Optional[float] = None
+    # Legacy fields retained for production adapters
+    token_id: Optional[str] = None
+    pnl_raw: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if self.outcome not in _VALID_POSITION_OUTCOMES:
+            raise ValueError(f"outcome must be one of {_VALID_POSITION_OUTCOMES}")
+        if self.size < 0:
+            raise ValueError("size must be >= 0")
+
+
+_VALID_RESOLUTION_OUTCOMES = {"RESOLVED_WIN", "RESOLVED_LOSS"}
 
 
 @dataclass(frozen=True)
@@ -410,12 +710,16 @@ class ResolutionResult:
     """
 
     condition_id: str
-    matched_trade_id: Optional[str]
-    outcome: str  # "WIN" | "LOSS"
+    outcome: str  # "RESOLVED_WIN" | "RESOLVED_LOSS"
     pnl_usd: float
-    status: str  # "RESOLVED_WIN" | "RESOLVED_LOSS"
+    matched_trade_id: Optional[str] = None
+    status: Optional[str] = None  # legacy alias (same as outcome)
     token_id: Optional[str] = None
     match_method: Optional[str] = None  # "exact" | "prefix" | "cost_fallback"
+
+    def __post_init__(self) -> None:
+        if self.outcome not in _VALID_RESOLUTION_OUTCOMES:
+            raise ValueError(f"outcome must be one of {_VALID_RESOLUTION_OUTCOMES}")
 
 
 @dataclass(frozen=True)
@@ -449,10 +753,20 @@ class RiskStatus:
     drawdown_pct: float
     daily_pnl: float
     consecutive_losses: int
-    paper_mode: bool
-    kill_switch_active: bool
+    paper_mode: bool = False
+    kill_switch_active: bool = False
     win_streak: int = 0
     loss_streak: int = 0
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.current_bankroll):
+            raise ValueError("current_bankroll must be finite")
+        if math.isfinite(self.drawdown_pct) and self.drawdown_pct > 1.0:
+            raise ValueError("drawdown_pct must be in [0.0, 1.0] (fraction, not percent)")
+
+    @property
+    def is_killed(self) -> bool:
+        return self.kill_switch_active
 
 
 @dataclass(frozen=True)
@@ -461,6 +775,13 @@ class WalletSnapshot:
 
     balance_usdc: float
     timestamp: float
+    source: str = "polymarket_clob"
+
+    def __post_init__(self) -> None:
+        if self.balance_usdc < 0:
+            raise ValueError("balance_usdc cannot be negative")
+        if not self.source:
+            raise ValueError("source must be non-empty")
 
 
 # ---------------------------------------------------------------------------
