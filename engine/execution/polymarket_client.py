@@ -1297,6 +1297,42 @@ class PolymarketClient:
 
         return float(await asyncio.to_thread(_fetch))
 
+    async def refresh_balance_allowance(self) -> None:
+        """Force CLOB to re-read on-chain USDC balance.
+
+        Polymarket's CLOB balance API caches and can lag on-chain state by
+        10-20 minutes after a redeem transfer settles. Calling
+        ``update_balance_allowance`` pokes their indexer to re-read and
+        makes the NEXT ``get_balance()`` call return fresh data.
+
+        Intended call sites:
+          * After each redeem sweep (redeemer loop in runtime)
+          * On a 60s timer inside the CLOB reconciler poll loop
+
+        Safe to call in paper mode (no-op). Errors logged, never raised —
+        a transient CLOB 5xx should not crash the calling loop.
+        """
+        if self.paper_mode or not self._clob_client:
+            return
+        from py_clob_client.clob_types import BalanceAllowanceParams
+
+        sig_type = int(os.environ.get("POLY_SIGNATURE_TYPE", "2"))
+
+        def _refresh() -> None:
+            params = BalanceAllowanceParams(
+                asset_type="COLLATERAL", signature_type=sig_type
+            )
+            self._clob_client.update_balance_allowance(params)
+
+        try:
+            await asyncio.to_thread(_refresh)
+            self._log.debug("polymarket.balance_allowance_refreshed")
+        except Exception as exc:
+            self._log.warning(
+                "polymarket.balance_allowance_refresh_failed",
+                error=str(exc)[:160],
+            )
+
     async def get_order_status(self, order_id: str) -> dict:
         """Return status dict for a given order ID.
 
