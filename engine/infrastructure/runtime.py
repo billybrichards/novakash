@@ -3208,34 +3208,16 @@ class EngineRuntime:
                         "details": [],
                     }
                 else:
+                    # Wins-only automatic sweep. NO-outcome tokens ("losses"
+                    # — worthless but still on the wallet manifest) are
+                    # redeemed ONLY on manual operator request above
+                    # (`manual_request in {"losses", "all"}`). Rationale:
+                    # losses don't change wallet value but still consume
+                    # relayer quota per redeem; Daisy prefers to control
+                    # that spend by hand. The prior automatic
+                    # `losses_due(interval_hours=24)` branch was removed
+                    # 2026-04-16 at user direction.
                     result = await self._redeemer.redeem_wins(max_positions=2)
-                    if self._redeemer.losses_due(interval_hours=24):
-                        loss_result = await self._redeemer.redeem_losses(
-                            max_positions=10
-                        )
-                        result = {
-                            **result,
-                            "redeem_type": "wins+losses",
-                            "scanned": result.get("scanned", 0)
-                            + loss_result.get("scanned", 0),
-                            "redeemed": result.get("redeemed", 0)
-                            + loss_result.get("redeemed", 0),
-                            "failed": result.get("failed", 0)
-                            + loss_result.get("failed", 0),
-                            "wins": result.get("wins", 0) + loss_result.get("wins", 0),
-                            "losses": result.get("losses", 0)
-                            + loss_result.get("losses", 0),
-                            "total_pnl": result.get("total_pnl", 0.0)
-                            + loss_result.get("total_pnl", 0.0),
-                            "usdc_before": result.get("usdc_before", 0.0),
-                            "usdc_after": loss_result.get(
-                                "usdc_after", result.get("usdc_after", 0.0)
-                            ),
-                            "details": (
-                                result.get("details", [])
-                                + loss_result.get("details", [])
-                            ),
-                        }
 
                 # v4.4.0: force CLOB to re-read on-chain USDC so downstream
                 # reconciler / risk manager don't show stale balance for up to
