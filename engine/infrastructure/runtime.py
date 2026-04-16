@@ -3235,11 +3235,42 @@ class EngineRuntime:
                         )
 
                         if redeemed > 0 or failed > 0:
+                            cd = (
+                                self._redeemer.cooldown_status()
+                                if self._redeemer
+                                else {"active": False}
+                            )
+                            failed_details = result.get("failed_details", []) or []
+                            failed_lines = ""
+                            if failed_details:
+                                rows = "\n".join(
+                                    f"  • `{(d.get('condition_id') or '?')[:12]}…` `{(d.get('error') or '?')[:40]}`"
+                                    for d in failed_details[:5]
+                                )
+                                extra = (
+                                    f"\n  …+{len(failed_details) - 5} more"
+                                    if len(failed_details) > 5
+                                    else ""
+                                )
+                                failed_lines = f"\n*Failures:*\n{rows}{extra}"
+
+                            cooldown_line = ""
+                            if cd.get("active"):
+                                from alerts.positions import _fmt_age
+                                cooldown_line = (
+                                    f"\n🚫 RELAYER COOLDOWN — resets in "
+                                    f"`{_fmt_age(int(cd.get('remaining_seconds', 0)))}`"
+                                )
+
                             await self._alerter._send_with_id(
-                                f"🔄 *REDEMPTION SWEEP* 🔴 LIVE\n\n"
-                                f"Type: `{result.get('redeem_type', 'all')}` | Positions: `{total}` | Redeemed: `{redeemed}` | Failed: `{failed}`\n"
+                                f"🔄 *REDEMPTION SWEEP* 🔴 LIVE\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"Type: `{result.get('redeem_type', 'all')}` | Scanned: `{total}`\n"
+                                f"Redeemed: `{redeemed}` | Failed: `{failed}`\n"
                                 f"Wins: `{wins}` | Losses: `{losses}`\n"
-                                f"P&L: `${pnl:+.2f}` | USDC change: `${usdc:+.2f}`\n"
+                                f"P&L: `${pnl:+.2f}` | USDC change: `${usdc:+.2f}`"
+                                f"{failed_lines}"
+                                f"{cooldown_line}"
                             )
                     except Exception:
                         pass

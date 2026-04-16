@@ -626,6 +626,7 @@ class PositionRedeemer:
             "usdc_after": 0.0,
             "tx_hashes": [],
             "details": [],
+            "failed_details": [],
             "paper_mode": self._paper_mode,
         }
 
@@ -663,6 +664,7 @@ class PositionRedeemer:
         total_pnl = 0.0
         total_value = 0.0
         details: list[dict] = []
+        failed_details: list[dict] = []
 
         for pos in positions:
             try:
@@ -685,6 +687,12 @@ class PositionRedeemer:
                         losses += 1
                 else:
                     failed += 1
+                    failed_details.append(
+                        {
+                            "condition_id": pos.get("conditionId"),
+                            "error": "relayer returned non-success",
+                        }
+                    )
             except Exception as exc:
                 self._log.error(
                     "redeemer.sweep_position_error",
@@ -699,6 +707,12 @@ class PositionRedeemer:
                         "pnl": pos.get("pnl"),
                         "success": False,
                         "error": str(exc)[:120],
+                    }
+                )
+                failed_details.append(
+                    {
+                        "condition_id": pos.get("conditionId"),
+                        "error": str(exc)[:80],
                     }
                 )
             await asyncio.sleep(2)
@@ -727,6 +741,7 @@ class PositionRedeemer:
             "usdc_after": usdc_after,
             "tx_hashes": [],
             "details": details,
+            "failed_details": failed_details,
             "paper_mode": False,
         }
 
