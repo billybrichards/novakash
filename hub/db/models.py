@@ -101,6 +101,9 @@ class Trade(Base):
         DateTime(timezone=True), server_default=func.now(), index=True
     )
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Strategy identity (added alongside v8.0 execution columns)
+    strategy_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    strategy_version: Mapped[Optional[str]] = mapped_column(String(32))
 
 
 class Signal(Base):

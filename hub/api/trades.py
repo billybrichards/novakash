@@ -133,6 +133,8 @@ def _trade_to_dict(trade: Trade) -> dict:
         "id": trade.id,
         "order_id": trade.order_id,
         "strategy": trade.strategy,
+        "strategy_id": trade.strategy_id,
+        "strategy_version": trade.strategy_version,
         "venue": trade.venue,
         "market_slug": trade.market_slug,
         "direction": trade.direction,
