@@ -616,6 +616,62 @@ class CompositionRoot:
             on_book=None,
         )
 
+        # ── Dense multi-asset signal collection (task #165 superset) ──────────
+        dense_enabled = (
+            os.environ.get("DENSE_SIGNALS_ENABLED", "false").lower() == "true"
+        )
+        self._collect_dense_signals_uc = None
+        if dense_enabled:
+            from domain.value_objects import Asset, Timeframe as _TF
+            from use_cases.collect_dense_signals import CollectDenseSignalsUseCase
+            from use_cases.evaluate_window import EvaluateWindowUseCase
+            from adapters.polymarket.gamma_discovery import GammaMarketDiscovery
+            from adapters.market_feed.composite_price_gateway import CompositePriceGateway
+            from adapters.clock.system_clock import SystemClock as _SystemClock
+            import aiohttp
+            import httpx
+
+            dense_assets_raw = os.environ.get("DENSE_SIGNALS_ASSETS", "BTC,ETH,SOL,XRP")
+            dense_tfs_raw = os.environ.get("DENSE_SIGNALS_TIMEFRAMES", "5m,15m")
+            dense_assets = [
+                Asset(s.strip()) for s in dense_assets_raw.split(",") if s.strip()
+            ]
+            dense_tfs = [
+                _TF(900 if t.strip() == "15m" else 300)
+                for t in dense_tfs_raw.split(",")
+                if t.strip()
+            ]
+            _tiingo_key = os.environ.get(
+                "TIINGO_API_KEY", "3f4456e457a4184d76c58a1320d8e1b214c3ab16"
+            )
+            _composite_gw = CompositePriceGateway(
+                chainlink_feed=self._chainlink_multi_feed,
+                binance_spot_feed=self._binance_spot_feed,
+                db=self._db,
+                tiingo_api_key=_tiingo_key,
+                http_session_factory=aiohttp.ClientSession,
+            )
+            _gamma_discovery = GammaMarketDiscovery(httpx.AsyncClient(timeout=10.0))
+            _dense_eval_uc = EvaluateWindowUseCase(
+                db_client=self._db,
+                price_gateway=_composite_gw,
+            )
+            self._collect_dense_signals_uc = CollectDenseSignalsUseCase(
+                assets=dense_assets,
+                timeframes=dense_tfs,
+                price_gw=_composite_gw,
+                discovery=_gamma_discovery,
+                evaluate_window_uc=_dense_eval_uc,
+                clock=_SystemClock(),
+            )
+            log.info(
+                "dense_signals.enabled",
+                assets=[a.symbol for a in dense_assets],
+                timeframes=[tf.label for tf in dense_tfs],
+            )
+        else:
+            log.info("dense_signals.disabled")
+
         # ── Heartbeat use cases ────────────────────────────────────────────────
         from use_cases.publish_heartbeat import PublishHeartbeatUseCase
         from adapters.persistence.pg_system_repo import PgSystemRepository

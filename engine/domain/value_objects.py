@@ -1167,3 +1167,83 @@ class WindowSummaryContext:
 # Order and OrderStatus are domain ENTITIES (mutable, stateful) — see
 # domain/entities.py.  The window constants live in config/constants.py.
 # Both are re-exported from execution.order_manager for backward compat.
+
+# ---------------------------------------------------------------------------
+# Dense multi-asset signal collection (task #165 superset) — see spec
+# docs/superpowers/specs/2026-04-15-dense-multi-asset-signals-design.md
+# ---------------------------------------------------------------------------
+
+
+SUPPORTED_ASSETS: frozenset[str] = frozenset({"BTC", "ETH", "SOL", "XRP", "DOGE", "BNB"})
+
+
+@dataclass(frozen=True)
+class Asset:
+    """Supported Polymarket up/down asset symbol.
+
+    Frozen VO. Symbol is uppercased + stripped on construction.
+    Raises ValueError for unsupported symbols.
+    """
+
+    symbol: str
+
+    def __post_init__(self) -> None:
+        normalized = self.symbol.upper().strip()
+        object.__setattr__(self, "symbol", normalized)
+        if normalized not in SUPPORTED_ASSETS:
+            raise ValueError(f"unsupported asset {self.symbol!r}")
+
+
+SUPPORTED_DURATIONS: frozenset[int] = frozenset({300, 900})
+
+
+@dataclass(frozen=True)
+class Timeframe:
+    """Trading window duration.
+
+    Only 300s (5m) and 900s (15m) supported today. Label derived, not stored.
+    """
+
+    duration_secs: int
+
+    def __post_init__(self) -> None:
+        if self.duration_secs not in SUPPORTED_DURATIONS:
+            raise ValueError(f"unsupported timeframe {self.duration_secs}s")
+
+    @property
+    def label(self) -> str:
+        return "15m" if self.duration_secs == 900 else "5m"
+
+
+@dataclass(frozen=True)
+class EvalOffset:
+    """Seconds before window close at which an evaluation fires.
+
+    Valid range [2, 898] — covers full 15m window minus 2s epsilon at each edge.
+    """
+
+    seconds_before_close: int
+
+    def __post_init__(self) -> None:
+        if not 2 <= self.seconds_before_close <= 898:
+            raise ValueError(
+                f"offset {self.seconds_before_close}s out of range [2, 898]"
+            )
+
+
+@dataclass(frozen=True)
+class PriceCandle:
+    """(open, close) pair for a given window. Used for delta-vs-open math.
+
+    ``source`` identifies provenance: "tiingo_rest", "tiingo_db", "chainlink".
+    """
+
+    open_price: float
+    close_price: float
+    source: str
+
+    def delta_pct(self) -> float:
+        """Percentage change open→close. Returns 0.0 if open_price is 0."""
+        if self.open_price == 0:
+            return 0.0
+        return (self.close_price - self.open_price) / self.open_price * 100.0
