@@ -3203,15 +3203,25 @@ class EngineRuntime:
                         error=str(exc)[:120],
                     )
 
+                # Per-hour throttle guard (Daisy-set 2026-04-16):
+                # default 4 wins/hour. Manual sweeps bypass this. The
+                # daily hard cap is enforced right after — this guard
+                # smooths the 15-min tick cadence into ≤4 wins/60 min.
+                try:
+                    redeems_last_hour = await self._db.count_redeems_last_hour()
+                except Exception:
+                    redeems_last_hour = 0
+
                 if manual_request == "wins":
                     result = await self._redeemer.redeem_wins(max_positions=10)
                 elif manual_request == "losses":
                     result = await self._redeemer.redeem_losses(max_positions=25)
                 elif manual_request == "all":
                     result = await self._redeemer.redeem_all()
-                elif quota_used_today >= max(0, self._redeemer.daily_quota_limit - 20):
+                elif quota_used_today >= self._redeemer.daily_quota_limit:
+                    # Hard cap: refuse all auto-sweep after daily limit.
                     log.warning(
-                        "orchestrator.redeemer_budget_guard",
+                        "orchestrator.redeemer_daily_cap_hit",
                         quota_used_today=quota_used_today,
                         daily_limit=self._redeemer.daily_quota_limit,
                     )
@@ -3226,6 +3236,28 @@ class EngineRuntime:
                         "usdc_before": 0.0,
                         "usdc_after": 0.0,
                         "details": [],
+                        "skip_reason": "daily_cap",
+                    }
+                elif redeems_last_hour >= self._redeemer.hourly_quota_limit:
+                    # Soft cap: skip this tick, wait for the rolling 60 min
+                    # window to drain. Daisy can always manual-sweep.
+                    log.info(
+                        "orchestrator.redeemer_hourly_throttle",
+                        redeems_last_hour=redeems_last_hour,
+                        hourly_limit=self._redeemer.hourly_quota_limit,
+                    )
+                    result = {
+                        "redeem_type": "wins",
+                        "scanned": 0,
+                        "redeemed": 0,
+                        "failed": 0,
+                        "wins": 0,
+                        "losses": 0,
+                        "total_pnl": 0.0,
+                        "usdc_before": 0.0,
+                        "usdc_after": 0.0,
+                        "details": [],
+                        "skip_reason": "hourly_throttle",
                     }
                 else:
                     # Wins-only automatic sweep. NO-outcome tokens ("losses"
@@ -3237,7 +3269,12 @@ class EngineRuntime:
                     # that spend by hand. The prior automatic
                     # `losses_due(interval_hours=24)` branch was removed
                     # 2026-04-16 at user direction.
-                    result = await self._redeemer.redeem_wins(max_positions=2)
+                    # Auto-sweep batch size = hourly cap headroom. With 15-min
+                    # REDEEM_INTERVAL and 4/hr throttle, one tick can drain up
+                    # to 4 wins before the next rolling-hour window gates it.
+                    # Manual sweep paths above use max_positions=10/25/all.
+                    batch = max(1, self._redeemer.hourly_quota_limit - redeems_last_hour)
+                    result = await self._redeemer.redeem_wins(max_positions=batch)
 
                 # v4.4.0: force CLOB to re-read on-chain USDC so downstream
                 # reconciler / risk manager don't show stale balance for up to
@@ -3397,7 +3434,10 @@ class EngineRuntime:
             except Exception as exc:
                 log.warning("snapshot.wallet_balance_failed", error=str(exc)[:120])
 
-        pending = await self._redeemer.pending_wins_summary()
+        # Audit #204: pending_wins_summary now returns (list, scan_successful).
+        # Preserve scan_successful through to the DB layer so transient
+        # scan failures don't wipe the Hub snapshot to 0 pending.
+        pending, pending_scan_ok = await self._redeemer.pending_wins_summary()
         cooldown = self._redeemer.cooldown_status()
         quota_used = (
             await self._db.count_redeems_today()
@@ -3425,7 +3465,11 @@ class EngineRuntime:
         # Done BEFORE the alerter call so DB rows are written even if Telegram
         # is down. Failures are logged but do not block the Telegram send.
         try:
-            await self._db.upsert_pending_wins(pending)
+            # Audit #204: pass scan_successful so a failed scan preserves
+            # the existing DB snapshot instead of wiping it to zero.
+            await self._db.upsert_pending_wins(
+                pending, scan_successful=pending_scan_ok
+            )
             await self._db.upsert_redeemer_state(
                 cooldown,
                 self._redeemer.daily_quota_limit,

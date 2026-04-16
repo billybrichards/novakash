@@ -54,8 +54,9 @@ async def test_pending_wins_summary_marks_overdue(monkeypatch):
         ),
     )
 
-    summary = await r.pending_wins_summary(now=now)
+    summary, scan_ok = await r.pending_wins_summary(now=now)
 
+    assert scan_ok is True
     assert len(summary) == 2
     # Sorted oldest-first (worst overdue at top)
     assert summary[0]["condition_id"] == "0xaaa"
@@ -109,8 +110,39 @@ async def test_pending_wins_summary_uses_real_endDate_from_fetch(monkeypatch):
         AsyncMock(return_value=[fake_position_row]),
     )
 
-    summary = await r.pending_wins_summary(now=now)
+    summary, scan_ok = await r.pending_wins_summary(now=now)
 
+    assert scan_ok is True
     assert len(summary) == 1
     assert summary[0]["condition_id"] == "0xfeed"
     assert summary[0]["overdue_seconds"] == 3600  # exactly 60 min
+
+
+
+@pytest.mark.asyncio
+async def test_pending_wins_summary_returns_scan_failed_on_exception(monkeypatch):
+    """Audit #204 regression: scan exception MUST return ([], False) so
+    callers know the empty list means "unknown", not "no pending wins".
+
+    Previously returned [] unconditionally → upsert_pending_wins([])
+    wiped poly_pending_wins → Hub snapshot reported 0 pending even
+    though wallet had 14 overdue wins. Observed in prod 2026-04-16.
+    """
+    r = PositionRedeemer(
+        rpc_url="https://test.invalid",
+        private_key="0x" + "0" * 64,
+        proxy_address="0x" + "0" * 40,
+        paper_mode=True,
+    )
+    now = datetime(2026, 4, 16, 15, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        r,
+        "_scan_redeemable_positions",
+        AsyncMock(side_effect=RuntimeError("data-api 429 cooldown")),
+    )
+
+    summary, scan_ok = await r.pending_wins_summary(now=now)
+
+    assert summary == []
+    assert scan_ok is False, "scan_failure must yield scan_successful=False"
+

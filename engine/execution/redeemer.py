@@ -221,8 +221,18 @@ class PositionRedeemer:
         # Throttle for "cooldown active" log lines so the engine log
         # doesn't fill up during a multi-hour 429 window.
         self._last_cooldown_log_at: Optional[datetime] = None
+        # Conservative hard cap — Daisy-set 2026-04-16. Server-side allowance
+        # is 100/rolling-24h but we want headroom for manual sweeps + safety
+        # against burn cascades during NegRisk-slow afternoons. Override via
+        # REDEEM_DAILY_LIMIT env if needed, but keep the default at 80.
         self._daily_quota_limit: int = int(
-            os.environ.get("REDEEM_DAILY_LIMIT", "100") or 100
+            os.environ.get("REDEEM_DAILY_LIMIT", "80") or 80
+        )
+        # Per-hour throttle (Daisy-set 2026-04-16). Default 4 wins/hour keeps
+        # the automatic sweep well below the relayer's observed rate-limit
+        # window. Manual redeem_wins / redeem_all still bypasses this cap.
+        self._hourly_quota_limit: int = int(
+            os.environ.get("REDEEM_HOURLY_LIMIT", "4") or 4
         )
         self._last_loss_sweep_at: Optional[datetime] = None
 
@@ -245,6 +255,10 @@ class PositionRedeemer:
     @property
     def daily_quota_limit(self) -> int:
         return self._daily_quota_limit
+
+    @property
+    def hourly_quota_limit(self) -> int:
+        return self._hourly_quota_limit
 
     async def _scan_redeemable_positions(self) -> list[dict]:
         """
@@ -307,11 +321,9 @@ class PositionRedeemer:
     async def pending_wins_summary(
         self,
         now: Optional[datetime] = None,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], bool]:
         """
-        Return the list of redeemable positions that have NOT yet been
-        redeemed, each annotated with how long it has been waiting since
-        market resolution.
+        Return ``(pending_wins, scan_successful)``.
 
         Used by the position-snapshot Telegram alert and the Hub
         ``/api/positions/snapshot`` endpoint. Read-only — does NOT trigger
@@ -330,6 +342,16 @@ class PositionRedeemer:
         Sort order: descending ``overdue_seconds`` (worst overdue first).
         Positions without a known ``resolved_at`` get ``overdue_seconds=0``
         and float to the bottom of the list.
+
+        **Scan-success contract (audit #204):** on scan failure (data-api
+        timeout, 429, network blip) returns ``([], False)`` — the empty
+        list means "unknown", NOT "no pending wins". Callers MUST
+        propagate the flag to any persistence layer that rewrites the
+        pending set, so a transient failure does not wipe the DB-backed
+        snapshot (``poly_pending_wins``) and make Daisy think her money
+        vanished. Root-caused 2026-04-16 when Wallet $83.31 · Pending
+        $112.71 (14 pending) was wiped to 0 pending in 60s after a single
+        429-cooldown scan failure, despite the wallet not moving.
         """
         now = now or datetime.now(timezone.utc)
         try:
@@ -338,7 +360,7 @@ class PositionRedeemer:
             self._log.warning(
                 "redeemer.pending_summary_scan_failed", error=str(exc)[:120]
             )
-            return []
+            return [], False
 
         out: list[dict] = []
         for p in positions:
@@ -357,7 +379,7 @@ class PositionRedeemer:
             )
         # Newest-first → oldest first (worst overdue at the top of the list)
         out.sort(key=lambda x: x["overdue_seconds"], reverse=True)
-        return out
+        return out, True
 
     def cooldown_status(self) -> dict:
         """Current relayer cooldown + backoff state.
