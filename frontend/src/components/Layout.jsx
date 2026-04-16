@@ -63,6 +63,7 @@ const NAV_SECTIONS = [
       { path: '/audit', label: 'Audit', icon: 'A' },
       { path: '/notes', label: 'Notes', icon: 'N' },
       { path: '/ops', label: 'Agent Ops', icon: 'Ao' },
+      { path: '/telegram', label: 'Telegram', icon: 'Tg' },
     ],
   },
 ];
