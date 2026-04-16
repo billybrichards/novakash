@@ -240,11 +240,23 @@ class FakeAlerter:
 
 
 class FakeFiveMinStrategy:
-    """Exposes _recent_windows as an empty deque so the ring-buffer
-    lookup always misses and we exercise the LT-02 DB fallback."""
+    """Exposes recent_windows property so the ring-buffer lookup can run.
+
+    Default is an empty list so all tests exercise the LT-02 DB fallback.
+    Tests that want to populate the ring buffer can append to _recent_windows
+    directly or use the recent_windows setter.
+    """
 
     def __init__(self) -> None:
         self._recent_windows: list = []
+
+    @property
+    def recent_windows(self) -> list:
+        return self._recent_windows
+
+    @recent_windows.setter
+    def recent_windows(self, value: list) -> None:
+        self._recent_windows = value
 
 
 # ────────────────────────────────────────────────────────────────────
