@@ -15,6 +15,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import structlog
+
+log = structlog.get_logger(__name__)
+
 
 @dataclass(frozen=True)
 class FullDataSurface:
@@ -181,6 +185,23 @@ class DataSurfaceManager:
         self._refresh_interval = 2.0
         self._running = False
         self._task: Optional[asyncio.Task] = None
+        # TimesFM health alerting — optional callback set via set_alerter().
+        # Called once when cache first crosses staleness threshold and again
+        # when it recovers. Prevents alert spam while ensuring Daisy knows
+        # TimesFM is degraded (2026-04-16 incident: silent degradation for
+        # 1h+ because no Telegram fires when /v4/snapshot goes bad).
+        self._alert_cb = None
+        self._degraded_since: Optional[float] = None
+        self._alert_stale_threshold_s = 45.0  # alert after 45s stale
+
+    def set_alerter(self, alert_cb: Any) -> None:
+        """Register a coroutine(text, level) for TimesFM health alerts.
+
+        ``alert_cb`` must be awaitable: ``async def cb(text: str, level: str)``.
+        Typical wiring: ``cb = TelegramAlerter.send_system_alert``.
+        Optional — if unset, staleness only goes to structlog error.
+        """
+        self._alert_cb = alert_cb
 
     def set_feeds(
         self,
@@ -251,18 +272,93 @@ class DataSurfaceManager:
             await asyncio.sleep(self._refresh_interval)
 
     async def _fetch_v4(self) -> None:
-        """Fetch V4 snapshot and cache it in memory."""
+        """Fetch V4 snapshot and cache it in memory.
+
+        Observability: every failure is logged with a reason. When the cache
+        goes stale (>30s since last successful fetch), escalates to ERROR so
+        it's visible in alerting. Empty polymarket block is a distinct failure
+        mode from transport timeout — log it separately so the TimesFM
+        feature-pipeline freeze (PR #47 class) gets caught early.
+        """
         if not self._session:
             return
         url = f"{self._v4_url}/v4/snapshot"
         params = {"asset": "BTC", "timescales": "5m,15m", "strategy": "polymarket_5m"}
+        age = time.time() - self._cached_v4_ts if self._cached_v4_ts else None
         try:
             async with self._session.get(url, params=params) as resp:
-                if resp.status == 200:
-                    self._cached_v4 = await resp.json()
-                    self._cached_v4_ts = time.time()
-        except Exception:
-            pass  # Keep stale cache
+                if resp.status != 200:
+                    log_fn = log.error if age is not None and age > 30 else log.warning
+                    log_fn(
+                        "data_surface.v4_fetch_http_error",
+                        status=resp.status,
+                        cache_age_s=round(age, 1) if age is not None else None,
+                    )
+                    return
+                body = await resp.json()
+                # Validate downstream critical fields BEFORE replacing cache.
+                # TimesFM can serve 200 OK with an empty polymarket block when
+                # its v2 feature pipeline freezes (see PR #47 class bug) —
+                # treat that as a fetch failure, not a success, to avoid
+                # feeding stale cache to strategies via a poisoned surface.
+                ts5 = (body.get("timescales") or {}).get("5m", {})
+                poly = ts5.get("polymarket_live_recommended_outcome") or {}
+                if not poly or poly.get("timing") is None:
+                    log_fn = log.error if age is not None and age > 30 else log.warning
+                    log_fn(
+                        "data_surface.v4_empty_polymarket",
+                        poly_keys=len(poly),
+                        cache_age_s=round(age, 1) if age is not None else None,
+                    )
+                    return
+                self._cached_v4 = body
+                self._cached_v4_ts = time.time()
+                # RECOVERY alert — we were degraded and now we're not.
+                if self._degraded_since is not None and self._alert_cb is not None:
+                    down_s = int(time.time() - self._degraded_since)
+                    try:
+                        await self._alert_cb(
+                            f"TimesFM /v4/snapshot recovered after {down_s}s down — "
+                            f"poly data flowing again.",
+                            "info",
+                        )
+                    except Exception as exc:
+                        log.warning("data_surface.recovery_alert_failed", error=str(exc)[:200])
+                    self._degraded_since = None
+                return
+        except asyncio.TimeoutError:
+            log_fn = log.error if age is not None and age > 30 else log.warning
+            log_fn(
+                "data_surface.v4_fetch_timeout",
+                cache_age_s=round(age, 1) if age is not None else None,
+            )
+        except Exception as exc:
+            log_fn = log.error if age is not None and age > 30 else log.warning
+            log_fn(
+                "data_surface.v4_fetch_error",
+                error=str(exc)[:200],
+                cache_age_s=round(age, 1) if age is not None else None,
+            )
+
+        # Any fall-through to here = this tick did not replace the cache.
+        # If the cache age now crosses the alert threshold and we have not
+        # already alerted, fire a Telegram alert so Daisy sees the outage
+        # even though strategies continue to skip silently.
+        if age is not None and age > self._alert_stale_threshold_s:
+            if self._degraded_since is None:
+                self._degraded_since = time.time() - age
+                if self._alert_cb is not None:
+                    try:
+                        await self._alert_cb(
+                            f"TimesFM /v4/snapshot degraded — cache stale "
+                            f"{int(age)}s. Strategies will skip until recovery.",
+                            "error",
+                        )
+                    except Exception as exc:
+                        log.warning(
+                            "data_surface.degraded_alert_failed",
+                            error=str(exc)[:200],
+                        )
 
     def get_surface(
         self,
@@ -374,9 +470,24 @@ class DataSurfaceManager:
         gamma_up = getattr(window, "up_price", None)
         gamma_down = getattr(window, "down_price", None)
 
-        # V4 snapshot from cache
+        # V4 snapshot from cache — reject cache older than 60s.
+        # A stale cache causes strategies to evaluate against frozen poly
+        # data, which is what produced the 2026-04-16 "timing=early"
+        # silent-skip incident (TimesFM /v4/snapshot hung; engine kept
+        # serving stale cache for an hour). Treating stale cache as
+        # absent forces strategies into `timing="unknown"` rather than
+        # acting on stale "early"/"optimal" labels.
         timeframe = getattr(window, "timeframe", "5m")
         v4 = self._cached_v4
+        if v4 and self._cached_v4_ts:
+            age = time.time() - self._cached_v4_ts
+            if age > 60:
+                log.error(
+                    "data_surface.v4_cache_stale",
+                    cache_age_s=round(age, 1),
+                    reason="stale cache rejected; strategies will see poly=None",
+                )
+                v4 = None
         ts_data = {}
         if v4:
             ts_data = (v4.get("timescales") or {}).get(timeframe, {})

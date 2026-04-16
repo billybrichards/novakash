@@ -789,6 +789,12 @@ class EngineRuntime:
                     if hasattr(self, "_aggregator")
                     else None,
                 )
+                # Wire TimesFM degradation alerts to Telegram (2026-04-16 incident).
+                if hasattr(self, "_alerter") and self._alerter is not None:
+                    if hasattr(self._data_surface_mgr, "set_alerter"):
+                        self._data_surface_mgr.set_alerter(
+                            self._alerter.send_system_alert
+                        )
                 await self._data_surface_mgr.start()
                 log.info("orchestrator.data_surface_manager_started")
             except Exception as exc:
