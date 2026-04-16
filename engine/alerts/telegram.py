@@ -940,6 +940,7 @@ class TelegramAlerter:
         gamma_at_fill: Optional[dict] = None,
         gamma_at_decision: Optional[dict] = None,
         ai_text: Optional[str] = None,
+        fills: Optional[list] = None,
     ) -> Optional[int]:
         """
         ③ 💰 FILLED — On CLOB MATCHED: shares, fill price, cost, gamma comparison, AI.
@@ -947,6 +948,10 @@ class TelegramAlerter:
         order: Order object with order_id, direction, stake_usd
         gamma_at_fill: {"gamma_up": x, "gamma_down": y}
         gamma_at_decision: Gamma at T-70 for comparison
+        fills: Optional list of per-fill dicts (price, size, tx) for the same
+            condition_id within the FAK window. When len(fills) > 1, a
+            🧩 FAK split block is rendered listing each fill. When None or
+            len <= 1, the output is byte-identical to the pre-Task-5 format.
         """
         try:
             direction = "DOWN" if getattr(order, "direction", "") == "NO" else "UP"
@@ -969,6 +974,22 @@ class TelegramAlerter:
             if fok_step is not None and fok_attempts is not None:
                 fok_line = f"⚡ FOK step `{fok_step}/{fok_attempts}`\n"
 
+            # Multi-fill block — only when the engine passes a fills list of len > 1.
+            # A FAK order can split across the layered ask book and produce multiple
+            # poly_fills rows for the same condition_id at the same timestamp; this
+            # makes that visible instead of collapsing it into a single aggregated number.
+            multi_block = ""
+            if fills and len(fills) > 1:
+                rows = "\n".join(
+                    f"  • `${float(f['price']):.4f}` × `{float(f['size']):.2f}`"
+                    for f in fills[:6]
+                )
+                extra = f"\n  …+{len(fills) - 6} more" if len(fills) > 6 else ""
+                multi_block = (
+                    f"🧩 *FAK split* — {len(fills)} fills, same condition_id\n"
+                    f"{rows}{extra}\n"
+                )
+
             text = (
                 f"💰 *FILLED* — BTC 5m {direction} | {self._engine_version}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -976,6 +997,7 @@ class TelegramAlerter:
                 f"Cost: `${cost:.2f}` | R/R `1:{rr}`\n"
                 f"If WIN: `+${profit_if_win:.2f}`\n"
                 f"{fok_line}"
+                f"{multi_block}"
                 f"Source: `{src_short}` | Mode: `{'gtc' if not fok_step else 'fok'}`\n"
             )
             msg_id = await self._send_with_id(text)

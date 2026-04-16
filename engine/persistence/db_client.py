@@ -3048,6 +3048,48 @@ class DBClient:
         except Exception as exc:
             log.warning("db.write_clob_book_snapshot_failed", error=str(exc)[:200])
 
+    async def fetch_recent_fills_for_condition(
+        self,
+        condition_id: Optional[str],
+        within_seconds: int = 60,
+    ) -> list[dict]:
+        """Return poly_fills rows for `condition_id` matched in the last
+        `within_seconds`, ordered oldest-first.
+
+        Used by the multi-fill (FAK split) detector in the engine before it
+        calls `TelegramAlerter.send_order_filled`. A FAK order can split
+        across the layered ask book and produce multiple poly_fills rows
+        for the same condition_id at the same timestamp; we want to surface
+        each leg in the alert.
+
+        Returns an empty list when condition_id is falsy, the pool isn't
+        connected, or anything goes wrong — callers treat absence of fills
+        as "no split block to render".
+        """
+        if not condition_id or not self._pool:
+            return []
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT price, size, transaction_hash AS tx
+                    FROM poly_fills
+                    WHERE condition_id = $1
+                      AND match_time_utc >= NOW() - make_interval(secs => $2)
+                    ORDER BY match_time_utc ASC
+                    """,
+                    condition_id,
+                    int(within_seconds),
+                )
+                return [dict(r) for r in rows]
+        except Exception as exc:
+            log.warning(
+                "db.fetch_recent_fills_for_condition_failed",
+                error=str(exc)[:200],
+                condition_id=condition_id,
+            )
+            return []
+
 
 class DBClientLegacyShim:
     """Thin delegate to pg_*_repo adapters.
