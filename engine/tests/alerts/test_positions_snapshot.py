@@ -76,6 +76,27 @@ def test_render_snapshot_text_marks_overdue_wins():
     assert "OVERDUE" in text  # >5min past window_end
 
 
+def test_overdue_boundary_is_strict_greater_than():
+    base = {
+        "wallet_usdc": 100.0,
+        "open_orders": [],
+        "cooldown": {"active": False, "remaining_seconds": 0, "resets_at": None, "reason": ""},
+        "daily_quota_limit": 100,
+        "quota_used_today": 0,
+        "now_utc": "2026-04-16T11:10:00Z",
+    }
+    snap_at = build_snapshot(
+        pending_wins=[{"condition_id": "0xa", "value": 1.0, "window_end_utc": "x", "overdue_seconds": 300}],
+        **base,
+    )
+    snap_over = build_snapshot(
+        pending_wins=[{"condition_id": "0xb", "value": 1.0, "window_end_utc": "x", "overdue_seconds": 301}],
+        **base,
+    )
+    assert snap_at["overdue_count"] == 0   # exactly 300s = NOT overdue
+    assert snap_over["overdue_count"] == 1  # 301s = overdue
+
+
 def test_render_snapshot_text_shows_cooldown_when_active():
     snap = build_snapshot(
         wallet_usdc=200.0,

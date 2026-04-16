@@ -31,6 +31,16 @@ class CooldownState(TypedDict):
     reason: str
 
 
+def _is_overdue(win: dict) -> bool:
+    """Single source of truth for the overdue predicate.
+
+    Used by both the `overdue_count` aggregation in build_snapshot AND
+    the per-row 🚨 OVERDUE tag in render_snapshot_text — extracting this
+    helper prevents the two call sites from drifting apart.
+    """
+    return int(win.get("overdue_seconds", 0)) > OVERDUE_THRESHOLD_SECONDS
+
+
 def build_snapshot(
     wallet_usdc: float,
     pending_wins: list[PendingWin],
@@ -40,13 +50,13 @@ def build_snapshot(
     quota_used_today: int,
     now_utc: str,
 ) -> dict:
-    pending_total = round(sum(float(w["value"]) for w in pending_wins), 2)
-    effective = round(wallet_usdc + pending_total, 2)
-    overdue_count = sum(
-        1
-        for w in pending_wins
-        if int(w.get("overdue_seconds", 0)) > OVERDUE_THRESHOLD_SECONDS
-    )
+    # Sum at full float precision and round ONCE at the end, so that
+    # round(round(a, 2) + round(b, 2), 2) drift on cent-precision floats
+    # never creeps into the user-visible effective balance.
+    pending_total_raw = sum(float(w["value"]) for w in pending_wins)
+    pending_total = round(pending_total_raw, 2)
+    effective = round(wallet_usdc + pending_total_raw, 2)  # sum raw, round once
+    overdue_count = sum(1 for w in pending_wins if _is_overdue(w))
     quota_remaining = max(0, int(daily_quota_limit) - int(quota_used_today))
     return {
         "now_utc": now_utc,
@@ -95,11 +105,7 @@ def render_snapshot_text(snap: dict) -> str:
             cid = w["condition_id"]
             short = (cid[:10] + "…") if len(cid) > 12 else cid
             age = _fmt_age(int(w.get("overdue_seconds", 0)))
-            tag = (
-                "🚨 OVERDUE"
-                if int(w.get("overdue_seconds", 0)) > OVERDUE_THRESHOLD_SECONDS
-                else "⏳"
-            )
+            tag = "🚨 OVERDUE" if _is_overdue(w) else "⏳"
             lines.append(
                 f"  {tag} `{short}` `${float(w['value']):.2f}` `{age}` since close"
             )
