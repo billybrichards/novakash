@@ -789,7 +789,11 @@ class DBClient:
     # Tables: poly_pending_wins, redeemer_state
     # Migration: hub/db/migrations/versions/20260416_01_pending_wins.sql
 
-    async def upsert_pending_wins(self, wins: list[dict]) -> None:
+    async def upsert_pending_wins(
+        self,
+        wins: list[dict],
+        scan_successful: bool = True,
+    ) -> None:
         """Replace the pending_wins set with the supplied list (atomic).
 
         ``wins`` items follow the schema returned by
@@ -798,9 +802,38 @@ class DBClient:
              "window_end_utc": str|None, "overdue_seconds": int}
 
         Items with ``window_end_utc=None`` are skipped (column is NOT NULL).
+
+        **Audit #204 (scan_successful guard):** when the upstream scan
+        failed (caller passes ``scan_successful=False``), we SKIP the
+        DELETE+INSERT entirely — an empty list from a failed scan is
+        "unknown", NOT "no pending wins". Without this guard, a single
+        transient data-api blip would wipe the Hub snapshot to
+        ``0 pending`` even though positions are still on-chain —
+        observed in prod 2026-04-16: Wallet $83.31 · Pending $112.71
+        (14 pending) wiped to 0 in 60s with zero on-chain activity.
         """
         if not self._pool:
             return
+
+        if not scan_successful:
+            # Preserve existing DB snapshot. Warn loud so ops know the
+            # POSITION SNAPSHOT may be stale. Cheap — one log line per
+            # failed scan (scan runs every 15 min).
+            try:
+                async with self._pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        "SELECT COUNT(*) AS c FROM poly_pending_wins"
+                    )
+                    existing = int((row or {}).get("c", 0))
+            except Exception:
+                existing = -1
+            log.warning(
+                "db.upsert_pending_wins.skipped_due_to_scan_failure",
+                existing_rows=existing,
+                reason="preserving prior snapshot — upstream scan unsuccessful",
+            )
+            return
+
         rows: list[tuple] = []
         for w in wins or []:
             wend = w.get("window_end_utc")
@@ -885,6 +918,27 @@ class DBClient:
                 return int(row["c"] or 0) if row else 0
         except Exception as e:
             log.warning("db.count_redeems_today.error", error=str(e)[:120])
+            return 0
+
+    async def count_redeems_last_hour(self) -> int:
+        """Count redeem ATTEMPT rows from the last rolling 60 min.
+
+        Used by the per-hour throttle (Daisy-set 2026-04-16: default
+        4/hr) to gate the auto-sweep between the 15-min ticks so we
+        never burn >4 wins per hour without explicit operator intent.
+        Rolling window, not calendar-hour — deterministic across restarts.
+        """
+        if not self._pool:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT COUNT(*) AS c FROM redeem_attempts "
+                    "WHERE attempted_at >= NOW() - INTERVAL '1 hour'"
+                )
+                return int(row["c"] or 0) if row else 0
+        except Exception as e:
+            log.warning("db.count_redeems_last_hour.error", error=str(e)[:120])
             return 0
 
     # ─── Window Snapshots ────────────────────────────────────────────────────
