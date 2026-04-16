@@ -1,6 +1,21 @@
+# ── Secrets (CRITICAL — never commit) ────────────────────────────────────
+# Match .env, .env.local, .env.production, .env.*.local at any depth.
+# If you add a new shell of secrets, add it here too.
 .env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.template
 .keys/
+**/.keys/
 *.pem
+*.key
+*.p12
+*_rsa
+*_ed25519
+id_rsa*
+id_ed25519*
 __pycache__/
 *.pyc
 node_modules/

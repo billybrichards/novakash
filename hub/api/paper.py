@@ -1,7 +1,10 @@
 """
 hub/api/paper.py — Paper Trading API endpoints.
 
-All endpoints are unauthenticated (dev/paper mode).
+All endpoints require a valid JWT access token. These endpoints expose live
+balances, positions, signals and drawdown — public exposure would leak the
+engine's full operational state to the internet.
+
 Uses SQLAlchemy async sessions for DB access.
 """
 
@@ -16,6 +19,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from auth.jwt import TokenData
+from auth.middleware import get_current_user
 from db.database import get_session
 
 log = structlog.get_logger(__name__)
@@ -58,7 +63,10 @@ def _ts(dt) -> str | None:
 # ─── Endpoints ───────────────────────────────────────────────────────────────
 
 @router.get("/status")
-async def paper_status(session: AsyncSession = Depends(get_session)):
+async def paper_status(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+):
     """Engine status, VPIN, cascade state, feeds, balance.
 
     Reads from the system_state.state JSONB field which the engine writes
@@ -116,7 +124,10 @@ async def paper_status(session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/positions")
-async def paper_positions(session: AsyncSession = Depends(get_session)):
+async def paper_positions(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+):
     """Currently open paper orders."""
     rows = await _fetch_all(session, """
         SELECT id, strategy, direction, venue, entry_price, stake_usd,
@@ -145,7 +156,10 @@ async def paper_positions(session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/trades")
-async def paper_trades(session: AsyncSession = Depends(get_session)):
+async def paper_trades(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+):
     """Last 100 resolved paper trades."""
     rows = await _fetch_all(session, """
         SELECT id, strategy, direction, venue, entry_price, stake_usd,
@@ -175,7 +189,10 @@ async def paper_trades(session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/stats")
-async def paper_stats(session: AsyncSession = Depends(get_session)):
+async def paper_stats(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+):
     """Aggregated paper trading statistics."""
     row = await _fetch_one(session, """
         SELECT
@@ -228,7 +245,10 @@ async def paper_stats(session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/strategy-breakdown")
-async def paper_strategy_breakdown(session: AsyncSession = Depends(get_session)):
+async def paper_strategy_breakdown(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+):
     """Per-strategy stats."""
     rows = await _fetch_all(session, """
         SELECT
@@ -263,7 +283,10 @@ async def paper_strategy_breakdown(session: AsyncSession = Depends(get_session))
 
 
 @router.get("/log")
-async def paper_log(session: AsyncSession = Depends(get_session)):
+async def paper_log(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+):
     """Recent engine signals as log entries.
 
     NOTE: signals table uses a 'payload' JSONB column, not 'value'/'metadata'.
@@ -317,7 +340,10 @@ async def paper_log(session: AsyncSession = Depends(get_session)):
 
 
 @router.get("/equity")
-async def paper_equity(session: AsyncSession = Depends(get_session)):
+async def paper_equity(
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+):
     """Cumulative P&L over trade sequence for equity curve chart."""
     rows = await _fetch_all(session, """
         SELECT pnl_usd, resolved_at

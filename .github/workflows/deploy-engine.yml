@@ -234,6 +234,11 @@ jobs:
 
       - name: Template .env from GitHub Actions secrets
         run: |
+          # SECURITY: disable xtrace so a future `set -x` in a shared runner
+          # env cannot echo secret values into the workflow log. The heredoc
+          # below redirects to .env.new (local file), not stdout, so values
+          # never reach the log even if GitHub's auto-masking misses them.
+          set +x
           {
             echo "DATABASE_URL=$DEPLOY_DATABASE_URL"
             echo "COINGLASS_API_KEY=$DEPLOY_COINGLASS_API_KEY"
@@ -286,8 +291,12 @@ jobs:
             echo "BUILDER_SECRET=${DEPLOY_BUILDER_SECRET}"
             echo "BUILDER_PASSPHRASE=${DEPLOY_BUILDER_PASSPHRASE}"
           } > .env.new
-          ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'cat > /home/novakash/novakash/engine/.env' < .env.new
+          chmod 600 .env.new
+          ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'cat > /home/novakash/novakash/engine/.env && chmod 600 /home/novakash/novakash/engine/.env' < .env.new
           ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'wc -l /home/novakash/novakash/engine/.env'
+          # SECURITY: shred the staging file on the runner so the next step's
+          # working tree never sees plaintext secrets.
+          shred -u .env.new 2>/dev/null || rm -f .env.new
         env:
           DEPLOY_DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DEPLOY_COINGLASS_API_KEY: ${{ secrets.COINGLASS_API_KEY }}

@@ -8,6 +8,7 @@ PostgreSQL (reads) and a shared system_state table.
 
 from __future__ import annotations
 
+import os
 import structlog
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -337,13 +338,26 @@ app = FastAPI(
 )
 
 # ─── CORS ────────────────────────────────────────────────────────────────────
+#
+# SECURITY: wildcard origins with credentials=True enables cross-site CSRF
+# against auth'd endpoints (kill switch, config PUT, paper-mode toggle).
+# Origins must be explicit. Override via CORS_ALLOWED_ORIGINS env (comma-sep).
+
+_default_origins = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+]
+_origins_env = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+_allowed_origins = [o.strip() for o in _origins_env.split(",") if o.strip()] or _default_origins
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Tighten in production via env
+    allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
 )
 
 # ─── Routers ─────────────────────────────────────────────────────────────────
