@@ -3368,6 +3368,22 @@ class EngineRuntime:
             quota_used_today=quota_used,
             now_utc=datetime.now(timezone.utc).isoformat(),
         )
+
+        # Persist snapshot state to DB for Hub /api/positions/snapshot endpoint.
+        # Done BEFORE the alerter call so DB rows are written even if Telegram
+        # is down. Failures are logged but do not block the Telegram send.
+        try:
+            await self._db.upsert_pending_wins(pending)
+            await self._db.upsert_redeemer_state(
+                cooldown,
+                self._redeemer.daily_quota_limit,
+                quota_used,
+            )
+        except Exception as exc:
+            log.warning(
+                "orchestrator.snapshot_persist_failed", error=str(exc)[:120]
+            )
+
         await self._alerter.send_position_snapshot(snap)
 
     # ── Playwright Loops ────────────────────────────────────────────────────

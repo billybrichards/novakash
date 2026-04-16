@@ -98,3 +98,45 @@ async def test_send_position_snapshot_warns_on_wallet_failure(monkeypatch):
     assert "snapshot.wallet_balance_failed" in events, (
         f"expected snapshot.wallet_balance_failed WARN, got events={events}"
     )
+
+
+@pytest.mark.asyncio
+async def test_send_position_snapshot_persists_to_db():
+    """Snapshot loop must call upsert_pending_wins + upsert_redeemer_state."""
+    from infrastructure.runtime import EngineRuntime
+
+    o = EngineRuntime.__new__(EngineRuntime)
+    o._shutdown_event = MagicMock()
+    o._alerter = MagicMock()
+    o._alerter.send_position_snapshot = AsyncMock(return_value=1)
+    o._redeemer = MagicMock()
+    o._redeemer.pending_wins_summary = AsyncMock(return_value=[
+        {
+            "condition_id": "0xa",
+            "value": 5.0,
+            "window_end_utc": "2026-04-16T11:00:00Z",
+            "overdue_seconds": 600,
+        },
+    ])
+    o._redeemer.cooldown_status = MagicMock(return_value={
+        "active": False,
+        "remaining_seconds": 0,
+        "resets_at": None,
+        "reason": "",
+    })
+    o._redeemer.daily_quota_limit = 100
+    o._db = MagicMock()
+    o._db.count_redeems_today = AsyncMock(return_value=7)
+    o._db.upsert_pending_wins = AsyncMock()
+    o._db.upsert_redeemer_state = AsyncMock()
+    o._poly_client = MagicMock()
+    o._poly_client.get_balance = AsyncMock(return_value=135.0)
+    o._poly_client.get_open_orders = AsyncMock(return_value=[])
+
+    await o._send_position_snapshot()
+
+    o._db.upsert_pending_wins.assert_awaited_once()
+    o._db.upsert_redeemer_state.assert_awaited_once_with(
+        {"active": False, "remaining_seconds": 0, "resets_at": None, "reason": ""},
+        100, 7,
+    )
