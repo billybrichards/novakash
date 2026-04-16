@@ -212,23 +212,26 @@ class DBClient:
                 entry_price, stake_usd, fee_usd, status, outcome,
                 payout_usd, pnl_usd, created_at, resolved_at, metadata, mode,
                 is_live,
-                engine_version, clob_order_id, fill_price, fill_size, execution_mode
+                engine_version, clob_order_id, fill_price, fill_size, execution_mode,
+                strategy_id, strategy_version
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-                      $18,$19,$20,$21,$22)
+                      $18,$19,$20,$21,$22,$23,$24)
             ON CONFLICT (order_id) DO UPDATE SET
-                status         = EXCLUDED.status,
-                outcome        = EXCLUDED.outcome,
-                payout_usd     = EXCLUDED.payout_usd,
-                pnl_usd        = EXCLUDED.pnl_usd,
-                resolved_at    = EXCLUDED.resolved_at,
-                is_live        = EXCLUDED.is_live,
-                entry_price    = EXCLUDED.entry_price,
-                stake_usd      = EXCLUDED.stake_usd,
-                metadata       = EXCLUDED.metadata,
-                clob_order_id  = COALESCE(EXCLUDED.clob_order_id, trades.clob_order_id),
-                fill_price     = COALESCE(EXCLUDED.fill_price, trades.fill_price),
-                fill_size      = COALESCE(EXCLUDED.fill_size, trades.fill_size),
-                execution_mode = COALESCE(EXCLUDED.execution_mode, trades.execution_mode)
+                status           = EXCLUDED.status,
+                outcome          = EXCLUDED.outcome,
+                payout_usd       = EXCLUDED.payout_usd,
+                pnl_usd          = EXCLUDED.pnl_usd,
+                resolved_at      = EXCLUDED.resolved_at,
+                is_live          = EXCLUDED.is_live,
+                entry_price      = EXCLUDED.entry_price,
+                stake_usd        = EXCLUDED.stake_usd,
+                metadata         = EXCLUDED.metadata,
+                clob_order_id    = COALESCE(EXCLUDED.clob_order_id, trades.clob_order_id),
+                fill_price       = COALESCE(EXCLUDED.fill_price, trades.fill_price),
+                fill_size        = COALESCE(EXCLUDED.fill_size, trades.fill_size),
+                execution_mode   = COALESCE(EXCLUDED.execution_mode, trades.execution_mode),
+                strategy_id      = COALESCE(EXCLUDED.strategy_id, trades.strategy_id),
+                strategy_version = COALESCE(EXCLUDED.strategy_version, trades.strategy_version)
         """
 
         try:
@@ -252,6 +255,11 @@ class DBClient:
             fill_price = meta.get("fill_price") or meta.get("avg_price")
             fill_size = meta.get("fill_size") or meta.get("size_matched")
             execution_mode = meta.get("execution_mode", "paper")
+            # strategy_id / strategy_version: prefer explicit metadata fields,
+            # fall back to order.strategy (which is always set to strategy_id
+            # by DBTradeRecorder).
+            strategy_id = meta.get("strategy_id") or order.strategy or None
+            strategy_version = meta.get("strategy_version") or None
 
             async with self._pool.acquire() as conn:
                 await conn.execute(
@@ -279,6 +287,9 @@ class DBClient:
                     float(fill_price) if fill_price is not None else None,
                     float(fill_size) if fill_size is not None else None,
                     execution_mode,
+                    # strategy identity fields
+                    strategy_id,
+                    strategy_version,
                 )
             log.debug("db.trade_written", order_id=order.order_id)
         except Exception as exc:
@@ -2181,6 +2192,8 @@ class DBClient:
                     ("fill_size", "DOUBLE PRECISION"),
                     ("execution_mode", "VARCHAR(20)"),
                     ("is_live", "BOOLEAN DEFAULT FALSE"),
+                    ("strategy_id", "VARCHAR(64)"),
+                    ("strategy_version", "VARCHAR(32)"),
                 ]:
                     await conn.execute(
                         f"ALTER TABLE trades ADD COLUMN IF NOT EXISTS {col} {col_type}"

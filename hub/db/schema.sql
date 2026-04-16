@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS trades (
     pnl_usd      NUMERIC(12, 4),
     metadata     JSONB DEFAULT '{}',
     mode         VARCHAR(16) DEFAULT 'paper',
+    strategy_id  VARCHAR(64),
+    strategy_version VARCHAR(32),
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     resolved_at  TIMESTAMPTZ
 );

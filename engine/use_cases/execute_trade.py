@@ -26,7 +26,7 @@ Feature flag: ENGINE_REGISTRY_EXECUTE (default false).
 
 from __future__ import annotations
 
-import logging
+import structlog
 from dataclasses import replace
 from typing import Optional
 
@@ -45,7 +45,7 @@ from domain.value_objects import (
 )
 from config.runtime_config import runtime
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger(__name__)
 
 # Constants ported from five_min_vpin.py
 PRICE_FLOOR = 0.30
@@ -157,9 +157,10 @@ class ExecuteTradeUseCase:
             if hasattr(self._window_state, "try_claim_trade"):
                 claim_acquired = await self._window_state.try_claim_trade(window_key)
                 if not claim_acquired:
-                    logger.info(
+                    log.info(
                         "execute_trade.dedup_hit",
-                        extra={"strategy": sid, "window": str(window_key)},
+                        strategy=sid,
+                        window=str(window_key),
                     )
                     return _failed(
                         "already_traded",
@@ -167,9 +168,10 @@ class ExecuteTradeUseCase:
                         direction=direction,
                     )
             elif await self._window_state.was_traded(window_key):
-                logger.info(
+                log.info(
                     "execute_trade.dedup_hit",
-                    extra={"strategy": sid, "window": str(window_key)},
+                    strategy=sid,
+                    window=str(window_key),
                 )
                 return _failed(
                     "already_traded",
@@ -177,9 +179,9 @@ class ExecuteTradeUseCase:
                     direction=direction,
                 )
         except Exception as exc:
-            logger.warning(
+            log.warning(
                 "execute_trade.dedup_check_error",
-                extra={"error": str(exc)[:200]},
+                error=str(exc)[:200],
             )
             # Fail safe: if we can't check dedup, proceed anyway
             # The CLOB will reject if already filled
@@ -206,13 +208,11 @@ class ExecuteTradeUseCase:
             risk_status = raw_status
         approved, reason = self._check_risk(risk_status, stake)
         if not approved:
-            logger.info(
+            log.info(
                 "execute_trade.risk_blocked",
-                extra={
-                    "strategy": sid,
-                    "stake": stake.adjusted_stake,
-                    "reason": reason,
-                },
+                strategy=sid,
+                stake=stake.adjusted_stake,
+                failure_reason=reason,
             )
             try:
                 await self._alerter.send_system_alert(
@@ -233,9 +233,10 @@ class ExecuteTradeUseCase:
         # ── Step 4: Guardrails ─────────────────────────────────────────
         ok, guard_reason = self._check_guardrails()
         if not ok:
-            logger.info(
+            log.info(
                 "execute_trade.guardrail_blocked",
-                extra={"strategy": sid, "reason": guard_reason},
+                strategy=sid,
+                failure_reason=guard_reason,
             )
             return _failed(
                 guard_reason,
@@ -253,9 +254,11 @@ class ExecuteTradeUseCase:
             side = "YES"
 
         if not token_id:
-            logger.error(
+            log.error(
                 "execute_trade.no_token_id",
-                extra={"strategy": sid, "direction": direction},
+                strategy=sid,
+                direction=direction,
+                failure_reason="no_token_id",
             )
             return _failed(
                 "no_token_id",
@@ -282,9 +285,11 @@ class ExecuteTradeUseCase:
                 except Exception:
                     pass
             self._on_order_error()
-            logger.error(
+            log.error(
                 "execute_trade.execution_error",
-                extra={"strategy": sid, "error": str(exc)[:200]},
+                strategy=sid,
+                failure_reason=f"execution_error: {str(exc)[:200]}",
+                exc_info=True,
             )
             return _failed(
                 f"execution_error: {str(exc)[:200]}",
@@ -313,12 +318,10 @@ class ExecuteTradeUseCase:
                 except Exception:
                     pass
             self._on_order_error()
-            logger.info(
+            log.info(
                 "execute_trade.order_not_filled",
-                extra={
-                    "strategy": sid,
-                    "reason": result.failure_reason,
-                },
+                strategy=sid,
+                failure_reason=result.failure_reason,
             )
             return result
 
@@ -327,9 +330,9 @@ class ExecuteTradeUseCase:
             await self._recorder.record_trade(decision, result, stake)
         except Exception as exc:
             # Fire-and-forget spirit: log but don't fail the trade
-            logger.warning(
+            log.warning(
                 "execute_trade.record_error",
-                extra={"error": str(exc)[:200]},
+                error=str(exc)[:200],
             )
 
         # ── Step 8: Mark traded ────────────────────────────────────────
@@ -339,9 +342,9 @@ class ExecuteTradeUseCase:
                 result.order_id or "unknown",
             )
         except Exception as exc:
-            logger.warning(
+            log.warning(
                 "execute_trade.mark_traded_error",
-                extra={"error": str(exc)[:200]},
+                error=str(exc)[:200],
             )
 
         # ── Step 9: Telegram alert (rich strategy-aware format) ─────────
@@ -390,26 +393,24 @@ class ExecuteTradeUseCase:
                 )
                 await self._alerter.send_system_alert(alert_msg)
         except Exception as exc:
-            logger.warning(
+            log.warning(
                 "execute_trade.alert_error",
-                extra={"error": str(exc)[:200]},
+                error=str(exc)[:200],
             )
 
         # ── Step 10: Update guardrail state ────────────────────────────
         self._record_order_placed()
         self._on_order_success()
 
-        logger.info(
+        log.info(
             "execute_trade.success",
-            extra={
-                "strategy": sid,
-                "direction": direction,
-                "order_id": result.order_id,
-                "fill_price": result.fill_price,
-                "fill_size": result.fill_size,
-                "stake": result.stake_usd,
-                "mode": result.execution_mode,
-            },
+            strategy=sid,
+            direction=direction,
+            order_id=result.order_id,
+            fill_price=result.fill_price,
+            fill_size=result.fill_size,
+            stake=result.stake_usd,
+            mode=result.execution_mode,
         )
 
         return result
@@ -529,12 +530,10 @@ class ExecuteTradeUseCase:
         self._consecutive_errors += 1
         if self._consecutive_errors >= CIRCUIT_BREAKER_ERRORS:
             self._circuit_break_until = self._clock.now() + CIRCUIT_BREAKER_COOLDOWN_S
-            logger.warning(
+            log.warning(
                 "execute_trade.circuit_breaker_tripped",
-                extra={
-                    "errors": self._consecutive_errors,
-                    "cooldown_s": CIRCUIT_BREAKER_COOLDOWN_S,
-                },
+                errors=self._consecutive_errors,
+                cooldown_s=CIRCUIT_BREAKER_COOLDOWN_S,
             )
 
     # ─── Helpers ───────────────────────────────────────────────────────

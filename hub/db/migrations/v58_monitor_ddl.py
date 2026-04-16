@@ -96,6 +96,8 @@ async def ensure_trades_sot_columns(session: AsyncSession) -> None:
         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS polymarket_last_verified_at TIMESTAMPTZ",
         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS sot_reconciliation_state TEXT",
         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS sot_reconciliation_notes TEXT",
+        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS strategy_id VARCHAR(64)",
+        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS strategy_version VARCHAR(32)",
     ):
         await session.execute(text(ddl))
     await session.execute(text(
