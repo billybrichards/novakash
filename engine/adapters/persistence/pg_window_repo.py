@@ -959,17 +959,33 @@ class PgWindowRepository(WindowStateRepository):
         if not self._pool:
             return
         outcome_str = str(outcome) if outcome is not None else None
+        actual_direction = (
+            getattr(outcome, "actual_direction", None) if outcome is not None else None
+        )
         try:
             async with self._pool.acquire() as conn:
+                # v4.4.0: also persist actual_direction (the oracle-resolved
+                # winner) so downstream skip-outcome analysis can read
+                # window_states directly instead of reconstructing from
+                # trades.market_slug. COALESCE preserves any previously-set
+                # value rather than nulling it on subsequent calls.
                 await conn.execute(
-                    "UPDATE window_states SET resolved_at = $2, outcome = $3 WHERE asset = $1 AND window_ts = $4 AND timeframe = $5",
+                    "UPDATE window_states SET resolved_at = $2, outcome = $3, "
+                    "actual_direction = COALESCE($6, actual_direction) "
+                    "WHERE asset = $1 AND window_ts = $4 AND timeframe = $5",
                     key.asset,
                     datetime.now(timezone.utc),
                     outcome_str,
                     key.window_ts,
                     key.timeframe,
+                    actual_direction,
                 )
-            log.debug("db.mark_resolved", key=str(key), outcome=outcome_str)
+            log.debug(
+                "db.mark_resolved",
+                key=str(key),
+                outcome=outcome_str,
+                actual_direction=actual_direction,
+            )
         except Exception as exc:
             log.warning("db.mark_resolved_failed", key=str(key), error=str(exc)[:120])
 

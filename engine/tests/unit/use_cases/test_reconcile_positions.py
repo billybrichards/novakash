@@ -199,6 +199,123 @@ async def test_empty_token_id_skips_token_matching():
 
 
 # ---------------------------------------------------------------------------
+# v4.4.0 (2026-04-16): TG alert payload enrichment + matched/orphan split
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_matched_win_alert_carries_direction_entry_window_ts():
+    """Matched resolution enriches alert payload with trade metadata."""
+    p = Ports()
+    p.trade_repo.find_by_token_id.return_value = {
+        **_match(stake_usd=4.86, entry_price=0.54, window_ts=1776323700),
+        "direction": "UP",
+        "strategy": "v4_fusion",
+    }
+    uc = p.uc()
+
+    await uc.resolve_one(_pos(outcome="WIN", cost=4.86))
+
+    assert len(uc._pending_live_alerts) == 1
+    a = uc._pending_live_alerts[0]
+    assert a["matched"] is True
+    assert a["direction"] == "UP"
+    assert a["entry_price"] == 0.54
+    assert a["window_ts"] == 1776323700
+    assert a["strategy"] == "v4_fusion"
+    assert a["match_method"] == "exact"
+
+
+@pytest.mark.asyncio
+async def test_orphan_alert_has_no_direction():
+    """Orphan (no DB match) records outcome but leaves direction/window None."""
+    p = Ports()
+    p.trade_repo.find_by_token_id.return_value = None
+    p.trade_repo.find_by_token_prefix.return_value = None
+    p.trade_repo.find_by_approximate_cost.return_value = None
+    uc = p.uc()
+
+    await uc.resolve_one(_pos(outcome="LOSS", cost=5.0))
+
+    assert len(uc._pending_live_alerts) == 1
+    a = uc._pending_live_alerts[0]
+    assert a["matched"] is False
+    assert a["direction"] is None
+    assert a["window_ts"] is None
+    assert a["match_method"] is None
+
+
+@pytest.mark.asyncio
+async def test_flush_separates_matched_from_orphans():
+    """Flushed message shows MATCHED count + ORPHAN count separately."""
+    p = Ports()
+    uc = p.uc()
+
+    # 1 matched WIN, 1 matched LOSS, 2 orphan LOSS
+    uc._pending_live_alerts = [
+        {
+            "outcome": "WIN", "pnl": 4.17, "cost": 4.86,
+            "entry_price": 0.54, "matched": True, "condition_id": "c1",
+            "direction": "UP", "window_ts": 1776323700,
+            "match_method": "exact", "strategy": "v4_fusion",
+        },
+        {
+            "outcome": "LOSS", "pnl": -4.86, "cost": 4.86,
+            "entry_price": 0.56, "matched": True, "condition_id": "c2",
+            "direction": "UP", "window_ts": 1776324000,
+            "match_method": "cost_fallback", "strategy": "v4_fusion",
+        },
+        {
+            "outcome": "LOSS", "pnl": -4.86, "cost": 4.86,
+            "entry_price": None, "matched": False, "condition_id": "c3",
+            "direction": None, "window_ts": None,
+            "match_method": None, "strategy": None,
+        },
+        {
+            "outcome": "LOSS", "pnl": -3.50, "cost": 3.50,
+            "entry_price": None, "matched": False, "condition_id": "c4",
+            "direction": None, "window_ts": None,
+            "match_method": None, "strategy": None,
+        },
+    ]
+
+    await uc._flush_resolution_alerts()
+
+    # Capture the message passed to alerter
+    send = p.alerts.send_raw_message
+    if not send.call_args:
+        send = p.alerts.send_system_alert
+    msg = send.call_args.args[0]
+
+    # Matched section shows 1W/1L (not 1W/3L — orphans excluded)
+    assert "matched: 1 WIN / 1 LOSS" in msg
+    # Matched net is -$0.69 (not -$8.05 — orphans excluded from net)
+    assert "-$0.69" in msg
+    # Orphans shown separately with their own count
+    assert "Orphans: 2" in msg
+    assert "pre-#211 legacy" in msg
+    # Per-trade detail for matched includes direction + entry price
+    assert "UP" in msg
+    assert "$0.540" in msg
+    # Window time rendered HH:MM UTC
+    assert "UTC" in msg
+
+
+@pytest.mark.asyncio
+async def test_flush_silent_when_nothing_pending():
+    """Empty pass produces no alert."""
+    p = Ports()
+    uc = p.uc()
+    uc._pending_live_alerts = []
+    uc._pending_paper_alerts = []
+
+    await uc._flush_resolution_alerts()
+
+    p.alerts.send_raw_message.assert_not_called()
+    p.alerts.send_system_alert.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # PgWindowRepository.get_actual_direction
 # ---------------------------------------------------------------------------
 
