@@ -3789,16 +3789,59 @@ async def get_factory_windows(
 async def strategy_decisions(
     strategy_id: Optional[str] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
+    resolved: Optional[bool] = Query(
+        default=None,
+        description=(
+            "Filter by resolution status: true=only decisions whose order "
+            "has resolved (outcome IS NOT NULL), false=only unresolved. "
+            "Omit for all rows. Used by FE WR matrix (task #222)."
+        ),
+    ),
     db: AsyncSession = Depends(get_session),
     user: TokenData = Depends(get_current_user),
 ):
-    """Return recent strategy decisions (LIVE + GHOST)."""
+    """Return recent strategy decisions (LIVE + GHOST) enriched with
+    resolved-trade outcome where available.
+
+    Task #222 — reads from the ``strategy_decisions_resolved`` view
+    (see migration
+    ``hub/db/migrations/versions/20260417_02_strategy_decisions_resolved_view.sql``
+    and the CREATE-OR-REPLACE block in ``hub/main.py`` startup). The
+    view LEFT-JOINs ``trades`` via a LATERAL subquery so each decision
+    carries ``outcome / pnl_usd / resolved_at / sot_reconciliation_state``
+    for the most-recently-resolved matching trade.
+
+    Response additions (nullable — absent until the trade resolves):
+      * ``outcome`` — "WIN" | "LOSS" | null
+      * ``pnl_usd`` — float | null
+      * ``resolved_at`` — ISO timestamp | null
+      * ``sot_reconciliation_state`` — phantom-detection tag | null.
+        Values include ``engine_optimistic`` / ``diverged`` / ``agrees``.
+        A decision with ``sot_reconciliation_state='engine_optimistic'``
+        + ``outcome='LOSS'`` is an accounting-only loss (wallet
+        untouched — see hub note #64).
+
+    Frontend WR math::
+
+        wr = wins(outcome='WIN') / resolved_decisions
+
+    Use ``?resolved=true`` to narrow to resolved rows server-side.
+
+    Clean-arch note: when the Phase-3 ``position_resolutions`` table
+    lands (see ``docs/CLEAN_ARCHITECT_MIGRATION_PLAN.md``), only the
+    view's body is rewritten; this endpoint's response shape stays
+    identical, so no FE change is required.
+    """
     try:
         where_clauses = []
         params: dict = {"lim": limit}
         if strategy_id:
             where_clauses.append("strategy_id = :sid")
             params["sid"] = strategy_id
+        if resolved is True:
+            where_clauses.append("outcome IS NOT NULL")
+        elif resolved is False:
+            where_clauses.append("outcome IS NULL")
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
         rows = (
             await db.execute(
@@ -3809,8 +3852,10 @@ async def strategy_decisions(
                            entry_cap, collateral_pct, entry_reason, skip_reason,
                            executed, order_id, fill_price, fill_size,
                            metadata_json::text AS metadata_json,
-                           evaluated_at
-                    FROM strategy_decisions
+                           evaluated_at,
+                           outcome, pnl_usd, resolved_at,
+                           sot_reconciliation_state
+                    FROM strategy_decisions_resolved
                     {where_sql}
                     ORDER BY evaluated_at DESC
                     LIMIT :lim
@@ -3849,6 +3894,11 @@ async def strategy_decisions(
                 "fill_size": _safe_float(r["fill_size"]),
                 "metadata": meta_parsed,
                 "evaluated_at": r["evaluated_at"].isoformat() if r["evaluated_at"] else None,
+                # Task #222 — resolved-trade enrichment (nullable until resolve)
+                "outcome": r["outcome"],
+                "pnl_usd": _safe_float(r["pnl_usd"]),
+                "resolved_at": r["resolved_at"].isoformat() if r["resolved_at"] else None,
+                "sot_reconciliation_state": r["sot_reconciliation_state"],
             })
         return {"decisions": decisions}
     except Exception as exc:
