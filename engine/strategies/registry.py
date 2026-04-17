@@ -19,6 +19,7 @@ import structlog
 import yaml
 
 from alerts.haiku_summarizer import HaikuSummarizer
+from domain.decision_metadata import DecisionMetadata
 from domain.value_objects import GateCheckTrace, StrategyDecision, WindowEvaluationTrace
 from strategies.data_surface import DataSurfaceManager, FullDataSurface
 from strategies.gates.base import Gate, GateResult
@@ -519,18 +520,10 @@ class StrategyRegistry:
                     error=str(exc)[:200],
                 )
                 decisions.append(
-                    StrategyDecision(
-                        action="ERROR",
-                        direction=None,
-                        confidence=None,
-                        confidence_score=None,
-                        entry_cap=None,
-                        collateral_pct=None,
+                    StrategyDecision.error(
+                        reason=f"registry_error: {str(exc)[:200]}",
                         strategy_id=name,
                         strategy_version=config.version,
-                        entry_reason="",
-                        skip_reason=f"registry_error: {str(exc)[:200]}",
-                        metadata={},
                     )
                 )
         # Send per-window summary at final eval offset
@@ -1096,18 +1089,28 @@ class StrategyRegistry:
                     for gate in self._pipelines[name]:
                         gate_result = gate.evaluate(surface)
                         if not gate_result.passed:
-                            return StrategyDecision(
-                                action="SKIP",
+                            # Preserve hook-computed direction/confidence so the
+                            # Signal Explorer can render "would have traded X
+                            # but filtered by gate Y". DecisionMetadata layers
+                            # a ``post_hook_gate_failed`` marker into extras
+                            # while keeping the hook's existing metadata as
+                            # the base — matches pre-VO semantics 1:1.
+                            hook_meta = DecisionMetadata.from_dict(
+                                hook_result.metadata
+                            ).with_extras(post_hook_gate_failed=gate_result.gate_name)
+                            return StrategyDecision.skip(
+                                reason=(
+                                    f"post_hook_gate {gate_result.gate_name}: "
+                                    f"{gate_result.reason}"
+                                ),
+                                strategy_id=name,
+                                strategy_version=config.version,
                                 direction=hook_result.direction,
                                 confidence=hook_result.confidence,
                                 confidence_score=hook_result.confidence_score,
                                 entry_cap=hook_result.entry_cap,
                                 collateral_pct=hook_result.collateral_pct,
-                                strategy_id=name,
-                                strategy_version=config.version,
-                                entry_reason="",
-                                skip_reason=f"post_hook_gate {gate_result.gate_name}: {gate_result.reason}",
-                                metadata={**hook_result.metadata, "post_hook_gate_failed": gate_result.gate_name},
+                                metadata=hook_meta,
                             )
                     return hook_result  # All post-hook gates passed
 
@@ -1117,27 +1120,24 @@ class StrategyRegistry:
             result = gate.evaluate(surface)
             gate_results.append(result)
             if not result.passed:
-                return StrategyDecision(
-                    action="SKIP",
-                    direction=None,
-                    confidence=None,
-                    confidence_score=None,
-                    entry_cap=None,
-                    collateral_pct=None,
+                # gate_results trace lives under extras — it's strategy-
+                # scoped debug info, not part of the shared decision shape.
+                return StrategyDecision.skip(
+                    reason=f"{result.gate_name}: {result.reason}",
                     strategy_id=name,
                     strategy_version=config.version,
-                    entry_reason="",
-                    skip_reason=f"{result.gate_name}: {result.reason}",
-                    metadata={
-                        "gate_results": [
-                            {
-                                "gate": r.gate_name,
-                                "passed": r.passed,
-                                "reason": r.reason,
-                            }
-                            for r in gate_results
-                        ]
-                    },
+                    metadata=DecisionMetadata(
+                        extras={
+                            "gate_results": [
+                                {
+                                    "gate": r.gate_name,
+                                    "passed": r.passed,
+                                    "reason": r.reason,
+                                }
+                                for r in gate_results
+                            ]
+                        }
+                    ),
                 )
 
         # All gates passed -- determine direction + sizing
@@ -1156,18 +1156,25 @@ class StrategyRegistry:
         if surface.poly_confidence_distance is not None:
             confidence_score = surface.poly_confidence_distance * 2.0
 
-        return StrategyDecision(
-            action="TRADE",
-            direction=direction,
-            confidence=confidence,
-            confidence_score=confidence_score,
-            entry_cap=sizing.entry_cap,
-            collateral_pct=sizing.max_collateral_pct * sizing.size_modifier,
-            strategy_id=name,
-            strategy_version=config.version,
-            entry_reason=(f"{name}_T{surface.eval_offset}_{direction}_{sizing.label}"),
-            skip_reason=None,
-            metadata={
+        # Resolve window_ts with `is None` check — window_ts=0 is a legit
+        # epoch-origin value (tests) that falsy-short-circuit would corrupt.
+        _raw_window_ts = getattr(surface, "window_ts", None)
+        resolved_window_ts = (
+            _raw_window_ts
+            if _raw_window_ts is not None
+            else getattr(surface, "eval_window_ts", None)
+        )
+        # Regime resolution: v4_regime (HMM classifier) preferred. Falls back
+        # to vol-regime `surface.regime` (CALM / NORMAL / TRANSITION / CASCADE)
+        # because data_surface only populates v4_regime when the TimesFM
+        # /v4/snapshot endpoint delivers the `regime` key.
+        resolved_regime = surface.v4_regime or getattr(surface, "regime", None)
+
+        trade_metadata = DecisionMetadata(
+            regime=resolved_regime,
+            conviction=surface.v4_conviction,
+            window_ts=resolved_window_ts,
+            extras={
                 "gate_results": [
                     {"gate": r.gate_name, "passed": r.passed, "reason": r.reason}
                     for r in gate_results
@@ -1181,31 +1188,32 @@ class StrategyRegistry:
                 "poly_direction": surface.poly_direction,
                 "poly_confidence_distance": surface.poly_confidence_distance,
                 "v2_probability_up": surface.v2_probability_up,
-                # Surfaced on the Trades UI (hub/api/trades.py
-                # `_row_to_dict` reads these from trades.metadata JSONB).
-                # v4_regime is the HMM regime (calm_trend / volatile_trend /
-                # chop / risk_off); the vol `regime` (CALM / NORMAL /
-                # TRANSITION / CASCADE) is available separately on the
-                # surface — we surface v4 because that's the one the
-                # strategy actually keys off.
-                # Fall back to the `regime` field too — data_surface assigns
-                # v4_regime from the TimesFM /v4/snapshot `regime` key, which
-                # may be missing while the vol-regime classifier field is
-                # always populated.
-                "regime": (
-                    surface.v4_regime
-                    or getattr(surface, "regime", None)
-                ),
-                "conviction": surface.v4_conviction,
-                # Explicit `is None` check — `window_ts == 0` is a legit
-                # value (unix epoch origin in tests) and must not be
-                # treated as missing.
-                "window_ts": (
-                    getattr(surface, "window_ts", None)
-                    if getattr(surface, "window_ts", None) is not None
-                    else getattr(surface, "eval_window_ts", None)
-                ),
             },
+        )
+
+        # Defensive: if all gates passed but we still couldn't derive a
+        # direction, convert to SKIP rather than emit a TRADE with
+        # direction=None. Pre-VO code accepted None and bounced further
+        # downstream; the factory's explicit validation catches it here,
+        # which is where the bug belongs.
+        if direction not in ("UP", "DOWN"):
+            return StrategyDecision.skip(
+                reason="no_direction_after_gates_passed",
+                strategy_id=name,
+                strategy_version=config.version,
+                metadata=trade_metadata,
+            )
+
+        return StrategyDecision.trade(
+            direction=direction,
+            strategy_id=name,
+            strategy_version=config.version,
+            entry_reason=f"{name}_T{surface.eval_offset}_{direction}_{sizing.label}",
+            metadata=trade_metadata,
+            confidence=confidence,
+            confidence_score=confidence_score,
+            entry_cap=sizing.entry_cap,
+            collateral_pct=sizing.max_collateral_pct * sizing.size_modifier,
         )
 
     def _determine_direction(

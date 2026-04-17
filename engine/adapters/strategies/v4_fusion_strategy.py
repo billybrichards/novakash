@@ -18,6 +18,7 @@ from typing import Optional
 
 import structlog
 
+from domain.decision_metadata import DecisionMetadata
 from domain.value_objects import StrategyContext, StrategyDecision, V4Snapshot
 
 log = structlog.get_logger(__name__)
@@ -123,18 +124,16 @@ class V4FusionStrategy:
             size_modifier = snap.macro.get("size_modifier", 1.0)
             collateral_pct = collateral_pct * size_modifier
 
-        return StrategyDecision(
-            action="TRADE",
+        return StrategyDecision.trade(
             direction=direction,
-            confidence=snap.conviction,
-            confidence_score=snap.conviction_score,
-            entry_cap=None,             # V4 uses its own sizing, not V10 caps
-            collateral_pct=collateral_pct,
             strategy_id=self.strategy_id,
             strategy_version=self.version,
             entry_reason=self._build_reason(snap, ctx),
-            skip_reason=None,
             metadata=self._build_metadata(snap),
+            confidence=snap.conviction,
+            confidence_score=snap.conviction_score,
+            entry_cap=None,  # V4 uses its own sizing, not V10 caps
+            collateral_pct=collateral_pct,
         )
 
     def _get_rec_extras(self, snap: V4Snapshot) -> dict:
@@ -228,21 +227,16 @@ class V4FusionStrategy:
             if macro_gate == "SHORT_ONLY" and direction == "UP":
                 return self._skip(f"macro direction_gate=SHORT_ONLY blocks UP")
 
-        return StrategyDecision(
-            action="TRADE",
+        return StrategyDecision.trade(
             direction=direction,
+            strategy_id=self.strategy_id,
+            strategy_version=self.version,
+            entry_reason=f"polymarket_{reason}_T{ctx.eval_offset}",
+            metadata=self._build_metadata(snap).with_extras(polymarket_outcome=poly),
             confidence=snap.conviction or f"dist_{distance:.2f}",
             confidence_score=distance * 2.0,
             entry_cap=max_entry,
             collateral_pct=snap.recommended_collateral_pct,
-            strategy_id=self.strategy_id,
-            strategy_version=self.version,
-            entry_reason=f"polymarket_{reason}_T{ctx.eval_offset}",
-            skip_reason=None,
-            metadata={
-                **self._build_metadata(snap),
-                "polymarket_outcome": poly,
-            },
         )
 
     def _evaluate_polymarket(
@@ -281,27 +275,29 @@ class V4FusionStrategy:
             size_modifier = snap.macro.get("size_modifier", 1.0)
             collateral_pct = collateral_pct * size_modifier
 
-        return StrategyDecision(
-            action="TRADE",
+        return StrategyDecision.trade(
             direction=direction,
+            strategy_id=self.strategy_id,
+            strategy_version=self.version,
+            entry_reason=self._build_reason(snap, ctx),
+            metadata=self._build_metadata(snap),
             confidence=snap.conviction,
             confidence_score=snap.conviction_score or (distance * 2.0),
             entry_cap=max_entry,
             collateral_pct=collateral_pct,
-            strategy_id=self.strategy_id,
-            strategy_version=self.version,
-            entry_reason=self._build_reason(snap, ctx),
-            skip_reason=None,
-            metadata=self._build_metadata(snap),
         )
 
-    def _build_metadata(self, snap: V4Snapshot) -> dict:
-        """Build the metadata dict for a strategy decision."""
-        return {
+    def _build_metadata(self, snap: V4Snapshot) -> DecisionMetadata:
+        """Build DecisionMetadata from the V4 snapshot.
+
+        Shared typed fields (regime, conviction) + V4-specific reasoning
+        in ``extras``. window_ts lives on the ctx for this adapter, not on
+        the snapshot — callers that want window_ts in metadata should use
+        ``with_extras`` or construct manually.
+        """
+        extras: dict = {
             "probability_up": snap.probability_up,
-            "conviction": snap.conviction,
             "conviction_score": snap.conviction_score,
-            "regime": snap.regime,
             "regime_confidence": snap.regime_confidence,
             "recommended_action": {
                 "side": snap.recommended_side,
@@ -314,6 +310,11 @@ class V4FusionStrategy:
             "macro": snap.macro,
             "quantiles": snap.quantiles,
         }
+        return DecisionMetadata(
+            regime=snap.regime,
+            conviction=snap.conviction,
+            extras=extras,
+        )
 
     def _build_reason(self, snap: V4Snapshot, ctx: StrategyContext) -> str:
         """Build a human-readable entry reason."""
@@ -324,32 +325,16 @@ class V4FusionStrategy:
 
     def _skip(self, reason: str) -> StrategyDecision:
         """Return a SKIP decision."""
-        return StrategyDecision(
-            action="SKIP",
-            direction=None,
-            confidence=None,
-            confidence_score=None,
-            entry_cap=None,
-            collateral_pct=None,
+        return StrategyDecision.skip(
+            reason=reason,
             strategy_id=self.strategy_id,
             strategy_version=self.version,
-            entry_reason="",
-            skip_reason=reason,
-            metadata={},
         )
 
     def _error(self, reason: str) -> StrategyDecision:
         """Return an ERROR decision."""
-        return StrategyDecision(
-            action="ERROR",
-            direction=None,
-            confidence=None,
-            confidence_score=None,
-            entry_cap=None,
-            collateral_pct=None,
+        return StrategyDecision.error(
+            reason=reason,
             strategy_id=self.strategy_id,
             strategy_version=self.version,
-            entry_reason="",
-            skip_reason=reason,
-            metadata={},
         )
