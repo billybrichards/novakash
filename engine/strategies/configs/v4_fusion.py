@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 from domain.alert_logic import score_signal_health
 from domain.alert_values import HealthStatus
+from domain.decision_metadata import DecisionMetadata
 from domain.value_objects import StrategyDecision
 
 _STRATEGY_ID = "v4_fusion"
@@ -258,18 +259,11 @@ def _try_risk_off_override(
 
 
 def _skip(reason: str, gate_results: Optional[list[dict]] = None) -> StrategyDecision:
-    return StrategyDecision(
-        action="SKIP",
-        direction=None,
-        confidence=None,
-        confidence_score=None,
-        entry_cap=None,
-        collateral_pct=None,
+    return StrategyDecision.skip(
+        reason=reason,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
-        entry_reason="",
-        skip_reason=reason,
-        metadata={"gate_results": gate_results or []},
+        metadata=DecisionMetadata(extras={"gate_results": gate_results or []}),
     )
 
 
@@ -545,30 +539,36 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
         )
 
     entry_reason_prefix = "polymarket_override_" if risk_off_overridden else "polymarket_"
-    return StrategyDecision(
-        action="TRADE",
+    # Canonical shared fields: regime from v4_regime (HMM classifier),
+    # conviction from v4_conviction. v4_regime key no longer appears in
+    # extras — it's on the VO as `regime`, so PR #254's trade_recorder
+    # fallback is no longer necessary for new writes.
+    return StrategyDecision.trade(
         direction=direction,
+        strategy_id=_STRATEGY_ID,
+        strategy_version=_VERSION,
+        entry_reason=f"{entry_reason_prefix}{reason}_T{surface.eval_offset}",
+        metadata=DecisionMetadata(
+            regime=surface.v4_regime,
+            conviction=surface.v4_conviction,
+            window_ts=getattr(surface, "window_ts", None),
+            extras={
+                "gate_results": gates,
+                "poly_direction": direction,
+                "poly_confidence_distance": distance,
+                "poly_timing": timing,
+                "vpin_regime": surface.regime,
+                "chainlink_delta": surface.delta_chainlink,
+                "chainlink_agrees": True,
+                "tiingo_delta": surface.delta_tiingo,
+                "tiingo_agrees": True,
+                "risk_off_overridden": risk_off_overridden,
+            },
+        ),
         confidence=surface.v4_conviction or f"dist_{distance:.2f}",
         confidence_score=distance * 2.0,
         entry_cap=max_entry,
         collateral_pct=surface.v4_recommended_collateral_pct,
-        strategy_id=_STRATEGY_ID,
-        strategy_version=_VERSION,
-        entry_reason=f"{entry_reason_prefix}{reason}_T{surface.eval_offset}",
-        skip_reason=None,
-        metadata={
-            "gate_results": gates,
-            "poly_direction": direction,
-            "poly_confidence_distance": distance,
-            "poly_timing": timing,
-            "v4_regime": surface.v4_regime,
-            "vpin_regime": surface.regime,
-            "chainlink_delta": surface.delta_chainlink,
-            "chainlink_agrees": True,
-            "tiingo_delta": surface.delta_tiingo,
-            "tiingo_agrees": True,
-            "risk_off_overridden": risk_off_overridden,
-        },
     )
 
 
@@ -602,22 +602,24 @@ def _evaluate_poly_legacy(surface: "FullDataSurface") -> StrategyDecision:
     if collateral_pct is not None and surface.v4_macro_size_modifier:
         collateral_pct *= surface.v4_macro_size_modifier
 
-    return StrategyDecision(
-        action="TRADE",
+    return StrategyDecision.trade(
         direction=direction,
+        strategy_id=_STRATEGY_ID,
+        strategy_version=_VERSION,
+        entry_reason=f"polymarket_legacy_dist{distance:.2f}_T{surface.eval_offset}",
+        metadata=DecisionMetadata(
+            regime=surface.v4_regime,
+            conviction=surface.v4_conviction,
+            window_ts=getattr(surface, "window_ts", None),
+            extras={
+                "gate_results": gates,
+                "v2_probability_up": p_up,
+            },
+        ),
         confidence=surface.v4_conviction,
         confidence_score=surface.v4_conviction_score or (distance * 2.0),
         entry_cap=surface.poly_max_entry_price,
         collateral_pct=collateral_pct,
-        strategy_id=_STRATEGY_ID,
-        strategy_version=_VERSION,
-        entry_reason=f"polymarket_legacy_dist{distance:.2f}_T{surface.eval_offset}",
-        skip_reason=None,
-        metadata={
-            "gate_results": gates,
-            "v2_probability_up": p_up,
-            "v4_regime": surface.v4_regime,
-        },
     )
 
 
@@ -680,21 +682,22 @@ def _evaluate_legacy(surface: "FullDataSurface") -> StrategyDecision:
     if collateral_pct is not None and surface.v4_macro_size_modifier:
         collateral_pct *= surface.v4_macro_size_modifier
 
-    return StrategyDecision(
-        action="TRADE",
+    return StrategyDecision.trade(
         direction=direction,
+        strategy_id=_STRATEGY_ID,
+        strategy_version=_VERSION,
+        entry_reason=f"v4_{conviction}_{regime}_T{surface.eval_offset}_p{p_up:.2f}",
+        metadata=DecisionMetadata(
+            regime=regime,
+            conviction=conviction,
+            window_ts=getattr(surface, "window_ts", None),
+            extras={
+                "gate_results": gates,
+                "v2_probability_up": p_up,
+            },
+        ),
         confidence=conviction,
         confidence_score=surface.v4_conviction_score,
         entry_cap=None,
         collateral_pct=collateral_pct,
-        strategy_id=_STRATEGY_ID,
-        strategy_version=_VERSION,
-        entry_reason=(f"v4_{conviction}_{regime}_T{surface.eval_offset}_p{p_up:.2f}"),
-        skip_reason=None,
-        metadata={
-            "gate_results": gates,
-            "v2_probability_up": p_up,
-            "v4_regime": regime,
-            "v4_conviction": conviction,
-        },
     )

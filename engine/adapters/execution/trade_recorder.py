@@ -77,25 +77,26 @@ class DBTradeRecorder(TradeRecorderPort):
             try:
                 from execution.order_manager import Order, OrderStatus
 
-                # Pull regime / conviction out of decision.metadata. Different
-                # strategy builders use different key names:
-                #   - registry._evaluate_common: "regime" / "conviction"
-                #   - configs/v4_fusion.py (4.5.0): "v4_regime" / "v4_conviction"
-                #   - adapters/v4_fusion_strategy (4.0.0): "regime" / "conviction"
-                # Fall back through the alternatives rather than forcing every
-                # builder to share a convention.
-                decision_meta = decision.metadata or {}
-                regime = (
-                    decision_meta.get("regime")
-                    or decision_meta.get("v4_regime")
-                )
+                # Parse via the DecisionMetadata VO — applies the
+                # v4_regime/v4_conviction legacy-key fallback internally
+                # (see engine/domain/decision_metadata.py). Phase 3 of the
+                # Three Builders convergence: all new writes use canonical
+                # ``regime`` / ``conviction`` keys directly via the
+                # StrategyDecision factory, so the fallback only serves
+                # historical rows — it has no effect on post-Phase-3b
+                # decisions.
+                from domain.decision_metadata import DecisionMetadata
+
+                decision_vo = DecisionMetadata.from_dict(decision.metadata)
+                regime = decision_vo.regime
                 # dedup_key uniquely identifies the (strategy, window, direction)
                 # triplet that the registry used for its in-memory dedup. Not
                 # strictly enforced in DB but useful for triage (e.g. a pair
                 # of trades with the same dedup_key indicates a re-entry bug).
                 # Fall back to parsing from market_slug when window_ts is not
-                # embedded in decision.metadata (v4_fusion builders omit it).
-                window_ts = decision_meta.get("window_ts")
+                # embedded in decision.metadata (edge cases where the VO
+                # wasn't populated with window_ts).
+                window_ts = decision_vo.window_ts
                 if window_ts is None and result.market_slug:
                     try:
                         window_ts = int(result.market_slug.rsplit("-", 1)[-1])
