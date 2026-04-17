@@ -124,6 +124,61 @@ class TestG2Resolved:
 
 
 # ---------------------------------------------------------------------------
+# Per-trade resolved card from reconciler
+# ---------------------------------------------------------------------------
+
+
+class TestPerTradeResolvedV2:
+    @pytest.mark.asyncio
+    async def test_win_up_emits_correct_win(self):
+        alerter, cap = _wire_alerter()
+        await alerter.emit_per_trade_resolved_v2(
+            direction="YES",  # predicted UP
+            outcome="WIN",
+            pnl=2.10,
+            entry_price=0.52,
+            cost=5.00,
+            window_ts=1_712_345_678,
+            strategy="v4_fusion",
+        )
+        assert len(cap.sent) == 1
+        msg = cap.sent[0]
+        assert "CORRECT + WIN" in msg
+        assert "+$2.10" in msg
+
+    @pytest.mark.asyncio
+    async def test_loss_down_emits_wrong_loss(self):
+        alerter, cap = _wire_alerter()
+        await alerter.emit_per_trade_resolved_v2(
+            direction="NO",    # predicted DOWN
+            outcome="LOSS",
+            pnl=-4.29,
+            entry_price=0.72,
+            cost=4.29,
+            window_ts=1_712_345_678,
+            strategy="v4_fusion",
+        )
+        assert len(cap.sent) == 1
+        msg = cap.sent[0]
+        assert "WRONG + LOSS" in msg
+        assert "-$4.29" in msg
+
+    @pytest.mark.asyncio
+    async def test_silent_when_v2_disabled(self):
+        alerter, cap = _wire_alerter(enabled=False)
+        await alerter.emit_per_trade_resolved_v2(
+            direction="UP",
+            outcome="WIN",
+            pnl=1.00,
+            entry_price=0.50,
+            cost=2.00,
+            window_ts=1_712_345_678,
+            strategy="v4_fusion",
+        )
+        assert len(cap.sent) == 0
+
+
+# ---------------------------------------------------------------------------
 # G.3: reconcile pass → ReconcilePayload (dedupe across passes)
 # ---------------------------------------------------------------------------
 

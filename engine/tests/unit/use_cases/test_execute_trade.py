@@ -379,6 +379,33 @@ async def test_circuit_breaker_tripped():
     assert "circuit_breaker" in result.failure_reason
 
 
+@pytest.mark.asyncio
+async def test_circuit_breaker_sends_tg_alert():
+    """Circuit breaker trip fires send_system_alert to TG."""
+    clock = FakeClock(1000.0)
+    fail_fill = _make_fill_result(success=False, failure_reason="clob_error")
+    uc, mocks = _build_use_case(clock=clock, fill_result=fail_fill)
+    decision = _make_decision()
+    market = _make_window_market()
+
+    # 3 failed orders to trip circuit breaker
+    for _ in range(3):
+        clock.advance(31.0)
+        mocks["window_state"].was_traded.return_value = False
+        await uc.execute(
+            decision=decision,
+            window_market=market,
+            current_btc_price=84231.0,
+            open_price=84331.0,
+        )
+
+    # Verify send_system_alert was called with circuit breaker message
+    alert_calls = mocks["alerter"].send_system_alert.call_args_list
+    cb_alerts = [c for c in alert_calls if "Circuit breaker" in str(c)]
+    assert len(cb_alerts) == 1
+    assert "3 consecutive" in str(cb_alerts[0])
+
+
 # ─── Token ID Missing ───────────────────────────────────────────────────
 
 

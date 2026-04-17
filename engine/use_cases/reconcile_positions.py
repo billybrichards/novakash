@@ -464,20 +464,37 @@ class ReconcilePositionsUseCase:
         + match_method + strategy so the flushed message can show proper
         per-trade detail and orphans can be separated from real LOSSES.
         """
-        self._pending_live_alerts.append(
-            {
-                "outcome": position.outcome,
-                "pnl": float(pnl),
-                "cost": float(cost),
-                "entry_price": float(entry_price) if entry_price else None,
-                "matched": matched_trade_id is not None,
-                "condition_id": position.condition_id,
-                "direction": (direction or "").upper() or None,
-                "window_ts": int(window_ts) if window_ts else None,
-                "match_method": match_method,
-                "strategy": strategy,
-            }
-        )
+        alert_dict = {
+            "outcome": position.outcome,
+            "pnl": float(pnl),
+            "cost": float(cost),
+            "entry_price": float(entry_price) if entry_price else None,
+            "matched": matched_trade_id is not None,
+            "condition_id": position.condition_id,
+            "direction": (direction or "").upper() or None,
+            "window_ts": int(window_ts) if window_ts else None,
+            "match_method": match_method,
+            "strategy": strategy,
+        }
+        self._pending_live_alerts.append(alert_dict)
+
+        # Emit rich per-trade v2 card (in addition to batched summary)
+        if alert_dict["matched"] and hasattr(self._alerts, "emit_per_trade_resolved_v2"):
+            try:
+                await self._alerts.emit_per_trade_resolved_v2(
+                    direction=alert_dict["direction"] or "UP",
+                    outcome=position.outcome,
+                    pnl=float(pnl),
+                    entry_price=float(entry_price) if entry_price else 0.50,
+                    cost=float(cost),
+                    window_ts=int(window_ts) if window_ts else 0,
+                    strategy=strategy or "unknown",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "reconcile.per_trade_resolved_v2_failed",
+                    error=str(exc)[:200],
+                )
 
     async def _send_resolution_alert(
         self,
