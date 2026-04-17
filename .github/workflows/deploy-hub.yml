@@ -139,6 +139,12 @@ jobs:
         # path is critical: hub/ (with slash) copies the contents of
         # the directory; without slash it would create a nested hub/
         # subdir on the host.
+        #
+        # `--exclude 'strategy_configs'` prevents the subsequent engine-
+        # YAML rsync step from being blown away by --delete if a deploy
+        # runs engine-configs first. The dedicated rsync below recreates
+        # the directory on every deploy, so exclude-from-hub-rsync is
+        # the safe ordering.
         run: |
           rsync -avz --delete \
             -e "ssh -i ~/.ssh/deploy_key" \
@@ -150,7 +156,28 @@ jobs:
             --exclude '.DS_Store' \
             --exclude '.venv' \
             --exclude 'venv' \
+            --exclude 'strategy_configs' \
             hub/ ubuntu@"$HOST":/home/ubuntu/hub/
+
+      - name: Rsync engine strategy YAMLs
+        # The hub /api/strategies endpoint (audit #216, PR #251) reads
+        # strategy YAML from disk. The hub deploy tree does NOT include
+        # the engine directory, so the endpoint returned an empty
+        # registry after the AWS cutover (PR #251 post-merge verification
+        # surfaced this). Fix: land engine YAMLs at
+        # /home/ubuntu/hub/strategy_configs/ which the resolver in
+        # hub/api/strategies.py::_pick_config_dir now checks first.
+        #
+        # --include/--exclude pair whitelists *.yaml so transient editor
+        # artifacts (.swp, .DS_Store) never reach the host. --delete
+        # scopes the purge to this subdirectory only.
+        run: |
+          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'mkdir -p /home/ubuntu/hub/strategy_configs'
+          rsync -avz --delete \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            --include='*.yaml' \
+            --exclude='*' \
+            engine/strategies/configs/ ubuntu@"$HOST":/home/ubuntu/hub/strategy_configs/
 
       - name: Template .env on host
         # The .env file on the EC2 is the single source of truth for

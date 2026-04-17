@@ -23,7 +23,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from api.strategies import router, _normalise_timeframe, _load_strategy_yaml
+from api.strategies import (
+    router,
+    _normalise_timeframe,
+    _load_strategy_yaml,
+    _pick_config_dir,
+)
 
 
 @pytest.fixture
@@ -143,3 +148,68 @@ def test_malformed_yaml_skipped_rest_still_load(
     data = resp.json()
     assert "good" in data
     assert "bad" not in data
+
+
+# ─── Config-dir resolver (2026-04-17 deploy-path hardening) ────────────────────
+
+
+def test_pick_config_dir_respects_env_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """STRATEGY_CONFIGS_DIR env wins over all filesystem probes."""
+    monkeypatch.setenv("STRATEGY_CONFIGS_DIR", str(tmp_path))
+    assert _pick_config_dir() == str(tmp_path)
+
+
+def test_pick_config_dir_prefers_hub_local_when_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Given both candidates exist, hub/strategy_configs wins. This is the
+    AWS-deploy layout; local repo-root layout is the fallback."""
+    monkeypatch.delenv("STRATEGY_CONFIGS_DIR", raising=False)
+    hub_local = tmp_path / "hub" / "strategy_configs"
+    repo_engine = tmp_path / "engine" / "strategies" / "configs"
+    hub_local.mkdir(parents=True)
+    repo_engine.mkdir(parents=True)
+
+    fake_module_file = tmp_path / "hub" / "api" / "strategies.py"
+    fake_module_file.parent.mkdir(parents=True, exist_ok=True)
+    fake_module_file.write_text("")
+
+    with patch("api.strategies.__file__", str(fake_module_file)):
+        assert _pick_config_dir() == str(hub_local)
+
+
+def test_pick_config_dir_falls_back_to_engine_configs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If hub/strategy_configs is absent but engine/strategies/configs
+    exists (local dev / docker-compose), use the repo-root path."""
+    monkeypatch.delenv("STRATEGY_CONFIGS_DIR", raising=False)
+    repo_engine = tmp_path / "engine" / "strategies" / "configs"
+    repo_engine.mkdir(parents=True)
+
+    fake_module_file = tmp_path / "hub" / "api" / "strategies.py"
+    fake_module_file.parent.mkdir(parents=True, exist_ok=True)
+    fake_module_file.write_text("")
+
+    with patch("api.strategies.__file__", str(fake_module_file)):
+        assert _pick_config_dir() == str(repo_engine)
+
+
+def test_pick_config_dir_returns_aws_default_when_none_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Returning the AWS-deploy path when nothing exists makes the
+    warning log in list_strategies point operators at the correct
+    fix location."""
+    monkeypatch.delenv("STRATEGY_CONFIGS_DIR", raising=False)
+
+    fake_module_file = tmp_path / "hub" / "api" / "strategies.py"
+    fake_module_file.parent.mkdir(parents=True, exist_ok=True)
+    fake_module_file.write_text("")
+
+    with patch("api.strategies.__file__", str(fake_module_file)):
+        picked = _pick_config_dir()
+
+    assert picked == str(tmp_path / "hub" / "strategy_configs")
