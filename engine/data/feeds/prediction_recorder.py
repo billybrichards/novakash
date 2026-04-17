@@ -24,7 +24,18 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-ASSETS = ["BTC", "ETH", "SOL", "XRP"]
+# Assets swept every POLL_INTERVAL seconds. Default to BTC only because
+# ETH/SOL/XRP v2 models are currently missing from S3 (audit #209 tracks
+# the retrain+promote) — polling them burns TimesFM CPU for NoSuchKey
+# misses and pushes /v4/snapshot latency past the engine's 60s stale
+# threshold, causing TG degrade/recover flap.
+#
+# Restore prior behaviour by setting
+#     PREDICTION_RECORDER_ASSETS=BTC,ETH,SOL,XRP
+# in the engine env once the alt models are back on S3.
+_DEFAULT_ASSETS_CSV = "BTC"
+_ASSETS_CSV = os.getenv("PREDICTION_RECORDER_ASSETS", _DEFAULT_ASSETS_CSV)
+ASSETS = [a.strip().upper() for a in _ASSETS_CSV.split(",") if a.strip()]
 DELTAS = [60, 90, 120, 180]  # seconds to close
 POLL_INTERVAL = 30  # seconds between full sweeps
 
