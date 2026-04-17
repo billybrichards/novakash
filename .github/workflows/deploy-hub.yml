@@ -175,53 +175,71 @@ jobs:
           ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'chmod 600 /home/ubuntu/hub/.env && wc -l /home/ubuntu/hub/.env'
 
       - name: Rebuild image and recreate container
-        # docker compose build pulls the latest source from the rsynced
-        # directory and rebuilds the image. --force-recreate guarantees
-        # the new image is actually used (without it, compose can decide
-        # nothing changed and skip the recreate).
+        # Synchronous build + recreate. The previous design kicked build via
+        # `nohup ... &` and returned immediately, so the health-check step
+        # polled against the OLD (still running, still healthy) container
+        # and declared "deploy succeeded" before the new image was ready.
+        # End result: PR merges appeared green on GitHub but stale code
+        # stayed in production (e.g. PR #235 trades schema never shipped).
         #
-        # set -e makes the step fail if either build or up fails, so we
-        # do not silently ship a broken image.
+        # Fix: run docker compose build in the foreground with SSH
+        # keepalive (60s * 60 = up to 60 min), then verify the container
+        # image digest actually changed post-recreate. docker compose
+        # build for the hub image takes ~2-3 min in practice — well within
+        # the keepalive window.
         run: |
-          # Build in background — avoids 60+ min SSH hang on docker compose build
-          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" bash -s <<'HUBEOF'
-          set -e
+          ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=60 \
+              -i ~/.ssh/deploy_key ubuntu@"$HOST" bash -s <<'HUBEOF'
+          set -euo pipefail
           cd /home/ubuntu/hub
-          echo "Starting hub build at $(date)"
-          nohup bash -c "DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 docker compose build --quiet 2>&1 && docker compose up -d --force-recreate 2>&1" > /tmp/hub-build.log 2>&1 &
-          echo "Build PID: $!"
+
+          OLD_IMG=$(docker inspect --format '{{.Image}}' hub 2>/dev/null || echo "none")
+          echo "pre-build image: ${OLD_IMG}"
+
+          echo "Build starting at $(date)"
+          DOCKER_BUILDKIT=1 COMPOSE_DOCKER_CLI_BUILD=1 \
+            docker compose build hub
+          echo "Build complete at $(date)"
+
+          echo "Recreating container at $(date)"
+          docker compose up -d --force-recreate hub
+
+          NEW_IMG=$(docker inspect --format '{{.Image}}' hub)
+          echo "post-deploy image: ${NEW_IMG}"
+          if [ "${NEW_IMG}" = "${OLD_IMG}" ] && [ "${OLD_IMG}" != "none" ]; then
+            echo "::error::hub image unchanged after build+recreate — deploy is stale"
+            docker logs --tail 50 hub
+            exit 1
+          fi
+          echo "Image swap verified at $(date)"
           HUBEOF
 
       - name: Wait for healthcheck
-        # Poll up to 10 minutes for hub to finish building and become healthy
+        # Build already finished synchronously above. This step just waits
+        # for the newly-recreated container to pass its internal HEALTHCHECK
+        # and then does an independent /health curl to catch the
+        # "container healthy per Docker but FastAPI returning 500" edge case.
         run: |
-          echo "Polling for hub healthy (up to 10 min)..."
-          for i in $(seq 1 20); do
-            sleep 30
-            STATUS=$(ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'docker inspect --format "{{.State.Health.Status}}" hub 2>/dev/null || echo starting' 2>/dev/null || echo "ssh_fail")
-            echo "[$i/20] hub status: $STATUS"
+          echo "Polling new container for healthy status (up to 5 min)..."
+          for i in $(seq 1 30); do
+            sleep 10
+            STATUS=$(ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" \
+              'docker inspect --format "{{.State.Health.Status}}" hub 2>/dev/null' \
+              2>/dev/null || echo "ssh_fail")
+            echo "[$i/30] hub status: $STATUS"
             if [ "$STATUS" = "healthy" ]; then
               echo "Hub is healthy"
               break
             fi
+            if [ "$i" = "30" ]; then
+              echo "::error::hub never reached healthy state after 5 min"
+              ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'docker logs --tail 100 hub' || true
+              exit 1
+            fi
           done
-          echo "Final status check:"
 
           ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" 'docker ps --filter name=hub --format "{{.Names}} {{.Status}}"'
 
-          ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" '
-            health=$(docker inspect --format "{{.State.Health.Status}}" hub)
-            echo "container health: $health"
-            if [ "$health" != "healthy" ] && [ "$health" != "starting" ]; then
-              echo "::error::hub container health is $health"
-              docker logs --tail 50 hub
-              exit 1
-            fi
-          '
-
-          # Double-check with a localhost curl on the box itself. This
-          # catches the case where the container is "healthy" per Docker
-          # but the FastAPI app is serving 500s.
           ssh -i ~/.ssh/deploy_key ubuntu@"$HOST" '
             code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8091/health || echo 000)
             echo "curl localhost:8091/health -> $code"
