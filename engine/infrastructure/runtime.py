@@ -2146,13 +2146,29 @@ class EngineRuntime:
                                 db_live=db_live,
                             )
 
-                            # Switch poly client mode
-                            self._poly_client.paper_mode = want_paper
+                            # Phantom-trade fix (2026-04-17 incident #4881):
+                            # (a) Use set_paper_mode() — atomically flip +
+                            #     rebind logger + invalidate stale CLOB handle.
+                            # (b) When switching TO live, connect() FIRST so
+                            #     the authenticated CLOB client exists before
+                            #     any endpoint that requires creds (get_balance
+                            #     was previously failing with "API Credentials
+                            #     are needed", blocking risk rebaseline).
+                            # (c) Only THEN rebaseline risk against live wallet.
+                            await self._poly_client.set_paper_mode(want_paper)
                             self._settings.paper_mode = want_paper
 
                             # Update risk manager
                             self._risk_manager._paper_mode = want_paper
                             if not want_paper:
+                                try:
+                                    # Reconnect BEFORE any authenticated call.
+                                    await self._poly_client.connect()
+                                except Exception as exc:
+                                    log.error(
+                                        "mode_switch.clob_connect_failed_pre_rebaseline",
+                                        error=str(exc)[:200],
+                                    )
                                 try:
                                     _live_wallet = await self._poly_client.get_balance()
                                     await self._risk_manager.rebaseline_live_bankroll(
@@ -2225,16 +2241,11 @@ class EngineRuntime:
                                 paper_mode=want_paper,
                             )
 
-                            # Connect CLOB client if switching TO live
+                            # CLOB client was already reconnected above (before
+                            # rebaseline) so we only need to log success here.
+                            # Kept for backwards-compat with downstream log grep.
                             if not want_paper:
-                                try:
-                                    await self._poly_client.connect()
-                                    log.info("mode_switch.clob_connected")
-                                except Exception as exc:
-                                    log.error(
-                                        "mode_switch.clob_connect_failed",
-                                        error=str(exc)[:100],
-                                    )
+                                log.info("mode_switch.clob_connected")
 
                             # Start redeemer if switching TO live — guard against
                             # double-registration on repeated paper→live flips.
