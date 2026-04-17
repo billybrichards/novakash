@@ -175,6 +175,47 @@ class TestG3Reconcile:
         assert "v4_fusion" in msg
 
     @pytest.mark.asyncio
+    async def test_normalizes_yes_no_to_up_down(self):
+        """Polymarket YES/NO side naming must be accepted by emit_reconcile_v2
+        and normalized to the UP/DOWN domain direction. 2026-04-17 bug: v2
+        reconcile threw ValueError on every resolved live trade because the
+        MatchedTradeRow validator rejected 'YES'/'NO'."""
+        alerter, cap = _wire_alerter()
+        live = [
+            {
+                "strategy": "v4_fusion",
+                "direction": "YES",  # ← legacy Polymarket naming
+                "outcome": "WIN",
+                "pnl": 1.57,
+                "stake": 2.21,
+                "cost": 2.21,
+                "entry_price": 0.356,
+                "matched": True,
+                "condition_id": "0xabc",
+                "order_id": "0xorder",
+            },
+            {
+                "strategy": "v4_fusion",
+                "direction": "NO",
+                "outcome": "LOSS",
+                "pnl": -2.21,
+                "stake": 2.21,
+                "cost": 2.21,
+                "entry_price": 0.356,
+                "matched": True,
+                "condition_id": "0xdef",
+                "order_id": "0xorder2",
+            },
+        ]
+        # Must not raise. Must emit a reconcile payload with both rows
+        # rendered (direction mapped YES→UP, NO→DOWN).
+        await alerter.emit_reconcile_v2(live_alerts=live, paper_alerts=[])
+        assert len(cap.sent) == 1
+        msg = cap.sent[0]
+        assert "WIN  UP" in msg
+        assert "LOSS  DOWN" in msg
+
+    @pytest.mark.asyncio
     async def test_second_pass_same_orphans_silent(self):
         alerter, cap = _wire_alerter()
         live = [
