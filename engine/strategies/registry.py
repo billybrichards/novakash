@@ -1086,10 +1086,23 @@ class StrategyRegistry:
                 # TRANSITION / CASCADE) is available separately on the
                 # surface — we surface v4 because that's the one the
                 # strategy actually keys off.
-                "regime": surface.v4_regime,
+                # Fall back to the `regime` field too — data_surface assigns
+                # v4_regime from the TimesFM /v4/snapshot `regime` key, which
+                # may be missing while the vol-regime classifier field is
+                # always populated.
+                "regime": (
+                    surface.v4_regime
+                    or getattr(surface, "regime", None)
+                ),
                 "conviction": surface.v4_conviction,
-                "window_ts": getattr(surface, "window_ts", None)
-                or getattr(surface, "eval_window_ts", None),
+                # Explicit `is None` check — `window_ts == 0` is a legit
+                # value (unix epoch origin in tests) and must not be
+                # treated as missing.
+                "window_ts": (
+                    getattr(surface, "window_ts", None)
+                    if getattr(surface, "window_ts", None) is not None
+                    else getattr(surface, "eval_window_ts", None)
+                ),
             },
         )
 
