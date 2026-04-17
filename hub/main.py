@@ -360,6 +360,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 log.info("hub.strategy_decisions_table_ensured")
             except Exception as sd_exc:
                 log.warning("hub.strategy_decisions_migration_error", error=str(sd_exc))
+            # v59: mark phantom trades (gtc_resting/gtc with no on-chain fill)
+            try:
+                from db.migrations.v59_mark_phantom_trades import mark_phantom_trades
+
+                n_phantom = await mark_phantom_trades(session)
+                await session.commit()
+                if n_phantom:
+                    log.info("hub.v59_phantom_trades_marked", count=n_phantom)
+            except Exception as ph_exc:
+                log.warning("hub.v59_phantom_migration_error", error=str(ph_exc))
             break
     except Exception as exc:
         log.warning("hub.migration_error", error=str(exc))
