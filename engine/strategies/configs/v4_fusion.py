@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 from domain.value_objects import StrategyDecision
 
 _STRATEGY_ID = "v4_fusion"
-_VERSION = "4.3.0"
+_VERSION = "4.4.0"
 
 # Conviction -> minimum distance from 0.5 (legacy path only)
 _CONVICTION_THRESHOLDS = {
@@ -55,6 +55,24 @@ _RISK_OFF_OVERRIDE_ENABLED = (
 )
 _RISK_OFF_OVERRIDE_DIST_MIN = float(
     os.environ.get("V4_RISK_OFF_OVERRIDE_DIST_MIN", "0.20")
+)
+
+# ── v4.4.0 CALM regime skip gate (audit task #225) ───────────────────────────
+# Per project_v9_analysis.md, v2 model accuracy in regime=CALM is 45.6% (below
+# coin flip). Other regimes are healthy: CASCADE 70.3%, TRANSITION 72.5%,
+# NORMAL 73.3%. Default ON (safer). Disable via V4_FUSION_SKIP_CALM=false.
+_FUSION_SKIP_CALM = (
+    os.environ.get("V4_FUSION_SKIP_CALM", "true").lower() == "true"
+)
+
+# ── v4.4.0 Tiingo agreement gate (audit task #228) ───────────────────────────
+# Mirrors the existing chainlink_agreement gate. If Tiingo's 5m delta points
+# opposite to the trade direction, skip — the chainlink gate was historically
+# the only directional source-agreement check. Today's 10:25 UTC near-miss:
+# model DOWN HIGH conviction vs chainlink+tiingo UP — only magnitude gate
+# saved us. Default ON (safer). Disable via V4_FUSION_REQUIRE_TIINGO_AGREE=false.
+_FUSION_REQUIRE_TIINGO_AGREE = (
+    os.environ.get("V4_FUSION_REQUIRE_TIINGO_AGREE", "true").lower() == "true"
 )
 
 
@@ -180,6 +198,32 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
     max_entry = surface.poly_max_entry_price
     gates: list[dict] = []
 
+    # v4.4.0: CALM regime skip (audit task #225). v2 model is 45.6% accurate
+    # (below coin flip) in VPIN regime=CALM. Skip unconditionally unless env
+    # override. See project_v9_analysis.md.
+    vpin_regime = surface.regime
+    if _FUSION_SKIP_CALM and vpin_regime == "CALM":
+        gates.append(
+            _gate(
+                "calm_regime",
+                False,
+                "regime=CALM v2 model 45.6% accuracy, skip",
+            )
+        )
+        return _skip("calm_regime_model_underperforms", gates)
+    if not _FUSION_SKIP_CALM and vpin_regime == "CALM":
+        gates.append(
+            _gate(
+                "calm_regime",
+                True,
+                "calm_gate_disabled_by_env (regime=CALM)",
+            )
+        )
+    elif vpin_regime is not None:
+        gates.append(
+            _gate("calm_regime", True, f"regime={vpin_regime} tradeable")
+        )
+
     # Hard skip if < _MIN_OFFSET_SEC left (v4.3.0: default T-45, was T-70).
     # Real fill latency is ~600ms FOK + same-region network; T-45 gives ~42s
     # safety margin. Override via V4_MIN_OFFSET_SEC env var.
@@ -301,6 +345,36 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
     if surface.delta_chainlink is not None:
         gates.append(_gate("chainlink_agreement", True, "Chainlink agrees"))
 
+    # v4.4.0: Tiingo agreement gate (audit task #228). Mirrors the chainlink
+    # gate but on the Tiingo top-of-book 5m delta. If direction disagrees,
+    # skip. Missing Tiingo => pass (don't penalise when source missing).
+    if not _FUSION_REQUIRE_TIINGO_AGREE:
+        gates.append(
+            _gate(
+                "tiingo_agreement",
+                True,
+                "tiingo_gate_disabled_by_env",
+            )
+        )
+    elif surface.delta_tiingo is None:
+        gates.append(_gate("tiingo_agreement", True, "tiingo_unavailable"))
+    else:
+        tiingo_direction = "UP" if surface.delta_tiingo > 0 else "DOWN"
+        if tiingo_direction != direction:
+            gates.append(
+                _gate(
+                    "tiingo_agreement",
+                    False,
+                    f"tiingo={tiingo_direction} vs trade={direction}",
+                )
+            )
+            return _skip(
+                f"tiingo_disagrees: tiingo={tiingo_direction} vs trade={direction} "
+                f"(tiingo_delta={surface.delta_tiingo:+.5f})",
+                gates,
+            )
+        gates.append(_gate("tiingo_agreement", True, "Tiingo agrees"))
+
     entry_reason_prefix = "polymarket_override_" if risk_off_overridden else "polymarket_"
     return StrategyDecision(
         action="TRADE",
@@ -319,8 +393,11 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
             "poly_confidence_distance": distance,
             "poly_timing": timing,
             "v4_regime": surface.v4_regime,
+            "vpin_regime": surface.regime,
             "chainlink_delta": surface.delta_chainlink,
             "chainlink_agrees": True,
+            "tiingo_delta": surface.delta_tiingo,
+            "tiingo_agrees": True,
             "risk_off_overridden": risk_off_overridden,
         },
     )

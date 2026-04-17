@@ -200,6 +200,8 @@ class TestV4Fusion:
             poly_timing="optimal",
             # Chainlink must agree with trade direction (it IS the resolution oracle)
             delta_chainlink=-0.005,
+            # v4.4.0: Tiingo gate -- must also agree with trade direction.
+            delta_tiingo=-0.004,
         )
         decision = registry._evaluate_one(
             "v4_fusion", registry.configs["v4_fusion"], surface
@@ -236,6 +238,8 @@ class TestV4Fusion:
             poly_direction="DOWN", poly_trade_advised=True,
             poly_confidence=0.38, poly_confidence_distance=0.12,
             poly_timing="optimal", delta_chainlink=-0.005,
+            # v4.4.0: Tiingo gate -- must also agree with trade direction.
+            delta_tiingo=-0.004,
         )
         decision = registry._evaluate_one(
             "v4_fusion", registry.configs["v4_fusion"], surface
@@ -305,6 +309,160 @@ class TestV4Fusion:
         )
         assert decision.action == "SKIP"
         assert "risk_off" in decision.skip_reason
+
+    # ─── v4.4.0: CALM regime skip + Tiingo agreement gates ──────────────────
+
+    def test_skip_on_calm_regime(self, registry):
+        """VPIN regime=CALM should SKIP with calm_regime_model_underperforms."""
+        surface = _make_surface(
+            poly_direction="DOWN", poly_trade_advised=True,
+            poly_confidence=0.38, poly_confidence_distance=0.12,
+            poly_timing="optimal",
+            delta_chainlink=-0.005, delta_tiingo=-0.004,
+            regime="CALM",  # triggers the gate
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "SKIP"
+        assert decision.skip_reason == "calm_regime_model_underperforms"
+        # Gate trace should record the skip reason
+        gates = decision.metadata.get("gate_results") or []
+        assert any(
+            g["gate"] == "calm_regime" and not g["passed"] for g in gates
+        )
+
+    def test_trade_on_non_calm_regime(self, registry):
+        """VPIN regime=NORMAL passes the calm gate and proceeds to trade."""
+        surface = _make_surface(
+            poly_direction="DOWN", poly_trade_advised=True,
+            poly_confidence=0.38, poly_confidence_distance=0.12,
+            poly_timing="optimal",
+            delta_chainlink=-0.005, delta_tiingo=-0.004,
+            regime="NORMAL",
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "TRADE"
+        gates = decision.metadata.get("gate_results") or []
+        assert any(
+            g["gate"] == "calm_regime" and g["passed"] for g in gates
+        )
+
+    def test_calm_regime_gate_disabled_via_env(self, registry, monkeypatch):
+        """V4_FUSION_SKIP_CALM=false must bypass the CALM skip."""
+        monkeypatch.setenv("V4_FUSION_SKIP_CALM", "false")
+        # The registry loads hooks via importlib without registering in
+        # sys.modules, so we patch the flag directly on the function's
+        # __globals__ dict using monkeypatch.setitem (auto-restores).
+        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
+        monkeypatch.setitem(hook_fn.__globals__, "_FUSION_SKIP_CALM", False)
+
+        surface = _make_surface(
+            poly_direction="DOWN", poly_trade_advised=True,
+            poly_confidence=0.38, poly_confidence_distance=0.12,
+            poly_timing="optimal",
+            delta_chainlink=-0.005, delta_tiingo=-0.004,
+            regime="CALM",  # would normally be blocked
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "TRADE"
+        # The specific gate should NOT be the cause of a skip
+        assert decision.skip_reason is None
+
+    def test_skip_on_tiingo_disagrees(self, registry):
+        """Tiingo direction opposite to trade → SKIP with tiingo_disagrees."""
+        surface = _make_surface(
+            poly_direction="DOWN", poly_trade_advised=True,
+            poly_confidence=0.38, poly_confidence_distance=0.12,
+            poly_timing="optimal",
+            delta_chainlink=-0.005,  # chainlink agrees
+            delta_tiingo=0.004,       # tiingo UP vs trade DOWN
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "SKIP"
+        assert "tiingo_disagrees" in decision.skip_reason
+        assert "tiingo=UP" in decision.skip_reason
+        assert "trade=DOWN" in decision.skip_reason
+        gates = decision.metadata.get("gate_results") or []
+        assert any(
+            g["gate"] == "tiingo_agreement" and not g["passed"] for g in gates
+        )
+
+    def test_trade_on_tiingo_agrees(self, registry):
+        """Tiingo agrees with trade direction → gate passes, trade proceeds."""
+        surface = _make_surface(
+            poly_direction="DOWN", poly_trade_advised=True,
+            poly_confidence=0.38, poly_confidence_distance=0.12,
+            poly_timing="optimal",
+            delta_chainlink=-0.005, delta_tiingo=-0.004,
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "TRADE"
+        gates = decision.metadata.get("gate_results") or []
+        assert any(
+            g["gate"] == "tiingo_agreement"
+            and g["passed"]
+            and "Tiingo agrees" in g["reason"]
+            for g in gates
+        )
+
+    def test_tiingo_unavailable_passes_gate(self, registry):
+        """Missing Tiingo delta → pass the gate with 'tiingo_unavailable'."""
+        surface = _make_surface(
+            poly_direction="DOWN", poly_trade_advised=True,
+            poly_confidence=0.38, poly_confidence_distance=0.12,
+            poly_timing="optimal",
+            delta_chainlink=-0.005, delta_tiingo=None,
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "TRADE"
+        gates = decision.metadata.get("gate_results") or []
+        assert any(
+            g["gate"] == "tiingo_agreement"
+            and g["passed"]
+            and "tiingo_unavailable" in g["reason"]
+            for g in gates
+        )
+
+    def test_tiingo_gate_disabled_via_env(self, registry, monkeypatch):
+        """V4_FUSION_REQUIRE_TIINGO_AGREE=false bypasses the Tiingo check."""
+        monkeypatch.setenv("V4_FUSION_REQUIRE_TIINGO_AGREE", "false")
+        # Hook modules are loaded via importlib without registering in
+        # sys.modules, so patch via the function's __globals__ with setitem.
+        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
+        monkeypatch.setitem(
+            hook_fn.__globals__, "_FUSION_REQUIRE_TIINGO_AGREE", False
+        )
+
+        # Tiingo would disagree if gate were on
+        surface = _make_surface(
+            poly_direction="DOWN", poly_trade_advised=True,
+            poly_confidence=0.38, poly_confidence_distance=0.12,
+            poly_timing="optimal",
+            delta_chainlink=-0.005,
+            delta_tiingo=0.004,  # disagrees with trade direction
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "TRADE"
+        gates = decision.metadata.get("gate_results") or []
+        assert any(
+            g["gate"] == "tiingo_agreement"
+            and g["passed"]
+            and "tiingo_gate_disabled_by_env" in g["reason"]
+            for g in gates
+        )
 
 
 class TestV10Gate:
