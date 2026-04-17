@@ -19,6 +19,13 @@ const RANGES = [
   { label: '7d', value: 7 },
   { label: '30d', value: 30 },
 ];
+// `filled` is the default — hides pre-#211 orphan rows (NULL fill_price AND
+// NULL entry_price) that carry a stake/outcome but never actually filled on
+// the CLOB. `all` includes them.
+const FILL_MODES = [
+  { label: 'filled', value: true },
+  { label: 'all', value: false },
+];
 
 const Stat = ({ lbl, val, sub, tone }) => {
   const color = tone === 'good' ? T.profit : tone === 'bad' ? T.loss : undefined;
@@ -43,6 +50,7 @@ export default function TradesEnhanced() {
   const [strategy, setStrategy] = useState(null);
   const [outcome, setOutcome] = useState(null);
   const [rangeDays, setRangeDays] = useState(7);
+  const [onlyFilled, setOnlyFilled] = useState(true);
 
   const { data, error: err } = useApiLoader(
     (signal) => {
@@ -50,9 +58,10 @@ export default function TradesEnhanced() {
       if (strategy) params.set('strategy', strategy);
       if (outcome) params.set('outcome', outcome);
       params.set('since_days', String(rangeDays));
+      params.set('only_filled', String(onlyFilled));
       return api.get(`/api/trades?${params.toString()}`, { signal });
     },
-    [strategy, outcome, rangeDays]
+    [strategy, outcome, rangeDays, onlyFilled]
   );
 
   const rows = Array.isArray(data) ? data : [];
@@ -69,9 +78,10 @@ export default function TradesEnhanced() {
     return opts;
   }, [rows, strategy]);
 
-  // Hub /api/trades row fields: pnl_usd, stake_usd, entry_price, market_slug,
-  // direction, created_at, order_id (not pnl/size/fill_price/market/side/ts/clob_oid).
-  // Helpers pick the real field with a fallback to our original aliases.
+  // Hub /api/trades row fields: pnl_usd, stake_usd, entry_price, fill_price,
+  // market_slug, direction, created_at, order_id, clob_order_id, regime,
+  // conviction, dedup_key, skip_reason, exit_price, polymarket_confirmed_*.
+  // Helpers pick the real field with a fallback to older aliases.
   const pnlOf = r => Number(r.pnl_usd ?? r.pnl);
   const sizeOf = r => Number(r.stake_usd ?? r.size);
   const edgeOf = r => Number(r.edge ?? r.avg_edge);
@@ -106,6 +116,7 @@ export default function TradesEnhanced() {
         <FilterPills label="strategy" options={strategyOptions} value={strategy} onChange={setStrategy} />
         <FilterPills label="outcome" options={OUTCOMES} value={outcome} onChange={setOutcome} />
         <FilterPills label="range" options={RANGES} value={rangeDays} onChange={setRangeDays} />
+        <FilterPills label="fills" options={FILL_MODES} value={onlyFilled} onChange={setOnlyFilled} />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12, marginBottom: 14 }}>
@@ -132,11 +143,14 @@ export default function TradesEnhanced() {
               return Number.isFinite(v) ? `$${v.toFixed(2)}` : '—';
             }},
             { key: 'fill_price', label: 'fill', num: true, render: r => {
-              const v = Number(r.entry_price ?? r.fill_price);
+              // Prefer actual fill_price over entry_price (intent). The old
+              // order swallowed real fills whenever entry_price was NULL even
+              // though fill_price was present — those were the "—" rows.
+              const v = Number(r.fill_price ?? r.entry_price);
               return Number.isFinite(v) ? v.toFixed(3) : '—';
             }},
             { key: 'exit_price', label: 'exit', num: true, render: r => {
-              const v = Number(r.exit_price);
+              const v = Number(r.exit_price ?? r.polymarket_confirmed_fill_price);
               return Number.isFinite(v) ? v.toFixed(3) : '—';
             }},
             { key: 'pnl', label: 'pnl', num: true, render: r => {
