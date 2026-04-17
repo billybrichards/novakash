@@ -17,8 +17,7 @@ import System from './pages/System.jsx';
 import Wallet from './pages/Wallet.jsx';
 import Strategies from './pages/Strategies.jsx';
 
-// Archive shell + wrapper
-import Layout from './components/Layout.jsx';
+// Archive wrapper
 import ArchiveCenter from './pages/archive/ArchiveCenter.jsx';
 import ArchivedPageBanner from './pages/archive/ArchivedPageBanner.jsx';
 import Loading from './components/shared/Loading.jsx';
@@ -137,8 +136,8 @@ export default function App() {
             <Route path="archive" element={<ArchiveCenter />} />
           </Route>
 
-          {/* Archive namespace — legacy Layout, each page wrapped in banner */}
-          <Route path="/archive" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+          {/* Archive namespace — AppShell, each page wrapped in banner */}
+          <Route path="/archive" element={<ProtectedRoute><AppShell /></ProtectedRoute>}>
             {ARCHIVED_PAGES.map(meta => {
               const element = wrapArchived(meta);
               if (!element) return null;
