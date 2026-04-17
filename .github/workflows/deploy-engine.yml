@@ -269,6 +269,10 @@ jobs:
             echo "FIFTEEN_MIN_ENABLED=true"
             echo "FIFTEEN_MIN_ASSETS=BTC"
             echo "V4_FUSION_ENABLED=true"
+            # v4.3.0 risk_off override DISABLED 2026-04-17 — losing money on
+            # regime=risk_off even with HIGH conviction + oracle agreement.
+            # Revert by flipping to 'true' after shadow-data evaluation.
+            echo "V4_RISK_OFF_OVERRIDE_ENABLED=false"
             echo ""
             echo "# TG Narrative V2 (plans/serialized-drifting-clover.md)"
             echo "TG_NARRATIVE_V2_ENABLED=true"
