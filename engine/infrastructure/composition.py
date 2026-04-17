@@ -673,8 +673,13 @@ class CompositionRoot:
 
         Always builds the wiring; the flag ``tg_narrative_v2_enabled`` only
         affects whether call sites *route through* the new publisher.
-        Default adapters are in-memory fallbacks so the engine can boot
-        without DB migrations or a Polygonscan key.
+
+        Shadow + tally repos use PG if ``self._db`` is available (the
+        ``shadow_decisions`` migration landed 2026-04-17); otherwise fall
+        back to in-memory so unit tests / cold starts still boot.
+        Polygonscan gateway not yet implemented → in-memory default tags
+        wallet-balance changes with no matching tx as DRIFT (TACTICAL),
+        which is the safer default.
         """
         from adapters.alert.telegram_renderer import TelegramRenderer
         from adapters.alert.telegram_sender import TelegramSender
@@ -683,18 +688,48 @@ class CompositionRoot:
             InMemoryShadowDecisionRepository,
         )
         from adapters.persistence.in_memory_tally_repo import InMemoryTallyRepo
+        from adapters.persistence.pg_shadow_decision_repo import (
+            PgShadowDecisionRepository,
+        )
+        from adapters.persistence.pg_tally_repo import PgTallyRepo
         from use_cases.alerts import PublishAlertUseCase
 
         self._alert_renderer = TelegramRenderer()
         self._alert_sender = TelegramSender(self._alerter)
-        # Start with in-memory repos; swap for PG in Phase I after migration runs.
-        self._shadow_decision_repo = InMemoryShadowDecisionRepository()
-        self._tally_repo = InMemoryTallyRepo()
+
+        db_client = getattr(self, "_db", None)
+        if db_client is not None:
+            self._shadow_decision_repo = PgShadowDecisionRepository(
+                db_client=db_client
+            )
+            self._tally_repo = PgTallyRepo(db_client=db_client)
+        else:
+            self._shadow_decision_repo = InMemoryShadowDecisionRepository()
+            self._tally_repo = InMemoryTallyRepo()
+
         self._onchain_query = InMemoryOnChainQuery()
         self._publish_alert = PublishAlertUseCase(
             renderer=self._alert_renderer,
             alerter=self._alert_sender,
         )
+
+        # Phase G.1 dual-fire hook: TelegramAlerter's legacy send_strategy_trade_alert
+        # also emits via the new pipeline when flag is on.
+        from adapters.clock.system_clock import SystemClock
+        try:
+            self._alerter.set_narrative_v2(
+                enabled=self._narrative_v2_enabled,
+                publish_uc=self._publish_alert,
+                clock=SystemClock(),
+                tallies=self._tally_repo,
+            )
+        except Exception as exc:
+            # Never fail composition for a dual-fire hook.
+            log = structlog.get_logger(__name__)
+            log.warning(
+                "composition.narrative_v2_hook_failed",
+                error=str(exc)[:200],
+            )
 
     # -- Accessors for EngineRuntime + use-case builders -------------------
 
