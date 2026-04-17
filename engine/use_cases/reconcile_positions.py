@@ -548,3 +548,18 @@ class ReconcilePositionsUseCase:
             await self._alerts.send_raw_message(msg)
         elif hasattr(self._alerts, "send_system_alert"):
             await self._alerts.send_system_alert(msg)
+
+        # ── Narrative V2 dual-fire (Phase G.3) ────────────────────────────────
+        # Emit a parallel ReconcilePayload that (a) dedupes orphan reporting
+        # across passes and (b) groups matched rows by (timeframe, strategy).
+        if hasattr(self._alerts, "emit_reconcile_v2"):
+            try:
+                await self._alerts.emit_reconcile_v2(
+                    live_alerts=live,
+                    paper_alerts=paper,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "reconcile.narrative_v2_emit_failed",
+                    error=str(exc)[:200],
+                )

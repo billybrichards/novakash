@@ -227,15 +227,22 @@ class TelegramAlerter:
                 has_openrouter=bool(self._openrouter_api_key),
             )
 
-        # ── TG Narrative V2 hook (Phase G.1) ─────────────────────────────────
+        # ── TG Narrative V2 hook (Phase G.1–G.7) ──────────────────────────────
         # Composition root injects these via set_narrative_v2(). When
-        # ``narrative_v2_enabled`` flips true AND all three are non-None,
-        # ``send_strategy_trade_alert`` dual-fires: legacy path + v2 pipeline.
+        # ``narrative_v2_enabled`` flips true AND publish/clock are non-None,
+        # every dual-fired ``send_*`` method emits a parallel v2 message.
         # See plans/serialized-drifting-clover.md.
         self._narrative_v2_enabled: bool = False
         self._narrative_v2_publish = None    # PublishAlertUseCase
         self._narrative_v2_clock = None      # Clock
         self._narrative_v2_tallies = None    # TallyQueryPort
+        self._narrative_v2_shadow_repo = None  # ShadowDecisionRepository
+        self._narrative_v2_onchain = None    # OnChainTxQueryPort
+        self._narrative_v2_owner_eoas: frozenset[str] = frozenset()
+        self._narrative_v2_poly_contracts: frozenset[str] = frozenset()
+        self._narrative_v2_redeemer_addr = None
+        # State for wallet-delta watchdog (populated by CLOB reconciler).
+        self._narrative_v2_last_wallet_usdc = None
 
     async def _emit_narrative_v2_trade(
         self,
@@ -357,6 +364,439 @@ class TelegramAlerter:
 
         await self._narrative_v2_publish.execute(payload)
 
+    # ── G.2: send_trade_resolved → ResolvedAlertPayload ─────────────────────
+
+    async def _emit_narrative_v2_resolved(
+        self,
+        *,
+        order,
+        window_ts: int,
+        asset: str,
+        timeframe: str,
+        open_price: float,
+        close_price: float,
+    ) -> None:
+        from decimal import Decimal
+        from use_cases.alerts.build_resolved_alert import (
+            BuildResolvedAlertInput,
+            BuildResolvedAlertUseCase,
+        )
+
+        predicted = "UP" if order.direction == "YES" else "DOWN"
+        actual = "UP" if close_price > open_price else "DOWN"
+        try:
+            pnl = Decimal(str(order.pnl_usd or 0))
+        except Exception:
+            pnl = Decimal("0")
+        stake = Decimal(str(getattr(order, "stake_usd", 0) or 0))
+        entry_price = float(order.price) if order.price else 0.50
+        order_id = getattr(order, "order_id", None) or None
+        strategy_id = (
+            (order.metadata or {}).get("strategy_id", "unknown")
+            if getattr(order, "metadata", None)
+            else "unknown"
+        )
+        window_id = f"{asset}-{window_ts}"
+        now_unix = int(self._narrative_v2_clock.now())
+
+        inp = BuildResolvedAlertInput(
+            timeframe=timeframe or "5m",
+            strategy_id=str(strategy_id),
+            mode="LIVE" if not getattr(self, "_paper_mode", False) else "GHOST",
+            predicted_direction=predicted,
+            actual_direction=actual,
+            pnl_usdc=pnl,
+            entry_price_cents=entry_price,
+            stake_usdc=stake,
+            window_id=window_id,
+            order_id=order_id,
+            event_ts_unix=int(window_ts + (300 if (timeframe or "5m") == "5m" else 900)),
+            actual_open_usd=open_price,
+            actual_close_usd=close_price,
+        )
+        try:
+            builder = BuildResolvedAlertUseCase(
+                tallies=self._narrative_v2_tallies,
+                clock=self._narrative_v2_clock,
+            )
+            payload = await builder.execute(inp)
+        except Exception as exc:
+            self._log.debug(
+                "telegram.narrative_v2_build_skipped",
+                which="resolved",
+                error=str(exc)[:200],
+            )
+            return
+        await self._narrative_v2_publish.execute(payload)
+
+    # ── G.4: send_window_report → WindowSignalPayload ───────────────────────
+
+    async def _emit_narrative_v2_window_report(
+        self,
+        *,
+        asset: str,
+        timeframe: str,
+        window_ts: int,
+        delta_pct: float,
+        vpin: float,
+        gamma_up_price: Optional[float] = None,
+        gamma_down_price: Optional[float] = None,
+        open_price: Optional[float] = None,
+        now_price: Optional[float] = None,
+    ) -> None:
+        from use_cases.alerts.build_window_signal_alert import (
+            BuildWindowSignalAlertInput,
+            BuildWindowSignalAlertUseCase,
+        )
+
+        if open_price is None or open_price <= 0:
+            return
+        if now_price is None or now_price <= 0:
+            # Reconstruct "now" from open + delta%.
+            now_price = open_price * (1.0 + (delta_pct or 0.0) / 100.0)
+        if now_price <= 0:
+            return
+
+        inp = BuildWindowSignalAlertInput(
+            timeframe=timeframe or "5m",
+            window_id=f"{asset}-{window_ts}",
+            event_ts_unix=int(window_ts),
+            t_offset_secs=0,
+            btc_now_usd=float(now_price),
+            btc_window_open_usd=float(open_price),
+            btc_chainlink_delta_pct=delta_pct,
+            btc_tiingo_delta_pct=None,
+            sources_agree=None,
+            vpin=vpin or None,
+            p_up=None,
+            p_up_distance=None,
+            strategies=[],
+        )
+        try:
+            builder = BuildWindowSignalAlertUseCase(self._narrative_v2_clock)
+            payload = await builder.execute(inp)
+        except Exception as exc:
+            self._log.debug(
+                "telegram.narrative_v2_build_skipped",
+                which="window_report",
+                error=str(exc)[:200],
+            )
+            return
+        await self._narrative_v2_publish.execute(payload)
+
+    # ── G.5: send_window_open → WindowOpenPayload ───────────────────────────
+
+    async def _emit_narrative_v2_window_open(
+        self,
+        *,
+        asset: str,
+        timeframe: str,
+        window_ts: int,
+        open_price: float,
+        gamma_up_price: Optional[float] = None,
+        gamma_down_price: Optional[float] = None,
+    ) -> None:
+        from decimal import Decimal
+        from domain.alert_values import (
+            AlertFooter,
+            AlertHeader,
+            AlertTier,
+            BtcPriceBlock,
+            LifecyclePhase,
+            WindowOpenPayload,
+        )
+
+        if not open_price or open_price <= 0:
+            return
+
+        tilt = None
+        if gamma_up_price is not None and gamma_down_price is not None:
+            if abs(gamma_up_price - gamma_down_price) < 0.01:
+                tilt = "BALANCED"
+            else:
+                tilt = "UP" if gamma_up_price > gamma_down_price else "DOWN"
+
+        now_unix = int(self._narrative_v2_clock.now())
+        payload = WindowOpenPayload(
+            header=AlertHeader(
+                phase=LifecyclePhase.MARKET,
+                title=f"BTC {timeframe or '5m'} — window open",
+                event_ts_unix=int(window_ts),
+                emit_ts_unix=now_unix,
+                window_id=f"{asset}-{window_ts}",
+            ),
+            footer=AlertFooter(
+                emit_ts_unix=now_unix,
+                window_id=f"{asset}-{window_ts}",
+            ),
+            tier=AlertTier.HEARTBEAT,
+            timeframe=timeframe or "5m",
+            btc=BtcPriceBlock(
+                now_price_usd=float(open_price),
+                window_open_usd=float(open_price),
+            ),
+            gamma_up_cents=gamma_up_price,
+            gamma_down_cents=gamma_down_price,
+            gamma_tilt=tilt,
+        )
+        await self._narrative_v2_publish.execute(payload)
+
+    # ── G.7: persist every decision (LIVE+GHOST) for the window ────────────
+
+    async def shadow_save_decisions(
+        self,
+        *,
+        asset: str,
+        window_ts: int,
+        timeframe: str,
+        decisions: list,
+    ) -> None:
+        """Persist per-window strategy decisions for the shadow report.
+
+        Called by evaluate_strategies after each window evaluation. The
+        feature is silent when shadow_repo not injected or decisions list
+        empty. Errors logged but never raised — alerts path stays alive.
+        """
+        if (
+            self._narrative_v2_shadow_repo is None
+            or not decisions
+        ):
+            return
+        try:
+            from domain.value_objects import WindowKey
+
+            duration = 900 if timeframe == "15m" else 300
+            window_key = WindowKey(
+                asset=asset, window_ts=int(window_ts), duration_secs=duration
+            )
+            await self._narrative_v2_shadow_repo.save(window_key, list(decisions))
+        except Exception as exc:
+            self._log.warning(
+                "telegram.narrative_v2_shadow_save_failed",
+                error=str(exc)[:200],
+            )
+
+    # ── G.7: post-resolve shadow report → ShadowReportPayload ───────────────
+
+    async def emit_shadow_report_v2(
+        self,
+        *,
+        asset: str,
+        timeframe: str,
+        window_ts: int,
+        actual_direction: str,
+        actual_open_usd: float,
+        actual_close_usd: float,
+    ) -> None:
+        """Emit a shadow report for a resolved window.
+
+        Requires ``shadow_repo`` injected via ``set_narrative_v2``. Pulls
+        persisted StrategyDecision rows for this (asset, window_ts) and
+        computes per-strategy hypothetical outcome via compute_shadow_outcome.
+
+        Silent when no decisions persisted (shadow save path not yet
+        wired for the timeframe) — no noise, no error.
+        """
+        if not self._v2_ready() or self._narrative_v2_shadow_repo is None:
+            return
+        try:
+            from decimal import Decimal
+            from domain.value_objects import WindowKey
+            from use_cases.alerts.build_shadow_report import (
+                BuildShadowReportInput,
+                BuildShadowReportUseCase,
+            )
+
+            duration = 900 if timeframe == "15m" else 300
+            window_key = WindowKey(
+                asset=asset, window_ts=int(window_ts), duration_secs=duration
+            )
+            builder = BuildShadowReportUseCase(
+                self._narrative_v2_shadow_repo, self._narrative_v2_clock
+            )
+            payload = await builder.execute(
+                BuildShadowReportInput(
+                    window_key=window_key,
+                    timeframe=timeframe or "5m",
+                    window_id=window_key.key,
+                    actual_direction=actual_direction,
+                    actual_open_usd=actual_open_usd,
+                    actual_close_usd=actual_close_usd,
+                    default_stake_usdc=Decimal("5.00"),
+                    event_ts_unix=int(window_ts + duration),
+                )
+            )
+            if payload is not None:
+                await self._narrative_v2_publish.execute(payload)
+        except Exception as exc:
+            self._log.warning(
+                "telegram.narrative_v2_shadow_report_failed",
+                error=str(exc)[:200],
+            )
+
+    # ── G.3: reconcile pass → ReconcilePayload ──────────────────────────────
+
+    async def emit_reconcile_v2(
+        self,
+        *,
+        live_alerts: list[dict],
+        paper_alerts: list[dict],
+    ) -> None:
+        """Called by ReconcilePositionsUseCase._flush_resolution_alerts.
+
+        Maps legacy alert dicts → MatchedTradeRow + orphan condition_ids,
+        then feeds BuildReconcileAlertUseCase (which dedupes orphan
+        reporting across calls). Silent-safe — zero effect until flag on.
+        """
+        if not self._v2_ready():
+            return
+        try:
+            from decimal import Decimal
+            from domain.alert_values import MatchedTradeRow
+            from use_cases.alerts.build_reconcile_alert import (
+                BuildReconcileAlertInput,
+                BuildReconcileAlertUseCase,
+            )
+
+            if not hasattr(self, "_v2_reconcile_builder") or self._v2_reconcile_builder is None:
+                self._v2_reconcile_builder = BuildReconcileAlertUseCase(
+                    self._narrative_v2_clock
+                )
+
+            matched: list[MatchedTradeRow] = []
+            orphan_ids: list[str] = []
+            auto_redeemed_wins = 0
+            worthless_tokens = 0
+
+            for a in live_alerts or []:
+                if a.get("matched"):
+                    matched.append(
+                        MatchedTradeRow(
+                            timeframe="5m",  # legacy reconciler is 5m only today
+                            strategy_id=str(a.get("strategy") or "unknown"),
+                            order_id=a.get("order_id"),
+                            outcome=str(a.get("outcome") or "WIN"),
+                            direction=str(a.get("direction") or "UP"),
+                            entry_price_cents=float(a.get("entry_price") or 0.0),
+                            pnl_usdc=Decimal(str(a.get("pnl") or 0)),
+                            cost_usdc=Decimal(str(a.get("cost") or 0)),
+                        )
+                    )
+                else:
+                    cid = a.get("condition_id")
+                    if cid:
+                        orphan_ids.append(str(cid))
+                    if a.get("outcome") == "WIN":
+                        auto_redeemed_wins += 1
+                    else:
+                        worthless_tokens += 1
+
+            paper_matched: list[MatchedTradeRow] = []
+            for a in paper_alerts or []:
+                paper_matched.append(
+                    MatchedTradeRow(
+                        timeframe="5m",
+                        strategy_id=str(a.get("strategy") or "unknown"),
+                        order_id=None,
+                        outcome=str(a.get("outcome") or "WIN"),
+                        direction=str(a.get("direction") or "UP"),
+                        entry_price_cents=0.0,
+                        pnl_usdc=Decimal(str(a.get("pnl") or 0)),
+                        cost_usdc=Decimal(str(a.get("stake") or 0)),
+                    )
+                )
+
+            payload = await self._v2_reconcile_builder.execute(
+                BuildReconcileAlertInput(
+                    matched=matched,
+                    paper_matched=paper_matched,
+                    current_orphan_condition_ids=orphan_ids,
+                    orphan_auto_redeemed_wins=auto_redeemed_wins,
+                    orphan_worthless_tokens=worthless_tokens,
+                    event_ts_unix=int(self._narrative_v2_clock.now()),
+                )
+            )
+            if payload is not None:
+                await self._narrative_v2_publish.execute(payload)
+        except Exception as exc:
+            self._log.warning(
+                "telegram.narrative_v2_reconcile_failed",
+                error=str(exc)[:200],
+            )
+
+    # ── G.6: wallet-delta classifier ────────────────────────────────────────
+
+    async def emit_wallet_delta_if_any(
+        self,
+        *,
+        new_wallet_usdc,
+        wallet_addr: Optional[str] = None,
+        today_realized_pnl_usdc=None,
+    ) -> None:
+        """Called by the CLOB reconciler after each wallet refresh.
+
+        Compares against the last-known balance; if an outflow is seen,
+        classifies via OnChainTxQueryPort + owner-EOA allowlist. Emits
+        MANUAL_WITHDRAWAL / TRADING_FLOW / REDEMPTION / UNEXPECTED /
+        DRIFT per plan. Errors swallowed (legacy path always runs).
+        """
+        from decimal import Decimal
+
+        if not self._v2_ready() or self._narrative_v2_onchain is None:
+            # Still remember so first non-zero doesn't become a giant outflow.
+            self._narrative_v2_last_wallet_usdc = new_wallet_usdc
+            return
+
+        try:
+            if new_wallet_usdc is None:
+                return
+            prev = self._narrative_v2_last_wallet_usdc
+            self._narrative_v2_last_wallet_usdc = new_wallet_usdc
+            if prev is None:
+                return  # no baseline yet
+
+            prior = Decimal(str(prev))
+            now = Decimal(str(new_wallet_usdc))
+            delta = now - prior
+            # Only classify meaningful outflows.
+            if delta >= Decimal("-0.50"):
+                return
+
+            from use_cases.alerts.build_wallet_delta_alert import (
+                BuildWalletDeltaAlertInput,
+                BuildWalletDeltaAlertUseCase,
+            )
+
+            builder = BuildWalletDeltaAlertUseCase(
+                self._narrative_v2_onchain, self._narrative_v2_clock
+            )
+            latest_block = 0
+            try:
+                latest_block = await self._narrative_v2_onchain.get_latest_block()
+            except Exception:
+                latest_block = 0
+            since_block = max(0, latest_block - 500)  # ~15m Polygon window
+            payload = await builder.execute(
+                BuildWalletDeltaAlertInput(
+                    wallet_addr=wallet_addr or "",
+                    prior_balance_usdc=prior,
+                    new_balance_usdc=now,
+                    since_block=since_block,
+                    owner_eoas=self._narrative_v2_owner_eoas,
+                    poly_contracts=self._narrative_v2_poly_contracts,
+                    redeemer_addr=self._narrative_v2_redeemer_addr,
+                    event_ts_unix=int(self._narrative_v2_clock.now()),
+                    today_realized_pnl_usdc=today_realized_pnl_usdc,
+                )
+            )
+            if payload is not None:
+                await self._narrative_v2_publish.execute(payload)
+        except Exception as exc:
+            self._log.warning(
+                "telegram.narrative_v2_wallet_delta_failed",
+                error=str(exc)[:200],
+            )
+
     def set_narrative_v2(
         self,
         *,
@@ -364,21 +804,47 @@ class TelegramAlerter:
         publish_uc,
         clock,
         tallies,
+        shadow_repo=None,
+        onchain=None,
+        owner_eoas: Optional[frozenset[str]] = None,
+        poly_contracts: Optional[frozenset[str]] = None,
+        redeemer_addr: Optional[str] = None,
     ) -> None:
         """Enable the narrative-v2 dual-fire pipeline.
 
         Call from composition root after the pipeline is wired. When
-        ``enabled`` is True and all dependencies are non-None,
-        ``send_strategy_trade_alert`` (and future migrated call sites)
-        ALSO emit via the new domain-payload → renderer → sender path
-        for A/B comparison.
+        ``enabled`` is True, every migrated ``send_*`` method emits via
+        the new domain-payload → renderer → sender path for A/B compare.
+
+        Optional deps extend the set of dual-fireable call sites:
+          - ``shadow_repo``: enables shadow report emission (Phase G.7)
+          - ``onchain`` + ``owner_eoas`` + ``poly_contracts`` + ``redeemer_addr``:
+            enable wallet-delta classifier (Phase G.6)
         """
         self._narrative_v2_enabled = bool(enabled)
         self._narrative_v2_publish = publish_uc
         self._narrative_v2_clock = clock
         self._narrative_v2_tallies = tallies
+        self._narrative_v2_shadow_repo = shadow_repo
+        self._narrative_v2_onchain = onchain
+        self._narrative_v2_owner_eoas = owner_eoas or frozenset()
+        self._narrative_v2_poly_contracts = poly_contracts or frozenset()
+        self._narrative_v2_redeemer_addr = redeemer_addr
         self._log.info(
-            "telegram.narrative_v2_configured", enabled=self._narrative_v2_enabled
+            "telegram.narrative_v2_configured",
+            enabled=self._narrative_v2_enabled,
+            shadow=shadow_repo is not None,
+            onchain=onchain is not None,
+            owner_eoas=len(self._narrative_v2_owner_eoas),
+        )
+
+    def _v2_ready(self) -> bool:
+        """Core v2 pipeline available (publish + clock + tallies)."""
+        return bool(
+            self._narrative_v2_enabled
+            and self._narrative_v2_publish is not None
+            and self._narrative_v2_clock is not None
+            and self._narrative_v2_tallies is not None
         )
 
     # ── Trade Decision + AI Analysis (Dual-AI) ────────────────────────────────
@@ -1954,6 +2420,30 @@ class TelegramAlerter:
         except:
             pass
 
+        # ── Narrative V2 dual-fire (Phase G.5) ────────────────────────────────
+        if self._v2_ready():
+            try:
+                _ts = 0
+                try:
+                    _ts = int(window_id.split("-")[1])
+                except Exception:
+                    pass
+                if _ts > 0:
+                    await self._emit_narrative_v2_window_open(
+                        asset=asset,
+                        timeframe=timeframe,
+                        window_ts=_ts,
+                        open_price=open_price,
+                        gamma_up_price=gamma_up,
+                        gamma_down_price=gamma_down,
+                    )
+            except Exception as exc:
+                self._log.warning(
+                    "telegram.narrative_v2_dual_fire_failed",
+                    which="window_open",
+                    error=str(exc)[:200],
+                )
+
         skew = (
             "BALANCED"
             if abs(gamma_up - gamma_down) < 0.03
@@ -2227,6 +2717,26 @@ class TelegramAlerter:
 
           💼 $162.40  📅 +$3.92 today
         """
+        # ── Narrative V2 dual-fire (Phase G.4) ────────────────────────────────
+        if self._v2_ready():
+            try:
+                await self._emit_narrative_v2_window_report(
+                    asset=asset,
+                    timeframe=timeframe,
+                    window_ts=window_ts,
+                    delta_pct=delta_pct,
+                    vpin=vpin,
+                    gamma_up_price=gamma_up_price,
+                    gamma_down_price=gamma_down_price,
+                    open_price=open_price,
+                    now_price=close_price,
+                )
+            except Exception as exc:
+                self._log.warning(
+                    "telegram.narrative_v2_dual_fire_failed",
+                    which="window_report",
+                    error=str(exc)[:200],
+                )
         try:
             mode = self._mode_tag()
             ts = _ts_str(window_ts)
@@ -2384,6 +2894,41 @@ class TelegramAlerter:
         """
         if not self.trade_alerts_enabled:
             return
+        # ── Narrative V2 dual-fire (Phase G.2 + G.7) ──────────────────────────
+        if self._v2_ready():
+            try:
+                await self._emit_narrative_v2_resolved(
+                    order=order,
+                    window_ts=window_ts,
+                    asset=asset,
+                    timeframe=timeframe,
+                    open_price=open_price,
+                    close_price=close_price,
+                )
+            except Exception as exc:
+                self._log.warning(
+                    "telegram.narrative_v2_dual_fire_failed",
+                    which="resolved",
+                    error=str(exc)[:200],
+                )
+            # G.7: also emit shadow report for this window (silent if no
+            # GHOST decisions persisted yet for this timeframe).
+            try:
+                _actual_dir = "UP" if close_price > open_price else "DOWN"
+                await self.emit_shadow_report_v2(
+                    asset=asset,
+                    timeframe=timeframe,
+                    window_ts=window_ts,
+                    actual_direction=_actual_dir,
+                    actual_open_usd=float(open_price),
+                    actual_close_usd=float(close_price),
+                )
+            except Exception as exc:
+                self._log.warning(
+                    "telegram.narrative_v2_dual_fire_failed",
+                    which="shadow_report",
+                    error=str(exc)[:200],
+                )
         try:
             meta = order.metadata or {}
             mode = self._mode_tag()

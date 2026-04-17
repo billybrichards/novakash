@@ -907,6 +907,24 @@ class CLOBReconciler:
         self._report_filled = 0
         self._report_expired = 0
 
+        # ── Narrative V2 dual-fire (Phase G.6): wallet delta classifier ─────
+        # Detects outflows between reports and classifies as MANUAL_WITHDRAWAL
+        # / TRADING_FLOW / REDEMPTION / UNEXPECTED / DRIFT. Silent when flag
+        # off; non-blocking on errors.
+        try:
+            if self._state.wallet and hasattr(
+                self._alerter, "emit_wallet_delta_if_any"
+            ):
+                await self._alerter.emit_wallet_delta_if_any(
+                    new_wallet_usdc=self._state.wallet.balance_usdc,
+                    wallet_addr=getattr(self._state.wallet, "address", None),
+                )
+        except Exception as exc:
+            self._log.warning(
+                "reconciler.narrative_v2_wallet_delta_failed",
+                error=str(exc)[:200],
+            )
+
         self._log.info(
             "reconciler.report_sent",
             open=len(open_positions),
