@@ -227,6 +227,160 @@ class TelegramAlerter:
                 has_openrouter=bool(self._openrouter_api_key),
             )
 
+        # ── TG Narrative V2 hook (Phase G.1) ─────────────────────────────────
+        # Composition root injects these via set_narrative_v2(). When
+        # ``narrative_v2_enabled`` flips true AND all three are non-None,
+        # ``send_strategy_trade_alert`` dual-fires: legacy path + v2 pipeline.
+        # See plans/serialized-drifting-clover.md.
+        self._narrative_v2_enabled: bool = False
+        self._narrative_v2_publish = None    # PublishAlertUseCase
+        self._narrative_v2_clock = None      # Clock
+        self._narrative_v2_tallies = None    # TallyQueryPort
+
+    async def _emit_narrative_v2_trade(
+        self,
+        *,
+        strategy_id: str,
+        strategy_version: str,
+        direction: str,
+        confidence: str,
+        confidence_score: float,
+        gate_results: list,
+        stake_usd: float,
+        fill_price: float,
+        fill_size: float,
+        order_type: str,
+        order_id: str,
+        execution_mode: str,
+        timeframe: str,
+        btc_price: float,
+        vpin: float,
+        eval_offset,
+        paper_mode: bool,
+        success: bool,
+    ) -> None:
+        """Build a TradeAlertPayload via Phase C use case and dispatch.
+
+        Imports kept inside the method so adapter failure (missing PG,
+        etc.) never crashes legacy-path construction at startup.
+        """
+        from decimal import Decimal
+        from use_cases.alerts.build_trade_alert import (
+            BuildTradeAlertInput,
+            BuildTradeAlertUseCase,
+        )
+
+        # Normalize direction — legacy code sometimes passes "?".
+        if direction not in {"UP", "DOWN"}:
+            return
+
+        # Normalize gate_results to the list[dict] shape the builder expects.
+        # Legacy uses key "gate", new plan uses "name" — accept both.
+        normalized_gates = []
+        for g in gate_results or []:
+            if isinstance(g, dict):
+                normalized_gates.append(
+                    {
+                        "name": g.get("name") or g.get("gate") or "",
+                        "passed": bool(g.get("passed")),
+                    }
+                )
+
+        # Decide order_status from execution_mode + success flags.
+        mode_lower = (execution_mode or "").lower()
+        if not success:
+            order_status = "FAILED"
+        elif "resting" in mode_lower:
+            order_status = "RESTING"
+        else:
+            order_status = "FILLED"
+
+        now_unix = int(self._narrative_v2_clock.now())
+        event_ts = now_unix
+        t_off = int(eval_offset) if eval_offset else 0
+
+        cost_usdc = None
+        if fill_price and fill_size:
+            try:
+                cost_usdc = Decimal(str(fill_price)) * Decimal(str(fill_size))
+            except Exception:
+                cost_usdc = None
+
+        inp = BuildTradeAlertInput(
+            timeframe=timeframe or "5m",
+            strategy_id=strategy_id,
+            strategy_version=strategy_version,
+            mode="GHOST" if paper_mode else "LIVE",
+            direction=direction,
+            confidence=confidence,
+            confidence_score=confidence_score,
+            gate_results=normalized_gates,
+            stake_usdc=Decimal(str(stake_usd or 0)),
+            fill_price_cents=fill_price or None,
+            fill_size_shares=fill_size or None,
+            cost_usdc=cost_usdc,
+            order_submitted=bool(success),
+            order_status=order_status,
+            window_id="",
+            order_id=order_id or None,
+            btc_now_usd=btc_price or 0.0,
+            btc_window_open_usd=btc_price or 0.0,  # caller lacks open; fall back
+            btc_chainlink_delta_pct=None,
+            btc_tiingo_delta_pct=None,
+            vpin=vpin or None,
+            p_up=None,
+            p_up_distance=None,
+            sources_agree=None,
+            chainlink_feed_age_s=None,
+            eval_band_in_optimal=True,
+            event_ts_unix=event_ts,
+            t_offset_secs=t_off,
+            paper_mode=paper_mode,
+        )
+
+        # Skip if required BTC price is zero — defensive.
+        if inp.btc_now_usd <= 0 or inp.btc_window_open_usd <= 0:
+            return
+
+        try:
+            builder = BuildTradeAlertUseCase(
+                tallies=self._narrative_v2_tallies,
+                clock=self._narrative_v2_clock,
+            )
+            payload = await builder.execute(inp)
+        except Exception as exc:
+            self._log.debug(
+                "telegram.narrative_v2_build_skipped",
+                error=str(exc)[:200],
+            )
+            return
+
+        await self._narrative_v2_publish.execute(payload)
+
+    def set_narrative_v2(
+        self,
+        *,
+        enabled: bool,
+        publish_uc,
+        clock,
+        tallies,
+    ) -> None:
+        """Enable the narrative-v2 dual-fire pipeline.
+
+        Call from composition root after the pipeline is wired. When
+        ``enabled`` is True and all dependencies are non-None,
+        ``send_strategy_trade_alert`` (and future migrated call sites)
+        ALSO emit via the new domain-payload → renderer → sender path
+        for A/B comparison.
+        """
+        self._narrative_v2_enabled = bool(enabled)
+        self._narrative_v2_publish = publish_uc
+        self._narrative_v2_clock = clock
+        self._narrative_v2_tallies = tallies
+        self._log.info(
+            "telegram.narrative_v2_configured", enabled=self._narrative_v2_enabled
+        )
+
     # ── Trade Decision + AI Analysis (Dual-AI) ────────────────────────────────
     async def send_trade_decision_detailed(
         self,
@@ -2605,6 +2759,41 @@ class TelegramAlerter:
 
         Shows strategy name, gate pipeline, sizing, fill details.
         """
+        # ── Narrative V2 dual-fire (Phase G.1) ────────────────────────────────
+        # Non-blocking: swallows every error so legacy path always runs.
+        if (
+            self._narrative_v2_enabled
+            and self._narrative_v2_publish is not None
+            and self._narrative_v2_clock is not None
+            and self._narrative_v2_tallies is not None
+        ):
+            try:
+                await self._emit_narrative_v2_trade(
+                    strategy_id=strategy_id,
+                    strategy_version=strategy_version,
+                    direction=direction,
+                    confidence=confidence,
+                    confidence_score=confidence_score,
+                    gate_results=gate_results or [],
+                    stake_usd=stake_usd,
+                    fill_price=fill_price,
+                    fill_size=fill_size,
+                    order_type=order_type,
+                    order_id=order_id,
+                    execution_mode=execution_mode,
+                    timeframe=timeframe,
+                    btc_price=btc_price,
+                    vpin=vpin,
+                    eval_offset=eval_offset,
+                    paper_mode=paper_mode,
+                    success=success,
+                )
+            except Exception as exc:
+                self._log.warning(
+                    "telegram.narrative_v2_dual_fire_failed",
+                    error=str(exc)[:200],
+                )
+
         try:
             dir_emoji = "⬇" if direction == "DOWN" else "⬆"
             mode_tag = "📝 PAPER" if paper_mode else "💰 LIVE"

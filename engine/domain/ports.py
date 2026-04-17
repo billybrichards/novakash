@@ -30,6 +30,9 @@ import abc
 from collections.abc import AsyncIterator
 from typing import Optional
 
+from domain.alert_values import (
+    CumulativeTally,
+)
 from domain.value_objects import (
     ClobSnapshot,
     DeltaSet,
@@ -784,3 +787,118 @@ class WindowTraceRepository(abc.ABC):
 # 4.16  OrderExecutionPort  (canonical location: use_cases/ports/execution.py)
 # 4.17  TradeRecorderPort   (canonical location: use_cases/ports/execution.py)
 # =====================================================================
+
+
+# NOTE: AlertRendererPort (4.18) and OnChainTxQueryPort (4.19) live in
+# use_cases/ports/ because they bind to external adapter surfaces (channel
+# formatters, on-chain RPCs) — same V7 convention as AlerterPort.
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4.20  ShadowDecisionRepository
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class ShadowDecisionRepository(abc.ABC):
+    """Persist per-window strategy decisions (LIVE + GHOST) for shadow reports.
+
+    Why it exists:
+      - ``evaluate_strategies.py`` already evaluates LIVE + GHOST in parallel.
+      - This repo captures every decision so the post-resolve shadow report
+        can reconstruct what each strategy saw, without re-evaluating.
+      - Audit field ``mode`` records what the strategy WAS at eval time,
+        not what it is now — stable even after YAML flips.
+
+    Backing table: ``shadow_decisions``
+    Unique key: (window_id, strategy_id)
+
+    Implementations:
+      - PgShadowDecisionRepository (SQL)
+      - InMemoryShadowDecisionRepository (tests)
+    """
+
+    @abc.abstractmethod
+    async def save(
+        self,
+        window_key: WindowKey,
+        decisions: list[StrategyDecision],
+    ) -> None:
+        """Persist all evaluated decisions for ``window_key``.
+
+        Upserts by (window_id, strategy_id). Idempotent — safe to call
+        multiple times per window.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def find_by_window(
+        self,
+        window_key: WindowKey,
+    ) -> list[StrategyDecision]:
+        """Return every persisted decision for ``window_key``.
+
+        Empty list if the window never evaluated or predates persistence.
+        Caller treats empty as "no shadow report available".
+        """
+        ...
+
+    @abc.abstractmethod
+    async def find_by_strategy(
+        self,
+        strategy_id: str,
+        since_unix: int,
+        limit: int = 1000,
+    ) -> list[StrategyDecision]:
+        """Return recent decisions for one strategy for tally backfill."""
+        ...
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4.21  TallyQueryPort
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TallyQueryPort(abc.ABC):
+    """Cumulative W/L + P&L rollups (today, last hour, session, by strategy).
+
+    Adapter is responsible for its own TTL cache (target ~60s) so that
+    alert-building stays under the per-alert latency budget.
+
+    The ``CumulativeTally`` value object is defined in
+    ``engine/domain/alert_values.py``.
+    """
+
+    @abc.abstractmethod
+    async def today(self) -> "CumulativeTally":
+        """Combined LIVE tally since UTC midnight."""
+        ...
+
+    @abc.abstractmethod
+    async def last_hour(self) -> "CumulativeTally":
+        """Combined LIVE tally for the rolling last 60 minutes."""
+        ...
+
+    @abc.abstractmethod
+    async def session(self, since_unix: int) -> "CumulativeTally":
+        """Combined LIVE tally since the given engine-start unix ts."""
+        ...
+
+    @abc.abstractmethod
+    async def today_by_strategy(
+        self,
+    ) -> dict[tuple[str, str, str], "CumulativeTally"]:
+        """Today's tally keyed on (timeframe, strategy_id, mode).
+
+        Joins ``trades`` (LIVE) + ``shadow_decisions`` (GHOST) so LIVE vs
+        GHOST can be compared per strategy per timeframe. Missing keys
+        mean that strategy has no activity today.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def today_combined(
+        self,
+        timeframe: Optional[str] = None,
+    ) -> "CumulativeTally":
+        """Combined tally for all strategies; optionally filtered by timeframe."""
+        ...
