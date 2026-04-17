@@ -125,17 +125,22 @@ async def get_strategy_config(strategy_id: str):
     Read YAML config for a strategy by ID.
 
     Returns parsed YAML as JSON.
+
+    NOTE (2026-04-17): previously resolved ``config_dir`` with a hard-coded
+    three-level-up path to ``engine/strategies/configs``. That silently
+    broke on the AWS-deploy hub where ``engine/`` is not present. The
+    shared resolver in ``api.strategies._pick_config_dir`` now handles the
+    env override + multi-candidate fallback — see that module's docstring
+    for the deploy-path rationale.
     """
     import os
     import yaml
 
-    config_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-        "engine",
-        "strategies",
-        "configs",
-    )
-    yaml_path = os.path.join(config_dir, f"{strategy_id}.yaml")
+    # Imported here rather than at module top to keep the (small) strategies
+    # module decoupled from the strategy-decisions module ordering.
+    from api.strategies import _pick_config_dir
+
+    yaml_path = os.path.join(_pick_config_dir(), f"{strategy_id}.yaml")
 
     if not os.path.exists(yaml_path):
         return {"error": f"Config not found: {strategy_id}"}

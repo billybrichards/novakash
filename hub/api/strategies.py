@@ -15,6 +15,21 @@ configs in `engine/strategies/configs/*.yaml` contain only strategy
 parameters (gates, sizing, versions) — no API keys or wallet material.
 Keep it that way. If secrets ever leak into YAML, add a redaction pass
 here before shipping.
+
+Deploy-path hardening (2026-04-17):
+PR #251 shipped with a single `engine/strategies/configs` path anchored to
+the repo root — which exists locally and in Docker-compose layouts but NOT
+on the AWS-rsync hub deploy (see .github/workflows/deploy-hub.yml — only
+the hub/ subdirectory is shipped). Post-deploy the endpoint returned an
+empty registry. Fixed by:
+  1. The deploy workflow now also rsyncs `engine/strategies/configs/` to
+     `/home/ubuntu/hub/strategy_configs/` on the hub host.
+  2. `_pick_config_dir` below checks multiple candidate paths in order,
+     matching either the local repo layout (engine/strategies/configs) or
+     the AWS-deploy layout (hub/strategy_configs). An optional env var
+     `STRATEGY_CONFIGS_DIR` overrides both.
+The twin bug in `hub/api/strategy_decisions.py::get_strategy_config`
+(same hard-coded path) is patched via the same resolver.
 """
 
 from __future__ import annotations
@@ -29,13 +44,40 @@ from fastapi import APIRouter
 log = structlog.get_logger(__name__)
 router = APIRouter()
 
-# hub/api/strategies.py → hub/api → hub → project root → engine/strategies/configs
-_CONFIG_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "engine",
-    "strategies",
-    "configs",
-)
+
+def _pick_config_dir() -> str:
+    """Resolve strategy-configs directory with fallback order.
+
+    Resolution order:
+      1. ``STRATEGY_CONFIGS_DIR`` env var if set (explicit operator override).
+      2. ``<hub_root>/strategy_configs/`` — the AWS-rsync target. This is
+         where ``.github/workflows/deploy-hub.yml`` lands the engine YAML
+         on the hub host so the hub can read it without needing
+         ``engine/`` in its deploy tree.
+      3. ``<repo_root>/engine/strategies/configs/`` — the local dev and
+         docker-compose layout (hub/ and engine/ are siblings under the
+         repo root).
+
+    If none of the candidates exist on disk, returns the canonical AWS
+    path (#2) so startup diagnostics point at the correct fix location
+    rather than a stale repo-relative guess.
+    """
+    override = os.environ.get("STRATEGY_CONFIGS_DIR")
+    if override:
+        return override
+
+    hub_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for candidate in (
+        os.path.join(hub_root, "strategy_configs"),
+        os.path.join(os.path.dirname(hub_root), "engine", "strategies", "configs"),
+    ):
+        if os.path.isdir(candidate):
+            return candidate
+
+    return os.path.join(hub_root, "strategy_configs")
+
+
+_CONFIG_DIR = _pick_config_dir()
 
 
 def _normalise_timeframe(parsed: dict) -> str:
