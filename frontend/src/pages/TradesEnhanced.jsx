@@ -6,6 +6,49 @@ import DataTable from '../components/shared/DataTable.jsx';
 import FilterPills from '../components/shared/FilterPills.jsx';
 import { T, wrTone } from '../theme/tokens.js';
 
+const PhantomBanner = ({ count, show, onToggle }) => {
+  if (!count) return null;
+  return (
+    <div
+      data-testid="phantom-banner"
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        background: 'rgba(245,158,11,0.08)',
+        border: `1px solid rgba(245,158,11,0.25)`,
+        borderRadius: 2,
+        padding: '8px 12px',
+        marginBottom: 12,
+        fontSize: 11,
+        color: T.warn,
+        letterSpacing: '0.06em',
+      }}
+    >
+      <span>
+        {count} phantom trade{count !== 1 ? 's' : ''} excluded from stats
+      </span>
+      <button
+        data-testid="phantom-toggle"
+        onClick={onToggle}
+        style={{
+          background: 'none',
+          border: `1px solid rgba(245,158,11,0.4)`,
+          borderRadius: 2,
+          color: T.warn,
+          cursor: 'pointer',
+          fontSize: 10,
+          letterSpacing: '0.08em',
+          padding: '2px 8px',
+          textTransform: 'uppercase',
+        }}
+      >
+        {show ? 'hide' : 'show'}
+      </button>
+    </div>
+  );
+};
+
 // Shorten strategy id for pill display: v4_down_only → v4/down_only, v10_15m → v10/15m.
 const prettyStrategy = s => s.replace(/^v(\d+)_/, 'v$1/');
 const OUTCOMES = [
@@ -51,6 +94,7 @@ export default function TradesEnhanced() {
   const [outcome, setOutcome] = useState(null);
   const [rangeDays, setRangeDays] = useState(7);
   const [onlyFilled, setOnlyFilled] = useState(true);
+  const [showPhantoms, setShowPhantoms] = useState(true);
 
   const { data, error: err } = useApiLoader(
     (signal) => {
@@ -65,6 +109,7 @@ export default function TradesEnhanced() {
   );
 
   const rows = Array.isArray(data) ? data : [];
+  const visibleRows = showPhantoms ? rows : rows.filter(r => !r.is_phantom);
 
   // Derive strategy pills from loaded rows so 15m strategies appear automatically.
   // Preserve the currently-selected value even if it's absent from the current page.
@@ -135,6 +180,8 @@ export default function TradesEnhanced() {
         <Stat lbl="Avg edge" val={kpi.avgEdge == null ? '—' : `${(kpi.avgEdge * 100).toFixed(1)}¢`} />
       </div>
 
+      <PhantomBanner count={kpi.phantom.n} show={showPhantoms} onToggle={() => setShowPhantoms(v => !v)} />
+
       {err ? <div style={{ color: T.loss, fontSize: 12, marginBottom: 10 }}>Load error: {err}</div> : null}
 
       <div style={{ background: T.card, border: `1px solid ${T.border}`, padding: 14, borderRadius: 2 }}>
@@ -181,7 +228,7 @@ export default function TradesEnhanced() {
             { key: 'skip_reason', label: 'skip', render: r => r.skip_reason ? <span style={{ color: T.warn, fontSize: 10 }}>{r.skip_reason}</span> : '—' },
           ]}
           rowStyle={r => r.is_phantom ? { opacity: 0.4 } : undefined}
-          rows={rows.map((r, i) => ({ ...r, _key: r.id ?? i }))}
+          rows={visibleRows.map((r, i) => ({ ...r, _key: r.id ?? i }))}
         />
       </div>
     </div>
