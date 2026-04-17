@@ -60,6 +60,25 @@ MAX_ORDERS_PER_HOUR = 20
 CIRCUIT_BREAKER_ERRORS = 3
 CIRCUIT_BREAKER_COOLDOWN_S = 180  # 3 minutes
 
+# Failure reasons that represent real infra/submit errors (CLOB rejection,
+# auth failure, signer error, network exception). These count toward the
+# consecutive-error counter that trips the circuit breaker.
+#
+# Everything else (fak_rfq_exhausted, gtc_unfilled, …) is a market
+# condition — empty book, price moved past cap, no taker for our GTC —
+# and must NOT trip the breaker. Cycling 180s cooldowns on "nobody took
+# my price" just silences the strategy without addressing any fault.
+_REAL_ERROR_REASON_PREFIXES: tuple[str, ...] = (
+    "gtc_submit_error",
+    "execution_error",
+)
+
+
+def _is_real_order_error(failure_reason: str | None) -> bool:
+    if not failure_reason:
+        return False
+    return failure_reason.startswith(_REAL_ERROR_REASON_PREFIXES)
+
 
 def _failed(
     reason: str,
@@ -317,7 +336,11 @@ class ExecuteTradeUseCase:
                     await self._window_state.clear_trade_claim(window_key)
                 except Exception:
                     pass
-            await self._on_order_error()
+            # Only real submit/infra errors increment the breaker counter.
+            # Benign no-fills (empty book, FAK exhausted, GTC unfilled) are
+            # market conditions, not faults — they skip cleanly.
+            if _is_real_order_error(result.failure_reason):
+                await self._on_order_error()
             log.info(
                 "execute_trade.order_not_filled",
                 strategy=sid,
