@@ -153,6 +153,11 @@ class StrategyRegistry:
         """Scan config_dir for *.yaml, build pipelines, load hooks."""
         _register_gates()
 
+        # Keep the raw YAML source text per-strategy so seed_registry_to_db()
+        # can persist it verbatim without re-reading files — preserves comments
+        # and formatting in the audit-trail TEXT column.
+        self._raw_yaml: dict[str, str] = {}
+
         for yaml_file in sorted(self._config_dir.glob("*.yaml")):
             try:
                 config = self._parse_yaml(yaml_file)
@@ -161,6 +166,12 @@ class StrategyRegistry:
                 self._configs[config.name] = config
                 self._pipelines[config.name] = gates
                 self._hooks[config.name] = hooks
+                try:
+                    self._raw_yaml[config.name] = yaml_file.read_text()
+                except Exception:
+                    # Non-fatal: DB seed falls back to re-serialising the
+                    # parsed StrategyConfig if raw text is unavailable.
+                    pass
                 log.info(
                     "registry.loaded",
                     strategy=config.name,
@@ -175,6 +186,97 @@ class StrategyRegistry:
                     file=str(yaml_file),
                     error=str(exc)[:200],
                 )
+
+    async def seed_registry_to_db(self) -> None:
+        """Upsert every loaded strategy into the `strategy_configs` table.
+
+        Runs after ``load_all()``. Idempotent — the ``(strategy_id, version)``
+        composite PK means re-seeding the same shipping version is a no-op
+        beyond bumping ``updated_at``. Bumping the YAML ``version`` inserts
+        a new row without touching the old one, giving us free history.
+
+        This is the Phase-2 (Option C.1) companion to the filesystem rsync
+        fix (Option A, PR #253). Hub reads the resulting rows via
+        ``/api/strategies``; the filesystem resolver stays as a fallback
+        so a fresh cluster with an engine that has not yet booted still
+        serves a usable (stale) registry rather than 500-ing.
+
+        Governance: this write path is engine-only. The hub has SELECT-only
+        access to the table. Keeps the "engine owns strategy catalog"
+        invariant clean and avoids creating an accidental auto-promotion
+        surface in the UI (see feedback_no_auto_model_promotion.md).
+
+        No-op when ``self._db`` is None (tests, legacy composition paths)
+        or when the pool is unavailable.
+        """
+        import json
+
+        pool = None
+        if self._db is not None:
+            pool = getattr(self._db, "_pool", None) or getattr(self._db, "pool", None)
+        if pool is None:
+            log.debug("registry.seed_skipped", reason="no_db_pool")
+            return
+
+        if not self._configs:
+            log.debug("registry.seed_skipped", reason="no_configs_loaded")
+            return
+
+        upserted = 0
+        try:
+            async with pool.acquire() as conn:
+                for name, cfg in self._configs.items():
+                    raw_yaml = self._raw_yaml.get(name)
+                    if raw_yaml is None:
+                        # Fallback: re-serialise from the parsed config.
+                        raw_yaml = yaml.safe_dump(
+                            {
+                                "name": cfg.name,
+                                "version": cfg.version,
+                                "mode": cfg.mode,
+                                "asset": cfg.asset,
+                                "timescale": cfg.timescale,
+                                "gates": cfg.gates,
+                                "sizing": cfg.sizing,
+                                "hooks_file": cfg.hooks_file,
+                                "pre_gate_hook": cfg.pre_gate_hook,
+                                "post_gate_hook": cfg.post_gate_hook,
+                            },
+                            sort_keys=False,
+                        )
+                    await conn.execute(
+                        """
+                        INSERT INTO strategy_configs (
+                            strategy_id, version, mode, asset, timescale,
+                            config_yaml, gates_json, sizing_json, hooks_file
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9)
+                        ON CONFLICT (strategy_id, version) DO UPDATE SET
+                            mode        = EXCLUDED.mode,
+                            asset       = EXCLUDED.asset,
+                            timescale   = EXCLUDED.timescale,
+                            config_yaml = EXCLUDED.config_yaml,
+                            gates_json  = EXCLUDED.gates_json,
+                            sizing_json = EXCLUDED.sizing_json,
+                            hooks_file  = EXCLUDED.hooks_file,
+                            updated_at  = NOW()
+                        """,
+                        cfg.name,
+                        cfg.version,
+                        cfg.mode,
+                        cfg.asset,
+                        cfg.timescale,
+                        raw_yaml,
+                        json.dumps(cfg.gates) if cfg.gates is not None else None,
+                        json.dumps(cfg.sizing) if cfg.sizing else None,
+                        cfg.hooks_file,
+                    )
+                    upserted += 1
+            log.info("registry.seeded_to_db", count=upserted)
+        except Exception as exc:
+            # Seed failure must not block engine startup — hub falls back
+            # to the filesystem resolver. Log loudly; operator debug via
+            # the warning log line.
+            log.warning("registry.seed_error", error=str(exc)[:300])
 
     def _parse_yaml(self, path: Path) -> StrategyConfig:
         """Parse a YAML strategy config file."""

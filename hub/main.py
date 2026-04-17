@@ -105,6 +105,41 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     "ALTER TABLE system_state ADD COLUMN IF NOT EXISTS active_live_config_id INTEGER"
                 )
             )
+            # Phase-2 (audit #216 follow-up): strategy_configs registry.
+            # Engine upserts YAML into this table at startup; hub reads it
+            # in preference to the filesystem (see api/strategies.py). See
+            # hub/db/migrations/versions/20260417_03_strategy_configs.sql
+            # for the full rationale.
+            await session.execute(
+                text("""
+                CREATE TABLE IF NOT EXISTS strategy_configs (
+                    strategy_id   VARCHAR(64)  NOT NULL,
+                    version       VARCHAR(32)  NOT NULL,
+                    mode          VARCHAR(16)  NOT NULL,
+                    asset         VARCHAR(16),
+                    timescale     VARCHAR(16),
+                    config_yaml   TEXT         NOT NULL,
+                    gates_json    JSONB,
+                    sizing_json   JSONB,
+                    hooks_file    VARCHAR(256),
+                    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                    updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (strategy_id, version)
+                )
+            """)
+            )
+            await session.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_strategy_configs_strategy "
+                    "ON strategy_configs (strategy_id)"
+                )
+            )
+            await session.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_strategy_configs_updated "
+                    "ON strategy_configs (updated_at DESC)"
+                )
+            )
             # NT-01: persistent notes/journal table
             await session.execute(
                 text("""

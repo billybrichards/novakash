@@ -23,11 +23,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from unittest.mock import AsyncMock, MagicMock
+
 from api.strategies import (
     router,
     _normalise_timeframe,
     _load_strategy_yaml,
     _pick_config_dir,
+    _load_registry_from_db,
 )
 
 
@@ -213,3 +216,140 @@ def test_pick_config_dir_returns_aws_default_when_none_exist(
         picked = _pick_config_dir()
 
     assert picked == str(tmp_path / "hub" / "strategy_configs")
+
+
+# ─── DB-first registry (Phase 2 Option C.1) ──────────────────────────────────
+
+
+def _mock_session_with_rows(rows: list[dict]):
+    """Build a session that yields `rows` from ``result.mappings().all()``.
+
+    Shape mirrors the SQLAlchemy async API used in ``_load_registry_from_db``.
+    """
+    mappings = MagicMock()
+    mappings.all.return_value = rows
+    result = MagicMock()
+    result.mappings.return_value = mappings
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+
+    async def gen():
+        yield session
+
+    return gen
+
+
+def test_db_registry_preferred_over_filesystem(client: TestClient) -> None:
+    """When the DB returns strategy rows, the endpoint serves them and
+    never touches the filesystem."""
+    db_rows = [
+        {
+            "strategy_id": "v4_fusion",
+            "version": "4.5.0",
+            "mode": "LIVE",
+            "asset": "BTC",
+            "timescale": "5m",
+            "config_yaml": "name: v4_fusion\nversion: 4.5.0\nmode: LIVE\ntimescale: 5m\n",
+            "gates_json": None,
+            "sizing_json": None,
+            "hooks_file": None,
+            "updated_at": None,
+        },
+        {
+            "strategy_id": "v15m_fusion",
+            "version": "1.1.0",
+            "mode": "GHOST",
+            "asset": "BTC",
+            "timescale": "15m",
+            "config_yaml": "name: v15m_fusion\nversion: 1.1.0\nmode: GHOST\ntimescale: 15m\n",
+            "gates_json": None,
+            "sizing_json": None,
+            "hooks_file": None,
+            "updated_at": None,
+        },
+    ]
+
+    with patch("api.strategies._get_db_session", _mock_session_with_rows(db_rows)):
+        with patch("api.strategies._load_registry_from_fs") as fs_mock:
+            resp = client.get("/api/strategies")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert set(data.keys()) == {"v4_fusion", "v15m_fusion"}
+    assert data["v4_fusion"]["yaml"]["version"] == "4.5.0"
+    assert data["v15m_fusion"]["timeframe"] == "15m"
+    # DB hit → filesystem must NOT be called
+    fs_mock.assert_not_called()
+
+
+def test_db_empty_falls_back_to_filesystem(client: TestClient) -> None:
+    """Fresh cluster / engine hasn't seeded yet → DB returns [] rows,
+    endpoint falls back to the filesystem resolver."""
+    with patch("api.strategies._get_db_session", _mock_session_with_rows([])):
+        resp = client.get("/api/strategies")
+    assert resp.status_code == 200
+    data = resp.json()
+    # Real shipping strategies must still show up via FS fallback
+    assert "v4_fusion" in data
+    assert len(data) >= 10
+
+
+def test_db_read_error_falls_back_to_filesystem(client: TestClient) -> None:
+    """If the DB session raises (table missing, connection dropped),
+    the endpoint still serves from the filesystem instead of 500ing."""
+
+    async def broken_session():
+        raise RuntimeError("simulated DB outage")
+        yield  # pragma: no cover — keeps the generator shape
+
+    with patch("api.strategies._get_db_session", broken_session):
+        resp = client.get("/api/strategies")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "v4_fusion" in data
+
+
+def test_db_row_with_malformed_yaml_is_skipped(client: TestClient) -> None:
+    """One corrupt ``config_yaml`` in the DB must not kill the whole
+    DB-backed response."""
+    db_rows = [
+        {
+            "strategy_id": "v4_fusion",
+            "version": "4.5.0",
+            "mode": "LIVE",
+            "asset": "BTC",
+            "timescale": "5m",
+            "config_yaml": "name: v4_fusion\nversion: 4.5.0\nmode: LIVE\ntimescale: 5m\n",
+            "gates_json": None,
+            "sizing_json": None,
+            "hooks_file": None,
+            "updated_at": None,
+        },
+        {
+            "strategy_id": "corrupt_row",
+            "version": "0.0.1",
+            "mode": "GHOST",
+            "asset": "BTC",
+            "timescale": "5m",
+            "config_yaml": "key: : : invalid\n  indent",
+            "gates_json": None,
+            "sizing_json": None,
+            "hooks_file": None,
+            "updated_at": None,
+        },
+    ]
+    with patch("api.strategies._get_db_session", _mock_session_with_rows(db_rows)):
+        resp = client.get("/api/strategies")
+    data = resp.json()
+    assert "v4_fusion" in data
+    assert "corrupt_row" not in data
+
+
+def test_db_session_module_unavailable_still_serves_fs(client: TestClient) -> None:
+    """If the hub DB session import was never wired (e.g. in a stripped-
+    down unit harness), the endpoint must still serve the filesystem
+    resolver rather than 500ing on a None attribute."""
+    with patch("api.strategies._get_db_session", None):
+        resp = client.get("/api/strategies")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "v4_fusion" in data
