@@ -1,196 +1,210 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './auth/AuthContext.jsx';
-import { ThemeProvider } from './contexts/ThemeContext.jsx';
 import ProtectedRoute from './auth/ProtectedRoute.jsx';
 import LoginPage from './auth/LoginPage.jsx';
-import Layout from './components/Layout.jsx';
-import Dashboard from './pages/Dashboard.jsx';
-import Trades from './pages/Trades.jsx';
-import Signals from './pages/Signals.jsx';
+
+// New shell + pages (eager, critical path)
+import AppShell from './layouts/AppShell.jsx';
+import UnifiedDashboard from './pages/UnifiedDashboard.jsx';
+import TradesEnhanced from './pages/TradesEnhanced.jsx';
+import SignalExplorer from './pages/SignalExplorer.jsx';
+import ConfigOverrides from './pages/ConfigOverrides.jsx';
+import AuditTasks from './pages/AuditTasks.jsx';
 import PnL from './pages/PnL.jsx';
 import System from './pages/System.jsx';
-import Setup from './pages/Setup.jsx';
-import PaperDashboard from './pages/PaperDashboard.jsx';
-import TradingConfig from './pages/TradingConfig.jsx';
-import Positions from './pages/Positions.jsx';
-import Risk from './pages/Risk.jsx';
-// CLEANUP-01: Learn, Changelog, Indicators, AnalysisLibrary, Recommendations removed (dead pages)
-import PlaywrightDashboard from './pages/PlaywrightDashboard.jsx';
-import TimesFM from './pages/TimesFM.jsx';
-import V58Monitor from './pages/V58Monitor.jsx';
-import WindowResults from './pages/WindowResults.jsx';
-import StrategyAnalysis from './pages/StrategyAnalysis.jsx';
-import LiveTrading from './pages/LiveTrading.jsx';
-import FactoryFloor from './pages/FactoryFloor.jsx';
-import ExecutionHQ from './pages/execution-hq/ExecutionHQ.jsx';
-import MarginEngine from './pages/margin-engine/MarginEngine.jsx';
-import MarginStrategies from './pages/MarginStrategies.jsx';
-import CompositeSignals from './pages/CompositeSignals.jsx';
-import AuditChecklist from './pages/AuditChecklist.jsx';
-import V1Surface from './pages/data-surfaces/V1Surface.jsx';
-import V2Surface from './pages/data-surfaces/V2Surface.jsx';
-import V3Surface from './pages/data-surfaces/V3Surface.jsx';
-import V4Surface from './pages/data-surfaces/V4Surface.jsx';
-import Assembler1 from './pages/data-surfaces/Assembler1.jsx';
-import Deployments from './pages/Deployments.jsx';
-import Notes from './pages/Notes.jsx';
-import Schema from './pages/Schema.jsx';
-// CFG-05: new DB-config browser. The legacy 13-key page is preserved at
-// /legacy-config so any in-flight bookmarks survive.
-import Config from './pages/Config.jsx';
-import LegacyConfig from './pages/LegacyConfig.jsx';
-import PolymarketMonitor from './pages/polymarket/Monitor.jsx';
-import PolymarketEvaluate from './pages/polymarket/Evaluate.jsx';
-import StrategyLab from './pages/polymarket/StrategyLab.jsx';
-import StrategyHistory from './pages/polymarket/StrategyHistory.jsx';
-import StrategyFloor from './pages/polymarket/StrategyFloor.jsx';
-import LiveFloor from './pages/polymarket/LiveFloor.jsx';
-import PolymarketOverview from './pages/polymarket/Overview.jsx';
-import StrategyConfigs from './pages/polymarket/StrategyConfigs.jsx';
-import GatePipelineMonitor from './pages/polymarket/GatePipelineMonitor.jsx';
-import DataHealth from './pages/polymarket/DataHealth.jsx';
-import StrategyCommand from './pages/polymarket/StrategyCommand.jsx';
-import FifteenMinMonitor from './pages/FifteenMinMonitor.jsx';
-import SignalComparison from './pages/SignalComparison.jsx';
-import AgentOps from './pages/AgentOps.jsx';
-import Telegram from './pages/Telegram.jsx';
+import Wallet from './pages/Wallet.jsx';
+import Strategies from './pages/Strategies.jsx';
 
-/**
- * AppErrorBoundary — catches any render-time JS errors and shows a visible
- * error panel instead of a silent black screen.
- */
-class AppErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { error: null };
-  }
-  static getDerivedStateFromError(error) {
-    return { error };
-  }
-  componentDidCatch(error, info) {
-    console.error('[AppErrorBoundary] Render crash:', error, info.componentStack);
-  }
-  render() {
-    if (this.state.error) {
-      return (
-        <div style={{
-          minHeight: '100vh', background: '#07070c', color: '#f87171',
-          display: 'flex', flexDirection: 'column', alignItems: 'center',
-          justifyContent: 'center', padding: 32, fontFamily: 'monospace',
-        }}>
-          <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 12 }}>
-            App crashed — check browser console
-          </div>
-          <pre style={{
-            fontSize: 12, color: 'rgba(255,255,255,0.5)', maxWidth: 700,
-            whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-          }}>
-            {this.state.error.toString()}
-          </pre>
-          <button
-            onClick={() => window.location.reload()}
-            style={{
-              marginTop: 24, padding: '8px 20px', borderRadius: 6,
-              background: 'rgba(248,113,113,0.15)', border: '1px solid rgba(248,113,113,0.3)',
-              color: '#f87171', cursor: 'pointer', fontFamily: 'monospace', fontSize: 13,
-            }}
-          >
-            Reload
-          </button>
-        </div>
-      );
+// Archive shell + wrapper
+import Layout from './components/Layout.jsx';
+import ArchiveCenter from './pages/archive/ArchiveCenter.jsx';
+import ArchivedPageBanner from './pages/archive/ArchivedPageBanner.jsx';
+import Loading from './components/shared/Loading.jsx';
+
+// Archive components (lazy-loaded — ~650KB off the main chunk)
+const PaperDashboard      = lazy(() => import('./pages/PaperDashboard.jsx'));
+const PlaywrightDashboard = lazy(() => import('./pages/PlaywrightDashboard.jsx'));
+const ExecutionHQ         = lazy(() => import('./pages/execution-hq/ExecutionHQ.jsx'));
+const LiveTrading         = lazy(() => import('./pages/LiveTrading.jsx'));
+const FactoryFloor        = lazy(() => import('./pages/FactoryFloor.jsx'));
+const V58Monitor          = lazy(() => import('./pages/V58Monitor.jsx'));
+const WindowResults       = lazy(() => import('./pages/WindowResults.jsx'));
+const StrategyAnalysis    = lazy(() => import('./pages/StrategyAnalysis.jsx'));
+const TimesFM             = lazy(() => import('./pages/TimesFM.jsx'));
+const CompositeSignals    = lazy(() => import('./pages/CompositeSignals.jsx'));
+const MarginEngine        = lazy(() => import('./pages/margin-engine/MarginEngine.jsx'));
+const Positions           = lazy(() => import('./pages/Positions.jsx'));
+const Risk                = lazy(() => import('./pages/Risk.jsx'));
+const Signals             = lazy(() => import('./pages/Signals.jsx'));
+const Trades              = lazy(() => import('./pages/Trades.jsx'));
+const Dashboard           = lazy(() => import('./pages/Dashboard.jsx'));
+const Setup               = lazy(() => import('./pages/Setup.jsx'));
+const TradingConfig       = lazy(() => import('./pages/TradingConfig.jsx'));
+const LegacyConfig        = lazy(() => import('./pages/LegacyConfig.jsx'));
+const Config              = lazy(() => import('./pages/Config.jsx'));
+const AuditChecklist      = lazy(() => import('./pages/AuditChecklist.jsx'));
+const MarginStrategies    = lazy(() => import('./pages/MarginStrategies.jsx'));
+const Deployments         = lazy(() => import('./pages/Deployments.jsx'));
+const Notes               = lazy(() => import('./pages/Notes.jsx'));
+const Schema              = lazy(() => import('./pages/Schema.jsx'));
+const SignalComparison    = lazy(() => import('./pages/SignalComparison.jsx'));
+const AgentOps            = lazy(() => import('./pages/AgentOps.jsx'));
+const Telegram            = lazy(() => import('./pages/Telegram.jsx'));
+const FifteenMinMonitor   = lazy(() => import('./pages/FifteenMinMonitor.jsx'));
+// Polymarket subtree
+const PolymarketOverview  = lazy(() => import('./pages/polymarket/Overview.jsx'));
+const PolymarketMonitor   = lazy(() => import('./pages/polymarket/Monitor.jsx'));
+const LiveFloor           = lazy(() => import('./pages/polymarket/LiveFloor.jsx'));
+const PolymarketEvaluate  = lazy(() => import('./pages/polymarket/Evaluate.jsx'));
+const StrategyLab         = lazy(() => import('./pages/polymarket/StrategyLab.jsx'));
+const StrategyHistory     = lazy(() => import('./pages/polymarket/StrategyHistory.jsx'));
+const StrategyConfigs     = lazy(() => import('./pages/polymarket/StrategyConfigs.jsx'));
+const GatePipelineMonitor = lazy(() => import('./pages/polymarket/GatePipelineMonitor.jsx'));
+const DataHealth          = lazy(() => import('./pages/polymarket/DataHealth.jsx'));
+const StrategyCommand     = lazy(() => import('./pages/polymarket/StrategyCommand.jsx'));
+const StrategyFloor       = lazy(() => import('./pages/polymarket/StrategyFloor.jsx'));
+// Data surfaces
+const V1Surface           = lazy(() => import('./pages/data-surfaces/V1Surface.jsx'));
+const V2Surface           = lazy(() => import('./pages/data-surfaces/V2Surface.jsx'));
+const V3Surface           = lazy(() => import('./pages/data-surfaces/V3Surface.jsx'));
+const V4Surface           = lazy(() => import('./pages/data-surfaces/V4Surface.jsx'));
+const Assembler1          = lazy(() => import('./pages/data-surfaces/Assembler1.jsx'));
+
+import { ARCHIVED_PAGES, ARCHIVED_STRATEGY_FLOORS } from './nav/navigation.js';
+
+const ARCHIVE_COMPONENTS = {
+  PaperDashboard, PlaywrightDashboard, ExecutionHQ, LiveTrading, FactoryFloor,
+  V58Monitor, WindowResults, StrategyAnalysis, TimesFM, CompositeSignals,
+  MarginEngine, Positions, Risk, Signals, Trades, Dashboard,
+  Setup, TradingConfig, LegacyConfig, Config, AuditChecklist,
+  MarginStrategies, Deployments, Notes, Schema, SignalComparison,
+  AgentOps, Telegram, FifteenMinMonitor,
+  PolymarketOverview, PolymarketMonitor, LiveFloor, PolymarketEvaluate,
+  StrategyLab, StrategyHistory, StrategyConfigs, GatePipelineMonitor,
+  DataHealth, StrategyCommand,
+  V1Surface, V2Surface, V3Surface, V4Surface, Assembler1,
+};
+
+function wrapArchived(meta) {
+  const Component = ARCHIVE_COMPONENTS[meta.importName];
+  if (!Component) {
+    if (import.meta.env.DEV) {
+      console.warn(`[archive] Missing component for ${meta.path} (importName=${meta.importName})`);
     }
-    return this.props.children;
+    return null;
   }
+  return (
+    <Suspense fallback={<Loading label="Loading archived page…" />}>
+      <ArchivedPageBanner replacedBy={meta.replacedBy} note={meta.note}>
+        <Component />
+      </ArchivedPageBanner>
+    </Suspense>
+  );
+}
+
+// Props-bearing archived routes (StrategyFloor needs strategyId).
+function wrapArchivedFloor(meta) {
+  return (
+    <Suspense fallback={<Loading label="Loading archived page…" />}>
+      <ArchivedPageBanner replacedBy={meta.replacedBy}>
+        <StrategyFloor strategyId={meta.strategyId} />
+      </ArchivedPageBanner>
+    </Suspense>
+  );
 }
 
 export default function App() {
   return (
-    <AppErrorBoundary>
     <BrowserRouter>
-      <ThemeProvider>
       <AuthProvider>
         <Routes>
-          {/* Public */}
           <Route path="/login" element={<LoginPage />} />
 
-          {/* Protected — all behind Layout */}
-          <Route
-            path="/"
-            element={
-              <ProtectedRoute>
-                <Layout />
-              </ProtectedRoute>
-            }
-          >
-            <Route index element={<Navigate to="/polymarket/monitor" replace />} />
-            <Route path="dashboard" element={<PolymarketOverview />} />
-            <Route path="paper" element={<PaperDashboard />} />
-            {/* PaperTrading removed — duplicate of Dashboard, use /paper instead */}
-            <Route path="positions" element={<Positions />} />
-            <Route path="trades" element={<Trades />} />
-            <Route path="signals" element={<Signals />} />
+          {/* New lean shell — Tier-1 active routes */}
+          <Route path="/" element={<ProtectedRoute><AppShell /></ProtectedRoute>}>
+            <Route index element={<UnifiedDashboard />} />
+            <Route path="trades" element={<TradesEnhanced />} />
+            <Route path="wallet" element={<Wallet />} />
+            <Route path="signals" element={<SignalExplorer />} />
+            <Route path="strategies" element={<Strategies />} />
+            <Route path="config" element={<ConfigOverrides />} />
+            <Route path="audit" element={<AuditTasks />} />
             <Route path="pnl" element={<PnL />} />
-            <Route path="risk" element={<Risk />} />
             <Route path="system" element={<System />} />
-            {/* CFG-05: /config now points at the new DB-config browser.
-                The legacy 13-key page lives at /legacy-config; the bundle
-                editor still owns /trading-config until CFG-06 lands. */}
-            <Route path="config" element={<Config />} />
-            <Route path="legacy-config" element={<LegacyConfig />} />
-            <Route path="trading-config" element={<TradingConfig />} />
-            <Route path="setup" element={<Setup />} />
-            <Route path="playwright" element={<PlaywrightDashboard />} />
-            <Route path="timesfm" element={<TimesFM />} />
-            <Route path="v58" element={<V58Monitor />} />
-            <Route path="windows" element={<WindowResults />} />
-            <Route path="strategy" element={<StrategyAnalysis />} />
-            <Route path="live" element={<LiveTrading />} />
-            <Route path="factory" element={<FactoryFloor />} />
-            {/* UI-02: Multi-market HQ monitors — 4 assets × 2 timeframes.
-                The legacy /execution-hq path redirects to the BTC 5m default
-                so bookmarks and the old sidebar link keep working. */}
-            <Route path="execution-hq" element={<Navigate to="/execution-hq/btc/5m" replace />} />
-            <Route path="execution-hq/:asset/:timeframe" element={<ExecutionHQ />} />
-            <Route path="margin" element={<MarginEngine />} />
-            <Route path="margin-strategies" element={<MarginStrategies />} />
-            <Route path="composite" element={<CompositeSignals />} />
-            <Route path="audit" element={<AuditChecklist />} />
-            <Route path="data/v1" element={<V1Surface />} />
-            <Route path="data/v2" element={<V2Surface />} />
-            <Route path="data/v3" element={<V3Surface />} />
-            <Route path="data/v4" element={<V4Surface />} />
-            <Route path="data/assembler1" element={<Assembler1 />} />
-            <Route path="deployments" element={<Deployments />} />
-            <Route path="notes" element={<Notes />} />
-            <Route path="schema" element={<Schema />} />
-            {/* Polymarket Monitor — new unified trading dashboard */}
-            <Route path="polymarket" element={<Navigate to="/polymarket/monitor" replace />} />
-            <Route path="polymarket/overview" element={<PolymarketOverview />} />
-            <Route path="polymarket/monitor" element={<PolymarketMonitor />} />
-            <Route path="polymarket/floor" element={<LiveFloor />} />
-            <Route path="polymarket/evaluate" element={<PolymarketEvaluate />} />
-            <Route path="polymarket/strategy-lab" element={<StrategyLab />} />
-          <Route path="polymarket/strategy-history" element={<StrategyHistory />} />
-            <Route path="polymarket/down-only" element={<StrategyFloor strategyId="v4_down_only" />} />
-            <Route path="polymarket/up-asian" element={<StrategyFloor strategyId="v4_up_asian" />} />
-            <Route path="polymarket/strategies" element={<StrategyConfigs />} />
-            <Route path="polymarket/gate-monitor" element={<GatePipelineMonitor />} />
-            <Route path="polymarket/data-health" element={<DataHealth />} />
-            <Route path="polymarket/command" element={<StrategyCommand />} />
-            <Route path="polymarket/15min" element={<FifteenMinMonitor />} />
-            <Route path="signal-comparison" element={<SignalComparison />} />
-            <Route path="ops" element={<AgentOps />} />
-            <Route path="telegram" element={<Telegram />} />
+            <Route path="archive" element={<ArchiveCenter />} />
           </Route>
 
-          {/* 404 fallback */}
-          <Route path="*" element={<Navigate to="/polymarket/monitor" replace />} />
+          {/* Archive namespace — legacy Layout, each page wrapped in banner */}
+          <Route path="/archive" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+            {ARCHIVED_PAGES.map(meta => {
+              const element = wrapArchived(meta);
+              if (!element) return null;
+              const sub = meta.path.replace(/^\/archive\//, '');
+              return <Route key={meta.path} path={sub} element={element} />;
+            })}
+            {ARCHIVED_STRATEGY_FLOORS.map(meta => {
+              const sub = meta.path.replace(/^\/archive\//, '');
+              return <Route key={meta.path} path={sub} element={wrapArchivedFloor(meta)} />;
+            })}
+            {/* Execution HQ has a parameterized subroute — preserve for deep links */}
+            <Route path="execution-hq/:asset/:timeframe" element={
+              <Suspense fallback={<Loading label="Loading archived page…" />}>
+                <ArchivedPageBanner replacedBy="Dashboard">
+                  <ExecutionHQ />
+                </ArchivedPageBanner>
+              </Suspense>
+            } />
+          </Route>
+
+          {/* Redirects for bookmarked legacy URLs to the new shell or archive */}
+          <Route path="/dashboard" element={<Navigate to="/" replace />} />
+          <Route path="/paper" element={<Navigate to="/archive/paper" replace />} />
+          <Route path="/live" element={<Navigate to="/archive/live" replace />} />
+          <Route path="/v58" element={<Navigate to="/archive/v58" replace />} />
+          <Route path="/execution-hq" element={<Navigate to="/archive/execution-hq" replace />} />
+          <Route path="/playwright" element={<Navigate to="/archive/playwright" replace />} />
+          <Route path="/factory" element={<Navigate to="/archive/factory" replace />} />
+          <Route path="/windows" element={<Navigate to="/archive/windows" replace />} />
+          <Route path="/strategy" element={<Navigate to="/archive/strategy" replace />} />
+          <Route path="/timesfm" element={<Navigate to="/archive/timesfm" replace />} />
+          <Route path="/composite" element={<Navigate to="/archive/composite" replace />} />
+          <Route path="/margin" element={<Navigate to="/archive/margin" replace />} />
+          <Route path="/margin-strategies" element={<Navigate to="/archive/margin-strategies" replace />} />
+          <Route path="/positions" element={<Navigate to="/archive/positions" replace />} />
+          <Route path="/risk" element={<Navigate to="/archive/risk" replace />} />
+          <Route path="/trading-config" element={<Navigate to="/config" replace />} />
+          <Route path="/legacy-config" element={<Navigate to="/archive/legacy-config" replace />} />
+          <Route path="/setup" element={<Navigate to="/archive/setup" replace />} />
+          <Route path="/notes" element={<Navigate to="/archive/notes" replace />} />
+          <Route path="/schema" element={<Navigate to="/archive/schema" replace />} />
+          <Route path="/deployments" element={<Navigate to="/archive/deployments" replace />} />
+          <Route path="/signal-comparison" element={<Navigate to="/archive/signal-comparison" replace />} />
+          <Route path="/ops" element={<Navigate to="/archive/ops" replace />} />
+          <Route path="/telegram" element={<Navigate to="/archive/telegram" replace />} />
+          <Route path="/polymarket" element={<Navigate to="/archive/polymarket/monitor" replace />} />
+          <Route path="/polymarket/monitor" element={<Navigate to="/archive/polymarket/monitor" replace />} />
+          <Route path="/polymarket/overview" element={<Navigate to="/archive/polymarket/overview" replace />} />
+          <Route path="/polymarket/floor" element={<Navigate to="/archive/polymarket/floor" replace />} />
+          <Route path="/polymarket/evaluate" element={<Navigate to="/archive/polymarket/evaluate" replace />} />
+          <Route path="/polymarket/strategy-lab" element={<Navigate to="/archive/polymarket/strategy-lab" replace />} />
+          <Route path="/polymarket/strategy-history" element={<Navigate to="/archive/polymarket/strategy-history" replace />} />
+          <Route path="/polymarket/strategies" element={<Navigate to="/archive/polymarket/strategies" replace />} />
+          <Route path="/polymarket/gate-monitor" element={<Navigate to="/archive/polymarket/gate-monitor" replace />} />
+          <Route path="/polymarket/data-health" element={<Navigate to="/archive/polymarket/data-health" replace />} />
+          <Route path="/polymarket/command" element={<Navigate to="/archive/polymarket/command" replace />} />
+          <Route path="/polymarket/down-only" element={<Navigate to="/archive/polymarket/down-only" replace />} />
+          <Route path="/polymarket/up-asian" element={<Navigate to="/archive/polymarket/up-asian" replace />} />
+          <Route path="/polymarket/15min" element={<Navigate to="/archive/15min-monitor" replace />} />
+          <Route path="/data/v1" element={<Navigate to="/archive/data/v1" replace />} />
+          <Route path="/data/v2" element={<Navigate to="/archive/data/v2" replace />} />
+          <Route path="/data/v3" element={<Navigate to="/archive/data/v3" replace />} />
+          <Route path="/data/v4" element={<Navigate to="/archive/data/v4" replace />} />
+          <Route path="/data/assembler1" element={<Navigate to="/archive/data/assembler1" replace />} />
+
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
-      </ThemeProvider>
     </BrowserRouter>
-    </AppErrorBoundary>
   );
 }
