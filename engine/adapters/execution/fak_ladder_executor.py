@@ -44,6 +44,15 @@ DEFAULT_PI_BONUS = 0.0314
 # the legacy Phase-3 fallback for back-compat / experimentation.
 _DEFAULT_ENABLE_GTC_FALLBACK = False
 
+# Phase-2 RFQ gate. Enabled by default — RFQ (market-maker fill) is the
+# intended fallback when FAK ladder exhausts. Disable via
+# FAK_LADDER_ENABLE_RFQ=false when the RFQ endpoint is returning 404s
+# (e.g. token_id lookup breaking against the CLOB markets list) or during
+# incident investigation. With both RFQ and GTC disabled the executor
+# becomes a strict FAK-only path; windows where FAK cannot fill will
+# skip cleanly (no phantom rows, no orphan fills).
+_DEFAULT_ENABLE_RFQ = True
+
 
 class FAKLadderExecutor(OrderExecutionPort):
     """Live execution: FAK ladder -> RFQ -> GTC fallback.
@@ -62,6 +71,7 @@ class FAKLadderExecutor(OrderExecutionPort):
         gtc_poll_interval: int = DEFAULT_GTC_POLL_INTERVAL,
         gtc_max_wait: int = DEFAULT_GTC_MAX_WAIT,
         enable_gtc_fallback: Optional[bool] = None,
+        enable_rfq: Optional[bool] = None,
     ) -> None:
         self._poly = poly_client
         self._pi_bonus = pi_bonus_cents
@@ -72,10 +82,22 @@ class FAKLadderExecutor(OrderExecutionPort):
             self._enable_gtc_fallback = env in ("1", "true", "yes", "on")
         else:
             self._enable_gtc_fallback = bool(enable_gtc_fallback)
+        # RFQ is enabled by default; disable via env for incident response.
+        if enable_rfq is None:
+            env = os.environ.get("FAK_LADDER_ENABLE_RFQ", "").strip().lower()
+            # Blank / unset → default True. Explicit false/0/no/off → disabled.
+            self._enable_rfq = env not in ("0", "false", "no", "off")
+        else:
+            self._enable_rfq = bool(enable_rfq)
         if not self._enable_gtc_fallback:
             logger.info(
                 "fak_ladder.init",
                 extra={"gtc_fallback": "disabled (default; set FAK_LADDER_ENABLE_GTC=true to re-enable)"},
+            )
+        if not self._enable_rfq:
+            logger.info(
+                "fak_ladder.init",
+                extra={"rfq": "disabled (FAK_LADDER_ENABLE_RFQ=false)"},
             )
 
     async def execute_order(
@@ -142,16 +164,30 @@ class FAKLadderExecutor(OrderExecutionPort):
             )
 
         # ── Phase 2: RFQ ────────────────────────────────────────────────
-        rfq_result = await self._try_rfq(
-            token_id,
-            side,
-            stake_usd,
-            entry_cap,
-            price_floor,
-            start,
-        )
-        if rfq_result is not None:
-            return rfq_result
+        # Gate added 2026-04-17: RFQ started returning 404s with
+        # "market not found for token X" for seemingly valid token IDs,
+        # burning circuit-breaker budget (3 consecutive errors → 180s
+        # trip). Set FAK_LADDER_ENABLE_RFQ=false in CI deploy vars to
+        # skip Phase 2 entirely until the token lookup path is debugged.
+        if self._enable_rfq:
+            rfq_result = await self._try_rfq(
+                token_id,
+                side,
+                stake_usd,
+                entry_cap,
+                price_floor,
+                start,
+            )
+            if rfq_result is not None:
+                return rfq_result
+        else:
+            logger.info(
+                "fak_ladder.rfq_skipped",
+                extra={
+                    "reason": "FAK_LADDER_ENABLE_RFQ=false",
+                    "token_id": token_id[:20],
+                },
+            )
 
         # ── Phase 3: GTC ────────────────────────────────────────────────
         # Disabled by default after 2026-04-17 phantom-fill incident

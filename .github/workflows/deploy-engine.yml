@@ -273,6 +273,11 @@ jobs:
             echo "# TG Narrative V2 (plans/serialized-drifting-clover.md)"
             echo "TG_NARRATIVE_V2_ENABLED=true"
             echo "OWNER_EOA_ADDRESSES=$DEPLOY_OWNER_EOA_ADDRESSES"
+            echo ""
+            echo "# Execution ladder gates. Default RFQ on, GTC off (#228)."
+            echo "# RFQ disabled temporarily 2026-04-17 for 404 token-lookup"
+            echo "# investigation. Flip to true once fixed."
+            echo "FAK_LADDER_ENABLE_RFQ=$DEPLOY_FAK_LADDER_ENABLE_RFQ"
             echo "TIMESFM_URL=http://${DEPLOY_TIMESFM_HOST}:8080"
             echo "POLYGON_RPC_URL=https://polygon-bor-rpc.publicnode.com"
             echo "TIINGO_API_KEY=${DEPLOY_TIINGO_API_KEY}"
@@ -322,6 +327,10 @@ jobs:
           # EOAs (MetaMask / hot wallets). Blank is safe (wallet-delta fires DRIFT
           # for any outflow). Set via GitHub Actions Variables.
           DEPLOY_OWNER_EOA_ADDRESSES: ${{ vars.OWNER_EOA_ADDRESSES || '' }}
+          # Execution ladder RFQ gate. Default false — disabled for 404 token-
+          # lookup investigation 2026-04-17. Flip Variable FAK_LADDER_ENABLE_RFQ
+          # to 'true' (and redeploy) once the upstream CLOB markets list is fixed.
+          DEPLOY_FAK_LADDER_ENABLE_RFQ: ${{ vars.FAK_LADDER_ENABLE_RFQ || 'false' }}
 
       - name: Validate critical .env vars on host
         run: |
