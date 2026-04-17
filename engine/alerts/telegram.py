@@ -382,7 +382,17 @@ class TelegramAlerter:
             BuildResolvedAlertUseCase,
         )
 
-        predicted = "UP" if order.direction == "YES" else "DOWN"
+        # Accept both the Polymarket side naming (YES/NO) and the
+        # domain direction (UP/DOWN). Resolved-order direction has been
+        # observed as both in different code paths; upstream SOT plumbing
+        # currently picks whichever the underlying trade row stored.
+        _d = str(getattr(order, "direction", "") or "").upper()
+        if _d in ("UP", "YES"):
+            predicted = "UP"
+        elif _d in ("DOWN", "NO"):
+            predicted = "DOWN"
+        else:
+            predicted = "UP"  # fallback; rendered with "?" if unknown upstream
         actual = "UP" if close_price > open_price else "DOWN"
         try:
             pnl = Decimal(str(order.pnl_usd or 0))
@@ -668,6 +678,22 @@ class TelegramAlerter:
             auto_redeemed_wins = 0
             worthless_tokens = 0
 
+            # Normalize Polymarket YES/NO side naming to UP/DOWN so the
+            # MatchedTradeRow validator accepts them. Polymarket binary
+            # markets store the traded side as YES / NO, but the domain
+            # value object is UP / DOWN (market-resolution semantics).
+            # 2026-04-17 bug: v2 reconcile path threw
+            # `direction must be UP or DOWN, got 'YES'` on every resolved
+            # live trade, silently dropping the richer v2 summary; legacy
+            # batched *Reconcile pass* kept firing via the raw path.
+            def _norm_dir(raw) -> str:
+                s = str(raw or "").upper()
+                if s in ("UP", "YES"):
+                    return "UP"
+                if s in ("DOWN", "NO"):
+                    return "DOWN"
+                return "UP"  # fallback — builder will still accept it
+
             for a in live_alerts or []:
                 if a.get("matched"):
                     matched.append(
@@ -676,7 +702,7 @@ class TelegramAlerter:
                             strategy_id=str(a.get("strategy") or "unknown"),
                             order_id=a.get("order_id"),
                             outcome=str(a.get("outcome") or "WIN"),
-                            direction=str(a.get("direction") or "UP"),
+                            direction=_norm_dir(a.get("direction")),
                             entry_price_cents=float(a.get("entry_price") or 0.0),
                             pnl_usdc=Decimal(str(a.get("pnl") or 0)),
                             cost_usdc=Decimal(str(a.get("cost") or 0)),
@@ -699,7 +725,7 @@ class TelegramAlerter:
                         strategy_id=str(a.get("strategy") or "unknown"),
                         order_id=None,
                         outcome=str(a.get("outcome") or "WIN"),
-                        direction=str(a.get("direction") or "UP"),
+                        direction=_norm_dir(a.get("direction")),
                         entry_price_cents=0.0,
                         pnl_usdc=Decimal(str(a.get("pnl") or 0)),
                         cost_usdc=Decimal(str(a.get("stake") or 0)),
