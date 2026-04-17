@@ -103,6 +103,26 @@ class CompositionRoot:
             openrouter_api_key=settings.openrouter_api_key,
         )
 
+        # ── TG Narrative V2 (Phase A-K refactor) ───────────────────────────────
+        # Always constructed so callers have a stable reference; activation is
+        # gated by ``settings.tg_narrative_v2_enabled`` inside the publisher.
+        # See plans/serialized-drifting-clover.md.
+        self._narrative_v2_enabled: bool = bool(
+            getattr(settings, "tg_narrative_v2_enabled", False)
+        )
+        self._owner_eoa_addresses: frozenset[str] = frozenset(
+            a.strip().lower()
+            for a in (getattr(settings, "owner_eoa_addresses", "") or "").split(",")
+            if a.strip()
+        )
+        self._alert_renderer = None        # type: ignore[var-annotated]
+        self._alert_sender = None          # type: ignore[var-annotated]
+        self._shadow_decision_repo = None  # type: ignore[var-annotated]
+        self._tally_repo = None            # type: ignore[var-annotated]
+        self._onchain_query = None         # type: ignore[var-annotated]
+        self._publish_alert = None         # type: ignore[var-annotated]
+        self._init_narrative_v2()
+
         # ── Signal Processors ──────────────────────────────────────────────────
         # VPIN (callback patched by EngineRuntime)
         self._vpin_calc = VPINCalculator(
@@ -642,3 +662,73 @@ class CompositionRoot:
             poly_client=self._poly_client,
             settings=settings,
         )
+
+    # =================================================================
+    # TG Narrative V2 wiring (Phase E)
+    # See plans/serialized-drifting-clover.md.
+    # =================================================================
+
+    def _init_narrative_v2(self) -> None:
+        """Construct the Phase A-K narrative pipeline.
+
+        Always builds the wiring; the flag ``tg_narrative_v2_enabled`` only
+        affects whether call sites *route through* the new publisher.
+        Default adapters are in-memory fallbacks so the engine can boot
+        without DB migrations or a Polygonscan key.
+        """
+        from adapters.alert.telegram_renderer import TelegramRenderer
+        from adapters.alert.telegram_sender import TelegramSender
+        from adapters.onchain.in_memory_onchain import InMemoryOnChainQuery
+        from adapters.persistence.in_memory_shadow_decision_repo import (
+            InMemoryShadowDecisionRepository,
+        )
+        from adapters.persistence.in_memory_tally_repo import InMemoryTallyRepo
+        from use_cases.alerts import PublishAlertUseCase
+
+        self._alert_renderer = TelegramRenderer()
+        self._alert_sender = TelegramSender(self._alerter)
+        # Start with in-memory repos; swap for PG in Phase I after migration runs.
+        self._shadow_decision_repo = InMemoryShadowDecisionRepository()
+        self._tally_repo = InMemoryTallyRepo()
+        self._onchain_query = InMemoryOnChainQuery()
+        self._publish_alert = PublishAlertUseCase(
+            renderer=self._alert_renderer,
+            alerter=self._alert_sender,
+        )
+
+    # -- Accessors for EngineRuntime + use-case builders -------------------
+
+    @property
+    def publish_alert(self):
+        """Phase A-K narrative publisher. None-safe: always non-None."""
+        return self._publish_alert
+
+    @property
+    def alert_renderer(self):
+        return self._alert_renderer
+
+    @property
+    def alert_sender(self):
+        return self._alert_sender
+
+    @property
+    def shadow_decision_repo(self):
+        return self._shadow_decision_repo
+
+    @property
+    def tally_repo(self):
+        return self._tally_repo
+
+    @property
+    def onchain_query(self):
+        return self._onchain_query
+
+    @property
+    def narrative_v2_enabled(self) -> bool:
+        """Feature flag — True if call sites should route through v2."""
+        return self._narrative_v2_enabled
+
+    @property
+    def owner_eoa_addresses(self) -> frozenset[str]:
+        """Lowercased allowlist for wallet-delta classifier."""
+        return self._owner_eoa_addresses

@@ -68,6 +68,22 @@ class Settings(BaseSettings):
     telegram_alerts_live: bool = Field(
         default=False, description="Send Telegram alerts for live trades"
     )
+    tg_narrative_v2_enabled: bool = Field(
+        default=False,
+        description=(
+            "Route alerts through the Phase A-K narrative refactor pipeline "
+            "(domain payloads → TelegramRenderer → TelegramSender). When False, "
+            "the legacy send_* methods run unchanged."
+        ),
+    )
+    owner_eoa_addresses: str = Field(
+        default="",
+        description=(
+            "Comma-separated allowlist of user-owned EOAs (MetaMask, hot wallets). "
+            "Used by the wallet-delta classifier to distinguish manual withdrawals "
+            "from unexpected outflows. Case-insensitive."
+        ),
+    )
 
     # Risk / Trading
     starting_bankroll: float = Field(
