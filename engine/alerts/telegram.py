@@ -439,6 +439,92 @@ class TelegramAlerter:
             return
         await self._narrative_v2_publish.execute(payload)
 
+    # ── Per-trade resolved card (called from reconciler) ─────────────────────
+
+    async def emit_per_trade_resolved_v2(
+        self,
+        *,
+        direction: str,
+        outcome: str,
+        pnl: float,
+        entry_price: float,
+        cost: float,
+        window_ts: int,
+        strategy: str,
+        order_id: str | None = None,
+        timeframe: str = "5m",
+        asset: str = "BTC",
+    ) -> None:
+        """Emit a rich individual v2 resolved card for a single trade.
+
+        Called from ReconcilePositionsUseCase._notify_resolution so each
+        resolved trade gets its own four-quadrant card (in addition to
+        the batched reconcile-pass summary).
+
+        Derives actual_direction from (predicted + outcome) since the
+        reconciler doesn't have BTC open/close prices.
+        """
+        if not self._v2_ready():
+            return
+
+        from decimal import Decimal
+        from use_cases.alerts.build_resolved_alert import (
+            BuildResolvedAlertInput,
+            BuildResolvedAlertUseCase,
+        )
+
+        # Normalize YES/NO → UP/DOWN
+        d = str(direction or "").upper()
+        if d in ("UP", "YES"):
+            predicted = "UP"
+        elif d in ("DOWN", "NO"):
+            predicted = "DOWN"
+        else:
+            predicted = "UP"
+
+        # Derive actual direction from (predicted + outcome)
+        if outcome == "WIN":
+            actual = predicted
+        else:
+            actual = "DOWN" if predicted == "UP" else "UP"
+
+        # Synthetic BTC prices that produce correct actual_direction
+        open_price = 100_000.0
+        close_price = 100_001.0 if actual == "UP" else 99_999.0
+
+        duration = 300 if timeframe == "5m" else 900
+
+        try:
+            builder = BuildResolvedAlertUseCase(
+                tallies=self._narrative_v2_tallies,
+                clock=self._narrative_v2_clock,
+            )
+            payload = await builder.execute(
+                BuildResolvedAlertInput(
+                    timeframe=timeframe,
+                    strategy_id=strategy or "unknown",
+                    mode="LIVE" if not getattr(self, "_paper_mode", False) else "GHOST",
+                    predicted_direction=predicted,
+                    actual_direction=actual,
+                    pnl_usdc=Decimal(str(pnl)),
+                    entry_price_cents=entry_price,
+                    stake_usdc=Decimal(str(cost)),
+                    window_id=f"{asset}-{window_ts}",
+                    order_id=order_id,
+                    event_ts_unix=int(window_ts + duration),
+                    actual_open_usd=open_price,
+                    actual_close_usd=close_price,
+                )
+            )
+        except Exception as exc:
+            self._log.debug(
+                "telegram.per_trade_resolved_v2_build_failed",
+                error=str(exc)[:200],
+            )
+            return
+
+        await self._narrative_v2_publish.execute(payload)
+
     # ── G.4: send_window_report → WindowSignalPayload ───────────────────────
 
     async def _emit_narrative_v2_window_report(

@@ -284,7 +284,7 @@ class ExecuteTradeUseCase:
                     await self._window_state.clear_trade_claim(window_key)
                 except Exception:
                     pass
-            self._on_order_error()
+            await self._on_order_error()
             log.error(
                 "execute_trade.execution_error",
                 strategy=sid,
@@ -317,7 +317,7 @@ class ExecuteTradeUseCase:
                     await self._window_state.clear_trade_claim(window_key)
                 except Exception:
                     pass
-            self._on_order_error()
+            await self._on_order_error()
             log.info(
                 "execute_trade.order_not_filled",
                 strategy=sid,
@@ -525,7 +525,7 @@ class ExecuteTradeUseCase:
         """Reset consecutive error counter on success."""
         self._consecutive_errors = 0
 
-    def _on_order_error(self) -> None:
+    async def _on_order_error(self) -> None:
         """Track consecutive errors and trigger circuit breaker."""
         self._consecutive_errors += 1
         if self._consecutive_errors >= CIRCUIT_BREAKER_ERRORS:
@@ -535,6 +535,14 @@ class ExecuteTradeUseCase:
                 errors=self._consecutive_errors,
                 cooldown_s=CIRCUIT_BREAKER_COOLDOWN_S,
             )
+            try:
+                await self._alerter.send_system_alert(
+                    f"⚠️ *Circuit breaker tripped*\n"
+                    f"{self._consecutive_errors} consecutive order errors\n"
+                    f"Cooldown: {CIRCUIT_BREAKER_COOLDOWN_S}s"
+                )
+            except Exception:
+                pass  # best-effort; log.warning above is the primary signal
 
     # ─── Helpers ───────────────────────────────────────────────────────
 
