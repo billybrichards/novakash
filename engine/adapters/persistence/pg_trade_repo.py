@@ -358,7 +358,17 @@ class PgTradeRepository:
             log.warning("db.ensure_v8_trade_columns_failed", error=str(exc))
 
     async def find_by_token_id(self, token_id: str) -> Optional[dict]:
-        """Find most recent unresolved/open trade by exact token_id match."""
+        """Find most recent trade by exact token_id match.
+
+        2026-04-17 fix: previously filtered ``WHERE outcome IS NULL`` which
+        excluded trades whose outcome had already been set by the
+        CLOBReconciler startup backfill (silent UPDATE). The reconciler
+        then reported 164+ ``no_trade_match`` per hour and fired zero
+        per-trade WIN/LOSS alerts. Outcome field is now returned so the
+        caller can differentiate "first-time resolve" from
+        "already-resolved, alert-only" paths (and skip duplicate DB
+        writes / duplicate alerts via a session-level dedupe).
+        """
         if not self._pool or not token_id:
             return None
         try:
@@ -372,12 +382,15 @@ class PgTradeRepository:
                            entry_price,
                            metadata,
                            created_at,
+                           outcome,
+                           resolved_at,
+                           polymarket_order_id,
+                           polymarket_tx_hash,
                            COALESCE(metadata->>'asset', 'BTC') AS asset,
                            metadata->>'window_ts' AS window_ts,
                            COALESCE(metadata->>'token_id', metadata->>'asset', '') AS token_id
                     FROM trades
-                    WHERE outcome IS NULL
-                      AND COALESCE(metadata->>'token_id', metadata->>'asset', '') = $1
+                    WHERE COALESCE(metadata->>'token_id', metadata->>'asset', '') = $1
                     ORDER BY created_at DESC
                     LIMIT 1
                     """,
@@ -389,7 +402,10 @@ class PgTradeRepository:
             return None
 
     async def find_by_token_prefix(self, token_id: str) -> Optional[dict]:
-        """Fallback prefix match for token ids that were truncated/stored inconsistently."""
+        """Fallback prefix match for token ids that were truncated/stored inconsistently.
+
+        See ``find_by_token_id`` for the 2026-04-17 filter-removal rationale.
+        """
         if not self._pool or not token_id or len(token_id) < 12:
             return None
         try:
@@ -404,12 +420,15 @@ class PgTradeRepository:
                            entry_price,
                            metadata,
                            created_at,
+                           outcome,
+                           resolved_at,
+                           polymarket_order_id,
+                           polymarket_tx_hash,
                            COALESCE(metadata->>'asset', 'BTC') AS asset,
                            metadata->>'window_ts' AS window_ts,
                            COALESCE(metadata->>'token_id', metadata->>'asset', '') AS token_id
                     FROM trades
-                    WHERE outcome IS NULL
-                      AND COALESCE(metadata->>'token_id', metadata->>'asset', '') LIKE $1
+                    WHERE COALESCE(metadata->>'token_id', metadata->>'asset', '') LIKE $1
                     ORDER BY created_at DESC
                     LIMIT 1
                     """,
@@ -423,7 +442,14 @@ class PgTradeRepository:
             return None
 
     async def find_by_approximate_cost(self, cost: float) -> Optional[dict]:
-        """Loose fallback by trade stake when token matching fails."""
+        """Loose fallback by trade stake when token matching fails.
+
+        Keeps ``outcome IS NULL`` — cost-fallback is the weakest tier (Tier 3),
+        only reached when exact + prefix token_id matching has failed. Matching
+        already-resolved trades here would risk false positives. PR #234's
+        phantom-trade guard ALSO runs against this match, relying on the
+        ``polymarket_order_id`` + ``polymarket_tx_hash`` fields we now return.
+        """
         if not self._pool or cost <= 0:
             return None
         try:
@@ -437,6 +463,10 @@ class PgTradeRepository:
                            entry_price,
                            metadata,
                            created_at,
+                           outcome,
+                           resolved_at,
+                           polymarket_order_id,
+                           polymarket_tx_hash,
                            COALESCE(metadata->>'asset', 'BTC') AS asset,
                            metadata->>'window_ts' AS window_ts,
                            COALESCE(metadata->>'token_id', metadata->>'asset', '') AS token_id
