@@ -18,10 +18,12 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from strategies.data_surface import FullDataSurface
 
+from domain.alert_logic import score_signal_health
+from domain.alert_values import HealthStatus
 from domain.value_objects import StrategyDecision
 
 _STRATEGY_ID = "v4_fusion"
-_VERSION = "4.4.0"
+_VERSION = "4.5.0"
 
 # Conviction -> minimum distance from 0.5 (legacy path only)
 _CONVICTION_THRESHOLDS = {
@@ -75,9 +77,90 @@ _FUSION_REQUIRE_TIINGO_AGREE = (
     os.environ.get("V4_FUSION_REQUIRE_TIINGO_AGREE", "true").lower() == "true"
 )
 
+# ── v4.5.0 Feature staleness skip gate (audit #234 + new) ────────────────────
+# 7d DB-verified 2026-04-17: 21.67% of BTC 5m windows had chainlink OR tiingo
+# NULL at evaluation time. Accuracy on stale rows = 54.8% vs clean 60.1% =
+# 5.3pp gap. Using NULL-proxy semantics (no freshness_ms fields on
+# FullDataSurface yet). A source being None is taken as "missing / stale /
+# unusable". Default ON. Env toggle: V4_FUSION_SKIP_STALE_SOURCES.
+_FUSION_SKIP_STALE_SOURCES = (
+    os.environ.get("V4_FUSION_SKIP_STALE_SOURCES", "true").lower() == "true"
+)
+
+# ── v4.5.0 HealthBadge skip gate (audit task #223) ───────────────────────────
+# engine/domain/alert_logic.py::score_signal_health() returns a HealthBadge
+# with status OK / DEGRADED / UNSAFE + reasons tuple. Until this gate, the
+# badge was rendered in TG but not read by the skip path — trades fired on
+# DEGRADED inputs (see 11:57 UTC 2026-04-17 trade 0x377cbaaa: health
+# DEGRADED [sources:unknown], FAK filled, LOSS -$2.46).
+#
+# Values:
+#   "off"      — never skip on health (legacy behaviour)
+#   "unsafe"   — skip only when status == UNSAFE (2+ amber OR red flag)
+#   "degraded" — skip on DEGRADED or UNSAFE (any amber flag; strict default)
+# Default "degraded" because the 11:57 loss had DEGRADED not UNSAFE and the
+# current thin-source class of losses needs blocking.
+_FUSION_HEALTH_GATE = os.environ.get("V4_FUSION_HEALTH_GATE", "degraded").lower()
+
+# ── v4.5.0 Risk-off override hardening (audit #228 extension) ────────────────
+# The v4.3.0 override path required ONLY chainlink to agree with trade
+# direction. Today's 11:57 UTC override trade (0x377cbaaa) lost with health
+# DEGRADED [sources:unknown] — Tiingo returned None so only chainlink was
+# verifying. Override fired anyway. Under one-source confirmation an
+# override is weak. v4.5.0 also requires Tiingo to be present and
+# direction-aligned for the override to fire.
+# Disable the extra check via V4_RISK_OFF_OVERRIDE_REQUIRE_TIINGO=false.
+_RISK_OFF_OVERRIDE_REQUIRE_TIINGO = (
+    os.environ.get("V4_RISK_OFF_OVERRIDE_REQUIRE_TIINGO", "true").lower() == "true"
+)
+
 
 def _gate(name: str, passed: bool, reason: str) -> dict:
     return {"gate": name, "passed": passed, "reason": reason}
+
+
+def _sources_agree_surface(surface: "FullDataSurface") -> Optional[bool]:
+    """Return True/False if chainlink + tiingo agree, None if either missing.
+
+    Used for HealthBadge computation. Only uses chainlink + tiingo (the
+    direction-agreement sources the strategy-level gates actually care about).
+    Binance is primary price feed, not used for direction consensus at this
+    layer.
+    """
+    cl = surface.delta_chainlink
+    ti = surface.delta_tiingo
+    if cl is None or ti is None:
+        return None
+    cl_sign = 1 if cl > 0 else (-1 if cl < 0 else 0)
+    ti_sign = 1 if ti > 0 else (-1 if ti < 0 else 0)
+    return cl_sign == ti_sign
+
+
+def _compute_health_badge(surface: "FullDataSurface", distance: float,
+                          direction: Optional[str],
+                          risk_off_override_active: bool):
+    """Compute HealthBadge from surface inputs for gating.
+
+    Inlined rather than threaded through because the DataSurfaceManager
+    does not currently build HealthBadge objects. Inputs match
+    score_signal_health's signature.
+    """
+    # chainlink feed age isn't on the surface yet (would require freshness
+    # fields — audit #234 phase 2). Pass None so feed-staleness dim falls
+    # through rather than falsely green.
+    confidence_label = surface.v4_conviction if surface.v4_conviction else None
+    eval_band_in_optimal = (surface.poly_timing == "optimal")
+    return score_signal_health(
+        vpin=surface.vpin,
+        p_up=(0.5 + distance if direction == "UP"
+              else (0.5 - distance if direction == "DOWN" else None)),
+        p_up_distance=distance,
+        sources_agree=_sources_agree_surface(surface),
+        confidence_label=confidence_label,
+        confidence_override_active=risk_off_override_active,
+        eval_band_in_optimal=eval_band_in_optimal,
+        chainlink_feed_age_s=None,
+    )
 
 
 def _try_risk_off_override(
@@ -133,6 +216,33 @@ def _try_risk_off_override(
             )
         )
         return False
+
+    # v4.5.0: override hardening — also require Tiingo agreement. Under
+    # one-source confirmation an override is weak: today's 11:57 UTC LOSS
+    # (order 0x377cbaaa) was an override-path trade with Tiingo None and
+    # only chainlink verifying. Require both if the env flag is on.
+    if _RISK_OFF_OVERRIDE_REQUIRE_TIINGO:
+        ti_delta = surface.delta_tiingo
+        if ti_delta is None:
+            gates.append(
+                _gate(
+                    "regime_risk_off_override",
+                    False,
+                    "tiingo unavailable — override requires both sources",
+                )
+            )
+            return False
+        ti_direction = "UP" if ti_delta > 0 else "DOWN"
+        if ti_direction != direction:
+            gates.append(
+                _gate(
+                    "regime_risk_off_override",
+                    False,
+                    f"tiingo={ti_direction} disagrees with trade={direction}",
+                )
+            )
+            return False
+
     gates.append(
         _gate(
             "regime_risk_off_override",
@@ -140,7 +250,7 @@ def _try_risk_off_override(
             (
                 f"risk_off overridden: dist={distance:.3f} "
                 f">= {_RISK_OFF_OVERRIDE_DIST_MIN:.2f}, "
-                f"chainlink={cl_direction} aligns with trade={direction}"
+                f"chainlink={cl_direction} + tiingo aligns with trade={direction}"
             ),
         )
     )
@@ -223,6 +333,30 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
         gates.append(
             _gate("calm_regime", True, f"regime={vpin_regime} tradeable")
         )
+
+    # v4.5.0: Feature staleness skip (NULL-proxy, audit #234). 7d data 2026-
+    # 04-17: 21.67% of BTC 5m decisions had chainlink OR tiingo NULL; WR on
+    # those rows 54.8% vs clean 60.1% = 5.3pp worse. None = stale/missing for
+    # gate purposes. Evaluated BEFORE expensive gates.
+    if _FUSION_SKIP_STALE_SOURCES:
+        missing_sources = []
+        if surface.delta_chainlink is None:
+            missing_sources.append("chainlink")
+        if surface.delta_tiingo is None:
+            missing_sources.append("tiingo")
+        if missing_sources:
+            gates.append(
+                _gate(
+                    "feature_staleness",
+                    False,
+                    f"sources_missing: {','.join(missing_sources)}",
+                )
+            )
+            return _skip(
+                f"feature_stale: {','.join(missing_sources)} missing at eval",
+                gates,
+            )
+        gates.append(_gate("feature_staleness", True, "chainlink + tiingo present"))
 
     # Hard skip if < _MIN_OFFSET_SEC left (v4.3.0: default T-45, was T-70).
     # Real fill latency is ~600ms FOK + same-region network; T-45 gives ~42s
@@ -374,6 +508,41 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
                 gates,
             )
         gates.append(_gate("tiingo_agreement", True, "Tiingo agrees"))
+
+    # v4.5.0: HealthBadge skip gate (audit task #223). Default "degraded"
+    # because today's 11:57 UTC LOSS fired at DEGRADED [sources:unknown].
+    # "off"      — never skip on health
+    # "unsafe"   — skip only UNSAFE
+    # "degraded" — skip DEGRADED or UNSAFE (strict)
+    if _FUSION_HEALTH_GATE != "off":
+        health = _compute_health_badge(
+            surface, distance, direction, risk_off_overridden,
+        )
+        block_on = {
+            "unsafe": {HealthStatus.UNSAFE},
+            "degraded": {HealthStatus.DEGRADED, HealthStatus.UNSAFE},
+        }.get(_FUSION_HEALTH_GATE, set())
+        if health.status in block_on:
+            gates.append(
+                _gate(
+                    "health_badge",
+                    False,
+                    f"status={health.status.value} reasons={','.join(health.reasons)}",
+                )
+            )
+            return _skip(
+                f"health_{health.status.value.lower()}: "
+                f"{','.join(health.reasons) if health.reasons else 'unspecified'}",
+                gates,
+            )
+        gates.append(
+            _gate(
+                "health_badge",
+                True,
+                f"status={health.status.value} "
+                f"reasons={','.join(health.reasons) if health.reasons else 'clean'}",
+            )
+        )
 
     entry_reason_prefix = "polymarket_override_" if risk_off_overridden else "polymarket_"
     return StrategyDecision(

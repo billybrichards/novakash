@@ -23,7 +23,11 @@ def _make_surface(**overrides) -> FullDataSurface:
         current_price=84500.0, open_price=84000.0,
         delta_binance=0.005, delta_tiingo=0.004, delta_chainlink=0.005,
         delta_pct=0.004, delta_source="tiingo_rest_candle",
-        vpin=0.45, regime="NORMAL", twap_delta=0.003,
+        # v4.5.0: bump default vpin into the healthy band (0.50-0.85) so the
+        # HealthBadge gate doesn't flag every test surface as DEGRADED via
+        # the "vpin:low" amber. Existing tests that want to test vpin=0.45
+        # behaviour should override explicitly.
+        vpin=0.55, regime="NORMAL", twap_delta=0.003,
         v2_probability_up=0.38, v2_probability_raw=0.36,
         v2_quantiles_p10=None, v2_quantiles_p50=None, v2_quantiles_p90=None,
         v3_5m_composite=None, v3_15m_composite=None, v3_1h_composite=None,
@@ -414,8 +418,23 @@ class TestV4Fusion:
             for g in gates
         )
 
-    def test_tiingo_unavailable_passes_gate(self, registry):
-        """Missing Tiingo delta → pass the gate with 'tiingo_unavailable'."""
+    def test_tiingo_unavailable_passes_gate(self, registry, monkeypatch):
+        """With staleness + health gates OFF: missing Tiingo → passes the
+        tiingo_agreement gate with 'tiingo_unavailable' (v4.4.0 behavior).
+
+        v4.5.0: both the staleness gate (fires first when tiingo=None) and
+        the health gate (sources:unknown → DEGRADED) would otherwise block.
+        This test disables both to target tiingo_agreement behavior only.
+        See `test_staleness_tiingo_missing_skips` for the v4.5.0 default.
+        """
+        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
+        monkeypatch.setitem(
+            hook_fn.__globals__, "_FUSION_SKIP_STALE_SOURCES", False
+        )
+        monkeypatch.setitem(
+            hook_fn.__globals__, "_FUSION_HEALTH_GATE", "off"
+        )
+
         surface = _make_surface(
             poly_direction="DOWN", poly_trade_advised=True,
             poly_confidence=0.38, poly_confidence_distance=0.12,
@@ -435,13 +454,23 @@ class TestV4Fusion:
         )
 
     def test_tiingo_gate_disabled_via_env(self, registry, monkeypatch):
-        """V4_FUSION_REQUIRE_TIINGO_AGREE=false bypasses the Tiingo check."""
+        """V4_FUSION_REQUIRE_TIINGO_AGREE=false bypasses the Tiingo check.
+
+        Disables health gate too — the test surface has chainlink and tiingo
+        disagreeing which otherwise trips `sources:mixed` amber → DEGRADED
+        → health_badge gate blocks. This test targets the tiingo_agreement
+        disable behavior specifically.
+        """
         monkeypatch.setenv("V4_FUSION_REQUIRE_TIINGO_AGREE", "false")
         # Hook modules are loaded via importlib without registering in
         # sys.modules, so patch via the function's __globals__ with setitem.
         hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
         monkeypatch.setitem(
             hook_fn.__globals__, "_FUSION_REQUIRE_TIINGO_AGREE", False
+        )
+        # v4.5.0: disable health gate so sources_mixed DEGRADED doesn't block
+        monkeypatch.setitem(
+            hook_fn.__globals__, "_FUSION_HEALTH_GATE", "off"
         )
 
         # Tiingo would disagree if gate were on
@@ -463,6 +492,186 @@ class TestV4Fusion:
             and "tiingo_gate_disabled_by_env" in g["reason"]
             for g in gates
         )
+
+    # ─── v4.5.0: staleness + HealthBadge + override-hardening gates ──────────
+
+    def test_staleness_tiingo_missing_skips(self, registry):
+        """V4_FUSION_SKIP_STALE_SOURCES default true — tiingo None → SKIP."""
+        surface = _make_surface(
+            poly_direction="DOWN", poly_trade_advised=True,
+            poly_confidence=0.38, poly_confidence_distance=0.12,
+            poly_timing="optimal",
+            delta_chainlink=-0.005, delta_tiingo=None,
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "SKIP"
+        assert "feature_stale" in decision.skip_reason
+        assert "tiingo" in decision.skip_reason
+
+    def test_staleness_chainlink_missing_skips(self, registry):
+        """Chainlink None → SKIP with feature_stale reason."""
+        surface = _make_surface(
+            poly_direction="DOWN", poly_trade_advised=True,
+            poly_confidence_distance=0.12, poly_timing="optimal",
+            delta_chainlink=None, delta_tiingo=-0.004,
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "SKIP"
+        assert "feature_stale" in decision.skip_reason
+        assert "chainlink" in decision.skip_reason
+
+    def test_staleness_gate_disabled_via_env(self, registry, monkeypatch):
+        """V4_FUSION_SKIP_STALE_SOURCES=false lets stale sources through."""
+        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
+        monkeypatch.setitem(
+            hook_fn.__globals__, "_FUSION_SKIP_STALE_SOURCES", False
+        )
+        # Also disable health gate — chainlink+tiingo None → sources_unknown
+        # would DEGRADE the badge and block via health gate instead.
+        monkeypatch.setitem(
+            hook_fn.__globals__, "_FUSION_HEALTH_GATE", "off"
+        )
+        surface = _make_surface(
+            poly_direction="DOWN", poly_trade_advised=True,
+            poly_confidence_distance=0.12, poly_timing="optimal",
+            delta_chainlink=-0.005, delta_tiingo=None,
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "TRADE"
+        gates = decision.metadata.get("gate_results") or []
+        # staleness gate should not appear as a check when disabled (early return)
+        assert not any(g["gate"] == "feature_staleness" for g in gates)
+
+    def test_health_badge_degraded_blocks_default(self, registry):
+        """Default V4_FUSION_HEALTH_GATE=degraded blocks when a single amber
+        flag fires. VPIN<0.40 trips 'vpin:low' → DEGRADED → SKIP."""
+        surface = _make_surface(
+            poly_direction="DOWN", poly_trade_advised=True,
+            poly_confidence_distance=0.12, poly_timing="optimal",
+            delta_chainlink=-0.005, delta_tiingo=-0.004,
+            vpin=0.30,  # below healthy band → amber vpin:low
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "SKIP"
+        assert "health_degraded" in decision.skip_reason
+        assert "vpin:low" in decision.skip_reason
+
+    def test_health_badge_unsafe_mode_allows_degraded(self, registry, monkeypatch):
+        """V4_FUSION_HEALTH_GATE=unsafe only blocks UNSAFE, allows DEGRADED."""
+        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
+        monkeypatch.setitem(
+            hook_fn.__globals__, "_FUSION_HEALTH_GATE", "unsafe"
+        )
+        surface = _make_surface(
+            poly_direction="DOWN", poly_trade_advised=True,
+            poly_confidence_distance=0.12, poly_timing="optimal",
+            delta_chainlink=-0.005, delta_tiingo=-0.004,
+            vpin=0.30,  # DEGRADED in degraded-mode but NOT UNSAFE
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "TRADE"
+
+    def test_health_badge_off_ignores_all(self, registry, monkeypatch):
+        """V4_FUSION_HEALTH_GATE=off never blocks."""
+        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
+        monkeypatch.setitem(
+            hook_fn.__globals__, "_FUSION_HEALTH_GATE", "off"
+        )
+        surface = _make_surface(
+            poly_direction="DOWN", poly_trade_advised=True,
+            poly_confidence_distance=0.12, poly_timing="optimal",
+            delta_chainlink=-0.005, delta_tiingo=-0.004,
+            vpin=0.30,
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "TRADE"
+        gates = decision.metadata.get("gate_results") or []
+        assert not any(g["gate"] == "health_badge" for g in gates)
+
+    def test_override_requires_tiingo_when_enabled(self, registry):
+        """Risk-off override hardening: tiingo missing → override rejected."""
+        surface = _make_surface(
+            eval_offset=120,
+            poly_direction="UP", poly_trade_advised=False,  # sister veto
+            poly_confidence=0.72, poly_confidence_distance=0.22,  # HIGH
+            poly_timing="optimal",
+            poly_reason="regime_risk_off_skip",
+            delta_chainlink=0.005,  # agrees UP
+            delta_tiingo=None,  # but tiingo missing
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        # Staleness gate catches this first actually (tiingo None). Even
+        # with staleness off, override would fail on the require-tiingo
+        # check. Confirmed via the explicit test below.
+        assert decision.action == "SKIP"
+
+    def test_override_rejects_on_tiingo_disagreement(self, registry, monkeypatch):
+        """Override hardening: chainlink agrees UP, tiingo disagrees DOWN
+        → override rejected even with HIGH conviction."""
+        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
+        # Disable staleness + health gate so test targets the override
+        # require-tiingo check specifically. Both tiingo & chainlink
+        # present, both disagree — sources_agree False → DEGRADED otherwise.
+        monkeypatch.setitem(hook_fn.__globals__, "_FUSION_SKIP_STALE_SOURCES", False)
+        monkeypatch.setitem(hook_fn.__globals__, "_FUSION_HEALTH_GATE", "off")
+        surface = _make_surface(
+            eval_offset=120,
+            poly_direction="UP", poly_trade_advised=False,  # sister veto
+            poly_confidence=0.72, poly_confidence_distance=0.22,  # HIGH
+            poly_timing="optimal",
+            poly_reason="regime_risk_off_skip",
+            delta_chainlink=0.005,  # agrees UP
+            delta_tiingo=-0.004,    # disagrees DOWN
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "SKIP"
+        gates = decision.metadata.get("gate_results") or []
+        assert any(
+            g["gate"] == "regime_risk_off_override"
+            and not g["passed"]
+            and "tiingo" in g["reason"].lower()
+            for g in gates
+        )
+
+    def test_override_hardening_disabled_via_env(self, registry, monkeypatch):
+        """V4_RISK_OFF_OVERRIDE_REQUIRE_TIINGO=false falls back to v4.3.0
+        single-source override behaviour (chainlink only)."""
+        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
+        monkeypatch.setitem(
+            hook_fn.__globals__, "_RISK_OFF_OVERRIDE_REQUIRE_TIINGO", False
+        )
+        monkeypatch.setitem(hook_fn.__globals__, "_FUSION_SKIP_STALE_SOURCES", False)
+        monkeypatch.setitem(hook_fn.__globals__, "_FUSION_HEALTH_GATE", "off")
+        surface = _make_surface(
+            eval_offset=120,
+            poly_direction="UP", poly_trade_advised=False,
+            poly_confidence=0.72, poly_confidence_distance=0.22,
+            poly_timing="optimal",
+            poly_reason="regime_risk_off_skip",
+            delta_chainlink=0.005,  # agrees UP
+            delta_tiingo=None,  # missing but should not block when hardening off
+        )
+        decision = registry._evaluate_one(
+            "v4_fusion", registry.configs["v4_fusion"], surface
+        )
+        assert decision.action == "TRADE"
+        assert decision.metadata.get("risk_off_overridden") is True
 
 
 class TestV10Gate:
