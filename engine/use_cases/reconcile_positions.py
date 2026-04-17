@@ -357,6 +357,47 @@ class ReconcilePositionsUseCase:
                 position.cost,
             )
             if match:
+                # Phantom-trade guard (2026-04-17 incident #4881). The
+                # cost-fallback match runs AFTER exact + prefix token_id
+                # tiers have failed, meaning the on-chain position cannot
+                # be tied to a local trade via its actual identifier. In
+                # the #4881 incident, this tier fake-resolved trades whose
+                # orders were never placed on-chain (synthetic order_ids
+                # from a stale paper-mode polymarket_client after a mode
+                # switch) by matching them to unrelated on-chain positions
+                # that happened to have a similar cost basis.
+                #
+                # Safety: refuse the match when the local trade has NO
+                # on-chain evidence. A trade with no polymarket_tx_hash
+                # AND a paper-prefixed / synthetic polymarket_order_id
+                # CANNOT have produced this on-chain position. Return
+                # None so the position is handled by a later sweep that
+                # knows to mark the trade ``unreconciled_no_onchain``.
+                tx_hash = (match.get("polymarket_tx_hash") or "").strip()
+                order_id = (match.get("polymarket_order_id") or "").strip()
+                is_synthetic = (
+                    not order_id
+                    or order_id.startswith("paper-")
+                    or order_id.startswith("fak-")
+                    or order_id.startswith("fok-")
+                    or order_id.startswith("gtc-")
+                )
+                if not tx_hash and is_synthetic:
+                    logger.warning(
+                        "reconciler.cost_fallback_rejected",
+                        extra={
+                            "trade_id": match.get("id"),
+                            "cost": f"${position.cost:.2f}",
+                            "condition_id": position.condition_id[:20],
+                            "reason": (
+                                "no_onchain_evidence: trade has no "
+                                "polymarket_tx_hash and order_id is "
+                                "synthetic; refusing to cost-fallback "
+                                "match against unrelated on-chain position"
+                            ),
+                        },
+                    )
+                    return None, None
                 logger.info(
                     "reconciler.cost_fallback_match",
                     extra={

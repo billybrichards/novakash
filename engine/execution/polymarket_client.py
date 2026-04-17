@@ -135,6 +135,14 @@ class PolymarketClient:
 
         self._log = logger.bind(component="polymarket_client", paper_mode=paper_mode)
 
+        # Phantom-trade fix (2026-04-17 incident #4881): mode_switch must
+        # force reconnect + rebind the structured logger so every subsequent
+        # log line and code branch reflects the current mode. Historical bug:
+        # ``self.paper_mode = False`` mutation left ``_log`` bound to the
+        # initial value, and left ``_clob_client`` pointing at the read-only
+        # paper client. ``set_paper_mode()`` is the sole sanctioned way to
+        # flip live/paper at runtime.
+
         # Safety check: refuse to construct in live mode without explicit opt-in
         if not paper_mode:
             live_enabled = os.environ.get("LIVE_TRADING_ENABLED", "").strip().lower()
@@ -197,6 +205,39 @@ class PolymarketClient:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    async def set_paper_mode(self, paper_mode: bool) -> None:
+        """Atomically flip paper/live at runtime, rebinding internal state.
+
+        Historical (2026-04-17 incident #4881): mutating ``self.paper_mode``
+        directly left ``self._log`` bound to the stale value AND left
+        ``self._clob_client`` pointing at the paper-mode (read-only) client.
+        Downstream code then submitted "live" orders against a read-only
+        client, got no fills, but saw synthetic order_ids — phantom trades.
+
+        This method:
+          - flips the mode flag,
+          - rebinds the structured logger so every subsequent log line
+            reports the correct mode,
+          - invalidates ``_clob_client`` so the next ``connect()`` re-builds
+            it with the right auth and credentials.
+
+        Caller is responsible for invoking ``await connect()`` after this
+        returns; ``mode_switch`` in ``infrastructure/runtime.py`` now does
+        exactly that before any call that requires authenticated endpoints.
+        """
+        old_mode = self.paper_mode
+        self.paper_mode = bool(paper_mode)
+        self._log = logger.bind(
+            component="polymarket_client", paper_mode=self.paper_mode
+        )
+        self._clob_client = None   # force re-init on next connect()
+        self._live_first_trade_warned = False
+        self._log.info(
+            "polymarket_client.mode_switched",
+            old_paper_mode=old_mode,
+            new_paper_mode=self.paper_mode,
+        )
 
     async def connect(self) -> None:
         """Initialise the CLOB client connection.
@@ -838,6 +879,20 @@ class PolymarketClient:
 
         if not self._clob_client:
             raise RuntimeError("CLOB client not connected — call connect() first")
+
+        # Phantom-trade guard (2026-04-17 incident #4881). If paper_mode is
+        # False but the underlying CLOB client was initialised as read-only
+        # (paper mode), signing fails silently and synthetic order_ids leak
+        # into the trade record. After ``set_paper_mode(False)`` the caller
+        # must call ``connect()`` to re-build ``_clob_client`` with creds;
+        # this check enforces that. ``creds`` attr exists only on the live
+        # authenticated ClobClient path.
+        if not getattr(self._clob_client, "creds", None):
+            raise RuntimeError(
+                "CLOB client has no auth creds — did you call connect() after "
+                "set_paper_mode(False)? Refusing to submit a live order against "
+                "a read-only (paper-mode) client."
+            )
 
         stake_usd = price * size
         if stake_usd > LIVE_MAX_TRADE_USD:

@@ -25,11 +25,19 @@ def _match(
     trade_id="trade-001", token_id="tok-123456789012345",
     stake_usd=5.0, entry_price=0.50, entry_reason="VPIN gate pass",
     asset="BTC", window_ts=1700000000,
+    polymarket_order_id="0xabcdef0123456789",
+    polymarket_tx_hash="0x9999" * 8,
 ):
+    """Default fixture represents a REAL trade: non-synthetic order_id +
+    on-chain tx_hash. Tests that exercise the phantom-trade guard can
+    override these to empty/synthetic values to simulate the failure mode.
+    """
     return {
         "id": trade_id, "token_id": token_id, "stake_usd": stake_usd,
         "entry_price": entry_price, "entry_reason": entry_reason,
         "asset": asset, "window_ts": window_ts,
+        "polymarket_order_id": polymarket_order_id,
+        "polymarket_tx_hash": polymarket_tx_hash,
     }
 
 
@@ -105,6 +113,90 @@ async def test_cost_fallback_match():
     assert result is not None
     assert result.match_method == "cost_fallback"
     assert result.matched_trade_id == "cost-001"
+
+
+# Phantom-trade guard (incident #4881, 2026-04-17). The cost-fallback tier
+# must refuse to match on-chain positions against local trades that have no
+# on-chain evidence. The three tests below lock down that guard.
+
+
+@pytest.mark.asyncio
+async def test_cost_fallback_rejected_when_trade_is_phantom():
+    """Trade with no tx_hash AND synthetic/missing order_id must NOT match."""
+    p = Ports()
+    p.trade_repo.find_by_token_id.return_value = None
+    p.trade_repo.find_by_token_prefix.return_value = None
+    p.trade_repo.find_by_approximate_cost.return_value = _match(
+        trade_id="phantom-001",
+        polymarket_order_id="",           # synthetic / missing
+        polymarket_tx_hash="",             # no on-chain evidence
+    )
+
+    result = await p.uc().resolve_one(
+        _pos(token_id="unknown-token-id", cost=3.35)
+    )
+
+    assert result is None
+    p.trade_repo.resolve_trade.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cost_fallback_rejected_on_paper_order_id_prefix():
+    """Synthetic prefixes (paper-, fak-, fok-, gtc-) + null tx → reject."""
+    for synthetic_prefix in ("paper-abc", "fak-xyz", "fok-123", "gtc-def"):
+        p = Ports()
+        p.trade_repo.find_by_token_id.return_value = None
+        p.trade_repo.find_by_token_prefix.return_value = None
+        p.trade_repo.find_by_approximate_cost.return_value = _match(
+            trade_id=f"synth-{synthetic_prefix}",
+            polymarket_order_id=synthetic_prefix,
+            polymarket_tx_hash="",
+        )
+        result = await p.uc().resolve_one(_pos(token_id="other", cost=3.35))
+        assert result is None, (
+            f"Cost-fallback wrongly matched synthetic-prefix order_id "
+            f"{synthetic_prefix!r} with no tx_hash"
+        )
+
+
+@pytest.mark.asyncio
+async def test_cost_fallback_accepted_when_trade_has_real_tx_hash():
+    """Trade with a real on-chain tx_hash is a legitimate cost-fallback candidate,
+    even if the local order_id happens to look synthetic. tx_hash is the strong
+    signal — if the chain says it's real, we trust it."""
+    p = Ports()
+    p.trade_repo.find_by_token_id.return_value = None
+    p.trade_repo.find_by_token_prefix.return_value = None
+    p.trade_repo.find_by_approximate_cost.return_value = _match(
+        trade_id="real-with-tx",
+        polymarket_order_id="fak-stale",
+        polymarket_tx_hash="0x" + "ab" * 32,  # real tx
+    )
+
+    result = await p.uc().resolve_one(_pos(token_id="other", cost=4.80))
+
+    assert result is not None
+    assert result.match_method == "cost_fallback"
+    assert result.matched_trade_id == "real-with-tx"
+
+
+@pytest.mark.asyncio
+async def test_cost_fallback_accepted_when_order_id_is_real_hash():
+    """Real CLOB order_id (non-synthetic prefix) implies a real trade even
+    when tx_hash hasn't been backfilled yet — accept."""
+    p = Ports()
+    p.trade_repo.find_by_token_id.return_value = None
+    p.trade_repo.find_by_token_prefix.return_value = None
+    p.trade_repo.find_by_approximate_cost.return_value = _match(
+        trade_id="real-by-order-id",
+        polymarket_order_id="0xd445168bf9e661" + "0" * 50,
+        polymarket_tx_hash="",  # tx not backfilled yet
+    )
+
+    result = await p.uc().resolve_one(_pos(token_id="other", cost=4.80))
+
+    assert result is not None
+    assert result.match_method == "cost_fallback"
 
 
 @pytest.mark.asyncio
