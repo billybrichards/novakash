@@ -65,7 +65,7 @@ class V4SnapshotHttpAdapter(V4SnapshotPort):
     Polls /v4/snapshot on a fixed cadence and caches the latest response.
 
     Lifecycle:
-        adapter = V4SnapshotHttpAdapter(base_url="http://3.98.114.0:8080")
+        adapter = V4SnapshotHttpAdapter(base_url="http://16.52.14.182:8080")
         await adapter.connect()              # starts background poll
         snapshot = await adapter.get_latest()  # returns Optional[V4Snapshot]
         await adapter.disconnect()           # stops poll, closes session
@@ -73,7 +73,7 @@ class V4SnapshotHttpAdapter(V4SnapshotPort):
 
     def __init__(
         self,
-        base_url: str = "http://3.98.114.0:8080",
+        base_url: str = "http://16.52.14.182:8080",
         asset: str = "BTC",
         timescales: tuple[str, ...] = ("5m", "15m", "1h", "4h"),
         strategy: str = "fee_aware_15m",

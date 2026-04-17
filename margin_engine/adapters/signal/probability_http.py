@@ -55,7 +55,7 @@ class ProbabilityHttpAdapter(ProbabilityPort):
 
     def __init__(
         self,
-        base_url: str = "http://3.98.114.0:8080",
+        base_url: str = "http://16.52.14.182:8080",
         asset: str = "BTC",
         timescale: str = "15m",
         seconds_to_close: int = 480,

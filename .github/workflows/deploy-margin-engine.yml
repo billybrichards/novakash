@@ -75,6 +75,10 @@ jobs:
               fi
             }
 
+            # All signal sources point at TimesFM service (16.52.14.182)
+            set_env MARGIN_TIMESFM_WS_URL ws://16.52.14.182:8080/v3/signal
+            set_env MARGIN_PROBABILITY_HTTP_URL http://16.52.14.182:8080
+
             # v4 wiring against Montreal timesfm service
             set_env MARGIN_PAPER_MODE true
             # DQ-06: explicitly pin the paper venue to hyperliquid. The
@@ -87,7 +91,7 @@ jobs:
             # that landed in the broken branch could persist across restarts.
             set_env MARGIN_EXCHANGE_VENUE hyperliquid
             set_env MARGIN_ENGINE_USE_V4_ACTIONS true
-            set_env MARGIN_V4_SNAPSHOT_URL http://3.98.114.0:8080
+            set_env MARGIN_V4_SNAPSHOT_URL http://16.52.14.182:8080
             # Phase A.1 hotfix (2026-04-11): reverted to 15m because the
             # 5m Sequoia v5 scorer is writing constant probability_raw=0.6201
             # (stuck at p_up=0.6061) — same bug documented in PR #47 commit
