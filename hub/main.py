@@ -220,6 +220,44 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     "ON audit_tasks_dev (task_type, created_at DESC)"
                 )
             )
+            # Task #222 — strategy_decisions_resolved view.
+            #
+            # Enriches strategy_decisions with resolved-trade outcome in a
+            # single query so the FE SignalExplorer / Strategies-WR matrix
+            # can get outcome + pnl without the O(N*M) client-side cross
+            # join. Shipped as VIEW (not column) to stay clean-arch-phase-3
+            # compatible — when position_resolutions table lands the view
+            # body rewrites; zero FE change.
+            #
+            # LATERAL subquery picks the most-recently-resolved trade when
+            # an order_id has multiple rows (2-leg, multi-eval, re-fills).
+            # `CREATE OR REPLACE VIEW` is idempotent — safe on every boot.
+            # Canonical source:
+            #   hub/db/migrations/versions/20260417_02_strategy_decisions_resolved_view.sql
+            await session.execute(
+                text(
+                    """
+                    CREATE OR REPLACE VIEW strategy_decisions_resolved AS
+                    SELECT
+                        sd.id, sd.strategy_id, sd.strategy_version, sd.asset,
+                        sd.window_ts, sd.timeframe, sd.eval_offset, sd.mode,
+                        sd.action, sd.direction, sd.confidence, sd.confidence_score,
+                        sd.entry_cap, sd.collateral_pct, sd.entry_reason, sd.skip_reason,
+                        sd.executed, sd.order_id, sd.fill_price, sd.fill_size,
+                        sd.metadata_json, sd.evaluated_at,
+                        t.outcome, t.pnl_usd, t.resolved_at, t.sot_reconciliation_state
+                    FROM strategy_decisions sd
+                    LEFT JOIN LATERAL (
+                        SELECT outcome, pnl_usd, resolved_at, sot_reconciliation_state
+                        FROM trades
+                        WHERE trades.order_id = sd.order_id
+                          AND sd.order_id IS NOT NULL
+                        ORDER BY resolved_at DESC NULLS LAST, created_at DESC
+                        LIMIT 1
+                    ) t ON TRUE
+                    """
+                )
+            )
             await session.commit()
             log.info("hub.migrations_applied")
             # Ensure manual_trades table exists
