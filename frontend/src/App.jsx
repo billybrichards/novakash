@@ -9,6 +9,7 @@ import AppShell from './layouts/AppShell.jsx';
 import UnifiedDashboard from './pages/UnifiedDashboard.jsx';
 import TradesEnhanced from './pages/TradesEnhanced.jsx';
 import SignalExplorer from './pages/SignalExplorer.jsx';
+import GateTraces from './pages/GateTraces.jsx';
 import ConfigOverrides from './pages/ConfigOverrides.jsx';
 import AuditTasks from './pages/AuditTasks.jsx';
 import PnL from './pages/PnL.jsx';
@@ -127,6 +128,7 @@ export default function App() {
             <Route path="trades" element={<TradesEnhanced />} />
             <Route path="wallet" element={<Wallet />} />
             <Route path="signals" element={<SignalExplorer />} />
+            <Route path="gate-traces" element={<GateTraces />} />
             <Route path="strategies" element={<Strategies />} />
             <Route path="config" element={<ConfigOverrides />} />
             <Route path="audit" element={<AuditTasks />} />

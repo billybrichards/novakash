@@ -46,6 +46,7 @@ from api.agent_ops import router as agent_ops_router
 from api.strategy_decisions import router as strategy_decisions_router
 from api.strategies import router as strategies_router
 from api.window_traces import router as window_traces_router
+from api.gate_traces import router as gate_traces_router
 
 log = structlog.get_logger(__name__)
 
@@ -466,6 +467,8 @@ app.include_router(
 # STRATEGIES: registry listing for FE Strategies page (audit #216)
 app.include_router(strategies_router, prefix="/api", tags=["strategies"])
 app.include_router(window_traces_router, prefix="/api", tags=["window-traces"])
+# GATE-TRACES: per-gate pass/fail heatmap from gate_check_traces (audit #188)
+app.include_router(gate_traces_router, prefix="/api", tags=["gate-traces"])
 
 
 @app.get("/health", tags=["health"])

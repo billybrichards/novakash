@@ -18,8 +18,9 @@ export const NAV_SECTIONS = [
     title: 'ANALYSIS',
     color: '#06b6d4',
     items: [
-      { path: '/signals',     label: 'Signal Explorer', icon: '📡' },
-      { path: '/strategies',  label: 'Strategies',      icon: '🧬' },
+      { path: '/signals',      label: 'Signal Explorer', icon: '📡' },
+      { path: '/gate-traces',  label: 'Gate Traces',     icon: '🔬' },
+      { path: '/strategies',   label: 'Strategies',      icon: '🧬' },
     ],
   },
   {
