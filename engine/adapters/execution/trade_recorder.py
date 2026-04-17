@@ -62,6 +62,23 @@ class DBTradeRecorder(TradeRecorderPort):
             try:
                 from execution.order_manager import Order, OrderStatus
 
+                # Pull regime / conviction out of decision.metadata (registry
+                # populates them from the FullDataSurface on the TRADE path).
+                # These flow into trades.metadata JSONB so the Trades UI can
+                # surface REGIME / CONV columns per-row.
+                decision_meta = decision.metadata or {}
+                regime = decision_meta.get("regime")
+                # dedup_key uniquely identifies the (strategy, window, direction)
+                # triplet that the registry used for its in-memory dedup. Not
+                # strictly enforced in DB but useful for triage (e.g. a pair
+                # of trades with the same dedup_key indicates a re-entry bug).
+                window_ts = decision_meta.get("window_ts")
+                dedup_key = (
+                    f"{decision.strategy_id}:{window_ts}:{decision.direction}"
+                    if window_ts is not None
+                    else None
+                )
+
                 order = Order(
                     order_id=result.order_id or f"unknown-{int(time.time())}",
                     strategy=decision.strategy_id,
@@ -80,6 +97,13 @@ class DBTradeRecorder(TradeRecorderPort):
                         "direction": decision.direction,
                         "confidence": decision.confidence,
                         "confidence_score": decision.confidence_score,
+                        # `conviction` is the hub / FE name for the same
+                        # HIGH/MEDIUM/LOW/NONE band; kept as a dedicated key
+                        # so hub/api/trades.py's `_row_to_dict` can surface it
+                        # without having to know about the `confidence` alias.
+                        "conviction": decision.confidence,
+                        "regime": regime,
+                        "dedup_key": dedup_key,
                         "entry_reason": decision.entry_reason,
                         "entry_cap": decision.entry_cap,
                         "token_id": result.token_id,
