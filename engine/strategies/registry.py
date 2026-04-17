@@ -1079,6 +1079,17 @@ class StrategyRegistry:
                 "poly_direction": surface.poly_direction,
                 "poly_confidence_distance": surface.poly_confidence_distance,
                 "v2_probability_up": surface.v2_probability_up,
+                # Surfaced on the Trades UI (hub/api/trades.py
+                # `_row_to_dict` reads these from trades.metadata JSONB).
+                # v4_regime is the HMM regime (calm_trend / volatile_trend /
+                # chop / risk_off); the vol `regime` (CALM / NORMAL /
+                # TRANSITION / CASCADE) is available separately on the
+                # surface — we surface v4 because that's the one the
+                # strategy actually keys off.
+                "regime": surface.v4_regime,
+                "conviction": surface.v4_conviction,
+                "window_ts": getattr(surface, "window_ts", None)
+                or getattr(surface, "eval_window_ts", None),
             },
         )
 
