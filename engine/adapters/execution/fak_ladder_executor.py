@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import time
 from decimal import Decimal
 from typing import Any, Optional
@@ -35,6 +36,14 @@ DEFAULT_GTC_MAX_WAIT = 60
 # Pi bonus for GTC after FAK exhaustion
 DEFAULT_PI_BONUS = 0.0314
 
+# Phase-3 GTC fallback default. Disabled (False) post-2026-04-17 incident:
+# 20/20 overnight gtc_resting orders booked as RESOLVED_LOSS in trades table
+# but never matched a poly_fills row on-chain (engine_optimistic state) —
+# -$77.90 phantom loss. See Hub note 64, audit-task #218.
+# Set FAK_LADDER_ENABLE_GTC=true (case-insensitive 1/true/yes) to re-enable
+# the legacy Phase-3 fallback for back-compat / experimentation.
+_DEFAULT_ENABLE_GTC_FALLBACK = False
+
 
 class FAKLadderExecutor(OrderExecutionPort):
     """Live execution: FAK ladder -> RFQ -> GTC fallback.
@@ -52,11 +61,22 @@ class FAKLadderExecutor(OrderExecutionPort):
         pi_bonus_cents: float = DEFAULT_PI_BONUS,
         gtc_poll_interval: int = DEFAULT_GTC_POLL_INTERVAL,
         gtc_max_wait: int = DEFAULT_GTC_MAX_WAIT,
+        enable_gtc_fallback: Optional[bool] = None,
     ) -> None:
         self._poly = poly_client
         self._pi_bonus = pi_bonus_cents
         self._gtc_poll_interval = gtc_poll_interval
         self._gtc_max_wait = gtc_max_wait
+        if enable_gtc_fallback is None:
+            env = os.environ.get("FAK_LADDER_ENABLE_GTC", "").strip().lower()
+            self._enable_gtc_fallback = env in ("1", "true", "yes", "on")
+        else:
+            self._enable_gtc_fallback = bool(enable_gtc_fallback)
+        if not self._enable_gtc_fallback:
+            logger.info(
+                "fak_ladder.init",
+                extra={"gtc_fallback": "disabled (default; set FAK_LADDER_ENABLE_GTC=true to re-enable)"},
+            )
 
     async def execute_order(
         self,
@@ -134,6 +154,32 @@ class FAKLadderExecutor(OrderExecutionPort):
             return rfq_result
 
         # ── Phase 3: GTC ────────────────────────────────────────────────
+        # Disabled by default after 2026-04-17 phantom-fill incident
+        # (see Hub note 64 / audit-task #218). The GTC path can return a
+        # success=True ExecutionResult with no real on-chain fill ("gtc_resting"),
+        # which propagates as an engine_optimistic phantom trade. Cost overnight:
+        # 20/20 phantom + -$77.90 booked vs zero on-chain match.
+        if not self._enable_gtc_fallback:
+            logger.info(
+                "fak_ladder.gtc_skipped",
+                extra={
+                    "reason": "FAK_LADDER_ENABLE_GTC not set",
+                    "fak_attempts": len(fak_prices),
+                    "fak_prices": fak_prices,
+                },
+            )
+            return ExecutionResult(
+                success=False,
+                failure_reason="fak_rfq_exhausted; gtc_fallback_disabled",
+                stake_usd=stake_usd,
+                execution_mode="none",
+                fak_attempts=len(fak_prices),
+                fak_prices=fak_prices,
+                token_id=token_id,
+                execution_start=start,
+                execution_end=time.time(),
+            )
+
         gtc_result = await self._try_gtc(
             token_id,
             side,
