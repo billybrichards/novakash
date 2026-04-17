@@ -722,6 +722,11 @@ class CompositionRoot:
                 publish_uc=self._publish_alert,
                 clock=SystemClock(),
                 tallies=self._tally_repo,
+                shadow_repo=self._shadow_decision_repo,
+                onchain=self._onchain_query,
+                owner_eoas=self._owner_eoa_addresses,
+                poly_contracts=frozenset(),  # populated in Phase I hardening
+                redeemer_addr=None,
             )
         except Exception as exc:
             # Never fail composition for a dual-fire hook.
