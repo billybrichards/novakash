@@ -84,6 +84,15 @@ class ReconcilePositionsUseCase:
         self._pending_live_alerts: list[dict] = []
         self._pending_paper_alerts: list[dict] = []
 
+        # 2026-04-17 fix: session-level dedupe for per-trade WIN/LOSS alerts.
+        # The ``WHERE outcome IS NULL`` filter used to be the dedupe mechanism
+        # (a trade could only be matched once, before its outcome got set).
+        # After dropping that filter from token_id / prefix queries — required
+        # so reconciler can find trades that the CLOBReconciler startup
+        # backfill silently resolved — we need an explicit dedupe so the same
+        # trade doesn't fire an alert on every reconciler pass.
+        self._alerted_trade_ids: set[str] = set()
+
     async def execute(
         self,
         positions: list[PositionOutcome],
@@ -258,12 +267,32 @@ class ReconcilePositionsUseCase:
         else:
             trade_pnl = round(-trade_stake, 4)
 
-        await self._trade_repo.resolve_trade(
-            trade_id=trade_id,
-            outcome=outcome,
-            pnl_usd=trade_pnl,
-            status=status,
-        )
+        # 2026-04-17 fix: skip the DB resolve_trade write if the match
+        # already has an outcome set (e.g. resolved silently by the
+        # CLOBReconciler startup backfill). Otherwise we'd re-stomp
+        # resolved_at on every reconciler pass. Still fall through to
+        # the alert path so the user sees a per-trade WIN/LOSS message.
+        already_resolved = bool(match.get("outcome"))
+
+        if not already_resolved:
+            await self._trade_repo.resolve_trade(
+                trade_id=trade_id,
+                outcome=outcome,
+                pnl_usd=trade_pnl,
+                status=status,
+            )
+
+        # Session-level dedupe — only alert once per trade_id per engine
+        # session. Backfilled trades fire on their first reconciler-seen
+        # pass; steady-state trades fire on their normal first resolve.
+        trade_id_key = str(trade_id)
+        if trade_id_key in self._alerted_trade_ids:
+            logger.debug(
+                "reconciler.trade_alert_suppressed_duplicate",
+                extra={"trade_id": trade_id, "outcome": outcome},
+            )
+            return None
+        self._alerted_trade_ids.add(trade_id_key)
 
         logger.info(
             "reconciler.trade_resolved",
@@ -273,6 +302,7 @@ class ReconcilePositionsUseCase:
                 "outcome": outcome,
                 "pnl": f"${trade_pnl:.2f}",
                 "match_method": match_method,
+                "already_resolved_in_db": already_resolved,
             },
         )
 

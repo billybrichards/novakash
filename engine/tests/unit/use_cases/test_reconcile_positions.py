@@ -27,10 +27,16 @@ def _match(
     asset="BTC", window_ts=1700000000,
     polymarket_order_id="0xabcdef0123456789",
     polymarket_tx_hash="0x9999" * 8,
+    outcome=None,
+    resolved_at=None,
 ):
     """Default fixture represents a REAL trade: non-synthetic order_id +
     on-chain tx_hash. Tests that exercise the phantom-trade guard can
     override these to empty/synthetic values to simulate the failure mode.
+
+    2026-04-17: ``outcome`` / ``resolved_at`` fields added so tests can
+    simulate already-resolved (backfilled) trades — reconciler should
+    still alert for them but skip the DB resolve_trade call.
     """
     return {
         "id": trade_id, "token_id": token_id, "stake_usd": stake_usd,
@@ -38,6 +44,8 @@ def _match(
         "asset": asset, "window_ts": window_ts,
         "polymarket_order_id": polymarket_order_id,
         "polymarket_tx_hash": polymarket_tx_hash,
+        "outcome": outcome,
+        "resolved_at": resolved_at,
     }
 
 
@@ -197,6 +205,97 @@ async def test_cost_fallback_accepted_when_order_id_is_real_hash():
 
     assert result is not None
     assert result.match_method == "cost_fallback"
+
+
+# Per-trade WIN/LOSS alert fix (2026-04-17). Removed the ``WHERE outcome IS NULL``
+# filter from find_by_token_id / find_by_token_prefix so reconciler can match
+# already-resolved-by-backfill trades. Added session dedupe to avoid re-alerting
+# the same trade on every reconciler pass. Skip resolve_trade DB write if outcome
+# already set.
+
+
+@pytest.mark.asyncio
+async def test_already_resolved_trade_alerts_but_skips_db_write():
+    """Backfill set outcome silently — reconciler must still fire alert
+    but must NOT re-call resolve_trade (would stomp resolved_at)."""
+    p = Ports()
+    p.trade_repo.find_by_token_id.return_value = _match(
+        trade_id="resolved-001",
+        outcome="WIN",                        # already set by backfill
+        resolved_at="2026-04-17T10:00:00Z",
+    )
+
+    result = await p.uc().resolve_one(_pos(outcome="WIN"))
+
+    assert result is not None
+    assert result.outcome == "RESOLVED_WIN"
+    assert result.matched_trade_id == "resolved-001"
+    # Core assertion: resolve_trade NOT called because already resolved.
+    p.trade_repo.resolve_trade.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unresolved_trade_calls_resolve_trade():
+    """Normal steady-state: trade not yet resolved — must call resolve_trade."""
+    p = Ports()
+    p.trade_repo.find_by_token_id.return_value = _match(
+        trade_id="fresh-001",
+        outcome=None,
+        resolved_at=None,
+    )
+
+    result = await p.uc().resolve_one(_pos(outcome="LOSS"))
+
+    assert result is not None
+    assert result.outcome == "RESOLVED_LOSS"
+    p.trade_repo.resolve_trade.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_session_dedupe_prevents_duplicate_alerts():
+    """Same trade seen twice in one session — alert fires first time only."""
+    p = Ports()
+    p.trade_repo.find_by_token_id.return_value = _match(
+        trade_id="dupe-001",
+        outcome="WIN",
+    )
+    uc = p.uc()
+
+    result1 = await uc.resolve_one(_pos(outcome="WIN"))
+    result2 = await uc.resolve_one(_pos(outcome="WIN"))
+
+    assert result1 is not None
+    assert result1.matched_trade_id == "dupe-001"
+    # Second call returns None (suppressed as duplicate).
+    assert result2 is None
+    # Alerted-ids set holds exactly one entry — the dedupe worked.
+    assert uc._alerted_trade_ids == {"dupe-001"}
+    # And exactly one matched pending alert was queued.
+    matched_count = sum(1 for a in uc._pending_live_alerts if a.get("matched"))
+    assert matched_count == 1
+
+
+@pytest.mark.asyncio
+async def test_different_trades_both_alert_in_session():
+    """Dedupe is per-trade_id — different trades in same session both alert."""
+    p = Ports()
+    uc = p.uc()
+
+    # First trade
+    p.trade_repo.find_by_token_id.return_value = _match(
+        trade_id="trade-A", outcome="WIN",
+    )
+    await uc.resolve_one(_pos(token_id="tok-A"))
+
+    # Different trade, different token
+    p.trade_repo.find_by_token_id.return_value = _match(
+        trade_id="trade-B", outcome="LOSS",
+    )
+    await uc.resolve_one(_pos(token_id="tok-B", outcome="LOSS"))
+
+    assert "trade-A" in uc._alerted_trade_ids
+    assert "trade-B" in uc._alerted_trade_ids
+    assert len(uc._alerted_trade_ids) == 2
 
 
 @pytest.mark.asyncio
