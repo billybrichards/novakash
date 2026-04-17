@@ -77,17 +77,30 @@ class DBTradeRecorder(TradeRecorderPort):
             try:
                 from execution.order_manager import Order, OrderStatus
 
-                # Pull regime / conviction out of decision.metadata (registry
-                # populates them from the FullDataSurface on the TRADE path).
-                # These flow into trades.metadata JSONB so the Trades UI can
-                # surface REGIME / CONV columns per-row.
+                # Pull regime / conviction out of decision.metadata. Different
+                # strategy builders use different key names:
+                #   - registry._evaluate_common: "regime" / "conviction"
+                #   - configs/v4_fusion.py (4.5.0): "v4_regime" / "v4_conviction"
+                #   - adapters/v4_fusion_strategy (4.0.0): "regime" / "conviction"
+                # Fall back through the alternatives rather than forcing every
+                # builder to share a convention.
                 decision_meta = decision.metadata or {}
-                regime = decision_meta.get("regime")
+                regime = (
+                    decision_meta.get("regime")
+                    or decision_meta.get("v4_regime")
+                )
                 # dedup_key uniquely identifies the (strategy, window, direction)
                 # triplet that the registry used for its in-memory dedup. Not
                 # strictly enforced in DB but useful for triage (e.g. a pair
                 # of trades with the same dedup_key indicates a re-entry bug).
+                # Fall back to parsing from market_slug when window_ts is not
+                # embedded in decision.metadata (v4_fusion builders omit it).
                 window_ts = decision_meta.get("window_ts")
+                if window_ts is None and result.market_slug:
+                    try:
+                        window_ts = int(result.market_slug.rsplit("-", 1)[-1])
+                    except (ValueError, IndexError):
+                        window_ts = None
                 dedup_key = (
                     f"{decision.strategy_id}:{window_ts}:{decision.direction}"
                     if window_ts is not None
