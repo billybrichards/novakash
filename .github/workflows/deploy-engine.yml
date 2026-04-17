@@ -269,6 +269,10 @@ jobs:
             echo "FIFTEEN_MIN_ENABLED=true"
             echo "FIFTEEN_MIN_ASSETS=BTC"
             echo "V4_FUSION_ENABLED=true"
+            echo ""
+            echo "# TG Narrative V2 (plans/serialized-drifting-clover.md)"
+            echo "TG_NARRATIVE_V2_ENABLED=true"
+            echo "OWNER_EOA_ADDRESSES=$DEPLOY_OWNER_EOA_ADDRESSES"
             echo "TIMESFM_URL=http://${DEPLOY_TIMESFM_HOST}:8080"
             echo "POLYGON_RPC_URL=https://polygon-bor-rpc.publicnode.com"
             echo "TIINGO_API_KEY=${DEPLOY_TIINGO_API_KEY}"
@@ -314,6 +318,10 @@ jobs:
           DEPLOY_STARTING_BANKROLL: ${{ vars.STARTING_BANKROLL || '30' }}
           DEPLOY_BET_FRACTION: ${{ vars.BET_FRACTION || '0.07' }}
           DEPLOY_MAX_POSITION_USD: ${{ vars.MAX_POSITION_USD || '10.0' }}
+          # TG Narrative V2 — OWNER_EOA_ADDRESSES is comma-separated user-owned
+          # EOAs (MetaMask / hot wallets). Blank is safe (wallet-delta fires DRIFT
+          # for any outflow). Set via GitHub Actions Variables.
+          DEPLOY_OWNER_EOA_ADDRESSES: ${{ vars.OWNER_EOA_ADDRESSES || '' }}
 
       - name: Validate critical .env vars on host
         run: |
