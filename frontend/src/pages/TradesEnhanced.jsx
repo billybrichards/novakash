@@ -87,7 +87,9 @@ export default function TradesEnhanced() {
   const edgeOf = r => Number(r.edge ?? r.avg_edge);
 
   const kpi = useMemo(() => {
-    const settled = rows.filter(r => r.outcome === 'WIN' || r.outcome === 'LOSS');
+    const real = rows.filter(r => !r.is_phantom);
+    const phantom = rows.filter(r => r.is_phantom);
+    const settled = real.filter(r => r.outcome === 'WIN' || r.outcome === 'LOSS');
     const wins = settled.filter(r => r.outcome === 'WIN').length;
     const net = settled.reduce((s, r) => {
       const v = pnlOf(r);
@@ -95,11 +97,16 @@ export default function TradesEnhanced() {
     }, 0);
     const edges = settled.map(edgeOf).filter(Number.isFinite);
     const avgEdge = edges.length ? edges.reduce((a, b) => a + b, 0) / edges.length : null;
+    // Phantom stats for secondary display
+    const pSettled = phantom.filter(r => r.outcome === 'WIN' || r.outcome === 'LOSS');
+    const pWins = pSettled.filter(r => r.outcome === 'WIN').length;
+    const pNet = pSettled.reduce((s, r) => { const v = pnlOf(r); return Number.isFinite(v) ? s + v : s; }, 0);
     return {
-      n: rows.length,
+      n: real.length,
       wr: settled.length ? wins / settled.length : null,
       net,
       avgEdge,
+      phantom: { n: phantom.length, wr: pSettled.length ? pWins / pSettled.length : null, net: pNet },
     };
   }, [rows]);
 
@@ -120,9 +127,11 @@ export default function TradesEnhanced() {
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 12, marginBottom: 14 }}>
-        <Stat lbl="Trades" val={kpi.n} sub={`${rangeDays}d window`} />
-        <Stat lbl="Win rate" val={kpi.wr == null ? '—' : `${(kpi.wr * 100).toFixed(1)}%`} tone={wrTone(kpi.wr)} />
-        <Stat lbl="Net PnL" val={fmtUSD(kpi.net)} tone={kpi.net >= 0 ? 'good' : 'bad'} />
+        <Stat lbl="Trades" val={kpi.n} sub={kpi.phantom.n ? `+ ${kpi.phantom.n} phantom` : `${rangeDays}d window`} />
+        <Stat lbl="Win rate" val={kpi.wr == null ? '—' : `${(kpi.wr * 100).toFixed(1)}%`} tone={wrTone(kpi.wr)}
+          sub={kpi.phantom.n && kpi.phantom.wr != null ? `phantom: ${(kpi.phantom.wr * 100).toFixed(1)}%` : undefined} />
+        <Stat lbl="Net PnL" val={fmtUSD(kpi.net)} tone={kpi.net >= 0 ? 'good' : 'bad'}
+          sub={kpi.phantom.n ? `phantom: ${fmtUSD(kpi.phantom.net)}` : undefined} />
         <Stat lbl="Avg edge" val={kpi.avgEdge == null ? '—' : `${(kpi.avgEdge * 100).toFixed(1)}¢`} />
       </div>
 
@@ -158,9 +167,12 @@ export default function TradesEnhanced() {
               if (!Number.isFinite(v)) return <span style={{ color: T.label }}>—</span>;
               return <span style={{ color: v >= 0 ? T.profit : T.loss }}>{fmtUSD(v)}</span>;
             }},
-            { key: 'outcome', label: 'out', render: r => r.outcome === 'WIN' ? <span style={{ color: T.profit, fontSize: 10 }}>WIN</span>
-              : r.outcome === 'LOSS' ? <span style={{ color: T.loss, fontSize: 10 }}>LOSS</span>
-              : <span style={{ color: T.label }}>open</span> },
+            { key: 'outcome', label: 'out', render: r => {
+              const badge = r.is_phantom ? <span style={{ color: T.warn, fontSize: 8, marginLeft: 4, letterSpacing: '0.08em' }}>PHANTOM</span> : null;
+              if (r.outcome === 'WIN') return <><span style={{ color: T.profit, fontSize: 10 }}>WIN</span>{badge}</>;
+              if (r.outcome === 'LOSS') return <><span style={{ color: T.loss, fontSize: 10 }}>LOSS</span>{badge}</>;
+              return <><span style={{ color: T.label }}>open</span>{badge}</>;
+            }},
             { key: 'clob_oid', label: 'CLOB oid', render: r => {
               const oid = r.order_id || r.clob_oid;
               return oid ? <code style={{ fontSize: 10, color: T.label2 }}>{oid.toString().slice(0, 6)}…{oid.toString().slice(-4)}</code> : '—';
@@ -168,6 +180,7 @@ export default function TradesEnhanced() {
             { key: 'dedup_key', label: 'dedup', render: r => r.dedup_key ? <code style={{ fontSize: 10, color: T.label2 }}>{r.dedup_key}</code> : '—' },
             { key: 'skip_reason', label: 'skip', render: r => r.skip_reason ? <span style={{ color: T.warn, fontSize: 10 }}>{r.skip_reason}</span> : '—' },
           ]}
+          rowStyle={r => r.is_phantom ? { opacity: 0.4 } : undefined}
           rows={rows.map((r, i) => ({ ...r, _key: r.id ?? i }))}
         />
       </div>

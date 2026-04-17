@@ -57,6 +57,21 @@ class DBTradeRecorder(TradeRecorderPort):
         if not result.success:
             return
 
+        # Reject phantom trades: success=True but no actual fill.
+        # gtc_resting returns success=True with fill_price=None when the
+        # order sits on the book unfilled. Recording these as trades
+        # poisons WR/P&L calculations (incident 2026-04-17, Hub note #147).
+        if result.fill_price is None and result.execution_mode in ("gtc_resting", "gtc"):
+            logger.warning(
+                "trade_recorder.phantom_rejected",
+                extra={
+                    "order_id": result.order_id,
+                    "execution_mode": result.execution_mode,
+                    "reason": "fill_price is None — refusing to record phantom trade",
+                },
+            )
+            return
+
         # 1. Register with OrderManager
         if self._om is not None:
             try:
