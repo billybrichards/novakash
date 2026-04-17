@@ -33,7 +33,7 @@ class WsSignalAdapter(SignalPort):
 
     def __init__(
         self,
-        url: str = "ws://3.98.114.0:8080/v3/signal",
+        url: str = "ws://16.52.14.182:8080/v3/signal",
         on_message: Optional[Callable[[dict], None]] = None,
     ) -> None:
         self._url = url
