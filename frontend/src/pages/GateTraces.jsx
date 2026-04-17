@@ -47,6 +47,48 @@ function utcHHMM(wts) {
   return `${h}:${m}`;
 }
 
+/**
+ * Convert a raw skip_reason string into a human-readable label.
+ * "vpin_too_low"            → "VPIN too low"
+ * "conviction_below_threshold" → "Conviction below threshold"
+ * Unknown / undefined       → "—"
+ */
+export function formatSkipReason(reason) {
+  if (!reason) return '—';
+  return reason
+    .replace(/_/g, ' ')
+    .replace(/\bvpin\b/gi, 'VPIN')
+    .replace(/\bbtc\b/gi, 'BTC')
+    .replace(/\bpnl\b/gi, 'PnL')
+    .replace(/^\w/, (c) => c.toUpperCase());
+}
+
+/**
+ * Return a full "why was this skipped?" sentence for a failed gate.
+ * Passed gates return null — callers should fall back to their own display.
+ */
+export function humanSkipReason(reason) {
+  if (!reason) return 'No skip reason recorded';
+  return `Skipped: ${formatSkipReason(reason)}`;
+}
+
+/**
+ * Build a ranked-list string for the heatmap cell tooltip's top_skip_reasons.
+ * Returns an empty string when there are no skip reasons to show.
+ *
+ * @param {Array<{reason: string, n: number}>} topSkipReasons
+ * @param {number} skippedCount  fired - passed
+ */
+export function formatTopSkipReasonsTooltip(topSkipReasons, skippedCount) {
+  if (!Array.isArray(topSkipReasons) || topSkipReasons.length === 0) return '';
+  const lines = topSkipReasons.map((r, i) => {
+    const pctStr =
+      skippedCount > 0 ? ` (${Math.round((100 * r.n) / skippedCount)}%)` : '';
+    return `  ${i + 1}. ${formatSkipReason(r.reason)} — ${r.n}\xd7${pctStr}`;
+  });
+  return ['', 'Top skip reasons:', ...lines].join('\n');
+}
+
 /** Format an ISO string as YYYY-MM-DD HH:MM UTC. */
 function utcDay(iso) {
   if (!iso) return '—';
@@ -316,14 +358,13 @@ export default function GateTraces() {
                       }
                       const pct = c.pass_pct;
                       const color = pct != null ? wrColor(pct / 100) : T.label;
+                      const skipped = (c.fired || 0) - (c.passed || 0);
                       const title = [
-                        `fired: ${c.fired}`,
-                        `passed: ${c.passed}`,
-                        `pass_pct: ${pct != null ? pct.toFixed(1) + '%' : '—'}`,
-                        ...(c.top_skip_reasons || []).map(
-                          (r) => `· ${r.reason} (${r.n})`
-                        ),
-                      ].join('\n');
+                        `fired: ${c.fired}  passed: ${c.passed}  pass_pct: ${pct != null ? pct.toFixed(1) + '%' : '—'}`,
+                        formatTopSkipReasonsTooltip(c.top_skip_reasons, skipped),
+                      ]
+                        .filter(Boolean)
+                        .join('\n');
                       return (
                         <td
                           key={g}
@@ -546,11 +587,13 @@ export default function GateTraces() {
                                     <td
                                       style={{
                                         padding: '4px 8px',
-                                        color: T.label2,
+                                        color: gt.passed ? T.label2 : T.warn,
                                         fontSize: 10,
                                       }}
                                     >
-                                      {gt.skip_reason || gt.reason || '—'}
+                                      {gt.passed
+                                        ? (gt.reason ? formatSkipReason(gt.reason) : '—')
+                                        : humanSkipReason(gt.skip_reason || gt.reason)}
                                     </td>
                                     <td
                                       style={{
