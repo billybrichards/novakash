@@ -1059,27 +1059,54 @@ class PgWindowRepository(WindowStateRepository):
             return None
 
     async def label_resolved_windows(self, min_age_seconds: int = 360) -> int:
-        """Bulk-stamp actual_direction on windows with close_price but no label.
+        """Bulk-stamp actual_direction on resolved windows using oracle sources.
 
         Implements WindowStateRepository.label_resolved_windows.
-        Polymarket 5-min UP/DOWN resolves via Chainlink oracle:
-        close_price > open_price → UP, else DOWN.
+
+        Priority chain (Polymarket 5m markets resolve via Chainlink oracle,
+        so Binance tape is the WRONG source — 42.9% disagreement on backfill
+        audit 2026-04-18):
+            1. window_snapshots.oracle_outcome (Polymarket Gamma, gold)
+            2. window_predictions.chainlink_close vs chainlink_open
+            3. window_snapshots.delta_chainlink sign (fallback)
+            4. NULL (skip — do NOT guess from binance open/close)
         """
         if not self._pool:
             return 0
         try:
             async with self._pool.acquire() as conn:
                 result = await conn.execute(
-                    """UPDATE window_snapshots
-                       SET actual_direction = CASE
-                           WHEN close_price > open_price THEN 'UP'
-                           ELSE 'DOWN'
-                       END
-                       WHERE actual_direction IS NULL
-                         AND close_price IS NOT NULL
-                         AND open_price IS NOT NULL
-                         AND close_price != open_price
-                         AND window_ts < EXTRACT(EPOCH FROM NOW())::bigint - $1""",
+                    """WITH labels AS (
+                           SELECT ws.window_ts, ws.asset, ws.timeframe,
+                                  CASE
+                                      WHEN ws.oracle_outcome IN ('UP','DOWN') THEN ws.oracle_outcome
+                                      WHEN wp.chainlink_close IS NOT NULL
+                                           AND wp.chainlink_open IS NOT NULL
+                                           AND wp.chainlink_close > wp.chainlink_open THEN 'UP'
+                                      WHEN wp.chainlink_close IS NOT NULL
+                                           AND wp.chainlink_open IS NOT NULL
+                                           AND wp.chainlink_close < wp.chainlink_open THEN 'DOWN'
+                                      WHEN ws.delta_chainlink IS NOT NULL
+                                           AND ws.delta_chainlink > 0 THEN 'UP'
+                                      WHEN ws.delta_chainlink IS NOT NULL
+                                           AND ws.delta_chainlink < 0 THEN 'DOWN'
+                                      ELSE NULL
+                                  END AS label
+                           FROM window_snapshots ws
+                           LEFT JOIN window_predictions wp
+                             ON wp.window_ts = ws.window_ts
+                            AND wp.asset     = ws.asset
+                            AND wp.timeframe = ws.timeframe
+                           WHERE ws.actual_direction IS NULL
+                             AND ws.window_ts < EXTRACT(EPOCH FROM NOW())::bigint - $1
+                       )
+                       UPDATE window_snapshots ws
+                       SET actual_direction = labels.label
+                       FROM labels
+                       WHERE ws.window_ts = labels.window_ts
+                         AND ws.asset     = labels.asset
+                         AND ws.timeframe = labels.timeframe
+                         AND labels.label IS NOT NULL""",
                     min_age_seconds,
                 )
                 count = int(result.split()[-1]) if result else 0
