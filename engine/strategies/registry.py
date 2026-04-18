@@ -802,8 +802,10 @@ class StrategyRegistry:
                 else "N/A"
             )
 
-            # Source agreement
+            # Source agreement (CL + Ti only -- matches the strategy gate
+            # definition; Binance shown separately as a cross-check).
             sources_agree = self._check_source_agreement(surface)
+            binance_cross_check = self._format_binance_cross_check(surface)
 
             # Prior-offset TRADE decisions for this window. Used by the
             # use case to populate "Already traded this window" and kill
@@ -892,6 +894,7 @@ class StrategyRegistry:
                 "dist": dist,
                 "chainlink_delta": chainlink_delta,
                 "tiingo_delta": tiingo_delta,
+                "binance_cross_check": binance_cross_check,
                 "sources_agree": sources_agree,
                 # Full surface for Haiku context
                 "clob_up_ask": getattr(surface, "clob_up_ask", None),
@@ -1007,20 +1010,54 @@ class StrategyRegistry:
 
     @staticmethod
     def _check_source_agreement(surface: FullDataSurface) -> str:
-        """Check if Chainlink, Tiingo, and Binance deltas agree on direction."""
-        directions = []
-        for delta in (
-            surface.delta_chainlink,
-            surface.delta_tiingo,
-            surface.delta_binance,
-        ):
-            if delta is not None:
-                directions.append("UP" if delta > 0 else "DOWN")
-        if not directions:
-            return "no data"
-        if all(d == directions[0] for d in directions):
-            return f"YES ({directions[0]})"
-        return "NO (mixed)"
+        """Consensus over the sources the trade gates actually care about.
+
+        Only Chainlink + Tiingo participate -- this matches the gate
+        definition in ``engine/strategies/configs/v4_fusion.py``
+        (``_sources_agree_surface``) and the documented invariant on
+        ``BtcPriceBlock``: Binance aggTrade feeds VPIN but is NOT a
+        direction-consensus input.
+
+        Previously this used a 3-way vote including Binance, which
+        produced misleading ``NO (mixed)`` output while the gate saw
+        ``YES`` -- because the rendered Chainlink/Tiingo deltas in the
+        same message both agreed, the Binance sign that flipped the
+        verdict was invisible. See the April 18 2026 postmortem.
+
+        Binance cross-check is surfaced separately via
+        ``_format_binance_cross_check`` so operators still see the
+        third-source sign without it corrupting consensus.
+        """
+        cl = surface.delta_chainlink
+        ti = surface.delta_tiingo
+        missing: list[str] = []
+        if cl is None:
+            missing.append("chainlink")
+        if ti is None:
+            missing.append("tiingo")
+        if missing:
+            return f"unknown ({'+'.join(missing)} missing)"
+        cl_dir = "UP" if cl > 0 else "DOWN"
+        ti_dir = "UP" if ti > 0 else "DOWN"
+        if cl_dir == ti_dir:
+            return f"YES ({cl_dir})"
+        return f"NO (CL={cl_dir}, Ti={ti_dir})"
+
+    @staticmethod
+    def _format_binance_cross_check(surface: FullDataSurface) -> str | None:
+        """Return a human-readable Binance cross-check string, or None.
+
+        Binance agreement/disagreement with the CL+Ti consensus is
+        diagnostic only -- it is NOT part of the consensus used for
+        gating. Surfacing it lets operators spot CEX-vs-oracle
+        divergence (e.g. Chainlink lag during fast moves) without it
+        silently flipping the rendered "sources agree" verdict.
+        """
+        bi = surface.delta_binance
+        if bi is None:
+            return None
+        sign = "UP" if bi > 0 else "DOWN"
+        return f"{bi * 100:+.2f}% ({sign})"
 
     def wire_execute_uc(self, uc: "ExecuteTradeUseCase") -> None:
         """Inject the ExecuteTradeUseCase after orchestrator startup."""

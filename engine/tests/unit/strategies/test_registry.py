@@ -499,3 +499,68 @@ class TestRegistrySurfacePersistence:
         # Should not raise — db=None path just skips
         registry._write_window_trace(surface)
         await asyncio.sleep(0)
+
+
+class TestCheckSourceAgreement:
+    """Pinned behaviour for ``StrategyRegistry._check_source_agreement``.
+
+    Matches the trade-gate definition (Chainlink + Tiingo only). Binance
+    is diagnostic-only and MUST NOT influence the consensus verdict.
+    """
+
+    def test_both_up_returns_yes_up(self):
+        surface = _make_surface(
+            delta_chainlink=0.0004, delta_tiingo=0.0005, delta_binance=-0.0002
+        )
+        # Binance disagreeing must NOT tip the verdict to "mixed" -- the
+        # gate ignores Binance, so the consensus string must too.
+        assert StrategyRegistry._check_source_agreement(surface) == "YES (UP)"
+
+    def test_both_down_returns_yes_down(self):
+        surface = _make_surface(
+            delta_chainlink=-0.0003, delta_tiingo=-0.0004, delta_binance=0.0008
+        )
+        assert StrategyRegistry._check_source_agreement(surface) == "YES (DOWN)"
+
+    def test_disagree_reports_per_source_directions(self):
+        surface = _make_surface(delta_chainlink=-0.0006, delta_tiingo=0.0005)
+        assert (
+            StrategyRegistry._check_source_agreement(surface)
+            == "NO (CL=DOWN, Ti=UP)"
+        )
+
+    def test_missing_chainlink_returns_unknown_with_reason(self):
+        surface = _make_surface(delta_chainlink=None, delta_tiingo=0.0005)
+        assert (
+            StrategyRegistry._check_source_agreement(surface)
+            == "unknown (chainlink missing)"
+        )
+
+    def test_missing_both_reports_both(self):
+        surface = _make_surface(delta_chainlink=None, delta_tiingo=None)
+        assert (
+            StrategyRegistry._check_source_agreement(surface)
+            == "unknown (chainlink+tiingo missing)"
+        )
+
+
+class TestFormatBinanceCrossCheck:
+    """Binance cross-check is rendered as a separate diagnostic line."""
+
+    def test_positive_delta_renders_with_up_tag(self):
+        surface = _make_surface(delta_binance=0.00057)
+        assert (
+            StrategyRegistry._format_binance_cross_check(surface)
+            == "+0.06% (UP)"
+        )
+
+    def test_negative_delta_renders_with_down_tag(self):
+        surface = _make_surface(delta_binance=-0.00019)
+        assert (
+            StrategyRegistry._format_binance_cross_check(surface)
+            == "-0.02% (DOWN)"
+        )
+
+    def test_none_returns_none(self):
+        surface = _make_surface(delta_binance=None)
+        assert StrategyRegistry._format_binance_cross_check(surface) is None

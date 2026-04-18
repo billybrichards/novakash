@@ -76,6 +76,7 @@ class HaikuSummarizer:
             f"Delta: {ctx.get('delta_pct', '?')}% | VPIN: {ctx.get('vpin', '?')} | Regime: {ctx.get('regime', '?')}\n"
             f"Model: P(UP)={ctx.get('p_up', '?')} dist={ctx.get('dist', '?')} → {ctx.get('model_direction', '?')}\n"
             f"Chainlink: {ctx.get('chainlink_delta', '?')}% | Tiingo: {ctx.get('tiingo_delta', '?')}% | Sources agree: {ctx.get('sources_agree', '?')}\n"
+            f"Binance cross-check (not gated): {ctx.get('binance_cross_check') or 'N/A'}\n"
             f"Full surface:\n{surface_block}\n\n"
             f"=== Strategy decisions (each includes its gate config) ===\n"
             f"{ctx.get('decisions_text', 'none')}\n\n"
@@ -134,6 +135,7 @@ class HaikuSummarizer:
         sources_agree = ctx.get("sources_agree", "?")
         chain_d = ctx.get("chainlink_delta", "?")
         tiingo_d = ctx.get("tiingo_delta", "?")
+        binance_xc = ctx.get("binance_cross_check")
 
         summary_parts = []
         if p_up is not None:
@@ -145,6 +147,8 @@ class HaikuSummarizer:
         summary_parts.append(f"Chainlink: {chain_d}% | Tiingo: {tiingo_d}%")
         if sources_agree is not None:
             summary_parts.append(f"Sources agree: {sources_agree}")
+        if binance_xc:
+            summary_parts.append(f"Binance cross-check: {binance_xc} (not gated)")
 
         market_line = f"\U0001f4ca {'. '.join(summary_parts)}."
 
