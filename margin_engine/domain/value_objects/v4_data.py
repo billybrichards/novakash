@@ -135,6 +135,9 @@ class TimescalePayload:
 
     probability_up: Optional[float] = None
     probability_raw: Optional[float] = None
+    probability_lgb: Optional[float] = None
+    probability_classifier: Optional[float] = None
+    ensemble_config: Optional[dict] = None
     model_version: Optional[str] = None
 
     quantiles_at_close: Quantiles = field(default_factory=Quantiles)
@@ -172,6 +175,33 @@ class TimescalePayload:
 
         p = self.probability_up if self.probability_up is not None else 0.5
         return TradeSide.LONG if p > 0.5 else TradeSide.SHORT
+
+    @property
+    def ensemble_mode(self) -> str:
+        """Return the ensemble operating mode, or 'unavailable' if no config."""
+        if self.ensemble_config and isinstance(self.ensemble_config, dict):
+            return self.ensemble_config.get("mode", "unavailable")
+        return "unavailable"
+
+    @property
+    def ensemble_disagreement(self) -> Optional[float]:
+        """Return |p_lgb - p_classifier| if both are available."""
+        if self.probability_lgb is not None and self.probability_classifier is not None:
+            return abs(self.probability_lgb - self.probability_classifier)
+        return None
+
+    def probability_for_source(self, source: str) -> Optional[float]:
+        """Select probability based on source preference.
+
+        Args:
+            source: 'ensemble' (default p_up), 'lgb_only', or 'path1_only'
+        """
+        if source == "lgb_only":
+            return self.probability_lgb if self.probability_lgb is not None else self.probability_up
+        elif source == "path1_only":
+            return self.probability_classifier
+        else:  # ensemble (default) — p_up already holds blended value
+            return self.probability_up
 
     def meets_threshold(self, min_conviction: float) -> bool:
         """True iff |probability_up - 0.5| >= min_conviction.
@@ -316,6 +346,9 @@ def _parse_timescale(name: str, d: dict) -> TimescalePayload:
         seconds_to_close=int(d.get("seconds_to_close", 0) or 0),
         probability_up=d.get("probability_up"),
         probability_raw=d.get("probability_raw"),
+        probability_lgb=d.get("probability_lgb"),
+        probability_classifier=d.get("probability_classifier"),
+        ensemble_config=d.get("ensemble_config") if isinstance(d.get("ensemble_config"), dict) else None,
         model_version=d.get("model_version"),
         quantiles_at_close=_parse_quantiles(d.get("quantiles_at_close") or {}),
         expected_move_bps=d.get("expected_move_bps"),

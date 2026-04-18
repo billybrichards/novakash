@@ -93,6 +93,19 @@ class MarginSettings(BaseSettings):
     v4_allow_mean_reverting: bool = False  # opt-in per strategy
     v4_event_exit_seconds: int = 120  # force exit within 2 min of HIGH/EXTREME
 
+    # ── v5 ensemble integration ──
+    # When enabled, the v4 entry strategy reads the ensemble-blended probability
+    # from /v4/snapshot (probability_lgb + probability_classifier) instead of
+    # the raw probability_up. Requires engine_use_v4_actions=True to have effect.
+    v5_ensemble_enabled: bool = False
+    # Which probability source to read: "ensemble" (blended p_up, default),
+    # "lgb_only" (raw LGB calibrated), or "path1_only" (classifier head only).
+    v5_ensemble_signal_source: str = "ensemble"
+    # Skip trade when ensemble fell back to LGB-only (classifier unavailable).
+    v5_ensemble_skip_on_fallback: bool = True
+    # Skip when |p_lgb - p_classifier| exceeds this. 0.0 = disabled.
+    v5_ensemble_disagreement_threshold: float = 0.0
+
     # ── Fee-aware continuation (NEW) ──
     fee_aware_continuation_enabled: bool = False
     fee_aware_partial_tp_threshold: float = 0.5

@@ -40,12 +40,15 @@ INSERT INTO margin_positions
      hold_clock_anchor, continuation_count, last_continuation_ts, last_continuation_p_up,
      v4_entry_regime, v4_entry_macro_bias, v4_entry_macro_confidence,
      v4_entry_expected_move_bps, v4_entry_composite_v3, v4_entry_consensus_safe,
-     v4_entry_window_close_ts, v4_snapshot_ts_at_entry)
+     v4_entry_window_close_ts, v4_snapshot_ts_at_entry,
+     v5_entry_signal_source, v5_entry_probability_lgb,
+     v5_entry_probability_classifier, v5_entry_ensemble_mode)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
         $24, $25, $26, $27,
         $28, $29, $30,
         $31, $32, $33,
-        $34, $35)
+        $34, $35,
+        $36, $37, $38, $39)
 ON CONFLICT (id) DO UPDATE SET
     state = $4,
     exit_price = $11,
@@ -123,6 +126,11 @@ ADDITIVE_MIGRATIONS_SQL = (
     "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS v4_entry_consensus_safe BOOLEAN",
     "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS v4_entry_window_close_ts BIGINT",
     "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS v4_snapshot_ts_at_entry DOUBLE PRECISION",
+    # ── v5 ensemble audit trail ──
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS v5_entry_signal_source TEXT",
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS v5_entry_probability_lgb REAL",
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS v5_entry_probability_classifier REAL",
+    "ALTER TABLE margin_positions ADD COLUMN IF NOT EXISTS v5_entry_ensemble_mode TEXT",
 )
 
 
@@ -191,6 +199,11 @@ class PgPositionRepository(PositionRepository):
                 position.v4_entry_consensus_safe,
                 position.v4_entry_window_close_ts,
                 position.v4_snapshot_ts_at_entry,
+                # $36-$39 — v5 ensemble audit trail (write-once at entry)
+                position.v5_entry_signal_source,
+                position.v5_entry_probability_lgb,
+                position.v5_entry_probability_classifier,
+                position.v5_entry_ensemble_mode,
             )
 
     async def get_open_positions(self) -> list[Position]:
@@ -255,6 +268,11 @@ class PgPositionRepository(PositionRepository):
             v4_entry_consensus_safe=_safe_get(row, "v4_entry_consensus_safe", None),
             v4_entry_window_close_ts=_safe_get(row, "v4_entry_window_close_ts", None),
             v4_snapshot_ts_at_entry=_safe_get(row, "v4_snapshot_ts_at_entry", None),
+            # ── v5 ensemble audit trail (all Optional, legacy rows → None) ──
+            v5_entry_signal_source=_safe_get(row, "v5_entry_signal_source", None),
+            v5_entry_probability_lgb=_safe_get(row, "v5_entry_probability_lgb", None),
+            v5_entry_probability_classifier=_safe_get(row, "v5_entry_probability_classifier", None),
+            v5_entry_ensemble_mode=_safe_get(row, "v5_entry_ensemble_mode", None),
         )
         if row["entry_price"]:
             p.entry_price = Price(value=row["entry_price"])
