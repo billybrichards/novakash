@@ -194,6 +194,7 @@ class PositionRedeemer:
         paper_mode: bool = True,
         builder_key: Optional[str] = None,
         attempts_repo: Optional[object] = None,
+        trades_repo: Optional[object] = None,
     ) -> None:
         self._rpc_url = rpc_url
         self._private_key = private_key
@@ -251,6 +252,16 @@ class PositionRedeemer:
         self._max_failures_24h: int = int(
             os.environ.get("REDEEM_MAX_FAILURES_24H", "3") or 3
         )
+
+        # Optional trades repo — when wired, successful redemptions flip
+        # ``trades.redeemed``/``redemption_tx``/``redeemed_at`` so audits,
+        # dashboards, and future sweeps can distinguish truly-settled
+        # positions from stale "WIN" rows that never got swept. Without
+        # this repo the sweep still works on-chain but the trades table
+        # is a poor source of truth (see the April 18 2026 postmortem:
+        # 1,285 cumulative WIN rows, zero with redeemed=true or a
+        # redemption_tx populated).
+        self._trades_repo = trades_repo
 
     @property
     def daily_quota_limit(self) -> int:
@@ -1073,6 +1084,29 @@ class PositionRedeemer:
                     )
                 except Exception:
                     pass
+
+            # Mark matching WIN trade rows as redeemed in the canonical
+            # trades table. Best-effort: the sweep already happened on-chain
+            # (this is just accounting), so a DB hiccup must not surface as
+            # a "redemption failed" result.
+            if success and self._trades_repo is not None:
+                try:
+                    updated = await self._trades_repo.mark_redeemed(
+                        condition_id=condition_id,
+                        tx_hash=tx_hash,
+                    )
+                    self._log.info(
+                        "redeemer.trades_marked_redeemed",
+                        condition=condition_id[:20] + "...",
+                        rows_updated=updated,
+                        tx_hash=tx_hash,
+                    )
+                except Exception as exc:
+                    self._log.warning(
+                        "redeemer.trades_mark_redeemed_error",
+                        condition=condition_id[:20] + "...",
+                        error=str(exc)[:200],
+                    )
 
             return success
 

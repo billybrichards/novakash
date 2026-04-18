@@ -290,6 +290,75 @@ class PgTradeRepository:
                 error=str(exc)[:100],
             )
 
+    async def mark_redeemed(
+        self,
+        condition_id: str,
+        tx_hash: Optional[str] = None,
+    ) -> int:
+        """Mark every on-chain FILLED WIN trade for ``condition_id`` redeemed.
+
+        Flips ``redeemed``/``redeemed_at``/``redemption_tx`` so dashboards,
+        audits, and future sweeps can tell what's actually been settled
+        on-chain. Returns the number of rows updated -- zero just means
+        the sweep redeemed a position that never had a matching trade row
+        (e.g. manual on-chain redeem of historic positions, or a row
+        excluded by the filters below).
+
+        Only rows that represent a real on-chain winning position are
+        touched. We exclude:
+
+        - Paper-mode rows (``is_live = false``) -- never placed on-chain,
+          so there is nothing to redeem.
+        - Trades that never filled (``fill_size IS NULL OR fill_size = 0``)
+          -- includes CANCELLED, EXPIRED, and cap-rejected orders that
+          wrote a row but never took an on-chain position. Their
+          ``outcome`` is normally NULL for these, but we belt-and-brace
+          the filter in case a stale resolver backfilled 'WIN' on a row
+          that never filled.
+        - Rows already marked (``redeemed = false``) -- idempotent replay
+          safety if the caller replays the same condition_id.
+        - Losing sides (``outcome = 'WIN'``) -- the on-chain redemption
+          pays only the winning token; losers have nothing to credit.
+
+        Never raises: the redeemer runs on a hot path and a DB hiccup
+        must not crash the sweep.
+        """
+        if not self._pool:
+            return 0
+        try:
+            from datetime import datetime, timezone
+
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    UPDATE trades
+                       SET redeemed      = true,
+                           redeemed_at   = $1,
+                           redemption_tx = $2
+                     WHERE metadata->>'condition_id' = $3
+                       AND outcome = 'WIN'
+                       AND redeemed = false
+                       AND is_live = true
+                       AND fill_size IS NOT NULL
+                       AND fill_size > 0
+                    """,
+                    datetime.now(timezone.utc),
+                    tx_hash,
+                    condition_id,
+                )
+            # execute() returns e.g. "UPDATE 3"; take the count.
+            try:
+                return int(result.split()[-1])
+            except (ValueError, IndexError):
+                return 0
+        except Exception as exc:
+            log.warning(
+                "pg_trade_repo.mark_redeemed_failed",
+                condition_id=condition_id[:20] + "...",
+                error=str(exc)[:200],
+            )
+            return 0
+
     async def mark_trade_expired(self, order_id: str) -> None:
         """Mark a trade as EXPIRED in the DB (used by startup reconciliation).
 
