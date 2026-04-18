@@ -1,0 +1,25 @@
+name: v5_ensemble
+version: "5.0.0-shadow"
+# NOTE: spec called for `mode: SHADOW`, but registry.StrategyConfig only
+# recognises LIVE / GHOST / DISABLED. GHOST is the matching semantic:
+# decisions are evaluated and persisted via decision_repo, and TRADE
+# actions emit `registry.ghost_decision` log lines instead of executing.
+# Flip to LIVE only after Billy approves shadow review (per
+# feedback_no_auto_promotion.md).
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+# All logic is in the hook (mirrors v4_fusion). The hook inherits all 13
+# v4_fusion gates verbatim and adds two ensemble-specific gates
+# (ensemble_fallback_sanity + ensemble_disagreement) after the confidence gate.
+gates: []
+
+hooks_file: v5_ensemble.py
+pre_gate_hook: evaluate_polymarket_ensemble
+
+# Sizing matches v4_fusion so allocation isn't a confound when comparing WR.
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.10
