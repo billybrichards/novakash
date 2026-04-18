@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "node scripts/gen-release-notes.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/gen-release-notes.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint src --ext .js,.jsx",

@@ -226,13 +226,13 @@ async def get_trade_stats(
         text(f"""
             SELECT
                 COUNT(*) FILTER (WHERE status != 'PHANTOM' OR status IS NULL) AS real_total,
-                COUNT(*) FILTER (WHERE status != 'PHANTOM' OR status IS NULL) FILTER (WHERE outcome = 'WIN') AS real_wins,
+                COUNT(*) FILTER (WHERE (status != 'PHANTOM' OR status IS NULL) AND outcome = 'WIN') AS real_wins,
                 SUM(CASE WHEN (status != 'PHANTOM' OR status IS NULL) THEN pnl_usd ELSE 0 END) AS real_pnl,
                 AVG(CASE WHEN (status != 'PHANTOM' OR status IS NULL) THEN pnl_usd END) AS real_avg_pnl,
                 MAX(CASE WHEN (status != 'PHANTOM' OR status IS NULL) THEN pnl_usd END) AS real_best,
                 MIN(CASE WHEN (status != 'PHANTOM' OR status IS NULL) THEN pnl_usd END) AS real_worst,
                 COUNT(*) FILTER (WHERE status = 'PHANTOM') AS phantom_total,
-                COUNT(*) FILTER (WHERE status = 'PHANTOM') FILTER (WHERE outcome = 'WIN') AS phantom_wins,
+                COUNT(*) FILTER (WHERE status = 'PHANTOM' AND outcome = 'WIN') AS phantom_wins,
                 SUM(CASE WHEN status = 'PHANTOM' THEN pnl_usd ELSE 0 END) AS phantom_pnl
             FROM trades
             WHERE {where_sql}

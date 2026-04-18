@@ -156,6 +156,21 @@ jobs:
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
+      - name: Verify package-lock.json is in sync with package.json
+        # Fast-fail with a clear operator message when a worker bumps
+        # package.json without regenerating the lock. Standalone from
+        # the install step so the error is unambiguous.
+        # No untrusted inputs — all literals + npm.
+        working-directory: frontend
+        run: |
+          if ! npm ci --dry-run >/dev/null 2>&1; then
+            echo "::error::frontend/package.json and package-lock.json are out of sync."
+            echo "Fix: cd frontend && npm install && git add package-lock.json"
+            npm ci --dry-run 2>&1 | grep -E "Missing|npm error" | head -20 || true
+            exit 1
+          fi
+          echo "lock in sync"
+
       - name: Install dependencies
         run: npm --prefix frontend ci
 

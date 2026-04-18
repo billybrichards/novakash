@@ -4,6 +4,7 @@ import { useAuth } from '../auth/AuthContext.jsx';
 import LiveToggle from '../components/LiveToggle.jsx';
 import { NAV_SECTIONS } from '../nav/navigation.js';
 import { T } from '../theme/tokens.js';
+import ReleaseNotes from './ReleaseNotes.jsx';
 
 const SIDEBAR_WIDTH = 220;
 
@@ -91,6 +92,15 @@ export default function AppShell() {
       </aside>
 
       <main style={{ flex: 1, padding: '16px 28px 80px', overflowX: 'hidden' }}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'flex-end',
+            marginBottom: 8,
+          }}
+        >
+          <ReleaseNotes />
+        </div>
         <Outlet />
       </main>
     </div>
