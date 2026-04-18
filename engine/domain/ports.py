@@ -351,10 +351,27 @@ class WindowStateRepository(abc.ABC):
     @abc.abstractmethod
     async def label_resolved_windows(self, min_age_seconds: int = 360) -> int:
         """Bulk-stamp ``actual_direction`` on windows that have close_price but
-        no label yet.  Uses ``close_price > open_price → UP, else DOWN``
-        (matches Chainlink oracle resolution used by Polymarket).
+        no label yet.  Priority: ``oracle_outcome`` (Polymarket Gamma) >
+        ``window_predictions.chainlink_close`` vs ``chainlink_open`` >
+        ``delta_chainlink`` sign > NULL (never Binance).
 
         Returns count of newly labeled windows.
+        """
+        ...
+
+    @abc.abstractmethod
+    async def populate_oracle_outcomes(
+        self, lookback_seconds: int = 900, min_age_seconds: int = 360
+    ) -> int:
+        """Poll Polymarket Gamma for authoritative UP/DOWN on recently-closed
+        windows and stamp ``oracle_outcome`` / ``poly_resolved_outcome`` /
+        ``poly_winner`` on ``window_snapshots``.
+
+        Windows must be at least ``min_age_seconds`` old (Polymarket needs
+        a few minutes to resolve via UMA + Chainlink). Only windows missing
+        ``oracle_outcome`` are polled.
+
+        Returns count of rows whose ``oracle_outcome`` was just populated.
         """
         ...
 
