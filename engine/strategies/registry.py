@@ -499,11 +499,32 @@ class StrategyRegistry:
                             fill_price=result.fill_price,
                             mode=result.execution_mode,
                         )
+                        # Per-strategy trade-attempt card (T-0 surface).
+                        # FILLED / FAILED_EXECUTION branch — we attempted,
+                        # so operator always sees the outcome. Skip-path
+                        # cards are emitted further down at final eval.
+                        await self._fire_trade_attempt_card(
+                            strategy=name,
+                            window_ts=window_ts,
+                            decision=decision,
+                            execution_result=result,
+                            timeframe=getattr(window, "timeframe", "5m"),
+                        )
                     except Exception as exec_exc:
                         log.error(
                             "registry.execute_error",
                             strategy=name,
                             error=str(exec_exc)[:200],
+                        )
+                        # Execute path raised — fire FAILED_EXECUTION card
+                        # so the silent exception doesn't go unnoticed.
+                        await self._fire_trade_attempt_card(
+                            strategy=name,
+                            window_ts=window_ts,
+                            decision=decision,
+                            execution_result=None,
+                            exec_error=str(exec_exc)[:200],
+                            timeframe=getattr(window, "timeframe", "5m"),
                         )
                 elif config.mode == "GHOST" and decision.action == "TRADE":
                     log.info(
@@ -552,7 +573,133 @@ class StrategyRegistry:
             except Exception:
                 pass
 
+            # Per-strategy skip cards at final eval offset — one per LIVE
+            # strategy that didn't already attempt execution. The
+            # FILLED / FAILED_EXECUTION path above handles trade attempts;
+            # here we emit SKIPPED_* cards so the operator sees why each
+            # LIVE strategy passed on this window.
+            for dec in decisions:
+                config = self._configs.get(dec.strategy_id)
+                if config is None or config.mode != "LIVE":
+                    continue
+                if dec.action == "TRADE":
+                    # Already emitted FILLED / FAILED_EXECUTION above.
+                    continue
+                try:
+                    await self._fire_trade_attempt_card(
+                        strategy=dec.strategy_id,
+                        window_ts=window_ts,
+                        decision=dec,
+                        execution_result=None,
+                        timeframe=window_tf,
+                    )
+                except Exception as exc:
+                    log.debug(
+                        "registry.skip_card_error",
+                        strategy=dec.strategy_id,
+                        error=str(exc)[:200],
+                    )
+
         return decisions
+
+    # ── Skip-reason → attempt-card outcome classifier ─────────────────
+    # Maps raw ``skip_reason`` strings produced by gates/hooks into the
+    # stable outcome enum used by TelegramAlerter.send_trade_attempt_result.
+    # Anything not matched falls through to "SKIPPED_NO_EDGE" so the card
+    # still fires (never drop silently).
+    _SKIP_OUTCOME_PATTERNS: tuple[tuple[str, str], ...] = (
+        ("cooldown", "SKIPPED_COOLDOWN"),
+        ("consensus", "SKIPPED_CONSENSUS"),
+        ("sources_agree", "SKIPPED_CONSENSUS"),
+        ("risk", "SKIPPED_RISK_GATED"),
+        ("kill_switch", "SKIPPED_RISK_GATED"),
+        ("daily_loss", "SKIPPED_RISK_GATED"),
+        ("exposure", "SKIPPED_RISK_GATED"),
+        ("entry_price", "SKIPPED_PRICE_BAND"),
+        ("price_floor", "SKIPPED_PRICE_BAND"),
+        ("dynamic_cap", "SKIPPED_PRICE_BAND"),
+        ("spread", "SKIPPED_PRICE_BAND"),
+    )
+
+    @classmethod
+    def _classify_skip_outcome(cls, skip_reason: Optional[str]) -> str:
+        """Map a decision's skip_reason to an attempt-card outcome label."""
+        if not skip_reason:
+            return "SKIPPED_NO_EDGE"
+        lower = skip_reason.lower()
+        for needle, outcome in cls._SKIP_OUTCOME_PATTERNS:
+            if needle in lower:
+                return outcome
+        return "SKIPPED_NO_EDGE"
+
+    async def _fire_trade_attempt_card(
+        self,
+        *,
+        strategy: str,
+        window_ts: int,
+        decision: StrategyDecision,
+        execution_result: Any,
+        timeframe: str,
+        exec_error: Optional[str] = None,
+    ) -> None:
+        """Emit a per-strategy trade-attempt card via the alerter.
+
+        Safe no-op when ``self._alerter`` lacks ``send_trade_attempt_result``
+        (legacy composition, some tests). Exceptions are logged and
+        swallowed — a telemetry failure must never break evaluation.
+        """
+        if self._alerter is None:
+            return
+        send = getattr(self._alerter, "send_trade_attempt_result", None)
+        if send is None:
+            return
+
+        # Classify outcome.
+        if execution_result is not None:
+            if getattr(execution_result, "success", False):
+                outcome = "FILLED"
+            else:
+                outcome = "FAILED_EXECUTION"
+        elif exec_error is not None:
+            outcome = "FAILED_EXECUTION"
+        else:
+            outcome = self._classify_skip_outcome(decision.skip_reason)
+
+        # Pull blocking gate from metadata if surfaced.
+        meta = decision.metadata or {}
+        blocking_gate = meta.get("blocking_gate") or meta.get("failed_gate")
+        gate_reason = decision.skip_reason if outcome.startswith("SKIPPED_") else None
+
+        side = decision.direction or "?"
+        price: Optional[float] = None
+        stake: Optional[float] = None
+        order_id: Optional[str] = None
+        if execution_result is not None:
+            price = getattr(execution_result, "fill_price", None)
+            stake = getattr(execution_result, "stake_usd", None)
+            order_id = getattr(execution_result, "order_id", None)
+        if price is None:
+            price = decision.entry_cap
+
+        try:
+            await send(
+                strategy=strategy,
+                window_ts=int(window_ts or 0),
+                side=side,
+                outcome=outcome,
+                stake_usd=float(stake) if stake is not None else None,
+                price=float(price) if price is not None else None,
+                edge_bps=None,
+                blocking_gate=blocking_gate,
+                gate_reason=gate_reason or (exec_error if outcome == "FAILED_EXECUTION" else None),
+                order_id=str(order_id) if order_id else None,
+                timeframe=timeframe,
+            )
+        except Exception as exc:
+            log.bind(strategy=strategy, outcome=outcome).warning(
+                "registry.trade_attempt_card_failed",
+                error=str(exc)[:200],
+            )
 
     def _write_window_trace(self, surface: FullDataSurface) -> None:
         import asyncio
