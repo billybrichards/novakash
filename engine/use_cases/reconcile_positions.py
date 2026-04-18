@@ -118,8 +118,16 @@ class ReconcilePositionsUseCase:
                 errors += 1
                 logger.warning("reconciler.live_resolve_error", condition_id=pos.condition_id[:20], error=str(exc)[:100])
 
-        # Shadow-label pass FIRST: stamp actual_direction on ALL resolved windows
-        # so paper trades can look up their outcome.
+        # Oracle poll FIRST: stamp oracle_outcome from Polymarket Gamma on any
+        # window closed in the last 15 min lacking an oracle label. Labeler
+        # below then prefers oracle_outcome over the chainlink/delta fallbacks.
+        try:
+            await self._window_state.populate_oracle_outcomes()
+        except Exception as exc:
+            logger.warning("reconciler.oracle_poll_error", error=str(exc)[:100])
+
+        # Shadow-label pass: stamp actual_direction on ALL resolved windows so
+        # paper trades can look up their outcome.
         windows_labeled = 0
         try:
             windows_labeled = await self._window_state.label_resolved_windows()
