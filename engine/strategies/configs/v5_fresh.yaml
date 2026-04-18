@@ -1,0 +1,65 @@
+name: v5_fresh
+version: "5.3.0"
+# 2026-04-18: Relaxed-gate sibling of v5_ensemble. Hook code reuses
+# v5_ensemble.evaluate_polymarket_ensemble — only the gate_params
+# differ. Goes LIVE alongside v5_ensemble. Window-level execute-trade
+# dedup (WindowKey) means only one strategy fills per window if both
+# agree; v5_fresh's marginal trades are on windows v5_ensemble declines.
+#
+# Relaxations vs v5_ensemble (only knobs already supported by the hook):
+#   health_gate: unsafe            (was degraded — allows DEGRADED through)
+#   ensemble_disagreement_threshold: 0.20 (was 0.0 — ADDS a model-sanity
+#                                          gate; not a pure relaxation)
+#
+# risk_off override stays DISABLED — matches Billy's 2026-04-17 kill
+# (commit b094278, lost money). Re-enabling requires counterfactual
+# shadow data first; a future PR will add that logging.
+#
+# NOT yet touched (would need new hook code — PR 4 follow-up):
+#   stale_mode: both  (currently any-source-None → skip)
+#   tiingo_high_waive: true  (waive tiingo for HIGH conviction)
+#   late_window_div_min: 0.03 (currently hard-coded 0.04)
+#
+# Roll back: edit this file (mode: GHOST) and restart engine.
+mode: LIVE
+asset: BTC
+timescale: 5m
+
+gates: []
+
+hooks_file: v5_fresh.py
+pre_gate_hook: evaluate_polymarket_ensemble
+
+# Per-strategy tuning — the WHOLE point of this strategy is that YAML
+# now owns these values independently from v5_ensemble.yaml.
+gate_params:
+  # Inherited tier-0 knobs — kept strict (don't relax without evidence).
+  min_offset_sec: 45
+  skip_calm: true
+  skip_stale_sources: true
+  require_tiingo_agree: true
+
+  # Tier A3 — allow DEGRADED through; still block UNSAFE.
+  health_gate: unsafe
+
+  # risk_off override STAYS DISABLED — matches Billy's 2026-04-17 kill.
+  # Values below are placeholders for when the override flips back on
+  # after shadow data validates it; they have no effect while disabled.
+  risk_off_override_enabled: false
+  risk_off_override_dist_min: 0.20
+  risk_off_override_require_tiingo: true
+
+  # v5-specific: ensemble source + sanity.
+  ensemble_signal_source: ensemble
+  ensemble_skip_on_fallback: true
+
+  # Tier A1 — enable model-level disagreement guard (v5_ensemble leaves
+  # this at 0 / disabled). |p_lgb - p_path1| > 0.20 → skip.
+  ensemble_disagreement_threshold: 0.20
+
+# Sizing matches v5_ensemble so per-window allocation isn't a confound
+# when comparing WR. Bump to 0.028 / 0.12 is a Week-2 candidate.
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.10
