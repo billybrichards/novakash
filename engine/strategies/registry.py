@@ -21,6 +21,7 @@ import yaml
 from alerts.haiku_summarizer import HaikuSummarizer
 from domain.decision_metadata import DecisionMetadata
 from domain.value_objects import GateCheckTrace, StrategyDecision, WindowEvaluationTrace
+from strategies import gate_params as _gate_params
 from strategies.data_surface import DataSurfaceManager, FullDataSurface
 from strategies.gates.base import Gate, GateResult
 
@@ -85,6 +86,11 @@ class StrategyConfig:
     hooks_file: Optional[str] = None
     pre_gate_hook: Optional[str] = None
     post_gate_hook: Optional[str] = None
+    # Per-strategy tuning knobs for hook code. Consumed via
+    # strategies.gate_params.get_*() inside the hook; YAML value wins over
+    # the legacy env fallback. Empty dict = pure env-only behaviour
+    # (pre-migration default — v4/v5 hooks still work unchanged).
+    gate_params: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -290,6 +296,12 @@ class StrategyRegistry:
             if not data.get(required):
                 raise ValueError(f"Missing required field '{required}' in {path}")
 
+        raw_gate_params = data.get("gate_params") or {}
+        if not isinstance(raw_gate_params, dict):
+            raise ValueError(
+                f"'gate_params' in {path} must be a mapping, got "
+                f"{type(raw_gate_params).__name__}"
+            )
         return StrategyConfig(
             name=data["name"],
             version=data["version"],
@@ -301,6 +313,7 @@ class StrategyRegistry:
             hooks_file=data.get("hooks_file"),
             pre_gate_hook=data.get("pre_gate_hook"),
             post_gate_hook=data.get("post_gate_hook"),
+            gate_params=dict(raw_gate_params),
         )
 
     def _build_pipeline(self, config: StrategyConfig) -> list[Gate]:
@@ -1259,7 +1272,26 @@ class StrategyRegistry:
         config: StrategyConfig,
         surface: FullDataSurface,
     ) -> StrategyDecision:
-        """Run one strategy's gate pipeline on the surface."""
+        """Run one strategy's gate pipeline on the surface.
+
+        Per-strategy gate_params (YAML) are bound to the module-level
+        contextvar in ``strategies.gate_params`` before any hook runs
+        and reset on exit. Hooks read tuning knobs via
+        ``gate_params.get_bool/get_float/...`` so each strategy sees its
+        own overrides even when sharing hook code.
+        """
+        token = _gate_params.set_active(config.gate_params)
+        try:
+            return self._evaluate_one_inner(name, config, surface)
+        finally:
+            _gate_params.reset_active(token)
+
+    def _evaluate_one_inner(
+        self,
+        name: str,
+        config: StrategyConfig,
+        surface: FullDataSurface,
+    ) -> StrategyDecision:
 
         # Pre-gate hook (e.g., v4_fusion custom evaluation)
         if config.pre_gate_hook:
