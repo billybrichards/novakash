@@ -158,50 +158,34 @@ export default function App() {
             } />
           </Route>
 
-          {/* Redirects for bookmarked legacy URLs to the new shell or archive */}
+          {/*
+           * Redirects for externally-linked legacy URLs (Telegram alerts, saved bookmarks).
+           * Internal-only dev pages (playwright, factory, schema, data surfaces, etc.) have
+           * no redirect — they fall through to the catch-all below.
+           */}
+          {/* Core operational pages — most likely to appear in Telegram alerts or user bookmarks */}
           <Route path="/dashboard" element={<Navigate to="/" replace />} />
-          <Route path="/paper" element={<Navigate to="/archive/paper" replace />} />
           <Route path="/live" element={<Navigate to="/archive/live" replace />} />
-          <Route path="/v58" element={<Navigate to="/archive/v58" replace />} />
-          <Route path="/execution-hq" element={<Navigate to="/archive/execution-hq" replace />} />
-          <Route path="/playwright" element={<Navigate to="/archive/playwright" replace />} />
-          <Route path="/factory" element={<Navigate to="/archive/factory" replace />} />
-          <Route path="/windows" element={<Navigate to="/archive/windows" replace />} />
-          <Route path="/strategy" element={<Navigate to="/archive/strategy" replace />} />
-          <Route path="/timesfm" element={<Navigate to="/archive/timesfm" replace />} />
-          <Route path="/composite" element={<Navigate to="/archive/composite" replace />} />
-          <Route path="/margin" element={<Navigate to="/archive/margin" replace />} />
-          <Route path="/margin-strategies" element={<Navigate to="/archive/margin-strategies" replace />} />
+          <Route path="/paper" element={<Navigate to="/archive/paper" replace />} />
           <Route path="/positions" element={<Navigate to="/archive/positions" replace />} />
           <Route path="/risk" element={<Navigate to="/archive/risk" replace />} />
-          <Route path="/trading-config" element={<Navigate to="/config" replace />} />
-          <Route path="/legacy-config" element={<Navigate to="/archive/legacy-config" replace />} />
-          <Route path="/setup" element={<Navigate to="/archive/setup" replace />} />
-          <Route path="/notes" element={<Navigate to="/archive/notes" replace />} />
-          <Route path="/schema" element={<Navigate to="/archive/schema" replace />} />
-          <Route path="/deployments" element={<Navigate to="/archive/deployments" replace />} />
-          <Route path="/signal-comparison" element={<Navigate to="/archive/signal-comparison" replace />} />
-          <Route path="/ops" element={<Navigate to="/archive/ops" replace />} />
+          <Route path="/execution-hq" element={<Navigate to="/archive/execution-hq" replace />} />
+          <Route path="/windows" element={<Navigate to="/archive/windows" replace />} />
+          <Route path="/v58" element={<Navigate to="/archive/v58" replace />} />
+          <Route path="/strategy" element={<Navigate to="/archive/strategy" replace />} />
+          <Route path="/timesfm" element={<Navigate to="/archive/timesfm" replace />} />
           <Route path="/telegram" element={<Navigate to="/archive/telegram" replace />} />
+          {/* Config redirect: /trading-config → active Tier-1 /config page */}
+          <Route path="/trading-config" element={<Navigate to="/config" replace />} />
+          {/* Polymarket subtree — main entry point and operational sub-pages */}
           <Route path="/polymarket" element={<Navigate to="/archive/polymarket/monitor" replace />} />
           <Route path="/polymarket/monitor" element={<Navigate to="/archive/polymarket/monitor" replace />} />
           <Route path="/polymarket/overview" element={<Navigate to="/archive/polymarket/overview" replace />} />
           <Route path="/polymarket/floor" element={<Navigate to="/archive/polymarket/floor" replace />} />
-          <Route path="/polymarket/evaluate" element={<Navigate to="/archive/polymarket/evaluate" replace />} />
-          <Route path="/polymarket/strategy-lab" element={<Navigate to="/archive/polymarket/strategy-lab" replace />} />
           <Route path="/polymarket/strategy-history" element={<Navigate to="/archive/polymarket/strategy-history" replace />} />
           <Route path="/polymarket/strategies" element={<Navigate to="/archive/polymarket/strategies" replace />} />
           <Route path="/polymarket/gate-monitor" element={<Navigate to="/archive/polymarket/gate-monitor" replace />} />
-          <Route path="/polymarket/data-health" element={<Navigate to="/archive/polymarket/data-health" replace />} />
           <Route path="/polymarket/command" element={<Navigate to="/archive/polymarket/command" replace />} />
-          <Route path="/polymarket/down-only" element={<Navigate to="/archive/polymarket/down-only" replace />} />
-          <Route path="/polymarket/up-asian" element={<Navigate to="/archive/polymarket/up-asian" replace />} />
-          <Route path="/polymarket/15min" element={<Navigate to="/archive/15min-monitor" replace />} />
-          <Route path="/data/v1" element={<Navigate to="/archive/data/v1" replace />} />
-          <Route path="/data/v2" element={<Navigate to="/archive/data/v2" replace />} />
-          <Route path="/data/v3" element={<Navigate to="/archive/data/v3" replace />} />
-          <Route path="/data/v4" element={<Navigate to="/archive/data/v4" replace />} />
-          <Route path="/data/assembler1" element={<Navigate to="/archive/data/assembler1" replace />} />
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
