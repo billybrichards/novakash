@@ -1,12 +1,13 @@
 name: v5_ensemble
-version: "5.0.0-shadow"
-# NOTE: spec called for `mode: SHADOW`, but registry.StrategyConfig only
-# recognises LIVE / GHOST / DISABLED. GHOST is the matching semantic:
-# decisions are evaluated and persisted via decision_repo, and TRADE
-# actions emit `registry.ghost_decision` log lines instead of executing.
-# Flip to LIVE only after Billy approves shadow review (per
-# feedback_no_auto_promotion.md).
-mode: GHOST
+version: "5.1.0"
+# 2026-04-18: Flipped GHOST → LIVE per Billy. Path 1 classifier is
+# deployed on Montreal-timesfm (16.52.14.182) with
+# V5_ENSEMBLE_PATH1_ENABLED=true; v5 now consumes the blended p_up via
+# surface.poly_confidence and runs alongside v4_fusion (also LIVE).
+# The 13 inherited gates + 2 ensemble gates govern execution. Roll
+# back to GHOST by editing this file (mode: GHOST) and restarting
+# the engine — no code change needed.
+mode: LIVE
 asset: BTC
 timescale: 5m
 
