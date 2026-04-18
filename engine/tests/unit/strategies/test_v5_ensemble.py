@@ -284,8 +284,9 @@ class TestInheritedGates:
 class TestRegistryLoad:
     """Sanity: the YAML actually loads and registers under the right name."""
 
-    def test_v5_ensemble_loads_with_ghost_mode(self):
+    def test_v5_ensemble_loads_with_live_mode(self):
         reg = _fresh_registry()
         assert "v5_ensemble" in reg.strategy_names
-        # GHOST not SHADOW — see v5_ensemble.md "Mode note"
-        assert reg.configs["v5_ensemble"].mode == "GHOST"
+        # 2026-04-18: GHOST → LIVE flip. Path 1 classifier deployed on
+        # Montreal-timesfm; v5 trades alongside v4_fusion.
+        assert reg.configs["v5_ensemble"].mode == "LIVE"

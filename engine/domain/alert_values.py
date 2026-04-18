@@ -399,6 +399,12 @@ class TradeAlertPayload:
     health: HealthBadge
     today_tally: Optional[CumulativeTally] = None
     last_hour_tally: Optional[CumulativeTally] = None
+    # Strategy-specific opaque metadata for renderer to surface (e.g.
+    # v5_ensemble passes signal_source / probability_lgb / probability_classifier
+    # / ensemble_config so the operator can distinguish ensemble trades from
+    # plain v4_fusion trades in Telegram). Default None preserves backward
+    # compat for every other strategy.
+    extras: Optional[dict] = None
 
     def __post_init__(self) -> None:
         _check_timeframe(self.timeframe)

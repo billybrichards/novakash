@@ -26,7 +26,7 @@ from domain.alert_values import HealthStatus
 from domain.value_objects import StrategyDecision
 
 _STRATEGY_ID = "v5_ensemble"
-_VERSION = "5.0.0-shadow"
+_VERSION = "5.1.0"
 
 # ── Inherited from v4_fusion (verbatim — keep aligned) ───────────────────────
 _CONVICTION_THRESHOLDS = {

@@ -1,7 +1,7 @@
 # v5_ensemble Strategy
 
-**Version:** 5.0.0-shadow (Strategy Engine v2)
-**Mode:** GHOST (log-only; promote to LIVE only after Billy's review)
+**Version:** 5.1.0 (Strategy Engine v2)
+**Mode:** LIVE (real-money execution alongside v4_fusion)
 **Direction:** ALL (direction determined by V4 surface)
 
 ## Overview

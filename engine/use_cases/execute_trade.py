@@ -405,6 +405,11 @@ class ExecuteTradeUseCase:
                     elapsed_s=(result.execution_end - result.execution_start)
                     if result.execution_end > result.execution_start
                     else 0.0,
+                    # Forward raw decision metadata so strategy-specific TG
+                    # surfaces (e.g. v5_ensemble's signal_source / p_lgb /
+                    # p_classifier / ensemble_config) flow to the renderer
+                    # without each strategy needing its own kwarg.
+                    decision_metadata=decision.metadata,
                 )
             else:
                 alert_msg = self._format_trade_alert(

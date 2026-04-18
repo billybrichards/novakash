@@ -134,6 +134,78 @@ class TestRenderTrade:
         out = TelegramRenderer().render(self._payload())
         assert "ord=`0xabcdef01`" in out
 
+    # ── v5_ensemble extras line ────────────────────────────────────────────
+
+    def _ensemble_payload(self, extras):
+        """Build a v5_ensemble TradeAlertPayload with custom extras."""
+        return TradeAlertPayload(
+            header=_hdr(),
+            footer=_foot(),
+            tier=AlertTier.TACTICAL,
+            timeframe="5m",
+            strategy_id="v5_ensemble",
+            strategy_version="5.1.0",
+            mode="LIVE",
+            direction="DOWN",
+            confidence_label="HIGH",
+            confidence_score=0.65,
+            gate_results=({"name": "confidence", "passed": True},),
+            stake_usdc=Decimal("3.94"),
+            fill_price_cents=0.49,
+            fill_size_shares=8.04,
+            cost_usdc=Decimal("3.94"),
+            order_submitted=True,
+            order_status="FILLED",
+            btc=_btc(),
+            health=HealthBadge(status=HealthStatus.OK, reasons=()),
+            extras=extras,
+        )
+
+    def test_no_extras_renders_unchanged(self):
+        """A payload with extras=None (every non-ensemble strategy) shows no ensemble line."""
+        out = TelegramRenderer().render(self._payload())  # default helper, no extras
+        assert "ensemble:" not in out
+
+    def test_ensemble_line_full_blend(self):
+        """signal_source=ensemble + both p_lgb / p_classifier present."""
+        out = TelegramRenderer().render(self._ensemble_payload({
+            "signal_source": "ensemble",
+            "probability_used": 0.812,
+            "probability_lgb": 0.773,
+            "probability_classifier": 0.851,
+            "ensemble_config": {"mode": "blend", "weights": {"lgb": 0.5, "path1": 0.5}},
+        }))
+        assert "ensemble: source=ensemble" in out
+        assert "used=0.812" in out
+        assert "lgb=0.773" in out
+        assert "path1=0.851" in out
+        assert "mode=blend" in out
+
+    def test_ensemble_line_fallback_lgb_only(self):
+        """ensemble_config.mode=fallback_lgb_only renders mode=fallback_lgb_only and path1=n/a."""
+        out = TelegramRenderer().render(self._ensemble_payload({
+            "signal_source": "ensemble",
+            "probability_used": 0.620,
+            "probability_lgb": 0.620,
+            "probability_classifier": None,
+            "ensemble_config": {"mode": "fallback_lgb_only"},
+        }))
+        assert "mode=fallback_lgb_only" in out
+        assert "path1=n/a" in out
+
+    def test_ensemble_line_lgb_only_source(self):
+        """signal_source=lgb_only is surfaced even when classifier is also live."""
+        out = TelegramRenderer().render(self._ensemble_payload({
+            "signal_source": "lgb_only",
+            "probability_used": 0.30,
+            "probability_lgb": 0.30,
+            "probability_classifier": 0.55,
+            "ensemble_config": {"mode": "blend"},
+        }))
+        assert "source=lgb_only" in out
+        assert "lgb=0.300" in out
+        assert "path1=0.550" in out
+
 
 # ---------------------------------------------------------------------------
 # WindowSignalPayload — strategies grouped by mode

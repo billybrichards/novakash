@@ -265,6 +265,7 @@ class TelegramAlerter:
         eval_offset,
         paper_mode: bool,
         success: bool,
+        decision_metadata: Optional[dict] = None,
     ) -> None:
         """Build a TradeAlertPayload via Phase C use case and dispatch.
 
@@ -313,6 +314,23 @@ class TelegramAlerter:
             except Exception:
                 cost_usdc = None
 
+        # Build strategy-specific extras for the renderer. Currently used by
+        # v5_ensemble to surface signal_source / probability_lgb /
+        # probability_classifier / ensemble_config so the operator can tell
+        # ensemble trades apart from plain v4_fusion in TG. Other strategies
+        # leave this None — renderer treats absence as a no-op.
+        extras: Optional[dict] = None
+        if decision_metadata and decision_metadata.get("signal_source"):
+            extras = {
+                "signal_source": decision_metadata.get("signal_source"),
+                "probability_used": decision_metadata.get("probability_used"),
+                "probability_lgb": decision_metadata.get("probability_lgb"),
+                "probability_classifier": decision_metadata.get(
+                    "probability_classifier"
+                ),
+                "ensemble_config": decision_metadata.get("ensemble_config"),
+            }
+
         inp = BuildTradeAlertInput(
             timeframe=timeframe or "5m",
             strategy_id=strategy_id,
@@ -343,6 +361,7 @@ class TelegramAlerter:
             event_ts_unix=event_ts,
             t_offset_secs=t_off,
             paper_mode=paper_mode,
+            extras=extras,
         )
 
         # Skip if required BTC price is zero — defensive.
@@ -3411,10 +3430,16 @@ class TelegramAlerter:
         success: bool = True,
         failure_reason: str = "",
         elapsed_s: float = 0.0,
+        decision_metadata: Optional[dict] = None,
     ) -> None:
         """Rich Telegram alert for Strategy Engine v2 trades.
 
         Shows strategy name, gate pipeline, sizing, fill details.
+
+        ``decision_metadata`` is the raw ``StrategyDecision.metadata`` dict.
+        Strategies that need to surface custom fields in TG (e.g.
+        v5_ensemble's ``signal_source`` / ``probability_lgb`` / etc) populate
+        it; the narrative-v2 path forwards selected keys to the renderer.
         """
         # ── Narrative V2 dual-fire (Phase G.1) ────────────────────────────────
         # Non-blocking: swallows every error so legacy path always runs.
@@ -3444,6 +3469,7 @@ class TelegramAlerter:
                     eval_offset=eval_offset,
                     paper_mode=paper_mode,
                     success=success,
+                    decision_metadata=decision_metadata,
                 )
             except Exception as exc:
                 self._log.warning(
