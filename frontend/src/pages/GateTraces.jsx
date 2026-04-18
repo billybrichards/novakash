@@ -283,10 +283,8 @@ export default function GateTraces() {
           <div style={{ overflowX: 'auto' }}>
             <table
               style={{
-                width: '100%',
                 borderCollapse: 'collapse',
                 fontSize: 11,
-                tableLayout: 'fixed',
               }}
             >
               <thead>
@@ -302,10 +300,12 @@ export default function GateTraces() {
                       textAlign: 'left',
                       padding: '6px 10px',
                       width: 180,
+                      minWidth: 180,
                       position: 'sticky',
                       left: 0,
                       background: T.bg,
                       zIndex: 1,
+                      verticalAlign: 'bottom',
                     }}
                   >
                     STRATEGY
@@ -313,14 +313,27 @@ export default function GateTraces() {
                   {gates.map((g) => (
                     <th
                       key={g}
+                      title={g}
                       style={{
-                        textAlign: 'right',
-                        padding: '6px 10px',
+                        padding: '6px 4px',
                         textTransform: 'uppercase',
                         fontWeight: 500,
+                        whiteSpace: 'nowrap',
+                        verticalAlign: 'bottom',
+                        height: 140,
+                        minWidth: 28,
                       }}
                     >
-                      {g}
+                      <div
+                        style={{
+                          writingMode: 'vertical-rl',
+                          transform: 'rotate(180deg)',
+                          textAlign: 'left',
+                          display: 'inline-block',
+                        }}
+                      >
+                        {g}
+                      </div>
                     </th>
                   ))}
                 </tr>

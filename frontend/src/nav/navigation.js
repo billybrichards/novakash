@@ -18,9 +18,11 @@ export const NAV_SECTIONS = [
     title: 'ANALYSIS',
     color: '#06b6d4',
     items: [
-      { path: '/signals',      label: 'Signal Explorer', icon: '📡' },
-      { path: '/gate-traces',  label: 'Gate Traces',     icon: '🔬' },
-      { path: '/strategies',   label: 'Strategies',      icon: '🧬' },
+      { path: '/signals',       label: 'Signal Explorer', icon: '📡' },
+      { path: '/gate-traces',   label: 'Gate Traces',     icon: '🔬' },
+      { path: '/gate-matrix',   label: 'Gate Matrix',     icon: '🧩' },
+      { path: '/analysis',      label: 'Analysis · 30d',  icon: '📈' },
+      { path: '/strategies',    label: 'Strategies',      icon: '🧬' },
     ],
   },
   {
@@ -29,6 +31,8 @@ export const NAV_SECTIONS = [
     items: [
       { path: '/config',      label: 'Config',         icon: '⚙️' },
       { path: '/audit',       label: 'Audit Tasks',    icon: '🔔' },
+      { path: '/notes',       label: 'Notes',          icon: '📝' },
+      { path: '/schema',      label: 'Schema',         icon: '🗄️' },
       { path: '/system',      label: 'System',         icon: '🖥️' },
     ],
   },
@@ -55,7 +59,7 @@ export const ARCHIVED_PAGES = [
   { path: '/archive/factory',           label: 'Factory Floor',         importName: 'FactoryFloor',         category: 'trading', replacedBy: 'Signal Explorer' },
   { path: '/archive/v58',               label: 'V58 Monitor',           importName: 'V58Monitor',           category: 'trading', replacedBy: 'Signal Explorer' },
   { path: '/archive/windows',           label: 'Window Results',        importName: 'WindowResults',        category: 'trading', replacedBy: 'Signal Explorer' },
-  { path: '/archive/strategy',          label: 'Strategy Analysis',     importName: 'StrategyAnalysis',     category: 'trading', replacedBy: 'Strategies' },
+  // StrategyAnalysis promoted to /analysis (nav entry "Analysis · 30d").
   { path: '/archive/timesfm',           label: 'TimesFM',               importName: 'TimesFM',              category: 'trading', replacedBy: 'Signal Explorer (forecast)' },
   { path: '/archive/composite',         label: 'Composite Signals',     importName: 'CompositeSignals',     category: 'trading', replacedBy: 'Signal Explorer' },
   { path: '/archive/positions',         label: 'Positions',             importName: 'Positions',            category: 'trading', replacedBy: 'Dashboard (open positions pane)' },
@@ -73,8 +77,8 @@ export const ARCHIVED_PAGES = [
   { path: '/archive/audit-checklist',   label: 'Audit Checklist',       importName: 'AuditChecklist',       category: 'ops',     replacedBy: 'Audit Tasks' },
   { path: '/archive/margin-strategies', label: 'Margin Strategies',     importName: 'MarginStrategies',     category: 'ops',     replacedBy: 'Strategies', note: 'Margin subsystem.' },
   { path: '/archive/deployments',       label: 'Deployments',           importName: 'Deployments',          category: 'ops',     replacedBy: 'System', note: 'CI/CD surface.' },
-  { path: '/archive/notes',             label: 'Notes',                 importName: 'Notes',                category: 'ops',     replacedBy: 'Audit Tasks', note: 'Hub notes log.' },
-  { path: '/archive/schema',            label: 'Schema',                importName: 'Schema',               category: 'ops',     replacedBy: null, note: 'DB schema inspector — no equivalent in new UI.' },
+  // Notes promoted to /notes (active nav under CONTROL).
+  // Schema promoted to /schema (active nav under CONTROL).
   { path: '/archive/ops',               label: 'Agent Ops',             importName: 'AgentOps',             category: 'ops',     replacedBy: 'Audit Tasks' },
   { path: '/archive/telegram',          label: 'Telegram',              importName: 'Telegram',             category: 'ops',     replacedBy: null, note: 'TG channel control — no equivalent in new UI.' },
   // Polymarket subtree
@@ -85,7 +89,7 @@ export const ARCHIVED_PAGES = [
   { path: '/archive/polymarket/strategy-lab',     label: 'Strategy Lab',             importName: 'StrategyLab',          category: 'polymarket', replacedBy: 'Strategies' },
   { path: '/archive/polymarket/strategy-history', label: 'Strategy History',         importName: 'StrategyHistory',      category: 'polymarket', replacedBy: 'Trades' },
   { path: '/archive/polymarket/strategies',       label: 'Strategy Configs',         importName: 'StrategyConfigs',      category: 'polymarket', replacedBy: 'Config' },
-  { path: '/archive/polymarket/gate-monitor',     label: 'Gate Pipeline Monitor',    importName: 'GatePipelineMonitor',  category: 'polymarket', replacedBy: 'Signal Explorer' },
+  // GatePipelineMonitor promoted to /gate-matrix (nav entry "Gate Matrix").
   { path: '/archive/polymarket/data-health',      label: 'Data Health',              importName: 'DataHealth',           category: 'polymarket', replacedBy: 'System' },
   { path: '/archive/polymarket/command',          label: 'Strategy Command',         importName: 'StrategyCommand',      category: 'polymarket', replacedBy: 'Config' },
   // Data surfaces — raw feed inspection pages (each version superseded by next)

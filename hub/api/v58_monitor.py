@@ -3893,6 +3893,14 @@ async def strategy_decisions(
                 "fill_price": _safe_float(r["fill_price"]),
                 "fill_size": _safe_float(r["fill_size"]),
                 "metadata": meta_parsed,
+                # Promoted metadata keys — FE SignalExplorer/GateTraces read as
+                # top-level fields (r.regime, r.conviction, r.distance_usd,
+                # r.min_distance). Keeping `metadata` too for consumers that
+                # want the full blob.
+                "regime": meta_parsed.get("regime"),
+                "conviction": meta_parsed.get("conviction"),
+                "distance_usd": meta_parsed.get("distance_usd"),
+                "min_distance": meta_parsed.get("min_distance"),
                 "evaluated_at": r["evaluated_at"].isoformat() if r["evaluated_at"] else None,
                 # Task #222 — resolved-trade enrichment (nullable until resolve)
                 "outcome": r["outcome"],

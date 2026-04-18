@@ -133,6 +133,27 @@ export default function App() {
             <Route path="audit" element={<AuditTasks />} />
             <Route path="pnl" element={<PnL />} />
             <Route path="system" element={<System />} />
+            {/* Pages promoted out of /archive — now first-class nav entries. */}
+            <Route path="analysis" element={
+              <Suspense fallback={<Loading label="Loading analysis…" />}>
+                <StrategyAnalysis />
+              </Suspense>
+            } />
+            <Route path="gate-matrix" element={
+              <Suspense fallback={<Loading label="Loading gate matrix…" />}>
+                <GatePipelineMonitor />
+              </Suspense>
+            } />
+            <Route path="notes" element={
+              <Suspense fallback={<Loading label="Loading notes…" />}>
+                <Notes />
+              </Suspense>
+            } />
+            <Route path="schema" element={
+              <Suspense fallback={<Loading label="Loading schema…" />}>
+                <Schema />
+              </Suspense>
+            } />
             <Route path="archive" element={<ArchiveCenter />} />
           </Route>
 
@@ -177,6 +198,11 @@ export default function App() {
           <Route path="/telegram" element={<Navigate to="/archive/telegram" replace />} />
           {/* Config redirect: /trading-config → active Tier-1 /config page */}
           <Route path="/trading-config" element={<Navigate to="/config" replace />} />
+          {/* Promoted-out-of-archive redirects (keep bookmarks/TG alerts working). */}
+          <Route path="/archive/strategy" element={<Navigate to="/analysis" replace />} />
+          <Route path="/archive/notes" element={<Navigate to="/notes" replace />} />
+          <Route path="/archive/schema" element={<Navigate to="/schema" replace />} />
+          <Route path="/archive/polymarket/gate-monitor" element={<Navigate to="/gate-matrix" replace />} />
           {/* Polymarket subtree — main entry point and operational sub-pages */}
           <Route path="/polymarket" element={<Navigate to="/archive/polymarket/monitor" replace />} />
           <Route path="/polymarket/monitor" element={<Navigate to="/archive/polymarket/monitor" replace />} />
