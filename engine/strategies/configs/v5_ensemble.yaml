@@ -19,6 +19,37 @@ gates: []
 hooks_file: v5_ensemble.py
 pre_gate_hook: evaluate_polymarket_ensemble
 
+# Per-strategy gate tuning. These values match the historical env-var
+# defaults (V4_* + V5_*) so this block is a zero-behaviour-change audit
+# trail of what v5_ensemble actually runs in production. Env vars fall
+# through when a key is omitted (ops escape hatch for 30 days post PR #267).
+gate_params:
+  # Inherited from v4_fusion — keep aligned with v4_fusion.yaml.
+  min_offset_sec: 45
+  skip_calm: true
+  skip_stale_sources: true
+  require_tiingo_agree: true
+  health_gate: degraded
+  # 2026-04-17: DISABLED by Billy after losing money (commit b094278).
+  # Matches current Montreal .env. Re-enable only after shadow data
+  # validates that override-skips would have been winners.
+  risk_off_override_enabled: false
+  risk_off_override_dist_min: 0.20
+  risk_off_override_require_tiingo: true
+
+  # v5-specific — ensemble control.
+  # Which p_up to consume: ensemble (blended) | lgb_only | path1_only.
+  ensemble_signal_source: ensemble
+
+  # Skip when timesfm reports ensemble_config.mode=fallback_lgb_only.
+  # Keeps v5_ensemble strictly stricter than v4_fusion when classifier
+  # head is unavailable (silent fallback would erase the v5 edge).
+  ensemble_skip_on_fallback: true
+
+  # Disagreement abstain threshold on |p_lgb - p_path1|. 0 = gate off.
+  # Leave off until we have 200+ trades of shadow calibration baseline.
+  ensemble_disagreement_threshold: 0.0
+
 # Sizing matches v4_fusion so allocation isn't a confound when comparing WR.
 sizing:
   type: fixed_kelly
