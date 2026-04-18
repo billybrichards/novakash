@@ -389,3 +389,29 @@ PRs shipped today:
 - **PR #190** — Retire CLOBReconciler dual path (`ENGINE_USE_RECONCILE_UC` made permanent, legacy branch removed)
 - **PR #191** — Fix test stubs (`fetch_trades` / `manual_trades_joined_poly_fills` signatures aligned)
 - **PR #192** — Retire `gate_audit` table (no-op wrappers removed, writes migrated to `gate_check_traces`)
+
+---
+
+## v5_ensemble Strategy (audit #121 Path 1) — 2026-04-18
+
+**Spec:** novakash-timesfm-repo `claude/audit-121-timesfm-finetune` :: `docs/superpowers/specs/2026-04-18-v5-ensemble-strategy.md` (commit c354bb8). Hub note 159.
+
+### Plan
+- [ ] Add `probability_lgb`, `probability_classifier`, `ensemble_config` to `FullDataSurface` (frozen=True → must be kwargs in `return FullDataSurface(...)`, NOT post-construct assignment as spec wrongly suggests)
+- [ ] In `data_surface.py` builder: read 3 keys from `ts_data` and pass as kwargs in the existing `return` block
+- [ ] Create `engine/strategies/configs/v5_ensemble.yaml`. Use `mode: GHOST` (not SHADOW — registry only knows LIVE/GHOST/DISABLED). Document choice.
+- [ ] Create `engine/strategies/configs/v5_ensemble.py`. Fork v4_fusion.py verbatim. Apply 2 patches: (1) signal-source select via `V5_ENSEMBLE_SIGNAL_SOURCE`, (2) two new gates `ensemble_fallback_sanity` + `ensemble_disagreement` after confidence gate. COPY `_evaluate_poly_legacy` + `_evaluate_legacy` verbatim from v4_fusion.py:575-700 (replace spec's `NotImplementedError` placeholders).
+- [ ] Create `engine/strategies/configs/v5_ensemble.md` modeled on v4_fusion.md. Note differences vs v4_fusion + env vars.
+- [ ] Add `engine/tests/test_v5_ensemble.py` with 6 tests per spec §Test plan.
+- [ ] Run `pytest engine/tests/test_v5_ensemble.py` — all 6 pass.
+- [ ] Verify yaml loads + hook imports cleanly (no registry warning).
+- [ ] Commit, push branch `feat/v5-ensemble-strategy`, open PR vs develop. Pin sister-repo commits c354bb8 + f62e9d8 in PR description.
+
+### Decisions / Notes
+- Mode = `GHOST` (not SHADOW). Registry behaviour: TRADE actions get logged via `registry.ghost_decision`, no execution.
+- New env vars (engine side): `V5_ENSEMBLE_SIGNAL_SOURCE` (default `ensemble`), `V5_ENSEMBLE_DISAGREEMENT_THRESHOLD` (default `0` = off), `V5_ENSEMBLE_SKIP_ON_FALLBACK` (default `true`).
+- Cross-repo contract keys (do NOT rename): `probability_lgb`, `probability_classifier`, `ensemble_config`.
+- Backward compat verified: `getattr(surface, "X", None)` in `_extract_ensemble_fields` so older surface (without fields) still works.
+
+### Hand-back
+- After PR opens: post hub note tagged `v5-ensemble,handoff-complete` linking PR.
