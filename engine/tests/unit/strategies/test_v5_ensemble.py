@@ -82,17 +82,22 @@ def _make_surface(**overrides) -> FullDataSurface:
 
 
 def _fresh_registry():
-    """Build a registry that re-loads v5_ensemble.py with current env vars.
+    """Build a registry that exercises the env-fallback path on v5_ensemble.
 
-    `StrategyRegistry._load_hooks` uses `importlib.util.spec_from_file_location`
-    with module name `strategy_hooks.v5_ensemble`. We force a fresh import by
-    popping the cached module before reload, so per-test env var changes are
-    actually picked up by the hook's module-level constants.
+    Since the gate_params refactor (PR #268), v5_ensemble.yaml declares every
+    tunable knob in a ``gate_params:`` block that takes priority over env.
+    These tests exercise *env fallback* behaviour, so after load we clear
+    v5_ensemble's gate_params bag — that way ``monkeypatch.setenv`` reaches
+    the hook as it did pre-refactor. Separate tests should be added if YAML
+    overrides need direct coverage (see test_gate_params.py for mechanism
+    tests).
     """
     sys.modules.pop("strategy_hooks.v5_ensemble", None)
     mgr = DataSurfaceManager(v4_base_url="http://fake")
     reg = StrategyRegistry(CONFIGS_DIR, mgr)
     reg.load_all()
+    if "v5_ensemble" in reg.configs:
+        reg.configs["v5_ensemble"].gate_params.clear()
     return reg
 
 

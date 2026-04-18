@@ -12,7 +12,6 @@ Three evaluation paths:
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -22,11 +21,12 @@ from domain.alert_logic import score_signal_health
 from domain.alert_values import HealthStatus
 from domain.decision_metadata import DecisionMetadata
 from domain.value_objects import StrategyDecision
+from strategies import gate_params as _gp
 
 _STRATEGY_ID = "v4_fusion"
 _VERSION = "4.5.0"
 
-# Conviction -> minimum distance from 0.5 (legacy path only)
+# Conviction -> minimum distance from 0.5 (legacy path only; not tunable).
 _CONVICTION_THRESHOLDS = {
     "HIGH": 0.12,
     "MEDIUM": 0.15,
@@ -36,84 +36,66 @@ _CONVICTION_THRESHOLDS = {
 
 _TRADEABLE_REGIMES = {"calm_trend", "volatile_trend"}
 
-# ── v4.3.0 Execution timing cutoff ───────────────────────────────────────────
-# Minimum eval_offset (seconds before window close) to allow a trade. The
-# sister repo's v2 model has peak accuracy at T-30 (86%) and T-60 (80%). Real
-# fill latency is ~600ms FOK + ~20ms network (same ca-central-1 region), so
-# we can safely trade until T-45 without risk of missing the close. The older
-# T-70 floor left ~8s of the highest-conviction band unused.
-_MIN_OFFSET_SEC = int(os.environ.get("V4_MIN_OFFSET_SEC", "45"))
 
-# ── v4.3.0 Direction-aware risk_off override ─────────────────────────────────
-# The sister repo (novakash-timesfm-repo/app/v4_strategies.py:952) short-
-# circuits ALL trades when HMM regime == risk_off, even HIGH-conviction ones.
-# During directional regime spikes (e.g. overnight rally), this leaves
-# aligned-direction wins on the table. The override allows the engine to
-# take the trade IFF: (a) sister's skip reason contains "risk_off",
-# (b) distance >= _RISK_OFF_OVERRIDE_DIST_MIN (HIGH conviction),
-# (c) Chainlink 5m delta direction agrees with the trade direction.
-# Disable by setting V4_RISK_OFF_OVERRIDE_ENABLED=false.
-_RISK_OFF_OVERRIDE_ENABLED = (
-    os.environ.get("V4_RISK_OFF_OVERRIDE_ENABLED", "true").lower() == "true"
-)
-_RISK_OFF_OVERRIDE_DIST_MIN = float(
-    os.environ.get("V4_RISK_OFF_OVERRIDE_DIST_MIN", "0.20")
-)
-
-# ── v4.4.0 CALM regime skip gate (audit task #225) ───────────────────────────
-# Per project_v9_analysis.md, v2 model accuracy in regime=CALM is 45.6% (below
-# coin flip). Other regimes are healthy: CASCADE 70.3%, TRANSITION 72.5%,
-# NORMAL 73.3%. Default ON (safer). Disable via V4_FUSION_SKIP_CALM=false.
-_FUSION_SKIP_CALM = (
-    os.environ.get("V4_FUSION_SKIP_CALM", "true").lower() == "true"
-)
-
-# ── v4.4.0 Tiingo agreement gate (audit task #228) ───────────────────────────
-# Mirrors the existing chainlink_agreement gate. If Tiingo's 5m delta points
-# opposite to the trade direction, skip — the chainlink gate was historically
-# the only directional source-agreement check. Today's 10:25 UTC near-miss:
-# model DOWN HIGH conviction vs chainlink+tiingo UP — only magnitude gate
-# saved us. Default ON (safer). Disable via V4_FUSION_REQUIRE_TIINGO_AGREE=false.
-_FUSION_REQUIRE_TIINGO_AGREE = (
-    os.environ.get("V4_FUSION_REQUIRE_TIINGO_AGREE", "true").lower() == "true"
-)
-
-# ── v4.5.0 Feature staleness skip gate (audit #234 + new) ────────────────────
-# 7d DB-verified 2026-04-17: 21.67% of BTC 5m windows had chainlink OR tiingo
-# NULL at evaluation time. Accuracy on stale rows = 54.8% vs clean 60.1% =
-# 5.3pp gap. Using NULL-proxy semantics (no freshness_ms fields on
-# FullDataSurface yet). A source being None is taken as "missing / stale /
-# unusable". Default ON. Env toggle: V4_FUSION_SKIP_STALE_SOURCES.
-_FUSION_SKIP_STALE_SOURCES = (
-    os.environ.get("V4_FUSION_SKIP_STALE_SOURCES", "true").lower() == "true"
-)
-
-# ── v4.5.0 HealthBadge skip gate (audit task #223) ───────────────────────────
-# engine/domain/alert_logic.py::score_signal_health() returns a HealthBadge
-# with status OK / DEGRADED / UNSAFE + reasons tuple. Until this gate, the
-# badge was rendered in TG but not read by the skip path — trades fired on
-# DEGRADED inputs (see 11:57 UTC 2026-04-17 trade 0x377cbaaa: health
-# DEGRADED [sources:unknown], FAK filled, LOSS -$2.46).
+# ── Tunable gate knobs (YAML gate_params → env fallback → default) ──────────
+# All values resolved per-evaluation via `gate_params.get_*` so per-strategy
+# YAML overrides work. Env vars stay as fallback during the 30-day grace
+# period so ops can still hot-tweak on Montreal without a PR.
 #
-# Values:
-#   "off"      — never skip on health (legacy behaviour)
-#   "unsafe"   — skip only when status == UNSAFE (2+ amber OR red flag)
-#   "degraded" — skip on DEGRADED or UNSAFE (any amber flag; strict default)
-# Default "degraded" because the 11:57 loss had DEGRADED not UNSAFE and the
-# current thin-source class of losses needs blocking.
-_FUSION_HEALTH_GATE = os.environ.get("V4_FUSION_HEALTH_GATE", "degraded").lower()
+# Historical context for the defaults lives in the audit tasks referenced
+# inline — the module-level constants used to live here with full docstrings;
+# the YAML now owns those values and the comments are the single source of
+# truth documentation.
+def _min_offset_sec() -> int:
+    # v4.3.0: T-45 fill-latency floor (audit notes in commit b61bf7a).
+    return _gp.get_int("min_offset_sec", "V4_MIN_OFFSET_SEC", 45)
 
-# ── v4.5.0 Risk-off override hardening (audit #228 extension) ────────────────
-# The v4.3.0 override path required ONLY chainlink to agree with trade
-# direction. Today's 11:57 UTC override trade (0x377cbaaa) lost with health
-# DEGRADED [sources:unknown] — Tiingo returned None so only chainlink was
-# verifying. Override fired anyway. Under one-source confirmation an
-# override is weak. v4.5.0 also requires Tiingo to be present and
-# direction-aligned for the override to fire.
-# Disable the extra check via V4_RISK_OFF_OVERRIDE_REQUIRE_TIINGO=false.
-_RISK_OFF_OVERRIDE_REQUIRE_TIINGO = (
-    os.environ.get("V4_RISK_OFF_OVERRIDE_REQUIRE_TIINGO", "true").lower() == "true"
-)
+
+def _risk_off_override_enabled() -> bool:
+    # v4.3.0: allow override of sister's risk_off veto on HIGH + oracle-aligned.
+    return _gp.get_bool(
+        "risk_off_override_enabled", "V4_RISK_OFF_OVERRIDE_ENABLED", True
+    )
+
+
+def _risk_off_override_dist_min() -> float:
+    return _gp.get_float(
+        "risk_off_override_dist_min", "V4_RISK_OFF_OVERRIDE_DIST_MIN", 0.20
+    )
+
+
+def _fusion_skip_calm() -> bool:
+    # Audit #225: CALM regime 45.6% WR on v2 model; skip.
+    return _gp.get_bool("skip_calm", "V4_FUSION_SKIP_CALM", True)
+
+
+def _fusion_require_tiingo_agree() -> bool:
+    # Audit #228: mirror of chainlink gate on Tiingo delta.
+    return _gp.get_bool(
+        "require_tiingo_agree", "V4_FUSION_REQUIRE_TIINGO_AGREE", True
+    )
+
+
+def _fusion_skip_stale_sources() -> bool:
+    # Audit #234: skip when chainlink OR tiingo NULL at eval (NULL-proxy).
+    return _gp.get_bool(
+        "skip_stale_sources", "V4_FUSION_SKIP_STALE_SOURCES", True
+    )
+
+
+def _fusion_health_gate() -> str:
+    # Audit #223: off|unsafe|degraded. Degraded strict-default since the
+    # 11:57 UTC 2026-04-17 loss (order 0x377cbaaa) was health=DEGRADED.
+    return _gp.get_str("health_gate", "V4_FUSION_HEALTH_GATE", "degraded").lower()
+
+
+def _risk_off_override_require_tiingo() -> bool:
+    # v4.5.0 / audit #228 extension: override requires BOTH sources.
+    return _gp.get_bool(
+        "risk_off_override_require_tiingo",
+        "V4_RISK_OFF_OVERRIDE_REQUIRE_TIINGO",
+        True,
+    )
 
 
 def _gate(name: str, passed: bool, reason: str) -> dict:
@@ -182,16 +164,17 @@ def _try_risk_off_override(
 
     All 5 checks append gate-trace rows so the decision path is auditable.
     """
-    if not _RISK_OFF_OVERRIDE_ENABLED:
+    if not _risk_off_override_enabled():
         return False
     if "risk_off" not in (reason or ""):
         return False
-    if distance < _RISK_OFF_OVERRIDE_DIST_MIN:
+    dist_min = _risk_off_override_dist_min()
+    if distance < dist_min:
         gates.append(
             _gate(
                 "regime_risk_off_override",
                 False,
-                f"dist={distance:.3f} < {_RISK_OFF_OVERRIDE_DIST_MIN:.2f} conviction floor",
+                f"dist={distance:.3f} < {dist_min:.2f} conviction floor",
             )
         )
         return False
@@ -222,7 +205,7 @@ def _try_risk_off_override(
     # one-source confirmation an override is weak: today's 11:57 UTC LOSS
     # (order 0x377cbaaa) was an override-path trade with Tiingo None and
     # only chainlink verifying. Require both if the env flag is on.
-    if _RISK_OFF_OVERRIDE_REQUIRE_TIINGO:
+    if _risk_off_override_require_tiingo():
         ti_delta = surface.delta_tiingo
         if ti_delta is None:
             gates.append(
@@ -250,7 +233,7 @@ def _try_risk_off_override(
             True,
             (
                 f"risk_off overridden: dist={distance:.3f} "
-                f">= {_RISK_OFF_OVERRIDE_DIST_MIN:.2f}, "
+                f">= {_risk_off_override_dist_min():.2f}, "
                 f"chainlink={cl_direction} + tiingo aligns with trade={direction}"
             ),
         )
@@ -305,8 +288,9 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
     # v4.4.0: CALM regime skip (audit task #225). v2 model is 45.6% accurate
     # (below coin flip) in VPIN regime=CALM. Skip unconditionally unless env
     # override. See project_v9_analysis.md.
+    skip_calm = _fusion_skip_calm()
     vpin_regime = surface.regime
-    if _FUSION_SKIP_CALM and vpin_regime == "CALM":
+    if skip_calm and vpin_regime == "CALM":
         gates.append(
             _gate(
                 "calm_regime",
@@ -315,7 +299,7 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
             )
         )
         return _skip("calm_regime_model_underperforms", gates)
-    if not _FUSION_SKIP_CALM and vpin_regime == "CALM":
+    if not skip_calm and vpin_regime == "CALM":
         gates.append(
             _gate(
                 "calm_regime",
@@ -332,7 +316,7 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
     # 04-17: 21.67% of BTC 5m decisions had chainlink OR tiingo NULL; WR on
     # those rows 54.8% vs clean 60.1% = 5.3pp worse. None = stale/missing for
     # gate purposes. Evaluated BEFORE expensive gates.
-    if _FUSION_SKIP_STALE_SOURCES:
+    if _fusion_skip_stale_sources():
         missing_sources = []
         if surface.delta_chainlink is None:
             missing_sources.append("chainlink")
@@ -352,21 +336,22 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
             )
         gates.append(_gate("feature_staleness", True, "chainlink + tiingo present"))
 
-    # Hard skip if < _MIN_OFFSET_SEC left (v4.3.0: default T-45, was T-70).
+    # Hard skip if < min_offset_sec left (v4.3.0: default T-45, was T-70).
     # Real fill latency is ~600ms FOK + same-region network; T-45 gives ~42s
-    # safety margin. Override via V4_MIN_OFFSET_SEC env var.
+    # safety margin. Configured per-strategy via YAML gate_params.
+    min_offset = _min_offset_sec()
     offset = surface.eval_offset or 0
-    if offset < _MIN_OFFSET_SEC:
+    if offset < min_offset:
         gates.append(
             _gate(
                 "execution_timing",
                 False,
-                f"T-{offset} < T-{_MIN_OFFSET_SEC} live minimum",
+                f"T-{offset} < T-{min_offset} live minimum",
             )
         )
         return _skip(
             f"polymarket: timing={timing} T-{offset} -- too late "
-            f"(<{_MIN_OFFSET_SEC}s), skip",
+            f"(<{min_offset}s), skip",
             gates,
         )
 
@@ -476,7 +461,7 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
     # v4.4.0: Tiingo agreement gate (audit task #228). Mirrors the chainlink
     # gate but on the Tiingo top-of-book 5m delta. If direction disagrees,
     # skip. Missing Tiingo => pass (don't penalise when source missing).
-    if not _FUSION_REQUIRE_TIINGO_AGREE:
+    if not _fusion_require_tiingo_agree():
         gates.append(
             _gate(
                 "tiingo_agreement",
@@ -508,14 +493,15 @@ def _evaluate_poly_v2(surface: "FullDataSurface") -> StrategyDecision:
     # "off"      — never skip on health
     # "unsafe"   — skip only UNSAFE
     # "degraded" — skip DEGRADED or UNSAFE (strict)
-    if _FUSION_HEALTH_GATE != "off":
+    health_gate = _fusion_health_gate()
+    if health_gate != "off":
         health = _compute_health_badge(
             surface, distance, direction, risk_off_overridden,
         )
         block_on = {
             "unsafe": {HealthStatus.UNSAFE},
             "degraded": {HealthStatus.DEGRADED, HealthStatus.UNSAFE},
-        }.get(_FUSION_HEALTH_GATE, set())
+        }.get(health_gate, set())
         if health.status in block_on:
             gates.append(
                 _gate(
