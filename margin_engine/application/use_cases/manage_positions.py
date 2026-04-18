@@ -180,15 +180,20 @@ class ManagePositionsUseCase:
         if await self._take_profit.check_take_profit(position, mark):
             return ExitReason.TAKE_PROFIT
 
-        event_guard = await self._expiry.check_event_guard_exit(position, v4)
-        if event_guard is not None:
-            return event_guard
+        # v4-specific exits only fire when v4 actions are enabled.
+        # Without this gate, the v4 adapter (which always polls) would
+        # trigger CASCADE_EXHAUSTED exits even with engine_use_v4_actions=False,
+        # causing 84% spurious exits (see hub note #170 audit).
+        if self._input.engine_use_v4_actions:
+            event_guard = await self._expiry.check_event_guard_exit(position, v4)
+            if event_guard is not None:
+                return event_guard
 
-        cascade_exhausted = await self._expiry.check_cascade_exhausted_exit(
-            position, v4
-        )
-        if cascade_exhausted is not None:
-            return cascade_exhausted
+            cascade_exhausted = await self._expiry.check_cascade_exhausted_exit(
+                position, v4
+            )
+            if cascade_exhausted is not None:
+                return cascade_exhausted
 
         if position.is_expired():
             return await self._expiry.check_continuation(position, v4)

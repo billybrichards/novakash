@@ -235,6 +235,11 @@ async def run() -> None:
             "v4_primary_timescale": settings.v4_primary_timescale,
             "v4_entry_edge": settings.v4_entry_edge,
             "v4_continuation_min_conviction": settings.v4_continuation_min_conviction,
+            # v5 ensemble state
+            "v5_ensemble_enabled": settings.v5_ensemble_enabled,
+            "v5_ensemble_signal_source": settings.v5_ensemble_signal_source,
+            "v5_ensemble_skip_on_fallback": settings.v5_ensemble_skip_on_fallback,
+            "v5_ensemble_disagreement_threshold": settings.v5_ensemble_disagreement_threshold,
         }
 
     # ── Signal adapter ──
@@ -372,6 +377,11 @@ async def run() -> None:
         v4_allow_no_edge_if_exp_move_bps_gte=settings.v4_allow_no_edge_if_exp_move_bps_gte,
         # DQ-07 — defensive mark-divergence gate (default OFF: 0.0 = no-op)
         v4_max_mark_divergence_bps=settings.v4_max_mark_divergence_bps,
+        # v5 ensemble integration
+        v5_ensemble_enabled=settings.v5_ensemble_enabled,
+        v5_ensemble_signal_source=settings.v5_ensemble_signal_source,
+        v5_ensemble_skip_on_fallback=settings.v5_ensemble_skip_on_fallback,
+        v5_ensemble_disagreement_threshold=settings.v5_ensemble_disagreement_threshold,
         fee_rate_per_side=(
             effective_fee_rate if effective_fee_rate is not None else 0.00045
         ),
