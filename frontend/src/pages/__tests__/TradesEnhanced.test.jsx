@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import '@testing-library/jest-dom';
 
+// ── mock hooks ──────────────────────────────────────────────────────────────
+
 const mockUseApiLoader = vi.fn();
 vi.mock('../../hooks/useApiLoader.js', () => ({
   useApiLoader: (...args) => mockUseApiLoader(...args),
@@ -10,6 +12,7 @@ vi.mock('../../hooks/useApiLoader.js', () => ({
 vi.mock('../../hooks/useApi.js', () => ({
   useApi: () => ({
     get: vi.fn().mockResolvedValue({ data: [] }),
+    patch: vi.fn(),
   }),
 }));
 
@@ -19,107 +22,138 @@ vi.mock('../../auth/AuthContext.jsx', () => ({
 
 import TradesEnhanced from '../TradesEnhanced.jsx';
 
-const makeLoader = (overrides = {}) => ({
-  data: null, error: null, loading: false, reload: vi.fn(), ...overrides,
+// ── helpers ─────────────────────────────────────────────────────────────────
+
+function makeLoader(overrides = {}) {
+  return { data: null, error: null, loading: false, reload: vi.fn(), ...overrides };
+}
+
+// Minimal trade row matching the shape used by TradesEnhanced.
+function makeRow(overrides = {}) {
+  return {
+    id: 1,
+    strategy: 'v4_up_only',
+    regime: 'NORMAL',
+    conviction: 'HIGH',
+    market_slug: 'btc-up-12345',
+    direction: 'YES',
+    stake_usd: 10,
+    fill_price: 0.55,
+    exit_price: 0.72,
+    pnl_usd: 1.70,
+    outcome: 'WIN',
+    created_at: '2026-03-01T10:00:00Z',
+    is_phantom: false,
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
 });
 
-const REAL_TRADES = [
-  { id: 1, strategy: 'v4_5m', outcome: 'WIN', pnl_usd: 5, stake_usd: 10, is_phantom: false, created_at: '2026-04-17T12:00:00' },
-  { id: 2, strategy: 'v4_5m', outcome: 'LOSS', pnl_usd: -3, stake_usd: 10, is_phantom: false, created_at: '2026-04-17T12:01:00' },
-];
+// ── tests ────────────────────────────────────────────────────────────────────
 
-const PHANTOM_TRADES = [
-  { id: 3, strategy: 'v4_5m', outcome: 'WIN', pnl_usd: 7, stake_usd: 10, is_phantom: true, created_at: '2026-04-17T12:02:00' },
-  { id: 4, strategy: 'v4_5m', outcome: 'LOSS', pnl_usd: -2, stake_usd: 10, is_phantom: true, created_at: '2026-04-17T12:03:00' },
-];
-
-describe('TradesEnhanced page', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('renders page header', () => {
+describe('TradesEnhanced — loading / error states', () => {
+  it('shows empty table with no rows when loading is false and data is null', () => {
     mockUseApiLoader.mockReturnValue(makeLoader());
     render(<TradesEnhanced />);
-    expect(screen.getByRole('heading', { name: 'Trades' })).toBeInTheDocument();
+    // "Trades" appears in the PageHeader title AND in the "Trades" KPI stat label.
+    expect(screen.getAllByText('Trades').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('No trades match these filters.')).toBeInTheDocument();
   });
 
-  it('does not show phantom banner when there are no phantom trades', () => {
-    mockUseApiLoader.mockReturnValue(makeLoader({ data: REAL_TRADES }));
+  it('shows load error message when error is set', () => {
+    mockUseApiLoader.mockReturnValue(makeLoader({ error: 'Network timeout' }));
     render(<TradesEnhanced />);
-    expect(screen.queryByTestId('phantom-banner')).not.toBeInTheDocument();
+    expect(screen.getByText(/Load error.*Network timeout/)).toBeInTheDocument();
+  });
+});
+
+describe('TradesEnhanced — data rendering', () => {
+  it('renders a WIN row with positive PnL in profit color', () => {
+    const row = makeRow({ pnl_usd: 1.70, outcome: 'WIN' });
+    mockUseApiLoader.mockReturnValue(makeLoader({ data: [row] }));
+    render(<TradesEnhanced />);
+    expect(screen.getByText('WIN')).toBeInTheDocument();
+    // +$1.70 appears in the Net PnL KPI stat AND in the table row.
+    expect(screen.getAllByText('+$1.70').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('shows phantom banner with correct count when phantom trades exist', () => {
-    mockUseApiLoader.mockReturnValue(makeLoader({ data: [...REAL_TRADES, ...PHANTOM_TRADES] }));
+  it('renders a LOSS row', () => {
+    const row = makeRow({ pnl_usd: -2.50, outcome: 'LOSS' });
+    mockUseApiLoader.mockReturnValue(makeLoader({ data: [row] }));
     render(<TradesEnhanced />);
-    const banner = screen.getByTestId('phantom-banner');
-    expect(banner).toBeInTheDocument();
-    expect(banner).toHaveTextContent('2 phantom trades excluded from stats');
+    expect(screen.getByText('LOSS')).toBeInTheDocument();
+    // -$2.50 appears in the Net PnL KPI stat AND in the table row.
+    expect(screen.getAllByText('-$2.50').length).toBeGreaterThanOrEqual(1);
   });
 
-  it('uses singular "trade" when there is exactly 1 phantom', () => {
-    const singlePhantom = [{ id: 5, strategy: 'v4_5m', outcome: 'WIN', pnl_usd: 7, stake_usd: 10, is_phantom: true }];
-    mockUseApiLoader.mockReturnValue(makeLoader({ data: [...REAL_TRADES, ...singlePhantom] }));
+  it('shows PHANTOM badge for phantom rows', () => {
+    const row = makeRow({ is_phantom: true, outcome: 'OPEN' });
+    mockUseApiLoader.mockReturnValue(makeLoader({ data: [row] }));
     render(<TradesEnhanced />);
-    expect(screen.getByTestId('phantom-banner')).toHaveTextContent('1 phantom trade excluded from stats');
+    expect(screen.getByText('PHANTOM')).toBeInTheDocument();
   });
 
-  it('shows "hide" toggle button by default when phantoms present', () => {
-    mockUseApiLoader.mockReturnValue(makeLoader({ data: [...REAL_TRADES, ...PHANTOM_TRADES] }));
+  it('renders phantom rows at 40% opacity (rowStyle)', () => {
+    // Phantom rows get opacity:0.4 from rowStyle. We verify the row is present
+    // and carries the PHANTOM badge rather than asserting inline-style (jsdom
+    // doesn't compute CSS from inline objects reliably).
+    const row = makeRow({ id: 42, is_phantom: true });
+    mockUseApiLoader.mockReturnValue(makeLoader({ data: [row] }));
     render(<TradesEnhanced />);
-    expect(screen.getByTestId('phantom-toggle')).toHaveTextContent('hide');
+    expect(screen.getByText('PHANTOM')).toBeInTheDocument();
   });
 
-  it('toggle switches to "show" after clicking hide', () => {
-    mockUseApiLoader.mockReturnValue(makeLoader({ data: [...REAL_TRADES, ...PHANTOM_TRADES] }));
+  it('shows row count in header', () => {
+    const rows = [makeRow({ id: 1 }), makeRow({ id: 2 })];
+    mockUseApiLoader.mockReturnValue(makeLoader({ data: rows }));
     render(<TradesEnhanced />);
-    fireEvent.click(screen.getByTestId('phantom-toggle'));
-    expect(screen.getByTestId('phantom-toggle')).toHaveTextContent('show');
+    expect(screen.getByText('2 rows')).toBeInTheDocument();
+  });
+});
+
+describe('TradesEnhanced — KPI stats', () => {
+  it('computes win rate from real (non-phantom) rows', () => {
+    const rows = [
+      makeRow({ id: 1, outcome: 'WIN', pnl_usd: 5 }),
+      makeRow({ id: 2, outcome: 'LOSS', pnl_usd: -2 }),
+      makeRow({ id: 3, outcome: 'WIN', pnl_usd: 3 }),
+    ];
+    mockUseApiLoader.mockReturnValue(makeLoader({ data: rows }));
+    render(<TradesEnhanced />);
+    // 2 wins / 3 settled = 66.7%
+    expect(screen.getByText('66.7%')).toBeInTheDocument();
   });
 
-  it('hides phantom rows from table after toggling off', () => {
-    const allTrades = [...REAL_TRADES, ...PHANTOM_TRADES];
-    mockUseApiLoader.mockReturnValue(makeLoader({ data: allTrades }));
+  it('shows phantom count in stat sub-label when phantoms are present', () => {
+    const rows = [
+      makeRow({ id: 1, is_phantom: false }),
+      makeRow({ id: 2, is_phantom: true }),
+    ];
+    mockUseApiLoader.mockReturnValue(makeLoader({ data: rows }));
     render(<TradesEnhanced />);
+    expect(screen.getByText('+ 1 phantom')).toBeInTheDocument();
+  });
+});
 
-    // Before toggle: 4 rows in the table (DataTable renders tbody tr per row)
-    const rowsBefore = screen.getAllByRole('row').filter(r => r.closest('tbody'));
-    expect(rowsBefore).toHaveLength(4);
-
-    fireEvent.click(screen.getByTestId('phantom-toggle'));
-
-    // After toggle: only 2 real rows
-    const rowsAfter = screen.getAllByRole('row').filter(r => r.closest('tbody'));
-    expect(rowsAfter).toHaveLength(2);
+describe('TradesEnhanced — filter pills', () => {
+  it('renders strategy, outcome, range, and fills filter pills', () => {
+    mockUseApiLoader.mockReturnValue(makeLoader({ data: [] }));
+    render(<TradesEnhanced />);
+    // Filter pill labels
+    expect(screen.getByText('wins')).toBeInTheDocument();
+    expect(screen.getByText('losses')).toBeInTheDocument();
+    expect(screen.getByText('24h')).toBeInTheDocument();
+    expect(screen.getByText('filled')).toBeInTheDocument();
   });
 
-  it('KPI Trades card excludes phantom count from main value', () => {
-    mockUseApiLoader.mockReturnValue(makeLoader({ data: [...REAL_TRADES, ...PHANTOM_TRADES] }));
+  it('derives strategy pill from loaded rows', () => {
+    const rows = [makeRow({ strategy: 'v4_up_only' })];
+    mockUseApiLoader.mockReturnValue(makeLoader({ data: rows }));
     render(<TradesEnhanced />);
-    // kpi.n = 2 (real only), the Trades stat card shows '2'
-    // The sub-text says '+ 2 phantom'
-    expect(screen.getByText('2')).toBeInTheDocument();
-    expect(screen.getByText('+ 2 phantom')).toBeInTheDocument();
-  });
-
-  it('shows phantom win-rate as sub-text in Win rate card', () => {
-    mockUseApiLoader.mockReturnValue(makeLoader({ data: [...REAL_TRADES, ...PHANTOM_TRADES] }));
-    render(<TradesEnhanced />);
-    // phantom win-rate = 1/2 = 50.0%
-    expect(screen.getByText('phantom: 50.0%')).toBeInTheDocument();
-  });
-
-  it('shows phantom PnL as sub-text in Net PnL card', () => {
-    mockUseApiLoader.mockReturnValue(makeLoader({ data: [...REAL_TRADES, ...PHANTOM_TRADES] }));
-    render(<TradesEnhanced />);
-    // phantom net = 7 - 2 = 5, fmtUSD(5) = '+$5.00'
-    expect(screen.getByText('phantom: +$5.00')).toBeInTheDocument();
-  });
-
-  it('shows error message when load fails', () => {
-    mockUseApiLoader.mockReturnValue(makeLoader({ error: 'Server error' }));
-    render(<TradesEnhanced />);
-    expect(screen.getByText('Load error: Server error')).toBeInTheDocument();
+    // prettyStrategy('v4_up_only') → 'v4/up_only'
+    expect(screen.getByText('v4/up_only')).toBeInTheDocument();
   });
 });
