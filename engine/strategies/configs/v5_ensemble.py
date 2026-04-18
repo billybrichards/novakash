@@ -15,7 +15,6 @@ probability_classifier / ensemble_config on the v4 surface
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -24,11 +23,12 @@ if TYPE_CHECKING:
 from domain.alert_logic import score_signal_health
 from domain.alert_values import HealthStatus
 from domain.value_objects import StrategyDecision
+from strategies import gate_params as _gp
 
 _STRATEGY_ID = "v5_ensemble"
 _VERSION = "5.1.0"
 
-# ── Inherited from v4_fusion (verbatim — keep aligned) ───────────────────────
+# Inherited from v4_fusion — non-env, not tunable.
 _CONVICTION_THRESHOLDS = {
     "HIGH": 0.12,
     "MEDIUM": 0.15,
@@ -37,49 +37,78 @@ _CONVICTION_THRESHOLDS = {
 }
 _TRADEABLE_REGIMES = {"calm_trend", "volatile_trend"}
 
-_MIN_OFFSET_SEC = int(os.environ.get("V4_MIN_OFFSET_SEC", "45"))
 
-_RISK_OFF_OVERRIDE_ENABLED = (
-    os.environ.get("V4_RISK_OFF_OVERRIDE_ENABLED", "true").lower() == "true"
-)
-_RISK_OFF_OVERRIDE_DIST_MIN = float(
-    os.environ.get("V4_RISK_OFF_OVERRIDE_DIST_MIN", "0.20")
-)
-_FUSION_SKIP_CALM = (
-    os.environ.get("V4_FUSION_SKIP_CALM", "true").lower() == "true"
-)
-_FUSION_REQUIRE_TIINGO_AGREE = (
-    os.environ.get("V4_FUSION_REQUIRE_TIINGO_AGREE", "true").lower() == "true"
-)
-_FUSION_SKIP_STALE_SOURCES = (
-    os.environ.get("V4_FUSION_SKIP_STALE_SOURCES", "true").lower() == "true"
-)
-_FUSION_HEALTH_GATE = os.environ.get("V4_FUSION_HEALTH_GATE", "degraded").lower()
-_RISK_OFF_OVERRIDE_REQUIRE_TIINGO = (
-    os.environ.get("V4_RISK_OFF_OVERRIDE_REQUIRE_TIINGO", "true").lower() == "true"
-)
+# ── Tunable gate knobs (YAML gate_params → env fallback → default) ──────────
+# v5 shares the v4 gate stack, so the first block mirrors v4_fusion's helper
+# names (same env var names + defaults). The second block adds the
+# v5-specific ensemble knobs. Per-strategy YAML overrides let v5_ensemble
+# stay strict while a future v5_fresh runs relaxed on the same engine —
+# that's the whole motivation for the gate_params refactor.
+def _min_offset_sec() -> int:
+    return _gp.get_int("min_offset_sec", "V4_MIN_OFFSET_SEC", 45)
 
-# ── v5.0 NEW env flags for ensemble control ──────────────────────────────────
-# Which p_up field to consume from the v4 surface:
-#   "ensemble" (default) — use surface.poly_confidence (the blended value
-#                          when timesfm has V5_ENSEMBLE_PATH1_ENABLED=true)
-#   "lgb_only"            — use surface.probability_lgb (match v4_fusion behavior)
-#   "path1_only"          — use surface.probability_classifier (research/A-B only)
-_ENSEMBLE_SOURCE = os.environ.get("V5_ENSEMBLE_SIGNAL_SOURCE", "ensemble").lower()
 
-# Disagreement-abstain gate threshold. 0 = gate disabled (shadow default).
-# 0.15 enables: on windows where |p_lgb - p_path1| > 0.15, skip.
-_ENSEMBLE_DISAGREEMENT_THRESHOLD = float(
-    os.environ.get("V5_ENSEMBLE_DISAGREEMENT_THRESHOLD", "0")
-)
+def _risk_off_override_enabled() -> bool:
+    return _gp.get_bool(
+        "risk_off_override_enabled", "V4_RISK_OFF_OVERRIDE_ENABLED", True
+    )
 
-# Fallback sanity: when timesfm reports ensemble_config.mode ==
-# "fallback_lgb_only" (classifier head unavailable), skip. Safer default
-# during shadow — operator awareness > silent degradation. Flip to false
-# once graceful degradation is acceptable.
-_SKIP_ON_ENSEMBLE_FALLBACK = (
-    os.environ.get("V5_ENSEMBLE_SKIP_ON_FALLBACK", "true").lower() == "true"
-)
+
+def _risk_off_override_dist_min() -> float:
+    return _gp.get_float(
+        "risk_off_override_dist_min", "V4_RISK_OFF_OVERRIDE_DIST_MIN", 0.20
+    )
+
+
+def _fusion_skip_calm() -> bool:
+    return _gp.get_bool("skip_calm", "V4_FUSION_SKIP_CALM", True)
+
+
+def _fusion_require_tiingo_agree() -> bool:
+    return _gp.get_bool(
+        "require_tiingo_agree", "V4_FUSION_REQUIRE_TIINGO_AGREE", True
+    )
+
+
+def _fusion_skip_stale_sources() -> bool:
+    return _gp.get_bool(
+        "skip_stale_sources", "V4_FUSION_SKIP_STALE_SOURCES", True
+    )
+
+
+def _fusion_health_gate() -> str:
+    return _gp.get_str("health_gate", "V4_FUSION_HEALTH_GATE", "degraded").lower()
+
+
+def _risk_off_override_require_tiingo() -> bool:
+    return _gp.get_bool(
+        "risk_off_override_require_tiingo",
+        "V4_RISK_OFF_OVERRIDE_REQUIRE_TIINGO",
+        True,
+    )
+
+
+# v5-specific ensemble knobs
+def _ensemble_source() -> str:
+    # ensemble | lgb_only | path1_only
+    return _gp.get_str(
+        "ensemble_signal_source", "V5_ENSEMBLE_SIGNAL_SOURCE", "ensemble"
+    ).lower()
+
+
+def _ensemble_disagreement_threshold() -> float:
+    # 0 = gate disabled. Enable at ~0.15-0.20 once baseline shadow is read.
+    return _gp.get_float(
+        "ensemble_disagreement_threshold",
+        "V5_ENSEMBLE_DISAGREEMENT_THRESHOLD",
+        0.0,
+    )
+
+
+def _skip_on_ensemble_fallback() -> bool:
+    return _gp.get_bool(
+        "ensemble_skip_on_fallback", "V5_ENSEMBLE_SKIP_ON_FALLBACK", True
+    )
 
 
 def _gate(name: str, passed: bool, reason: str) -> dict:
@@ -127,16 +156,17 @@ def _try_risk_off_override(
     gates: list[dict],
 ) -> bool:
     """Mirror of v4_fusion._try_risk_off_override (verbatim logic)."""
-    if not _RISK_OFF_OVERRIDE_ENABLED:
+    if not _risk_off_override_enabled():
         return False
     if "risk_off" not in (reason or ""):
         return False
-    if distance < _RISK_OFF_OVERRIDE_DIST_MIN:
+    dist_min = _risk_off_override_dist_min()
+    if distance < dist_min:
         gates.append(
             _gate(
                 "regime_risk_off_override",
                 False,
-                f"dist={distance:.3f} < {_RISK_OFF_OVERRIDE_DIST_MIN:.2f} conviction floor",
+                f"dist={distance:.3f} < {dist_min:.2f} conviction floor",
             )
         )
         return False
@@ -163,7 +193,7 @@ def _try_risk_off_override(
         )
         return False
 
-    if _RISK_OFF_OVERRIDE_REQUIRE_TIINGO:
+    if _risk_off_override_require_tiingo():
         ti_delta = surface.delta_tiingo
         if ti_delta is None:
             gates.append(
@@ -191,7 +221,7 @@ def _try_risk_off_override(
             True,
             (
                 f"risk_off overridden: dist={distance:.3f} "
-                f">= {_RISK_OFF_OVERRIDE_DIST_MIN:.2f}, "
+                f">= {_risk_off_override_dist_min():.2f}, "
                 f"chainlink={cl_direction} + tiingo aligns with trade={direction}"
             ),
         )
@@ -261,11 +291,12 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
     p_lgb, p_classifier, ens_cfg = _extract_ensemble_fields(surface)
 
     # ── NEW: select signal source per V5_ENSEMBLE_SIGNAL_SOURCE ────────────
-    if _ENSEMBLE_SOURCE == "lgb_only":
+    source = _ensemble_source()
+    if source == "lgb_only":
         # If timesfm has ensemble disabled, p_lgb is None → poly_confidence
         # IS the LGB calibrated value, so fall back to it.
         confidence = p_lgb if p_lgb is not None else (surface.poly_confidence or 0.5)
-    elif _ENSEMBLE_SOURCE == "path1_only":
+    elif source == "path1_only":
         if p_classifier is None:
             gates.append(
                 _gate(
@@ -284,15 +315,16 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         _gate(
             "ensemble_signal_source",
             True,
-            f"source={_ENSEMBLE_SOURCE} conf={confidence:.3f} dist={distance:.3f}",
+            f"source={source} conf={confidence:.3f} dist={distance:.3f}",
         )
     )
 
     # ── Inherited v4_fusion gates start here (unchanged) ───────────────────
 
     # CALM regime skip (audit #225)
+    skip_calm = _fusion_skip_calm()
     vpin_regime = surface.regime
-    if _FUSION_SKIP_CALM and vpin_regime == "CALM":
+    if skip_calm and vpin_regime == "CALM":
         gates.append(
             _gate(
                 "calm_regime",
@@ -301,7 +333,7 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             )
         )
         return _skip("calm_regime_model_underperforms", gates)
-    if not _FUSION_SKIP_CALM and vpin_regime == "CALM":
+    if not skip_calm and vpin_regime == "CALM":
         gates.append(
             _gate("calm_regime", True, "calm_gate_disabled_by_env (regime=CALM)")
         )
@@ -309,7 +341,7 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         gates.append(_gate("calm_regime", True, f"regime={vpin_regime} tradeable"))
 
     # Feature staleness (audit #234)
-    if _FUSION_SKIP_STALE_SOURCES:
+    if _fusion_skip_stale_sources():
         missing_sources = []
         if surface.delta_chainlink is None:
             missing_sources.append("chainlink")
@@ -330,18 +362,19 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         gates.append(_gate("feature_staleness", True, "chainlink + tiingo present"))
 
     # Execution timing
+    min_offset = _min_offset_sec()
     offset = surface.eval_offset or 0
-    if offset < _MIN_OFFSET_SEC:
+    if offset < min_offset:
         gates.append(
             _gate(
                 "execution_timing",
                 False,
-                f"T-{offset} < T-{_MIN_OFFSET_SEC} live minimum",
+                f"T-{offset} < T-{min_offset} live minimum",
             )
         )
         return _skip(
             f"polymarket: timing={timing} T-{offset} -- too late "
-            f"(<{_MIN_OFFSET_SEC}s), skip",
+            f"(<{min_offset}s), skip",
             gates,
         )
 
@@ -384,8 +417,9 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
 
     # ── NEW ensemble-specific gates ────────────────────────────────────────
     # Fallback sanity — skip when ensemble degraded to LGB-only by default.
+    skip_fallback = _skip_on_ensemble_fallback()
     if (
-        _SKIP_ON_ENSEMBLE_FALLBACK
+        skip_fallback
         and ens_cfg
         and ens_cfg.get("mode") == "fallback_lgb_only"
     ):
@@ -402,24 +436,25 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             _gate(
                 "ensemble_fallback_sanity",
                 True,
-                "fallback accepted (V5_ENSEMBLE_SKIP_ON_FALLBACK=false)",
+                "fallback accepted (ensemble_skip_on_fallback=false)",
             )
         )
 
     # Disagreement abstain — disabled by default (threshold=0).
+    disagreement_threshold = _ensemble_disagreement_threshold()
     if (
-        _ENSEMBLE_DISAGREEMENT_THRESHOLD > 0
+        disagreement_threshold > 0
         and p_lgb is not None
         and p_classifier is not None
     ):
         disagreement = abs(float(p_lgb) - float(p_classifier))
-        if disagreement > _ENSEMBLE_DISAGREEMENT_THRESHOLD:
+        if disagreement > disagreement_threshold:
             gates.append(
                 _gate(
                     "ensemble_disagreement",
                     False,
                     f"|p_lgb-p_path1|={disagreement:.3f} > "
-                    f"{_ENSEMBLE_DISAGREEMENT_THRESHOLD:.3f}",
+                    f"{disagreement_threshold:.3f}",
                 )
             )
             return _skip(f"ensemble_disagreement: {disagreement:.3f}", gates)
@@ -489,7 +524,7 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         gates.append(_gate("chainlink_agreement", True, "Chainlink agrees"))
 
     # Tiingo agreement (audit #228)
-    if not _FUSION_REQUIRE_TIINGO_AGREE:
+    if not _fusion_require_tiingo_agree():
         gates.append(_gate("tiingo_agreement", True, "tiingo_gate_disabled_by_env"))
     elif surface.delta_tiingo is None:
         gates.append(_gate("tiingo_agreement", True, "tiingo_unavailable"))
@@ -511,14 +546,15 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         gates.append(_gate("tiingo_agreement", True, "Tiingo agrees"))
 
     # HealthBadge gate (audit #223)
-    if _FUSION_HEALTH_GATE != "off":
+    health_gate = _fusion_health_gate()
+    if health_gate != "off":
         health = _compute_health_badge(
             surface, distance, direction, risk_off_overridden,
         )
         block_on = {
             "unsafe": {HealthStatus.UNSAFE},
             "degraded": {HealthStatus.DEGRADED, HealthStatus.UNSAFE},
-        }.get(_FUSION_HEALTH_GATE, set())
+        }.get(health_gate, set())
         if health.status in block_on:
             gates.append(
                 _gate(
@@ -569,7 +605,7 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             "tiingo_agrees": True,
             "risk_off_overridden": risk_off_overridden,
             # v5_ensemble-specific audit trail
-            "signal_source": _ENSEMBLE_SOURCE,
+            "signal_source": source,
             "probability_lgb": p_lgb,
             "probability_classifier": p_classifier,
             "probability_used": confidence,
