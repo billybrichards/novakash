@@ -107,7 +107,7 @@ def test_v6_sniper_registered_as_live(registry):
     assert "v6_sniper" in registry.strategy_names
     cfg = registry.configs["v6_sniper"]
     assert cfg.mode == "LIVE"
-    assert cfg.version == "6.0.3"
+    assert cfg.version == "6.0.4"
     assert cfg.timescale == "5m"
 
 
@@ -443,6 +443,49 @@ def test_19_pegged_low_boundary_just_outside(registry):
     )
     decision = _evaluate(registry, surface)
     assert decision.action == "SKIP"
+
+
+def test_21_risk_off_override_fires_when_oracles_align(registry):
+    """v6.0.4: sister-repo vetoes with reason=regime_risk_off but
+    chainlink+tiingo both agree with trade direction AND dist ≥ 0.20 →
+    override fires, TRADE allowed.
+    """
+    surface = _make_surface(
+        poly_trade_advised=False,
+        poly_reason="regime_risk_off",
+        poly_direction="DOWN",
+        poly_confidence=0.07,
+        poly_confidence_distance=0.43,
+        probability_lgb=0.12, probability_classifier=0.08,
+        delta_chainlink=-0.0005, delta_tiingo=-0.0009,
+        v4_recommended_side="DOWN",
+    )
+    decision = _evaluate(registry, surface)
+    assert decision.action == "TRADE", (
+        f"expected TRADE via risk_off override, got {decision.action} "
+        f"skip_reason={decision.skip_reason}"
+    )
+    gate_names = [g.get("gate") for g in decision.metadata.get("gate_results", [])]
+    assert "regime_risk_off_override" in gate_names
+
+
+def test_22_risk_off_override_blocks_when_oracles_opposite(registry):
+    """v6.0.4: same veto but chainlink UP vs trade DOWN → override fails,
+    v6 skips with trade_not_advised.
+    """
+    surface = _make_surface(
+        poly_trade_advised=False,
+        poly_reason="regime_risk_off",
+        poly_direction="DOWN",
+        poly_confidence=0.07,
+        poly_confidence_distance=0.43,
+        probability_lgb=0.12, probability_classifier=0.08,
+        delta_chainlink=+0.0005, delta_tiingo=+0.0009,   # OPPOSITE
+        v4_recommended_side="DOWN",
+    )
+    decision = _evaluate(registry, surface)
+    assert decision.action == "SKIP"
+    assert "trade_not_advised" in (decision.skip_reason or "")
 
 
 def test_20_entry_cap_override_applied(registry):

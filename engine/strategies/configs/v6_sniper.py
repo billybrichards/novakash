@@ -50,7 +50,7 @@ from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
 _STRATEGY_ID = "v6_sniper"
-_VERSION = "6.0.3"
+_VERSION = "6.0.4"
 
 
 # ── Tunable knobs (YAML gate_params → env fallback → default) ──────────────
@@ -192,6 +192,36 @@ def _skip_on_oracle_disagree() -> bool:
     )
 
 
+# ── risk_off override helpers (v6.0.4: ported from v5_ensemble) ───────────
+def _risk_off_override_enabled() -> bool:
+    """v6.0.4: enables the sister-repo risk_off veto bypass for HIGH-
+    conviction + oracle-aligned trades. Mirrors v4_fusion's behaviour.
+    YAML: risk_off_override_enabled. Default True.
+    """
+    return _gp.get_bool(
+        "risk_off_override_enabled", "V4_RISK_OFF_OVERRIDE_ENABLED", True
+    )
+
+
+def _risk_off_override_dist_min() -> float:
+    """Minimum |p_up - 0.5| required for the override to fire."""
+    return _gp.get_float(
+        "risk_off_override_dist_min", "V4_RISK_OFF_OVERRIDE_DIST_MIN", 0.20
+    )
+
+
+def _risk_off_override_require_tiingo() -> bool:
+    """If True, override requires BOTH chainlink AND tiingo to agree
+    with the trade direction. If False, only chainlink alignment is
+    needed (more permissive).
+    """
+    return _gp.get_bool(
+        "risk_off_override_require_tiingo",
+        "V4_RISK_OFF_OVERRIDE_REQUIRE_TIINGO",
+        True,
+    )
+
+
 def _entry_cap_override() -> Optional[float]:
     """v6.0.1: explicit cap override ($0.85 default) — bypasses the
     surface's poly_max_entry_price default (~0.65-0.70). Returns None
@@ -202,6 +232,94 @@ def _entry_cap_override() -> Optional[float]:
     """
     v = _gp.get_float("entry_cap_override", "V6_SNIPER_ENTRY_CAP_OVERRIDE", 0.0)
     return v if v > 0 else None
+
+
+def _try_risk_off_override(
+    reason: str,
+    distance: float,
+    direction: Optional[str],
+    surface: "FullDataSurface",
+    gates: list[dict],
+) -> bool:
+    """v6.0.4: verbatim port of v5_ensemble._try_risk_off_override.
+
+    Returns True if the sister-repo's risk_off veto should be bypassed.
+    Preconditions:
+      1. risk_off_override_enabled = True
+      2. reason contains "risk_off"
+      3. distance >= risk_off_override_dist_min (HIGH-conviction only)
+      4. direction is not None
+      5. chainlink delta aligns with trade direction
+      6. if require_tiingo: tiingo delta also aligns
+    """
+    if not _risk_off_override_enabled():
+        return False
+    if "risk_off" not in (reason or ""):
+        return False
+    dist_min = _risk_off_override_dist_min()
+    if distance < dist_min:
+        gates.append(
+            _gate(
+                "regime_risk_off_override",
+                False,
+                f"dist={distance:.3f} < {dist_min:.2f} conviction floor",
+            )
+        )
+        return False
+    if direction is None:
+        return False
+    cl_delta = surface.delta_chainlink
+    if cl_delta is None:
+        gates.append(
+            _gate(
+                "regime_risk_off_override",
+                False,
+                "no chainlink delta to verify direction alignment",
+            )
+        )
+        return False
+    cl_direction = "UP" if cl_delta > 0 else "DOWN"
+    if cl_direction != direction:
+        gates.append(
+            _gate(
+                "regime_risk_off_override",
+                False,
+                f"chainlink={cl_direction} disagrees with trade={direction}",
+            )
+        )
+        return False
+    if _risk_off_override_require_tiingo():
+        ti_delta = surface.delta_tiingo
+        if ti_delta is None:
+            gates.append(
+                _gate(
+                    "regime_risk_off_override",
+                    False,
+                    "tiingo unavailable — override requires both sources",
+                )
+            )
+            return False
+        ti_direction = "UP" if ti_delta > 0 else "DOWN"
+        if ti_direction != direction:
+            gates.append(
+                _gate(
+                    "regime_risk_off_override",
+                    False,
+                    f"tiingo={ti_direction} disagrees with trade={direction}",
+                )
+            )
+            return False
+    gates.append(
+        _gate(
+            "regime_risk_off_override",
+            True,
+            (
+                f"risk_off overridden: dist={distance:.3f} "
+                f">= {dist_min:.2f}, chainlink + tiingo align with {direction}"
+            ),
+        )
+    )
+    return True
 
 
 # ── Utility helpers ────────────────────────────────────────────────────────
@@ -447,11 +565,27 @@ def evaluate_polymarket_sniper(
         )
 
     # ── trade_advised ────────────────────────────────────────────────────
+    # v6.0.4: if sister-repo veto fires, try risk_off override BEFORE
+    # skipping. Uses surface.poly_direction + poly_confidence_distance
+    # as the preliminary direction/distance (ensemble bucket logic below
+    # will reconcile or reject). Matches v4_fusion / v5_ensemble pattern.
     if not (surface.poly_trade_advised or False):
         reason = surface.poly_reason or "no_poly_advice"
-        gates.append(_gate("trade_advised", False, reason))
-        return _skip(f"trade_not_advised: {reason}", gates)
-    gates.append(_gate("trade_advised", True, "trade_advised=true"))
+        _prelim_dir = surface.poly_direction or surface.v4_recommended_side
+        _prelim_dist = surface.poly_confidence_distance or 0.0
+        if _try_risk_off_override(reason, _prelim_dist, _prelim_dir, surface, gates):
+            gates.append(
+                _gate(
+                    "trade_advised",
+                    True,
+                    f"trade_advised=false ({reason}) but risk_off_override applied",
+                )
+            )
+        else:
+            gates.append(_gate("trade_advised", False, reason))
+            return _skip(f"trade_not_advised: {reason}", gates)
+    else:
+        gates.append(_gate("trade_advised", True, "trade_advised=true"))
 
     # ── Ensemble fields + signal-source selection ────────────────────────
     p_lgb = getattr(surface, "probability_lgb", None)
