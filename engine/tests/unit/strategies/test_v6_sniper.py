@@ -107,7 +107,7 @@ def test_v6_sniper_registered_as_live(registry):
     assert "v6_sniper" in registry.strategy_names
     cfg = registry.configs["v6_sniper"]
     assert cfg.mode == "LIVE"
-    assert cfg.version == "6.0.2"
+    assert cfg.version == "6.0.3"
     assert cfg.timescale == "5m"
 
 
@@ -293,15 +293,24 @@ def test_12_blocked_utc_hours_disabled_by_default(registry):
     assert "blocked_utc" not in (decision.skip_reason or "")
 
 
-# ── #13 source_agreement ───────────────────────────────────────────────────
-def test_13_source_disagreement_rejects(registry):
-    """chainlink UP, tiingo DOWN -> REJECT."""
+# ── #13 source_agreement (v6.0.3: disagreement non-blocking by default) ────
+def test_13_source_disagreement_does_not_reject(registry):
+    """v6.0.3 sets ``skip_on_oracle_disagree: false`` in YAML — chainlink
+    or tiingo direction disagreement no longer blocks. Base surface has
+    poly_direction=DOWN; inverting chainlink+tiingo to UP must now
+    still result in TRADE (v6's conviction + VPIN + freshness gates
+    carry the selectivity load).
+    """
     surface = _make_surface(
-        delta_chainlink=+0.005, delta_tiingo=-0.004,
+        delta_chainlink=+0.005, delta_tiingo=+0.004,
     )
     decision = _evaluate(registry, surface)
-    assert decision.action == "SKIP"
-    assert "source_disagreement" in (decision.skip_reason or "")
+    assert decision.action == "TRADE", (
+        f"expected TRADE, got {decision.action} "
+        f"skip_reason={decision.skip_reason}"
+    )
+    # Oracle disagreement is STILL surfaced in gates metadata — just non-fatal.
+    assert decision.metadata.get("gate_results") is not None
 
 
 # ── #14 prefer_raw_probability ─────────────────────────────────────────────

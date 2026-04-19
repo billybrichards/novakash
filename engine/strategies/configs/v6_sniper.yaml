@@ -1,5 +1,5 @@
 name: v6_sniper
-version: "6.0.2"
+version: "6.0.3"
 # v6.0.1 — 2026-04-19 — post-review tweaks for LIVE launch (per Billy):
 #   • mode: GHOST → LIVE
 #   • Relaxed pegged_path1 thresholds 0.95/0.05 → 0.90/0.10 (captures
@@ -54,8 +54,16 @@ gate_params:
 
   # ── Defensive gates inherited from v4_fusion / v5_ensemble ──
   vpin_min: 0.45
+  # NOTE (v6.0.3): require_chainlink / require_tiingo still gate NULL /
+  # staleness (feed-health). Direction disagreement is now controlled
+  # by skip_on_oracle_disagree below — set False for overnight run.
   source_agreement_require_chainlink: true
   source_agreement_require_tiingo: true
+  # v6.0.3: allow v6 to fire even when chainlink/tiingo delta
+  # direction is opposite the trade direction. v6's conviction buckets
+  # + VPIN + health + freshness are considered sufficient selectivity.
+  # Gate entries still log the disagreement for post-run analysis.
+  skip_on_oracle_disagree: false
   health_gate: degraded               # block if health in {degraded, unsafe}
   skip_stale_sources: true            # skip if chainlink or tiingo NULL
 

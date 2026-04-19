@@ -50,7 +50,7 @@ from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
 _STRATEGY_ID = "v6_sniper"
-_VERSION = "6.0.2"
+_VERSION = "6.0.3"
 
 
 # ── Tunable knobs (YAML gate_params → env fallback → default) ──────────────
@@ -164,6 +164,31 @@ def _skip_on_ensemble_fallback() -> bool:
 def _prefer_raw_probability() -> bool:
     return _gp.get_bool(
         "prefer_raw_probability", "V6_SNIPER_PREFER_RAW_PROBABILITY", True
+    )
+
+
+def _skip_on_oracle_disagree() -> bool:
+    """v6.0.3: Gate for oracle direction disagreement.
+
+    True (default):  skip when chainlink OR tiingo delta-direction
+                     is opposite the trade direction.
+    False:           log the disagreement as a gate entry but DON'T
+                     skip — let v6's conviction buckets + VPIN gate
+                     carry the selectivity load on their own.
+
+    Set to False for 2026-04-19 overnight run per Billy — v6's strict
+    gates (agree_strong |dist| >= 0.20 OR pegged_path1 0.90/0.10, VPIN
+    floor 0.45, feature staleness, health badge) are considered enough
+    signal-quality assurance without oracle veto.
+
+    NOTE: still respects ``source_agreement_require_chainlink`` /
+    ``source_agreement_require_tiingo`` for NULL / staleness skips —
+    those are about feed health, not direction opinion.
+    """
+    return _gp.get_bool(
+        "skip_on_oracle_disagree",
+        "V6_SNIPER_SKIP_ON_ORACLE_DISAGREE",
+        True,
     )
 
 
@@ -587,6 +612,10 @@ def evaluate_polymarket_sniper(
         return _skip("no_eval_blocked: insufficient ensemble inputs", gates, extras=bucket_extras)
 
     # ── Chainlink + Tiingo direction agreement with trade ───────────────
+    # v6.0.3: direction-agreement checks are gated on
+    # ``skip_on_oracle_disagree``. When False, disagreement is logged
+    # as a gate entry but does NOT skip.
+    _skip_disagree = _skip_on_oracle_disagree()
     if cl is not None:
         cl_direction = "UP" if cl > 0 else "DOWN"
         if cl_direction != direction:
@@ -597,12 +626,14 @@ def evaluate_polymarket_sniper(
                     f"oracle={cl_direction} vs trade={direction}",
                 )
             )
-            return _skip(
-                f"chainlink_disagrees: oracle={cl_direction} vs trade={direction}",
-                gates,
-                extras=bucket_extras,
-            )
-        gates.append(_gate("chainlink_agreement", True, "Chainlink agrees"))
+            if _skip_disagree:
+                return _skip(
+                    f"chainlink_disagrees: oracle={cl_direction} vs trade={direction}",
+                    gates,
+                    extras=bucket_extras,
+                )
+        else:
+            gates.append(_gate("chainlink_agreement", True, "Chainlink agrees"))
     if ti is not None:
         ti_direction = "UP" if ti > 0 else "DOWN"
         if ti_direction != direction:
@@ -613,12 +644,14 @@ def evaluate_polymarket_sniper(
                     f"tiingo={ti_direction} vs trade={direction}",
                 )
             )
-            return _skip(
-                f"tiingo_disagrees: tiingo={ti_direction} vs trade={direction}",
-                gates,
-                extras=bucket_extras,
-            )
-        gates.append(_gate("tiingo_agreement", True, "Tiingo agrees"))
+            if _skip_disagree:
+                return _skip(
+                    f"tiingo_disagrees: tiingo={ti_direction} vs trade={direction}",
+                    gates,
+                    extras=bucket_extras,
+                )
+        else:
+            gates.append(_gate("tiingo_agreement", True, "Tiingo agrees"))
 
     # ── Health badge ─────────────────────────────────────────────────────
     health_gate = _health_gate()
