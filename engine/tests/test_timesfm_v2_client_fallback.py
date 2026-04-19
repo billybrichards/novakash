@@ -295,6 +295,74 @@ async def test_post_body_contains_all_25_feature_keys():
 
 
 @pytest.mark.asyncio
+async def test_post_retries_on_transient_connection_reset():
+    """POST that fails once with a connection reset retries and succeeds on
+    the second attempt. Pins that transient transport failures (seen in prod
+    as `v2.probability.push_connection_error`) are no longer fatal."""
+    call_count = {"n": 0}
+
+    async def handle_post(request: web.Request) -> web.Response:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # Simulate Connection reset by peer by closing the transport.
+            request.transport.close()
+            return web.Response(status=500)
+        return web.Response(
+            status=200,
+            body=json.dumps(_make_success_response("retry-sha")),
+            content_type="application/json",
+        )
+
+    app = web.Application()
+    app.router.add_post("/v2/probability", handle_post)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        base = f"http://{server.host}:{server.port}"
+        client = TimesFMV2Client(base_url=base, timeout=2.0, retries=2, retry_backoff=0.01)
+        features = build_v5_feature_body(eval_offset=60)
+        result = await client.score_with_features(
+            asset="BTC", seconds_to_close=60, features=features,
+        )
+        assert result["model_version"] == "retry-sha"
+        assert call_count["n"] == 2
+        await client.close()
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_post_retries_exhausted_raises():
+    """If transport keeps failing, the client gives up after `retries+1`
+    total attempts and propagates. 5xx with a valid HTTP response is NOT
+    a transport failure — that still propagates immediately without retry."""
+    call_count = {"n": 0}
+
+    async def handle_post(request: web.Request) -> web.Response:
+        call_count["n"] += 1
+        request.transport.close()
+        return web.Response(status=500)
+
+    app = web.Application()
+    app.router.add_post("/v2/probability", handle_post)
+    server = TestServer(app)
+    await server.start_server()
+    try:
+        base = f"http://{server.host}:{server.port}"
+        client = TimesFMV2Client(base_url=base, timeout=2.0, retries=1, retry_backoff=0.01)
+        features = build_v5_feature_body(eval_offset=60)
+        with pytest.raises(Exception):
+            await client.score_with_features(
+                asset="BTC", seconds_to_close=60, features=features,
+            )
+        # retries=1 => total 2 attempts.
+        assert call_count["n"] == 2
+        await client.close()
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
 async def test_cedar_model_routes_to_cedar_url():
     """The model='cedar' / 'dune' path hits /v2/probability/cedar, not
     the base URL. We don't bother routing both in this test — just
