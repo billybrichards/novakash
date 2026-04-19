@@ -50,7 +50,7 @@ from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
 _STRATEGY_ID = "v6_sniper"
-_VERSION = "6.0.4"
+_VERSION = "6.0.5"
 
 
 # ── Tunable knobs (YAML gate_params → env fallback → default) ──────────────

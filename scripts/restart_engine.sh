@@ -83,6 +83,18 @@ fi
 # ─── Step 4: Start engine (append to log, full fd redirect) ──────────────
 log_info "Starting engine in $ENGINE_DIR"
 cd "$ENGINE_DIR"
+# 2026-04-20: source .env so engine inherits V10_6_*, V4_*, V5_*, V6_*
+# env vars set in the tracked .env file. Prior behaviour: nohup inherited
+# only the invoker's shell env, so env var edits in .env were silently
+# ignored (observed V10_6_MAX_EVAL_OFFSET=240 in .env but engine ran with
+# default 180). `set -a` exports all sourced vars automatically.
+if [ -f "$ENGINE_DIR/.env" ]; then
+    log_info "Sourcing .env so engine process inherits configured env vars"
+    set -a
+    # shellcheck disable=SC1091
+    source "$ENGINE_DIR/.env"
+    set +a
+fi
 nohup python3 main.py >> "$CURRENT_LOG" 2>&1 </dev/null &
 disown
 

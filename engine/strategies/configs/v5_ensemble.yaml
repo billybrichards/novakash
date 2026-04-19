@@ -33,8 +33,13 @@ pre_gate_hook: evaluate_polymarket_ensemble
 # trail of what v5_ensemble actually runs in production. Env vars fall
 # through when a key is omitted (ops escape hatch for 30 days post PR #267).
 gate_params:
-  # Inherited from v4_fusion — keep aligned with v4_fusion.yaml.
-  min_offset_sec: 45
+  # 2026-04-20: widen timing window to match v6_sniper. Lower min from 45 → 30
+  # and explicitly cap max at 240. Requires V10_6_MAX_EVAL_OFFSET=240 +
+  # V10_6_MIN_EVAL_OFFSET=30 in engine env (now durable via
+  # scripts/restart_engine.sh sourcing .env, same PR).
+  min_offset_sec: 30
+  max_offset_sec: 240
+  skip_calm: true
   skip_calm: true
   skip_stale_sources: true
   require_tiingo_agree: true
