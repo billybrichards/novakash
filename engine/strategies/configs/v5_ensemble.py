@@ -447,22 +447,32 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         and p_lgb is not None
         and p_classifier is not None
     ):
-        disagreement = abs(float(p_lgb) - float(p_classifier))
+        p_lgb_f = float(p_lgb)
+        p_cls_f = float(p_classifier)
+        disagreement = abs(p_lgb_f - p_cls_f)
+        # Surface which model predicted which direction so the operator
+        # can tell at a glance whether the old (lgb) or new (path1
+        # classifier) was the dissenting source.
+        lgb_dir = "UP" if p_lgb_f > 0.5 else "DOWN"
+        p1_dir = "UP" if p_cls_f > 0.5 else "DOWN"
+        detail = (
+            f"lgb={p_lgb_f:.2f}({lgb_dir}) path1={p_cls_f:.2f}({p1_dir}) "
+            f"|Δ|={disagreement:.3f}"
+        )
         if disagreement > disagreement_threshold:
             gates.append(
                 _gate(
                     "ensemble_disagreement",
                     False,
-                    f"|p_lgb-p_path1|={disagreement:.3f} > "
-                    f"{disagreement_threshold:.3f}",
+                    f"{detail} > thr={disagreement_threshold:.3f}",
                 )
             )
-            return _skip(f"ensemble_disagreement: {disagreement:.3f}", gates)
+            return _skip(f"ensemble_disagreement: {detail}", gates)
         gates.append(
             _gate(
                 "ensemble_disagreement",
                 True,
-                f"models agree (|Δ|={disagreement:.3f})",
+                f"models agree ({detail})",
             )
         )
 

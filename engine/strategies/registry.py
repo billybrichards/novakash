@@ -146,6 +146,14 @@ class StrategyRegistry:
         # In-memory dedup: strategy_id -> last window_ts that was executed
         # Prevents double-execution when WindowStateRepository is unavailable
         self._executed_windows: dict[str, int] = {}
+        # PR 4: per-(strategy, window_ts, outcome) TG card emission dedup.
+        # When a trade retries every 2s for a 5m window, we'd otherwise
+        # flood TG with 30+ identical FAILED_EXECUTION cards. Cap at
+        # FAILED_EXECUTION_CARD_CAP per (strategy, window, outcome) tuple;
+        # extra attempts still log to DB via gate_check_traces, they just
+        # don't spam TG. LRU-bounded so long-running engines don't leak.
+        self._attempt_card_counts: dict[tuple[str, int, str], int] = {}
+        self._attempt_card_cap: int = 2
         # Haiku summarizer for human-readable Telegram messages
         self._haiku = HaikuSummarizer()
         # Clean-arch: BuildWindowSummaryUseCase produces a
@@ -668,15 +676,50 @@ class StrategyRegistry:
             return
 
         # Classify outcome.
+        # PR 4: distinguish execute-trade "already_traded" (window-level
+        # dedup kicked in because a sibling strategy won try_claim_trade
+        # first) from a real FAILED_EXECUTION. They used to collapse into
+        # the same FAILED_EXECUTION card, making sibling-losers look like
+        # genuine failures. ExecuteTradeUseCase._failed("already_traded")
+        # sets result.failure_reason = "already_traded"; that's our signal.
         if execution_result is not None:
             if getattr(execution_result, "success", False):
                 outcome = "FILLED"
             else:
-                outcome = "FAILED_EXECUTION"
+                failure_reason = getattr(execution_result, "failure_reason", "") or ""
+                if failure_reason == "already_traded":
+                    outcome = "SKIPPED_COOLDOWN"
+                else:
+                    outcome = "FAILED_EXECUTION"
         elif exec_error is not None:
             outcome = "FAILED_EXECUTION"
         else:
             outcome = self._classify_skip_outcome(decision.skip_reason)
+
+        # PR 4: per-(strategy, window, outcome) TG card cap. Retries at
+        # later eval offsets still log full context to DB via
+        # gate_check_traces, but we cap TG at _attempt_card_cap per tuple
+        # so operator isn't drowned. FILLED always emits (one-shot), and
+        # skip-path cards from the final-eval loop are already 1-per-window
+        # — the cap matters mainly for FAILED_EXECUTION / SKIPPED_COOLDOWN
+        # retries within a window.
+        tuple_key = (strategy, int(window_ts or 0), outcome)
+        count = self._attempt_card_counts.get(tuple_key, 0) + 1
+        self._attempt_card_counts[tuple_key] = count
+        if outcome != "FILLED" and count > self._attempt_card_cap:
+            log.debug(
+                "registry.trade_attempt_card_capped",
+                strategy=strategy,
+                window_ts=window_ts,
+                outcome=outcome,
+                count=count,
+            )
+            return
+        # Bound the dict — keep last 512 tuple keys (≈ 256 windows × 2
+        # outcomes) so engines running for weeks don't grow unbounded.
+        if len(self._attempt_card_counts) > 512:
+            oldest = next(iter(self._attempt_card_counts))
+            self._attempt_card_counts.pop(oldest, None)
 
         # Pull blocking gate from metadata if surfaced.
         meta = decision.metadata or {}
