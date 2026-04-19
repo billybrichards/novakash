@@ -54,6 +54,13 @@ class FullDataSurface:
     twap_delta: Optional[float]
 
     # V2 Predictions (from V4 snapshot cache, <5s fresh)
+    # ``v2_probability_up`` is the "effective" P(UP) the engine consumes: if
+    # the forecaster shipped novakash-timesfm PR #107 and env flag
+    # ``V2_PROB_USE_CALIBRATED`` is true, it is the isotonic-calibrated value;
+    # otherwise it falls through to the uncalibrated ``probability_up`` key.
+    # ``v2_probability_up_raw`` / ``v2_probability_up_calibrated`` /
+    # ``isotonic_version`` are kept purely for logging + diagnostics; they
+    # do NOT feed gates or blends.
     v2_probability_up: Optional[float]
     v2_probability_raw: Optional[float]
     v2_quantiles_p10: Optional[float]
@@ -154,6 +161,16 @@ class FullDataSurface:
     # Window metadata
     hour_utc: Optional[int]
     seconds_to_close: Optional[int]
+
+    # Isotonic calibration (novakash-timesfm PR #107) — diagnostics only.
+    # ``v2_probability_up`` above is whichever value the adapter selected
+    # (see `V2_PROB_USE_CALIBRATED`). These three fields preserve the raw
+    # and calibrated originals plus the isotonic version tag for logging.
+    # All default to None so older V4 snapshots / forecaster versions
+    # pre-PR-107 keep working unchanged.
+    v2_probability_up_raw: Optional[float] = None
+    v2_probability_up_calibrated: Optional[float] = None
+    isotonic_version: Optional[str] = None
 
 
 class DataSurfaceManager:
@@ -531,8 +548,26 @@ class DataSurfaceManager:
         # Seconds to close
         seconds_to_close = eval_offset
 
-        p_up = ts_data.get("probability_up")
-        p_up_float = float(p_up) if p_up is not None else None
+        # ── Isotonic-calibrated P(UP) passthrough (novakash-timesfm PR #107) ──
+        # The V4 snapshot may include the new additive fields
+        # ``probability_up_calibrated`` + ``isotonic_version`` alongside the
+        # unchanged ``probability_up`` / ``probability_raw``. If it also
+        # carries a top-level ``probability_up_effective`` (set by the
+        # forecaster or by ``TimesFMV2Client`` when this dict is the raw
+        # scorer payload), we trust that as the already-selected value.
+        # Otherwise re-apply the env-flag decision here so surfaces fed
+        # directly off the V4 snapshot still benefit from the calibration
+        # choice. See ``engine/adapters/prediction/timesfm_v2.py``.
+        p_up_raw = ts_data.get("probability_up")
+        p_up_cal = ts_data.get("probability_up_calibrated")
+        iso_version = ts_data.get("isotonic_version")
+        p_up_eff = ts_data.get("probability_up_effective")
+        if p_up_eff is None:
+            use_cal = os.environ.get(
+                "V2_PROB_USE_CALIBRATED", "true"
+            ).strip().lower() in ("1", "true", "yes", "on")
+            p_up_eff = p_up_cal if (use_cal and p_up_cal is not None) else p_up_raw
+        p_up_float = float(p_up_eff) if p_up_eff is not None else None
         poly_confidence = poly.get("confidence")
 
         return FullDataSurface(
@@ -563,6 +598,14 @@ class DataSurfaceManager:
                 if ts_data.get("probability_raw") is not None
                 else None
             ),
+            # Isotonic calibration passthrough (audit: novakash-timesfm #107)
+            v2_probability_up_raw=(
+                float(p_up_raw) if p_up_raw is not None else None
+            ),
+            v2_probability_up_calibrated=(
+                float(p_up_cal) if p_up_cal is not None else None
+            ),
+            isotonic_version=(str(iso_version) if iso_version is not None else None),
             v2_quantiles_p10=quantiles.get("p10"),
             v2_quantiles_p50=quantiles.get("p50"),
             v2_quantiles_p90=quantiles.get("p90"),

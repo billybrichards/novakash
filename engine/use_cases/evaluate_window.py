@@ -843,7 +843,11 @@ class EvaluateWindowUseCase:
             )
             if not r or "probability_up" not in r:
                 raise RuntimeError("v2.2 invalid")
-            _p = float(r["probability_up"])
+            # Prefer the adapter-selected effective probability (calibrated
+            # when forecaster PR #107 + env flag both green) and fall back
+            # to the uncalibrated field for safety.
+            _p_eff = r.get("probability_up_effective")
+            _p = float(_p_eff if _p_eff is not None else r["probability_up"])
             _d = "UP" if _p > 0.5 else "DOWN"
             _hi = _p > 0.65 or _p < 0.35
             _ag = _d == _v8_dir
