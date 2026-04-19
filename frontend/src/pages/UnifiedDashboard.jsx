@@ -47,16 +47,20 @@ export default function UnifiedDashboard() {
   const api = useApi();
   const [tf, setTf] = useState(null);
 
-  const dashLoader = useApiLoader(
-    (s) => api.get(`/api/dashboard${tf ? `?timeframe=${tf}` : ''}`, { signal: s }),
-    [tf]
-  );
+  // /api/dashboard aggregator 500s (ORM drift in DashboardService._get_recent_trades).
+  // Compose `dash` from the split endpoints that DO work — /dashboard/summary
+  // returns bankroll/daily_pnl/win_rate, /dashboard/equity returns the curve.
+  // `open_positions` and `alerts` have no hub endpoint today (tracked as
+  // follow-ups); default to [] so the UI renders empty state, not a crash.
+  const summaryLoader = useApiLoader((s) => api.get('/api/dashboard/summary', { signal: s }));
+  const equityLoader = useApiLoader((s) => api.get('/api/dashboard/equity', { signal: s }));
   const statsLoader = useApiLoader((s) => api.get('/api/trades/stats', { signal: s }));
   const sysLoader = useApiLoader((s) => api.get('/api/system/status', { signal: s }));
 
   useEffect(() => {
     const t = setInterval(() => {
-      dashLoader.reload();
+      summaryLoader.reload();
+      equityLoader.reload();
       statsLoader.reload();
       sysLoader.reload();
     }, 5000);
@@ -64,10 +68,19 @@ export default function UnifiedDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const dash = dashLoader.data;
+  const summary = summaryLoader.data;
+  const equityRaw = equityLoader.data;
+  const dash = useMemo(() => ({
+    pnl_today: summary?.daily_pnl,
+    exposure_pct: null,
+    drawdown: null,
+    equity_curve: Array.isArray(equityRaw) ? equityRaw : [],
+    open_positions: [],
+    alerts: [],
+  }), [summary, equityRaw]);
   const stats = statsLoader.data;
   const sys = sysLoader.data;
-  const err = dashLoader.error || statsLoader.error || sysLoader.error;
+  const err = summaryLoader.error || equityLoader.error || statsLoader.error || sysLoader.error;
 
   // Backend may ignore the timeframe param. Client-filter open_positions by
   // timeframe as a fallback so at least the positions table is accurate.
