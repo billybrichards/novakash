@@ -470,27 +470,43 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
     gates.append(_gate("confidence", True, f"dist={distance:.3f} >= {conf_min:.2f}"))
 
     # ── NEW ensemble-specific gates ────────────────────────────────────────
-    # Fallback sanity — skip when ensemble degraded to LGB-only by default.
+    # Fallback sanity — skip when ensemble degraded to LGB-only.
+    #
+    # Two failure modes we must both catch:
+    #   1. EXPLICIT: TimesFM sets ens_cfg.mode = "fallback_lgb_only"
+    #      (classifier load failed at service boot / health-flipped degraded).
+    #   2. SILENT:   probability_classifier is None even when ens_cfg.mode is
+    #      not set (classifier timed out on this window, push missed, etc).
+    #      Without this check v5_ensemble would happily trade on LGB alone
+    #      while reporting ensemble conf — defeating the whole v5 edge.
     skip_fallback = _skip_on_ensemble_fallback()
-    if (
-        skip_fallback
-        and ens_cfg
-        and ens_cfg.get("mode") == "fallback_lgb_only"
-    ):
-        gates.append(
-            _gate(
-                "ensemble_fallback_sanity",
-                False,
-                "ensemble degraded to fallback_lgb_only; classifier unavailable",
+    if skip_fallback:
+        explicit_fallback = bool(ens_cfg and ens_cfg.get("mode") == "fallback_lgb_only")
+        silent_fallback = p_classifier is None
+        if explicit_fallback or silent_fallback:
+            reason = "fallback_lgb_only" if explicit_fallback else "classifier_p_up_null"
+            gates.append(
+                _gate(
+                    "ensemble_fallback_sanity",
+                    False,
+                    f"{reason}; classifier unavailable — LGB-only would be silent fallback",
+                )
             )
-        )
-        return _skip("ensemble_fallback_lgb_only", gates)
+            return _skip(f"ensemble_fallback: {reason}", gates)
     if ens_cfg and ens_cfg.get("mode") == "fallback_lgb_only":
         gates.append(
             _gate(
                 "ensemble_fallback_sanity",
                 True,
                 "fallback accepted (ensemble_skip_on_fallback=false)",
+            )
+        )
+    elif p_classifier is None and not skip_fallback:
+        gates.append(
+            _gate(
+                "ensemble_fallback_sanity",
+                True,
+                "classifier NULL but skip disabled (ensemble_skip_on_fallback=false)",
             )
         )
 
