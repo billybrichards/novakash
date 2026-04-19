@@ -24,9 +24,13 @@
 -- actual_direction` is written (~2 min after window close) regardless of
 -- whether a trade actually filled.
 --
--- Idempotent — CREATE OR REPLACE VIEW.
+-- Idempotent via DROP + CREATE — CREATE OR REPLACE VIEW refuses when the
+-- outcome column's expression type changes and a new trailing column is
+-- added. DROP IF EXISTS keeps re-runs safe.
 
-CREATE OR REPLACE VIEW strategy_decisions_resolved AS
+DROP VIEW IF EXISTS strategy_decisions_resolved;
+
+CREATE VIEW strategy_decisions_resolved AS
 SELECT
     sd.id,
     sd.strategy_id,
@@ -69,7 +73,7 @@ SELECT
         END
     ) AS outcome,
     t.pnl_usd,
-    COALESCE(t.resolved_at, snap.resolved_at) AS resolved_at,
+    t.resolved_at,
     t.sot_reconciliation_state,
     -- New: explicit flag so the FE / audit tooling can distinguish
     -- "real on-chain settled" from "would-have-been (shadow) settled".
