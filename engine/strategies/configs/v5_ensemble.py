@@ -406,14 +406,17 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         gates.append(_gate("timing", False, "timing=late outside window"))
         return _skip(f"polymarket: timing=late -- outside window", gates)
 
-    # Confidence gate
-    if distance < 0.12:
-        gates.append(_gate("confidence", False, f"dist={distance:.3f} < 0.12"))
+    # Confidence gate — tunable per strategy via gate_params (default 0.12).
+    # Hub note #183 showed mid-conviction (dist 0.0-0.20) as the bleeding
+    # bucket; v5_ensemble + v5_fresh each pick their own floor in YAML.
+    conf_min = _gp.get_float("confidence_min_distance", "V5_CONFIDENCE_MIN_DIST", 0.12)
+    if distance < conf_min:
+        gates.append(_gate("confidence", False, f"dist={distance:.3f} < {conf_min:.2f}"))
         return _skip(
-            f"polymarket: p_up={confidence:.3f} dist={distance:.3f} < 0.12 threshold",
+            f"polymarket: p_up={confidence:.3f} dist={distance:.3f} < {conf_min:.2f} threshold",
             gates,
         )
-    gates.append(_gate("confidence", True, f"dist={distance:.3f} >= 0.12"))
+    gates.append(_gate("confidence", True, f"dist={distance:.3f} >= {conf_min:.2f}"))
 
     # ── NEW ensemble-specific gates ────────────────────────────────────────
     # Fallback sanity — skip when ensemble degraded to LGB-only by default.

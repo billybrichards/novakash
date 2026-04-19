@@ -59,7 +59,14 @@ gate_params:
 
   # 2026-04-19: Skip calm_trend regime (40% WR per 7d data).
   # Default was [calm_trend, volatile_trend]; drop calm_trend.
+  # NOTE: currently only wired in the legacy fallback path — primary
+  # poly_v2 path does not yet honour this filter. Follow-up PR will move
+  # the filter into _evaluate_poly_v2_ensemble.
   tradeable_v4_regimes: [volatile_trend]
+
+  # 2026-04-19: Raise confidence floor 0.12 → 0.15 (relaxed vs v5_ensemble
+  # which uses 0.18). Still cuts the worst of the mid-conviction bleed.
+  confidence_min_distance: 0.15
 
 # Sizing matches v5_ensemble so per-window allocation isn't a confound
 # when comparing WR. Bump to 0.028 / 0.12 is a Week-2 candidate.
