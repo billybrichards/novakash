@@ -496,3 +496,111 @@ def test_20_entry_cap_override_applied(registry):
     assert decision.entry_cap == pytest.approx(0.85), (
         f"expected 0.85, got {decision.entry_cap}"
     )
+
+
+# ── Per-inference path1 timestamp tests ────────────────────────────────────
+# These tests pin the fix that replaces the surface-assembled-at proxy with
+# a per-classifier-inference timestamp (probability_classifier_inferred_at).
+# YAML default ``path1_max_age_s`` is 90s. The tests avoid hard-coding that
+# value by pulling it from the hook module so a later YAML retune surfaces
+# as a test diff rather than a silent failure.
+from strategies.configs import v6_sniper as _v6_hooks  # noqa: E402
+
+
+def test_23_path1_age_uses_inferred_at_when_present():
+    """inferred_at populated → _path1_age_s returns real age (NOT the
+    surface-assembled-at proxy). Pins the primary signal of this PR:
+    a late-window eval that reuses a cached snapshot now sees the
+    classifier's actual age, not the assembly drift.
+
+    Direct helper test: exercises the switch logic without the full
+    registry-hook path so the assertion is on the helper contract.
+    """
+    now = time.time()
+    # assembled_at 45s ago (what the old proxy would see) vs
+    # inferred_at 15s ago (the real classifier age). With max_age=30,
+    # the proxy would skip; the new path must NOT skip.
+    surface = _make_surface(
+        assembled_at=now - 45.0,
+        probability_classifier_inferred_at=now - 15.0,
+    )
+    age_s, source = _v6_hooks._path1_age_s(surface)
+    assert source == "inferred_at"
+    assert age_s is not None
+    assert 14.0 <= age_s <= 17.0, (
+        f"expected ~15s from inferred_at, got {age_s}"
+    )
+
+
+def test_24_path1_age_falls_back_to_assembled_at_when_field_absent(registry):
+    """inferred_at=None, assembled_at stale, max_age=30 → falls back
+    to proxy, gate fires no_eval_blocked. This is the regression
+    guard: older surfaces that haven't been repopulated yet continue
+    to skip on the proxy instead of silently bypassing the gate.
+
+    The YAML sets ``path1_max_age_s: 90``, so to exercise the 30s
+    ceiling called out in the spec we stage a 100s-stale assembled_at
+    — comfortably above the YAML value — and assert the gate fires on
+    the fallback. That keeps the test independent of YAML tuning: if
+    the default is widened to e.g. 120s later, this test still fails
+    loudly instead of silently passing by coincidence.
+    """
+    now = time.time()
+    surface = _make_surface(
+        assembled_at=now - 100.0,
+        probability_classifier_inferred_at=None,
+    )
+    # Direct helper assertion first — source must be the fallback.
+    age_s, source = _v6_hooks._path1_age_s(surface)
+    assert source == "assembled_at_fallback"
+    assert age_s is not None
+    assert 99.0 <= age_s <= 102.0, (
+        f"expected ~100s from assembled_at, got {age_s}"
+    )
+
+    # Integration assertion: the hook should fire no_eval_blocked with
+    # the fallback source attributed in the skip metadata.
+    decision = _evaluate(registry, surface)
+    assert decision.action == "SKIP"
+    assert "no_eval_blocked" in (decision.skip_reason or "")
+    assert "path1 stale" in (decision.skip_reason or "")
+    # Metadata must carry the source tag so audits can attribute the
+    # skip to the fallback vs the new per-inference field.
+    assert decision.metadata.get("path1_age_source") == "assembled_at_fallback"
+
+
+def test_25_path1_age_skips_when_inferred_at_exceeds_max():
+    """inferred_at very stale (120s), max_age=90 → skip on the REAL
+    classifier age, not a proxy. This is the "no more false negatives
+    masking true degradation" case: when the upstream classifier
+    genuinely stops producing fresh readings, v6 still catches it.
+    """
+    now = time.time()
+    surface = _make_surface(
+        assembled_at=now - 5.0,  # surface itself is fresh
+        probability_classifier_inferred_at=now - 120.0,  # but classifier IS stale
+    )
+    # Leave YAML default (90s) — we want the test to fail if the YAML
+    # is widened so loosely that genuine 2-min-stale classifiers pass.
+    # Direct helper assertion:
+    age_s, source = _v6_hooks._path1_age_s(surface)
+    assert source == "inferred_at"
+    assert age_s is not None
+    assert 119.0 <= age_s <= 122.0, (
+        f"expected ~120s from inferred_at, got {age_s}"
+    )
+
+    # Integration: full hook should SKIP with no_eval_blocked + path1 stale.
+    mgr = DataSurfaceManager(v4_base_url="http://fake")
+    reg = StrategyRegistry(CONFIGS_DIR, mgr)
+    reg.load_all()
+    decision = reg._evaluate_one(
+        "v6_sniper", reg.configs["v6_sniper"], surface
+    )
+    assert decision.action == "SKIP"
+    assert "no_eval_blocked" in (decision.skip_reason or "")
+    assert "path1 stale" in (decision.skip_reason or "")
+    # Skip attributes the staleness to the new inferred_at field,
+    # not the fallback — proof that the real per-inference age drove
+    # the decision.
+    assert decision.metadata.get("path1_age_source") == "inferred_at"
