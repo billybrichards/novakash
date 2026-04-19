@@ -287,6 +287,57 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
     max_entry = surface.poly_max_entry_price
     gates: list[dict] = []
 
+    # ── Freshness gate ─────────────────────────────────────────────────────
+    # Skip when surface is too old. Protects against engine stalls /
+    # feed brown-outs masking as live data. Default 60s = matches v4 cache
+    # rejection in data_surface.py. Tighten via YAML for stricter live paths.
+    import time as _time
+    max_age = _gp.get_float(
+        "max_surface_age_seconds", "V5_MAX_SURFACE_AGE_SEC", 60.0
+    )
+    assembled_at = getattr(surface, "assembled_at", None)
+    if assembled_at and max_age > 0:
+        age = _time.time() - float(assembled_at)
+        if age > max_age:
+            gates.append(
+                _gate("surface_freshness", False, f"age={age:.1f}s > {max_age:.0f}s")
+            )
+            return _skip(f"surface_stale: age={age:.1f}s > {max_age:.0f}s", gates)
+        gates.append(_gate("surface_freshness", True, f"age={age:.1f}s"))
+
+    # ── UTC hour block (gate_params: block_utc_hours: [7,8,9]). ────────────
+    # Empty list = no block. Previously only wired in _evaluate_legacy;
+    # ported here so it actually applies to v5_ensemble / v5_fresh.
+    block_hours = _gp.get_int_list("block_utc_hours", "V4_BLOCK_UTC_HOURS", [])
+    if block_hours:
+        window_ts = getattr(surface, "window_ts", None)
+        if window_ts:
+            import datetime as _dt
+            hour = _dt.datetime.fromtimestamp(int(window_ts), _dt.timezone.utc).hour
+            if hour in block_hours:
+                gates.append(
+                    _gate("utc_hour_block", False, f"hour={hour} in {sorted(block_hours)}")
+                )
+                return _skip(f"utc_hour_block hour={hour}", gates)
+
+    # ── v4_regime allowlist (gate_params: tradeable_v4_regimes). ───────────
+    # Default = {calm_trend, volatile_trend} matching _TRADEABLE_REGIMES.
+    # 7d audit (2026-04-19): chop = 45.5% WR (noise) → exclude chop in YAML.
+    # Previously only wired in _evaluate_legacy; ported here for primary path.
+    v4_regime = surface.v4_regime
+    tradeable = set(
+        _gp.get_str_list(
+            "tradeable_v4_regimes",
+            "V4_TRADEABLE_REGIMES",
+            list(_TRADEABLE_REGIMES),
+        )
+    )
+    if v4_regime and v4_regime not in tradeable:
+        gates.append(
+            _gate("v4_regime", False, f"regime={v4_regime} not in {sorted(tradeable)}")
+        )
+        return _skip(f"v4_regime={v4_regime} not tradeable", gates)
+
     # ── NEW: pull ensemble fields ──────────────────────────────────────────
     p_lgb, p_classifier, ens_cfg = _extract_ensemble_fields(surface)
 
@@ -406,37 +457,56 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         gates.append(_gate("timing", False, "timing=late outside window"))
         return _skip(f"polymarket: timing=late -- outside window", gates)
 
-    # Confidence gate
-    if distance < 0.12:
-        gates.append(_gate("confidence", False, f"dist={distance:.3f} < 0.12"))
+    # Confidence gate — tunable per strategy via gate_params. Default 0.12
+    # = zero behaviour change. Hub note #183 showed mid-conviction
+    # (dist 0.0-0.20) was the bleeding bucket; raise via YAML per strategy.
+    conf_min = _gp.get_float("confidence_min_distance", "V5_CONFIDENCE_MIN_DIST", 0.12)
+    if distance < conf_min:
+        gates.append(_gate("confidence", False, f"dist={distance:.3f} < {conf_min:.2f}"))
         return _skip(
-            f"polymarket: p_up={confidence:.3f} dist={distance:.3f} < 0.12 threshold",
+            f"polymarket: p_up={confidence:.3f} dist={distance:.3f} < {conf_min:.2f} threshold",
             gates,
         )
-    gates.append(_gate("confidence", True, f"dist={distance:.3f} >= 0.12"))
+    gates.append(_gate("confidence", True, f"dist={distance:.3f} >= {conf_min:.2f}"))
 
     # ── NEW ensemble-specific gates ────────────────────────────────────────
-    # Fallback sanity — skip when ensemble degraded to LGB-only by default.
+    # Fallback sanity — skip when ensemble degraded to LGB-only.
+    #
+    # Two failure modes we must both catch:
+    #   1. EXPLICIT: TimesFM sets ens_cfg.mode = "fallback_lgb_only"
+    #      (classifier load failed at service boot / health-flipped degraded).
+    #   2. SILENT:   probability_classifier is None even when ens_cfg.mode is
+    #      not set (classifier timed out on this window, push missed, etc).
+    #      Without this check v5_ensemble would happily trade on LGB alone
+    #      while reporting ensemble conf — defeating the whole v5 edge.
     skip_fallback = _skip_on_ensemble_fallback()
-    if (
-        skip_fallback
-        and ens_cfg
-        and ens_cfg.get("mode") == "fallback_lgb_only"
-    ):
-        gates.append(
-            _gate(
-                "ensemble_fallback_sanity",
-                False,
-                "ensemble degraded to fallback_lgb_only; classifier unavailable",
+    if skip_fallback:
+        explicit_fallback = bool(ens_cfg and ens_cfg.get("mode") == "fallback_lgb_only")
+        silent_fallback = p_classifier is None
+        if explicit_fallback or silent_fallback:
+            reason = "fallback_lgb_only" if explicit_fallback else "classifier_p_up_null"
+            gates.append(
+                _gate(
+                    "ensemble_fallback_sanity",
+                    False,
+                    f"{reason}; classifier unavailable — LGB-only would be silent fallback",
+                )
             )
-        )
-        return _skip("ensemble_fallback_lgb_only", gates)
+            return _skip(f"ensemble_fallback: {reason}", gates)
     if ens_cfg and ens_cfg.get("mode") == "fallback_lgb_only":
         gates.append(
             _gate(
                 "ensemble_fallback_sanity",
                 True,
                 "fallback accepted (ensemble_skip_on_fallback=false)",
+            )
+        )
+    elif p_classifier is None and not skip_fallback:
+        gates.append(
+            _gate(
+                "ensemble_fallback_sanity",
+                True,
+                "classifier NULL but skip disabled (ensemble_skip_on_fallback=false)",
             )
         )
 
@@ -636,11 +706,12 @@ def _evaluate_poly_legacy(surface: "FullDataSurface") -> StrategyDecision:
     direction = surface.v4_recommended_side or ("UP" if p_up > 0.5 else "DOWN")
     gates: list[dict] = []
 
-    if distance < 0.12:
-        gates.append(_gate("confidence", False, f"dist={distance:.3f} < 0.12"))
-        return _skip(f"polymarket_legacy: dist={distance:.3f} < 0.12", gates)
+    conf_min = _gp.get_float("confidence_min_distance", "V5_CONFIDENCE_MIN_DIST", 0.12)
+    if distance < conf_min:
+        gates.append(_gate("confidence", False, f"dist={distance:.3f} < {conf_min:.2f}"))
+        return _skip(f"polymarket_legacy: dist={distance:.3f} < {conf_min:.2f}", gates)
 
-    gates.append(_gate("confidence", True, f"dist={distance:.3f} >= 0.12"))
+    gates.append(_gate("confidence", True, f"dist={distance:.3f} >= {conf_min:.2f}"))
 
     macro_gate = surface.v4_macro_direction_gate
     if macro_gate and macro_gate not in ("ALLOW_ALL", None):

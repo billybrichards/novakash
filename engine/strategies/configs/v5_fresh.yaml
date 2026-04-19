@@ -59,9 +59,17 @@ gate_params:
   # this at 0 / disabled). |p_lgb - p_path1| > 0.20 → skip.
   ensemble_disagreement_threshold: 0.20
 
-  # 2026-04-19: Skip calm_trend regime (40% WR per 7d data).
-  # Default was [calm_trend, volatile_trend]; drop calm_trend.
-  tradeable_v4_regimes: [volatile_trend]
+  # 2026-04-19: v5_fresh is GHOST; values tuned for when/if re-promoted.
+  # 7d audit revision: calm_trend = 57.3% (not 40% as note #183 claimed),
+  # volatile_trend = 62.8%, chop = 45.5% (bleed). Drop chop only.
+  tradeable_v4_regimes: [calm_trend, volatile_trend]
+
+  # Relaxed floor vs v5_ensemble (0.18). Fresh catches dist 0.15-0.18
+  # windows ensemble declines — its primary value-add.
+  confidence_min_distance: 0.15
+
+  # Freshness parity with v5_ensemble.
+  max_surface_age_seconds: 30.0
 
 # Sizing matches v5_ensemble so per-window allocation isn't a confound
 # when comparing WR. Bump to 0.028 / 0.12 is a Week-2 candidate.
