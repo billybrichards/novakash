@@ -1,5 +1,5 @@
 name: v6_sniper
-version: "6.0.4"
+version: "6.0.5"
 # v6.0.1 — 2026-04-19 — post-review tweaks for LIVE launch (per Billy):
 #   • mode: GHOST → LIVE
 #   • Relaxed pegged_path1 thresholds 0.95/0.05 → 0.90/0.10 (captures
@@ -49,7 +49,16 @@ gate_params:
   bucket_block_mid_conf: true         # block 0.5 < p < 0.7, dist < 0.20 bucket
 
   # ── Path1 freshness ──
-  path1_max_age_s: 30
+  # 2026-04-20: raised 30 → 90 as stopgap. v6's freshness check uses
+  # ``time.time() - surface.assembled_at`` as a conservative proxy
+  # because no per-classifier-inference timestamp exists on the surface
+  # today. Late evals in the same window reuse the assembled_at, which
+  # drifts past 30s and fires false no_eval_blocked skips while upstream
+  # classifier is healthy (signal_evaluations.v2_probability_up = 98.3%
+  # non-null). Proper fix: add ``probability_classifier_inferred_at`` to
+  # FullDataSurface (data_surface PR, follow-up). 90s absorbs the
+  # 5-min window reuse without letting truly stale classifier through.
+  path1_max_age_s: 90
   path1_skip_on_null: true
 
   # ── Defensive gates inherited from v4_fusion / v5_ensemble ──

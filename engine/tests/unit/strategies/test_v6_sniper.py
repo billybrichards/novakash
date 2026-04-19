@@ -107,7 +107,7 @@ def test_v6_sniper_registered_as_live(registry):
     assert "v6_sniper" in registry.strategy_names
     cfg = registry.configs["v6_sniper"]
     assert cfg.mode == "LIVE"
-    assert cfg.version == "6.0.4"
+    assert cfg.version == "6.0.5"
     assert cfg.timescale == "5m"
 
 
