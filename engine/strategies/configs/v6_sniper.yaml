@@ -1,5 +1,5 @@
 name: v6_sniper
-version: "6.0.3"
+version: "6.0.4"
 # v6.0.1 — 2026-04-19 — post-review tweaks for LIVE launch (per Billy):
 #   • mode: GHOST → LIVE
 #   • Relaxed pegged_path1 thresholds 0.95/0.05 → 0.90/0.10 (captures
