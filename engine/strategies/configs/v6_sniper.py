@@ -50,16 +50,18 @@ from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
 _STRATEGY_ID = "v6_sniper"
-_VERSION = "6.0.1"
+_VERSION = "6.0.2"
 
 
 # ── Tunable knobs (YAML gate_params → env fallback → default) ──────────────
 def _min_offset_sec() -> int:
-    return _gp.get_int("min_offset_sec", "V6_SNIPER_MIN_OFFSET_SEC", 60)
+    # v6.0.2: widened 60 → 30 per Billy for overnight run.
+    return _gp.get_int("min_offset_sec", "V6_SNIPER_MIN_OFFSET_SEC", 30)
 
 
 def _max_offset_sec() -> int:
-    return _gp.get_int("max_offset_sec", "V6_SNIPER_MAX_OFFSET_SEC", 180)
+    # v6.0.2: widened 180 → 240 per Billy for overnight run.
+    return _gp.get_int("max_offset_sec", "V6_SNIPER_MAX_OFFSET_SEC", 240)
 
 
 def _bucket_abs_dist_strong() -> float:

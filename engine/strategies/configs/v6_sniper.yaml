@@ -1,5 +1,5 @@
 name: v6_sniper
-version: "6.0.1"
+version: "6.0.2"
 # v6.0.1 — 2026-04-19 — post-review tweaks for LIVE launch (per Billy):
 #   • mode: GHOST → LIVE
 #   • Relaxed pegged_path1 thresholds 0.95/0.05 → 0.90/0.10 (captures
@@ -29,9 +29,17 @@ timescale: 5m
 gates: []
 
 gate_params:
-  # ── Timing window ──
-  min_offset_sec: 60
-  max_offset_sec: 180
+  # ── Timing window (v6.0.2: widened per Billy for overnight run) ──
+  # Previously [60, 180]. Widened to [30, 240] since v6's other gates
+  # (agree_strong / pegged_path1 / VPIN / source agreement) are strict
+  # enough to filter noise at earlier/later offsets.
+  # Note: sister-repo's v4 snapshot assembler tags stc > 180 as "early"
+  # and stc <= 5 as "expired"; if trade_advised fires with those tags,
+  # v6 will still skip via the polymarket_v2 path even inside this
+  # wider local window. Overnight data will reveal whether v6 captures
+  # any T > 180 or T < 60 trades or if sister-repo gates still block.
+  min_offset_sec: 30
+  max_offset_sec: 240
 
   # ── Ensemble conviction bucket thresholds (note #183, relaxed in v6.0.1) ──
   bucket_abs_dist_strong: 0.20        # agree_strong: both models same dir + dist >= 0.20
