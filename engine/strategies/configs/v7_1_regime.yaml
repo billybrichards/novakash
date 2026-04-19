@@ -1,0 +1,43 @@
+# v7.1 regime-aware VPIN/delta — GHOST ONLY.
+#
+# Logic:
+#   * VPIN >= 0.45 (require informed flow — NORMAL/TRANSITION regime bar)
+#   * |delta_pct| >= 0.02% (NORMAL) or 0.01% (CASCADE: VPIN >= 0.65)
+#   * Direction comes from engine's v5.7c baseline.
+# Implemented via companion hook v7_1_regime_hook.py (gate library does
+# not natively express regime-dependent delta thresholds).
+#
+# Backtest (72h, 2026-04-16 → 2026-04-19, 862 BTC/5m windows):
+#   eligible=520, dir_wr=56.2%, poly_pnl_sim=+$212.01 on $10 stake.
+#   edge vs base-rate =+5.7pp. Regime WAS 73% DOWN.
+#
+# WHY GHOST ONLY:
+#   * 72h sample only. Needs >=2 weeks shadow data before any LIVE promotion.
+#   * Regime thresholds are brittle — VPIN scales move with overall
+#     market volume, 0.45 gate may over/under-fire in different eras.
+#   * Not tested in low-vol / sideways regimes.
+#
+# Does NOT auto-promote.
+name: v7_1_regime
+version: "0.1.0-shadow"
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+# Note: gate list here is minimal — the pre_gate_hook does the heavy
+# lifting because DeltaMagnitudeGate only supports a single (non-regime)
+# threshold. We still post-filter with timing + trade_advised once the
+# hook returns TRADE.
+gates:
+  - type: timing
+    params: { min_offset: 60, max_offset: 180 }
+  - type: trade_advised
+    params: {}
+
+hooks_file: v7_1_regime_hook.py
+pre_gate_hook: evaluate_v71
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.015
+  max_collateral_pct: 0.05
