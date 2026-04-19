@@ -277,10 +277,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             # window_snapshots.actual_direction (PR #213) is the canonical
             # source — matches scripts/ops/shadow_analysis.py. See
             # hub/db/migrations/versions/20260419_01_strategy_decisions_shadow_outcome.sql
+            #
+            # DROP first — PG's CREATE OR REPLACE refuses when the
+            # outcome column's expression type changes from a bare
+            # trades.outcome to a COALESCE, and when a new trailing
+            # column (outcome_source) is added. The DROP keeps this
+            # idempotent and unambiguous on boot.
+            await session.execute(
+                text("DROP VIEW IF EXISTS strategy_decisions_resolved")
+            )
             await session.execute(
                 text(
                     """
-                    CREATE OR REPLACE VIEW strategy_decisions_resolved AS
+                    CREATE VIEW strategy_decisions_resolved AS
                     SELECT
                         sd.id, sd.strategy_id, sd.strategy_version, sd.asset,
                         sd.window_ts, sd.timeframe, sd.eval_offset, sd.mode,
@@ -301,7 +310,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                             END
                         ) AS outcome,
                         t.pnl_usd,
-                        COALESCE(t.resolved_at, snap.resolved_at) AS resolved_at,
+                        t.resolved_at,
                         t.sot_reconciliation_state,
                         CASE WHEN t.outcome IS NOT NULL THEN 'fill'
                              WHEN COALESCE(snap.actual_direction, UPPER(snap.poly_winner)) IS NOT NULL
