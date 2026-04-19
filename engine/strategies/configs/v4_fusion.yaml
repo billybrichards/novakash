@@ -6,7 +6,9 @@ version: "4.2.0"
 # v5_ensemble stays LIVE and is now uncontested primary; v5_fresh
 # (relaxed gates) runs alongside on windows v5_ensemble declines.
 # Roll back by editing this file (mode: LIVE) and restarting the engine.
-mode: GHOST
+# 2026-04-19: Flipped GHOST → LIVE. 72h audit: 61.1% WR, +$423/$10 stake,
+# bidirectional. Primary workhorse while v5 reviewed + v6_sniper shadows.
+mode: LIVE
 asset: BTC
 timescale: 5m
 

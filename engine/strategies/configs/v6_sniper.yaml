@@ -1,0 +1,96 @@
+name: v6_sniper
+version: "6.0.1"
+# v6.0.1 — 2026-04-19 — post-review tweaks for LIVE launch (per Billy):
+#   • mode: GHOST → LIVE
+#   • Relaxed pegged_path1 thresholds 0.95/0.05 → 0.90/0.10 (captures
+#     near-pegged signals like TG example path1=0.921)
+#   • Enabled risk_off override on HIGH-conviction (was false)
+#   • Added risk_off HMM state to tradeable_v4_regimes (was calm+volatile only)
+#   • Explicit entry_cap_override: 0.85 (FAK ladder will try $0.85 + pi bonus)
+#   • Removed blocked_utc_hours (was [7,8,9])
+#   • probability_up_calibrated logged to metadata when available; decisions
+#     still use raw (prefer_raw_probability: true) until isotonic shadow
+#     re-validates the bucket thresholds on calibrated data.
+#
+# v6.0.0 base — bidirectional ensemble sniper, built on ruins of v5_ensemble.
+# Primary signal: LGB + Path1 ensemble (surface.poly_confidence).
+# Conviction buckets from note #183 (7d). CLOB sizing schedule from
+# v4_down_only (the 86% winner). Defensive gates from v4_fusion.
+mode: LIVE
+asset: BTC
+timescale: 5m
+
+# All conviction/freshness/VPIN/regime logic lives in the hook
+# (evaluate_polymarket_sniper). Follows the v4_fusion / v5_ensemble
+# inline-hook pattern rather than declarative gates — those registry
+# entries (ensemble_path1_freshness, ensemble_conviction_bucket,
+# vpin_min, etc.) are a future gate-infra refactor, not required to
+# ship this strategy.
+gates: []
+
+gate_params:
+  # ── Timing window ──
+  min_offset_sec: 60
+  max_offset_sec: 180
+
+  # ── Ensemble conviction bucket thresholds (note #183, relaxed in v6.0.1) ──
+  bucket_abs_dist_strong: 0.20        # agree_strong: both models same dir + dist >= 0.20
+  bucket_path1_extreme_high: 0.90     # pegged_path1: path1 >= 0.90 (was 0.95)
+  bucket_path1_extreme_low: 0.10      # pegged_path1: path1 <= 0.10 (was 0.05)
+  bucket_lgb_opposite_block: 0.10     # pegged_path1: LGB opposite + |dist| > 0.10 -> block
+  bucket_block_mid_conf: true         # block 0.5 < p < 0.7, dist < 0.20 bucket
+
+  # ── Path1 freshness ──
+  path1_max_age_s: 30
+  path1_skip_on_null: true
+
+  # ── Defensive gates inherited from v4_fusion / v5_ensemble ──
+  vpin_min: 0.45
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  health_gate: degraded               # block if health in {degraded, unsafe}
+  skip_stale_sources: true            # skip if chainlink or tiingo NULL
+
+  # ── Time-of-day block (v6.0.1: disabled — removed per Billy) ──
+  blocked_utc_hours: []
+
+  # ── Regime gate (v6.0.1: risk_off added per Billy; chop still blocked) ──
+  tradeable_v4_regimes: [calm_trend, volatile_trend, risk_off]
+
+  # ── Ensemble signal source selection ──
+  ensemble_signal_source: ensemble
+  ensemble_skip_on_fallback: true
+
+  # Read RAW probability_up (not calibrated) while bucket thresholds
+  # were measured on raw values. Flip to false once isotonic PRs
+  # (novakash-timesfm#107 + novakash#281) are live AND 72h shadow
+  # re-validates the buckets on calibrated data.
+  prefer_raw_probability: true
+
+  # ── Entry-price cap (v6.0.1: explicit 0.85 override) ──
+  # v6 is willing to pay up to $0.85 on HIGH-conviction setups.
+  # FAK ladder respects this: rung 1 = $0.85, rung 2 = $0.85 + pi bonus (~$0.88).
+  # Overrides surface.poly_max_entry_price default (~0.65-0.70).
+  entry_cap_override: 0.85
+
+  # ── risk_off override (v6.0.1: enabled per Billy) ──
+  # v6's stricter conviction buckets + VPIN + source agreement gates make
+  # this safer than v4_fusion's pre-2026-04-17 override was. Only triggers
+  # when distance >= 0.20 AND both chainlink + tiingo agree.
+  risk_off_override_enabled: true
+  risk_off_override_dist_min: 0.20
+  risk_off_override_require_tiingo: true
+
+sizing:
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.025
+  max_collateral_pct: 0.08
+  schedule:
+    - { threshold: 0.55, modifier: 2.0, label: "high_conv_TBD" }
+    - { threshold: 0.35, modifier: 1.2, label: "mid_conv_TBD" }
+    - { threshold: 0.25, modifier: 1.0, label: "low_conv_TBD" }
+    - { threshold: 0.0,  modifier: 0.0, label: "skip_below_25" }
+
+hooks_file: v6_sniper.py
+pre_gate_hook: evaluate_polymarket_sniper
