@@ -10,6 +10,7 @@ export const NAV_SECTIONS = [
     items: [
       { path: '/',            label: 'Dashboard',      icon: '📊' },
       { path: '/trades',      label: 'Trades',         icon: '📋' },
+      { path: '/windows',     label: 'Windows',        icon: '🪟' },
       { path: '/wallet',      label: 'Wallet',         icon: '👛' },
       { path: '/pnl',         label: 'P&L',            icon: '💰' },
     ],
@@ -58,7 +59,7 @@ export const ARCHIVED_PAGES = [
   { path: '/archive/live',              label: 'Live Trading',          importName: 'LiveTrading',          category: 'trading', replacedBy: 'Dashboard + Trades' },
   { path: '/archive/factory',           label: 'Factory Floor',         importName: 'FactoryFloor',         category: 'trading', replacedBy: 'Signal Explorer' },
   { path: '/archive/v58',               label: 'V58 Monitor',           importName: 'V58Monitor',           category: 'trading', replacedBy: 'Signal Explorer' },
-  { path: '/archive/windows',           label: 'Window Results',        importName: 'WindowResults',        category: 'trading', replacedBy: 'Signal Explorer' },
+  // WindowResults promoted to /windows (active nav under TRADING).
   // StrategyAnalysis promoted to /analysis (nav entry "Analysis · 30d").
   { path: '/archive/timesfm',           label: 'TimesFM',               importName: 'TimesFM',              category: 'trading', replacedBy: 'Signal Explorer (forecast)' },
   { path: '/archive/composite',         label: 'Composite Signals',     importName: 'CompositeSignals',     category: 'trading', replacedBy: 'Signal Explorer' },
