@@ -57,6 +57,10 @@ gate_params:
   # this at 0 / disabled). |p_lgb - p_path1| > 0.20 → skip.
   ensemble_disagreement_threshold: 0.20
 
+  # 2026-04-19: Skip calm_trend regime (40% WR per 7d data).
+  # Default was [calm_trend, volatile_trend]; drop calm_trend.
+  tradeable_v4_regimes: [volatile_trend]
+
 # Sizing matches v5_ensemble so per-window allocation isn't a confound
 # when comparing WR. Bump to 0.028 / 0.12 is a Week-2 candidate.
 sizing:

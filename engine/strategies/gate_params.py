@@ -85,3 +85,23 @@ def get_int(name: str, env_var: str | None, default: int) -> int:
 def get_str(name: str, env_var: str | None, default: str) -> str:
     raw = _lookup(name, env_var, default)
     return str(raw)
+
+
+def get_int_list(name: str, env_var: str | None, default: list[int]) -> list[int]:
+    """Resolve a list of ints. YAML accepts [1,2,3]; env accepts '1,2,3'."""
+    raw = _lookup(name, env_var, default)
+    if isinstance(raw, list):
+        return [int(x) for x in raw]
+    if isinstance(raw, str):
+        return [int(x.strip()) for x in raw.split(",") if x.strip()]
+    return list(default)
+
+
+def get_str_list(name: str, env_var: str | None, default: list[str]) -> list[str]:
+    """Resolve a list of strings. YAML accepts [a,b]; env accepts 'a,b'."""
+    raw = _lookup(name, env_var, default)
+    if isinstance(raw, list):
+        return [str(x) for x in raw]
+    if isinstance(raw, str):
+        return [x.strip() for x in raw.split(",") if x.strip()]
+    return list(default)

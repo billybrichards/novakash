@@ -681,8 +681,32 @@ def _evaluate_legacy(surface: "FullDataSurface") -> StrategyDecision:
     """Legacy margin-engine path (verbatim from v4_fusion)."""
     regime = surface.v4_regime
     gates: list[dict] = []
-    if regime and regime not in _TRADEABLE_REGIMES:
-        gates.append(_gate("regime", False, f"regime={regime} not tradeable"))
+
+    # UTC hour block (per-strategy gate_params, e.g. block_utc_hours: [7,8,9]).
+    # Empty list = no block. Used by v5_ensemble to avoid 07-09 UTC (0-25% WR).
+    block_hours = _gp.get_int_list("block_utc_hours", "V4_BLOCK_UTC_HOURS", [])
+    if block_hours:
+        window_ts = getattr(surface, "window_ts", None)
+        if window_ts:
+            import datetime as _dt
+            hour = _dt.datetime.fromtimestamp(int(window_ts), _dt.timezone.utc).hour
+            if hour in block_hours:
+                gates.append(_gate("utc_hour_block", False, f"hour={hour} in blocked {sorted(block_hours)}"))
+                return _skip(f"utc_hour_block hour={hour}", gates)
+
+    # Tradeable v4_regime set (per-strategy gate_params).
+    # Default = {calm_trend, volatile_trend}. v5_fresh drops calm_trend (40% WR).
+    tradeable = set(
+        _gp.get_str_list(
+            "tradeable_v4_regimes",
+            "V4_TRADEABLE_REGIMES",
+            list(_TRADEABLE_REGIMES),
+        )
+    )
+    if regime and regime not in tradeable:
+        gates.append(
+            _gate("regime", False, f"regime={regime} not in tradeable={sorted(tradeable)}")
+        )
         return _skip(f"regime={regime} not tradeable", gates)
 
     gates.append(_gate("regime", True, f"regime={regime} tradeable"))

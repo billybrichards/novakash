@@ -7,11 +7,11 @@ version: "5.1.0"
 # The 13 inherited gates + 2 ensemble gates govern execution. Roll
 # back to GHOST by editing this file (mode: GHOST) and restarting
 # the engine — no code change needed.
-# 2026-04-19: Flipped LIVE → GHOST per Billy. Only v5_fresh LIVE for now —
-# v5_ensemble (strict) bleeding with ensemble_disagreement_threshold=0.0
-# too aggressive, per hub note #183 gate-tuning plan. Revisit after
-# v5_fresh note #183 changes land + 48h shadow.
-mode: GHOST
+# 2026-04-19: Flipped LIVE → GHOST then back to LIVE same day with added
+# block_utc_hours: [7,8,9] — those UTC hours were 0-25% WR buckets.
+# v5_ensemble (strict) runs LIVE alongside v5_fresh (relaxed); dedup keeps
+# per-window exposure to 1 stake.
+mode: LIVE
 asset: BTC
 timescale: 5m
 
@@ -53,6 +53,9 @@ gate_params:
   # Disagreement abstain threshold on |p_lgb - p_path1|. 0 = gate off.
   # Leave off until we have 200+ trades of shadow calibration baseline.
   ensemble_disagreement_threshold: 0.0
+
+  # 2026-04-19: Block UTC hours 07-09 (0-25% WR bucket per 7d data).
+  block_utc_hours: [7, 8, 9]
 
 # Sizing matches v4_fusion so allocation isn't a confound when comparing WR.
 sizing:
