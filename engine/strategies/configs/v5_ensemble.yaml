@@ -11,7 +11,9 @@ version: "5.1.0"
 # block_utc_hours: [7,8,9] — those UTC hours were 0-25% WR buckets.
 # v5_ensemble (strict) runs LIVE alongside v5_fresh (relaxed); dedup keeps
 # per-window exposure to 1 stake.
-mode: LIVE
+# 2026-04-19: Flipped LIVE → GHOST alongside v6_sniper rollout.
+# v5_* net-negative on 72h audit; revisit after v6 shadow completes + isotonic recalibration.
+mode: GHOST
 asset: BTC
 timescale: 5m
 
