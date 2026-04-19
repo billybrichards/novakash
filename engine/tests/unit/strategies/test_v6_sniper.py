@@ -103,11 +103,11 @@ def _evaluate(registry, surface):
 
 
 # ── Registry load sanity ────────────────────────────────────────────────────
-def test_v6_sniper_registered_as_ghost(registry):
+def test_v6_sniper_registered_as_live(registry):
     assert "v6_sniper" in registry.strategy_names
     cfg = registry.configs["v6_sniper"]
-    assert cfg.mode == "GHOST"
-    assert cfg.version == "6.0.0"
+    assert cfg.mode == "LIVE"
+    assert cfg.version == "6.0.1"
     assert cfg.timescale == "5m"
 
 
@@ -273,17 +273,24 @@ def test_11_vpin_below_floor_rejects(registry):
     assert "vpin_too_low" in (decision.skip_reason or "")
 
 
-# ── #12 blocked_utc_hours ──────────────────────────────────────────────────
-def test_12_blocked_utc_hour_rejects(registry):
-    """window at 07:30 UTC -> REJECT (hour in [7, 8, 9])."""
-    # 07:30 UTC on 2026-04-19
+# ── #12 blocked_utc_hours (v6.0.1: disabled by default) ────────────────────
+def test_12_blocked_utc_hours_disabled_by_default(registry):
+    """v6.0.1 sets blocked_utc_hours=[] in YAML (removed per Billy). A
+    window at 07:30 UTC should NOT be skipped for time-of-day reasons
+    anymore. Regression guard so a later PR that sets the YAML back to
+    [7,8,9] shows up as a test diff rather than silent reactivation.
+    """
     window_ts = int(
         _dt.datetime(2026, 4, 19, 7, 30, tzinfo=_dt.timezone.utc).timestamp()
     )
     surface = _make_surface(window_ts=window_ts, hour_utc=7)
     decision = _evaluate(registry, surface)
-    assert decision.action == "SKIP"
-    assert "blocked_utc_hour" in (decision.skip_reason or "")
+    # Default happy-path surface → should TRADE with no time-of-day skip.
+    assert decision.action == "TRADE", (
+        f"expected TRADE, got {decision.action} skip_reason={decision.skip_reason}"
+    )
+    # Sanity: skip_reason shouldn't contain "blocked_utc" for any reason.
+    assert "blocked_utc" not in (decision.skip_reason or "")
 
 
 # ── #13 source_agreement ───────────────────────────────────────────────────
@@ -341,3 +348,96 @@ def test_v4_fusion_flipped_to_live(registry):
 def test_v4_down_only_stays_ghost(registry):
     """Spec: do NOT touch v4_down_only — stays GHOST."""
     assert registry.configs["v4_down_only"].mode == "GHOST"
+
+
+# ── v6.0.1 additions: risk_off regime pass + pegged boundary tests ─────────
+def test_15_risk_off_regime_accepts(registry):
+    """v6.0.1 adds risk_off to tradeable_v4_regimes. Regression test:
+    a risk_off window with otherwise-passing gates should TRADE, not skip.
+    """
+    surface = _make_surface(v4_regime="risk_off")
+    decision = _evaluate(registry, surface)
+    assert decision.action == "TRADE", (
+        f"expected TRADE, got {decision.action} skip_reason={decision.skip_reason}"
+    )
+
+
+def test_15b_chop_regime_still_rejected(registry):
+    """chop stays blocked per Billy (only calm_trend / volatile_trend /
+    risk_off in the allowlist)."""
+    surface = _make_surface(v4_regime="chop")
+    decision = _evaluate(registry, surface)
+    assert decision.action == "SKIP"
+    assert "regime_not_tradeable" in (decision.skip_reason or "")
+
+
+def test_16_pegged_high_boundary_just_inside(registry):
+    """path1=0.91 + LGB=0.50 -> ACCEPT (just inside relaxed 0.90 threshold)."""
+    surface = _make_surface(
+        poly_direction="UP", poly_confidence=0.91,
+        probability_lgb=0.50, probability_classifier=0.91,
+        delta_chainlink=+0.01, delta_tiingo=+0.009, delta_binance=+0.01,
+        v4_recommended_side="UP",
+    )
+    decision = _evaluate(registry, surface)
+    assert decision.action == "TRADE", (
+        f"skip_reason={decision.skip_reason}"
+    )
+    assert decision.metadata["conviction_bucket"] == "pegged_path1"
+
+
+def test_17_pegged_high_boundary_just_outside(registry):
+    """path1=0.89 + LGB=0.50 (indifferent) -> neither pegged nor agree_strong,
+    falls into mid_conf block."""
+    surface = _make_surface(
+        poly_direction="UP", poly_confidence=0.70,
+        poly_confidence_distance=0.20,
+        probability_lgb=0.50, probability_classifier=0.89,
+        delta_chainlink=+0.005, delta_tiingo=+0.004, delta_binance=+0.005,
+        v4_recommended_side="UP",
+    )
+    decision = _evaluate(registry, surface)
+    # 0.89 < 0.90 pegged threshold; LGB=0.50 means models don't agree on
+    # direction with any force → agree_strong fails too. mid_conf fallback.
+    assert decision.action == "SKIP"
+
+
+def test_18_pegged_low_boundary_just_inside(registry):
+    """path1=0.09 + LGB=0.50 (indifferent) -> ACCEPT (just inside 0.10 threshold)."""
+    surface = _make_surface(
+        poly_direction="DOWN", poly_confidence=0.09,
+        probability_lgb=0.50, probability_classifier=0.09,
+        delta_chainlink=-0.01, delta_tiingo=-0.009, delta_binance=-0.01,
+        v4_recommended_side="DOWN",
+    )
+    decision = _evaluate(registry, surface)
+    assert decision.action == "TRADE", (
+        f"skip_reason={decision.skip_reason}"
+    )
+    assert decision.direction == "DOWN"
+    assert decision.metadata["conviction_bucket"] == "pegged_path1"
+
+
+def test_19_pegged_low_boundary_just_outside(registry):
+    """path1=0.11 + LGB=0.45 + blended dist=0.05 -> neither pegged
+    (path1 > 0.10) nor agree_strong (dist < 0.20) -> mid_conf block.
+    """
+    surface = _make_surface(
+        poly_direction="DOWN", poly_confidence=0.45,
+        poly_confidence_distance=0.05,
+        probability_lgb=0.45, probability_classifier=0.11,
+        delta_chainlink=-0.005, delta_tiingo=-0.004, delta_binance=-0.005,
+        v4_recommended_side="DOWN",
+    )
+    decision = _evaluate(registry, surface)
+    assert decision.action == "SKIP"
+
+
+def test_20_entry_cap_override_applied(registry):
+    """v6.0.1: entry_cap_override=0.85 in YAML overrides surface.poly_max_entry_price."""
+    surface = _make_surface(poly_max_entry_price=0.65)  # surface default < override
+    decision = _evaluate(registry, surface)
+    assert decision.action == "TRADE"
+    assert decision.entry_cap == pytest.approx(0.85), (
+        f"expected 0.85, got {decision.entry_cap}"
+    )

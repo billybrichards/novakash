@@ -50,7 +50,7 @@ from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
 _STRATEGY_ID = "v6_sniper"
-_VERSION = "6.0.0"
+_VERSION = "6.0.1"
 
 
 # ── Tunable knobs (YAML gate_params → env fallback → default) ──────────────
@@ -69,14 +69,16 @@ def _bucket_abs_dist_strong() -> float:
 
 
 def _bucket_path1_extreme_high() -> float:
+    # v6.0.1: relaxed 0.95 → 0.90 per Billy (captures near-pegged winners).
     return _gp.get_float(
-        "bucket_path1_extreme_high", "V6_SNIPER_PATH1_EXTREME_HIGH", 0.95
+        "bucket_path1_extreme_high", "V6_SNIPER_PATH1_EXTREME_HIGH", 0.90
     )
 
 
 def _bucket_path1_extreme_low() -> float:
+    # v6.0.1: relaxed 0.05 → 0.10 per Billy (symmetric DOWN side).
     return _gp.get_float(
-        "bucket_path1_extreme_low", "V6_SNIPER_PATH1_EXTREME_LOW", 0.05
+        "bucket_path1_extreme_low", "V6_SNIPER_PATH1_EXTREME_LOW", 0.10
     )
 
 
@@ -131,14 +133,17 @@ def _skip_stale_sources() -> bool:
 
 
 def _blocked_utc_hours() -> list[int]:
-    return _gp.get_int_list("blocked_utc_hours", "V6_SNIPER_BLOCKED_HOURS", [7, 8, 9])
+    # v6.0.1: disabled by default per Billy (removed [7,8,9] UTC block).
+    # Ops can re-enable via YAML or V6_SNIPER_BLOCKED_HOURS env var.
+    return _gp.get_int_list("blocked_utc_hours", "V6_SNIPER_BLOCKED_HOURS", [])
 
 
 def _tradeable_v4_regimes() -> list[str]:
+    # v6.0.1: risk_off added per Billy. chop still blocked.
     return _gp.get_str_list(
         "tradeable_v4_regimes",
         "V6_SNIPER_TRADEABLE_REGIMES",
-        ["calm_trend", "volatile_trend"],
+        ["calm_trend", "volatile_trend", "risk_off"],
     )
 
 
@@ -158,6 +163,18 @@ def _prefer_raw_probability() -> bool:
     return _gp.get_bool(
         "prefer_raw_probability", "V6_SNIPER_PREFER_RAW_PROBABILITY", True
     )
+
+
+def _entry_cap_override() -> Optional[float]:
+    """v6.0.1: explicit cap override ($0.85 default) — bypasses the
+    surface's poly_max_entry_price default (~0.65-0.70). Returns None
+    if unset or set to 0, which falls back to the surface cap.
+
+    FAK ladder consumes this as rung 1; rung 2 is cap + pi_bonus (~3c),
+    so an 0.85 override translates to FAK attempts at $0.85 and ~$0.88.
+    """
+    v = _gp.get_float("entry_cap_override", "V6_SNIPER_ENTRY_CAP_OVERRIDE", 0.0)
+    return v if v > 0 else None
 
 
 # ── Utility helpers ────────────────────────────────────────────────────────
@@ -644,12 +661,15 @@ def evaluate_polymarket_sniper(
         gates.append(_gate("regime", True, f"regime={v4_regime} tradeable"))
 
     # ── TRADE ────────────────────────────────────────────────────────────
+    # v6.0.1: entry_cap_override (default 0.85) beats surface default.
+    _cap_override = _entry_cap_override()
+    _entry_cap = _cap_override if _cap_override is not None else surface.poly_max_entry_price
     return StrategyDecision(
         action="TRADE",
         direction=direction,
         confidence=surface.v4_conviction or f"dist_{distance:.2f}",
         confidence_score=distance * 2.0,
-        entry_cap=surface.poly_max_entry_price,
+        entry_cap=_entry_cap,
         collateral_pct=surface.v4_recommended_collateral_pct,
         strategy_id=_STRATEGY_ID,
         strategy_version=_VERSION,
