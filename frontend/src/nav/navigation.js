@@ -16,6 +16,13 @@ export const NAV_SECTIONS = [
     ],
   },
   {
+    title: 'MONITORING',
+    color: '#14b8a6',
+    items: [
+      { path: '/monitor',       label: 'Live Monitor',   icon: '🛰️' },
+    ],
+  },
+  {
     title: 'ANALYSIS',
     color: '#06b6d4',
     items: [
