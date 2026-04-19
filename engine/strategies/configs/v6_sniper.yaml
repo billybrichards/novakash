@@ -1,0 +1,76 @@
+name: v6_sniper
+version: "6.0.0"
+# v6 — bidirectional ensemble sniper, built on ruins of v5_ensemble.
+# Primary signal: LGB + Path1 ensemble (surface.poly_confidence).
+# Conviction buckets from note #183 (7d). CLOB sizing schedule from
+# v4_down_only (the 86% winner). Defensive gates from v4_fusion.
+# Ships GHOST alongside v4_fusion LIVE + v5 GHOST in same PR.
+# Reads RAW probability_up (not calibrated) until 72h shadow re-analyses
+# bucket thresholds on post-isotonic data.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+# All conviction/freshness/VPIN/time-of-day logic lives in the hook
+# (evaluate_polymarket_sniper). The declarative gates listed in the
+# spec (ensemble_path1_freshness, ensemble_conviction_bucket, vpin_min,
+# blocked_utc_hours, health_badge, feature_staleness) are NOT yet in
+# the declarative gate registry — v4_fusion / v5_ensemble implement the
+# same checks inline in their hook. v6_sniper follows the same pattern
+# to ship as a focused fork rather than a gate-infra refactor.
+gates: []
+
+gate_params:
+  # ── Timing window ──
+  min_offset_sec: 60
+  max_offset_sec: 180
+
+  # ── Ensemble conviction bucket thresholds (note #183) ──
+  bucket_abs_dist_strong: 0.20        # agree_strong: both models same dir + dist >= 0.20
+  bucket_path1_extreme_high: 0.95     # pegged_path1: path1 >= 0.95
+  bucket_path1_extreme_low: 0.05      # pegged_path1: path1 <= 0.05
+  bucket_lgb_opposite_block: 0.10     # pegged_path1: LGB opposite + |dist| > 0.10 -> block
+  bucket_block_mid_conf: true         # block 0.5 < p < 0.7, dist < 0.20 bucket
+
+  # ── Path1 freshness ──
+  path1_max_age_s: 30
+  path1_skip_on_null: true
+
+  # ── Defensive gates inherited from v4_fusion / v5_ensemble ──
+  vpin_min: 0.45
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  health_gate: degraded               # block if health in {degraded, unsafe}
+  skip_stale_sources: true            # skip if chainlink or tiingo NULL
+
+  # ── Time-of-day block (note #183 bleed hours) ──
+  blocked_utc_hours: [7, 8, 9]
+
+  # ── Regime gate ──
+  tradeable_v4_regimes: [calm_trend, volatile_trend]
+
+  # ── Ensemble signal source selection ──
+  ensemble_signal_source: ensemble
+  ensemble_skip_on_fallback: true
+
+  # Read RAW probability_up (not calibrated) while bucket thresholds
+  # were measured on raw values. Flip to false once isotonic PR #281
+  # lands AND 72h shadow re-validates the buckets on calibrated data.
+  prefer_raw_probability: true
+
+  # risk_off override stays disabled across all strategies (Billy 2026-04-17).
+  risk_off_override_enabled: false
+
+sizing:
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.025
+  max_collateral_pct: 0.08
+  schedule:
+    - { threshold: 0.55, modifier: 2.0, label: "high_conv_TBD" }
+    - { threshold: 0.35, modifier: 1.2, label: "mid_conv_TBD" }
+    - { threshold: 0.25, modifier: 1.0, label: "low_conv_TBD" }
+    - { threshold: 0.0,  modifier: 0.0, label: "skip_below_25" }
+
+hooks_file: v6_sniper.py
+pre_gate_hook: evaluate_polymarket_sniper
