@@ -7,7 +7,11 @@ version: "5.1.0"
 # The 13 inherited gates + 2 ensemble gates govern execution. Roll
 # back to GHOST by editing this file (mode: GHOST) and restarting
 # the engine — no code change needed.
-mode: LIVE
+# 2026-04-19: Flipped LIVE → GHOST per Billy. Only v5_fresh LIVE for now —
+# v5_ensemble (strict) bleeding with ensemble_disagreement_threshold=0.0
+# too aggressive, per hub note #183 gate-tuning plan. Revisit after
+# v5_fresh note #183 changes land + 48h shadow.
+mode: GHOST
 asset: BTC
 timescale: 5m
 
