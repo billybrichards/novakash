@@ -144,6 +144,11 @@ export default function App() {
                 <GatePipelineMonitor />
               </Suspense>
             } />
+            <Route path="windows" element={
+              <Suspense fallback={<Loading label="Loading windows…" />}>
+                <WindowResults />
+              </Suspense>
+            } />
             <Route path="notes" element={
               <Suspense fallback={<Loading label="Loading notes…" />}>
                 <Notes />
@@ -191,7 +196,7 @@ export default function App() {
           <Route path="/positions" element={<Navigate to="/archive/positions" replace />} />
           <Route path="/risk" element={<Navigate to="/archive/risk" replace />} />
           <Route path="/execution-hq" element={<Navigate to="/archive/execution-hq" replace />} />
-          <Route path="/windows" element={<Navigate to="/archive/windows" replace />} />
+          {/* /windows now active (WindowResults promoted out of archive). */}
           <Route path="/v58" element={<Navigate to="/archive/v58" replace />} />
           <Route path="/strategy" element={<Navigate to="/archive/strategy" replace />} />
           <Route path="/timesfm" element={<Navigate to="/archive/timesfm" replace />} />
@@ -203,6 +208,7 @@ export default function App() {
           <Route path="/archive/notes" element={<Navigate to="/notes" replace />} />
           <Route path="/archive/schema" element={<Navigate to="/schema" replace />} />
           <Route path="/archive/polymarket/gate-monitor" element={<Navigate to="/gate-matrix" replace />} />
+          <Route path="/archive/windows" element={<Navigate to="/windows" replace />} />
           {/* Polymarket subtree — main entry point and operational sub-pages */}
           <Route path="/polymarket" element={<Navigate to="/archive/polymarket/monitor" replace />} />
           <Route path="/polymarket/monitor" element={<Navigate to="/archive/polymarket/monitor" replace />} />
