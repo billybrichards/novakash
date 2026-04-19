@@ -332,17 +332,20 @@ def test_14_prefer_raw_records_raw_source(registry):
     assert decision.metadata["conviction_bucket"] == "agree_strong"
 
 
-# ── Mode-flip regression (change 2 + 3) ────────────────────────────────────
-def test_v5_ensemble_flipped_to_ghost(registry):
-    assert registry.configs["v5_ensemble"].mode == "GHOST"
+# ── Mode-flip regression (live lineup: v5_ensemble + v6_sniper) ────────────
+def test_v5_ensemble_is_live(registry):
+    # Per Billy 2026-04-19 second flip: v5_ensemble back to LIVE.
+    assert registry.configs["v5_ensemble"].mode == "LIVE"
 
 
-def test_v5_fresh_flipped_to_ghost(registry):
+def test_v5_fresh_stays_ghost(registry):
     assert registry.configs["v5_fresh"].mode == "GHOST"
 
 
-def test_v4_fusion_flipped_to_live(registry):
-    assert registry.configs["v4_fusion"].mode == "LIVE"
+def test_v4_fusion_ghost_reference(registry):
+    # v4_fusion kept as GHOST reference baseline (same signal source as
+    # v5_ensemble; audit-winner history in comments).
+    assert registry.configs["v4_fusion"].mode == "GHOST"
 
 
 def test_v4_down_only_stays_ghost(registry):

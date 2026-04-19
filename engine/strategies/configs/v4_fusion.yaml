@@ -6,9 +6,11 @@ version: "4.2.0"
 # v5_ensemble stays LIVE and is now uncontested primary; v5_fresh
 # (relaxed gates) runs alongside on windows v5_ensemble declines.
 # Roll back by editing this file (mode: LIVE) and restarting the engine.
-# 2026-04-19: Flipped GHOST → LIVE. 72h audit: 61.1% WR, +$423/$10 stake,
-# bidirectional. Primary workhorse while v5 reviewed + v6_sniper shadows.
-mode: LIVE
+# 2026-04-19: Flipped GHOST → LIVE. 72h audit: 61.1% WR, +$423/$10 stake.
+# 2026-04-19 (later): Flipped LIVE → GHOST per Billy. Live lineup is now
+# v5_ensemble + v6_sniper. v4_fusion stays GHOST as a reference baseline
+# (same polymarket_v2 signal source as v5_ensemble, no ensemble gates).
+mode: GHOST
 asset: BTC
 timescale: 5m
 

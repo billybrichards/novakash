@@ -13,7 +13,10 @@ version: "5.1.0"
 # per-window exposure to 1 stake.
 # 2026-04-19: Flipped LIVE → GHOST alongside v6_sniper rollout.
 # v5_* net-negative on 72h audit; revisit after v6 shadow completes + isotonic recalibration.
-mode: GHOST
+# 2026-04-19 (later): Flipped GHOST → LIVE per Billy. Live lineup now
+# v5_ensemble + v6_sniper. Previous audit contaminated by broken-classifier
+# period (pre-PR #278); re-running fresh on post-fix data.
+mode: LIVE
 asset: BTC
 timescale: 5m
 
