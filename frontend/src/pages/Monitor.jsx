@@ -11,6 +11,9 @@ import CircuitBreakerCard from '../components/monitor/CircuitBreakerCard.jsx';
 import ClassifierHistogram from '../components/monitor/ClassifierHistogram.jsx';
 import ModeShareCard from '../components/monitor/ModeShareCard.jsx';
 import DisagreementPlot from '../components/monitor/DisagreementPlot.jsx';
+import SaturationMeter from '../components/monitor/SaturationMeter.jsx';
+import LgbVsClsPlot from '../components/monitor/LgbVsClsPlot.jsx';
+import ComparativeWRCard from '../components/monitor/ComparativeWRCard.jsx';
 import KillConfirmModal from '../components/monitor/KillConfirmModal.jsx';
 import { useSnapshotStream } from '../components/monitor/useSnapshotStream.js';
 
@@ -374,15 +377,32 @@ export default function Monitor() {
         <TradeActivityCard api={api} />
       </div>
 
-      {/* Tier 2 */}
+      {/* Tier 1b — classifier health row (saturation + WR head-to-head). */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr)',
+        gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 2fr)',
+        gap: 14, marginBottom: 18,
+      }}>
+        <SaturationMeter buffer={buffer} />
+        <ComparativeWRCard buffer={buffer} />
+      </div>
+
+      {/* Tier 2 — rolling buffer distributions + head-to-head line */}
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+        gap: 14, marginBottom: 14,
+      }}>
+        <LgbVsClsPlot buffer={buffer} />
+        <DisagreementPlot buffer={buffer} />
+      </div>
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
         gap: 14, marginBottom: 18,
       }}>
         <ClassifierHistogram buffer={buffer} />
         <ModeShareCard buffer={buffer} />
-        <DisagreementPlot buffer={buffer} />
       </div>
 
       {/* Tier 3 tabs */}
