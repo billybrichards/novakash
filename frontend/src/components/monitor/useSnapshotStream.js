@@ -52,6 +52,7 @@ export function useSnapshotStream({ asset = 'BTC', timescales = '5m', bufferCap 
         if (tf5) {
           bufferRef.current.push({
             ts: payload.ts ?? Date.now() / 1000,
+            window_ts: tf5.window_ts ?? null,
             probability_up: tf5.probability_up,
             probability_lgb: tf5.probability_lgb,
             probability_classifier: tf5.probability_classifier,
