@@ -106,6 +106,43 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     "ALTER TABLE system_state ADD COLUMN IF NOT EXISTS active_live_config_id INTEGER"
                 )
             )
+            # 2026-04-19 (PR 02) — v5_ensemble probability surface on window_snapshots.
+            # Unblocks historical counterfactual WR (p_lgb alone vs p_classifier
+            # alone vs ensemble p_up) across browser reloads & operators. The
+            # engine write path sits in strategies/registry._write_window_trace
+            # and mirrors the existing _v34_surface_fields pattern. See
+            # hub/db/migrations/versions/20260419_02_window_snapshots_ensemble_cols.sql
+            # for the full rationale. All columns nullable + additive.
+            await session.execute(
+                text(
+                    "ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS ensemble_p_up DOUBLE PRECISION"
+                )
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS ensemble_p_lgb DOUBLE PRECISION"
+                )
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS ensemble_p_classifier DOUBLE PRECISION"
+                )
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS ensemble_mode VARCHAR(32)"
+                )
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS ensemble_disagreement DOUBLE PRECISION"
+                )
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS ensemble_model_version TEXT"
+                )
+            )
             # Phase-2 (audit #216 follow-up): strategy_configs registry.
             # Engine upserts YAML into this table at startup; hub reads it
             # in preference to the filesystem (see api/strategies.py). See

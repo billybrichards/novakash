@@ -582,8 +582,8 @@ class StrategyRegistry:
 
                 fields = _v34_surface_fields(surface)
             except Exception:
-                return
-            if any(v is not None for v in fields.values()):
+                fields = {}
+            if fields and any(v is not None for v in fields.values()):
                 surf_task = asyncio.create_task(
                     self._db.update_window_surface_fields(
                         window_ts=surface.window_ts,
@@ -596,6 +596,37 @@ class StrategyRegistry:
                 surf_task.add_done_callback(
                     self._log_async_write_error(
                         "registry.surface_fields_write_error"
+                    )
+                )
+
+        # 2026-04-19: also upsert v5_ensemble probability surface into
+        # window_snapshots so historical counterfactual WR (p_lgb alone
+        # vs p_classifier alone vs ensemble p_up) is queryable in SQL.
+        # Fire-and-forget, mirrors the v3/v4 upsert above. Safe when
+        # ensemble is disabled — extractor returns NULLs, DB UPDATE is
+        # a no-op (COALESCE preserves existing values).
+        if self._db is not None and hasattr(
+            self._db, "update_window_ensemble_fields"
+        ):
+            try:
+                from strategies.five_min_vpin import _ensemble_surface_fields
+
+                ens_fields = _ensemble_surface_fields(surface)
+            except Exception:
+                ens_fields = {}
+            if ens_fields and any(v is not None for v in ens_fields.values()):
+                ens_task = asyncio.create_task(
+                    self._db.update_window_ensemble_fields(
+                        window_ts=surface.window_ts,
+                        asset=surface.asset,
+                        timeframe=surface.timescale,
+                        eval_offset=surface.eval_offset,
+                        ensemble_fields=ens_fields,
+                    )
+                )
+                ens_task.add_done_callback(
+                    self._log_async_write_error(
+                        "registry.ensemble_fields_write_error"
                     )
                 )
 
