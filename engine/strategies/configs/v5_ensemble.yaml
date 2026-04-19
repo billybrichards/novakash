@@ -7,6 +7,10 @@ version: "5.1.0"
 # The 13 inherited gates + 2 ensemble gates govern execution. Roll
 # back to GHOST by editing this file (mode: GHOST) and restarting
 # the engine — no code change needed.
+# 2026-04-19: Flipped LIVE → GHOST then back to LIVE same day with added
+# block_utc_hours: [7,8,9] — those UTC hours were 0-25% WR buckets.
+# v5_ensemble (strict) runs LIVE alongside v5_fresh (relaxed); dedup keeps
+# per-window exposure to 1 stake.
 mode: LIVE
 asset: BTC
 timescale: 5m
@@ -18,6 +22,40 @@ gates: []
 
 hooks_file: v5_ensemble.py
 pre_gate_hook: evaluate_polymarket_ensemble
+
+# Per-strategy gate tuning. These values match the historical env-var
+# defaults (V4_* + V5_*) so this block is a zero-behaviour-change audit
+# trail of what v5_ensemble actually runs in production. Env vars fall
+# through when a key is omitted (ops escape hatch for 30 days post PR #267).
+gate_params:
+  # Inherited from v4_fusion — keep aligned with v4_fusion.yaml.
+  min_offset_sec: 45
+  skip_calm: true
+  skip_stale_sources: true
+  require_tiingo_agree: true
+  health_gate: degraded
+  # 2026-04-17: DISABLED by Billy after losing money (commit b094278).
+  # Matches current Montreal .env. Re-enable only after shadow data
+  # validates that override-skips would have been winners.
+  risk_off_override_enabled: false
+  risk_off_override_dist_min: 0.20
+  risk_off_override_require_tiingo: true
+
+  # v5-specific — ensemble control.
+  # Which p_up to consume: ensemble (blended) | lgb_only | path1_only.
+  ensemble_signal_source: ensemble
+
+  # Skip when timesfm reports ensemble_config.mode=fallback_lgb_only.
+  # Keeps v5_ensemble strictly stricter than v4_fusion when classifier
+  # head is unavailable (silent fallback would erase the v5 edge).
+  ensemble_skip_on_fallback: true
+
+  # Disagreement abstain threshold on |p_lgb - p_path1|. 0 = gate off.
+  # Leave off until we have 200+ trades of shadow calibration baseline.
+  ensemble_disagreement_threshold: 0.0
+
+  # 2026-04-19: Block UTC hours 07-09 (0-25% WR bucket per 7d data).
+  block_utc_hours: [7, 8, 9]
 
 # Sizing matches v4_fusion so allocation isn't a confound when comparing WR.
 sizing:

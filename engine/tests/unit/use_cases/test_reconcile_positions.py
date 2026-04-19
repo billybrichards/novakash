@@ -845,3 +845,58 @@ class TestExecute:
         asyncio.run(uc.execute([]))  # No positions, no paper trades
         alerts.send_system_alert.assert_not_called()
         alerts.send_raw_message.assert_not_called()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# is_backfill flag — suppress per-trade v2 cards on first execute() pass
+# ══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_is_backfill_true_skips_per_trade_v2_emit():
+    """When is_backfill=True, emit_per_trade_resolved_v2 must NOT fire."""
+    p = Ports()
+    p.trade_repo.find_by_token_id.return_value = _match()
+    uc = p.uc()
+
+    await uc.resolve_one(_pos(outcome="WIN"), is_backfill=True)
+
+    # Batched list still populated so flush_resolution_alerts renders it.
+    assert len(uc._pending_live_alerts) == 1
+    assert uc._pending_live_alerts[0]["matched"] is True
+    # Per-trade card suppressed.
+    p.alerts.emit_per_trade_resolved_v2.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_is_backfill_false_emits_per_trade_v2():
+    """Default path: is_backfill=False still fires the per-trade card."""
+    p = Ports()
+    p.trade_repo.find_by_token_id.return_value = _match()
+    uc = p.uc()
+
+    await uc.resolve_one(_pos(outcome="WIN"), is_backfill=False)
+
+    p.alerts.emit_per_trade_resolved_v2.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_first_pass_is_backfill_subsequent_are_not():
+    """execute()'s first pass suppresses cards; the second pass emits normally."""
+    p = Ports()
+    # Return different trade IDs on successive calls so session dedupe
+    # doesn't suppress the second iteration.
+    p.trade_repo.find_by_token_id.side_effect = [
+        _match(trade_id="t-first"),
+        _match(trade_id="t-second"),
+    ]
+    p.trade_repo.find_unresolved_paper_trades.return_value = []
+    uc = p.uc()
+
+    await uc.execute([_pos(condition_id="c-1")])
+    first_emit_calls = p.alerts.emit_per_trade_resolved_v2.call_count
+    assert first_emit_calls == 0  # first pass suppressed
+
+    # Second pass — should emit now that _first_pass_completed is True.
+    await uc.execute([_pos(condition_id="c-2", token_id="tok-different")])
+    assert p.alerts.emit_per_trade_resolved_v2.call_count == 1

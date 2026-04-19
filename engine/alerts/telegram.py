@@ -22,6 +22,7 @@ Alert types:
 from __future__ import annotations
 
 import asyncio
+import collections
 import os
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
@@ -243,6 +244,18 @@ class TelegramAlerter:
         self._narrative_v2_redeemer_addr = None
         # State for wallet-delta watchdog (populated by CLOB reconciler).
         self._narrative_v2_last_wallet_usdc = None
+
+        # LRU dedup for per-trade resolved v2 cards. Keyed by
+        # (trade_id_or_window_ts, condition_id). OrderedDict gives
+        # O(1) membership + cheap eviction of the oldest entry when we
+        # cross the cap. Capped at 512 — at ~100 resolved trades/day
+        # that's roughly a 5-day memory. Resets on process restart
+        # which is intentional: the backfill path (is_backfill=True)
+        # handles first-pass suppression after a restart.
+        self._resolved_dedup: "collections.OrderedDict[tuple, None]" = (
+            collections.OrderedDict()
+        )
+        self._resolved_dedup_cap: int = 512
 
     async def _emit_narrative_v2_trade(
         self,
@@ -473,6 +486,8 @@ class TelegramAlerter:
         order_id: str | None = None,
         timeframe: str = "5m",
         asset: str = "BTC",
+        trade_id: Optional[str] = None,
+        condition_id: Optional[str] = None,
     ) -> None:
         """Emit a rich individual v2 resolved card for a single trade.
 
@@ -482,9 +497,32 @@ class TelegramAlerter:
 
         Derives actual_direction from (predicted + outcome) since the
         reconciler doesn't have BTC open/close prices.
+
+        Dedup: key on ``(trade_id or window_ts, condition_id)`` — the
+        same resolved trade re-seen on a subsequent reconciler pass
+        won't fire a second card. LRU cap = 512 entries.
         """
         if not self._v2_ready():
             return
+
+        # ── LRU dedup ────────────────────────────────────────────────
+        # Prefer trade_id when we have it (stable identity); fall back
+        # to window_ts which is unique per window-per-asset.
+        _dedup_key = (trade_id or int(window_ts or 0), condition_id or "")
+        if _dedup_key in self._resolved_dedup:
+            self._log.debug(
+                "telegram.per_trade_resolved_v2.dedup_hit",
+                trade_id=trade_id,
+                window_ts=window_ts,
+                condition_id=(condition_id or "")[:20],
+            )
+            # Move to end so actively-re-seen keys aren't evicted.
+            self._resolved_dedup.move_to_end(_dedup_key)
+            return
+        self._resolved_dedup[_dedup_key] = None
+        # Trim oldest when over cap.
+        while len(self._resolved_dedup) > self._resolved_dedup_cap:
+            self._resolved_dedup.popitem(last=False)
 
         from decimal import Decimal
         from use_cases.alerts.build_resolved_alert import (
@@ -3556,6 +3594,132 @@ class TelegramAlerter:
             self._log.warning(
                 "telegram.strategy_trade_alert_failed",
                 strategy=strategy_id,
+                error=str(exc)[:200],
+            )
+
+    # ── Per-strategy trade-attempt card (T-0) ──────────────────────────────
+    # Outcome enum rendered with emoji + fragment. Kept terse so operator
+    # can scan five cards in two seconds on a phone.
+    _TRADE_ATTEMPT_EMOJI: dict[str, str] = {
+        "FILLED": "✅",
+        "SKIPPED_NO_EDGE": "⏸️",
+        "SKIPPED_PRICE_BAND": "🚫",
+        "SKIPPED_RISK_GATED": "🛑",
+        "SKIPPED_COOLDOWN": "🧊",
+        "SKIPPED_CONSENSUS": "⚖️",
+        "FAILED_EXECUTION": "❌",
+    }
+    _TRADE_ATTEMPT_REASON: dict[str, str] = {
+        "FILLED": "filled",
+        "SKIPPED_NO_EDGE": "no edge",
+        "SKIPPED_PRICE_BAND": "price outside band",
+        "SKIPPED_RISK_GATED": "risk gate",
+        "SKIPPED_COOLDOWN": "cooldown",
+        "SKIPPED_CONSENSUS": "consensus",
+        "FAILED_EXECUTION": "execution failed",
+    }
+
+    async def send_trade_attempt_result(
+        self,
+        *,
+        strategy: str,
+        window_ts: int,
+        side: str,
+        outcome: str,
+        stake_usd: Optional[float] = None,
+        price: Optional[float] = None,
+        edge_bps: Optional[float] = None,
+        blocking_gate: Optional[str] = None,
+        gate_reason: Optional[str] = None,
+        order_id: Optional[str] = None,
+        timeframe: str = "5m",
+    ) -> None:
+        """One per-strategy card at T-0 for each TRADE-advised decision.
+
+        ``outcome`` must be one of ``_TRADE_ATTEMPT_EMOJI`` keys. Unknown
+        values render with a generic ⚠️ + raw label so the card still
+        surfaces instead of silently dropping.
+
+        Stays bounded to five or six lines — the user wants rapid scan
+        across multiple strategies per window.
+        """
+        if not self._bot_token or not self._chat_id:
+            return
+        emoji = self._TRADE_ATTEMPT_EMOJI.get(outcome, "⚠️")
+        reason_short = self._TRADE_ATTEMPT_REASON.get(outcome, outcome.lower())
+
+        lines = [
+            f"{emoji} *{strategy}* — {side.upper()} `{timeframe}`",
+            f"outcome: `{outcome}` ({reason_short})",
+        ]
+        if stake_usd is not None and price is not None and outcome == "FILLED":
+            lines.append(f"stake `${stake_usd:.2f}` @ `${price:.3f}`")
+        elif price is not None:
+            lines.append(f"price `${price:.3f}`")
+        if edge_bps is not None:
+            lines.append(f"edge `{edge_bps:+.1f} bps`")
+        if blocking_gate:
+            gate_line = f"gate: `{blocking_gate}`"
+            if gate_reason:
+                gate_line += f" — {gate_reason[:80]}"
+            lines.append(gate_line)
+        if order_id:
+            lines.append(f"order: `{order_id[:20]}`")
+        lines.append(f"window: `{window_ts}`")
+
+        try:
+            await self._send("\n".join(lines))
+        except Exception as exc:
+            self._log.bind(strategy=strategy, outcome=outcome).warning(
+                "telegram.trade_attempt_result_failed",
+                error=str(exc)[:200],
+            )
+
+    async def send_fill_confirmed(
+        self,
+        *,
+        strategy: str,
+        window_ts: int,
+        side: str,
+        price: float,
+        shares: float,
+        stake_usd: float,
+        condition_id: Optional[str] = None,
+        tx_hash: Optional[str] = None,
+        pre_fill_wallet: Optional[float] = None,
+        post_fill_wallet: Optional[float] = None,
+        timeframe: str = "5m",
+    ) -> None:
+        """Unconditional FILL card — fires once per Polymarket fill.
+
+        User requirement: every successful CLOB match must surface in
+        Telegram. Keep it short — fill details only, no AI assessment
+        (resolution card handles that later).
+        """
+        if not self._bot_token or not self._chat_id:
+            return
+        lines = [
+            f"🎯 *FILL* {strategy} — {side.upper()} `{timeframe}`",
+            f"`{shares:.2f}` @ `${price:.3f}` · stake `${stake_usd:.2f}`",
+        ]
+        if pre_fill_wallet is not None and post_fill_wallet is not None:
+            delta = post_fill_wallet - pre_fill_wallet
+            sign = "+" if delta >= 0 else "-"
+            lines.append(
+                f"wallet `${pre_fill_wallet:.2f}` → `${post_fill_wallet:.2f}` "
+                f"(`{sign}${abs(delta):.2f}`)"
+            )
+        if condition_id:
+            lines.append(f"cid: `{condition_id[:20]}`")
+        if tx_hash:
+            lines.append(f"tx: `{tx_hash[:20]}`")
+        lines.append(f"window: `{window_ts}`")
+
+        try:
+            await self._send("\n".join(lines))
+        except Exception as exc:
+            self._log.bind(strategy=strategy, window_ts=window_ts).warning(
+                "telegram.fill_confirmed_failed",
                 error=str(exc)[:200],
             )
 

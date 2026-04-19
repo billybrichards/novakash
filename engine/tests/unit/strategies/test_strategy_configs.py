@@ -66,6 +66,12 @@ def registry():
     mgr = DataSurfaceManager(v4_base_url="http://fake")
     reg = StrategyRegistry(CONFIGS_DIR, mgr)
     reg.load_all()
+    # Since PR #268 (gate_params), YAML declares tunable knobs that win
+    # over env. Existing tests toggle behaviour via monkeypatch.setenv;
+    # clear YAML bags so that path keeps working. Dedicated YAML-priority
+    # coverage lives in tests/unit/strategies/test_gate_params.py.
+    for cfg in reg.configs.values():
+        cfg.gate_params.clear()
     return reg
 
 
@@ -358,12 +364,8 @@ class TestV4Fusion:
 
     def test_calm_regime_gate_disabled_via_env(self, registry, monkeypatch):
         """V4_FUSION_SKIP_CALM=false must bypass the CALM skip."""
+        # After the gate_params refactor, env fallback is all that's needed.
         monkeypatch.setenv("V4_FUSION_SKIP_CALM", "false")
-        # The registry loads hooks via importlib without registering in
-        # sys.modules, so we patch the flag directly on the function's
-        # __globals__ dict using monkeypatch.setitem (auto-restores).
-        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
-        monkeypatch.setitem(hook_fn.__globals__, "_FUSION_SKIP_CALM", False)
 
         surface = _make_surface(
             poly_direction="DOWN", poly_trade_advised=True,
@@ -429,13 +431,8 @@ class TestV4Fusion:
         This test disables both to target tiingo_agreement behavior only.
         See `test_staleness_tiingo_missing_skips` for the v4.5.0 default.
         """
-        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
-        monkeypatch.setitem(
-            hook_fn.__globals__, "_FUSION_SKIP_STALE_SOURCES", False
-        )
-        monkeypatch.setitem(
-            hook_fn.__globals__, "_FUSION_HEALTH_GATE", "off"
-        )
+        monkeypatch.setenv("V4_FUSION_SKIP_STALE_SOURCES", "false")
+        monkeypatch.setenv("V4_FUSION_HEALTH_GATE", "off")
 
         surface = _make_surface(
             poly_direction="DOWN", poly_trade_advised=True,
@@ -464,16 +461,8 @@ class TestV4Fusion:
         disable behavior specifically.
         """
         monkeypatch.setenv("V4_FUSION_REQUIRE_TIINGO_AGREE", "false")
-        # Hook modules are loaded via importlib without registering in
-        # sys.modules, so patch via the function's __globals__ with setitem.
-        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
-        monkeypatch.setitem(
-            hook_fn.__globals__, "_FUSION_REQUIRE_TIINGO_AGREE", False
-        )
         # v4.5.0: disable health gate so sources_mixed DEGRADED doesn't block
-        monkeypatch.setitem(
-            hook_fn.__globals__, "_FUSION_HEALTH_GATE", "off"
-        )
+        monkeypatch.setenv("V4_FUSION_HEALTH_GATE", "off")
 
         # Tiingo would disagree if gate were on
         surface = _make_surface(
@@ -528,15 +517,12 @@ class TestV4Fusion:
 
     def test_staleness_gate_disabled_via_env(self, registry, monkeypatch):
         """V4_FUSION_SKIP_STALE_SOURCES=false lets stale sources through."""
-        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
-        monkeypatch.setitem(
-            hook_fn.__globals__, "_FUSION_SKIP_STALE_SOURCES", False
-        )
+        # Env fallback paths still work after the gate_params refactor —
+        # helpers read env when the YAML bag omits the key.
+        monkeypatch.setenv("V4_FUSION_SKIP_STALE_SOURCES", "false")
         # Also disable health gate — chainlink+tiingo None → sources_unknown
         # would DEGRADE the badge and block via health gate instead.
-        monkeypatch.setitem(
-            hook_fn.__globals__, "_FUSION_HEALTH_GATE", "off"
-        )
+        monkeypatch.setenv("V4_FUSION_HEALTH_GATE", "off")
         surface = _make_surface(
             poly_direction="DOWN", poly_trade_advised=True,
             poly_confidence_distance=0.12, poly_timing="optimal",
@@ -568,10 +554,7 @@ class TestV4Fusion:
 
     def test_health_badge_unsafe_mode_allows_degraded(self, registry, monkeypatch):
         """V4_FUSION_HEALTH_GATE=unsafe only blocks UNSAFE, allows DEGRADED."""
-        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
-        monkeypatch.setitem(
-            hook_fn.__globals__, "_FUSION_HEALTH_GATE", "unsafe"
-        )
+        monkeypatch.setenv("V4_FUSION_HEALTH_GATE", "unsafe")
         surface = _make_surface(
             poly_direction="DOWN", poly_trade_advised=True,
             poly_confidence_distance=0.12, poly_timing="optimal",
@@ -585,10 +568,7 @@ class TestV4Fusion:
 
     def test_health_badge_off_ignores_all(self, registry, monkeypatch):
         """V4_FUSION_HEALTH_GATE=off never blocks."""
-        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
-        monkeypatch.setitem(
-            hook_fn.__globals__, "_FUSION_HEALTH_GATE", "off"
-        )
+        monkeypatch.setenv("V4_FUSION_HEALTH_GATE", "off")
         surface = _make_surface(
             poly_direction="DOWN", poly_trade_advised=True,
             poly_confidence_distance=0.12, poly_timing="optimal",
@@ -624,12 +604,11 @@ class TestV4Fusion:
     def test_override_rejects_on_tiingo_disagreement(self, registry, monkeypatch):
         """Override hardening: chainlink agrees UP, tiingo disagrees DOWN
         → override rejected even with HIGH conviction."""
-        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
         # Disable staleness + health gate so test targets the override
         # require-tiingo check specifically. Both tiingo & chainlink
         # present, both disagree — sources_agree False → DEGRADED otherwise.
-        monkeypatch.setitem(hook_fn.__globals__, "_FUSION_SKIP_STALE_SOURCES", False)
-        monkeypatch.setitem(hook_fn.__globals__, "_FUSION_HEALTH_GATE", "off")
+        monkeypatch.setenv("V4_FUSION_SKIP_STALE_SOURCES", "false")
+        monkeypatch.setenv("V4_FUSION_HEALTH_GATE", "off")
         surface = _make_surface(
             eval_offset=120,
             poly_direction="UP", poly_trade_advised=False,  # sister veto
@@ -654,12 +633,9 @@ class TestV4Fusion:
     def test_override_hardening_disabled_via_env(self, registry, monkeypatch):
         """V4_RISK_OFF_OVERRIDE_REQUIRE_TIINGO=false falls back to v4.3.0
         single-source override behaviour (chainlink only)."""
-        hook_fn = registry._hooks["v4_fusion"]["evaluate_polymarket_v2"]
-        monkeypatch.setitem(
-            hook_fn.__globals__, "_RISK_OFF_OVERRIDE_REQUIRE_TIINGO", False
-        )
-        monkeypatch.setitem(hook_fn.__globals__, "_FUSION_SKIP_STALE_SOURCES", False)
-        monkeypatch.setitem(hook_fn.__globals__, "_FUSION_HEALTH_GATE", "off")
+        monkeypatch.setenv("V4_RISK_OFF_OVERRIDE_REQUIRE_TIINGO", "false")
+        monkeypatch.setenv("V4_FUSION_SKIP_STALE_SOURCES", "false")
+        monkeypatch.setenv("V4_FUSION_HEALTH_GATE", "off")
         surface = _make_surface(
             eval_offset=120,
             poly_direction="UP", poly_trade_advised=False,

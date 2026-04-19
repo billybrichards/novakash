@@ -1,6 +1,12 @@
 name: v4_fusion
 version: "4.2.0"
-mode: LIVE
+# 2026-04-18: Flipped LIVE → GHOST. v5_ensemble is signal-equivalent
+# (both read the blended p_up from surface.poly_confidence) plus two
+# extra safety gates, so v5_ensemble is a strict superset of v4_fusion.
+# v5_ensemble stays LIVE and is now uncontested primary; v5_fresh
+# (relaxed gates) runs alongside on windows v5_ensemble declines.
+# Roll back by editing this file (mode: LIVE) and restarting the engine.
+mode: GHOST
 asset: BTC
 timescale: 5m
 
@@ -12,6 +18,40 @@ gates: []
 
 hooks_file: v4_fusion.py
 pre_gate_hook: evaluate_polymarket_v2
+
+# Per-strategy gate tuning. Values here match the historical env-var
+# defaults (V4_*) so this block is a zero-behaviour-change audit trail
+# of what the production strategy actually runs. Env vars still fall
+# through when a key is omitted, so ops can emergency-tweak on Montreal
+# without a PR during the 30-day grace after PR #267.
+gate_params:
+  # Execution timing floor (seconds before window close). v4.3.0.
+  min_offset_sec: 45
+
+  # VPIN CALM regime skip (audit #225). v2 model ~45.6% WR here.
+  skip_calm: true
+
+  # Feature staleness skip (audit #234). NULL chainlink OR NULL tiingo → skip.
+  skip_stale_sources: true
+
+  # Tiingo direction-agreement gate (audit #228). Skip when tiingo ↔ trade disagree.
+  require_tiingo_agree: true
+
+  # HealthBadge skip gate (audit #223). off | unsafe | degraded.
+  # Default "degraded" because 2026-04-17 11:57 loss fired on health=DEGRADED.
+  health_gate: degraded
+
+  # Direction-aware risk_off override (v4.3.0). Allows HIGH+oracle-aligned
+  # trades to bypass sister repo's risk_off veto.
+  # 2026-04-17: DISABLED by Billy after losing money (commit b094278).
+  # Matches current Montreal .env (V4_RISK_OFF_OVERRIDE_ENABLED=false).
+  # Re-enable only after counterfactual shadow data shows override skips
+  # would have been winners.
+  risk_off_override_enabled: false
+  risk_off_override_dist_min: 0.20
+  # v4.5.0 override hardening: require BOTH chainlink + tiingo aligned.
+  # Moot while override is disabled but kept for when it flips back on.
+  risk_off_override_require_tiingo: true
 
 sizing:
   type: fixed_kelly

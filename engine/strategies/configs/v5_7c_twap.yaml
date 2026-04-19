@@ -1,0 +1,39 @@
+# v5.7c TWAP baseline — GHOST ONLY.
+#
+# Logic: trade whatever direction the engine's v5.7c computation picked
+# (window_snapshots.direction column). No additional gate.
+#
+# Backtest (72h, 2026-04-16 → 2026-04-19, 862 BTC/5m windows):
+#   eligible=862, dir_wr=56.1%, poly_pnl_sim=+$355.32 on $10 stake.
+#   edge vs base-rate =+5.1pp. Regime WAS 73% DOWN — will NOT repeat in
+#   rangebound markets. See hub note "Extended config audit — 72h, all
+#   configs + YAML drafts" for full context.
+#
+# WHY GHOST ONLY:
+#   * 72h sample only. Needs >=2 weeks shadow data before any LIVE promotion.
+#   * Selection bias: v5.7c direction is itself computed from TWAP + delta,
+#     so this is "trade every signal", not an independently-evaluated
+#     strategy. Expect meaningful decay vs backtest.
+#   * Entry-price sensitivity: poly_pnl assumes gamma_up/down as entry.
+#     CLOB ask can diverge; real fills will be worse.
+#
+# Does NOT auto-promote. Billy reviews shadow data personally.
+name: v5_7c_twap
+version: "0.1.0-shadow"
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+# No gates — this is the "no-gate" legacy baseline. Direction comes from
+# the engine's TWAP/delta fusion in FullDataSurface. trade_advised still
+# required so we don't trade when v4 has no view.
+gates:
+  - type: timing
+    params: { min_offset: 60, max_offset: 180 }
+  - type: trade_advised
+    params: {}
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.015          # conservative (half of v4 live configs)
+  max_collateral_pct: 0.05
