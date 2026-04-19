@@ -346,22 +346,43 @@ def _skip(reason: str, gates: list[dict], *, extras: Optional[dict] = None) -> S
     )
 
 
-def _path1_age_s(surface: "FullDataSurface") -> Optional[float]:
-    """Best-effort age of the path1 classifier reading.
+def _path1_age_s(
+    surface: "FullDataSurface",
+) -> tuple[Optional[float], str]:
+    """Age of the path1 classifier reading + which field it came from.
 
-    DataSurface doesn't yet publish a per-field ``*_age_s`` attribute,
-    so we fall back to the surface-level ``assembled_at`` delta from
-    wall clock. This over-estimates freshness-loss (a surface assembled
-    5s ago can contain classifier data that was captured 4s ago) but
-    under-estimates it in no realistic failure mode, so it is safe to
-    use as a staleness upper bound.
+    Preferred source: ``surface.probability_classifier_inferred_at`` —
+    the per-inference wall-clock timestamp the data-surface layer
+    populates from the upstream v4 snapshot. Tracks the REAL classifier
+    age even when the same cached snapshot feeds many successive evals
+    across a 5-minute window.
 
-    Returns None when ``assembled_at`` is missing or zero (tests).
+    Fallback: ``surface.assembled_at`` — wall clock at surface-assembly.
+    Over-estimates freshness-loss when a cached snapshot is reused at
+    late offsets (which is exactly the false-positive
+    ``no_eval_blocked`` pattern this split exists to fix). Still
+    shipped as a fallback so older engine builds that haven't yet
+    populated ``probability_classifier_inferred_at`` (e.g. during the
+    data_surface PR rollout) don't silently bypass the gate.
+
+    Returns (age_seconds, source_label). source_label is one of:
+      - ``"inferred_at"``      — used the new per-inference field
+      - ``"assembled_at_fallback"`` — field absent, used surface proxy
+      - ``"unavailable"``      — neither field usable (e.g. test surface)
+
+    Callers should record ``source_label`` in gate metadata so staleness
+    mismatches between old/new surfaces are visible in post-run audits.
     """
+    inferred_at = getattr(surface, "probability_classifier_inferred_at", None)
+    if inferred_at:
+        return max(0.0, time.time() - float(inferred_at)), "inferred_at"
     assembled_at = getattr(surface, "assembled_at", None)
     if not assembled_at:
-        return None
-    return max(0.0, time.time() - float(assembled_at))
+        return None, "unavailable"
+    return (
+        max(0.0, time.time() - float(assembled_at)),
+        "assembled_at_fallback",
+    )
 
 
 def _window_utc_hour(surface: "FullDataSurface") -> Optional[int]:
@@ -642,14 +663,26 @@ def evaluate_polymarket_sniper(
                 "path1": p_path1,
             },
         )
-    age_s = _path1_age_s(surface)
+    age_s, age_source = _path1_age_s(surface)
     max_age = _path1_max_age_s()
+    # Record the age source in metadata so the fallback-vs-real-field
+    # split is visible in strategy_decisions audits. When "assembled_at_fallback"
+    # shows up repeatedly after this PR ships, it flags surfaces the new
+    # data_surface PR hasn't populated yet (e.g. older engine builds).
+    if age_source != "inferred_at":
+        gates.append(
+            _gate(
+                "ensemble_path1_age_source",
+                age_source == "assembled_at_fallback",  # True = fallback ok, False = no data
+                f"age_source={age_source}",
+            )
+        )
     if age_s is not None and age_s > max_age:
         gates.append(
             _gate(
                 "ensemble_path1_freshness",
                 False,
-                f"age={age_s:.1f}s > {max_age}s",
+                f"age={age_s:.1f}s > {max_age}s (src={age_source})",
             )
         )
         return _skip(
@@ -662,13 +695,19 @@ def evaluate_polymarket_sniper(
                 "read_probability_source": read_source,
                 "lgb": p_lgb,
                 "path1": p_path1,
+                "path1_age_source": age_source,
+                "path1_age_s": age_s,
             },
         )
     gates.append(
         _gate(
             "ensemble_path1_freshness",
             True,
-            f"path1={p_path1} age={'?' if age_s is None else f'{age_s:.1f}s'}",
+            (
+                f"path1={p_path1} "
+                f"age={'?' if age_s is None else f'{age_s:.1f}s'} "
+                f"src={age_source}"
+            ),
         )
     )
 
@@ -864,6 +903,8 @@ def evaluate_polymarket_sniper(
             "conviction_bucket": bucket,
             "lgb": p_lgb,
             "path1": p_path1,
+            "path1_age_s": age_s,
+            "path1_age_source": age_source,
             "ensemble_config": ens_cfg,
         },
     )
