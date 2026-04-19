@@ -123,10 +123,12 @@ def test_v4_fusion_override_disabled(registry):
     assert v4.get("risk_off_override_enabled") is False
 
 
-def test_v4_fusion_flipped_to_live(registry):
-    # 2026-04-19: Flipped GHOST → LIVE alongside v6_sniper rollout
-    # (hub note #182 72h audit: v4_fusion 61.1% WR, +$423).
-    assert registry.configs["v4_fusion"].mode == "LIVE"
+def test_v4_fusion_is_ghost_reference(registry):
+    # 2026-04-19: GHOST → LIVE. 2026-04-19 (later): LIVE → GHOST per Billy.
+    # Live lineup is v5_ensemble + v6_sniper; v4_fusion kept as reference
+    # baseline (same polymarket_v2 signal source as v5_ensemble, minus the
+    # two ensemble-specific gates).
+    assert registry.configs["v4_fusion"].mode == "GHOST"
 
 
 def test_decision_stamped_with_v5_fresh_id(registry):
