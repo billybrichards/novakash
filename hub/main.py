@@ -271,6 +271,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             # `CREATE OR REPLACE VIEW` is idempotent — safe on every boot.
             # Canonical source:
             #   hub/db/migrations/versions/20260417_02_strategy_decisions_resolved_view.sql
+            # 2026-04-19 follow-up: the original view returned zero outcomes
+            # because trades.order_id rarely backfills onto strategy_decisions
+            # and SKIPs have no order_id at all. Shadow outcome from
+            # window_snapshots.actual_direction (PR #213) is the canonical
+            # source — matches scripts/ops/shadow_analysis.py. See
+            # hub/db/migrations/versions/20260419_01_strategy_decisions_shadow_outcome.sql
             await session.execute(
                 text(
                     """
@@ -282,7 +288,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         sd.entry_cap, sd.collateral_pct, sd.entry_reason, sd.skip_reason,
                         sd.executed, sd.order_id, sd.fill_price, sd.fill_size,
                         sd.metadata_json, sd.evaluated_at,
-                        t.outcome, t.pnl_usd, t.resolved_at, t.sot_reconciliation_state
+                        COALESCE(
+                            t.outcome,
+                            CASE
+                                WHEN sd.direction IS NOT NULL
+                                 AND COALESCE(snap.actual_direction, UPPER(snap.poly_winner)) IS NOT NULL
+                                THEN CASE
+                                    WHEN sd.direction = COALESCE(snap.actual_direction, UPPER(snap.poly_winner))
+                                    THEN 'WIN' ELSE 'LOSS'
+                                END
+                                ELSE NULL
+                            END
+                        ) AS outcome,
+                        t.pnl_usd,
+                        COALESCE(t.resolved_at, snap.resolved_at) AS resolved_at,
+                        t.sot_reconciliation_state,
+                        CASE WHEN t.outcome IS NOT NULL THEN 'fill'
+                             WHEN COALESCE(snap.actual_direction, UPPER(snap.poly_winner)) IS NOT NULL
+                                  AND sd.direction IS NOT NULL THEN 'shadow'
+                             ELSE NULL
+                        END AS outcome_source
                     FROM strategy_decisions sd
                     LEFT JOIN LATERAL (
                         SELECT outcome, pnl_usd, resolved_at, sot_reconciliation_state
@@ -292,6 +317,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         ORDER BY resolved_at DESC NULLS LAST, created_at DESC
                         LIMIT 1
                     ) t ON TRUE
+                    LEFT JOIN window_snapshots snap
+                        ON snap.asset = sd.asset
+                       AND snap.window_ts = sd.window_ts
+                       AND snap.timeframe = sd.timeframe
                     """
                 )
             )

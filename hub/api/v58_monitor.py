@@ -3854,7 +3854,8 @@ async def strategy_decisions(
                            metadata_json::text AS metadata_json,
                            evaluated_at,
                            outcome, pnl_usd, resolved_at,
-                           sot_reconciliation_state
+                           sot_reconciliation_state,
+                           outcome_source
                     FROM strategy_decisions_resolved
                     {where_sql}
                     ORDER BY evaluated_at DESC
@@ -3907,6 +3908,9 @@ async def strategy_decisions(
                 "pnl_usd": _safe_float(r["pnl_usd"]),
                 "resolved_at": r["resolved_at"].isoformat() if r["resolved_at"] else None,
                 "sot_reconciliation_state": r["sot_reconciliation_state"],
+                # 'fill' (real trade settlement) vs 'shadow' (direction match
+                # vs window_snapshots.actual_direction) — audit / UI hint.
+                "outcome_source": r["outcome_source"],
             })
         return {"decisions": decisions}
     except Exception as exc:
