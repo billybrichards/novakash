@@ -155,6 +155,23 @@ class FullDataSurface:
     hour_utc: Optional[int]
     seconds_to_close: Optional[int]
 
+    # ── Per-field inference timestamps ───────────────────────────────────
+    # Wall-clock moment the probability_classifier (TimesFM Path1) value
+    # was produced upstream. This is NOT the surface-assembly time (see
+    # ``assembled_at``) — it is the closest available timestamp for the
+    # classifier inference itself. Populated from the v4 snapshot's
+    # top-level ``ts`` field when present, with a fallback to the engine's
+    # v4-cache-write time (``self._cached_v4_ts``). None when the cached
+    # snapshot has no timestamp AND the cache hasn't been primed yet.
+    #
+    # Freshness gates in individual strategies (e.g. v6_sniper's path1
+    # freshness check) should prefer this over ``assembled_at`` because
+    # a single cached v4 payload feeds many successive surfaces across a
+    # 5-minute window — ``assembled_at`` drifts past the gate threshold
+    # while the upstream classifier is still healthy, firing false
+    # "no_eval_blocked" skips. This field tracks the real inference age.
+    probability_classifier_inferred_at: Optional[float] = None
+
 
 class DataSurfaceManager:
     """Keeps FullDataSurface fresh in memory. No blocking I/O at decision time.
@@ -535,6 +552,26 @@ class DataSurfaceManager:
         p_up_float = float(p_up) if p_up is not None else None
         poly_confidence = poly.get("confidence")
 
+        # Per-field inference timestamp for the Path1 classifier. Prefer the
+        # v4 payload's top-level ``ts`` (closest to actual inference time),
+        # then the engine's v4-cache-write time (``_cached_v4_ts``) which
+        # lags inference by the round-trip latency (~100-500ms). Leave as
+        # None when the classifier itself is absent — freshness gates read
+        # this together with ``probability_classifier`` to decide skips.
+        p_classifier_raw = ts_data.get("probability_classifier")
+        if p_classifier_raw is None:
+            classifier_inferred_at: Optional[float] = None
+        else:
+            payload_ts = None
+            if v4:
+                try:
+                    _raw_ts = v4.get("ts")
+                    if _raw_ts:
+                        payload_ts = float(_raw_ts)
+                except (TypeError, ValueError):
+                    payload_ts = None
+            classifier_inferred_at = payload_ts or (self._cached_v4_ts or None)
+
         return FullDataSurface(
             # Identity
             asset=asset,
@@ -665,6 +702,8 @@ class DataSurfaceManager:
             # Window metadata
             hour_utc=hour_utc,
             seconds_to_close=seconds_to_close,
+            # Per-field inference timestamp for Path1 classifier
+            probability_classifier_inferred_at=classifier_inferred_at,
         )
 
 
