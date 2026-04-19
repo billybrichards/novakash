@@ -17,6 +17,7 @@ import System from './pages/System.jsx';
 import Wallet from './pages/Wallet.jsx';
 import Strategies from './pages/Strategies.jsx';
 import Monitor from './pages/Monitor.jsx';
+import Compare from './pages/compare/Compare.jsx';
 
 // Archive wrapper
 import ArchiveCenter from './pages/archive/ArchiveCenter.jsx';
@@ -135,6 +136,7 @@ export default function App() {
             <Route path="pnl" element={<PnL />} />
             <Route path="system" element={<System />} />
             <Route path="monitor" element={<Monitor />} />
+            <Route path="compare" element={<Compare />} />
             {/* Pages promoted out of /archive — now first-class nav entries. */}
             <Route path="analysis" element={
               <Suspense fallback={<Loading label="Loading analysis…" />}>

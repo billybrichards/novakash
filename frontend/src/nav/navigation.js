@@ -31,6 +31,7 @@ export const NAV_SECTIONS = [
       { path: '/gate-matrix',   label: 'Gate Matrix',     icon: '🧩' },
       { path: '/analysis',      label: 'Analysis · 30d',  icon: '📈' },
       { path: '/strategies',    label: 'Strategies',      icon: '🧬' },
+      { path: '/compare',       label: 'Compare',         icon: '⚖️' },
     ],
   },
   {
