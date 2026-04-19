@@ -93,6 +93,16 @@ class ReconcilePositionsUseCase:
         # trade doesn't fire an alert on every reconciler pass.
         self._alerted_trade_ids: set[str] = set()
 
+        # 2026-04-18 fix: the first execute() pass after an engine restart
+        # typically walks a backlog of already-resolved on-chain positions
+        # that the engine just hasn't caught up with yet. Before this flag
+        # each of those would fire a full per-trade v2 card (observed: 76
+        # cards + a batched summary in one restart pass). Now the first
+        # pass only populates the batched list — per-trade v2 cards are
+        # suppressed for that pass. Subsequent passes resume normal
+        # per-trade emission.
+        self._first_pass_completed: bool = False
+
     async def execute(
         self,
         positions: list[PositionOutcome],
@@ -106,12 +116,17 @@ class ReconcilePositionsUseCase:
         self._pending_live_alerts = []
         self._pending_paper_alerts = []
 
+        # Treat the first execute() pass as a backfill sweep — per-trade
+        # v2 cards are suppressed, the batched summary still fires. See
+        # _first_pass_completed docstring in __init__.
+        is_backfill = not self._first_pass_completed
+
         live_resolved = 0
         errors = 0
 
         for pos in positions:
             try:
-                result = await self.resolve_one(pos)
+                result = await self.resolve_one(pos, is_backfill=is_backfill)
                 if result:
                     live_resolved += 1
             except Exception as exc:
@@ -133,6 +148,10 @@ class ReconcilePositionsUseCase:
             await self._flush_resolution_alerts()
         except Exception as exc:
             logger.debug("reconciler.flush_alerts_failed", error=str(exc)[:120])
+
+        # First pass is done — subsequent execute() calls will emit
+        # per-trade v2 cards normally.
+        self._first_pass_completed = True
 
         return ReconcileResult(
             live_resolved=live_resolved,
@@ -223,8 +242,16 @@ class ReconcilePositionsUseCase:
     async def resolve_one(
         self,
         position: PositionOutcome,
+        *,
+        is_backfill: bool = False,
     ) -> Optional[ResolutionResult]:
-        """Resolve a single position outcome against the trades table."""
+        """Resolve a single position outcome against the trades table.
+
+        ``is_backfill`` — when True, per-trade v2 resolved cards are
+        suppressed (the batched summary still fires). Used on the first
+        execute() pass after restart so an old on-chain backlog doesn't
+        flood Telegram with 70+ individual cards.
+        """
         outcome = position.outcome
         status = "RESOLVED_WIN" if outcome == "WIN" else "RESOLVED_LOSS"
 
@@ -251,6 +278,7 @@ class ReconcilePositionsUseCase:
                 window_ts=None,
                 match_method=None,
                 strategy=None,
+                is_backfill=is_backfill,
             )
             return None
 
@@ -365,6 +393,7 @@ class ReconcilePositionsUseCase:
             window_ts=match.get("window_ts"),
             match_method=match_method,
             strategy=match.get("strategy"),
+            is_backfill=is_backfill,
         )
 
         return ResolutionResult(
@@ -468,6 +497,7 @@ class ReconcilePositionsUseCase:
         window_ts: Optional[int] = None,
         match_method: Optional[str] = None,
         strategy: Optional[str] = None,
+        is_backfill: bool = False,
     ) -> None:
         """Queue a live position resolution for the batched end-of-pass summary.
 
@@ -494,8 +524,17 @@ class ReconcilePositionsUseCase:
         }
         self._pending_live_alerts.append(alert_dict)
 
-        # Emit rich per-trade v2 card (in addition to batched summary)
-        if alert_dict["matched"] and hasattr(self._alerts, "emit_per_trade_resolved_v2"):
+        # Emit rich per-trade v2 card (in addition to batched summary).
+        # On startup backfill passes we skip the per-trade card — the
+        # batched summary still fires at flush time, preserving the
+        # audit trail without spamming dozens of individual cards for
+        # historical resolutions. See ReconcilePositionsUseCase.execute
+        # for first-pass detection.
+        if (
+            not is_backfill
+            and alert_dict["matched"]
+            and hasattr(self._alerts, "emit_per_trade_resolved_v2")
+        ):
             try:
                 await self._alerts.emit_per_trade_resolved_v2(
                     direction=alert_dict["direction"] or "UP",
@@ -505,6 +544,8 @@ class ReconcilePositionsUseCase:
                     cost=float(cost),
                     window_ts=int(window_ts) if window_ts else 0,
                     strategy=strategy or "unknown",
+                    trade_id=str(matched_trade_id) if matched_trade_id else None,
+                    condition_id=position.condition_id,
                 )
             except Exception as exc:
                 logger.warning(

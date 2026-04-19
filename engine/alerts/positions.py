@@ -133,4 +133,29 @@ def render_snapshot_text(snap: dict) -> str:
     if snap["open_orders_count"]:
         lines.append(f"📋 Open orders: `{snap['open_orders_count']}`")
 
+    # 30-min activity digest (optional — only render when caller passed
+    # it in via the "activity_digest" key). Keeps positions.py free of
+    # IO: the caller fetches from data-api and injects the payload dict.
+    digest = snap.get("activity_digest")
+    if digest:
+        lines.append("")
+        lines.append("*Last 30m:*")
+        buy_n = digest.get("trade_buy_count", 0)
+        sell_n = digest.get("trade_sell_count", 0)
+        win_n = digest.get("redeem_win_count", 0)
+        dust_n = digest.get("redeem_dust_count", 0)
+        if buy_n == 0 and sell_n == 0 and win_n == 0 and dust_n == 0:
+            lines.append("  _no activity_")
+        else:
+            if buy_n or sell_n:
+                lines.append(
+                    f"  🟢 BUY `{buy_n}` (`${digest.get('trade_buy_usd', 0):.2f}`)  "
+                    f"🔴 SELL `{sell_n}` (`${digest.get('trade_sell_usd', 0):.2f}`)"
+                )
+            if win_n or dust_n:
+                lines.append(
+                    f"  🏆 WIN redeem `{win_n}` (`${digest.get('redeem_win_usd', 0):.2f}`)  "
+                    f"🗑 dust `{dust_n}`"
+                )
+
     return "\n".join(lines)

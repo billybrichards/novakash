@@ -370,6 +370,35 @@ class ExecuteTradeUseCase:
                 error=str(exc)[:200],
             )
 
+        # ── Step 8b: Unconditional FILL card ───────────────────────────
+        # Every successful fill on Polymarket gets a short confirmation
+        # message. Complements send_strategy_trade_alert (which is a
+        # richer entry card) and send_trade_resolved (which fires later
+        # at window resolve). User-requested visibility guarantee.
+        if (
+            not self._paper_mode
+            and result.fill_size
+            and result.fill_size > 0
+            and hasattr(self._alerter, "send_fill_confirmed")
+        ):
+            try:
+                await self._alerter.send_fill_confirmed(
+                    strategy=sid,
+                    window_ts=int(window_key.window_ts or 0),
+                    side=direction,
+                    price=float(result.fill_price or 0.0),
+                    shares=float(result.fill_size or 0.0),
+                    stake_usd=float(result.stake_usd or 0.0),
+                    condition_id=getattr(window_market, "condition_id", None),
+                    tx_hash=getattr(result, "tx_hash", None),
+                    timeframe=window_key.timeframe,
+                )
+            except Exception as exc:
+                log.bind(strategy=sid).warning(
+                    "execute_trade.fill_confirmed_failed",
+                    error=str(exc)[:200],
+                )
+
         # ── Step 9: Telegram alert (rich strategy-aware format) ─────────
         try:
             gate_results = decision.metadata.get("gate_results", [])
