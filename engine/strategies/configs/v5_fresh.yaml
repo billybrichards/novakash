@@ -21,7 +21,11 @@ version: "5.3.0"
 #   late_window_div_min: 0.03 (currently hard-coded 0.04)
 #
 # Roll back: edit this file (mode: GHOST) and restart engine.
-mode: LIVE
+# 2026-04-19: Flipped LIVE → GHOST per Billy. v6 strategy about to go
+# live; keep v5_ensemble as sole LIVE v5 for cleaner attribution.
+# v5_fresh continues to evaluate + log in shadow so we can compare
+# what-if P&L against v5_ensemble + v6.
+mode: GHOST
 asset: BTC
 timescale: 5m
 
