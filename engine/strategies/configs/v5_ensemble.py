@@ -620,6 +620,13 @@ def _evaluate_poly_v2_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             "probability_classifier": p_classifier,
             "probability_used": confidence,
             "ensemble_config": ens_cfg,
+            # Isotonic calibration passthrough for logging (novakash-timesfm #107).
+            # None when forecaster is pre-PR-107 or calibration disabled.
+            "isotonic_version": getattr(surface, "isotonic_version", None),
+            "v2_probability_up_raw": getattr(surface, "v2_probability_up_raw", None),
+            "v2_probability_up_calibrated": getattr(
+                surface, "v2_probability_up_calibrated", None
+            ),
         },
     )
 
