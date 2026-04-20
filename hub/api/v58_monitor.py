@@ -3788,6 +3788,14 @@ async def get_factory_windows(
 @router.get("/v58/strategy-decisions")
 async def strategy_decisions(
     strategy_id: Optional[str] = Query(default=None),
+    timeframe: Optional[str] = Query(
+        default=None,
+        description=(
+            "Filter to a single timeframe (e.g. '5m', '15m'). Composes "
+            "with strategy_id / resolved. Previously silently ignored — "
+            "see hub note #192 / audit #256."
+        ),
+    ),
     limit: int = Query(default=100, ge=1, le=1000),
     resolved: Optional[bool] = Query(
         default=None,
@@ -3838,26 +3846,41 @@ async def strategy_decisions(
         if strategy_id:
             where_clauses.append("strategy_id = :sid")
             params["sid"] = strategy_id
+        if timeframe:
+            where_clauses.append("timeframe = :tf")
+            params["tf"] = timeframe
         if resolved is True:
             where_clauses.append("outcome IS NOT NULL")
         elif resolved is False:
             where_clauses.append("outcome IS NULL")
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        # Dedup: engine re-evaluates the same (strategy, asset, window, timeframe)
+        # tuple every ~20ms while a window is open, producing hundreds of rows
+        # per window in the view. Without DISTINCT ON the raw ORDER BY
+        # evaluated_at DESC LIMIT N returns 2-3 windows × hundreds of dupes
+        # and the FE Signal Explorer WR matrix is computed over 2-3 windows
+        # (hub note #192 / audit #256). Mirror the DISTINCT ON pattern from
+        # scripts/ops/shadow_analysis.py — keep the latest eval per tuple.
         rows = (
             await db.execute(
                 text(f"""
-                    SELECT strategy_id, strategy_version, mode, asset,
-                           window_ts, timeframe, eval_offset,
-                           action, direction, confidence, confidence_score,
-                           entry_cap, collateral_pct, entry_reason, skip_reason,
-                           executed, order_id, fill_price, fill_size,
-                           metadata_json::text AS metadata_json,
-                           evaluated_at,
-                           outcome, pnl_usd, resolved_at,
-                           sot_reconciliation_state,
-                           outcome_source
-                    FROM strategy_decisions_resolved
-                    {where_sql}
+                    SELECT * FROM (
+                        SELECT DISTINCT ON (strategy_id, asset, window_ts, timeframe)
+                               strategy_id, strategy_version, mode, asset,
+                               window_ts, timeframe, eval_offset,
+                               action, direction, confidence, confidence_score,
+                               entry_cap, collateral_pct, entry_reason, skip_reason,
+                               executed, order_id, fill_price, fill_size,
+                               metadata_json::text AS metadata_json,
+                               evaluated_at,
+                               outcome, pnl_usd, resolved_at,
+                               sot_reconciliation_state,
+                               outcome_source
+                        FROM strategy_decisions_resolved
+                        {where_sql}
+                        ORDER BY strategy_id, asset, window_ts, timeframe,
+                                 evaluated_at DESC
+                    ) deduped
                     ORDER BY evaluated_at DESC
                     LIMIT :lim
                 """),

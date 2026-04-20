@@ -85,6 +85,10 @@ def _decision_row(
         "pnl_usd": pnl_usd,
         "resolved_at": resolved_at,
         "sot_reconciliation_state": sot_state,
+        # Projected by the view — 'fill' (real trade settlement) vs
+        # 'shadow' (snapshot-direction match). Added here so tests
+        # mirror the real column list and don't raise KeyError.
+        "outcome_source": "fill" if outcome is not None else None,
     }
 
 
@@ -262,6 +266,93 @@ def test_endpoint_reads_from_view_not_base_table():
     sql = session._last_stmt["stmt"]
     assert "FROM strategy_decisions_resolved" in sql
     assert "FROM strategy_decisions\n" not in sql  # not the base table
+
+
+# ─── Dedup + timeframe tests (hub note #192 / audit #256) ───────────────────
+
+
+def test_query_uses_distinct_on_for_dedup():
+    """Engine re-evaluates each (strategy, asset, window_ts, timeframe)
+    tuple every ~20ms and writes a fresh strategy_decisions row. Without
+    DISTINCT ON, ORDER BY evaluated_at DESC LIMIT N returns 2-3 windows
+    with hundreds of dupes each, and FE WR matrix is computed over
+    almost nothing. Mirror the canonical pattern in
+    scripts/ops/shadow_analysis.py.
+    """
+    session = _make_session([])
+    client = TestClient(_build_app(session))
+    client.get("/api/v58/strategy-decisions")
+    sql = session._last_stmt["stmt"]
+    assert "DISTINCT ON (strategy_id, asset, window_ts, timeframe)" in sql
+    # DISTINCT ON's ORDER BY must lead with the DISTINCT tuple, ending
+    # with evaluated_at DESC to pick the latest eval per window.
+    assert (
+        "ORDER BY strategy_id, asset, window_ts, timeframe,"
+        in sql
+    )
+    assert "evaluated_at DESC" in sql
+
+
+def test_timeframe_param_routes_into_query():
+    """`?timeframe=5m` previously silently ignored — now filters the
+    inner SELECT so DISTINCT ON only dedups across the requested
+    timeframe."""
+    session = _make_session([])
+    client = TestClient(_build_app(session))
+
+    client.get("/api/v58/strategy-decisions?timeframe=5m")
+    sql = session._last_stmt["stmt"]
+    params = session._last_stmt["params"]
+    assert "timeframe = :tf" in sql
+    assert params["tf"] == "5m"
+
+
+def test_timeframe_omitted_does_not_filter():
+    session = _make_session([])
+    client = TestClient(_build_app(session))
+    client.get("/api/v58/strategy-decisions")
+    sql = session._last_stmt["stmt"]
+    params = session._last_stmt["params"]
+    assert "timeframe = :tf" not in sql
+    assert "tf" not in params
+
+
+def test_timeframe_and_strategy_id_compose():
+    """Both filters compose with AND — FE per-strategy 5m matrix calls."""
+    session = _make_session([])
+    client = TestClient(_build_app(session))
+
+    client.get(
+        "/api/v58/strategy-decisions?strategy_id=v4_fusion&timeframe=5m&resolved=true"
+    )
+    sql = session._last_stmt["stmt"]
+    params = session._last_stmt["params"]
+    assert "strategy_id = :sid" in sql
+    assert "timeframe = :tf" in sql
+    assert "outcome IS NOT NULL" in sql
+    assert params["sid"] == "v4_fusion"
+    assert params["tf"] == "5m"
+
+
+def test_response_passes_through_deduped_rows_unchanged():
+    """Dedup is Postgres's job (DISTINCT ON). The hub layer passes through
+    whatever the DB returns — response shape must be identical to
+    pre-dedup. This is a shape-only guard: if the fixture returns 3
+    pre-deduped rows, the endpoint returns 3 rows in the same order."""
+    rows = [
+        _decision_row(strategy_id="v4_fusion", direction="UP"),
+        _decision_row(strategy_id="v4_fusion", direction="DOWN"),
+        _decision_row(strategy_id="v4_down_only", direction="DOWN"),
+    ]
+    client = TestClient(_build_app(_make_session(rows)))
+
+    body = client.get("/api/v58/strategy-decisions?timeframe=5m").json()
+    assert len(body["decisions"]) == 3
+    # Confirm strategy_id + direction pass through in order (no reshuffle
+    # in Python — outer ORDER BY evaluated_at DESC is done by Postgres).
+    assert [d["strategy_id"] for d in body["decisions"]] == [
+        "v4_fusion", "v4_fusion", "v4_down_only"
+    ]
 
 
 # ─── Error-path test ─────────────────────────────────────────────────────────
