@@ -7,8 +7,17 @@
 
 ## Overview
 
-15-minute Polymarket BTC sniper using the Path 1 classifier head as the
+15-minute Polymarket sniper using the Path 1 classifier head as the
 sole signal source. Fork of `v6_sniper` adapted for 15m windows.
+
+**Multi-asset:** Three configs share the same hook (`v7_15m_sniper.py`):
+- `v7_15m_sniper.yaml` — BTC (66.7% high-conviction accuracy, N=12)
+- `v7_15m_sniper_eth.yaml` — ETH (80.8% high-conviction accuracy, N=26)
+- `v7_15m_sniper_sol.yaml` — SOL (85.7% high-conviction accuracy, N=21)
+
+ETH and SOL are the strongest performers at high conviction. The hook is
+asset-agnostic — it reads `surface.probability_classifier` which the
+TimesFM service computes per-asset. All three configs are GHOST mode.
 
 There is no 15m LGB model yet, so the v6 ensemble blend
 (`surface.poly_confidence`) is not used. Instead, v7 reads
