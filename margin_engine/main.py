@@ -399,24 +399,28 @@ async def run() -> None:
         )
     )
 
+    from margin_engine.application.dto import ManagePositionsInput
+
     manage_uc = ManagePositionsUseCase(
-        exchange=exchange,
-        portfolio=portfolio,
-        repository=repo,
-        alerts=alerts,
-        # ── v4 integration (PR B) ──
-        v4_snapshot_port=v4_adapter,
-        probability_port=probability_adapter,  # fallback continuation path
-        engine_use_v4_actions=settings.engine_use_v4_actions,
-        v4_primary_timescale=settings.v4_primary_timescale,
-        v4_timescales=settings.v4_timescales_tuple,
-        v4_continuation_min_conviction=settings.v4_continuation_min_conviction,
-        v4_continuation_max=settings.v4_continuation_max,
-        v4_event_exit_seconds=settings.v4_event_exit_seconds,
-        # Phase A — parallel macro advisory mode for continuation path
-        v4_macro_mode=settings.v4_macro_mode,
-        v4_macro_hard_veto_confidence_floor=settings.v4_macro_hard_veto_confidence_floor,
-        trailing_stop_pct=settings.trailing_stop_pct,
+        input=ManagePositionsInput(
+            exchange=exchange,
+            portfolio=portfolio,
+            repository=repo,
+            alerts=alerts,
+            # ── v4 integration (PR B) ──
+            v4_snapshot_port=v4_adapter,
+            probability_port=probability_adapter,  # fallback continuation path
+            engine_use_v4_actions=settings.engine_use_v4_actions,
+            v4_primary_timescale=settings.v4_primary_timescale,
+            v4_timescales=settings.v4_timescales_tuple,
+            v4_continuation_min_conviction=settings.v4_continuation_min_conviction,
+            v4_continuation_max=settings.v4_continuation_max,
+            v4_event_exit_seconds=settings.v4_event_exit_seconds,
+            # Phase A — parallel macro advisory mode for continuation path
+            v4_macro_mode=settings.v4_macro_mode,
+            v4_macro_hard_veto_confidence_floor=settings.v4_macro_hard_veto_confidence_floor,
+            trailing_stop_pct=settings.trailing_stop_pct,
+        )
     )
 
     # ── Status HTTP server (for dashboard proxy) ──
