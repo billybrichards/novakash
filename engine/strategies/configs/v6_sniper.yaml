@@ -148,7 +148,8 @@ gate_params:
   # v6_sniper uses `_try_bucket_risk_off_override` instead, which is gated
   # on v6's OWN conviction bucket rather than sister-repo distance.
   # V4_RISK_OFF_OVERRIDE_ENABLED is CI-disabled (PR #243, 2026-04-17).
-  risk_off_override_enabled: true
+  # Disabled 2026-04-20 after 0/1 WR observation on risk_off trades (Hub data). Montreal prod also manually patched. See audit/trade-logs for rationale.
+  risk_off_override_enabled: false
   risk_off_override_dist_min: 0.20
   risk_off_override_require_tiingo: true
 

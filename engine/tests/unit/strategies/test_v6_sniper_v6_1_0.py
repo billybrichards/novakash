@@ -232,3 +232,15 @@ def test_version_bumped():
     """YAML version must be 6.1.0."""
     data = yaml.safe_load(V6_YAML.read_text())
     assert data["version"] == "6.1.0", f"expected 6.1.0, got {data['version']}"
+
+
+# ── Test 7 ──────────────────────────────────────────────────────────────────
+def test_risk_off_override_disabled():
+    """Pin risk_off_override_enabled=false (2026-04-20: 0/1 WR observation).
+
+    Montreal prod was manually patched to disable this flag after a losing
+    risk_off trade. This test ensures develop stays aligned so future deploys
+    don't regress.
+    """
+    cfg = yaml.safe_load(V6_YAML.read_text())
+    assert cfg["gate_params"]["risk_off_override_enabled"] is False
