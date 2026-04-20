@@ -476,8 +476,8 @@ async def run() -> None:
                 await open_uc.execute()
 
                 # 2. Manage existing positions — price/time exits only.
-                closed = await manage_uc.tick()
-                for pos in closed:
+                result = await manage_uc.tick()
+                for pos in result.closed_positions:
                     logger.info(
                         "Position %s closed: PnL=%.2f (%s)",
                         pos.id,
