@@ -50,7 +50,7 @@ from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
 _STRATEGY_ID = "v6_sniper"
-_VERSION = "6.0.5"
+_VERSION = "6.0.6"
 
 
 # ── Tunable knobs (YAML gate_params → env fallback → default) ──────────────
@@ -232,6 +232,103 @@ def _entry_cap_override() -> Optional[float]:
     """
     v = _gp.get_float("entry_cap_override", "V6_SNIPER_ENTRY_CAP_OVERRIDE", 0.0)
     return v if v > 0 else None
+
+
+# ── v6.0.6 bucket-aware override helpers ──────────────────────────────────
+# Context: V4_RISK_OFF_OVERRIDE was CI-disabled 2026-04-17 (PR #243) because
+# v4/v5's blanket distance-based override was losing money. v6's ensemble
+# conviction bucket (agree_strong / pegged_path1) is stricter; gating the
+# override on bucket filters noise without losing the #252-style pending
+# wins. High-VPIN source bypass: at high informed-flow + strong bucket,
+# chainlink/tiingo directional disagreement no longer auto-skips.
+def _v6_risk_off_override_enabled() -> bool:
+    return _gp.get_bool(
+        "v6_risk_off_override_enabled",
+        "V6_SNIPER_RISK_OFF_OVERRIDE_ENABLED",
+        True,
+    )
+
+
+def _v6_risk_off_override_buckets() -> set[str]:
+    return set(
+        _gp.get_str_list(
+            "v6_risk_off_override_buckets",
+            "V6_SNIPER_RISK_OFF_OVERRIDE_BUCKETS",
+            ["agree_strong", "pegged_path1"],
+        )
+    )
+
+
+def _high_vpin_bypass_enabled() -> bool:
+    return _gp.get_bool(
+        "high_vpin_bypass_enabled",
+        "V6_SNIPER_HIGH_VPIN_BYPASS_ENABLED",
+        True,
+    )
+
+
+def _high_vpin_bypass_threshold() -> float:
+    return _gp.get_float(
+        "high_vpin_bypass_threshold",
+        "V6_SNIPER_HIGH_VPIN_BYPASS_THRESHOLD",
+        0.60,
+    )
+
+
+def _high_vpin_bypass_buckets() -> set[str]:
+    return set(
+        _gp.get_str_list(
+            "high_vpin_bypass_buckets",
+            "V6_SNIPER_HIGH_VPIN_BYPASS_BUCKETS",
+            ["agree_strong", "pegged_path1"],
+        )
+    )
+
+
+def _try_bucket_risk_off_override(
+    reason: str,
+    bucket: str,
+    direction: "Optional[str]",
+    surface: "FullDataSurface",
+    gates: list[dict],
+) -> bool:
+    """v6.0.6: bucket-gated risk_off override.
+
+    Returns True if sister-repo's risk_off veto should be bypassed.
+    Preconditions:
+      1. v6_risk_off_override_enabled = True
+      2. reason contains "risk_off"
+      3. bucket in v6_risk_off_override_buckets
+      4. direction is not None
+      5. chainlink delta aligns with trade direction
+    """
+    if not _v6_risk_off_override_enabled():
+        return False
+    if "risk_off" not in (reason or ""):
+        return False
+    allowed = _v6_risk_off_override_buckets()
+    if bucket not in allowed:
+        gates.append(_gate("v6_risk_off_override", False,
+                           f"bucket={bucket} not in {sorted(allowed)}"))
+        return False
+    if direction is None:
+        return False
+    cl_delta = surface.delta_chainlink
+    if cl_delta is None:
+        gates.append(_gate("v6_risk_off_override", False,
+                           "no chainlink delta to verify direction alignment"))
+        return False
+    cl_direction = "UP" if cl_delta > 0 else "DOWN"
+    if cl_direction != direction:
+        gates.append(_gate("v6_risk_off_override", False,
+                           f"chainlink={cl_direction} disagrees with trade={direction}"))
+        return False
+    gates.append(_gate(
+        "v6_risk_off_override", True,
+        f"risk_off overridden: bucket={bucket}, chainlink={cl_direction} aligns with trade={direction}",
+    ))
+    return True
+
 
 
 def _try_risk_off_override(
@@ -563,50 +660,12 @@ def evaluate_polymarket_sniper(
         _gate("vpin_min", True, f"vpin={vpin:.3f} >= {vpin_floor:.3f}")
     )
 
-    # ── Source agreement (directions actually match) ──────────────────────
-    cl = surface.delta_chainlink
-    ti = surface.delta_tiingo
-    if cl is not None and ti is not None:
-        cl_dir = "UP" if cl > 0 else ("DOWN" if cl < 0 else None)
-        ti_dir = "UP" if ti > 0 else ("DOWN" if ti < 0 else None)
-        if cl_dir is None or ti_dir is None or cl_dir != ti_dir:
-            gates.append(
-                _gate(
-                    "source_agreement",
-                    False,
-                    f"chainlink={cl_dir} tiingo={ti_dir}",
-                )
-            )
-            return _skip(
-                f"source_disagreement: chainlink={cl_dir} tiingo={ti_dir}",
-                gates,
-            )
-        gates.append(
-            _gate("source_agreement", True, f"both agree {cl_dir}")
-        )
-
-    # ── trade_advised ────────────────────────────────────────────────────
-    # v6.0.4: if sister-repo veto fires, try risk_off override BEFORE
-    # skipping. Uses surface.poly_direction + poly_confidence_distance
-    # as the preliminary direction/distance (ensemble bucket logic below
-    # will reconcile or reject). Matches v4_fusion / v5_ensemble pattern.
-    if not (surface.poly_trade_advised or False):
-        reason = surface.poly_reason or "no_poly_advice"
-        _prelim_dir = surface.poly_direction or surface.v4_recommended_side
-        _prelim_dist = surface.poly_confidence_distance or 0.0
-        if _try_risk_off_override(reason, _prelim_dist, _prelim_dir, surface, gates):
-            gates.append(
-                _gate(
-                    "trade_advised",
-                    True,
-                    f"trade_advised=false ({reason}) but risk_off_override applied",
-                )
-            )
-        else:
-            gates.append(_gate("trade_advised", False, reason))
-            return _skip(f"trade_not_advised: {reason}", gates)
-    else:
-        gates.append(_gate("trade_advised", True, "trade_advised=true"))
+    # ── v6.0.6 ORDER CHANGE: source_agreement + trade_advised moved below ──
+    # Both gates now run AFTER conviction bucket is computed so they can use
+    # bucket-aware overrides (high-VPIN source bypass + bucket-gated risk_off).
+    # See helpers `_try_bucket_risk_off_override`, `_high_vpin_bypass_*`.
+    # Supersedes latent `risk_off_override_enabled` at old position (bucket
+    # was not yet computed, so the override never fired). Audit-task #256.
 
     # ── Ensemble fields + signal-source selection ────────────────────────
     p_lgb = getattr(surface, "probability_lgb", None)
@@ -727,6 +786,60 @@ def evaluate_polymarket_sniper(
         "lgb": p_lgb,
         "path1": p_path1,
     }
+
+    # ── v6.0.6 Source agreement (moved below bucket, high-VPIN bypass) ───
+    # When VPIN >= 0.60 AND bucket in {agree_strong, pegged_path1},
+    # chainlink/tiingo directional disagreement no longer auto-skips.
+    cl = surface.delta_chainlink
+    ti = surface.delta_tiingo
+    if cl is not None and ti is not None:
+        cl_dir = "UP" if cl > 0 else ("DOWN" if cl < 0 else None)
+        ti_dir = "UP" if ti > 0 else ("DOWN" if ti < 0 else None)
+        if cl_dir is None or ti_dir is None or cl_dir != ti_dir:
+            vpin_val = surface.vpin or 0.0
+            if (
+                _high_vpin_bypass_enabled()
+                and bucket in _high_vpin_bypass_buckets()
+                and vpin_val >= _high_vpin_bypass_threshold()
+            ):
+                gates.append(_gate(
+                    "source_agreement_high_vpin_bypass", True,
+                    f"bypassed: bucket={bucket}, vpin={vpin_val:.3f} "
+                    f">= {_high_vpin_bypass_threshold():.2f}, "
+                    f"chainlink={cl_dir} tiingo={ti_dir}",
+                ))
+                bucket_extras["source_agreement_bypassed"] = True
+            else:
+                gates.append(_gate(
+                    "source_agreement", False,
+                    f"chainlink={cl_dir} tiingo={ti_dir}",
+                ))
+                return _skip(
+                    f"source_disagreement: chainlink={cl_dir} tiingo={ti_dir}",
+                    gates,
+                    extras=bucket_extras,
+                )
+        else:
+            gates.append(_gate("source_agreement", True, f"both agree {cl_dir}"))
+
+    # ── v6.0.6 trade_advised (bucket-aware risk_off override) ────────────
+    if not (surface.poly_trade_advised or False):
+        reason = surface.poly_reason or "no_poly_advice"
+        if _try_bucket_risk_off_override(reason, bucket, direction, surface, gates):
+            gates.append(_gate(
+                "trade_advised", True,
+                f"trade_advised=false ({reason}) but v6_risk_off_override applied",
+            ))
+            bucket_extras["risk_off_override_fired"] = True
+        else:
+            gates.append(_gate("trade_advised", False, reason))
+            return _skip(
+                f"trade_not_advised: {reason}",
+                gates,
+                extras=bucket_extras,
+            )
+    else:
+        gates.append(_gate("trade_advised", True, "trade_advised=true"))
 
     if bucket == "agree_strong":
         gates.append(

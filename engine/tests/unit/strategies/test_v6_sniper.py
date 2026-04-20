@@ -107,7 +107,7 @@ def test_v6_sniper_registered_as_live(registry):
     assert "v6_sniper" in registry.strategy_names
     cfg = registry.configs["v6_sniper"]
     assert cfg.mode == "LIVE"
-    assert cfg.version == "6.0.5"
+    assert cfg.version == "6.0.6"
     assert cfg.timescale == "5m"
 
 
@@ -468,7 +468,7 @@ def test_21_risk_off_override_fires_when_oracles_align(registry):
         f"skip_reason={decision.skip_reason}"
     )
     gate_names = [g.get("gate") for g in decision.metadata.get("gate_results", [])]
-    assert "regime_risk_off_override" in gate_names
+    assert "v6_risk_off_override" in gate_names
 
 
 def test_22_risk_off_override_blocks_when_oracles_opposite(registry):

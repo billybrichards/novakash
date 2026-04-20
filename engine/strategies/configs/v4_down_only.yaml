@@ -1,6 +1,6 @@
 name: v4_down_only
-version: "2.1.0"
-mode: GHOST
+version: "2.2.0"
+mode: LIVE
 asset: BTC
 timescale: 5m
 
@@ -21,6 +21,12 @@ gates:
         - { threshold: 0.25, modifier: 1.0, label: "contrarian_87pct" }
         - { threshold: 0.0, modifier: 0.0, label: "skip_sub25_53pct" }
       null_modifier: 1.5
+
+  # ── entry cap (v2.2.0) ──
+  # Gamma bestAsk is used as the GTC limit price. This override caps it
+  # so v4_down_only never bids above 90¢ even if Gamma returns higher.
+  # Env override: V4_DOWN_ONLY_ENTRY_CAP_OVERRIDE
+  entry_cap_override: 0.90
 
 sizing:
   type: custom
