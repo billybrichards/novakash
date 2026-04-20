@@ -726,6 +726,24 @@ class StrategyDecisionRepository(abc.ABC):
         """Read strategy decisions for a strategy across a window range."""
         ...
 
+    async def mark_executed(
+        self,
+        *,
+        strategy_id: str,
+        asset: str,
+        window_ts: int,
+        order_id: Optional[str],
+        fill_price: Optional[float],
+        fill_size: Optional[float],
+    ) -> None:
+        """Audit #255 F5 — post-execution update of executed / fill details.
+
+        Default is a no-op so in-memory adapters (tests) inherit without
+        having to implement. Production adapters (PgStrategyDecisionRepository)
+        override this to write back the fill into the strategy_decisions row.
+        """
+        return None
+
 
 class WindowTraceRepository(abc.ABC):
     """Persists structured per-window/per-gate decision traces.

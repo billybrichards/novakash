@@ -4770,3 +4770,197 @@ async def prediction_surface(
             "recent_windows": [],
             "error": str(exc)[:300],
         }
+
+
+# ─── Audit-task #255 F3 — skip-bucket analysis endpoint ──────────────────────
+
+
+@router.get("/v58/skip-bucket-analysis")
+async def skip_bucket_analysis(
+    strategy: str = Query(..., description="Strategy id (e.g. v6_sniper, v4_fusion)"),
+    hours: int = Query(48, ge=1, le=720),
+    db: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """Per-skip-reason bucket analysis for a given strategy.
+
+    Audit-task #255 F3. Backed by the ``strategy_skip_resolved`` materialised
+    view (see migration ``20260420_02_strategy_skip_resolved_matview.sql``)
+    so queries are sub-second instead of the previous 5-30s raw scans.
+
+    Returns per-bucket::
+
+        {
+          "strategy": "v6_sniper",
+          "hours": 48,
+          "total_windows": 512,
+          "trade_windows": 31,
+          "skip_windows": 481,
+          "buckets": [
+            {
+              "skip_reason": "source_disagree",
+              "distinct_windows": 142,
+              "re_eval_hits": 18442,
+              "resolved_count": 128,
+              "hypo_wins": 71,
+              "hypo_losses": 57,
+              "hypo_wr": 0.555,
+              "hypo_pnl_usd": 12.47,
+              "bands": {
+                "HIGH": {"distinct_windows": 30, "hypo_wr": 0.70},
+                "MEDIUM": {"distinct_windows": 75, "hypo_wr": 0.55},
+                "LOW": {"distinct_windows": 37, "hypo_wr": 0.35}
+              }
+            },
+            ...
+          ]
+        }
+
+    ``hypo_wr`` and ``hypo_pnl_usd`` are counterfactual: they score the
+    strategy's ``direction`` against ``window_snapshots.actual_direction``
+    even when no trade was placed. That's the metric the tuning workflow
+    cares about (would lifting this skip reason have printed money?).
+    ``hypo_pnl_usd`` uses a unit stake of $1 per hypothetical trade — the
+    FE can multiply by the user's chosen bet size.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    try:
+        # Per-bucket aggregation. The matview is already deduped to one
+        # row per (strategy, window) so COUNT(*) = distinct_windows.
+        bucket_q = text("""
+            SELECT
+                COALESCE(skip_reason, '__trade__') AS bucket,
+                COUNT(*)                                   AS distinct_windows,
+                SUM(re_eval_count)                         AS re_eval_hits,
+                COUNT(*) FILTER (WHERE hypo_outcome IS NOT NULL) AS resolved_count,
+                COUNT(*) FILTER (WHERE hypo_outcome = 'WIN')     AS hypo_wins,
+                COUNT(*) FILTER (WHERE hypo_outcome = 'LOSS')    AS hypo_losses,
+                COUNT(*) FILTER (WHERE confidence = 'HIGH')      AS band_high,
+                COUNT(*) FILTER (WHERE confidence = 'HIGH' AND hypo_outcome = 'WIN')
+                                                                   AS band_high_wins,
+                COUNT(*) FILTER (WHERE confidence = 'HIGH' AND hypo_outcome IS NOT NULL)
+                                                                   AS band_high_resolved,
+                COUNT(*) FILTER (WHERE confidence = 'MEDIUM')      AS band_med,
+                COUNT(*) FILTER (WHERE confidence = 'MEDIUM' AND hypo_outcome = 'WIN')
+                                                                   AS band_med_wins,
+                COUNT(*) FILTER (WHERE confidence = 'MEDIUM' AND hypo_outcome IS NOT NULL)
+                                                                   AS band_med_resolved,
+                COUNT(*) FILTER (WHERE confidence = 'LOW')         AS band_low,
+                COUNT(*) FILTER (WHERE confidence = 'LOW' AND hypo_outcome = 'WIN')
+                                                                   AS band_low_wins,
+                COUNT(*) FILTER (WHERE confidence = 'LOW' AND hypo_outcome IS NOT NULL)
+                                                                   AS band_low_resolved,
+                SUM(
+                    CASE
+                        WHEN hypo_outcome = 'WIN' THEN 1.0
+                        WHEN hypo_outcome = 'LOSS' THEN -1.0
+                        ELSE 0.0
+                    END
+                )                                          AS hypo_pnl_unit
+            FROM strategy_skip_resolved
+            WHERE strategy_id = :strategy
+              AND evaluated_at >= :cutoff
+            GROUP BY COALESCE(skip_reason, '__trade__')
+            ORDER BY distinct_windows DESC
+        """)
+        rows = (
+            await db.execute(bucket_q, {"strategy": strategy, "cutoff": cutoff})
+        ).mappings().all()
+
+        buckets = []
+        total_windows = 0
+        trade_windows = 0
+        skip_windows = 0
+        for r in rows:
+            dw = int(r["distinct_windows"] or 0)
+            total_windows += dw
+            if r["bucket"] == "__trade__":
+                trade_windows += dw
+            else:
+                skip_windows += dw
+
+            resolved = int(r["resolved_count"] or 0)
+            wins = int(r["hypo_wins"] or 0)
+            losses = int(r["hypo_losses"] or 0)
+            hypo_wr = round(wins / resolved, 4) if resolved else None
+
+            def _band(n: int, w: int, res: int) -> dict:
+                return {
+                    "distinct_windows": n,
+                    "hypo_wins": w,
+                    "resolved": res,
+                    "hypo_wr": round(w / res, 4) if res else None,
+                }
+
+            buckets.append({
+                "skip_reason": None if r["bucket"] == "__trade__" else r["bucket"],
+                "bucket": r["bucket"],  # legacy alias
+                "distinct_windows": dw,
+                "re_eval_hits": int(r["re_eval_hits"] or 0),
+                "resolved_count": resolved,
+                "hypo_wins": wins,
+                "hypo_losses": losses,
+                "hypo_wr": hypo_wr,
+                # $1 unit stake; FE multiplies for display.
+                "hypo_pnl_usd": float(r["hypo_pnl_unit"] or 0.0),
+                "bands": {
+                    "HIGH": _band(
+                        int(r["band_high"] or 0),
+                        int(r["band_high_wins"] or 0),
+                        int(r["band_high_resolved"] or 0),
+                    ),
+                    "MEDIUM": _band(
+                        int(r["band_med"] or 0),
+                        int(r["band_med_wins"] or 0),
+                        int(r["band_med_resolved"] or 0),
+                    ),
+                    "LOW": _band(
+                        int(r["band_low"] or 0),
+                        int(r["band_low_wins"] or 0),
+                        int(r["band_low_resolved"] or 0),
+                    ),
+                },
+            })
+
+        return {
+            "strategy": strategy,
+            "hours": hours,
+            "cutoff": cutoff.isoformat(),
+            "total_windows": total_windows,
+            "trade_windows": trade_windows,
+            "skip_windows": skip_windows,
+            "buckets": buckets,
+            # Sourced from the matview — if a refresh is stale the FE can
+            # decide to warn. Absent when the matview isn't yet created
+            # (first boot, pre-migration).
+            "matview": "strategy_skip_resolved",
+        }
+    except Exception as exc:
+        log.warning("v58.skip_bucket_analysis_error", error=str(exc)[:300])
+        return {
+            "strategy": strategy,
+            "hours": hours,
+            "buckets": [],
+            "error": str(exc)[:300],
+        }
+
+
+@router.post("/v58/skip-bucket-analysis/refresh")
+async def skip_bucket_analysis_refresh(
+    db: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """Manually refresh the ``strategy_skip_resolved`` matview.
+
+    The scheduled refresh runs every 5 minutes (see hub/main.py startup).
+    This endpoint lets ops force a refresh after a tuning commit without
+    waiting. Uses REFRESH CONCURRENTLY so readers aren't blocked.
+    """
+    try:
+        await db.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY strategy_skip_resolved"))
+        await db.commit()
+        return {"status": "ok", "refreshed_at": datetime.now(timezone.utc).isoformat()}
+    except Exception as exc:
+        log.warning("v58.skip_bucket_refresh_error", error=str(exc)[:300])
+        return {"status": "error", "error": str(exc)[:300]}

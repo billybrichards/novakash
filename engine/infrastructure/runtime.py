@@ -297,10 +297,16 @@ class EngineRuntime:
                             poly_client=self._poly_client,
                         )
                     )
+                    # Audit #255 F5 — pass the strategy-decision repo so the
+                    # recorder can write executed/order_id/fill_price/fill_size
+                    # back onto strategy_decisions post-fill. The repo is the
+                    # same instance EvaluateStrategiesUseCase writes through.
+                    _sd_repo = getattr(self, "_strategy_decision_repo", None)
                     _recorder = (
                         TradeRecorder(
                             db_client=self._db,
                             order_manager=self._order_manager,
+                            strategy_decision_repo=_sd_repo,
                         )
                         if self._db
                         else None

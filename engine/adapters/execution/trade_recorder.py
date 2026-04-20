@@ -38,9 +38,13 @@ class DBTradeRecorder(TradeRecorderPort):
         self,
         db_client: Any = None,
         order_manager: Any = None,
+        strategy_decision_repo: Any = None,
     ) -> None:
         self._db = db_client
         self._om = order_manager
+        # Audit #255 F5 — post-execution write-back to strategy_decisions.
+        # Optional: when None we skip the update silently.
+        self._sd_repo = strategy_decision_repo
 
     async def record_trade(
         self,
@@ -172,5 +176,47 @@ class DBTradeRecorder(TradeRecorderPort):
             except Exception as exc:
                 logger.warning(
                     "trade_recorder.db_update_error",
+                    extra={"error": str(exc)[:200]},
+                )
+
+        # 3. Audit #255 F5 — flag the strategy_decision row as executed and
+        #    write the real fill details. Forward-only — historical rows
+        #    remain NULL by design (no backfill). Defensive: a missing repo
+        #    or raise here never blocks the trade flow.
+        if self._sd_repo is not None:
+            try:
+                sd_window_ts: Optional[int] = None
+                sd_asset: str = "BTC"
+                parts = (result.market_slug or "").split("-") if result.market_slug else []
+                if len(parts) >= 1 and parts[0]:
+                    sd_asset = parts[0].upper()
+                if parts:
+                    try:
+                        sd_window_ts = int(parts[-1])
+                    except (ValueError, TypeError):
+                        sd_window_ts = None
+                if sd_window_ts is None:
+                    # Metadata may carry window_ts directly (engine-side write).
+                    meta_ts = (
+                        decision.metadata.get("window_ts") if decision.metadata else None
+                    )
+                    if meta_ts is not None:
+                        try:
+                            sd_window_ts = int(meta_ts)
+                        except (ValueError, TypeError):
+                            sd_window_ts = None
+
+                if sd_window_ts is not None:
+                    await self._sd_repo.mark_executed(
+                        strategy_id=decision.strategy_id,
+                        asset=sd_asset,
+                        window_ts=sd_window_ts,
+                        order_id=result.order_id,
+                        fill_price=result.fill_price,
+                        fill_size=result.fill_size,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "trade_recorder.sd_mark_executed_error",
                     extra={"error": str(exc)[:200]},
                 )

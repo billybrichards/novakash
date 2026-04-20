@@ -233,3 +233,59 @@ class PgStrategyDecisionRepository(StrategyDecisionRepository):
         except Exception as exc:
             log.warning("pg_strategy_decisions.read_range_error", error=str(exc)[:200])
             return []
+
+    async def mark_executed(
+        self,
+        *,
+        strategy_id: str,
+        asset: str,
+        window_ts: int,
+        order_id: Optional[str],
+        fill_price: Optional[float],
+        fill_size: Optional[float],
+    ) -> None:
+        """Audit #255 F5 — flag the strategy_decision row as executed and
+        persist the real fill details post-trade.
+
+        Decision rows are written at evaluation time (see
+        EvaluateStrategiesUseCase) BEFORE execution completes, so
+        executed/order_id/fill_price/fill_size are always NULL at insert.
+        Invoked from DBTradeRecorder after a CLOB fill confirms.
+
+        Updates every eval_offset row for the (strategy, asset, window)
+        triplet — they all refer to the same final decision so the fill
+        is anchored across the whole row set.
+
+        Forward-only. No backfill for historical rows.
+        """
+        pool = self._get_pool()
+        if not pool:
+            return
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE strategy_decisions
+                    SET executed = true,
+                        order_id = COALESCE($4, order_id),
+                        fill_price = COALESCE($5, fill_price),
+                        fill_size = COALESCE($6, fill_size)
+                    WHERE strategy_id = $1
+                      AND asset = $2
+                      AND window_ts = $3
+                      AND action = 'TRADE'
+                    """,
+                    strategy_id,
+                    asset,
+                    int(window_ts),
+                    order_id,
+                    fill_price,
+                    fill_size,
+                )
+        except Exception as exc:
+            log.warning(
+                "pg_strategy_decisions.mark_executed_error",
+                error=str(exc)[:200],
+                strategy_id=strategy_id,
+                window_ts=window_ts,
+            )
