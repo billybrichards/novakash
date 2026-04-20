@@ -1,5 +1,34 @@
 name: v4_down_only
-version: "2.2.0"
+version: "2.3.0"
+# v2.3.0 — 2026-04-20 — ensemble-era guards + tight conviction.
+#   Rationale (Hub note #198):
+#     * v4_down_only went LIVE earlier today (v2.2.0). First trade = LOSS
+#       (MEDIUM conv, dist=0.10, volatile_trend, -$3.68). Same failure
+#       pattern as v5_ensemble lifetime MEDIUM bucket (46% WR / -$3.67
+#       net). min_dist=0.10 is too permissive post-ensemble.
+#     * Historical v4_down_only 86% WR was measured pre-ensemble. The
+#       ensemble-era signal distribution has a long mid-conviction tail
+#       that single-source distance gates don't filter out.
+#   Changes:
+#     * confidence min_dist 0.10 → 0.18 (lifts the trade-eligibility
+#       floor above the break-even zone measured in v5_ensemble audits).
+#     * conviction_gate allowed=[HIGH] — MEDIUM is a documented bleed
+#       bucket post-ensemble; HIGH-only brings us back toward the
+#       86%-WR cohort.
+#     * vpin_gate min=0.40, block_cascade=true — prevents firing in the
+#       CASCADE-inversion pattern that collapsed v4 overnight 2026-04-17.
+#     * source_agreement null-block on chainlink + tiingo — refuses to
+#       trade when either oracle is silent. Direction-agreement is NOT
+#       required (min_sources=0 disables the direction check).
+#     * regime_v4 allow=[calm_trend, volatile_trend] — DOWN-only is
+#       strict; risk_off gets no override here.
+#     * entry_cap_override 0.90 → 0.85 (parity with v6_sniper's v6.0.1
+#       cap; avoids paying 90¢ when the FAK ladder can find fills at
+#       85¢/88¢).
+#   Projected outcome: 75-85% WR (historical 86% pre-ensemble).
+#   Gated on PR #306 (SOT reconciliation fix, audit #260).
+#
+# v2.2.0 — entry_cap_override 0.90, LIVE mode launch.
 mode: LIVE
 asset: BTC
 timescale: 5m
@@ -9,10 +38,23 @@ gates:
     params: { min_offset: 90, max_offset: 150 }
   - type: direction
     params: { direction: DOWN }
+  # v2.3.0: raised min_dist 0.10 → 0.18.
   - type: confidence
-    params: { min_dist: 0.10 }
+    params: { min_dist: 0.18 }
   - type: trade_advised
     params: {}
+  # v2.3.0: ensemble-era guards.
+  - type: conviction_gate
+    params: { allowed: [HIGH] }
+  - type: vpin_gate
+    params: { min: 0.40, block_cascade: true }
+  - type: source_agreement
+    params:
+      min_sources: 0
+      require_chainlink_null_block: true
+      require_tiingo_null_block: true
+  - type: regime_v4
+    params: { allow: [calm_trend, volatile_trend] }
   - type: clob_sizing
     params:
       schedule:
@@ -23,11 +65,11 @@ gates:
       null_modifier: 1.5
 
 gate_params:
-  # ── entry cap (v2.2.0) ──
+  # ── entry cap (v2.3.0: tightened 0.90 → 0.85) ──
   # Gamma bestAsk is used as the GTC limit price. This override caps it
-  # so v4_down_only never bids above 90¢ even if Gamma returns higher.
+  # so v4_down_only never bids above 85¢ even if Gamma returns higher.
   # Env override: V4_DOWN_ONLY_ENTRY_CAP_OVERRIDE
-  entry_cap_override: 0.90
+  entry_cap_override: 0.85
 
 sizing:
   type: custom

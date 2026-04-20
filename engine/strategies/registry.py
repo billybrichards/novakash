@@ -50,6 +50,10 @@ def _register_gates() -> None:
     from strategies.gates.macro_direction import MacroDirectionGate
     from strategies.gates.trade_advised import TradeAdvisedGate
     from strategies.gates.entry_price_floor import EntryPriceFloorGate
+    # v4_down_only v2.3.0 — ensemble-era guards (#198)
+    from strategies.gates.conviction import ConvictionGate
+    from strategies.gates.vpin_gate import VPINGate
+    from strategies.gates.regime_v4 import RegimeV4Gate
 
     _GATE_REGISTRY.update(
         {
@@ -68,6 +72,10 @@ def _register_gates() -> None:
             "macro_direction": MacroDirectionGate,
             "trade_advised": TradeAdvisedGate,
             "entry_price_floor": EntryPriceFloorGate,
+            # v4_down_only v2.3.0
+            "conviction_gate": ConvictionGate,
+            "vpin_gate": VPINGate,
+            "regime_v4": RegimeV4Gate,
         }
     )
 

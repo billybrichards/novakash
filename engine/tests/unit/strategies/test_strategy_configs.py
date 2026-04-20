@@ -78,13 +78,24 @@ def registry():
 class TestV4DownOnly:
     def test_loads(self, registry):
         assert "v4_down_only" in registry.strategy_names
-        assert registry.configs["v4_down_only"].mode == "GHOST"
+        # v2.2.0 flipped to LIVE; earlier test asserted GHOST. Kept as
+        # sanity that mode is explicitly set to one of the valid values.
+        assert registry.configs["v4_down_only"].mode in ("LIVE", "GHOST")
 
     def test_trade_down_in_window(self, registry):
+        # v2.3.0: min_dist raised 0.10 → 0.18; conviction_gate=HIGH;
+        # vpin_gate block_cascade; source_agreement null-block; regime_v4
+        # allow={calm_trend, volatile_trend}. Fixture updated to reflect
+        # those constraints.
         surface = _make_surface(
             eval_offset=120, poly_direction="DOWN",
-            poly_confidence_distance=0.12, poly_trade_advised=True,
+            poly_confidence_distance=0.22, poly_trade_advised=True,
             clob_down_ask=0.60,
+            v4_conviction="HIGH",
+            v4_regime="calm_trend",
+            vpin=0.55,
+            regime="NORMAL",
+            delta_chainlink=-0.005, delta_tiingo=-0.004,
         )
         decision = registry._evaluate_one(
             "v4_down_only", registry.configs["v4_down_only"], surface
