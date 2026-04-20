@@ -16,7 +16,11 @@ version: "5.1.0"
 # 2026-04-19 (later): Flipped GHOST → LIVE per Billy. Live lineup now
 # v5_ensemble + v6_sniper. Previous audit contaminated by broken-classifier
 # period (pre-PR #278); re-running fresh on post-fix data.
-mode: LIVE
+# 2026-04-20: Flipped LIVE → GHOST per Billy. Today's data (2026-04-19 23:37 → 2026-04-20 ~14:00 UTC):
+# v6_sniper 9W/1L (90%, +$28.62). v5_ensemble 4W/3L (57%, +$0.59, near break-even).
+# v5 stays GHOST while v6 runs sole-LIVE and accumulates more sample. Revisit
+# if v6 regresses or sample grows above 30 trades with clear edge.
+mode: GHOST
 asset: BTC
 timescale: 5m
 

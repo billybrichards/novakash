@@ -341,10 +341,12 @@ def test_14_prefer_raw_records_raw_source(registry):
     assert decision.metadata["conviction_bucket"] == "agree_strong"
 
 
-# ── Mode-flip regression (live lineup: v5_ensemble + v6_sniper) ────────────
-def test_v5_ensemble_is_live(registry):
-    # Per Billy 2026-04-19 second flip: v5_ensemble back to LIVE.
-    assert registry.configs["v5_ensemble"].mode == "LIVE"
+# ── Mode-flip regression (live lineup: v6_sniper sole LIVE) ────────────────
+def test_v5_ensemble_is_ghost(registry):
+    # 2026-04-20: v5_ensemble flipped LIVE → GHOST per Billy. Today's data:
+    # v6_sniper 9W/1L (90%, +$28.62) vs v5_ensemble 4W/3L (57%, +$0.59).
+    # v6_sniper is sole LIVE; v5_ensemble shadows.
+    assert registry.configs["v5_ensemble"].mode == "GHOST"
 
 
 def test_v5_fresh_stays_ghost(registry):
