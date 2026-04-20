@@ -1,5 +1,23 @@
 name: v6_sniper
-version: "6.1.0"
+version: "6.1.1"
+# v6.1.1 — 2026-04-20 — direction-asymmetric gating (stricter UP, DOWN unchanged).
+#   Rationale (live Montreal data, today):
+#     * v6 DOWN: 83% WR (10W/2L), +$24.27, ROI +68.6%.
+#     * v6 UP:   62% WR (5W/3L),  +$4.65,  ROI +17.9%.
+#     * Today saw 2 consecutive UP losses (21:02 YES @ 0.84, 21:06 YES @ 0.83).
+#       UP is the clear weak side — tighten it substantially without touching DOWN.
+#   Changes:
+#     * Direction-asymmetric thresholds behind new gate_params:
+#         - up_require_both_buckets: true        (UP must be agree_strong AND pegged_path1)
+#         - up_bucket_abs_dist_strong:   0.28    (UP only; was shared 0.22)
+#         - up_bucket_path1_extreme_high: 0.95   (UP only; was shared 0.92)
+#         - up_entry_cap_override:        0.75   (UP only; was shared 0.85)
+#     * DOWN keeps the proven v6.1.0 thresholds (0.22 / 0.92 / 0.08 / 0.85).
+#     * Preserves the Montreal hotfix `risk_off_override_enabled: false`
+#       (supersedes PR #310 which also carried this flag).
+#   Projected outcome: UP traffic cut ~60-80% but WR pushed from 62% → ~80%+;
+#     DOWN unchanged. Net: bleed on UP side removed, alpha preserved on DOWN.
+#
 # v6.1.0 — 2026-04-20 — fill-aware sizing + mid-range double-bucket gate.
 #   Rationale (Hub note #198, 25 trades today, 13W/5L/7 OPEN, +$22.83):
 #     * Fill 0.60-0.70 bucket = 100% WR (5/5) — pegged_path1 peak, size UP.
@@ -85,6 +103,16 @@ gate_params:
   bucket_lgb_opposite_block: 0.10     # pegged_path1: LGB opposite + |dist| > 0.10 -> block
   bucket_block_mid_conf: true         # block 0.5 < p < 0.7, dist < 0.20 bucket
 
+  # ── Direction-asymmetric thresholds (v6.1.1) ──
+  # UP traded at 62% WR vs DOWN 83% WR today. UP requires substantially stricter
+  # gates while DOWN keeps proven v6.1.0 settings (0.22 / 0.92 / 0.08 / 0.85).
+  # All four keys below are UP-only overrides — when direction == "UP" the hook
+  # prefers these; otherwise it falls back to the shared thresholds above.
+  up_require_both_buckets: true            # UP must satisfy agree_strong AND pegged_path1
+  up_bucket_abs_dist_strong: 0.28          # UP-only agree_strong (was shared 0.22)
+  up_bucket_path1_extreme_high: 0.95       # UP-only pegged upper bound (was shared 0.92)
+  up_entry_cap_override: 0.75              # UP-only entry cap (was shared 0.85)
+
   # ── v6.1.0 mid-range fill gate (Hub note #198) ──
   # Fills in [0.35, 0.60] are the break-even zone after 7.2% Polymarket
   # fees. Requires BOTH agree_strong AND pegged_path1 buckets to be
@@ -148,7 +176,9 @@ gate_params:
   # v6_sniper uses `_try_bucket_risk_off_override` instead, which is gated
   # on v6's OWN conviction bucket rather than sister-repo distance.
   # V4_RISK_OFF_OVERRIDE_ENABLED is CI-disabled (PR #243, 2026-04-17).
-  risk_off_override_enabled: true
+  # v6.1.1 (2026-04-20): flipped true→false to match Montreal hotfix applied
+  # 21:09 UTC after 0/1 WR observation at 20:36 (-$3.00). Supersedes PR #310.
+  risk_off_override_enabled: false
   risk_off_override_dist_min: 0.20
   risk_off_override_require_tiingo: true
 

@@ -111,18 +111,23 @@ def test_v6_sniper_registered_as_live(registry):
     assert "v6_sniper" in registry.strategy_names
     cfg = registry.configs["v6_sniper"]
     assert cfg.mode == "LIVE"
-    assert cfg.version == "6.1.0"
+    assert cfg.version == "6.1.1"
     assert cfg.timescale == "5m"
 
 
 # ── #1-#4 agree_strong bucket ──────────────────────────────────────────────
 def test_1_agree_strong_both_up_accepts(registry):
-    """Both models agree UP + dist=0.25 -> ACCEPT."""
+    """Both models agree UP + stringent UP thresholds -> ACCEPT.
+
+    v6.1.1: UP requires BOTH agree_strong (|dist| >= 0.28) AND pegged_path1
+    (path1 >= 0.95). Updated from the v6.1.0 surface (dist=0.25) to
+    clear the tightened UP gate: dist=0.46, path1=0.96.
+    """
     surface = _make_surface(
-        poly_direction="UP", poly_confidence=0.75,
-        poly_confidence_distance=0.25,
-        probability_lgb=0.72, probability_classifier=0.78,
-        delta_chainlink=+0.005, delta_tiingo=+0.004, delta_binance=+0.005,
+        poly_direction="UP", poly_confidence=0.96,
+        poly_confidence_distance=0.46,
+        probability_lgb=0.90, probability_classifier=0.96,
+        delta_chainlink=+0.01, delta_tiingo=+0.009, delta_binance=+0.01,
         v4_recommended_side="UP",
     )
     decision = _evaluate(registry, surface)
@@ -130,7 +135,10 @@ def test_1_agree_strong_both_up_accepts(registry):
         f"expected TRADE, got {decision.action} skip_reason={decision.skip_reason}"
     )
     assert decision.direction == "UP"
-    assert decision.metadata["conviction_bucket"] == "agree_strong"
+    # pegged_path1 is checked first and matches first (path1 >= 0.95), so this
+    # surface classifies as pegged_path1 rather than agree_strong. Both accept
+    # paths are covered by tests 2 (DOWN agree_strong) and 5/6 (pegged_path1).
+    assert decision.metadata["conviction_bucket"] == "pegged_path1"
 
 
 def test_2_agree_strong_both_down_accepts(registry):
@@ -328,17 +336,19 @@ def test_14_prefer_raw_records_raw_source(registry):
     — it arrives with engine-side PR #281. Until then, prefer_raw=false
     would fall back to raw anyway, so the test of mode A (raw) is the
     load-bearing case.
+
+    v6.1.1: switched the surface to DOWN so the stricter UP gate does
+    not gate the prefer_raw metadata check. The probability-source
+    recording logic is direction-agnostic.
     """
     surface = _make_surface(
-        poly_direction="UP", poly_confidence=0.75,
-        probability_lgb=0.72, probability_classifier=0.78,
-        delta_chainlink=+0.005, delta_tiingo=+0.004, delta_binance=+0.005,
-        v4_recommended_side="UP",
+        poly_direction="DOWN", poly_confidence=0.25,
+        probability_lgb=0.28, probability_classifier=0.22,
     )
     decision = _evaluate(registry, surface)
     assert decision.action == "TRADE"
     assert decision.metadata["read_probability_source"] == "raw"
-    assert decision.metadata["probability_raw"] == pytest.approx(0.75)
+    assert decision.metadata["probability_raw"] == pytest.approx(0.25)
     # calibrated field absent today → logged as None.
     assert decision.metadata["probability_calibrated"] is None
     # Bucket carries the winning decision.
@@ -393,10 +403,15 @@ def test_15b_chop_regime_still_rejected(registry):
 
 
 def test_16_pegged_high_boundary_just_inside(registry):
-    """v6.1.0: path1=0.93 + LGB=0.50 -> ACCEPT (just inside tightened 0.92 threshold)."""
+    """v6.1.1: UP peg threshold is 0.95, so path1=0.96 just inside ACCEPTs.
+
+    Also requires dist >= 0.28 AND pegged (up_require_both_buckets). With
+    path1=0.96 and LGB=0.90, both buckets are satisfied.
+    """
     surface = _make_surface(
-        poly_direction="UP", poly_confidence=0.93,
-        probability_lgb=0.50, probability_classifier=0.93,
+        poly_direction="UP", poly_confidence=0.96,
+        poly_confidence_distance=0.46,
+        probability_lgb=0.90, probability_classifier=0.96,
         delta_chainlink=+0.01, delta_tiingo=+0.009, delta_binance=+0.01,
         v4_recommended_side="UP",
     )
