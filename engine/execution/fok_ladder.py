@@ -194,10 +194,55 @@ class FOKLadder:
         self, result: dict, price: float, stake_usd: float,
         attempt: int, attempted_prices: list, order_type: str,
     ) -> FOKResult:
-        """Build FOKResult from a successful fill."""
+        """Build FOKResult from a successful fill.
+
+        fill_price computation (audit #260, 2026-04-20):
+
+        Prefer the CLOB response's `making_amount / taking_amount` because
+        those are the actual order-match terms reported by Polymarket
+        (USDC consumed / shares received). This handles:
+          - Partial fills where we spent less than our stake budget.
+          - Price improvement where the CLOB hit a better ask than our limit.
+
+        Fall back to `stake_usd / size_matched` ONLY when the CLOB response
+        doesn't carry making_amount (legacy SDK paths). The final fallback
+        is the submitted limit `price` — used when size_matched is zero or
+        making_amount math yields a non-sensical value.
+
+        This fix does NOT fully close the on-chain divergence — neg-risk
+        splitting at settlement can still move the effective per-share
+        price (see Hub note #202). That residual is resolved by the SOT
+        reconciler writing `polymarket_confirmed_fill_price`. A Phase-3
+        backfill to overwrite `fill_price` with confirmed values is
+        tracked separately on audit #260 and requires operator sign-off.
+        """
         size_matched = float(result.get("size_matched", 0) or 0)
         order_id = result.get("order_id")
-        fill_price = round(stake_usd / size_matched, 4) if size_matched > 0 else price
+
+        # Prefer CLOB making_amount / taking_amount when both are available
+        # and sensible. taking_amount is usually == size_matched — we use it
+        # directly rather than size_matched for symmetry with making_amount
+        # (they come from the same CLOB response field).
+        making_amount = float(result.get("making_amount", 0) or 0)
+        taking_amount = float(result.get("taking_amount", 0) or 0) or size_matched
+
+        fill_price: float
+        if making_amount > 0 and taking_amount > 0:
+            candidate = making_amount / taking_amount
+            # Sanity: binary-outcome tokens trade in (0, 1]. If the CLOB
+            # returns something outside that range (corrupt response, test
+            # stub, etc.), fall back to the legacy formula.
+            if 0.0 < candidate <= 1.0:
+                fill_price = round(candidate, 4)
+            else:
+                fill_price = (
+                    round(stake_usd / size_matched, 4) if size_matched > 0 else price
+                )
+        else:
+            fill_price = (
+                round(stake_usd / size_matched, 4) if size_matched > 0 else price
+            )
+
         requested = self._calc_size(price, stake_usd)
         is_partial = size_matched < (requested * 0.95)
 
