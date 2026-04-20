@@ -3607,6 +3607,10 @@ class TelegramAlerter:
         "SKIPPED_RISK_GATED": "🛑",
         "SKIPPED_COOLDOWN": "🧊",
         "SKIPPED_CONSENSUS": "⚖️",
+        "SKIPPED_DIRECTION": "↕️",
+        "SKIPPED_TIMING": "⏰",
+        "SKIPPED_HEALTH": "🩺",
+        "SKIPPED_REGIME": "🌡️",
         "FAILED_EXECUTION": "❌",
     }
     _TRADE_ATTEMPT_REASON: dict[str, str] = {
@@ -3616,6 +3620,10 @@ class TelegramAlerter:
         "SKIPPED_RISK_GATED": "risk gate",
         "SKIPPED_COOLDOWN": "cooldown",
         "SKIPPED_CONSENSUS": "consensus",
+        "SKIPPED_DIRECTION": "wrong direction",
+        "SKIPPED_TIMING": "outside window",
+        "SKIPPED_HEALTH": "signal unhealthy",
+        "SKIPPED_REGIME": "regime blocked",
         "FAILED_EXECUTION": "execution failed",
     }
 

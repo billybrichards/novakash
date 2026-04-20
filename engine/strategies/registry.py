@@ -632,14 +632,21 @@ class StrategyRegistry:
         ("cooldown", "SKIPPED_COOLDOWN"),
         ("consensus", "SKIPPED_CONSENSUS"),
         ("sources_agree", "SKIPPED_CONSENSUS"),
+        ("source_disagreement", "SKIPPED_CONSENSUS"),
         ("risk", "SKIPPED_RISK_GATED"),
         ("kill_switch", "SKIPPED_RISK_GATED"),
         ("daily_loss", "SKIPPED_RISK_GATED"),
         ("exposure", "SKIPPED_RISK_GATED"),
+        ("trade_not_advised", "SKIPPED_RISK_GATED"),
         ("entry_price", "SKIPPED_PRICE_BAND"),
         ("price_floor", "SKIPPED_PRICE_BAND"),
         ("dynamic_cap", "SKIPPED_PRICE_BAND"),
         ("spread", "SKIPPED_PRICE_BAND"),
+        ("direction", "SKIPPED_DIRECTION"),
+        ("timing", "SKIPPED_TIMING"),
+        ("health_unsafe", "SKIPPED_HEALTH"),
+        ("health_degraded", "SKIPPED_HEALTH"),
+        ("regime", "SKIPPED_REGIME"),
     )
 
     @classmethod
