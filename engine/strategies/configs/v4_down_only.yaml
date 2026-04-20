@@ -29,7 +29,8 @@ version: "2.3.0"
 #   Gated on PR #306 (SOT reconciliation fix, audit #260).
 #
 # v2.2.0 — entry_cap_override 0.90, LIVE mode launch.
-mode: LIVE
+# Set to GHOST 2026-04-20 pending SOT fix + v2.3.0 validation. See Hub note #198 + audit #260.
+mode: GHOST
 asset: BTC
 timescale: 5m
 

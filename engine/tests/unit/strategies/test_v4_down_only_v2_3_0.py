@@ -204,3 +204,13 @@ def test_version_bumped():
     """YAML version must be 2.3.0."""
     data = yaml.safe_load(V4_YAML.read_text())
     assert data["version"] == "2.3.0", f"expected 2.3.0, got {data['version']}"
+
+
+# ── Test 9 ──────────────────────────────────────────────────────────────────
+def test_mode_is_ghost():
+    """YAML mode must be GHOST — pins the manual Montreal flip so that
+    merging this PR does not regress prod back to LIVE. See Hub note #198
+    + audit #260. Flip back to LIVE only after SOT fix + v2.3.0 validation.
+    """
+    data = yaml.safe_load(V4_YAML.read_text())
+    assert data["mode"] == "GHOST", f"expected GHOST, got {data['mode']}"
