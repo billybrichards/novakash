@@ -36,6 +36,7 @@ from api.margin import router as margin_router
 from api.notes import router as notes_router
 from api.audit_tasks import router as audit_tasks_router
 from api.positions import router as positions_router
+from api.wallet import router as wallet_router
 from api.schema import router as schema_router
 
 # CFG-02/03: DB-backed config schema + read-only API
@@ -84,6 +85,39 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await session.execute(
                 text(
                     "ALTER TABLE trades ADD COLUMN IF NOT EXISTS vpin_at_entry NUMERIC(10,6)"
+                )
+            )
+            # Wallet v2 (note #189 §7.3) — transport + initiator columns.
+            # Mirrors hub/db/migrations/versions/20260420_01_trades_transport_initiator.sql
+            # so Railway boots apply without a separate alembic pass. Single
+            # write path matches `mode` / `vpin_at_entry` above. Idempotent.
+            await session.execute(
+                text(
+                    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS transport VARCHAR(32)"
+                )
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE trades ADD COLUMN IF NOT EXISTS initiator VARCHAR(32)"
+                )
+            )
+            await session.execute(
+                text(
+                    "UPDATE trades SET transport='relayer' "
+                    "WHERE transport IS NULL AND outcome='WIN' "
+                    "AND created_at < TIMESTAMP '2026-04-16'"
+                )
+            )
+            await session.execute(
+                text(
+                    "UPDATE trades SET transport='unknown' "
+                    "WHERE transport IS NULL AND outcome='WIN'"
+                )
+            )
+            await session.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_trades_transport_initiator "
+                    "ON trades (transport, initiator) WHERE outcome='WIN'"
                 )
             )
             await session.execute(
@@ -529,6 +563,8 @@ app.include_router(notes_router, prefix="/api", tags=["notes"])
 app.include_router(audit_tasks_router, prefix="/api", tags=["audit-tasks"])
 # TG-REDEMPTION-VIS Task 8: positions snapshot for Telegram top bar
 app.include_router(positions_router, prefix="/api", tags=["positions"])
+# Wallet v2 (note #189) — /api/wallet/{snapshot,pending,history}
+app.include_router(wallet_router, prefix="/api", tags=["wallet"])
 # SCHEMA-01: /schema page — DB table inventory (catalog + live runtime stats)
 app.include_router(schema_router, prefix="/api", tags=["schema"])
 # CFG-02/03: DB-backed config (read-only in this PR; writes ship in CFG-04)
