@@ -100,7 +100,7 @@ class TestManagePositionsIntegration:
 
         # Verify position was closed with stop loss
         assert len(result.closed_positions) == 1
-        assert result.closed_positions[0].exit_reason.value == "stop_loss"
+        assert result.closed_positions[0].exit_reason.value == "STOP_LOSS"
         assert result.closed_positions[0].state.value == "CLOSED"
 
         # Verify close order was placed
@@ -167,7 +167,7 @@ class TestManagePositionsIntegration:
 
         # Verify position was closed with take profit
         assert len(result.closed_positions) == 1
-        assert result.closed_positions[0].exit_reason.value == "take_profit"
+        assert result.closed_positions[0].exit_reason.value == "TAKE_PROFIT"
 
         # Verify PnL is positive
         assert result.closed_positions[0].realised_pnl > 0
@@ -286,7 +286,7 @@ class TestManagePositionsIntegration:
         result = await uc.tick()
 
         assert len(result.closed_positions) == 1
-        assert result.closed_positions[0].exit_reason.value == "trailing_stop"
+        assert result.closed_positions[0].exit_reason.value == "TRAILING_STOP"
 
     @pytest.mark.asyncio
     async def test_expiry_continuation_v4(
@@ -430,7 +430,7 @@ class TestManagePositionsIntegration:
 
         # Position should be closed due to event guard
         assert len(result.closed_positions) == 1
-        assert result.closed_positions[0].exit_reason.value == "event_guard"
+        assert result.closed_positions[0].exit_reason.value == "EVENT_GUARD"
 
 
 class TestManagePositionsMultiplePositions:
@@ -503,7 +503,7 @@ class TestManagePositionsMultiplePositions:
         # Only pos1 should be closed (stop loss)
         assert len(result.closed_positions) == 1
         assert result.closed_positions[0].id == pos1.id
-        assert result.closed_positions[0].exit_reason.value == "stop_loss"
+        assert result.closed_positions[0].exit_reason.value == "STOP_LOSS"
 
 
 if __name__ == "__main__":
