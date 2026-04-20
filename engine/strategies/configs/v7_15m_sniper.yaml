@@ -1,0 +1,111 @@
+name: v7_15m_sniper
+version: "7.0.0"
+# v7.0.0 — 2026-04-20 — 15-minute Polymarket BTC sniper (GHOST).
+#
+# Fork of v6_sniper adapted for 15-minute windows. Key differences:
+#
+# 1. Timescale: 15m (not 5m).
+# 2. Entry window: T-400 to T-300 (seconds before close).
+#    Rationale: classifier evaluation simulation shows 83.9%
+#    high-conviction accuracy at T-400 for 15m windows. The
+#    T-400 to T-300 band is the sweet spot — early enough for
+#    the classifier to have consumed most of the window's price
+#    action, late enough that the market hasn't fully priced in
+#    the move. Outside this band accuracy degrades rapidly.
+# 3. Signal source: path1_only (classifier head directly).
+#    There is NO 15m LGB model yet, so ensemble blending does
+#    not apply. We read surface.probability_classifier directly
+#    instead of the LGB+Path1 blend (surface.poly_confidence).
+# 4. Conviction: |probability_classifier - 0.5| >= 0.30.
+#    Below 0.30 the classifier drops below 70% accuracy on
+#    15m windows. This is higher than v6's 0.20 threshold
+#    because 15m windows have more noise and the classifier
+#    has less edge at moderate conviction.
+# 5. Mode: GHOST — shadow only, logs decisions but does not
+#    execute. Will be promoted to LIVE after sufficient shadow
+#    data validates the thresholds.
+
+mode: GHOST
+asset: BTC
+timescale: 15m
+
+# All conviction/freshness/VPIN/regime logic lives in the hook
+# (evaluate_polymarket_15m_sniper). Follows the v6_sniper inline-hook
+# pattern — declarative gate entries are a future refactor.
+gates: []
+
+gate_params:
+  # ── Timing window (T-400 to T-300 before 15m window close) ──
+  # Classifier eval simulation: 83.9% accuracy at T-400 for
+  # high-conviction 15m predictions. T-300 is the late boundary
+  # to leave enough time for CLOB order placement + fill.
+  min_offset_sec: 300
+  max_offset_sec: 400
+
+  # ── Classifier conviction threshold ──
+  # For 15m, require |p_classifier - 0.5| >= 0.30 (= p >= 0.80
+  # or p <= 0.20). Below this the classifier is under 70% accuracy.
+  # v6 uses 0.20 for the ensemble — raised here because there's
+  # only one signal (no LGB confirmation).
+  bucket_abs_dist_strong: 0.30
+
+  # ── Pegged classifier thresholds ──
+  # Extreme confidence: classifier >= 0.90 or <= 0.10.
+  # Same as v6.0.1 relaxed thresholds.
+  bucket_path1_extreme_high: 0.90
+  bucket_path1_extreme_low: 0.10
+
+  # ── Path1 freshness ──
+  # Wider than v6's 90s because 15m windows are longer and the
+  # classifier polls every ~30s. 120s allows up to 4 poll cycles
+  # of reuse without triggering a false staleness skip.
+  path1_max_age_s: 120
+  path1_skip_on_null: true
+
+  # ── Signal source: classifier only (no LGB for 15m) ──
+  ensemble_signal_source: path1_only
+  ensemble_skip_on_fallback: true
+
+  # ── Defensive gates (inherited from v6_sniper) ──
+  vpin_min: 0.45
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  skip_on_oracle_disagree: false
+  health_gate: degraded
+  skip_stale_sources: true
+
+  # ── Time-of-day block (disabled — let shadow data reveal patterns) ──
+  blocked_utc_hours: []
+
+  # ── Regime gate (same as v6: calm_trend, volatile_trend, risk_off) ──
+  tradeable_v4_regimes: [calm_trend, volatile_trend, risk_off]
+
+  # ── Entry-price cap (slightly more conservative than v6's 0.85) ──
+  # 15m windows have wider spreads; cap at 0.80 to limit downside
+  # on less liquid markets.
+  entry_cap_override: 0.80
+
+  # ── risk_off override (simplified — no LGB bucket dependency) ──
+  # Use the v6.0.6 bucket-aware override but only for classifier_strong
+  # and pegged_classifier buckets (the v7 equivalents).
+  v7_risk_off_override_enabled: true
+  v7_risk_off_override_buckets: [classifier_strong, pegged_classifier]
+
+  # ── High-VPIN source bypass (same as v6) ──
+  high_vpin_bypass_enabled: true
+  high_vpin_bypass_threshold: 0.60
+  high_vpin_bypass_buckets: [classifier_strong, pegged_classifier]
+
+sizing:
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.025
+  max_collateral_pct: 0.08
+  schedule:
+    - { threshold: 0.55, modifier: 2.0, label: "high_conv_TBD" }
+    - { threshold: 0.35, modifier: 1.2, label: "mid_conv_TBD" }
+    - { threshold: 0.25, modifier: 1.0, label: "low_conv_TBD" }
+    - { threshold: 0.0,  modifier: 0.0, label: "skip_below_25" }
+
+hooks_file: v7_15m_sniper.py
+pre_gate_hook: evaluate_polymarket_15m_sniper
