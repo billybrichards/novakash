@@ -203,12 +203,18 @@ class TelegramRenderer(AlertRendererPort):
 
         cfg = extras.get("ensemble_config") or {}
         mode = cfg.get("mode") if isinstance(cfg, dict) else None
+        # Isotonic calibration (novakash-timesfm #107). Shown as a terse
+        # ``iso=v3`` suffix when the forecaster applied calibration; omitted
+        # entirely when None so pre-PR-107 forecaster builds render clean.
+        iso_version = extras.get("isotonic_version")
+        iso_suffix = f"  iso={iso_version}" if iso_version else ""
         return (
             f"🧬 ensemble: source={extras['signal_source']}"
             f"  used={_fmt(extras.get('probability_used'))}"
             f"  lgb={_fmt(extras.get('probability_lgb'))}"
             f"  path1={_fmt(extras.get('probability_classifier'))}"
             f"  mode={mode or 'n/a'}"
+            f"{iso_suffix}"
         )
 
     def _render_health(self, h: HealthBadge) -> str:

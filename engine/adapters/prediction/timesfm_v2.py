@@ -60,6 +60,53 @@ _DEFAULT_TIMEOUT = float(os.environ.get("TIMESFM_V2_TIMEOUT", "12.0"))
 _DEFAULT_RETRIES = int(os.environ.get("TIMESFM_V2_RETRIES", "1"))
 _DEFAULT_RETRY_BACKOFF = float(os.environ.get("TIMESFM_V2_RETRY_BACKOFF", "0.25"))
 
+
+def _use_calibrated_enabled() -> bool:
+    """Runtime toggle for consuming forecaster-side isotonic calibration.
+
+    Defaults to TRUE so that once novakash-timesfm PR #107 ships, the
+    engine opts in automatically. Flip to `false` to force the engine
+    back onto the raw `probability_up` field even if the forecaster
+    returned a calibrated value. This toggle is independent of the
+    forecaster-side `ISOTONIC_CALIBRATION_ENABLED` switch: disabling
+    either one is sufficient to stop consuming calibrated probabilities.
+
+    Read per-call (not cached) so Billy can flip it without a restart
+    on Montreal, same pattern as the other feature flags in this file.
+    """
+    raw = os.environ.get("V2_PROB_USE_CALIBRATED", "true")
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _apply_calibrated_choice(payload: Optional[dict]) -> Optional[dict]:
+    """Augment the scorer payload with a top-level `probability_up_effective`.
+
+    Decision rule:
+      - If env flag `V2_PROB_USE_CALIBRATED=true` (default) AND the
+        payload carries a non-null `probability_up_calibrated`, the
+        calibrated value wins.
+      - Otherwise the raw `probability_up` wins.
+      - `probability_up`, `probability_up_calibrated`, and
+        `isotonic_version` are all preserved on the payload unchanged
+        so downstream callers can log all three.
+
+    Additive: callers that still read `payload["probability_up"]`
+    observe zero behavior change.
+    """
+    if not isinstance(payload, dict):
+        return payload
+
+    p_raw = payload.get("probability_up")
+    p_cal = payload.get("probability_up_calibrated")
+    use_cal = _use_calibrated_enabled()
+
+    if use_cal and p_cal is not None:
+        payload["probability_up_effective"] = p_cal
+    else:
+        payload["probability_up_effective"] = p_raw
+
+    return payload
+
 # HTTP statuses that mean "the scorer doesn't support POST push-mode
 # yet" — these are the only codes that trigger the silent GET fallback.
 # Everything else (5xx, timeouts, auth errors) propagates so we don't
@@ -137,7 +184,7 @@ class TimesFMV2Client:
                         body = await resp.text()
                         logger.warning("v2.probability.error", status=resp.status, body=body[:100])
                         raise RuntimeError(f"v2 API returned {resp.status}: {body[:100]}")
-                    return await resp.json()
+                    return _apply_calibrated_choice(await resp.json())
             except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
                 is_timeout = isinstance(exc, asyncio.TimeoutError)
                 if attempt < self._retries:
@@ -235,7 +282,7 @@ class TimesFMV2Client:
                                 url=url,
                                 feature_coverage=round(features.coverage(), 3),
                             )
-                        return payload
+                        return _apply_calibrated_choice(payload)
 
                     if status in _POST_UNSUPPORTED_STATUSES:
                         # Drain the body (small, no cost) so the connection
