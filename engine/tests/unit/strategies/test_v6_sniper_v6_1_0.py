@@ -229,6 +229,12 @@ def test_sizing_rung_fill_band_falls_through_when_outside(registry):
 
 # ── Test 6 ──────────────────────────────────────────────────────────────────
 def test_version_bumped():
-    """YAML version must be 6.1.0."""
+    """YAML version must be at least 6.1.0 (forward-compatible).
+
+    This test pins the v6.1.0 mid-range fill gate changes. v6.1.1 and later
+    versions layer on top without removing any of the assertions in this
+    file, so we accept any 6.1.x version here.
+    """
     data = yaml.safe_load(V6_YAML.read_text())
-    assert data["version"] == "6.1.0", f"expected 6.1.0, got {data['version']}"
+    version = data["version"]
+    assert version.startswith("6.1."), f"expected 6.1.x, got {version}"

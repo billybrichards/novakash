@@ -50,7 +50,7 @@ from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
 _STRATEGY_ID = "v6_sniper"
-_VERSION = "6.1.0"
+_VERSION = "6.1.1"
 
 
 # ── Tunable knobs (YAML gate_params → env fallback → default) ──────────────
@@ -97,6 +97,45 @@ def _bucket_block_mid_conf() -> bool:
     return _gp.get_bool(
         "bucket_block_mid_conf", "V6_SNIPER_BLOCK_MID_CONF", True
     )
+
+
+# ── v6.1.1 direction-asymmetric UP-only overrides ────────────────────────
+# Rationale: today's live data shows v6 UP at 62% WR vs DOWN 83% WR. Tighten
+# UP gates substantially while DOWN keeps v6.1.0 proven thresholds.
+def _up_require_both_buckets() -> bool:
+    return _gp.get_bool(
+        "up_require_both_buckets", "V6_SNIPER_UP_REQUIRE_BOTH", False
+    )
+
+
+def _up_bucket_abs_dist_strong() -> float:
+    """UP-only agree_strong distance threshold. Falls back to the shared
+    ``bucket_abs_dist_strong`` when unset (0 sentinel) so disabling the
+    split behaves like v6.1.0 (symmetric)."""
+    v = _gp.get_float(
+        "up_bucket_abs_dist_strong", "V6_SNIPER_UP_BUCKET_ABS_DIST_STRONG", 0.0
+    )
+    return v if v > 0 else _bucket_abs_dist_strong()
+
+
+def _up_bucket_path1_extreme_high() -> float:
+    """UP-only pegged_path1 upper-bound threshold. Falls back to shared
+    ``bucket_path1_extreme_high`` when unset (0 sentinel)."""
+    v = _gp.get_float(
+        "up_bucket_path1_extreme_high",
+        "V6_SNIPER_UP_BUCKET_PATH1_EXTREME_HIGH",
+        0.0,
+    )
+    return v if v > 0 else _bucket_path1_extreme_high()
+
+
+def _up_entry_cap_override() -> Optional[float]:
+    """UP-only entry-price cap. Returns None (fall back to shared cap)
+    when unset or set to 0."""
+    v = _gp.get_float(
+        "up_entry_cap_override", "V6_SNIPER_UP_ENTRY_CAP_OVERRIDE", 0.0
+    )
+    return v if v > 0 else None
 
 
 # ── v6.1.0 mid-range fill gate (Hub note #198) ────────────────────────────
@@ -595,15 +634,25 @@ def _classify_bucket(
         pegged_path1        path1 extreme + LGB not strongly opposing
         mid_conf            0.5 < p < 0.7 (dist < 0.20) — bleed bucket
         no_eval             classifier unavailable / insufficient inputs
+
+    v6.1.1: UP direction uses stricter thresholds (up_bucket_abs_dist_strong,
+    up_bucket_path1_extreme_high). DOWN keeps v6.1.0 symmetric thresholds.
+    The low-side path1 threshold (extreme_low) is DOWN-only by construction,
+    so it is never affected by the UP overrides.
     """
     if p_path1 is None:
         return "no_eval"
 
     dist = abs(probability_up - 0.5)
-    high = _bucket_path1_extreme_high()
-    low = _bucket_path1_extreme_low()
+    # v6.1.1: direction-asymmetric thresholds — UP uses stricter bounds.
+    if direction == "UP":
+        high = _up_bucket_path1_extreme_high()
+        strong_thr = _up_bucket_abs_dist_strong()
+    else:
+        high = _bucket_path1_extreme_high()
+        strong_thr = _bucket_abs_dist_strong()
+    low = _bucket_path1_extreme_low()  # DOWN-only branch, UP never hits it
     opp_block = _bucket_lgb_opposite_block()
-    strong_thr = _bucket_abs_dist_strong()
 
     # pegged_path1 — checked FIRST because it is the narrower accept window.
     if p_path1 >= high or p_path1 <= low:
@@ -957,8 +1006,13 @@ def evaluate_polymarket_sniper(
     mid_max = _mid_range_fill_max()
     fill_price = _resolve_fill_price(surface, direction)
     _dist = abs(probability_up - 0.5)
-    _strong_thr = _bucket_abs_dist_strong()
-    _high_thr = _bucket_path1_extreme_high()
+    # v6.1.1: direction-asymmetric thresholds — UP uses stricter bounds.
+    if direction == "UP":
+        _strong_thr = _up_bucket_abs_dist_strong()
+        _high_thr = _up_bucket_path1_extreme_high()
+    else:
+        _strong_thr = _bucket_abs_dist_strong()
+        _high_thr = _bucket_path1_extreme_high()
     _low_thr = _bucket_path1_extreme_low()
     # agree_strong condition: both models same direction + |dist| >= thr
     is_agree_strong = (
@@ -973,6 +1027,44 @@ def evaluate_polymarket_sniper(
         p_path1 is not None
         and (p_path1 >= _high_thr or p_path1 <= _low_thr)
     )
+
+    # ── v6.1.1 direction-asymmetric UP-only double-bucket requirement ───
+    # UP trades at 62% WR vs DOWN 83% WR. When this flag is on, any UP
+    # trade must satisfy BOTH agree_strong AND pegged_path1 regardless of
+    # fill band. DOWN retains v6.1.0 semantics (either bucket accepts).
+    if direction == "UP" and _up_require_both_buckets():
+        if not (is_agree_strong and is_pegged_path1):
+            gates.append(
+                _gate(
+                    "direction_asym_up",
+                    False,
+                    (
+                        f"UP requires BOTH agree_strong+pegged_path1 "
+                        f"(up_dist_strong={_strong_thr}, "
+                        f"up_peg_high={_high_thr}); "
+                        f"got agree_strong={is_agree_strong} "
+                        f"pegged={is_pegged_path1}"
+                    ),
+                )
+            )
+            bucket_extras["fill_price"] = fill_price
+            bucket_extras["is_agree_strong"] = is_agree_strong
+            bucket_extras["is_pegged_path1"] = is_pegged_path1
+            return _skip(
+                "direction_asym_up_insufficient_conviction",
+                gates,
+                extras=bucket_extras,
+            )
+        gates.append(
+            _gate(
+                "direction_asym_up",
+                True,
+                (
+                    f"UP double-bucket satisfied "
+                    f"(up_dist_strong={_strong_thr}, up_peg_high={_high_thr})"
+                ),
+            )
+        )
     if (
         _mid_range_require_both_buckets()
         and fill_price is not None
@@ -1097,7 +1189,9 @@ def evaluate_polymarket_sniper(
 
     # ── TRADE ────────────────────────────────────────────────────────────
     # v6.0.1: entry_cap_override (default 0.85) beats surface default.
-    _cap_override = _entry_cap_override()
+    # v6.1.1: UP uses up_entry_cap_override (0.75) when set; DOWN keeps 0.85.
+    _up_cap = _up_entry_cap_override() if direction == "UP" else None
+    _cap_override = _up_cap if _up_cap is not None else _entry_cap_override()
     _entry_cap = _cap_override if _cap_override is not None else surface.poly_max_entry_price
     return StrategyDecision(
         action="TRADE",
