@@ -74,11 +74,11 @@ class StrategyRegistry:
                 self._modes[config["name"]] = mode
 
                 logger.info(
-                    "strategy_registry.loaded",
-                    name=config["name"],
-                    version=config.get("version", "?"),
-                    mode=mode,
-                    timescale=config.get("timescale", "?"),
+                    "strategy_registry.loaded: name=%s version=%s mode=%s timescale=%s",
+                    config["name"],
+                    config.get("version", "?"),
+                    mode,
+                    config.get("timescale", "?"),
                 )
             except Exception as exc:
                 logger.error(
@@ -135,7 +135,7 @@ class StrategyRegistry:
         }
 
         if name not in strategy_map:
-            logger.warning("strategy_registry.unknown_strategy", name=name)
+            logger.warning("strategy_registry.unknown_strategy: name=%s", name)
             return None
 
         module_name, strategy_cls, config_cls = strategy_map[name]
@@ -165,9 +165,9 @@ class StrategyRegistry:
 
         except Exception as e:
             logger.error(
-                "strategy_registry.build_error",
-                name=name,
-                error=str(e)[:200],
+                "strategy_registry.build_error: name=%s error=%s",
+                name,
+                str(e)[:200],
             )
             return None
 
@@ -204,16 +204,16 @@ class StrategyRegistry:
                     decision = strategy.decide(v4)
                     results[name] = decision
                     logger.debug(
-                        "strategy_registry.evaluated",
-                        name=name,
-                        direction=decision.direction,
-                        reason=decision.reason,
+                        "strategy_registry.evaluated: name=%s direction=%s reason=%s",
+                        name,
+                        decision.direction,
+                        decision.reason,
                     )
                 except Exception as e:
                     logger.error(
-                        "strategy_registry.evaluate_error",
-                        name=name,
-                        error=str(e)[:200],
+                        "strategy_registry.evaluate_error: name=%s error=%s",
+                        name,
+                        str(e)[:200],
                     )
         return results
 

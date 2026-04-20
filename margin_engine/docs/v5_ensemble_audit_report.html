@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Margin Engine v5_ensemble Upgrade Audit</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922; --purple: #bc8cff;
+    --orange: #f0883e;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:'Inter','SF Pro',system-ui,sans-serif; line-height:1.6; padding:2rem; max-width:1200px; margin:0 auto; }
+  h1 { font-size:2rem; margin-bottom:.5rem; background:linear-gradient(135deg,var(--accent),var(--purple)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+  h2 { font-size:1.4rem; color:var(--accent); margin:2rem 0 1rem; padding-bottom:.5rem; border-bottom:1px solid var(--border); }
+  h3 { font-size:1.1rem; color:var(--purple); margin:1.5rem 0 .75rem; }
+  .subtitle { color:var(--muted); margin-bottom:2rem; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1rem; margin:1rem 0; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:1.25rem; }
+  .card-title { font-size:.85rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:.5rem; }
+  .card-value { font-size:2rem; font-weight:700; }
+  .card-value.bad { color:var(--red); }
+  .card-value.good { color:var(--green); }
+  .card-value.warn { color:var(--yellow); }
+  .card-value.info { color:var(--accent); }
+  .card-detail { font-size:.85rem; color:var(--muted); margin-top:.25rem; }
+  table { width:100%; border-collapse:collapse; margin:1rem 0; background:var(--surface); border-radius:8px; overflow:hidden; }
+  th,td { padding:.65rem 1rem; text-align:left; border-bottom:1px solid var(--border); font-size:.9rem; }
+  th { background:#1c2128; color:var(--muted); font-weight:600; text-transform:uppercase; font-size:.75rem; letter-spacing:.05em; }
+  tr:last-child td { border-bottom:none; }
+  .tag { display:inline-block; padding:.15rem .5rem; border-radius:4px; font-size:.75rem; font-weight:600; }
+  .tag-red { background:rgba(248,81,73,.15); color:var(--red); }
+  .tag-green { background:rgba(63,185,80,.15); color:var(--green); }
+  .tag-yellow { background:rgba(210,153,34,.15); color:var(--yellow); }
+  .tag-blue { background:rgba(88,166,255,.15); color:var(--accent); }
+  .tag-purple { background:rgba(188,140,255,.15); color:var(--purple); }
+  .timeline { border-left:2px solid var(--border); padding-left:1.5rem; margin:1rem 0; }
+  .timeline-item { position:relative; margin-bottom:1.25rem; }
+  .timeline-item::before { content:''; position:absolute; left:-1.75rem; top:.5rem; width:10px; height:10px; border-radius:50%; border:2px solid var(--accent); background:var(--bg); }
+  .timeline-item.milestone::before { background:var(--green); border-color:var(--green); }
+  .timeline-item.bug::before { background:var(--red); border-color:var(--red); }
+  .timeline-item.deploy::before { background:var(--purple); border-color:var(--purple); }
+  .timeline-time { font-size:.75rem; color:var(--muted); }
+  .timeline-title { font-weight:600; }
+  .timeline-detail { font-size:.85rem; color:var(--muted); }
+  .phase { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:1.25rem; margin:1rem 0; }
+  .phase-header { display:flex; align-items:center; gap:.75rem; margin-bottom:.75rem; }
+  .phase-num { background:var(--accent); color:var(--bg); width:28px; height:28px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:.85rem; }
+  .phase-title { font-weight:700; font-size:1.05rem; }
+  .phase-scope { color:var(--muted); font-size:.85rem; }
+  .file-list { list-style:none; margin:.5rem 0; }
+  .file-list li { padding:.25rem 0; font-size:.85rem; font-family:'JetBrains Mono','Fira Code',monospace; }
+  .file-list li::before { content:''; display:inline-block; width:6px; height:6px; background:var(--accent); border-radius:50%; margin-right:.5rem; }
+  .risk-row { display:flex; gap:1rem; align-items:flex-start; padding:.75rem 0; border-bottom:1px solid var(--border); }
+  .risk-row:last-child { border-bottom:none; }
+  .risk-icon { font-size:1.25rem; flex-shrink:0; }
+  .risk-text { flex:1; }
+  .risk-title { font-weight:600; font-size:.9rem; }
+  .risk-detail { font-size:.85rem; color:var(--muted); }
+  .arch-diagram { background:#1c2128; border:1px solid var(--border); border-radius:8px; padding:1.5rem; font-family:'JetBrains Mono','Fira Code',monospace; font-size:.8rem; line-height:1.5; overflow-x:auto; white-space:pre; color:var(--muted); }
+  .arch-diagram .hl { color:var(--accent); }
+  .arch-diagram .new { color:var(--green); font-weight:700; }
+  .checklist { list-style:none; margin:1rem 0; }
+  .checklist li { padding:.35rem 0; font-size:.9rem; display:flex; align-items:center; gap:.5rem; }
+  .checklist li::before { content:''; width:16px; height:16px; border:2px solid var(--border); border-radius:4px; flex-shrink:0; }
+  .section-intro { color:var(--muted); font-size:.95rem; margin-bottom:1rem; }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  .perf-chart { display:flex; gap:2px; align-items:flex-end; height:120px; margin:1rem 0; padding:.5rem; background:var(--surface); border-radius:8px; }
+  .perf-bar { flex:1; border-radius:3px 3px 0 0; min-width:40px; position:relative; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; }
+  .perf-bar-inner { width:100%; border-radius:3px 3px 0 0; }
+  .perf-bar-label { font-size:.6rem; color:var(--muted); margin-top:4px; text-align:center; writing-mode:horizontal-tb; }
+  .perf-bar-value { font-size:.65rem; color:var(--text); margin-bottom:2px; }
+  .divider { border:none; border-top:1px solid var(--border); margin:2rem 0; }
+</style>
+</head>
+<body>
+
+<h1>Margin Engine v5_ensemble Upgrade</h1>
+<p class="subtitle">Audit Report &amp; Implementation Plan &mdash; 2026-04-18 &mdash; Generated by 4-agent swarm</p>
+
+<!-- STATUS CARDS -->
+<h2>Current Margin Engine Status</h2>
+<div class="grid">
+  <div class="card">
+    <div class="card-title">Win Rate (All-Time Paper)</div>
+    <div class="card-value bad">4.4%</div>
+    <div class="card-detail">15 wins / 324 losses / 341 total trades</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Cumulative P&amp;L</div>
+    <div class="card-value bad">-$65.22</div>
+    <div class="card-detail">Avg -$0.19 per trade</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Dominant Exit Reason</div>
+    <div class="card-value warn">CASCADE_EXHAUSTED</div>
+    <div class="card-detail">84% of all exits (107/127) &mdash; BUG</div>
+  </div>
+  <div class="card">
+    <div class="card-title">v5_ensemble Edge (OOS)</div>
+    <div class="card-value good">+6.12pp</div>
+    <div class="card-detail">50/50 ensemble WR@gate: 83.4% vs 77.3% prod</div>
+  </div>
+</div>
+
+<!-- OVERNIGHT TIMELINE -->
+<h2>Overnight Timeline (2026-04-18)</h2>
+<p class="section-intro">Hub notes #151-#171 chronicle a dense overnight session: Path 1 validation, bug discovery, ensemble deployment, and strategy refinement.</p>
+
+<div class="timeline">
+  <div class="timeline-item milestone">
+    <div class="timeline-time">05:37 UTC &mdash; Note #151</div>
+    <div class="timeline-title">Path 1 Initial Result: PROMOTE</div>
+    <div class="timeline-detail">369 BTC OOS windows. Path 1 solo: 89.6% WR@gate (+8.83pp). 50/50 ensemble: 90.7%.</div>
+  </div>
+  <div class="timeline-item milestone">
+    <div class="timeline-time">05:57 UTC &mdash; Note #152</div>
+    <div class="timeline-title">OOS Validation: PROMOTE_BORDERLINE</div>
+    <div class="timeline-detail">626 disjoint OOS windows. Edge holds at +8.21pp. Absolute WR dropped 5.4pp (shared with prod).</div>
+  </div>
+  <div class="timeline-item bug">
+    <div class="timeline-time">06:02 UTC &mdash; Note #153</div>
+    <div class="timeline-title">Oracle-Label Bug Discovered</div>
+    <div class="timeline-detail">actual_direction labeled from Binance, not Chainlink. 42.9% disagreement. 12,341 rows backfilled.</div>
+  </div>
+  <div class="timeline-item">
+    <div class="timeline-time">06:17 UTC &mdash; Note #154</div>
+    <div class="timeline-title">Execution Gap Analysis</div>
+    <div class="timeline-detail">Shadow 80.5% WR vs live 56.7%. Fill price absorbs edge above $0.65. Only T-240..T-180 bucket profitable.</div>
+  </div>
+  <div class="timeline-item milestone">
+    <div class="timeline-time">06:52 UTC &mdash; Note #155</div>
+    <div class="timeline-title">t-60 Fair Fight: PATH1_EQUALS_PROD solo, Ensemble +6.12pp</div>
+    <div class="timeline-detail">Solo edge was 80% info advantage. But ensemble still +6.12pp OOS. Abstain gate: 86.0% on 300 trades.</div>
+  </div>
+  <div class="timeline-item bug">
+    <div class="timeline-time">09:44 UTC &mdash; Note #157</div>
+    <div class="timeline-title">Two Classifier Shadow Bugs</div>
+    <div class="timeline-detail">MacroV2Classifier dead code (always NEUTRAL). HIGH_VOL regime encoder NaN leak.</div>
+  </div>
+  <div class="timeline-item milestone">
+    <div class="timeline-time">10:00 UTC &mdash; Note #158</div>
+    <div class="timeline-title">6-Delta Tournament: PROMOTE_ACROSS_TIMELINE</div>
+    <div class="timeline-detail">Ensemble beats prod at ALL 6 deltas by +3 to +7.54pp. Best: +7.54pp at delta=120.</div>
+  </div>
+  <div class="timeline-item deploy">
+    <div class="timeline-time">11:00 UTC &mdash; Note #159</div>
+    <div class="timeline-title">Handoff Spec for Engine Integration</div>
+    <div class="timeline-detail">Detailed implementation spec posted. Fork of v4_fusion with 2 additions: signal-source + 2 new gates.</div>
+  </div>
+  <div class="timeline-item">
+    <div class="timeline-time">11:06 UTC &mdash; Note #160-161</div>
+    <div class="timeline-title">Head Selection: Unified for Shadow, Per-Delta for Full</div>
+    <div class="timeline-detail">Unified head: +4.28pp avg (generalizes). Per-delta: +6.06pp (specialist). Decision: unified first.</div>
+  </div>
+  <div class="timeline-item deploy">
+    <div class="timeline-time">11:43 UTC &mdash; Note #165-166</div>
+    <div class="timeline-title">v5_ensemble Deployed GHOST on Montreal</div>
+    <div class="timeline-detail">5 deploy bugs fixed (deps, schema, state_dict keys, padding, scorer keys). GHOST mode evaluating every 2s.</div>
+  </div>
+  <div class="timeline-item deploy">
+    <div class="timeline-time">11:58 UTC &mdash; Note #167</div>
+    <div class="timeline-title">v5_ensemble Flipped to LIVE (Real Money)</div>
+    <div class="timeline-detail">Version 5.1.0. 50/50 weights. Disagreement gate OFF. Fallback sanity ON. TG ensemble line active.</div>
+  </div>
+  <div class="timeline-item deploy">
+    <div class="timeline-time">12:19 UTC &mdash; Note #168</div>
+    <div class="timeline-title">Head Swapped: t60 Specialist &rarr; Unified</div>
+    <div class="timeline-detail">t60 was out-of-distribution at non-60s deltas. Unified is ~1.78pp weaker at trained deltas but stable everywhere.</div>
+  </div>
+  <div class="timeline-item">
+    <div class="timeline-time">12:33 UTC &mdash; Note #169</div>
+    <div class="timeline-title">Retrain Cadence Formalized</div>
+    <div class="timeline-detail">Week 1: measure only. Then weekly head warm-start + monthly LoRA. ~$75-95/year budget.</div>
+  </div>
+  <div class="timeline-item milestone">
+    <div class="timeline-time">12:53 UTC &mdash; Note #170</div>
+    <div class="timeline-title">v4_early_high Profit Strategy Proposed</div>
+    <div class="timeline-detail">Only T-240..T-180 + HIGH conviction bucket was net-positive. 87% WR, +$45.19 on 15 trades.</div>
+  </div>
+</div>
+
+<!-- TIMESFM CHANGES -->
+<h2>TimesFM Repo: What Changed (139 commits)</h2>
+
+<div class="arch-diagram"><span class="hl">TimesFM Service Architecture (5-Layer Stack)</span>
+
+<span class="hl">v1</span> TimesFM 2.5 200M  &rarr;  quantile forecasts (p10..p90)
+ |
+<span class="hl">v2</span> LightGBM v5       &rarr;  P(UP) on 70+ features (eval_offset continuous)
+ |                         <span class="new">+ Path 1 Classifier MLP (600&rarr;256&rarr;64&rarr;1, ~170K params)</span>
+ |                         <span class="new">+ 50/50 blend &rarr; probability_up (ensemble)</span>
+<span class="hl">v3</span> Composite Scorer  &rarr;  7-signal fusion across 9 timescales
+ |
+<span class="hl">v4</span> Snapshot Assembly &rarr;  /v4/snapshot JSON (per-timescale blocks)
+ |                         <span class="new">+ probability_lgb</span>
+ |                         <span class="new">+ probability_classifier</span>
+ |                         <span class="new">+ ensemble_config { mode, weights, disagreement }</span>
+<span class="hl">v5</span> /predict envelope &rarr;  best_probability picker (v2&rarr;v3&rarr;v1 fallback)
+</div>
+
+<h3>Key New Files</h3>
+<table>
+  <tr><th>File</th><th>Purpose</th></tr>
+  <tr><td><code>app/v5_feature_loader.py</code></td><td>Push-mode feature reader from signal_evaluations (asyncpg)</td></tr>
+  <tr><td><code>training/train_lgb_v5.py</code></td><td>Primary v5 trainer (70+ features, eval_offset continuous)</td></tr>
+  <tr><td><code>training/train_lgb_v5_ticks.py</code></td><td>Alternate v5 trainer from ticks_v2_probability JSONB</td></tr>
+  <tr><td><code>training/feature_smoothing.py</code></td><td>EWMA/SG/rolling-std of top predictors (opt-in)</td></tr>
+  <tr><td><code>training/calibration.py</code></td><td>Temperature + isotonic + Platt calibration</td></tr>
+  <tr><td><code>training/data_quality/</code></td><td>Preflight checks, nightly backfill, NaN scanners</td></tr>
+</table>
+
+<!-- MARGIN ENGINE CURRENT -->
+<h2>Margin Engine: Why It's Losing</h2>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-title">Active Signal Path</div>
+    <div class="card-value warn">v2 Only</div>
+    <div class="card-detail">Polls /v2/probability/15m every 30s. v4 path disabled.</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Strategy Leveraged</div>
+    <div class="card-value info">v2-probability</div>
+    <div class="card-detail">10.3% WR. 8 other strategies exist but are all disabled.</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Critical Bug</div>
+    <div class="card-value bad">CASCADE EXIT</div>
+    <div class="card-detail">Fires even with v4 disabled. 84% of exits are spurious.</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Last Trade</div>
+    <div class="card-value warn">Apr 14</div>
+    <div class="card-detail">No trades in 4 days. TimesFM 503s blocking signal.</div>
+  </div>
+</div>
+
+<h3>Daily P&amp;L (Last 6 Days)</h3>
+<div class="perf-chart">
+  <div class="perf-bar"><div class="perf-bar-value" style="color:var(--red)">-$8.97</div><div class="perf-bar-inner" style="height:22%;background:var(--red);opacity:.7"></div><div class="perf-bar-label">Apr 9</div></div>
+  <div class="perf-bar"><div class="perf-bar-value" style="color:var(--red)">-$41.25</div><div class="perf-bar-inner" style="height:100%;background:var(--red);opacity:.9"></div><div class="perf-bar-label">Apr 10</div></div>
+  <div class="perf-bar"><div class="perf-bar-value" style="color:var(--red)">-$0.96</div><div class="perf-bar-inner" style="height:3%;background:var(--red);opacity:.5"></div><div class="perf-bar-label">Apr 11</div></div>
+  <div class="perf-bar"><div class="perf-bar-value" style="color:var(--red)">-$3.62</div><div class="perf-bar-inner" style="height:9%;background:var(--red);opacity:.6"></div><div class="perf-bar-label">Apr 12</div></div>
+  <div class="perf-bar"><div class="perf-bar-value" style="color:var(--red)">-$8.84</div><div class="perf-bar-inner" style="height:22%;background:var(--red);opacity:.7"></div><div class="perf-bar-label">Apr 13</div></div>
+  <div class="perf-bar"><div class="perf-bar-value" style="color:var(--red)">-$1.58</div><div class="perf-bar-inner" style="height:4%;background:var(--red);opacity:.5"></div><div class="perf-bar-label">Apr 14</div></div>
+</div>
+
+<h3>Root Causes</h3>
+<div class="card" style="margin:1rem 0">
+  <div class="risk-row">
+    <div class="risk-icon">&#x1f41b;</div>
+    <div class="risk-text">
+      <div class="risk-title">CASCADE_EXHAUSTED bypass <span class="tag tag-red">BUG</span></div>
+      <div class="risk-detail"><code>expiry.py</code> fires cascade exits regardless of <code>engine_use_v4_actions</code> flag. 107/127 exits (84%) are spurious CASCADE_EXHAUSTED with -$0.12 avg P&amp;L each.</div>
+    </div>
+  </div>
+  <div class="risk-row">
+    <div class="risk-icon">&#x26a0;&#xfe0f;</div>
+    <div class="risk-text">
+      <div class="risk-title">v4 path disabled <span class="tag tag-yellow">CONFIG</span></div>
+      <div class="risk-detail"><code>engine_use_v4_actions=False</code> means all v4 gate infrastructure (10 gates, regime routing, quantile SL/TP) is dead code. Engine runs on bare v2 probability scalar.</div>
+    </div>
+  </div>
+  <div class="risk-row">
+    <div class="risk-icon">&#x274c;</div>
+    <div class="risk-text">
+      <div class="risk-title">No ensemble signal <span class="tag tag-blue">MISSING</span></div>
+      <div class="risk-detail"><code>TimescalePayload</code> lacks <code>probability_lgb</code>, <code>probability_classifier</code>, <code>ensemble_config</code>. Fields exist on /v4/snapshot but are silently discarded by the parser.</div>
+    </div>
+  </div>
+  <div class="risk-row">
+    <div class="risk-icon">&#x23f0;</div>
+    <div class="risk-text">
+      <div class="risk-title">TimesFM 503s <span class="tag tag-red">OUTAGE</span></div>
+      <div class="risk-detail">Probability poll to <code>16.52.14.182:8080/v2/probability/15m</code> returning HTTP 503 since last night. No trades since Apr 14.</div>
+    </div>
+  </div>
+</div>
+
+<!-- IMPLEMENTATION PLAN -->
+<h2>Implementation Plan</h2>
+
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num">1</div>
+    <div>
+      <div class="phase-title">Fix the Foundation</div>
+      <div class="phase-scope">Day 1 &mdash; ~40 LOC</div>
+    </div>
+  </div>
+  <p style="font-size:.9rem;color:var(--muted);margin-bottom:.75rem">Fix the CASCADE_EXHAUSTED bug and add ensemble fields to V4Snapshot parser.</p>
+  <ul class="file-list">
+    <li>margin_engine/application/use_cases/position_management/expiry.py &mdash; gate cascade exits behind feature flag</li>
+    <li>margin_engine/domain/value_objects/v4_data.py &mdash; add probability_lgb, probability_classifier, ensemble_config to TimescalePayload + parser</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num">2</div>
+    <div>
+      <div class="phase-title">Signal Source Selection + Gates</div>
+      <div class="phase-scope">Day 1-2 &mdash; ~60 LOC</div>
+    </div>
+  </div>
+  <p style="font-size:.9rem;color:var(--muted);margin-bottom:.75rem">Add settings, probability source selector, and two new ensemble gates.</p>
+  <ul class="file-list">
+    <li>margin_engine/infrastructure/config/settings.py &mdash; 4 new env vars (v5_ensemble_enabled, signal_source, disagreement_threshold, skip_on_fallback)</li>
+    <li>margin_engine/application/use_cases/entry_strategies/v4_strategy.py &mdash; signal source selection + fallback_sanity gate + disagreement gate</li>
+    <li>margin_engine/application/use_cases/position_management/expiry.py &mdash; same signal source in continuation</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num">3</div>
+    <div>
+      <div class="phase-title">DTO Wiring + Audit Trail</div>
+      <div class="phase-scope">Day 2 &mdash; ~40 LOC</div>
+    </div>
+  </div>
+  <p style="font-size:.9rem;color:var(--muted);margin-bottom:.75rem">Thread ensemble config through DTOs, add position metadata, update main.py.</p>
+  <ul class="file-list">
+    <li>margin_engine/application/dto/open_position.py &mdash; ensemble config fields</li>
+    <li>margin_engine/application/dto/manage_positions.py &mdash; same</li>
+    <li>margin_engine/domain/entities/position.py &mdash; audit trail (signal_source, p_lgb, p_classifier)</li>
+    <li>margin_engine/main.py &mdash; wire settings through, update build_execution_info()</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num">4</div>
+    <div>
+      <div class="phase-title">DB Migration + Schema</div>
+      <div class="phase-scope">Day 2-3 &mdash; ~15 LOC</div>
+    </div>
+  </div>
+  <p style="font-size:.9rem;color:var(--muted);margin-bottom:.75rem">Add columns to margin_positions for ensemble audit trail.</p>
+  <ul class="file-list">
+    <li>margin_engine/adapters/persistence/pg_repository.py &mdash; schema migration for new position fields</li>
+  </ul>
+</div>
+
+<div class="phase">
+  <div class="phase-header">
+    <div class="phase-num">5</div>
+    <div>
+      <div class="phase-title">Activate v4 + GHOST Deploy</div>
+      <div class="phase-scope">Day 3 &mdash; config change + monitoring</div>
+    </div>
+  </div>
+  <p style="font-size:.9rem;color:var(--muted);margin-bottom:.75rem">Flip engine_use_v4_actions=True (safe after cascade bug fix). Deploy v5_ensemble as GHOST for 48h.</p>
+  <ul class="file-list">
+    <li>Set MARGIN_ENGINE_USE_V4_ACTIONS=true on eu-west-2 EC2</li>
+    <li>Set MARGIN_V5_ENSEMBLE_ENABLED=true</li>
+    <li>Monitor 48h: compare ensemble vs v2-only WR, cascade exit rate, signal staleness</li>
+  </ul>
+</div>
+
+<!-- GAP TABLE -->
+<h2>Detailed Gap Analysis</h2>
+<table>
+  <tr><th>Component</th><th>Current</th><th>Required</th><th>Effort</th></tr>
+  <tr>
+    <td>TimescalePayload fields</td>
+    <td><span class="tag tag-red">Missing</span></td>
+    <td>probability_lgb, probability_classifier, ensemble_config</td>
+    <td>~10 LOC</td>
+  </tr>
+  <tr>
+    <td>Signal source selection</td>
+    <td><span class="tag tag-red">Hardcoded</span></td>
+    <td>Configurable: ensemble / lgb_only / path1_only</td>
+    <td>~20 LOC</td>
+  </tr>
+  <tr>
+    <td>Ensemble gates</td>
+    <td><span class="tag tag-red">None</span></td>
+    <td>fallback_sanity + disagreement</td>
+    <td>~30 LOC</td>
+  </tr>
+  <tr>
+    <td>v4 path activation</td>
+    <td><span class="tag tag-yellow">Disabled</span></td>
+    <td>engine_use_v4_actions=True</td>
+    <td>Config only</td>
+  </tr>
+  <tr>
+    <td>CASCADE_EXHAUSTED bug</td>
+    <td><span class="tag tag-red">Bug</span></td>
+    <td>Respect feature flag</td>
+    <td>~10 LOC</td>
+  </tr>
+  <tr>
+    <td>Position audit trail</td>
+    <td><span class="tag tag-yellow">Missing</span></td>
+    <td>signal_source, p_lgb, p_classifier, ensemble_mode</td>
+    <td>~25 LOC</td>
+  </tr>
+  <tr>
+    <td>Settings env vars</td>
+    <td><span class="tag tag-yellow">Missing</span></td>
+    <td>4 new margin v5 ensemble vars</td>
+    <td>~10 LOC</td>
+  </tr>
+  <tr>
+    <td>DTO threading</td>
+    <td><span class="tag tag-yellow">Missing</span></td>
+    <td>Ensemble config in OpenPositionInput + ManagePositionsInput</td>
+    <td>~20 LOC</td>
+  </tr>
+  <tr>
+    <td>DB migration</td>
+    <td><span class="tag tag-yellow">Missing</span></td>
+    <td>New columns on margin_positions</td>
+    <td>~15 LOC</td>
+  </tr>
+  <tr>
+    <td style="font-weight:700">TOTAL</td>
+    <td></td>
+    <td></td>
+    <td style="font-weight:700">~165 LOC</td>
+  </tr>
+</table>
+
+<!-- ENSEMBLE VS CURRENT COMPARISON -->
+<h2>Expected Impact</h2>
+<div class="grid">
+  <div class="card">
+    <div class="card-title">Current (v2-probability)</div>
+    <table style="margin:0">
+      <tr><td>Win Rate</td><td><span class="tag tag-red">4.4%</span></td></tr>
+      <tr><td>Signal Source</td><td>/v2/probability/15m (single LGB)</td></tr>
+      <tr><td>Gates Active</td><td>2 (conviction + regime OFF)</td></tr>
+      <tr><td>Cascade Bug</td><td><span class="tag tag-red">Active</span></td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <div class="card-title">Proposed (v5_ensemble)</div>
+    <table style="margin:0">
+      <tr><td>Expected WR</td><td><span class="tag tag-green">+6.12pp edge</span></td></tr>
+      <tr><td>Signal Source</td><td>LGB + Path 1 classifier blend</td></tr>
+      <tr><td>Gates Active</td><td>12 (v4 full stack + 2 ensemble)</td></tr>
+      <tr><td>Cascade Bug</td><td><span class="tag tag-green">Fixed</span></td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- SUCCESS CRITERIA -->
+<h2>Success Criteria (Before LIVE Flip)</h2>
+<ul class="checklist">
+  <li>48h GHOST data shows ensemble WR &gt; v2-only WR by &ge; 3pp</li>
+  <li>CASCADE_EXHAUSTED exit rate drops from 84% to &lt; 10%</li>
+  <li>No signal staleness warnings during GHOST period</li>
+  <li>Ensemble fields parsing validated against live /v4/snapshot responses</li>
+  <li>Position audit trail correctly records signal source metadata</li>
+  <li>TimesFM 15m endpoint reliably responding (no 503s)</li>
+</ul>
+
+<!-- OPEN QUESTIONS -->
+<h2>Open Questions</h2>
+<div class="card" style="margin:1rem 0">
+  <div class="risk-row">
+    <div class="risk-icon">1.</div>
+    <div class="risk-text">
+      <div class="risk-title">Activate v4 first, independently?</div>
+      <div class="risk-detail">Would validate the 10-gate stack without ensemble complexity. Lower risk, adds a day.</div>
+    </div>
+  </div>
+  <div class="risk-row">
+    <div class="risk-icon">2.</div>
+    <div class="risk-text">
+      <div class="risk-title">Which timescale for margin?</div>
+      <div class="risk-detail">Currently 15m. Should we add 5m for Polymarket alignment? The ensemble was validated on 5m windows.</div>
+    </div>
+  </div>
+  <div class="risk-row">
+    <div class="risk-icon">3.</div>
+    <div class="risk-text">
+      <div class="risk-title">Per-delta specialist heads (audit #245)?</div>
+      <div class="risk-detail">+1.78pp over unified head. Wait for canary results before margin integration?</div>
+    </div>
+  </div>
+  <div class="risk-row">
+    <div class="risk-icon">4.</div>
+    <div class="risk-text">
+      <div class="risk-title">Disagreement gate threshold?</div>
+      <div class="risk-detail">Start at 0 (disabled) per main engine, or use a conservative value for margin risk?</div>
+    </div>
+  </div>
+</div>
+
+<hr class="divider">
+<p style="text-align:center;color:var(--muted);font-size:.8rem;margin-top:1rem">
+  Generated 2026-04-18 by Claude Code 4-agent audit swarm &mdash; TimesFM audit + v5_ensemble audit + hub notes synthesis + margin engine analysis
+</p>
+
+</body>
+</html>

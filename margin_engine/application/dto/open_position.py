@@ -49,6 +49,12 @@ class OpenPositionInput:
     # Strategy registry (YAML-configurable strategies)
     # Note: Already defined above, just adding comment for clarity
 
+    # v5 ensemble config
+    v5_ensemble_enabled: bool = False
+    v5_ensemble_signal_source: str = "ensemble"
+    v5_ensemble_skip_on_fallback: bool = True
+    v5_ensemble_disagreement_threshold: float = 0.0
+
     # v4 strategy config
     v4_primary_timescale: str = "15m"
     v4_timescales: tuple[str, ...] = ("5m", "15m", "1h", "4h")
