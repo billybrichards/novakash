@@ -1,5 +1,18 @@
 name: v6_sniper
-version: "6.0.5"
+version: "6.0.6"
+# v6.0.6 — 2026-04-20 — bucket-aware risk_off override + high-VPIN source bypass.
+#   * Moved source_agreement + trade_advised gates BELOW conviction bucket
+#     computation so both can consult v6's own ensemble signal.
+#   * New helper `_try_bucket_risk_off_override`: fires only when bucket in
+#     {agree_strong, pegged_path1} AND chainlink aligns with trade direction.
+#     Gated by V6_SNIPER_RISK_OFF_OVERRIDE_ENABLED (default true).
+#   * New helper: high-VPIN source-agreement bypass. When VPIN >= 0.60 AND
+#     bucket is strong, chainlink/tiingo directional disagreement no longer
+#     auto-skips. Captures "market-at-odds-with-one-oracle" winners.
+#   * Supersedes latent v6.0.1 `risk_off_override_enabled` which never fired
+#     at the point it was checked (bucket not yet computed).
+#   * See PR body for audit-task #256 linkage, #243 rollback context.
+#
 # v6.0.1 — 2026-04-19 — post-review tweaks for LIVE launch (per Billy):
 #   • mode: GHOST → LIVE
 #   • Relaxed pegged_path1 thresholds 0.95/0.05 → 0.90/0.10 (captures
@@ -98,13 +111,30 @@ gate_params:
   # Overrides surface.poly_max_entry_price default (~0.65-0.70).
   entry_cap_override: 0.85
 
-  # ── risk_off override (v6.0.1: enabled per Billy) ──
-  # v6's stricter conviction buckets + VPIN + source agreement gates make
-  # this safer than v4_fusion's pre-2026-04-17 override was. Only triggers
-  # when distance >= 0.20 AND both chainlink + tiingo agree.
+  # ── risk_off override (v6.0.1 legacy — distance-based, kept for docs) ──
+  # These flags drive the old `_try_risk_off_override` helper. As of v6.0.6
+  # v6_sniper uses `_try_bucket_risk_off_override` instead, which is gated
+  # on v6's OWN conviction bucket rather than sister-repo distance.
+  # V4_RISK_OFF_OVERRIDE_ENABLED is CI-disabled (PR #243, 2026-04-17).
   risk_off_override_enabled: true
   risk_off_override_dist_min: 0.20
   risk_off_override_require_tiingo: true
+
+  # ── v6.0.6 bucket-aware risk_off override ──
+  # Fires only when v6's conviction bucket is strong AND chainlink aligns
+  # with trade direction. Tiingo alignment enforced upstream by the
+  # source_agreement gate (or its high-VPIN bypass). Rollback via env flag.
+  v6_risk_off_override_enabled: true
+  v6_risk_off_override_buckets: [agree_strong, pegged_path1]
+
+  # ── v6.0.6 high-VPIN source-agreement bypass ──
+  # When VPIN >= high_vpin_bypass_threshold AND bucket in high_vpin_bypass_buckets,
+  # chainlink/tiingo directional disagreement NO LONGER auto-skips the window.
+  # 0.60 floor is well above the 0.45 VPIN floor — only clearly informed-flow
+  # markets qualify.
+  high_vpin_bypass_enabled: true
+  high_vpin_bypass_threshold: 0.60
+  high_vpin_bypass_buckets: [agree_strong, pegged_path1]
 
 sizing:
   type: custom
