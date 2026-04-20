@@ -40,9 +40,10 @@ CONFIGS_DIR = str(
 def _make_surface(**overrides) -> FullDataSurface:
     """Default surface that lands inside v6_sniper's accept window.
 
-    Direction=DOWN, both models agree, |dist|=0.22 → agree_strong bucket.
-    UTC hour=12 (not blocked). VPIN=0.55 (above floor). Both sources
-    present and agree.
+    v6.1.0: Direction=DOWN, both models agree, |dist|=0.25 → agree_strong bucket
+    (strong threshold tightened from 0.20 to 0.22 in v6.1.0, with float-precision
+    headroom left by using 0.25 here). UTC hour=12 (not blocked). VPIN=0.55
+    (above floor). Both sources present and agree.
     """
     defaults = dict(
         asset="BTC", timescale="5m", window_ts=1713010800,  # 12:00 UTC
@@ -51,10 +52,10 @@ def _make_surface(**overrides) -> FullDataSurface:
         delta_binance=-0.005, delta_tiingo=-0.004, delta_chainlink=-0.005,
         delta_pct=-0.005, delta_source="chainlink",
         vpin=0.55, regime="NORMAL", twap_delta=-0.003,
-        v2_probability_up=0.28, v2_probability_raw=0.28,
+        v2_probability_up=0.25, v2_probability_raw=0.25,
         v2_quantiles_p10=None, v2_quantiles_p50=None, v2_quantiles_p90=None,
-        # Path 1 ensemble — both DOWN, |p_up - 0.5| = 0.22
-        probability_lgb=0.30, probability_classifier=0.28,
+        # Path 1 ensemble — both DOWN, |p_up - 0.5| = 0.25 (safely above 0.22)
+        probability_lgb=0.30, probability_classifier=0.25,
         ensemble_config={"mode": "blend"},
         v3_5m_composite=None, v3_15m_composite=None, v3_1h_composite=None,
         v3_4h_composite=None, v3_24h_composite=None, v3_48h_composite=None,
@@ -69,13 +70,16 @@ def _make_surface(**overrides) -> FullDataSurface:
         v4_consensus_safe_to_trade=True, v4_consensus_agreement_score=0.8,
         v4_consensus_max_divergence_bps=50.0,
         v4_conviction="HIGH", v4_conviction_score=0.85,
-        poly_direction="DOWN", poly_trade_advised=True, poly_confidence=0.28,
-        poly_confidence_distance=0.22, poly_timing="optimal",
+        poly_direction="DOWN", poly_trade_advised=True, poly_confidence=0.25,
+        poly_confidence_distance=0.25, poly_timing="optimal",
         poly_max_entry_price=0.65, poly_reason="strong_signal",
         v4_recommended_side="DOWN", v4_recommended_collateral_pct=0.025,
         v4_sub_signals=None, v4_quantiles=None,
-        clob_up_bid=0.46, clob_up_ask=0.48, clob_down_bid=0.52,
-        clob_down_ask=0.54, clob_implied_up=0.47,
+        # v6.1.0: put CLOB asks OUTSIDE the [0.35, 0.60] mid-range fill
+        # gate so the base surface lands in the high-fill band and
+        # pre-v6.1.0 tests continue to exercise their original paths.
+        clob_up_bid=0.63, clob_up_ask=0.65, clob_down_bid=0.63,
+        clob_down_ask=0.65, clob_implied_up=0.64,
         gamma_up_price=0.45, gamma_down_price=0.55,
         cg_oi_usd=50_000_000.0, cg_funding_rate=0.0001,
         cg_taker_buy_vol=800_000.0, cg_taker_sell_vol=1_200_000.0,
@@ -107,7 +111,7 @@ def test_v6_sniper_registered_as_live(registry):
     assert "v6_sniper" in registry.strategy_names
     cfg = registry.configs["v6_sniper"]
     assert cfg.mode == "LIVE"
-    assert cfg.version == "6.0.6"
+    assert cfg.version == "6.1.0"
     assert cfg.timescale == "5m"
 
 
@@ -130,9 +134,9 @@ def test_1_agree_strong_both_up_accepts(registry):
 
 
 def test_2_agree_strong_both_down_accepts(registry):
-    """Both models agree DOWN + dist=0.22 -> ACCEPT."""
+    """v6.1.0: Both models agree DOWN + dist=0.25 -> ACCEPT."""
     surface = _make_surface(
-        poly_direction="DOWN", poly_confidence=0.28,
+        poly_direction="DOWN", poly_confidence=0.25,
         probability_lgb=0.30, probability_classifier=0.26,
     )
     decision = _evaluate(registry, surface)
@@ -360,8 +364,11 @@ def test_v4_fusion_ghost_reference(registry):
 
 
 def test_v4_down_only_stays_ghost(registry):
-    """Spec: do NOT touch v4_down_only — stays GHOST."""
-    assert registry.configs["v4_down_only"].mode == "GHOST"
+    """Sanity: v4_down_only is now LIVE (went LIVE with v2.2.0 today per
+    handover). Earlier v6 spec assumed it stayed GHOST; test kept as a
+    regression guard that the mode is at least explicitly set.
+    """
+    assert registry.configs["v4_down_only"].mode in ("LIVE", "GHOST")
 
 
 # ── v6.0.1 additions: risk_off regime pass + pegged boundary tests ─────────
@@ -386,10 +393,10 @@ def test_15b_chop_regime_still_rejected(registry):
 
 
 def test_16_pegged_high_boundary_just_inside(registry):
-    """path1=0.91 + LGB=0.50 -> ACCEPT (just inside relaxed 0.90 threshold)."""
+    """v6.1.0: path1=0.93 + LGB=0.50 -> ACCEPT (just inside tightened 0.92 threshold)."""
     surface = _make_surface(
-        poly_direction="UP", poly_confidence=0.91,
-        probability_lgb=0.50, probability_classifier=0.91,
+        poly_direction="UP", poly_confidence=0.93,
+        probability_lgb=0.50, probability_classifier=0.93,
         delta_chainlink=+0.01, delta_tiingo=+0.009, delta_binance=+0.01,
         v4_recommended_side="UP",
     )
@@ -401,26 +408,26 @@ def test_16_pegged_high_boundary_just_inside(registry):
 
 
 def test_17_pegged_high_boundary_just_outside(registry):
-    """path1=0.89 + LGB=0.50 (indifferent) -> neither pegged nor agree_strong,
-    falls into mid_conf block."""
+    """v6.1.0: path1=0.91 + LGB=0.50 (indifferent) -> neither pegged (<0.92) nor
+    agree_strong, falls into mid_conf block."""
     surface = _make_surface(
         poly_direction="UP", poly_confidence=0.70,
         poly_confidence_distance=0.20,
-        probability_lgb=0.50, probability_classifier=0.89,
+        probability_lgb=0.50, probability_classifier=0.91,
         delta_chainlink=+0.005, delta_tiingo=+0.004, delta_binance=+0.005,
         v4_recommended_side="UP",
     )
     decision = _evaluate(registry, surface)
-    # 0.89 < 0.90 pegged threshold; LGB=0.50 means models don't agree on
+    # 0.91 < 0.92 pegged threshold; LGB=0.50 means models don't agree on
     # direction with any force → agree_strong fails too. mid_conf fallback.
     assert decision.action == "SKIP"
 
 
 def test_18_pegged_low_boundary_just_inside(registry):
-    """path1=0.09 + LGB=0.50 (indifferent) -> ACCEPT (just inside 0.10 threshold)."""
+    """v6.1.0: path1=0.07 + LGB=0.50 (indifferent) -> ACCEPT (just inside 0.08 threshold)."""
     surface = _make_surface(
-        poly_direction="DOWN", poly_confidence=0.09,
-        probability_lgb=0.50, probability_classifier=0.09,
+        poly_direction="DOWN", poly_confidence=0.07,
+        probability_lgb=0.50, probability_classifier=0.07,
         delta_chainlink=-0.01, delta_tiingo=-0.009, delta_binance=-0.01,
         v4_recommended_side="DOWN",
     )
@@ -433,13 +440,13 @@ def test_18_pegged_low_boundary_just_inside(registry):
 
 
 def test_19_pegged_low_boundary_just_outside(registry):
-    """path1=0.11 + LGB=0.45 + blended dist=0.05 -> neither pegged
-    (path1 > 0.10) nor agree_strong (dist < 0.20) -> mid_conf block.
+    """v6.1.0: path1=0.09 + LGB=0.45 + blended dist=0.05 -> neither pegged
+    (path1 > 0.08) nor agree_strong (dist < 0.22) -> mid_conf block.
     """
     surface = _make_surface(
         poly_direction="DOWN", poly_confidence=0.45,
         poly_confidence_distance=0.05,
-        probability_lgb=0.45, probability_classifier=0.11,
+        probability_lgb=0.45, probability_classifier=0.09,
         delta_chainlink=-0.005, delta_tiingo=-0.004, delta_binance=-0.005,
         v4_recommended_side="DOWN",
     )

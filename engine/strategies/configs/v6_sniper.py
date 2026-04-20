@@ -50,7 +50,7 @@ from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
 _STRATEGY_ID = "v6_sniper"
-_VERSION = "6.0.6"
+_VERSION = "6.1.0"
 
 
 # ── Tunable knobs (YAML gate_params → env fallback → default) ──────────────
@@ -65,22 +65,25 @@ def _max_offset_sec() -> int:
 
 
 def _bucket_abs_dist_strong() -> float:
+    # v6.1.0: tightened 0.20 → 0.22 per Hub note #198 (mid-range break-even).
     return _gp.get_float(
-        "bucket_abs_dist_strong", "V6_SNIPER_BUCKET_ABS_DIST_STRONG", 0.20
+        "bucket_abs_dist_strong", "V6_SNIPER_BUCKET_ABS_DIST_STRONG", 0.22
     )
 
 
 def _bucket_path1_extreme_high() -> float:
     # v6.0.1: relaxed 0.95 → 0.90 per Billy (captures near-pegged winners).
+    # v6.1.0: re-tightened 0.90 → 0.92 per Hub note #198 (100% WR in 0.60-0.70 fill bucket).
     return _gp.get_float(
-        "bucket_path1_extreme_high", "V6_SNIPER_PATH1_EXTREME_HIGH", 0.90
+        "bucket_path1_extreme_high", "V6_SNIPER_PATH1_EXTREME_HIGH", 0.92
     )
 
 
 def _bucket_path1_extreme_low() -> float:
     # v6.0.1: relaxed 0.05 → 0.10 per Billy (symmetric DOWN side).
+    # v6.1.0: re-tightened 0.10 → 0.08 per Hub note #198 (symmetric).
     return _gp.get_float(
-        "bucket_path1_extreme_low", "V6_SNIPER_PATH1_EXTREME_LOW", 0.10
+        "bucket_path1_extreme_low", "V6_SNIPER_PATH1_EXTREME_LOW", 0.08
     )
 
 
@@ -93,6 +96,27 @@ def _bucket_lgb_opposite_block() -> float:
 def _bucket_block_mid_conf() -> bool:
     return _gp.get_bool(
         "bucket_block_mid_conf", "V6_SNIPER_BLOCK_MID_CONF", True
+    )
+
+
+# ── v6.1.0 mid-range fill gate (Hub note #198) ────────────────────────────
+def _mid_range_fill_min() -> float:
+    return _gp.get_float(
+        "mid_range_fill_min", "V6_SNIPER_MID_RANGE_FILL_MIN", 0.35
+    )
+
+
+def _mid_range_fill_max() -> float:
+    return _gp.get_float(
+        "mid_range_fill_max", "V6_SNIPER_MID_RANGE_FILL_MAX", 0.60
+    )
+
+
+def _mid_range_require_both_buckets() -> bool:
+    return _gp.get_bool(
+        "mid_range_require_both_buckets",
+        "V6_SNIPER_MID_RANGE_REQUIRE_BOTH",
+        True,
     )
 
 
@@ -509,6 +533,33 @@ def _sources_agree_surface(surface: "FullDataSurface") -> Optional[bool]:
     return cl_sign == ti_sign
 
 
+def _resolve_fill_price(
+    surface: "FullDataSurface", direction: Optional[str]
+) -> Optional[float]:
+    """v6.1.0: best-effort fill price for the trade direction.
+
+    Priority:
+      1. CLOB ask for the direction being bought (UP -> clob_up_ask,
+         DOWN -> clob_down_ask). This is ground-truth Polymarket ask.
+      2. gamma price fallback for the direction (gamma_up_price /
+         gamma_down_price) — useful when CLOB is empty.
+      3. None if neither is available.
+    """
+    if direction == "UP":
+        ask = getattr(surface, "clob_up_ask", None)
+        if ask is not None:
+            return float(ask)
+        gamma = getattr(surface, "gamma_up_price", None)
+        return float(gamma) if gamma is not None else None
+    if direction == "DOWN":
+        ask = getattr(surface, "clob_down_ask", None)
+        if ask is not None:
+            return float(ask)
+        gamma = getattr(surface, "gamma_down_price", None)
+        return float(gamma) if gamma is not None else None
+    return None
+
+
 def _compute_health_badge(
     surface: "FullDataSurface",
     distance: float,
@@ -897,6 +948,69 @@ def evaluate_polymarket_sniper(
         bucket_extras["conviction_bucket"] = "no_eval_blocked"
         return _skip("no_eval_blocked: insufficient ensemble inputs", gates, extras=bucket_extras)
 
+    # ── v6.1.0 mid-range fill gate (Hub note #198) ──────────────────────
+    # Fills in [mid_min, mid_max] are the break-even zone after 7.2%
+    # Polymarket fees (60% WR / near-zero net PnL). Require BOTH
+    # agree_strong AND pegged_path1 conditions to pass. Outside this
+    # band, either bucket alone is sufficient.
+    mid_min = _mid_range_fill_min()
+    mid_max = _mid_range_fill_max()
+    fill_price = _resolve_fill_price(surface, direction)
+    _dist = abs(probability_up - 0.5)
+    _strong_thr = _bucket_abs_dist_strong()
+    _high_thr = _bucket_path1_extreme_high()
+    _low_thr = _bucket_path1_extreme_low()
+    # agree_strong condition: both models same direction + |dist| >= thr
+    is_agree_strong = (
+        p_lgb is not None
+        and direction in ("UP", "DOWN")
+        and _dist >= _strong_thr
+        and (("UP" if p_lgb > 0.5 else "DOWN") == direction)
+    )
+    # pegged_path1 condition: path1 at extreme (and not LGB-blocked,
+    # which is already enforced upstream for lgb_blocks_pegged skip).
+    is_pegged_path1 = (
+        p_path1 is not None
+        and (p_path1 >= _high_thr or p_path1 <= _low_thr)
+    )
+    if (
+        _mid_range_require_both_buckets()
+        and fill_price is not None
+        and mid_min <= fill_price <= mid_max
+        and not (is_agree_strong and is_pegged_path1)
+    ):
+        gates.append(
+            _gate(
+                "mid_range_both_buckets",
+                False,
+                (
+                    f"fill={fill_price:.3f} in [{mid_min:.2f},{mid_max:.2f}] "
+                    f"requires BOTH agree_strong+pegged_path1; "
+                    f"got agree_strong={is_agree_strong} pegged={is_pegged_path1}"
+                ),
+            )
+        )
+        bucket_extras["fill_price"] = fill_price
+        bucket_extras["is_agree_strong"] = is_agree_strong
+        bucket_extras["is_pegged_path1"] = is_pegged_path1
+        return _skip(
+            "mid_range_insufficient_conviction", gates, extras=bucket_extras
+        )
+    gates.append(
+        _gate(
+            "mid_range_both_buckets",
+            True,
+            (
+                f"fill={'?' if fill_price is None else f'{fill_price:.3f}'} "
+                f"bucket gate passed (agree_strong={is_agree_strong} "
+                f"pegged={is_pegged_path1})"
+            ),
+        )
+    )
+    bucket_extras["fill_price"] = fill_price
+    bucket_extras["is_agree_strong"] = is_agree_strong
+    bucket_extras["is_pegged_path1"] = is_pegged_path1
+
     # ── Chainlink + Tiingo direction agreement with trade ───────────────
     # v6.0.3: direction-agreement checks are gated on
     # ``skip_on_oracle_disagree``. When False, disagreement is logged
@@ -1021,3 +1135,120 @@ def evaluate_polymarket_sniper(
             "ensemble_config": ens_cfg,
         },
     )
+
+
+# ── v6.1.0 fill-aware CLOB sizing hook ────────────────────────────────────
+# Registered via ``sizing.custom_hook: clob_sizing`` in v6_sniper.yaml.
+# Rungs from the YAML schedule are iterated in order; optional
+# ``fill_band: [lo, hi]`` on a rung restricts selection to CLOB asks in
+# that band. Rungs without fill_band are fill-agnostic (legacy behaviour).
+#
+# Schedule (v6.1.0):
+#   - threshold 0.55, mod 2.5, fill_band [0.60, 0.75] : high-conv + high-fill
+#   - threshold 0.55, mod 2.0                         : high-conv fill-agnostic
+#   - threshold 0.35, mod 1.0                         : mid-conv downsized
+#   - threshold 0.25, mod 0.8                         : low-conv downsized
+#   - threshold 0.0,  mod 0.0                         : skip below 25
+def clob_sizing(surface, sizing):
+    """v6.1.0: fill-aware CLOB sizing hook.
+
+    Reads the sizing schedule from ``sizing.*`` (YAML-provided via the
+    registry's ``SizingResult`` preload path); since SizingResult itself
+    doesn't carry the schedule, we fetch it from the surface's cached
+    config or fall back to a sane default.
+
+    Implementation detail: the registry's ``_calculate_sizing`` constructs
+    SizingResult from the YAML ``sizing`` block (fraction +
+    max_collateral_pct only) then calls this hook. The schedule lives in
+    the parsed YAML but isn't threaded through SizingResult today. To keep
+    this change minimal we re-read the YAML via ``_gp.get_*`` helpers —
+    schedule is flattened into a module-level default here so tests that
+    don't go through the registry still work. When the registry is
+    invoked it loads the YAML schedule as part of StrategyConfig.sizing;
+    the hook reaches it by looking up the v6 strategy's config through
+    the registry singleton if available, else the default constants
+    below are used.
+    """
+    from strategies.registry import SizingResult
+
+    direction = getattr(surface, "poly_direction", None)
+    if direction not in ("UP", "DOWN"):
+        # Fall back to probability-derived direction (same logic as main hook).
+        p_up = getattr(surface, "poly_confidence", None)
+        if p_up is not None:
+            direction = "UP" if p_up > 0.5 else "DOWN"
+
+    clob_ask = _resolve_fill_price(surface, direction)
+
+    # Schedule is sourced from the active YAML gate_params-style registry
+    # when the hook is called via the registry; for direct callers we use
+    # the documented v6.1.0 defaults below. Order matters — first matching
+    # rung wins.
+    schedule = _v6_sizing_schedule()
+    null_modifier = 1.5  # parity with v4_down_only.clob_sizing
+
+    if clob_ask is None:
+        return SizingResult(
+            fraction=sizing.fraction,
+            max_collateral_pct=sizing.max_collateral_pct,
+            entry_cap=sizing.entry_cap,
+            size_modifier=null_modifier,
+            label="no_clob_fallback",
+        )
+
+    for rung in schedule:
+        threshold = rung["threshold"]
+        modifier = rung["modifier"]
+        label = rung["label"]
+        fill_band = rung.get("fill_band")
+        if fill_band is not None:
+            lo, hi = float(fill_band[0]), float(fill_band[1])
+            if not (lo <= clob_ask <= hi):
+                continue
+        if clob_ask >= threshold:
+            if modifier == 0.0:
+                return SizingResult(
+                    fraction=sizing.fraction,
+                    max_collateral_pct=sizing.max_collateral_pct,
+                    entry_cap=sizing.entry_cap,
+                    size_modifier=0.0,
+                    label=label,
+                )
+            return SizingResult(
+                fraction=sizing.fraction,
+                max_collateral_pct=sizing.max_collateral_pct,
+                entry_cap=sizing.entry_cap,
+                size_modifier=modifier,
+                label=label,
+            )
+
+    # Below all thresholds — skip.
+    return SizingResult(
+        fraction=sizing.fraction,
+        max_collateral_pct=sizing.max_collateral_pct,
+        entry_cap=sizing.entry_cap,
+        size_modifier=0.0,
+        label="below_all_thresholds",
+    )
+
+
+# v6.1.0 sizing schedule. Mirrors the YAML ``sizing.schedule`` block so the
+# hook produces identical output whether the schedule is threaded through
+# from SizingResult or not. Update both in lock-step if tuning.
+_V6_SIZING_SCHEDULE_DEFAULT: list[dict] = [
+    {"threshold": 0.55, "modifier": 2.5, "label": "high_conv_fills_0.60+",
+     "fill_band": [0.60, 0.75]},
+    {"threshold": 0.55, "modifier": 2.0, "label": "high_conv_TBD"},
+    {"threshold": 0.35, "modifier": 1.0, "label": "mid_conv_downsized"},
+    {"threshold": 0.25, "modifier": 0.8, "label": "low_conv_downsized"},
+    {"threshold": 0.0, "modifier": 0.0, "label": "skip_below_25"},
+]
+
+
+def _v6_sizing_schedule() -> list[dict]:
+    """Return the sizing schedule. Today sources from a module constant
+    (YAML sync is a manual step; tune both or neither). A future refactor
+    could surface the parsed YAML schedule on SizingResult itself so this
+    indirection goes away.
+    """
+    return _V6_SIZING_SCHEDULE_DEFAULT

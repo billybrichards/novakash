@@ -1,5 +1,27 @@
 name: v6_sniper
-version: "6.0.6"
+version: "6.1.0"
+# v6.1.0 — 2026-04-20 — fill-aware sizing + mid-range double-bucket gate.
+#   Rationale (Hub note #198, 25 trades today, 13W/5L/7 OPEN, +$22.83):
+#     * Fill 0.60-0.70 bucket = 100% WR (5/5) — pegged_path1 peak, size UP.
+#     * Fill 0.35-0.60 bucket = 60% WR / near-zero net PnL after 7.2% fee —
+#       break-even zone, tighten with double-bucket requirement.
+#     * All 5 losses occurred in volatile_trend regime at HIGH conviction.
+#   Changes:
+#     * Bucket thresholds tightened:
+#         - bucket_abs_dist_strong: 0.20 → 0.22
+#         - bucket_path1_extreme_high: 0.90 → 0.92
+#         - bucket_path1_extreme_low: 0.10 → 0.08
+#     * New mid-range-fill gate (0.35-0.60): requires BOTH agree_strong
+#       AND pegged_path1 to pass. Kills the break-even zone without
+#       dropping the 100% WR high-fill trades.
+#     * Sizing schedule gets a top rung for fill_band [0.60, 0.75] at
+#       2.5x modifier (vs 2.0x for the legacy high-conv rung). Schedule
+#       rungs now honour ``fill_band`` if present — rungs without it
+#       are fill-agnostic and behave exactly as before.
+#   Projected outcome: 72% → 78-82% WR, +20% pnl/trade.
+#   Gated on PR #306 (SOT reconciliation fix, audit #260) merging first
+#   so the re-baseline confirms this isn't measurement noise.
+#
 # v6.0.6 — 2026-04-20 — bucket-aware risk_off override + high-VPIN source bypass.
 #   * Moved source_agreement + trade_advised gates BELOW conviction bucket
 #     computation so both can consult v6's own ensemble signal.
@@ -54,12 +76,22 @@ gate_params:
   min_offset_sec: 30
   max_offset_sec: 240
 
-  # ── Ensemble conviction bucket thresholds (note #183, relaxed in v6.0.1) ──
-  bucket_abs_dist_strong: 0.20        # agree_strong: both models same dir + dist >= 0.20
-  bucket_path1_extreme_high: 0.90     # pegged_path1: path1 >= 0.90 (was 0.95)
-  bucket_path1_extreme_low: 0.10      # pegged_path1: path1 <= 0.10 (was 0.05)
+  # ── Ensemble conviction bucket thresholds (note #183, tightened in v6.1.0) ──
+  # v6.1.0: 0.20 → 0.22 (strong), 0.90 → 0.92 (high), 0.10 → 0.08 (low).
+  # Tighter conviction reduces mid-range break-even trades.
+  bucket_abs_dist_strong: 0.22
+  bucket_path1_extreme_high: 0.92
+  bucket_path1_extreme_low: 0.08
   bucket_lgb_opposite_block: 0.10     # pegged_path1: LGB opposite + |dist| > 0.10 -> block
   bucket_block_mid_conf: true         # block 0.5 < p < 0.7, dist < 0.20 bucket
+
+  # ── v6.1.0 mid-range fill gate (Hub note #198) ──
+  # Fills in [0.35, 0.60] are the break-even zone after 7.2% Polymarket
+  # fees. Requires BOTH agree_strong AND pegged_path1 buckets to be
+  # eligible. Outside this fill band, either bucket alone is accepted.
+  mid_range_fill_min: 0.35
+  mid_range_fill_max: 0.60
+  mid_range_require_both_buckets: true
 
   # ── Path1 freshness ──
   # 2026-04-20: raised 30 → 90 as stopgap. v6's freshness check uses
@@ -141,10 +173,15 @@ sizing:
   custom_hook: clob_sizing
   fraction: 0.025
   max_collateral_pct: 0.08
+  # v6.1.0: schedule now honours optional ``fill_band: [lo, hi]`` per rung.
+  # When present, the rung is only selected if the CLOB ask falls within
+  # the band. Rungs without fill_band are fill-agnostic (legacy behaviour).
+  # Order matters: first matching rung wins.
   schedule:
+    - { threshold: 0.55, modifier: 2.5, label: "high_conv_fills_0.60+", fill_band: [0.60, 0.75] }
     - { threshold: 0.55, modifier: 2.0, label: "high_conv_TBD" }
-    - { threshold: 0.35, modifier: 1.2, label: "mid_conv_TBD" }
-    - { threshold: 0.25, modifier: 1.0, label: "low_conv_TBD" }
+    - { threshold: 0.35, modifier: 1.0, label: "mid_conv_downsized" }
+    - { threshold: 0.25, modifier: 0.8, label: "low_conv_downsized" }
     - { threshold: 0.0,  modifier: 0.0, label: "skip_below_25" }
 
 hooks_file: v6_sniper.py
