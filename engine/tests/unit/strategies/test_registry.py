@@ -393,6 +393,9 @@ class TestRegistrySurfacePersistence:
 
         mock_db = MagicMock()
         mock_db.update_window_surface_fields = AsyncMock()
+        # 2026-04-19: second writer (ensemble surface). Needs AsyncMock so
+        # asyncio.create_task accepts the return value.
+        mock_db.update_window_ensemble_fields = AsyncMock()
 
         registry = StrategyRegistry(
             str(tmp_path),
@@ -442,6 +445,9 @@ class TestRegistrySurfacePersistence:
         mock_trace.write_window_evaluation_trace = AsyncMock()
         mock_db = MagicMock()
         mock_db.update_window_surface_fields = AsyncMock()
+        # 2026-04-19: second writer (ensemble surface). Needs AsyncMock so
+        # asyncio.create_task accepts the return value when it fires.
+        mock_db.update_window_ensemble_fields = AsyncMock()
 
         registry = StrategyRegistry(
             str(tmp_path), mgr, trace_repo=mock_trace, db=mock_db
@@ -466,11 +472,17 @@ class TestRegistrySurfacePersistence:
             v4_macro_bias=None,
             v4_macro_direction_gate=None,
             v4_macro_size_modifier=None,
+            # Ensemble fields also all None → both writers skipped.
+            v2_probability_up=None,
+            probability_lgb=None,
+            probability_classifier=None,
+            ensemble_config=None,
         )
         registry._write_window_trace(surface)
         await asyncio.sleep(0)
 
         mock_db.update_window_surface_fields.assert_not_awaited()
+        mock_db.update_window_ensemble_fields.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_write_window_trace_no_db_is_noop(self, tmp_path):
@@ -503,6 +515,259 @@ class TestRegistrySurfacePersistence:
         # Should not raise — db=None path just skips
         registry._write_window_trace(surface)
         await asyncio.sleep(0)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 2026-04-19: v5_ensemble probability-surface persistence
+# (registry → db.update_window_ensemble_fields). Mirrors the v3/v4
+# `_v34_surface_fields` tests above. Unblocks historical counterfactual
+# WR across browser reloads / operators — see migration header comment.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_ensemble_surface_fields_full_blend():
+    """Full-ensemble shape: all components + mode=blend + config-reported disagreement."""
+    from strategies.five_min_vpin import _ensemble_surface_fields
+
+    surface = _make_surface(
+        v2_probability_up=0.62,
+        probability_lgb=0.58,
+        probability_classifier=0.70,
+        ensemble_config={
+            "mode": "blend",
+            "weights": {"lgb": 0.5, "classifier": 0.5},
+            "disagreement_magnitude": 0.12,
+            "disagreement_detected": True,
+            "model_version": "path1-classifier-v0.3.1",
+        },
+    )
+
+    fields = _ensemble_surface_fields(surface)
+
+    assert fields["ensemble_p_up"] == 0.62
+    assert fields["ensemble_p_lgb"] == 0.58
+    assert fields["ensemble_p_classifier"] == 0.70
+    assert fields["ensemble_mode"] == "blend"
+    assert fields["ensemble_disagreement"] == 0.12
+    assert fields["ensemble_model_version"] == "path1-classifier-v0.3.1"
+
+
+def test_ensemble_surface_fields_fallback_lgb_only():
+    """Classifier head unavailable: p_classifier NULL, disagreement NULL, mode reported."""
+    from strategies.five_min_vpin import _ensemble_surface_fields
+
+    surface = _make_surface(
+        v2_probability_up=0.55,
+        probability_lgb=0.55,
+        probability_classifier=None,
+        ensemble_config={
+            "mode": "fallback_lgb_only",
+            "model_version": "path1-classifier-v0.3.1",
+        },
+    )
+
+    fields = _ensemble_surface_fields(surface)
+
+    assert fields["ensemble_p_up"] == 0.55
+    assert fields["ensemble_p_lgb"] == 0.55
+    assert fields["ensemble_p_classifier"] is None
+    assert fields["ensemble_mode"] == "fallback_lgb_only"
+    # No disagreement when one component is missing and config omits it.
+    assert fields["ensemble_disagreement"] is None
+    # model_version survives the fallback.
+    assert fields["ensemble_model_version"] == "path1-classifier-v0.3.1"
+
+
+def test_ensemble_surface_fields_config_absent():
+    """ensemble_config None: components + mode + disagreement NULL, p_up preserved."""
+    from strategies.five_min_vpin import _ensemble_surface_fields
+
+    surface = _make_surface(
+        v2_probability_up=0.48,
+        probability_lgb=None,
+        probability_classifier=None,
+        ensemble_config=None,
+    )
+
+    fields = _ensemble_surface_fields(surface)
+
+    assert fields["ensemble_p_up"] == 0.48
+    assert fields["ensemble_p_lgb"] is None
+    assert fields["ensemble_p_classifier"] is None
+    assert fields["ensemble_mode"] is None
+    assert fields["ensemble_disagreement"] is None
+    assert fields["ensemble_model_version"] is None
+
+
+def test_ensemble_surface_fields_disagreement_derived():
+    """Config omits disagreement_magnitude: derive as |p_lgb - p_classifier|."""
+    from strategies.five_min_vpin import _ensemble_surface_fields
+
+    surface = _make_surface(
+        v2_probability_up=0.60,
+        probability_lgb=0.55,
+        probability_classifier=0.71,
+        ensemble_config={"mode": "blend"},  # no disagreement_magnitude
+    )
+
+    fields = _ensemble_surface_fields(surface)
+
+    assert fields["ensemble_disagreement"] == pytest.approx(0.16, rel=1e-6)
+    assert fields["ensemble_mode"] == "blend"
+
+
+def test_ensemble_surface_fields_none_surface():
+    """Helper returns {} when surface is None (matches _v34_surface_fields pattern)."""
+    from strategies.five_min_vpin import _ensemble_surface_fields
+
+    assert _ensemble_surface_fields(None) == {}
+
+
+class TestRegistryEnsemblePersistence:
+    """Registry should call db.update_window_ensemble_fields for each of the
+    three snapshot shapes spec'd in the write-path design:
+      1. Full ensemble (all fields populated, mode='blend')
+      2. Fallback (ensemble_config.mode='fallback_lgb_only', classifier NULL)
+      3. Missing snapshot entirely (all 6 NULL → DB call skipped)
+    """
+
+    def _load_registry(self, tmp_path, *, db, trace):
+        yaml_path = tmp_path / "ens_test.yaml"
+        yaml_path.write_text(
+            yaml.dump(
+                {
+                    "name": "ens_test",
+                    "version": "1.0.0",
+                    "mode": "GHOST",
+                    "gates": [],
+                    "sizing": {"type": "fixed_kelly", "fraction": 0.025},
+                }
+            )
+        )
+        mgr = DataSurfaceManager(v4_base_url="http://fake")
+        registry = StrategyRegistry(
+            str(tmp_path), mgr, trace_repo=trace, db=db
+        )
+        registry.load_all()
+        return registry
+
+    @pytest.mark.asyncio
+    async def test_full_ensemble_invokes_writer(self, tmp_path):
+        """Snapshot shape #1 — all fields populated."""
+        from unittest.mock import MagicMock, AsyncMock
+        import asyncio
+
+        mock_trace = MagicMock()
+        mock_trace.write_window_evaluation_trace = AsyncMock()
+        mock_trace.write_gate_check_traces = AsyncMock()
+
+        mock_db = MagicMock()
+        mock_db.update_window_surface_fields = AsyncMock()
+        mock_db.update_window_ensemble_fields = AsyncMock()
+
+        registry = self._load_registry(tmp_path, db=mock_db, trace=mock_trace)
+
+        surface = _make_surface(
+            v2_probability_up=0.62,
+            probability_lgb=0.58,
+            probability_classifier=0.70,
+            ensemble_config={
+                "mode": "blend",
+                "disagreement_magnitude": 0.12,
+                "model_version": "path1-classifier-v0.3.1",
+            },
+        )
+
+        registry._write_window_trace(surface)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        mock_db.update_window_ensemble_fields.assert_awaited_once()
+        call = mock_db.update_window_ensemble_fields.await_args
+        f = call.kwargs["ensemble_fields"]
+        assert f["ensemble_p_up"] == 0.62
+        assert f["ensemble_p_lgb"] == 0.58
+        assert f["ensemble_p_classifier"] == 0.70
+        assert f["ensemble_mode"] == "blend"
+        assert f["ensemble_disagreement"] == 0.12
+        assert f["ensemble_model_version"] == "path1-classifier-v0.3.1"
+
+    @pytest.mark.asyncio
+    async def test_fallback_lgb_only_invokes_writer(self, tmp_path):
+        """Snapshot shape #2 — classifier NULL, mode=fallback_lgb_only."""
+        from unittest.mock import MagicMock, AsyncMock
+        import asyncio
+
+        mock_trace = MagicMock()
+        mock_trace.write_window_evaluation_trace = AsyncMock()
+        mock_trace.write_gate_check_traces = AsyncMock()
+
+        mock_db = MagicMock()
+        mock_db.update_window_surface_fields = AsyncMock()
+        mock_db.update_window_ensemble_fields = AsyncMock()
+
+        registry = self._load_registry(tmp_path, db=mock_db, trace=mock_trace)
+
+        surface = _make_surface(
+            v2_probability_up=0.55,
+            probability_lgb=0.55,
+            probability_classifier=None,
+            ensemble_config={
+                "mode": "fallback_lgb_only",
+                "model_version": "path1-classifier-v0.3.1",
+            },
+        )
+
+        registry._write_window_trace(surface)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        mock_db.update_window_ensemble_fields.assert_awaited_once()
+        f = mock_db.update_window_ensemble_fields.await_args.kwargs[
+            "ensemble_fields"
+        ]
+        assert f["ensemble_p_up"] == 0.55
+        assert f["ensemble_p_lgb"] == 0.55
+        assert f["ensemble_p_classifier"] is None
+        assert f["ensemble_mode"] == "fallback_lgb_only"
+        assert f["ensemble_disagreement"] is None
+        assert f["ensemble_model_version"] == "path1-classifier-v0.3.1"
+
+    @pytest.mark.asyncio
+    async def test_missing_snapshot_skips_writer(self, tmp_path):
+        """Snapshot shape #3 — all six fields NULL → writer NOT called.
+
+        Rationale: no useful information in an all-NULL UPDATE; skipping
+        avoids pointless DB hits. The legacy writer still creates the row
+        with the usual columns when a trade evaluates.
+        """
+        from unittest.mock import MagicMock, AsyncMock
+        import asyncio
+
+        mock_trace = MagicMock()
+        mock_trace.write_window_evaluation_trace = AsyncMock()
+        mock_trace.write_gate_check_traces = AsyncMock()
+
+        mock_db = MagicMock()
+        mock_db.update_window_surface_fields = AsyncMock()
+        mock_db.update_window_ensemble_fields = AsyncMock()
+
+        registry = self._load_registry(tmp_path, db=mock_db, trace=mock_trace)
+
+        # Override every v2/ensemble field AND every v3/v4 field so both
+        # writers have nothing to flush — guarantees the second task
+        # (ensemble) is never scheduled and we can assert it wasn't called.
+        surface = _make_surface(
+            v2_probability_up=None,
+            probability_lgb=None,
+            probability_classifier=None,
+            ensemble_config=None,
+        )
+        registry._write_window_trace(surface)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        mock_db.update_window_ensemble_fields.assert_not_awaited()
 
 
 class TestCheckSourceAgreement:

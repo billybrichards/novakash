@@ -132,6 +132,80 @@ def _v34_surface_fields(surface) -> dict:
     }
 
 
+def _ensemble_surface_fields(surface) -> dict:
+    """Extract v5_ensemble probability surface into a dict for window_snapshots.
+
+    Unblocks historical counterfactual WR analysis (p_lgb alone vs
+    p_classifier alone vs ensemble p_up) across browser reloads and
+    operators. Previously these three components lived only in-memory
+    on the timesfm box and in a session-only FE ring buffer — see the
+    2026-04-19 migration header for the full rationale.
+
+    Never raises — missing / malformed snapshot falls back to NULLs
+    for every field so the surrounding commit can still persist.
+    Returns {} when surface is None (legacy call paths).
+
+    Mapping:
+        ensemble_p_up          = surface.v2_probability_up          (final blend output)
+        ensemble_p_lgb         = surface.probability_lgb            (pre-blend LGB)
+        ensemble_p_classifier  = surface.probability_classifier     (pre-blend path1)
+        ensemble_mode          = ensemble_config.mode               (blend/fallback/disabled)
+        ensemble_disagreement  = ensemble_config.disagreement_magnitude
+                                 OR |p_lgb - p_classifier| when the
+                                 config omits it but both components are present
+        ensemble_model_version = ensemble_config.model_version
+                                 (classifier head version string)
+
+    Fallback behaviours (documented in engine/strategies/configs/v5_ensemble.md):
+      * ensemble_config None  → mode/disagreement/components all NULL,
+                                 ensemble_p_up still captured (it's just
+                                 LGB-calibrated p_up in that world)
+      * probability_classifier None → ensemble_p_classifier NULL,
+                                       disagreement can't be derived
+      * ensemble_model_version survives total fallback when timesfm
+        still reports model_version through the config dict.
+    """
+    if surface is None:
+        return {}
+
+    p_lgb = getattr(surface, "probability_lgb", None)
+    p_cls = getattr(surface, "probability_classifier", None)
+
+    cfg_raw = getattr(surface, "ensemble_config", None)
+    cfg = cfg_raw if isinstance(cfg_raw, dict) else None
+
+    mode = None
+    disagreement = None
+    model_version = None
+    if cfg is not None:
+        mode = cfg.get("mode")
+        # Prefer the value timesfm reports; fall back to the obvious
+        # |p_lgb - p_classifier| calc when both components are present.
+        _disag = cfg.get("disagreement_magnitude")
+        if _disag is not None:
+            try:
+                disagreement = float(_disag)
+            except (TypeError, ValueError):
+                disagreement = None
+        if disagreement is None and p_lgb is not None and p_cls is not None:
+            try:
+                disagreement = abs(float(p_lgb) - float(p_cls))
+            except (TypeError, ValueError):
+                disagreement = None
+        _mv = cfg.get("model_version")
+        if _mv is not None:
+            model_version = str(_mv)
+
+    return {
+        "ensemble_p_up": getattr(surface, "v2_probability_up", None),
+        "ensemble_p_lgb": p_lgb,
+        "ensemble_p_classifier": p_cls,
+        "ensemble_mode": mode,
+        "ensemble_disagreement": disagreement,
+        "ensemble_model_version": model_version,
+    }
+
+
 @dataclass
 class FiveMinSignal:
     """Signal for 5-minute trading decision."""

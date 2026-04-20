@@ -235,6 +235,11 @@ async def run() -> None:
             "v4_primary_timescale": settings.v4_primary_timescale,
             "v4_entry_edge": settings.v4_entry_edge,
             "v4_continuation_min_conviction": settings.v4_continuation_min_conviction,
+            # v5 ensemble state
+            "v5_ensemble_enabled": settings.v5_ensemble_enabled,
+            "v5_ensemble_signal_source": settings.v5_ensemble_signal_source,
+            "v5_ensemble_skip_on_fallback": settings.v5_ensemble_skip_on_fallback,
+            "v5_ensemble_disagreement_threshold": settings.v5_ensemble_disagreement_threshold,
         }
 
     # ── Signal adapter ──
@@ -337,9 +342,9 @@ async def run() -> None:
     )
     strategy_registry.load_all()
     logger.info(
-        "strategy_registry.loaded",
-        active=strategy_registry.get_active_strategies(),
-        all=strategy_registry.get_strategy_names(),
+        "strategy_registry.loaded: active=%s all=%s",
+        strategy_registry.get_active_strategies(),
+        strategy_registry.get_strategy_names(),
     )
 
     # ── Use Cases ──
@@ -347,63 +352,75 @@ async def run() -> None:
     from margin_engine.application.use_cases.manage_positions import (
         ManagePositionsUseCase,
     )
+    from margin_engine.application.dto import OpenPositionInput
 
     open_uc = OpenPositionUseCase(
-        exchange=exchange,
-        portfolio=portfolio,
-        repository=repo,
-        alerts=alerts,
-        probability_port=probability_adapter,
-        signal_port=signal_adapter,
-        # ── Strategy Registry (YAML-configurable strategies) ──
-        strategy_registry=strategy_registry,
-        # ── v4 integration (PR B) — falls back to legacy when v4_adapter is None ──
-        v4_snapshot_port=v4_adapter,
-        engine_use_v4_actions=settings.engine_use_v4_actions,
-        v4_primary_timescale=settings.v4_primary_timescale,
-        v4_timescales=settings.v4_timescales_tuple,
-        v4_entry_edge=settings.v4_entry_edge,
-        v4_min_expected_move_bps=settings.v4_min_expected_move_bps,
-        v4_allow_mean_reverting=settings.v4_allow_mean_reverting,
-        # Phase A — macro advisory mode + NO_EDGE override
-        v4_macro_mode=settings.v4_macro_mode,
-        v4_macro_hard_veto_confidence_floor=settings.v4_macro_hard_veto_confidence_floor,
-        v4_macro_advisory_size_mult_on_conflict=settings.v4_macro_advisory_size_mult_on_conflict,
-        v4_allow_no_edge_if_exp_move_bps_gte=settings.v4_allow_no_edge_if_exp_move_bps_gte,
-        # DQ-07 — defensive mark-divergence gate (default OFF: 0.0 = no-op)
-        v4_max_mark_divergence_bps=settings.v4_max_mark_divergence_bps,
-        fee_rate_per_side=(
-            effective_fee_rate if effective_fee_rate is not None else 0.00045
-        ),
-        # ── legacy v2 path ──
-        min_conviction=settings.probability_min_conviction,
-        regime_threshold=settings.regime_threshold,
-        regime_timescale=settings.regime_timescale,
-        bet_fraction=settings.bet_fraction,
-        stop_loss_pct=settings.stop_loss_pct,
-        take_profit_pct=settings.take_profit_pct,
-        venue=venue,
-        strategy_version="v2-probability",
+        input=OpenPositionInput(
+            exchange=exchange,
+            portfolio=portfolio,
+            repository=repo,
+            alerts=alerts,
+            probability_port=probability_adapter,
+            signal_port=signal_adapter,
+            # ── Strategy Registry (YAML-configurable strategies) ──
+            strategy_registry=strategy_registry,
+            # ── v4 integration (PR B) — falls back to legacy when v4_adapter is None ──
+            v4_snapshot_port=v4_adapter,
+            engine_use_v4_actions=settings.engine_use_v4_actions,
+            v4_primary_timescale=settings.v4_primary_timescale,
+            v4_timescales=settings.v4_timescales_tuple,
+            v4_entry_edge=settings.v4_entry_edge,
+            v4_min_expected_move_bps=settings.v4_min_expected_move_bps,
+            v4_allow_mean_reverting=settings.v4_allow_mean_reverting,
+            # Phase A — macro advisory mode + NO_EDGE override
+            v4_macro_mode=settings.v4_macro_mode,
+            v4_macro_hard_veto_confidence_floor=settings.v4_macro_hard_veto_confidence_floor,
+            v4_macro_advisory_size_mult_on_conflict=settings.v4_macro_advisory_size_mult_on_conflict,
+            v4_allow_no_edge_if_exp_move_bps_gte=settings.v4_allow_no_edge_if_exp_move_bps_gte,
+            # DQ-07 — defensive mark-divergence gate (default OFF: 0.0 = no-op)
+            v4_max_mark_divergence_bps=settings.v4_max_mark_divergence_bps,
+            # v5 ensemble integration
+            v5_ensemble_enabled=settings.v5_ensemble_enabled,
+            v5_ensemble_signal_source=settings.v5_ensemble_signal_source,
+            v5_ensemble_skip_on_fallback=settings.v5_ensemble_skip_on_fallback,
+            v5_ensemble_disagreement_threshold=settings.v5_ensemble_disagreement_threshold,
+            fee_rate_per_side=(
+                effective_fee_rate if effective_fee_rate is not None else 0.00045
+            ),
+            # ── legacy v2 path ──
+            min_conviction=settings.probability_min_conviction,
+            regime_threshold=settings.regime_threshold,
+            regime_timescale=settings.regime_timescale,
+            bet_fraction=settings.bet_fraction,
+            stop_loss_pct=settings.stop_loss_pct,
+            take_profit_pct=settings.take_profit_pct,
+            venue=venue,
+            strategy_version="v2-probability",
+        )
     )
 
+    from margin_engine.application.dto import ManagePositionsInput
+
     manage_uc = ManagePositionsUseCase(
-        exchange=exchange,
-        portfolio=portfolio,
-        repository=repo,
-        alerts=alerts,
-        # ── v4 integration (PR B) ──
-        v4_snapshot_port=v4_adapter,
-        probability_port=probability_adapter,  # fallback continuation path
-        engine_use_v4_actions=settings.engine_use_v4_actions,
-        v4_primary_timescale=settings.v4_primary_timescale,
-        v4_timescales=settings.v4_timescales_tuple,
-        v4_continuation_min_conviction=settings.v4_continuation_min_conviction,
-        v4_continuation_max=settings.v4_continuation_max,
-        v4_event_exit_seconds=settings.v4_event_exit_seconds,
-        # Phase A — parallel macro advisory mode for continuation path
-        v4_macro_mode=settings.v4_macro_mode,
-        v4_macro_hard_veto_confidence_floor=settings.v4_macro_hard_veto_confidence_floor,
-        trailing_stop_pct=settings.trailing_stop_pct,
+        input=ManagePositionsInput(
+            exchange=exchange,
+            portfolio=portfolio,
+            repository=repo,
+            alerts=alerts,
+            # ── v4 integration (PR B) ──
+            v4_snapshot_port=v4_adapter,
+            probability_port=probability_adapter,  # fallback continuation path
+            engine_use_v4_actions=settings.engine_use_v4_actions,
+            v4_primary_timescale=settings.v4_primary_timescale,
+            v4_timescales=settings.v4_timescales_tuple,
+            v4_continuation_min_conviction=settings.v4_continuation_min_conviction,
+            v4_continuation_max=settings.v4_continuation_max,
+            v4_event_exit_seconds=settings.v4_event_exit_seconds,
+            # Phase A — parallel macro advisory mode for continuation path
+            v4_macro_mode=settings.v4_macro_mode,
+            v4_macro_hard_veto_confidence_floor=settings.v4_macro_hard_veto_confidence_floor,
+            trailing_stop_pct=settings.trailing_stop_pct,
+        )
     )
 
     # ── Status HTTP server (for dashboard proxy) ──
@@ -459,8 +476,8 @@ async def run() -> None:
                 await open_uc.execute()
 
                 # 2. Manage existing positions — price/time exits only.
-                closed = await manage_uc.tick()
-                for pos in closed:
+                result = await manage_uc.tick()
+                for pos in result.closed_positions:
                     logger.info(
                         "Position %s closed: PnL=%.2f (%s)",
                         pos.id,

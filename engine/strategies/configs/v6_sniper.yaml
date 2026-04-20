@@ -1,0 +1,151 @@
+name: v6_sniper
+version: "6.0.6"
+# v6.0.6 — 2026-04-20 — bucket-aware risk_off override + high-VPIN source bypass.
+#   * Moved source_agreement + trade_advised gates BELOW conviction bucket
+#     computation so both can consult v6's own ensemble signal.
+#   * New helper `_try_bucket_risk_off_override`: fires only when bucket in
+#     {agree_strong, pegged_path1} AND chainlink aligns with trade direction.
+#     Gated by V6_SNIPER_RISK_OFF_OVERRIDE_ENABLED (default true).
+#   * New helper: high-VPIN source-agreement bypass. When VPIN >= 0.60 AND
+#     bucket is strong, chainlink/tiingo directional disagreement no longer
+#     auto-skips. Captures "market-at-odds-with-one-oracle" winners.
+#   * Supersedes latent v6.0.1 `risk_off_override_enabled` which never fired
+#     at the point it was checked (bucket not yet computed).
+#   * See PR body for audit-task #256 linkage, #243 rollback context.
+#
+# v6.0.1 — 2026-04-19 — post-review tweaks for LIVE launch (per Billy):
+#   • mode: GHOST → LIVE
+#   • Relaxed pegged_path1 thresholds 0.95/0.05 → 0.90/0.10 (captures
+#     near-pegged signals like TG example path1=0.921)
+#   • Enabled risk_off override on HIGH-conviction (was false)
+#   • Added risk_off HMM state to tradeable_v4_regimes (was calm+volatile only)
+#   • Explicit entry_cap_override: 0.85 (FAK ladder will try $0.85 + pi bonus)
+#   • Removed blocked_utc_hours (was [7,8,9])
+#   • probability_up_calibrated logged to metadata when available; decisions
+#     still use raw (prefer_raw_probability: true) until isotonic shadow
+#     re-validates the bucket thresholds on calibrated data.
+#
+# v6.0.0 base — bidirectional ensemble sniper, built on ruins of v5_ensemble.
+# Primary signal: LGB + Path1 ensemble (surface.poly_confidence).
+# Conviction buckets from note #183 (7d). CLOB sizing schedule from
+# v4_down_only (the 86% winner). Defensive gates from v4_fusion.
+mode: LIVE
+asset: BTC
+timescale: 5m
+
+# All conviction/freshness/VPIN/regime logic lives in the hook
+# (evaluate_polymarket_sniper). Follows the v4_fusion / v5_ensemble
+# inline-hook pattern rather than declarative gates — those registry
+# entries (ensemble_path1_freshness, ensemble_conviction_bucket,
+# vpin_min, etc.) are a future gate-infra refactor, not required to
+# ship this strategy.
+gates: []
+
+gate_params:
+  # ── Timing window (v6.0.2: widened per Billy for overnight run) ──
+  # Previously [60, 180]. Widened to [30, 240] since v6's other gates
+  # (agree_strong / pegged_path1 / VPIN / source agreement) are strict
+  # enough to filter noise at earlier/later offsets.
+  # Note: sister-repo's v4 snapshot assembler tags stc > 180 as "early"
+  # and stc <= 5 as "expired"; if trade_advised fires with those tags,
+  # v6 will still skip via the polymarket_v2 path even inside this
+  # wider local window. Overnight data will reveal whether v6 captures
+  # any T > 180 or T < 60 trades or if sister-repo gates still block.
+  min_offset_sec: 30
+  max_offset_sec: 240
+
+  # ── Ensemble conviction bucket thresholds (note #183, relaxed in v6.0.1) ──
+  bucket_abs_dist_strong: 0.20        # agree_strong: both models same dir + dist >= 0.20
+  bucket_path1_extreme_high: 0.90     # pegged_path1: path1 >= 0.90 (was 0.95)
+  bucket_path1_extreme_low: 0.10      # pegged_path1: path1 <= 0.10 (was 0.05)
+  bucket_lgb_opposite_block: 0.10     # pegged_path1: LGB opposite + |dist| > 0.10 -> block
+  bucket_block_mid_conf: true         # block 0.5 < p < 0.7, dist < 0.20 bucket
+
+  # ── Path1 freshness ──
+  # 2026-04-20: raised 30 → 90 as stopgap. v6's freshness check uses
+  # ``time.time() - surface.assembled_at`` as a conservative proxy
+  # because no per-classifier-inference timestamp exists on the surface
+  # today. Late evals in the same window reuse the assembled_at, which
+  # drifts past 30s and fires false no_eval_blocked skips while upstream
+  # classifier is healthy (signal_evaluations.v2_probability_up = 98.3%
+  # non-null). Proper fix: add ``probability_classifier_inferred_at`` to
+  # FullDataSurface (data_surface PR, follow-up). 90s absorbs the
+  # 5-min window reuse without letting truly stale classifier through.
+  path1_max_age_s: 90
+  path1_skip_on_null: true
+
+  # ── Defensive gates inherited from v4_fusion / v5_ensemble ──
+  vpin_min: 0.45
+  # NOTE (v6.0.3): require_chainlink / require_tiingo still gate NULL /
+  # staleness (feed-health). Direction disagreement is now controlled
+  # by skip_on_oracle_disagree below — set False for overnight run.
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  # v6.0.3: allow v6 to fire even when chainlink/tiingo delta
+  # direction is opposite the trade direction. v6's conviction buckets
+  # + VPIN + health + freshness are considered sufficient selectivity.
+  # Gate entries still log the disagreement for post-run analysis.
+  skip_on_oracle_disagree: false
+  health_gate: degraded               # block if health in {degraded, unsafe}
+  skip_stale_sources: true            # skip if chainlink or tiingo NULL
+
+  # ── Time-of-day block (v6.0.1: disabled — removed per Billy) ──
+  blocked_utc_hours: []
+
+  # ── Regime gate (v6.0.1: risk_off added per Billy; chop still blocked) ──
+  tradeable_v4_regimes: [calm_trend, volatile_trend, risk_off]
+
+  # ── Ensemble signal source selection ──
+  ensemble_signal_source: ensemble
+  ensemble_skip_on_fallback: true
+
+  # Read RAW probability_up (not calibrated) while bucket thresholds
+  # were measured on raw values. Flip to false once isotonic PRs
+  # (novakash-timesfm#107 + novakash#281) are live AND 72h shadow
+  # re-validates the buckets on calibrated data.
+  prefer_raw_probability: true
+
+  # ── Entry-price cap (v6.0.1: explicit 0.85 override) ──
+  # v6 is willing to pay up to $0.85 on HIGH-conviction setups.
+  # FAK ladder respects this: rung 1 = $0.85, rung 2 = $0.85 + pi bonus (~$0.88).
+  # Overrides surface.poly_max_entry_price default (~0.65-0.70).
+  entry_cap_override: 0.85
+
+  # ── risk_off override (v6.0.1 legacy — distance-based, kept for docs) ──
+  # These flags drive the old `_try_risk_off_override` helper. As of v6.0.6
+  # v6_sniper uses `_try_bucket_risk_off_override` instead, which is gated
+  # on v6's OWN conviction bucket rather than sister-repo distance.
+  # V4_RISK_OFF_OVERRIDE_ENABLED is CI-disabled (PR #243, 2026-04-17).
+  risk_off_override_enabled: true
+  risk_off_override_dist_min: 0.20
+  risk_off_override_require_tiingo: true
+
+  # ── v6.0.6 bucket-aware risk_off override ──
+  # Fires only when v6's conviction bucket is strong AND chainlink aligns
+  # with trade direction. Tiingo alignment enforced upstream by the
+  # source_agreement gate (or its high-VPIN bypass). Rollback via env flag.
+  v6_risk_off_override_enabled: true
+  v6_risk_off_override_buckets: [agree_strong, pegged_path1]
+
+  # ── v6.0.6 high-VPIN source-agreement bypass ──
+  # When VPIN >= high_vpin_bypass_threshold AND bucket in high_vpin_bypass_buckets,
+  # chainlink/tiingo directional disagreement NO LONGER auto-skips the window.
+  # 0.60 floor is well above the 0.45 VPIN floor — only clearly informed-flow
+  # markets qualify.
+  high_vpin_bypass_enabled: true
+  high_vpin_bypass_threshold: 0.60
+  high_vpin_bypass_buckets: [agree_strong, pegged_path1]
+
+sizing:
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.025
+  max_collateral_pct: 0.08
+  schedule:
+    - { threshold: 0.55, modifier: 2.0, label: "high_conv_TBD" }
+    - { threshold: 0.35, modifier: 1.2, label: "mid_conv_TBD" }
+    - { threshold: 0.25, modifier: 1.0, label: "low_conv_TBD" }
+    - { threshold: 0.0,  modifier: 0.0, label: "skip_below_25" }
+
+hooks_file: v6_sniper.py
+pre_gate_hook: evaluate_polymarket_sniper

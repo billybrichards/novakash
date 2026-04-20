@@ -3788,6 +3788,14 @@ async def get_factory_windows(
 @router.get("/v58/strategy-decisions")
 async def strategy_decisions(
     strategy_id: Optional[str] = Query(default=None),
+    timeframe: Optional[str] = Query(
+        default=None,
+        description=(
+            "Filter to a single timeframe (e.g. '5m', '15m'). Composes "
+            "with strategy_id / resolved. Previously silently ignored — "
+            "see hub note #192 / audit #256."
+        ),
+    ),
     limit: int = Query(default=100, ge=1, le=1000),
     resolved: Optional[bool] = Query(
         default=None,
@@ -3838,26 +3846,41 @@ async def strategy_decisions(
         if strategy_id:
             where_clauses.append("strategy_id = :sid")
             params["sid"] = strategy_id
+        if timeframe:
+            where_clauses.append("timeframe = :tf")
+            params["tf"] = timeframe
         if resolved is True:
             where_clauses.append("outcome IS NOT NULL")
         elif resolved is False:
             where_clauses.append("outcome IS NULL")
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        # Dedup: engine re-evaluates the same (strategy, asset, window, timeframe)
+        # tuple every ~20ms while a window is open, producing hundreds of rows
+        # per window in the view. Without DISTINCT ON the raw ORDER BY
+        # evaluated_at DESC LIMIT N returns 2-3 windows × hundreds of dupes
+        # and the FE Signal Explorer WR matrix is computed over 2-3 windows
+        # (hub note #192 / audit #256). Mirror the DISTINCT ON pattern from
+        # scripts/ops/shadow_analysis.py — keep the latest eval per tuple.
         rows = (
             await db.execute(
                 text(f"""
-                    SELECT strategy_id, strategy_version, mode, asset,
-                           window_ts, timeframe, eval_offset,
-                           action, direction, confidence, confidence_score,
-                           entry_cap, collateral_pct, entry_reason, skip_reason,
-                           executed, order_id, fill_price, fill_size,
-                           metadata_json::text AS metadata_json,
-                           evaluated_at,
-                           outcome, pnl_usd, resolved_at,
-                           sot_reconciliation_state,
-                           outcome_source
-                    FROM strategy_decisions_resolved
-                    {where_sql}
+                    SELECT * FROM (
+                        SELECT DISTINCT ON (strategy_id, asset, window_ts, timeframe)
+                               strategy_id, strategy_version, mode, asset,
+                               window_ts, timeframe, eval_offset,
+                               action, direction, confidence, confidence_score,
+                               entry_cap, collateral_pct, entry_reason, skip_reason,
+                               executed, order_id, fill_price, fill_size,
+                               metadata_json::text AS metadata_json,
+                               evaluated_at,
+                               outcome, pnl_usd, resolved_at,
+                               sot_reconciliation_state,
+                               outcome_source
+                        FROM strategy_decisions_resolved
+                        {where_sql}
+                        ORDER BY strategy_id, asset, window_ts, timeframe,
+                                 evaluated_at DESC
+                    ) deduped
                     ORDER BY evaluated_at DESC
                     LIMIT :lim
                 """),
@@ -4058,6 +4081,16 @@ async def strategy_windows(
     try:
         # Get distinct windows with best decision per strategy per window.
         # "Best" = lowest eval_offset in the T-90-150 range; fallback to latest overall.
+        #
+        # Enrichment: also pull fill_price / fill_size / entry_cap / executed /
+        # order_id + the full metadata_json blob so the FE Window Results page
+        # (PR #296) can surface conviction bucket, path1 age, gate results,
+        # probability calibration etc. LEFT JOIN trades on order_id to pick up
+        # the authoritative realised pnl_usd + outcome for decisions that
+        # actually filled. Shadow strategies (GHOST) never produce a trades
+        # row, so their fill_price/pnl_usd stay NULL — the FE uses the
+        # existing derived "outcome" (direction vs actual_direction) in that
+        # case.
         rows = (await db.execute(text("""
             WITH distinct_windows AS (
                 SELECT DISTINCT ON (sd.window_ts)
@@ -4092,7 +4125,13 @@ async def strategy_windows(
                     sd.entry_reason,
                     sd.confidence_score,
                     sd.eval_offset,
-                    sd.evaluated_at
+                    sd.evaluated_at,
+                    sd.fill_price,
+                    sd.fill_size,
+                    sd.entry_cap,
+                    sd.executed,
+                    sd.order_id,
+                    sd.metadata_json
                 FROM strategy_decisions sd
                 WHERE sd.asset = :asset
                 ORDER BY sd.window_ts DESC, sd.asset, sd.strategy_id,
@@ -4116,10 +4155,30 @@ async def strategy_windows(
                 bps.skip_reason,
                 bps.entry_reason,
                 bps.confidence_score,
-                bps.eval_offset
+                bps.eval_offset,
+                bps.fill_price,
+                bps.fill_size,
+                bps.entry_cap,
+                bps.executed,
+                bps.order_id,
+                bps.metadata_json,
+                -- LEFT JOIN on order_id; fall back to polymarket_order_id
+                -- for rows whose strategy_decisions.order_id is the engine's
+                -- internal UUID rather than the Polymarket tx-hash.
+                t.pnl_usd             AS trade_pnl_usd,
+                t.outcome             AS trade_outcome
             FROM distinct_windows dw
             LEFT JOIN best_per_strategy bps
                 ON bps.window_ts = dw.window_ts AND bps.asset = dw.asset
+            LEFT JOIN LATERAL (
+                SELECT pnl_usd, outcome
+                FROM trades
+                WHERE bps.order_id IS NOT NULL
+                  AND (trades.order_id = bps.order_id
+                       OR trades.polymarket_order_id = bps.order_id)
+                ORDER BY resolved_at DESC NULLS LAST, created_at DESC
+                LIMIT 1
+            ) t ON TRUE
             ORDER BY dw.window_ts DESC, bps.strategy_id
         """), {"asset": asset, "limit": limit})).mappings().all()
 
@@ -4143,12 +4202,24 @@ async def strategy_windows(
                 actual = r["actual_direction"]
                 action = (r["action"] or "").upper()
                 strat_dir = (r["strategy_direction"] or "").upper()
-                # Determine outcome for this strategy's decision
+                # Derived (shadow) outcome — direction vs window actual.
+                # Kept for backward compat. Authoritative outcome for FILLED
+                # trades comes from trades.outcome below.
                 outcome = None
                 if action == "TRADE" and actual:
                     outcome = "WIN" if strat_dir == actual else "LOSS"
                 elif action == "SKIP":
                     outcome = "SKIP"
+                # metadata_json arrives as a dict from the JSONB column on
+                # asyncpg. If something has serialized it to a string (older
+                # rows, test fixtures), coerce safely so the FE always sees
+                # a JSON-native object or None.
+                meta = r["metadata_json"]
+                if isinstance(meta, str):
+                    try:
+                        meta = json.loads(meta)
+                    except (TypeError, ValueError):
+                        meta = None
                 windows[wts]["strategies"][r["strategy_id"]] = {
                     "mode": r["mode"],
                     "action": action,
@@ -4158,6 +4229,19 @@ async def strategy_windows(
                     "confidence_score": _safe_float(r["confidence_score"]),
                     "eval_offset": r["eval_offset"],
                     "outcome": outcome,
+                    # ── Enrichment for Window Results redesign (PR #296) ──
+                    "fill_price": _safe_float(r["fill_price"]),
+                    "fill_size": _safe_float(r["fill_size"]),
+                    "entry_cap": _safe_float(r["entry_cap"]),
+                    "executed": bool(r["executed"]) if r["executed"] is not None else None,
+                    "order_id": r["order_id"],
+                    # Raw metadata — FE picks what it needs (conviction_bucket,
+                    # path1_age_s, gate_results, probability_*, lgb, path1, …).
+                    "metadata": meta if isinstance(meta, dict) else None,
+                    # Authoritative realised values from trades (LEFT JOIN —
+                    # null for GHOST / never-filled decisions).
+                    "pnl_usd": _safe_float(r["trade_pnl_usd"]),
+                    "trade_outcome": r["trade_outcome"],
                 }
 
         return {

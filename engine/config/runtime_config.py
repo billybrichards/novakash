@@ -285,14 +285,20 @@ class RuntimeConfig:
         # silently repurpose the variable on flag flip and break trading.
         # See gates.py EvalOffsetBoundsGate docstring for rationale.
         #
-        # Defaults match docs/V10_6_DECISION_SURFACE_PROPOSAL.md §3.4:
-        #   90 = refuse to trade closer than T-90 to window close
-        #  180 = refuse to trade further than T-180 from window close
+        # Defaults (2026-04-20, Billy): widened to [30, 240] to match
+        # v5_ensemble and v6_sniper's YAML timing windows. Prior values
+        # were 90/180 per V10_6_DECISION_SURFACE_PROPOSAL.md §3.4 but
+        # those bounds pre-dated v6_sniper and effectively capped both
+        # strategies at T-60..T-180 regardless of YAML. Baking 30/240
+        # into the code default makes the wider range durable across
+        # deploys (tracked .env was being wiped on git reset).
+        #   30  = refuse to trade closer than T-30 to window close
+        #  240  = refuse to trade further than T-240 from window close
         self.v10_6_min_eval_offset: int = int(
-            os.environ.get("V10_6_MIN_EVAL_OFFSET", "90")
+            os.environ.get("V10_6_MIN_EVAL_OFFSET", "30")
         )
         self.v10_6_max_eval_offset: int = int(
-            os.environ.get("V10_6_MAX_EVAL_OFFSET", "180")
+            os.environ.get("V10_6_MAX_EVAL_OFFSET", "240")
         )
 
         # ── SP-04 / SP-05: Strategy port settings (DB-synced, hot-reloadable) ──

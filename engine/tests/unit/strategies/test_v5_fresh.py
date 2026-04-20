@@ -81,10 +81,12 @@ def registry():
     return reg
 
 
-def test_v5_fresh_loads_LIVE(registry):
+def test_v5_fresh_loads_GHOST(registry):
+    # 2026-04-19: Flipped LIVE → GHOST alongside v6_sniper rollout
+    # (hub note #182 72h audit — v5_* net-negative).
     assert "v5_fresh" in registry.strategy_names
     cfg = registry.configs["v5_fresh"]
-    assert cfg.mode == "LIVE"
+    assert cfg.mode == "GHOST"
     assert cfg.version == "5.3.0"
     assert cfg.timescale == "5m"
 
@@ -121,7 +123,11 @@ def test_v4_fusion_override_disabled(registry):
     assert v4.get("risk_off_override_enabled") is False
 
 
-def test_v4_fusion_flipped_to_ghost(registry):
+def test_v4_fusion_is_ghost_reference(registry):
+    # 2026-04-19: GHOST → LIVE. 2026-04-19 (later): LIVE → GHOST per Billy.
+    # Live lineup is v5_ensemble + v6_sniper; v4_fusion kept as reference
+    # baseline (same polymarket_v2 signal source as v5_ensemble, minus the
+    # two ensemble-specific gates).
     assert registry.configs["v4_fusion"].mode == "GHOST"
 
 

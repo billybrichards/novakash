@@ -9,6 +9,58 @@
  */
 
 export const STRATEGIES = {
+  v6_sniper: {
+    id: 'v6_sniper',
+    label: 'V6 SNIPER',
+    shortLabel: 'V6S',
+    color: '#a855f7',
+    colorDim: 'rgba(168,85,247,0.14)',
+    direction: 'ANY',
+    description:
+      'Bidirectional ensemble sniper. Conviction buckets: agree_strong, pegged_path1, '
+      + 'mid_conf_blocked, no_eval_blocked. Primary LIVE strategy (entry_cap 0.85).',
+    configKey: 'V6_SNIPER_MODE',
+    defaultMode: 'LIVE',
+    timescale: '5m',
+    asset: 'BTC',
+    gateLabel: 'LGB + Path1 consensus · entry_cap 0.85',
+    thresholds: {},
+    // UI hint: strategies exposed in per-window "current lineup" filter.
+    inCurrentLineup: true,
+  },
+  v5_ensemble: {
+    id: 'v5_ensemble',
+    label: 'V5 ENSEMBLE',
+    shortLabel: 'V5E',
+    color: '#22d3ee',
+    colorDim: 'rgba(34,211,238,0.14)',
+    direction: 'ANY',
+    description:
+      'Ensemble baseline (5.1.0). poly_confidence blend. GHOST shadow for v6 benchmarking.',
+    configKey: 'V5_ENSEMBLE_MODE',
+    defaultMode: 'GHOST',
+    timescale: '5m',
+    asset: 'BTC',
+    gateLabel: 'Ensemble · entry_cap 0.72',
+    thresholds: {},
+    inCurrentLineup: true,
+  },
+  v5_fresh: {
+    id: 'v5_fresh',
+    label: 'V5 FRESH',
+    shortLabel: 'V5F',
+    color: '#f472b6',
+    colorDim: 'rgba(244,114,182,0.14)',
+    direction: 'ANY',
+    description: 'v5_ensemble variant (5.3.0) — relaxed freshness. GHOST.',
+    configKey: 'V5_FRESH_MODE',
+    defaultMode: 'GHOST',
+    timescale: '5m',
+    asset: 'BTC',
+    gateLabel: 'Ensemble · fresh path1',
+    thresholds: {},
+    inCurrentLineup: true,
+  },
   v4_down_only: {
     id: 'v4_down_only',
     label: 'V4 DOWN-ONLY',
@@ -84,6 +136,7 @@ export const STRATEGIES = {
     asset: 'BTC',
     gateLabel: 'Full V4 surface (UP+DOWN)',
     thresholds: {},
+    inCurrentLineup: true,
   },
   v10_gate: {
     id: 'v10_gate',
@@ -104,6 +157,26 @@ export const STRATEGIES = {
 
 export const STRATEGY_LIST = Object.values(STRATEGIES);
 export const STRATEGY_IDS = Object.keys(STRATEGIES);
+
+// Current (post-2026-04-20) lineup — v6_sniper LIVE dominant,
+// v5_ensemble / v4_fusion / v5_fresh GHOST shadow. Ordered so v6_sniper
+// renders first in the per-window "current lineup" rows.
+export const CURRENT_LINEUP_IDS = [
+  'v6_sniper',
+  'v5_ensemble',
+  'v4_fusion',
+  'v5_fresh',
+];
+
+// Legacy strategy ids — surfaced behind an "archive" toggle on Window
+// History so users can still audit historical v4/v10 decisions without
+// polluting the primary LIVE/GHOST comparison.
+export const LEGACY_LINEUP_IDS = [
+  'v4_down_only',
+  'v4_up_basic',
+  'v4_up_asian',
+  'v10_gate',
+];
 
 /** Look up strategy metadata by id. Falls back to a generated entry for unknown ids. */
 export function getStrategyMeta(id, index) {

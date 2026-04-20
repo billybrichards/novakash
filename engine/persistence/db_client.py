@@ -1338,6 +1338,69 @@ class DBClient:
                 window_ts=window_ts,
             )
 
+    async def update_window_ensemble_fields(
+        self,
+        *,
+        window_ts: int,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        ensemble_fields: dict,
+    ) -> None:
+        """Upsert v5_ensemble probability surface onto window_snapshots.
+
+        2026-04-19: mirrors update_window_surface_fields. Called from
+        StrategyRegistry._write_window_trace after every window eval so
+        historical counterfactual WR (p_lgb alone vs p_classifier alone
+        vs ensemble p_up) is queryable in SQL. See migration
+        20260419_02_window_snapshots_ensemble_cols.sql for rationale.
+
+        Fire-and-forget: never raises. INSERT ... ON CONFLICT upsert so
+        it creates a minimal row if the legacy writer hasn't run yet.
+        """
+        if not self._pool:
+            return
+        if eval_offset is None:
+            eval_offset = 0
+        try:
+            async with self._pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO window_snapshots (
+                        window_ts, asset, timeframe, eval_offset,
+                        ensemble_p_up, ensemble_p_lgb, ensemble_p_classifier,
+                        ensemble_mode, ensemble_disagreement, ensemble_model_version
+                    ) VALUES (
+                        $1,$2,$3,$4,
+                        $5,$6,$7,$8,$9,$10
+                    )
+                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                        ensemble_p_up          = COALESCE(EXCLUDED.ensemble_p_up, window_snapshots.ensemble_p_up),
+                        ensemble_p_lgb         = COALESCE(EXCLUDED.ensemble_p_lgb, window_snapshots.ensemble_p_lgb),
+                        ensemble_p_classifier  = COALESCE(EXCLUDED.ensemble_p_classifier, window_snapshots.ensemble_p_classifier),
+                        ensemble_mode          = COALESCE(EXCLUDED.ensemble_mode, window_snapshots.ensemble_mode),
+                        ensemble_disagreement  = COALESCE(EXCLUDED.ensemble_disagreement, window_snapshots.ensemble_disagreement),
+                        ensemble_model_version = COALESCE(EXCLUDED.ensemble_model_version, window_snapshots.ensemble_model_version)
+                    """,
+                    int(window_ts),
+                    asset,
+                    timeframe,
+                    int(eval_offset),
+                    ensemble_fields.get("ensemble_p_up"),
+                    ensemble_fields.get("ensemble_p_lgb"),
+                    ensemble_fields.get("ensemble_p_classifier"),
+                    ensemble_fields.get("ensemble_mode"),
+                    ensemble_fields.get("ensemble_disagreement"),
+                    ensemble_fields.get("ensemble_model_version"),
+                )
+        except Exception as exc:
+            log.warning(
+                "db.update_window_ensemble_fields_failed",
+                error=str(exc)[:160],
+                asset=asset,
+                window_ts=window_ts,
+            )
+
     async def update_window_outcome(
         self,
         window_ts,

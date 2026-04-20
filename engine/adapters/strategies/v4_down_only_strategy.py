@@ -20,6 +20,7 @@ import structlog
 
 from adapters.strategies.v4_fusion_strategy import V4FusionStrategy
 from domain.value_objects import StrategyContext, StrategyDecision
+from strategies import gate_params as _gp
 
 log = structlog.get_logger(__name__)
 
@@ -59,7 +60,7 @@ class V4DownOnlyStrategy(V4FusionStrategy):
 
     @property
     def version(self) -> str:
-        return "1.0.0"
+        return "2.2.0"
 
     async def evaluate(self, ctx: StrategyContext) -> StrategyDecision:
         """Run V4 evaluation with relaxed confidence (0.10 vs parent's 0.12) and timing (T-90-150 vs parent's T-180)."""
@@ -180,12 +181,23 @@ class V4DownOnlyStrategy(V4FusionStrategy):
         base_pct = decision.collateral_pct or 0.025
         new_pct = min(base_pct * size_mod, _MAX_COLLATERAL_PCT)
 
+        # v2.2.0: cap entry price — Gamma bestAsk flows through as entry_cap,
+        # but never bid above entry_cap_override (YAML → env → 0.90).
+        _cap_override = _gp.get_float(
+            "entry_cap_override", "V4_DOWN_ONLY_ENTRY_CAP_OVERRIDE", 0.90
+        )
+        raw_cap = decision.entry_cap
+        if raw_cap is not None:
+            capped = min(float(raw_cap), _cap_override)
+        else:
+            capped = _cap_override
+
         return StrategyDecision(
             action=decision.action,
             direction=decision.direction,
             confidence=decision.confidence,
             confidence_score=decision.confidence_score,
-            entry_cap=decision.entry_cap,
+            entry_cap=capped,
             collateral_pct=new_pct,
             strategy_id=self.strategy_id,
             strategy_version=self.version,
@@ -196,6 +208,8 @@ class V4DownOnlyStrategy(V4FusionStrategy):
                 "clob_down_ask": ctx.clob_down_ask,
                 "clob_size_modifier": size_mod,
                 "clob_size_label": label,
+                "entry_cap_raw": raw_cap,
+                "entry_cap_override": _cap_override,
             },
         )
 

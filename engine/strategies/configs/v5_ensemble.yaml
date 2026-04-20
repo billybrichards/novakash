@@ -11,7 +11,16 @@ version: "5.1.0"
 # block_utc_hours: [7,8,9] — those UTC hours were 0-25% WR buckets.
 # v5_ensemble (strict) runs LIVE alongside v5_fresh (relaxed); dedup keeps
 # per-window exposure to 1 stake.
-mode: LIVE
+# 2026-04-19: Flipped LIVE → GHOST alongside v6_sniper rollout.
+# v5_* net-negative on 72h audit; revisit after v6 shadow completes + isotonic recalibration.
+# 2026-04-19 (later): Flipped GHOST → LIVE per Billy. Live lineup now
+# v5_ensemble + v6_sniper. Previous audit contaminated by broken-classifier
+# period (pre-PR #278); re-running fresh on post-fix data.
+# 2026-04-20: Flipped LIVE → GHOST per Billy. Today's data (2026-04-19 23:37 → 2026-04-20 ~14:00 UTC):
+# v6_sniper 9W/1L (90%, +$28.62). v5_ensemble 4W/3L (57%, +$0.59, near break-even).
+# v5 stays GHOST while v6 runs sole-LIVE and accumulates more sample. Revisit
+# if v6 regresses or sample grows above 30 trades with clear edge.
+mode: GHOST
 asset: BTC
 timescale: 5m
 
@@ -28,8 +37,13 @@ pre_gate_hook: evaluate_polymarket_ensemble
 # trail of what v5_ensemble actually runs in production. Env vars fall
 # through when a key is omitted (ops escape hatch for 30 days post PR #267).
 gate_params:
-  # Inherited from v4_fusion — keep aligned with v4_fusion.yaml.
-  min_offset_sec: 45
+  # 2026-04-20: widen timing window to match v6_sniper. Lower min from 45 → 30
+  # and explicitly cap max at 240. Requires V10_6_MAX_EVAL_OFFSET=240 +
+  # V10_6_MIN_EVAL_OFFSET=30 in engine env (now durable via
+  # scripts/restart_engine.sh sourcing .env, same PR).
+  min_offset_sec: 30
+  max_offset_sec: 240
+  skip_calm: true
   skip_calm: true
   skip_stale_sources: true
   require_tiingo_agree: true
@@ -54,8 +68,24 @@ gate_params:
   # Leave off until we have 200+ trades of shadow calibration baseline.
   ensemble_disagreement_threshold: 0.0
 
-  # 2026-04-19: Block UTC hours 07-09 (0-25% WR bucket per 7d data).
-  block_utc_hours: [7, 8, 9]
+  # 2026-04-19: Hour-of-day gate removed per Billy. Trade all hours
+  # initially; chop-regime filter + confidence floor should carry the
+  # load without time-based side effects.
+  # block_utc_hours: []  (empty = no block)
+
+  # 2026-04-19: Raise confidence floor 0.12 → 0.18 (strict). Only fires
+  # on near-STRONG conviction (p_up >= 0.68 or <= 0.32). Subagent 7d
+  # audit: dist >= 0.18 + exclude chop = +$2.45/trade (best per-trade $).
+  confidence_min_distance: 0.18
+
+  # 2026-04-19: Drop chop regime. 7d audit: chop = 45.5% WR across all
+  # conviction buckets (noise). calm_trend = 57.3%, volatile_trend = 62.8%.
+  # Default was [calm_trend, volatile_trend]; keep as-is but explicit here.
+  tradeable_v4_regimes: [calm_trend, volatile_trend]
+
+  # 2026-04-19: Freshness gate. Skip when surface is older than N seconds.
+  # Matches data_surface.py 60s v4-cache rejection; tighten via this knob.
+  max_surface_age_seconds: 30.0
 
 # Sizing matches v4_fusion so allocation isn't a confound when comparing WR.
 sizing:
