@@ -98,6 +98,9 @@ def _row_to_dict(r: dict) -> dict:
         ),
         "created_at": created_at.isoformat() if created_at else None,
         "resolved_at": resolved_at.isoformat() if resolved_at else None,
+        # Phantom flag — lets FE visually distinguish trades that never
+        # went on-chain (gtc_resting/gtc with no fill) from real trades.
+        "is_phantom": r.get("status") == "PHANTOM",
     }
 
 
@@ -193,41 +196,74 @@ async def list_trades(
 
 @router.get("/trades/stats")
 async def get_trade_stats(
+    since_days: Optional[int] = Query(None, ge=1, le=365),
+    strategy: Optional[str] = Query(None),
     session: AsyncSession = Depends(get_session),
     user: TokenData = Depends(get_current_user),
 ) -> dict:
     """
-    Return aggregate statistics:
-      total_trades, wins, losses, win_rate, total_pnl, avg_pnl, best_trade, worst_trade
+    Return aggregate statistics split into real vs phantom.
+
+    Real trades = on-chain verified (have fill_price or tx_hash).
+    Phantom trades = gtc_resting/gtc with no fill, status='PHANTOM'.
+
+    The top-level fields (total_trades, wins, etc.) reflect REAL trades only.
+    Phantom stats are in a nested `phantom` object for comparison.
     """
-    from sqlalchemy import select, func
+    where: list[str] = ["pnl_usd IS NOT NULL"]
+    params: dict[str, Any] = {}
 
-    result = await session.execute(
-        select(
-            func.count(Trade.id).label("total"),
-            func.sum(Trade.pnl_usd).label("total_pnl"),
-            func.avg(Trade.pnl_usd).label("avg_pnl"),
-            func.max(Trade.pnl_usd).label("best"),
-            func.min(Trade.pnl_usd).label("worst"),
-        ).where(Trade.pnl_usd.isnot(None))
+    if since_days is not None:
+        where.append("created_at >= NOW() - make_interval(days => :since_days)")
+        params["since_days"] = since_days
+    if strategy:
+        where.append("(strategy = :strategy OR strategy_id = :strategy)")
+        params["strategy"] = strategy
+
+    where_sql = " AND ".join(where)
+
+    row = await session.execute(
+        text(f"""
+            SELECT
+                COUNT(*) FILTER (WHERE status != 'PHANTOM' OR status IS NULL) AS real_total,
+                COUNT(*) FILTER (WHERE status != 'PHANTOM' OR status IS NULL) FILTER (WHERE outcome = 'WIN') AS real_wins,
+                SUM(CASE WHEN (status != 'PHANTOM' OR status IS NULL) THEN pnl_usd ELSE 0 END) AS real_pnl,
+                AVG(CASE WHEN (status != 'PHANTOM' OR status IS NULL) THEN pnl_usd END) AS real_avg_pnl,
+                MAX(CASE WHEN (status != 'PHANTOM' OR status IS NULL) THEN pnl_usd END) AS real_best,
+                MIN(CASE WHEN (status != 'PHANTOM' OR status IS NULL) THEN pnl_usd END) AS real_worst,
+                COUNT(*) FILTER (WHERE status = 'PHANTOM') AS phantom_total,
+                COUNT(*) FILTER (WHERE status = 'PHANTOM') FILTER (WHERE outcome = 'WIN') AS phantom_wins,
+                SUM(CASE WHEN status = 'PHANTOM' THEN pnl_usd ELSE 0 END) AS phantom_pnl
+            FROM trades
+            WHERE {where_sql}
+        """),
+        params,
     )
-    row = result.one()
+    r = row.mappings().first()
 
-    wins_result = await session.execute(
-        select(func.count()).where(Trade.outcome == "WIN")
-    )
-    wins = wins_result.scalar_one()
+    real_total = int(r["real_total"] or 0)
+    real_wins = int(r["real_wins"] or 0)
+    phantom_total = int(r["phantom_total"] or 0)
+    phantom_wins = int(r["phantom_wins"] or 0)
 
-    total = row.total or 0
     return {
-        "total_trades": total,
-        "wins": wins,
-        "losses": total - wins,
-        "win_rate": wins / total if total > 0 else 0.0,
-        "total_pnl": float(row.total_pnl or 0),
-        "avg_pnl": float(row.avg_pnl or 0),
-        "best_trade": float(row.best or 0),
-        "worst_trade": float(row.worst or 0),
+        # Top-level = real trades only
+        "total_trades": real_total,
+        "wins": real_wins,
+        "losses": real_total - real_wins,
+        "win_rate": real_wins / real_total if real_total > 0 else 0.0,
+        "total_pnl": float(r["real_pnl"] or 0),
+        "avg_pnl": float(r["real_avg_pnl"] or 0),
+        "best_trade": float(r["real_best"] or 0),
+        "worst_trade": float(r["real_worst"] or 0),
+        # Phantom comparison — "what would have happened"
+        "phantom": {
+            "total": phantom_total,
+            "wins": phantom_wins,
+            "losses": phantom_total - phantom_wins,
+            "win_rate": phantom_wins / phantom_total if phantom_total > 0 else 0.0,
+            "total_pnl": float(r["phantom_pnl"] or 0),
+        },
     }
 
 

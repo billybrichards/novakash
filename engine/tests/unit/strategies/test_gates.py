@@ -33,6 +33,8 @@ def _make_surface(**overrides) -> FullDataSurface:
         vpin=0.45, regime="NORMAL", twap_delta=0.003,
         v2_probability_up=0.62, v2_probability_raw=0.60,
         v2_quantiles_p10=-0.001, v2_quantiles_p50=0.002, v2_quantiles_p90=0.005,
+        # Audit #121 Path 1 ensemble fields (default None — most tests don't care)
+        probability_lgb=None, probability_classifier=None, ensemble_config=None,
         v3_5m_composite=0.6, v3_15m_composite=0.55, v3_1h_composite=None,
         v3_4h_composite=None, v3_24h_composite=None, v3_48h_composite=None,
         v3_72h_composite=None, v3_1w_composite=None, v3_2w_composite=None,

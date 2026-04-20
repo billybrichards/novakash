@@ -57,10 +57,56 @@ class DBTradeRecorder(TradeRecorderPort):
         if not result.success:
             return
 
+        # Reject phantom trades: success=True but no actual fill.
+        # gtc_resting returns success=True with fill_price=None when the
+        # order sits on the book unfilled. Recording these as trades
+        # poisons WR/P&L calculations (incident 2026-04-17, Hub note #147).
+        if result.fill_price is None and result.execution_mode in ("gtc_resting", "gtc"):
+            logger.warning(
+                "trade_recorder.phantom_rejected",
+                extra={
+                    "order_id": result.order_id,
+                    "execution_mode": result.execution_mode,
+                    "reason": "fill_price is None — refusing to record phantom trade",
+                },
+            )
+            return
+
         # 1. Register with OrderManager
         if self._om is not None:
             try:
                 from execution.order_manager import Order, OrderStatus
+
+                # Parse via the DecisionMetadata VO — applies the
+                # v4_regime/v4_conviction legacy-key fallback internally
+                # (see engine/domain/decision_metadata.py). Phase 3 of the
+                # Three Builders convergence: all new writes use canonical
+                # ``regime`` / ``conviction`` keys directly via the
+                # StrategyDecision factory, so the fallback only serves
+                # historical rows — it has no effect on post-Phase-3b
+                # decisions.
+                from domain.decision_metadata import DecisionMetadata
+
+                decision_vo = DecisionMetadata.from_dict(decision.metadata)
+                regime = decision_vo.regime
+                # dedup_key uniquely identifies the (strategy, window, direction)
+                # triplet that the registry used for its in-memory dedup. Not
+                # strictly enforced in DB but useful for triage (e.g. a pair
+                # of trades with the same dedup_key indicates a re-entry bug).
+                # Fall back to parsing from market_slug when window_ts is not
+                # embedded in decision.metadata (edge cases where the VO
+                # wasn't populated with window_ts).
+                window_ts = decision_vo.window_ts
+                if window_ts is None and result.market_slug:
+                    try:
+                        window_ts = int(result.market_slug.rsplit("-", 1)[-1])
+                    except (ValueError, IndexError):
+                        window_ts = None
+                dedup_key = (
+                    f"{decision.strategy_id}:{window_ts}:{decision.direction}"
+                    if window_ts is not None
+                    else None
+                )
 
                 order = Order(
                     order_id=result.order_id or f"unknown-{int(time.time())}",
@@ -80,6 +126,13 @@ class DBTradeRecorder(TradeRecorderPort):
                         "direction": decision.direction,
                         "confidence": decision.confidence,
                         "confidence_score": decision.confidence_score,
+                        # `conviction` is the hub / FE name for the same
+                        # HIGH/MEDIUM/LOW/NONE band; kept as a dedicated key
+                        # so hub/api/trades.py's `_row_to_dict` can surface it
+                        # without having to know about the `confidence` alias.
+                        "conviction": decision.confidence,
+                        "regime": regime,
+                        "dedup_key": dedup_key,
                         "entry_reason": decision.entry_reason,
                         "entry_cap": decision.entry_cap,
                         "token_id": result.token_id,

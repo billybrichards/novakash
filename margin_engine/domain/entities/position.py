@@ -128,6 +128,14 @@ class Position:
     v4_entry_window_close_ts: Optional[int] = None
     v4_snapshot_ts_at_entry: Optional[float] = None
 
+    # ── v5 ensemble audit at entry ──
+    # When v5_ensemble_enabled, capture which signal source drove the entry
+    # and the individual component probabilities for post-trade analysis.
+    v5_entry_signal_source: Optional[str] = None
+    v5_entry_probability_lgb: Optional[float] = None
+    v5_entry_probability_classifier: Optional[float] = None
+    v5_entry_ensemble_mode: Optional[str] = None
+
     # ── ME-STRAT-04: regime strategy audit at entry ──
     # When regime-adaptive strategy is enabled, these fields capture the
     # strategy-specific decision (regime routing, size_mult, hold_minutes).

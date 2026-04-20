@@ -19,6 +19,7 @@ import structlog
 import yaml
 
 from alerts.haiku_summarizer import HaikuSummarizer
+from domain.decision_metadata import DecisionMetadata
 from domain.value_objects import GateCheckTrace, StrategyDecision, WindowEvaluationTrace
 from strategies.data_surface import DataSurfaceManager, FullDataSurface
 from strategies.gates.base import Gate, GateResult
@@ -153,6 +154,11 @@ class StrategyRegistry:
         """Scan config_dir for *.yaml, build pipelines, load hooks."""
         _register_gates()
 
+        # Keep the raw YAML source text per-strategy so seed_registry_to_db()
+        # can persist it verbatim without re-reading files — preserves comments
+        # and formatting in the audit-trail TEXT column.
+        self._raw_yaml: dict[str, str] = {}
+
         for yaml_file in sorted(self._config_dir.glob("*.yaml")):
             try:
                 config = self._parse_yaml(yaml_file)
@@ -161,6 +167,12 @@ class StrategyRegistry:
                 self._configs[config.name] = config
                 self._pipelines[config.name] = gates
                 self._hooks[config.name] = hooks
+                try:
+                    self._raw_yaml[config.name] = yaml_file.read_text()
+                except Exception:
+                    # Non-fatal: DB seed falls back to re-serialising the
+                    # parsed StrategyConfig if raw text is unavailable.
+                    pass
                 log.info(
                     "registry.loaded",
                     strategy=config.name,
@@ -175,6 +187,97 @@ class StrategyRegistry:
                     file=str(yaml_file),
                     error=str(exc)[:200],
                 )
+
+    async def seed_registry_to_db(self) -> None:
+        """Upsert every loaded strategy into the `strategy_configs` table.
+
+        Runs after ``load_all()``. Idempotent — the ``(strategy_id, version)``
+        composite PK means re-seeding the same shipping version is a no-op
+        beyond bumping ``updated_at``. Bumping the YAML ``version`` inserts
+        a new row without touching the old one, giving us free history.
+
+        This is the Phase-2 (Option C.1) companion to the filesystem rsync
+        fix (Option A, PR #253). Hub reads the resulting rows via
+        ``/api/strategies``; the filesystem resolver stays as a fallback
+        so a fresh cluster with an engine that has not yet booted still
+        serves a usable (stale) registry rather than 500-ing.
+
+        Governance: this write path is engine-only. The hub has SELECT-only
+        access to the table. Keeps the "engine owns strategy catalog"
+        invariant clean and avoids creating an accidental auto-promotion
+        surface in the UI (see feedback_no_auto_model_promotion.md).
+
+        No-op when ``self._db`` is None (tests, legacy composition paths)
+        or when the pool is unavailable.
+        """
+        import json
+
+        pool = None
+        if self._db is not None:
+            pool = getattr(self._db, "_pool", None) or getattr(self._db, "pool", None)
+        if pool is None:
+            log.debug("registry.seed_skipped", reason="no_db_pool")
+            return
+
+        if not self._configs:
+            log.debug("registry.seed_skipped", reason="no_configs_loaded")
+            return
+
+        upserted = 0
+        try:
+            async with pool.acquire() as conn:
+                for name, cfg in self._configs.items():
+                    raw_yaml = self._raw_yaml.get(name)
+                    if raw_yaml is None:
+                        # Fallback: re-serialise from the parsed config.
+                        raw_yaml = yaml.safe_dump(
+                            {
+                                "name": cfg.name,
+                                "version": cfg.version,
+                                "mode": cfg.mode,
+                                "asset": cfg.asset,
+                                "timescale": cfg.timescale,
+                                "gates": cfg.gates,
+                                "sizing": cfg.sizing,
+                                "hooks_file": cfg.hooks_file,
+                                "pre_gate_hook": cfg.pre_gate_hook,
+                                "post_gate_hook": cfg.post_gate_hook,
+                            },
+                            sort_keys=False,
+                        )
+                    await conn.execute(
+                        """
+                        INSERT INTO strategy_configs (
+                            strategy_id, version, mode, asset, timescale,
+                            config_yaml, gates_json, sizing_json, hooks_file
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9)
+                        ON CONFLICT (strategy_id, version) DO UPDATE SET
+                            mode        = EXCLUDED.mode,
+                            asset       = EXCLUDED.asset,
+                            timescale   = EXCLUDED.timescale,
+                            config_yaml = EXCLUDED.config_yaml,
+                            gates_json  = EXCLUDED.gates_json,
+                            sizing_json = EXCLUDED.sizing_json,
+                            hooks_file  = EXCLUDED.hooks_file,
+                            updated_at  = NOW()
+                        """,
+                        cfg.name,
+                        cfg.version,
+                        cfg.mode,
+                        cfg.asset,
+                        cfg.timescale,
+                        raw_yaml,
+                        json.dumps(cfg.gates) if cfg.gates is not None else None,
+                        json.dumps(cfg.sizing) if cfg.sizing else None,
+                        cfg.hooks_file,
+                    )
+                    upserted += 1
+            log.info("registry.seeded_to_db", count=upserted)
+        except Exception as exc:
+            # Seed failure must not block engine startup — hub falls back
+            # to the filesystem resolver. Log loudly; operator debug via
+            # the warning log line.
+            log.warning("registry.seed_error", error=str(exc)[:300])
 
     def _parse_yaml(self, path: Path) -> StrategyConfig:
         """Parse a YAML strategy config file."""
@@ -417,18 +520,10 @@ class StrategyRegistry:
                     error=str(exc)[:200],
                 )
                 decisions.append(
-                    StrategyDecision(
-                        action="ERROR",
-                        direction=None,
-                        confidence=None,
-                        confidence_score=None,
-                        entry_cap=None,
-                        collateral_pct=None,
+                    StrategyDecision.error(
+                        reason=f"registry_error: {str(exc)[:200]}",
                         strategy_id=name,
                         strategy_version=config.version,
-                        entry_reason="",
-                        skip_reason=f"registry_error: {str(exc)[:200]}",
-                        metadata={},
                     )
                 )
         # Send per-window summary at final eval offset
@@ -707,8 +802,10 @@ class StrategyRegistry:
                 else "N/A"
             )
 
-            # Source agreement
+            # Source agreement (CL + Ti only -- matches the strategy gate
+            # definition; Binance shown separately as a cross-check).
             sources_agree = self._check_source_agreement(surface)
+            binance_cross_check = self._format_binance_cross_check(surface)
 
             # Prior-offset TRADE decisions for this window. Used by the
             # use case to populate "Already traded this window" and kill
@@ -797,6 +894,7 @@ class StrategyRegistry:
                 "dist": dist,
                 "chainlink_delta": chainlink_delta,
                 "tiingo_delta": tiingo_delta,
+                "binance_cross_check": binance_cross_check,
                 "sources_agree": sources_agree,
                 # Full surface for Haiku context
                 "clob_up_ask": getattr(surface, "clob_up_ask", None),
@@ -912,20 +1010,54 @@ class StrategyRegistry:
 
     @staticmethod
     def _check_source_agreement(surface: FullDataSurface) -> str:
-        """Check if Chainlink, Tiingo, and Binance deltas agree on direction."""
-        directions = []
-        for delta in (
-            surface.delta_chainlink,
-            surface.delta_tiingo,
-            surface.delta_binance,
-        ):
-            if delta is not None:
-                directions.append("UP" if delta > 0 else "DOWN")
-        if not directions:
-            return "no data"
-        if all(d == directions[0] for d in directions):
-            return f"YES ({directions[0]})"
-        return "NO (mixed)"
+        """Consensus over the sources the trade gates actually care about.
+
+        Only Chainlink + Tiingo participate -- this matches the gate
+        definition in ``engine/strategies/configs/v4_fusion.py``
+        (``_sources_agree_surface``) and the documented invariant on
+        ``BtcPriceBlock``: Binance aggTrade feeds VPIN but is NOT a
+        direction-consensus input.
+
+        Previously this used a 3-way vote including Binance, which
+        produced misleading ``NO (mixed)`` output while the gate saw
+        ``YES`` -- because the rendered Chainlink/Tiingo deltas in the
+        same message both agreed, the Binance sign that flipped the
+        verdict was invisible. See the April 18 2026 postmortem.
+
+        Binance cross-check is surfaced separately via
+        ``_format_binance_cross_check`` so operators still see the
+        third-source sign without it corrupting consensus.
+        """
+        cl = surface.delta_chainlink
+        ti = surface.delta_tiingo
+        missing: list[str] = []
+        if cl is None:
+            missing.append("chainlink")
+        if ti is None:
+            missing.append("tiingo")
+        if missing:
+            return f"unknown ({'+'.join(missing)} missing)"
+        cl_dir = "UP" if cl > 0 else "DOWN"
+        ti_dir = "UP" if ti > 0 else "DOWN"
+        if cl_dir == ti_dir:
+            return f"YES ({cl_dir})"
+        return f"NO (CL={cl_dir}, Ti={ti_dir})"
+
+    @staticmethod
+    def _format_binance_cross_check(surface: FullDataSurface) -> str | None:
+        """Return a human-readable Binance cross-check string, or None.
+
+        Binance agreement/disagreement with the CL+Ti consensus is
+        diagnostic only -- it is NOT part of the consensus used for
+        gating. Surfacing it lets operators spot CEX-vs-oracle
+        divergence (e.g. Chainlink lag during fast moves) without it
+        silently flipping the rendered "sources agree" verdict.
+        """
+        bi = surface.delta_binance
+        if bi is None:
+            return None
+        sign = "UP" if bi > 0 else "DOWN"
+        return f"{bi * 100:+.2f}% ({sign})"
 
     def wire_execute_uc(self, uc: "ExecuteTradeUseCase") -> None:
         """Inject the ExecuteTradeUseCase after orchestrator startup."""
@@ -994,18 +1126,28 @@ class StrategyRegistry:
                     for gate in self._pipelines[name]:
                         gate_result = gate.evaluate(surface)
                         if not gate_result.passed:
-                            return StrategyDecision(
-                                action="SKIP",
+                            # Preserve hook-computed direction/confidence so the
+                            # Signal Explorer can render "would have traded X
+                            # but filtered by gate Y". DecisionMetadata layers
+                            # a ``post_hook_gate_failed`` marker into extras
+                            # while keeping the hook's existing metadata as
+                            # the base — matches pre-VO semantics 1:1.
+                            hook_meta = DecisionMetadata.from_dict(
+                                hook_result.metadata
+                            ).with_extras(post_hook_gate_failed=gate_result.gate_name)
+                            return StrategyDecision.skip(
+                                reason=(
+                                    f"post_hook_gate {gate_result.gate_name}: "
+                                    f"{gate_result.reason}"
+                                ),
+                                strategy_id=name,
+                                strategy_version=config.version,
                                 direction=hook_result.direction,
                                 confidence=hook_result.confidence,
                                 confidence_score=hook_result.confidence_score,
                                 entry_cap=hook_result.entry_cap,
                                 collateral_pct=hook_result.collateral_pct,
-                                strategy_id=name,
-                                strategy_version=config.version,
-                                entry_reason="",
-                                skip_reason=f"post_hook_gate {gate_result.gate_name}: {gate_result.reason}",
-                                metadata={**hook_result.metadata, "post_hook_gate_failed": gate_result.gate_name},
+                                metadata=hook_meta,
                             )
                     return hook_result  # All post-hook gates passed
 
@@ -1015,27 +1157,24 @@ class StrategyRegistry:
             result = gate.evaluate(surface)
             gate_results.append(result)
             if not result.passed:
-                return StrategyDecision(
-                    action="SKIP",
-                    direction=None,
-                    confidence=None,
-                    confidence_score=None,
-                    entry_cap=None,
-                    collateral_pct=None,
+                # gate_results trace lives under extras — it's strategy-
+                # scoped debug info, not part of the shared decision shape.
+                return StrategyDecision.skip(
+                    reason=f"{result.gate_name}: {result.reason}",
                     strategy_id=name,
                     strategy_version=config.version,
-                    entry_reason="",
-                    skip_reason=f"{result.gate_name}: {result.reason}",
-                    metadata={
-                        "gate_results": [
-                            {
-                                "gate": r.gate_name,
-                                "passed": r.passed,
-                                "reason": r.reason,
-                            }
-                            for r in gate_results
-                        ]
-                    },
+                    metadata=DecisionMetadata(
+                        extras={
+                            "gate_results": [
+                                {
+                                    "gate": r.gate_name,
+                                    "passed": r.passed,
+                                    "reason": r.reason,
+                                }
+                                for r in gate_results
+                            ]
+                        }
+                    ),
                 )
 
         # All gates passed -- determine direction + sizing
@@ -1054,18 +1193,25 @@ class StrategyRegistry:
         if surface.poly_confidence_distance is not None:
             confidence_score = surface.poly_confidence_distance * 2.0
 
-        return StrategyDecision(
-            action="TRADE",
-            direction=direction,
-            confidence=confidence,
-            confidence_score=confidence_score,
-            entry_cap=sizing.entry_cap,
-            collateral_pct=sizing.max_collateral_pct * sizing.size_modifier,
-            strategy_id=name,
-            strategy_version=config.version,
-            entry_reason=(f"{name}_T{surface.eval_offset}_{direction}_{sizing.label}"),
-            skip_reason=None,
-            metadata={
+        # Resolve window_ts with `is None` check — window_ts=0 is a legit
+        # epoch-origin value (tests) that falsy-short-circuit would corrupt.
+        _raw_window_ts = getattr(surface, "window_ts", None)
+        resolved_window_ts = (
+            _raw_window_ts
+            if _raw_window_ts is not None
+            else getattr(surface, "eval_window_ts", None)
+        )
+        # Regime resolution: v4_regime (HMM classifier) preferred. Falls back
+        # to vol-regime `surface.regime` (CALM / NORMAL / TRANSITION / CASCADE)
+        # because data_surface only populates v4_regime when the TimesFM
+        # /v4/snapshot endpoint delivers the `regime` key.
+        resolved_regime = surface.v4_regime or getattr(surface, "regime", None)
+
+        trade_metadata = DecisionMetadata(
+            regime=resolved_regime,
+            conviction=surface.v4_conviction,
+            window_ts=resolved_window_ts,
+            extras={
                 "gate_results": [
                     {"gate": r.gate_name, "passed": r.passed, "reason": r.reason}
                     for r in gate_results
@@ -1080,6 +1226,31 @@ class StrategyRegistry:
                 "poly_confidence_distance": surface.poly_confidence_distance,
                 "v2_probability_up": surface.v2_probability_up,
             },
+        )
+
+        # Defensive: if all gates passed but we still couldn't derive a
+        # direction, convert to SKIP rather than emit a TRADE with
+        # direction=None. Pre-VO code accepted None and bounced further
+        # downstream; the factory's explicit validation catches it here,
+        # which is where the bug belongs.
+        if direction not in ("UP", "DOWN"):
+            return StrategyDecision.skip(
+                reason="no_direction_after_gates_passed",
+                strategy_id=name,
+                strategy_version=config.version,
+                metadata=trade_metadata,
+            )
+
+        return StrategyDecision.trade(
+            direction=direction,
+            strategy_id=name,
+            strategy_version=config.version,
+            entry_reason=f"{name}_T{surface.eval_offset}_{direction}_{sizing.label}",
+            metadata=trade_metadata,
+            confidence=confidence,
+            confidence_score=confidence_score,
+            entry_cap=sizing.entry_cap,
+            collateral_pct=sizing.max_collateral_pct * sizing.size_modifier,
         )
 
     def _determine_direction(

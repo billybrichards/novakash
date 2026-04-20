@@ -65,6 +65,11 @@ class V4Strategy(EntryStrategy):
         # DQ-07 mark divergence
         v4_max_mark_divergence_bps: float = 0.0,
         fee_rate_per_side: float = 0.00045,
+        # v5 ensemble
+        v5_ensemble_enabled: bool = False,
+        v5_ensemble_signal_source: str = "ensemble",
+        v5_ensemble_skip_on_fallback: bool = True,
+        v5_ensemble_disagreement_threshold: float = 0.0,
         # regime adaptive
         regime_adaptive_enabled: bool = False,
         regime_trend_min_prob: float = 0.55,
@@ -105,6 +110,10 @@ class V4Strategy(EntryStrategy):
         self._macro_advisory_conflict_mult = v4_macro_advisory_size_mult_on_conflict
         self._v4_max_mark_divergence_bps = v4_max_mark_divergence_bps
         self._fee_rate_per_side = fee_rate_per_side
+        self._v5_ensemble_enabled = v5_ensemble_enabled
+        self._v5_ensemble_signal_source = v5_ensemble_signal_source
+        self._v5_ensemble_skip_on_fallback = v5_ensemble_skip_on_fallback
+        self._v5_ensemble_disagreement_threshold = v5_ensemble_disagreement_threshold
         self._venue = venue
         self._strategy_version = strategy_version
         self._stop_loss_pct = stop_loss_pct
@@ -241,9 +250,43 @@ class V4Strategy(EntryStrategy):
             )
 
         # Gate ⑥: conviction threshold
-        if not payload.meets_threshold(self._v4_entry_edge):
+        # When v5 ensemble is enabled, use the selected signal source for
+        # conviction check instead of the raw probability_up.
+        if self._v5_ensemble_enabled:
+            effective_p = payload.probability_for_source(self._v5_ensemble_signal_source)
+            if effective_p is None:
+                self._log_skip("v5_ensemble_signal_unavailable", v4, payload)
+                return None
+            if abs(effective_p - 0.5) < self._v4_entry_edge:
+                self._log_skip("conviction_below_threshold", v4, payload)
+                return None
+        elif not payload.meets_threshold(self._v4_entry_edge):
             self._log_skip("conviction_below_threshold", v4, payload)
             return None
+
+        # Gate ⑥a: v5 ensemble fallback sanity
+        if self._v5_ensemble_enabled and self._v5_ensemble_skip_on_fallback:
+            if payload.ensemble_mode == "fallback_lgb_only":
+                self._log_skip("v5_ensemble_fallback_lgb_only", v4, payload)
+                return None
+
+        # Gate ⑥b: v5 ensemble disagreement
+        if (
+            self._v5_ensemble_enabled
+            and self._v5_ensemble_disagreement_threshold > 0
+        ):
+            disag = payload.ensemble_disagreement
+            if disag is not None and disag > self._v5_ensemble_disagreement_threshold:
+                logger.info(
+                    "v4 entry skip: ensemble_disagreement=%.3f > threshold=%.3f "
+                    "(p_lgb=%.3f p_classifier=%.3f)",
+                    disag,
+                    self._v5_ensemble_disagreement_threshold,
+                    payload.probability_lgb or 0.0,
+                    payload.probability_classifier or 0.0,
+                )
+                self._log_skip("v5_ensemble_disagreement", v4, payload)
+                return None
 
         # Gate ⑦: expected move clears fee wall
         if (
@@ -357,11 +400,17 @@ class V4Strategy(EntryStrategy):
             return None
 
         # All gates passed - build position
+        # Use ensemble-selected probability for signal score when v5 is active
+        if self._v5_ensemble_enabled:
+            effective_signal = payload.probability_for_source(self._v5_ensemble_signal_source) or 0.0
+        else:
+            effective_signal = payload.probability_up or 0.0
+
         position = Position(
             asset=v4.asset,
             side=side,
             leverage=self._portfolio.leverage,
-            entry_signal_score=payload.probability_up or 0.0,
+            entry_signal_score=effective_signal,
             entry_timescale=self._v4_primary_timescale,
             venue=self._venue,
             strategy_version=self._strategy_version,
@@ -377,6 +426,14 @@ class V4Strategy(EntryStrategy):
             if payload.window_close_ts > 0
             else None,
             v4_snapshot_ts_at_entry=v4.ts,
+            v5_entry_signal_source=self._v5_ensemble_signal_source
+            if self._v5_ensemble_enabled
+            else None,
+            v5_entry_probability_lgb=payload.probability_lgb,
+            v5_entry_probability_classifier=payload.probability_classifier,
+            v5_entry_ensemble_mode=payload.ensemble_mode
+            if self._v5_ensemble_enabled
+            else None,
             v4_entry_strategy_decision=regime_decision.reason
             if regime_decision
             else None,

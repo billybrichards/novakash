@@ -44,7 +44,9 @@ from api.config_v2 import router as config_v2_router
 # AGENT-OPS: Claude Agent SDK background task runners
 from api.agent_ops import router as agent_ops_router
 from api.strategy_decisions import router as strategy_decisions_router
+from api.strategies import router as strategies_router
 from api.window_traces import router as window_traces_router
+from api.gate_traces import router as gate_traces_router
 
 log = structlog.get_logger(__name__)
 
@@ -102,6 +104,41 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await session.execute(
                 text(
                     "ALTER TABLE system_state ADD COLUMN IF NOT EXISTS active_live_config_id INTEGER"
+                )
+            )
+            # Phase-2 (audit #216 follow-up): strategy_configs registry.
+            # Engine upserts YAML into this table at startup; hub reads it
+            # in preference to the filesystem (see api/strategies.py). See
+            # hub/db/migrations/versions/20260417_03_strategy_configs.sql
+            # for the full rationale.
+            await session.execute(
+                text("""
+                CREATE TABLE IF NOT EXISTS strategy_configs (
+                    strategy_id   VARCHAR(64)  NOT NULL,
+                    version       VARCHAR(32)  NOT NULL,
+                    mode          VARCHAR(16)  NOT NULL,
+                    asset         VARCHAR(16),
+                    timescale     VARCHAR(16),
+                    config_yaml   TEXT         NOT NULL,
+                    gates_json    JSONB,
+                    sizing_json   JSONB,
+                    hooks_file    VARCHAR(256),
+                    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                    updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (strategy_id, version)
+                )
+            """)
+            )
+            await session.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_strategy_configs_strategy "
+                    "ON strategy_configs (strategy_id)"
+                )
+            )
+            await session.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_strategy_configs_updated "
+                    "ON strategy_configs (updated_at DESC)"
                 )
             )
             # NT-01: persistent notes/journal table
@@ -359,6 +396,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 log.info("hub.strategy_decisions_table_ensured")
             except Exception as sd_exc:
                 log.warning("hub.strategy_decisions_migration_error", error=str(sd_exc))
+            # v59: mark phantom trades (gtc_resting/gtc with no on-chain fill)
+            try:
+                from db.migrations.v59_mark_phantom_trades import mark_phantom_trades
+
+                n_phantom = await mark_phantom_trades(session)
+                await session.commit()
+                if n_phantom:
+                    log.info("hub.v59_phantom_trades_marked", count=n_phantom)
+            except Exception as ph_exc:
+                log.warning("hub.v59_phantom_migration_error", error=str(ph_exc))
             break
     except Exception as exc:
         log.warning("hub.migration_error", error=str(exc))
@@ -417,7 +464,11 @@ app.include_router(agent_ops_router, prefix="/api", tags=["agent-ops"])
 app.include_router(
     strategy_decisions_router, prefix="/api", tags=["strategy-decisions"]
 )
+# STRATEGIES: registry listing for FE Strategies page (audit #216)
+app.include_router(strategies_router, prefix="/api", tags=["strategies"])
 app.include_router(window_traces_router, prefix="/api", tags=["window-traces"])
+# GATE-TRACES: per-gate pass/fail heatmap from gate_check_traces (audit #188)
+app.include_router(gate_traces_router, prefix="/api", tags=["gate-traces"])
 
 
 @app.get("/health", tags=["health"])

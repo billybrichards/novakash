@@ -267,6 +267,22 @@ class ReconcilePositionsUseCase:
         else:
             trade_pnl = round(-trade_stake, 4)
 
+        # Phantom-trade guard (all tiers): refuse to score trades that
+        # have no on-chain evidence AND are from phantom-prone exec modes.
+        # Hub note #147: gtc_resting/gtc phantom trades poisoned P&L.
+        tx_hash = (match.get("polymarket_tx_hash") or "").strip()
+        exec_mode = match.get("execution_mode") or ""
+        if not tx_hash and exec_mode in ("gtc_resting", "gtc"):
+            logger.warning(
+                "reconciler.phantom_trade_skip",
+                extra={
+                    "trade_id": trade_id,
+                    "execution_mode": exec_mode,
+                    "reason": "no polymarket_tx_hash on gtc/gtc_resting trade",
+                },
+            )
+            return None
+
         # 2026-04-17 fix: skip the DB resolve_trade write if the match
         # already has an outcome set (e.g. resolved silently by the
         # CLOBReconciler startup backfill). Otherwise we'd re-stomp

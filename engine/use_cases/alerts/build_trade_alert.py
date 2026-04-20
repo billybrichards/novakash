@@ -64,6 +64,10 @@ class BuildTradeAlertInput:
     t_offset_secs: int
     wallet_usdc: Optional[Decimal] = None
     paper_mode: bool = False
+    # Strategy-specific opaque metadata to surface in renderer (v5_ensemble
+    # uses this to expose signal_source / p_lgb / p_classifier / ensemble_config
+    # so operators can tell ensemble trades apart from plain v4_fusion).
+    extras: Optional[dict] = None
 
 
 class BuildTradeAlertUseCase:
@@ -153,6 +157,7 @@ class BuildTradeAlertUseCase:
             health=health,
             today_tally=today,
             last_hour_tally=last_hour,
+            extras=inp.extras,
         )
 
     @staticmethod

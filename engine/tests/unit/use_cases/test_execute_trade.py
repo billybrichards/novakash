@@ -348,9 +348,11 @@ async def test_rate_limit_blocked():
 
 @pytest.mark.asyncio
 async def test_circuit_breaker_tripped():
-    """3 consecutive errors -> circuit breaker activated."""
+    """3 consecutive real errors -> circuit breaker activated."""
     clock = FakeClock(1000.0)
-    fail_fill = _make_fill_result(success=False, failure_reason="clob_error")
+    fail_fill = _make_fill_result(
+        success=False, failure_reason="gtc_submit_error: clob rejected"
+    )
     uc, mocks = _build_use_case(clock=clock, fill_result=fail_fill)
     decision = _make_decision()
     market = _make_window_market()
@@ -383,7 +385,9 @@ async def test_circuit_breaker_tripped():
 async def test_circuit_breaker_sends_tg_alert():
     """Circuit breaker trip fires send_system_alert to TG."""
     clock = FakeClock(1000.0)
-    fail_fill = _make_fill_result(success=False, failure_reason="clob_error")
+    fail_fill = _make_fill_result(
+        success=False, failure_reason="gtc_submit_error: clob rejected"
+    )
     uc, mocks = _build_use_case(clock=clock, fill_result=fail_fill)
     decision = _make_decision()
     market = _make_window_market()
@@ -404,6 +408,107 @@ async def test_circuit_breaker_sends_tg_alert():
     cb_alerts = [c for c in alert_calls if "Circuit breaker" in str(c)]
     assert len(cb_alerts) == 1
     assert "3 consecutive" in str(cb_alerts[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_reason",
+    [
+        "fak_rfq_exhausted; gtc_fallback_disabled",
+        "gtc_unfilled",
+    ],
+)
+async def test_benign_no_fill_does_not_trip_breaker(failure_reason):
+    """No-liquidity outcomes (FAK exhaustion, GTC unfilled) are market
+    conditions, not infra errors. They MUST NOT count toward the
+    consecutive-error counter that trips the 180s circuit breaker.
+    """
+    clock = FakeClock(1000.0)
+    fail_fill = _make_fill_result(success=False, failure_reason=failure_reason)
+    uc, mocks = _build_use_case(clock=clock, fill_result=fail_fill)
+    decision = _make_decision()
+    market = _make_window_market()
+
+    # Ten benign no-fills in a row — well beyond CIRCUIT_BREAKER_ERRORS=3
+    for _ in range(10):
+        clock.advance(31.0)
+        mocks["window_state"].was_traded.return_value = False
+        result = await uc.execute(
+            decision=decision,
+            window_market=market,
+            current_btc_price=84231.0,
+            open_price=84331.0,
+        )
+        assert not result.success
+        # Never circuit-breaker-blocked
+        assert "circuit_breaker" not in (result.failure_reason or "")
+
+    # No TG circuit-breaker alert fired
+    alert_calls = mocks["alerter"].send_system_alert.call_args_list
+    cb_alerts = [c for c in alert_calls if "Circuit breaker" in str(c)]
+    assert cb_alerts == []
+
+
+@pytest.mark.asyncio
+async def test_benign_no_fills_do_not_poison_real_error_counter():
+    """A real gtc_submit_error after a string of benign no-fills should
+    start the counter from 1, not inherit from the benign stream.
+    Two real errors alone must not trip (threshold=3).
+    """
+    clock = FakeClock(1000.0)
+    benign = _make_fill_result(
+        success=False, failure_reason="fak_rfq_exhausted; gtc_fallback_disabled"
+    )
+    real = _make_fill_result(
+        success=False, failure_reason="gtc_submit_error: clob rejected"
+    )
+    uc, mocks = _build_use_case(clock=clock, fill_result=benign)
+    decision = _make_decision()
+    market = _make_window_market()
+
+    # 5 benign no-fills
+    for _ in range(5):
+        clock.advance(31.0)
+        mocks["window_state"].was_traded.return_value = False
+        await uc.execute(
+            decision=decision,
+            window_market=market,
+            current_btc_price=84231.0,
+            open_price=84331.0,
+        )
+
+    # 2 real errors — below threshold, should NOT trip yet
+    mocks["executor"].execute_order.return_value = real
+    for _ in range(2):
+        clock.advance(31.0)
+        mocks["window_state"].was_traded.return_value = False
+        await uc.execute(
+            decision=decision,
+            window_market=market,
+            current_btc_price=84231.0,
+            open_price=84331.0,
+        )
+
+    clock.advance(31.0)
+    mocks["window_state"].was_traded.return_value = False
+    result = await uc.execute(
+        decision=decision,
+        window_market=market,
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    # Third real error — this one trips
+    assert "circuit_breaker" not in (result.failure_reason or "")
+    # But the NEXT call should be blocked
+    clock.advance(31.0)
+    mocks["window_state"].was_traded.return_value = False
+    blocked = await uc.execute(
+        decision=decision,
+        window_market=market,
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    assert "circuit_breaker" in (blocked.failure_reason or "")
 
 
 # ─── Token ID Missing ───────────────────────────────────────────────────

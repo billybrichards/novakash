@@ -5,23 +5,12 @@ import PageHeader from '../../components/shared/PageHeader.jsx';
 import FilterPills from '../../components/shared/FilterPills.jsx';
 import { T } from '../../theme/tokens.js';
 
-// Derive a coarse category from the archive path so operators can scan by area.
-function categoryOf(path) {
-  if (path.startsWith('/archive/polymarket/')) return 'polymarket';
-  if (path.startsWith('/archive/data/')) return 'data';
-  if (/paper|dashboard|playwright|execution-hq|live|factory|v58|windows|timesfm|composite|15min|strategy(?!-floor)/i.test(path)) return 'trading';
-  if (/margin/i.test(path)) return 'margin';
-  if (/config|audit|deployments|schema|notes|ops|telegram|setup|risk|positions|signals|trades/i.test(path)) return 'system';
-  return 'other';
-}
-
+// Category is declared on each entry in navigation.js (trading | polymarket | data | ops).
 const CATEGORY_COLORS = {
-  trading: '#a855f7',
+  trading:   '#a855f7',
   polymarket: '#06b6d4',
-  data: '#4ade80',
-  margin: '#f59e0b',
-  system: '#64748b',
-  other: '#94a3b8',
+  data:      '#4ade80',
+  ops:       '#f59e0b',
 };
 
 export default function ArchiveCenter() {
@@ -32,14 +21,9 @@ export default function ArchiveCenter() {
   // operators see every archive route regardless of whether it's
   // generic-component or props-bearing (StrategyFloor).
   const allRows = useMemo(() => {
-    const a = ARCHIVED_PAGES.map(p => ({
-      ...p,
-      category: categoryOf(p.path),
-      kind: 'page',
-    }));
+    const a = ARCHIVED_PAGES.map(p => ({ ...p, kind: 'page' }));
     const b = ARCHIVED_STRATEGY_FLOORS.map(p => ({
       ...p,
-      category: 'polymarket',
       kind: 'floor',
       note: `StrategyFloor with strategyId="${p.strategyId}"`,
     }));

@@ -1,0 +1,26 @@
+name: v5_ensemble
+version: "5.1.0"
+# 2026-04-18: Flipped GHOST → LIVE per Billy. Path 1 classifier is
+# deployed on Montreal-timesfm (16.52.14.182) with
+# V5_ENSEMBLE_PATH1_ENABLED=true; v5 now consumes the blended p_up via
+# surface.poly_confidence and runs alongside v4_fusion (also LIVE).
+# The 13 inherited gates + 2 ensemble gates govern execution. Roll
+# back to GHOST by editing this file (mode: GHOST) and restarting
+# the engine — no code change needed.
+mode: LIVE
+asset: BTC
+timescale: 5m
+
+# All logic is in the hook (mirrors v4_fusion). The hook inherits all 13
+# v4_fusion gates verbatim and adds two ensemble-specific gates
+# (ensemble_fallback_sanity + ensemble_disagreement) after the confidence gate.
+gates: []
+
+hooks_file: v5_ensemble.py
+pre_gate_hook: evaluate_polymarket_ensemble
+
+# Sizing matches v4_fusion so allocation isn't a confound when comparing WR.
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.10

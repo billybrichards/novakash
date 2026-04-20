@@ -180,6 +180,37 @@ class TelegramRenderer(AlertRendererPort):
             f"  open ${b.window_open_usd:,.2f}{close}{pct}{agree}"
         )
 
+    def _render_ensemble_extras(self, extras: Optional[dict]) -> Optional[str]:
+        """One-line summary of v5_ensemble's signal-source + ensemble blend.
+
+        Reads opaque dict the use case forwards from
+        ``StrategyDecision.metadata``. Returns None unless ``signal_source``
+        is set, so non-ensemble strategies render unchanged.
+
+        Format examples (one line each):
+          ensemble: source=ensemble  used=0.812  lgb=0.773  path1=0.851  mode=blend
+          ensemble: source=lgb_only  used=0.300  lgb=0.300  path1=n/a  mode=blend
+          ensemble: source=ensemble  used=0.620  lgb=0.620  path1=n/a  mode=fallback_lgb_only
+        """
+        if not extras or not extras.get("signal_source"):
+            return None
+
+        def _fmt(p):
+            try:
+                return f"{float(p):.3f}"
+            except (TypeError, ValueError):
+                return "n/a"
+
+        cfg = extras.get("ensemble_config") or {}
+        mode = cfg.get("mode") if isinstance(cfg, dict) else None
+        return (
+            f"🧬 ensemble: source={extras['signal_source']}"
+            f"  used={_fmt(extras.get('probability_used'))}"
+            f"  lgb={_fmt(extras.get('probability_lgb'))}"
+            f"  path1={_fmt(extras.get('probability_classifier'))}"
+            f"  mode={mode or 'n/a'}"
+        )
+
     def _render_health(self, h: HealthBadge) -> str:
         emoji = _HEALTH_EMOJI[h.status]
         tag = f"{emoji} {h.status.value}"
@@ -226,11 +257,16 @@ class TelegramRenderer(AlertRendererPort):
             DIVIDER,
             f"{dir_arrow} {p.direction}  |  conf={p.confidence_label} ({p.confidence_score:.2f})  |  mode={p.mode}",
             f"gates: {gates}" if gates else "gates: (none)",
+        ]
+        ensemble_line = self._render_ensemble_extras(p.extras)
+        if ensemble_line:
+            lines.append(ensemble_line)
+        lines.extend([
             SUB_DIVIDER,
             order_line,
             self._render_btc(p.btc),
             self._render_health(p.health),
-        ]
+        ])
         if tally_line:
             lines.append(tally_line)
         lines.append(DIVIDER)

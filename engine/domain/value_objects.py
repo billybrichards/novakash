@@ -854,6 +854,20 @@ class StrategyDecision:
 
     Every strategy returns exactly one of these per evaluate() call.
     The use case uses ``action`` to determine what happens next.
+
+    **Construction path (2026-04-17 Three-Builders convergence):**
+
+    Prefer the ``trade()`` / ``skip()`` / ``error()`` classmethods below
+    over direct construction. The factories accept a ``DecisionMetadata``
+    Value Object (``engine/domain/decision_metadata.py``) instead of a
+    loose dict — which prevents the key-convention divergence between
+    ``registry._evaluate_common``, ``v4_fusion_strategy.py``, and
+    ``configs/v4_fusion.py`` that originally motivated this refactor.
+
+    Direct-construction paths remain temporarily supported (``metadata``
+    can still be a plain dict) so the three existing builders migrate
+    incrementally without a flag-day cutover. Subsequent PRs tighten
+    the type once all call sites are converted.
     """
 
     action: str  # "TRADE" | "SKIP" | "ERROR"
@@ -871,8 +885,166 @@ class StrategyDecision:
     entry_reason: str  # Human-readable, e.g. "v10_DUNE_TRANSITION_T120_FAK"
     skip_reason: Optional[str]  # Why SKIP/ERROR, None if TRADE
 
-    # Strategy-specific metadata (JSON-serializable dict)
+    # Strategy-specific metadata (JSON-serializable dict).
+    # Prefer using DecisionMetadata.to_dict() via the classmethod factories
+    # below rather than assigning a dict literal here.
     metadata: dict = field(default_factory=dict)
+
+    # ── Factory methods (Three-Builders convergence) ─────────────────────────
+    #
+    # These are the one blessed construction path for TRADE / SKIP / ERROR
+    # decisions. All three historic builders should migrate to call these.
+    # Accepting either a DecisionMetadata VO (preferred) or a legacy dict
+    # (deprecated, for migration safety) means builders can be cut over one
+    # at a time.
+
+    @classmethod
+    def trade(
+        cls,
+        *,
+        direction: str,
+        strategy_id: str,
+        strategy_version: str,
+        entry_reason: str,
+        metadata: "Any" = None,
+        confidence: Optional[str] = None,
+        confidence_score: Optional[float] = None,
+        entry_cap: Optional[float] = None,
+        collateral_pct: Optional[float] = None,
+    ) -> "StrategyDecision":
+        """Construct a TRADE decision.
+
+        :param direction: "UP" or "DOWN". Required — SKIP/ERROR have no
+            direction so they use the other factories.
+        :param metadata: Either a ``DecisionMetadata`` VO (preferred) or
+            a plain ``dict`` (legacy). ``None`` is treated as empty.
+        :raises ValueError: if ``direction`` is not "UP" or "DOWN".
+        """
+        if direction not in ("UP", "DOWN"):
+            raise ValueError(
+                f"StrategyDecision.trade direction must be 'UP' or 'DOWN', "
+                f"got {direction!r}"
+            )
+        return cls(
+            action="TRADE",
+            direction=direction,
+            confidence=confidence,
+            confidence_score=confidence_score,
+            entry_cap=entry_cap,
+            collateral_pct=collateral_pct,
+            strategy_id=strategy_id,
+            strategy_version=strategy_version,
+            entry_reason=entry_reason,
+            skip_reason=None,
+            metadata=_coerce_metadata(metadata),
+        )
+
+    @classmethod
+    def skip(
+        cls,
+        *,
+        reason: str,
+        strategy_id: str,
+        strategy_version: str,
+        metadata: "Any" = None,
+        direction: Optional[str] = None,
+        confidence: Optional[str] = None,
+        confidence_score: Optional[float] = None,
+        entry_cap: Optional[float] = None,
+        collateral_pct: Optional[float] = None,
+        entry_reason: str = "",
+    ) -> "StrategyDecision":
+        """Construct a SKIP decision.
+
+        :param reason: Human-readable skip reason (e.g. "regime:calm_skip",
+            "health:degraded"). Stored in ``skip_reason`` — used by the
+            Signal Explorer and gate-audit analytics.
+        :param metadata: DecisionMetadata VO or legacy dict; see
+            ``trade()``.
+        :param direction: Optional direction (``UP`` / ``DOWN``). Default
+            ``None``. Set when the strategy had computed a direction
+            before a subsequent gate vetoed the trade — preserves the
+            "strategy would have traded X but was filtered" record for
+            post-hoc analytics (e.g. gate-audit-matrix rendering in the
+            FE Signal Explorer). A bare SKIP (no prior decision) leaves
+            direction ``None``.
+        :param confidence / confidence_score / entry_cap / collateral_pct:
+            Optional fields carrying the decision state at the point of
+            skip. Used by the registry's post-hook-gate branch, which
+            already has a TRADE decision from the hook but ran YAML
+            gates as post-filters and caught a veto.
+        :param entry_reason: Default ``""``. Only populated for SKIPs
+            that followed a hook-computed entry reason; generic gate
+            skips leave it empty.
+        """
+        return cls(
+            action="SKIP",
+            direction=direction,
+            confidence=confidence,
+            confidence_score=confidence_score,
+            entry_cap=entry_cap,
+            collateral_pct=collateral_pct,
+            strategy_id=strategy_id,
+            strategy_version=strategy_version,
+            entry_reason=entry_reason,
+            skip_reason=reason,
+            metadata=_coerce_metadata(metadata),
+        )
+
+    @classmethod
+    def error(
+        cls,
+        *,
+        reason: str,
+        strategy_id: str,
+        strategy_version: str,
+        metadata: "Any" = None,
+    ) -> "StrategyDecision":
+        """Construct an ERROR decision (strategy raised during evaluation).
+
+        Distinct from SKIP: SKIP means "strategy ran, decided not to
+        trade", ERROR means "strategy could not reach a decision"
+        (exception path, surface missing, etc).
+        """
+        return cls(
+            action="ERROR",
+            direction=None,
+            confidence=None,
+            confidence_score=None,
+            entry_cap=None,
+            collateral_pct=None,
+            strategy_id=strategy_id,
+            strategy_version=strategy_version,
+            entry_reason="",
+            skip_reason=reason,
+            metadata=_coerce_metadata(metadata),
+        )
+
+
+def _coerce_metadata(metadata: "Any") -> dict:
+    """Accept a DecisionMetadata VO, a dict, or None — return the dict form.
+
+    Temporary shim for the migration window: existing call sites that
+    pass dicts keep working; new call sites pass the VO and get its
+    canonical ``to_dict()`` output. Once the three historic builders
+    are all migrated, the ``dict`` branch can be deleted and the
+    factories tightened to accept only ``DecisionMetadata``.
+    """
+    if metadata is None:
+        return {}
+    # Avoid importing DecisionMetadata at module top (keeps
+    # domain/value_objects.py free of intra-domain import ordering
+    # concerns; decision_metadata.py itself imports nothing from here).
+    from domain.decision_metadata import DecisionMetadata
+
+    if isinstance(metadata, DecisionMetadata):
+        return metadata.to_dict()
+    if isinstance(metadata, dict):
+        return metadata
+    raise TypeError(
+        f"StrategyDecision metadata must be DecisionMetadata, dict, or None; "
+        f"got {type(metadata).__name__}"
+    )
 
 
 @dataclass(frozen=True)

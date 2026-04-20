@@ -60,6 +60,14 @@ class FullDataSurface:
     v2_quantiles_p50: Optional[float]
     v2_quantiles_p90: Optional[float]
 
+    # Audit #121 Path 1 — TimesFM ensemble fields (timesfm-repo commit f62e9d8).
+    # All None when V5_ENSEMBLE_PATH1_ENABLED is off on the timesfm side, OR
+    # when classifier head fails to load (then mode == "fallback_lgb_only").
+    # Cross-repo contract keys — do NOT rename without coordinated PR.
+    probability_lgb: Optional[float]
+    probability_classifier: Optional[float]
+    ensemble_config: Optional[dict]
+
     # V3 Multi-Horizon Composites (9 timescales)
     v3_5m_composite: Optional[float]
     v3_15m_composite: Optional[float]
@@ -558,6 +566,19 @@ class DataSurfaceManager:
             v2_quantiles_p10=quantiles.get("p10"),
             v2_quantiles_p50=quantiles.get("p50"),
             v2_quantiles_p90=quantiles.get("p90"),
+            # Path 1 ensemble (audit #121) — all None when ensemble disabled
+            # on timesfm side. ensemble_config carries mode + weights metadata.
+            probability_lgb=(
+                float(ts_data["probability_lgb"])
+                if ts_data.get("probability_lgb") is not None
+                else None
+            ),
+            probability_classifier=(
+                float(ts_data["probability_classifier"])
+                if ts_data.get("probability_classifier") is not None
+                else None
+            ),
+            ensemble_config=ts_data.get("ensemble_config"),
             # V3 Composites
             v3_5m_composite=_v3_composite(v3, "5m"),
             v3_15m_composite=_v3_composite(v3, "15m"),

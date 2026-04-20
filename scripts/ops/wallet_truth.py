@@ -313,10 +313,11 @@ def main(hours_window: int = 8) -> None:
     print(f"USDC on-chain NOW:              ${usdc:.4f}")
 
     # Optional context: early/recent wallet snapshots
-    for h, label in [(args.hours, "Wallet snap %dh ago"), (1, "Wallet snap 1h ago")]:
+    for h in (args.hours, 1):
         snaps = wallet_history(h)
         if snaps:
-            print(f"{label % h:32s}${float(snaps[0][1]):.2f}")
+            label = f"Wallet snap {h}h ago"
+            print(f"{label:32s}${float(snaps[0][1]):.2f}")
     print()
 
     positions = poly_positions()

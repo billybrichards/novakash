@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { useApi } from '../hooks/useApi.js';
 import { useApiLoader } from '../hooks/useApiLoader.js';
+import { useWebSocket } from '../hooks/useWebSocket.js';
 import PageHeader from '../components/shared/PageHeader.jsx';
 import DataTable from '../components/shared/DataTable.jsx';
 import EmptyState from '../components/shared/EmptyState.jsx';
@@ -25,6 +26,7 @@ export default function SignalExplorer() {
   const api = useApi();
   const [tf, setTf] = useState('5m');
   const [conv, setConv] = useState(null);
+  const [liveRows, setLiveRows] = useState([]);
 
   const { data, error: err, loading } = useApiLoader(
     (signal) => {
@@ -35,7 +37,20 @@ export default function SignalExplorer() {
     [tf, conv]
   );
 
-  const rows = Array.isArray(data) ? data : [];
+  // Seed local state from API snapshot; reset on filter change
+  useEffect(() => {
+    setLiveRows(Array.isArray(data) ? data : []);
+  }, [data]);
+
+  // WebSocket: receive real-time signal events and prepend to heatmap data
+  const { isConnected, data: wsMsg } = useWebSocket('/ws/feed');
+  useEffect(() => {
+    if (wsMsg?.type === 'signal' && wsMsg.payload) {
+      setLiveRows(prev => [wsMsg.payload, ...prev]);
+    }
+  }, [wsMsg]);
+
+  const rows = liveRows;
 
   const matrix = useMemo(() => {
     const by = {};
@@ -65,7 +80,15 @@ export default function SignalExplorer() {
         tag="SIGNALS · /signals"
         title="Signal Explorer"
         subtitle="Strategy × regime × conviction win-rate slicer over /api/v58/strategy-decisions."
-        right={<div style={{ fontSize: 11, color: T.label2 }}>
+        right={<div style={{ fontSize: 11, color: T.label2, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: isConnected ? T.profit : T.label,
+              display: 'inline-block',
+            }} />
+            {isConnected ? 'LIVE' : 'poll'}
+          </span>
           {rows.length} decisions · {matrix.strategies.length} strategies · {matrix.regimes.length} regimes
         </div>}
       />

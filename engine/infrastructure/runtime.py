@@ -241,6 +241,18 @@ class EngineRuntime:
                 "orchestrator.ensure_window_trace_tables_failed", error=str(exc)[:200]
             )
 
+        # Phase-2 Option C.1 (audit #216 follow-up): seed strategy_configs
+        # table from in-memory registry. Hub serves /api/strategies from this
+        # table in preference to the filesystem resolver. Idempotent upsert,
+        # non-fatal on failure — hub fallback covers missing rows.
+        try:
+            if self._strategy_registry:
+                await self._strategy_registry.seed_registry_to_db()
+        except Exception as exc:
+            log.warning(
+                "orchestrator.seed_strategy_configs_failed", error=str(exc)[:200]
+            )
+
         # ── Inject pool into heartbeat repo (pool available after connect()) ─────
         self._root._pg_system_repo._pool = self._db._pool
 
