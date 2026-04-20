@@ -22,6 +22,7 @@ gates:
         - { threshold: 0.0, modifier: 0.0, label: "skip_sub25_53pct" }
       null_modifier: 1.5
 
+gate_params:
   # ── entry cap (v2.2.0) ──
   # Gamma bestAsk is used as the GTC limit price. This override caps it
   # so v4_down_only never bids above 90¢ even if Gamma returns higher.
