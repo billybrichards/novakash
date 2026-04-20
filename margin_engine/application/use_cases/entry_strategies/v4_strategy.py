@@ -453,7 +453,7 @@ class V4Strategy(EntryStrategy):
                 notional=requested_notional,
             )
 
-            actual_notional = (
+            actual_notional = Money.usd(
                 fill.filled_notional if fill.filled_notional > 0 else requested_notional
             )
 
