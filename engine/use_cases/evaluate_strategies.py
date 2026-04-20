@@ -279,8 +279,9 @@ class EvaluateStrategiesUseCase:
                     (d for d in all_decisions if d.strategy_id == "v10_gate"), None
                 )
                 if v10_decision:
+                    timeframe = getattr(window, "timeframe", "5m")
                     asyncio.create_task(self._write_signal_evaluation(
-                        ctx, v10_decision, asset, window_ts, eval_offset,
+                        ctx, v10_decision, asset, window_ts, eval_offset, timeframe,
                     ))
             except Exception as exc:
                 log.warning("strategy.signal_eval_error", error=str(exc)[:200])
@@ -311,6 +312,7 @@ class EvaluateStrategiesUseCase:
         asset: str,
         window_ts: int,
         eval_offset: int,
+        timeframe: str = "5m",
     ) -> None:
         """Write a signal_evaluations row with full decision vector.
 
@@ -338,7 +340,7 @@ class EvaluateStrategiesUseCase:
                 # Window identification
                 "window_ts": window_ts,
                 "asset": asset,
-                "timeframe": "5m",
+                "timeframe": timeframe,
                 "eval_offset": eval_offset,
 
                 # Price sources
