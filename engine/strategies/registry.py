@@ -433,6 +433,12 @@ class StrategyRegistry:
                 continue
             if config.timescale != window_tf:
                 continue
+            # Multi-asset guard: skip strategies whose configured asset
+            # doesn't match this window's asset. Without this, a BTC window
+            # would evaluate v7_15m_sniper_eth and produce mislabelled data.
+            window_asset = getattr(window, "asset", "BTC")
+            if getattr(config, "asset", "BTC") != window_asset:
+                continue
             try:
                 decision = self._evaluate_one(name, config, surface)
                 decisions.append(decision)

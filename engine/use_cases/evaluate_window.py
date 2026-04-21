@@ -540,7 +540,7 @@ class EvaluateWindowUseCase:
                         {
                             "window_ts": window.window_ts,
                             "asset": window.asset,
-                            "timeframe": "5m",
+                            "timeframe": getattr(window, "timeframe", "5m"),
                             "eval_offset": ctx.eval_offset,
                             "delta_pct": delta_pct,
                             "vpin": current_vpin,
@@ -559,7 +559,7 @@ class EvaluateWindowUseCase:
                         {
                             "window_ts": window.window_ts,
                             "asset": window.asset,
-                            "timeframe": "5m",
+                            "timeframe": getattr(window, "timeframe", "5m"),
                             "open_price": open_price,
                             "close_price": current_price,
                             "delta_pct": delta_pct,
@@ -586,7 +586,7 @@ class EvaluateWindowUseCase:
                         {
                             "window_ts": window.window_ts,
                             "asset": window.asset,
-                            "timeframe": "5m",
+                            "timeframe": getattr(window, "timeframe", "5m"),
                             "eval_offset": eval_offset,
                             "delta_pct": delta_pct,
                             "vpin": current_vpin,
