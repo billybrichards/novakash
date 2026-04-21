@@ -50,7 +50,7 @@ from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
 _STRATEGY_ID = "v6_sniper"
-_VERSION = "6.1.1"
+_VERSION = "6.1.2"
 
 
 # ── Tunable knobs (YAML gate_params → env fallback → default) ──────────────
@@ -134,6 +134,50 @@ def _up_entry_cap_override() -> Optional[float]:
     when unset or set to 0."""
     v = _gp.get_float(
         "up_entry_cap_override", "V6_SNIPER_UP_ENTRY_CAP_OVERRIDE", 0.0
+    )
+    return v if v > 0 else None
+
+
+# ── v6.1.2 Tier-1 rules (LGB alignment + head agreement + conf floor) ───
+# Data: strategy_decisions n=27, 2026-04-21 (Hub note "tier1").
+#   NO / lgb<0.30: 91% WR, ROI +58.6%
+#   YES / lgb>0.70: 89% WR, ROI +26.4%
+#   NO / lgb 0.30-0.50: 33% WR (loser) — block this
+#   |lgb-path1|<0.30: 83-100% WR; >= 0.30 degrades to ~60% WR
+def _require_lgb_aligned() -> bool:
+    return _gp.get_bool(
+        "require_lgb_aligned", "V6_SNIPER_REQUIRE_LGB_ALIGNED", False
+    )
+
+
+def _lgb_aligned_down_max() -> float:
+    return _gp.get_float(
+        "lgb_aligned_down_max", "V6_SNIPER_LGB_ALIGNED_DOWN_MAX", 0.30
+    )
+
+
+def _lgb_aligned_up_min() -> float:
+    return _gp.get_float(
+        "lgb_aligned_up_min", "V6_SNIPER_LGB_ALIGNED_UP_MIN", 0.70
+    )
+
+
+def _max_head_disagreement() -> Optional[float]:
+    """Max |lgb - path1|. Returns None (gate disabled) when sentinel 0.
+    YAML positive floats enable the gate; absent/zero disables it.
+    """
+    v = _gp.get_float(
+        "max_head_disagreement", "V6_SNIPER_MAX_HEAD_DISAGREEMENT", 0.0
+    )
+    return v if v > 0 else None
+
+
+def _min_confidence_score() -> Optional[float]:
+    """Floor on |probability_used - 0.5| * 2. Returns None when sentinel 0.
+    YAML positive floats enable the gate; absent/zero disables it.
+    """
+    v = _gp.get_float(
+        "min_confidence_score", "V6_SNIPER_MIN_CONFIDENCE_SCORE", 0.0
     )
     return v if v > 0 else None
 
@@ -996,6 +1040,75 @@ def evaluate_polymarket_sniper(
         )
         bucket_extras["conviction_bucket"] = "no_eval_blocked"
         return _skip("no_eval_blocked: insufficient ensemble inputs", gates, extras=bucket_extras)
+
+    # ── Tier-1 (v6.1.2): LGB alignment requirement ──────────────────────
+    # Not just "no opposition" (which only blocks bucket_lgb_opposite_block
+    # upstream) — actively REQUIRE LGB agreement in the winning direction.
+    # DOWN: lgb must be < lgb_aligned_down_max (default 0.30).
+    # UP:   lgb must be > lgb_aligned_up_min   (default 0.70).
+    if _require_lgb_aligned() and p_lgb is not None:
+        down_max = _lgb_aligned_down_max()
+        up_min = _lgb_aligned_up_min()
+        if direction == "DOWN" and p_lgb >= down_max:
+            gates.append(_gate(
+                "lgb_aligned", False,
+                f"DOWN needs lgb<{down_max}, got lgb={p_lgb:.3f}",
+            ))
+            return _skip(
+                f"lgb_misaligned_down: lgb={p_lgb:.3f} >= {down_max}",
+                gates, extras=bucket_extras,
+            )
+        if direction == "UP" and p_lgb <= up_min:
+            gates.append(_gate(
+                "lgb_aligned", False,
+                f"UP needs lgb>{up_min}, got lgb={p_lgb:.3f}",
+            ))
+            return _skip(
+                f"lgb_misaligned_up: lgb={p_lgb:.3f} <= {up_min}",
+                gates, extras=bucket_extras,
+            )
+        gates.append(_gate(
+            "lgb_aligned", True,
+            f"lgb={p_lgb:.3f} aligned with direction={direction}",
+        ))
+
+    # ── Tier-1 (v6.1.2): Head agreement (|lgb - path1| < threshold) ─────
+    max_disagreement = _max_head_disagreement()
+    if max_disagreement is not None and p_lgb is not None and p_path1 is not None:
+        disagreement = abs(p_lgb - p_path1)
+        if disagreement >= max_disagreement:
+            gates.append(_gate(
+                "head_agreement", False,
+                f"|lgb-path1|={disagreement:.3f} >= {max_disagreement}",
+            ))
+            return _skip(
+                f"heads_disagree: |lgb-path1|={disagreement:.3f} >= {max_disagreement}",
+                gates, extras=bucket_extras,
+            )
+        gates.append(_gate(
+            "head_agreement", True,
+            f"|lgb-path1|={disagreement:.3f} < {max_disagreement}",
+        ))
+
+    # ── Tier-1 (v6.1.2): Min confidence_score floor ─────────────────────
+    # confidence_score = |probability_used - 0.5| * 2. Tighter than the
+    # bucket-level HIGH threshold (0.55) — kills marginal HIGH trades.
+    min_conf = _min_confidence_score()
+    if min_conf is not None:
+        confscore = abs(probability_up - 0.5) * 2.0
+        if confscore < min_conf:
+            gates.append(_gate(
+                "min_confidence_score", False,
+                f"conf={confscore:.3f} < floor {min_conf}",
+            ))
+            return _skip(
+                f"conf_score_below_floor: {confscore:.3f} < {min_conf}",
+                gates, extras=bucket_extras,
+            )
+        gates.append(_gate(
+            "min_confidence_score", True,
+            f"conf={confscore:.3f} >= floor {min_conf}",
+        ))
 
     # ── v6.1.0 mid-range fill gate (Hub note #198) ──────────────────────
     # Fills in [mid_min, mid_max] are the break-even zone after 7.2%

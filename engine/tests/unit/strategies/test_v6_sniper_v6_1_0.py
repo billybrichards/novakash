@@ -89,6 +89,16 @@ def registry():
     mgr = DataSurfaceManager(v4_base_url="http://fake")
     reg = StrategyRegistry(CONFIGS_DIR, mgr)
     reg.load_all()
+    # v6.1.2 introduced Tier-1 gates (require_lgb_aligned, max_head_disagreement,
+    # min_confidence_score) that reject many v6.1.0 fixtures (dist=0.25,
+    # lgb=0.30). These tests cover v6.1.0's fill-aware sizing + mid-range
+    # double-bucket logic, which is independent of Tier-1, so we disable
+    # the v6.1.2 gates at fixture scope. v6.1.2 behaviour itself is pinned
+    # by ``test_v6_sniper_v6_1_2.py``.
+    cfg = reg.configs["v6_sniper"]
+    cfg.gate_params["require_lgb_aligned"] = False
+    cfg.gate_params["max_head_disagreement"] = 0.0
+    cfg.gate_params["min_confidence_score"] = 0.0
     return reg
 
 

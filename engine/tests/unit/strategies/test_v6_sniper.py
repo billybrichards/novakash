@@ -97,6 +97,17 @@ def registry():
     mgr = DataSurfaceManager(v4_base_url="http://fake")
     reg = StrategyRegistry(CONFIGS_DIR, mgr)
     reg.load_all()
+    # v6.1.2 introduced Tier-1 gates (require_lgb_aligned, max_head_disagreement,
+    # min_confidence_score) that — by design — reject many of the marginal
+    # agree_strong / pegged_path1 fixtures this file was written against.
+    # These tests cover the v6.1.0/v6.1.1 bucket + freshness logic below the
+    # new gates, so we disable the v6.1.2 gates at fixture scope to keep the
+    # original regression coverage intact. v6.1.2 behaviour itself is pinned
+    # by ``test_v6_sniper_v6_1_2.py``.
+    cfg = reg.configs["v6_sniper"]
+    cfg.gate_params["require_lgb_aligned"] = False
+    cfg.gate_params["max_head_disagreement"] = 0.0
+    cfg.gate_params["min_confidence_score"] = 0.0
     return reg
 
 
@@ -111,7 +122,10 @@ def test_v6_sniper_registered_as_live(registry):
     assert "v6_sniper" in registry.strategy_names
     cfg = registry.configs["v6_sniper"]
     assert cfg.mode == "LIVE"
-    assert cfg.version == "6.1.1"
+    # Version pin relaxed in v6.1.2 — this file covers code paths shared
+    # across 6.1.x and forward; see ``test_v6_sniper_v6_1_2.test_version_bumped``
+    # for the exact-version pin on the currently-LIVE release.
+    assert cfg.version.startswith("6.1.")
     assert cfg.timescale == "5m"
 
 
@@ -382,15 +396,16 @@ def test_v4_down_only_stays_ghost(registry):
 
 
 # ── v6.0.1 additions: risk_off regime pass + pegged boundary tests ─────────
-def test_15_risk_off_regime_accepts(registry):
-    """v6.0.1 adds risk_off to tradeable_v4_regimes. Regression test:
-    a risk_off window with otherwise-passing gates should TRADE, not skip.
+def test_15_risk_off_regime_rejected(registry):
+    """v6.0.1 added risk_off to tradeable_v4_regimes; PR #313 (volatile-only
+    Montreal parity) restricted the allowlist to ``[volatile_trend]``.
+    v6.1.2 inherits that restriction — a risk_off window must SKIP with
+    ``regime_not_tradeable``, not TRADE.
     """
     surface = _make_surface(v4_regime="risk_off")
     decision = _evaluate(registry, surface)
-    assert decision.action == "TRADE", (
-        f"expected TRADE, got {decision.action} skip_reason={decision.skip_reason}"
-    )
+    assert decision.action == "SKIP"
+    assert "regime_not_tradeable" in (decision.skip_reason or ""), decision.skip_reason
 
 
 def test_15b_chop_regime_still_rejected(registry):

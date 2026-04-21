@@ -136,13 +136,16 @@ def _gate_result(decision, gate_name):
 
 # ── Test 1 ──────────────────────────────────────────────────────────────────
 def test_up_requires_both_buckets(registry):
-    """UP direction + agree_strong only (dist=0.30, path1=0.78) → SKIP.
+    """UP direction + agree_strong only (dist=0.35, path1=0.78) → SKIP.
 
     With up_require_both_buckets=true, UP needs BOTH conditions.
+    v6.1.2 update: raised poly_confidence 0.80→0.85 and lgb 0.70→0.75 so the
+    surface clears v6.1.2's Tier-1 gates (min_confidence_score 0.70, lgb_aligned_up_min
+    0.70, head agreement < 0.30); the direction_asym_up SKIP is still the one under test.
     """
     surface = _make_up_surface(
-        poly_confidence=0.80, poly_confidence_distance=0.30,
-        probability_lgb=0.70, probability_classifier=0.78,
+        poly_confidence=0.85, poly_confidence_distance=0.35,
+        probability_lgb=0.75, probability_classifier=0.78,
         # High-fill band so mid-range gate doesn't short-circuit.
         clob_up_ask=0.65, clob_down_ask=0.35,
     )
@@ -179,14 +182,17 @@ def test_up_allowed_when_both_buckets(registry):
 
 # ── Test 3 ──────────────────────────────────────────────────────────────────
 def test_down_allows_single_bucket(registry):
-    """DOWN + agree_strong only (dist=0.25, path1=0.25 non-pegged) → TRADE.
+    """DOWN + agree_strong only (dist=0.35, path1=0.20 non-pegged) → TRADE.
 
     DOWN direction keeps v6.1.0 semantics: either bucket alone accepts.
+    v6.1.2 update: lowered poly_confidence 0.25→0.15 and lgb 0.30→0.20 so the
+    surface clears Tier-1 gates (confscore floor 0.70 and lgb_aligned_down_max 0.30);
+    agree_strong / single-bucket acceptance on DOWN is still what's under test.
     """
     surface = _make_surface(
         poly_direction="DOWN",
-        poly_confidence=0.25, poly_confidence_distance=0.25,
-        probability_lgb=0.30, probability_classifier=0.25,
+        poly_confidence=0.15, poly_confidence_distance=0.35,
+        probability_lgb=0.20, probability_classifier=0.20,
         clob_down_ask=0.65, clob_up_ask=0.35,
     )
     decision = _evaluate(registry, surface)
@@ -220,14 +226,17 @@ def test_up_higher_dist_threshold(registry):
 
 # ── Test 5 ──────────────────────────────────────────────────────────────────
 def test_down_keeps_022_threshold(registry):
-    """DOWN + dist=0.25 (>= shared 0.22 but < new UP 0.28) → agree_strong TRUE.
+    """DOWN + dist=0.35 still buckets as agree_strong using shared threshold.
 
-    Confirms DOWN still uses 0.22 threshold.
+    Confirms DOWN uses the shared (v6.1.0) threshold path, not the UP-only
+    override. v6.1.2 update: raised dist 0.25→0.35 and lowered lgb 0.30→0.20
+    so Tier-1 gates (confscore floor 0.70, lgb_aligned_down_max 0.30) pass;
+    the direction-asymmetric bucket-classification branch is still under test.
     """
     surface = _make_surface(
         poly_direction="DOWN",
-        poly_confidence=0.25, poly_confidence_distance=0.25,
-        probability_lgb=0.30, probability_classifier=0.25,
+        poly_confidence=0.15, poly_confidence_distance=0.35,
+        probability_lgb=0.20, probability_classifier=0.20,
         clob_down_ask=0.65, clob_up_ask=0.35,
     )
     decision = _evaluate(registry, surface)
@@ -291,11 +300,13 @@ def test_down_entry_cap_085(registry):
     """DOWN decision carries entry_cap = 0.85 (v6.0.1 shared override).
 
     DOWN is unaffected by v6.1.1's up_entry_cap_override.
+    v6.1.2 update: same surface tuning as test_down_allows_single_bucket to
+    clear Tier-1 gates; entry_cap semantics are unchanged and still under test.
     """
     surface = _make_surface(
         poly_direction="DOWN",
-        poly_confidence=0.25, poly_confidence_distance=0.25,
-        probability_lgb=0.30, probability_classifier=0.25,
+        poly_confidence=0.15, poly_confidence_distance=0.35,
+        probability_lgb=0.20, probability_classifier=0.20,
         clob_down_ask=0.65, clob_up_ask=0.35,
     )
     decision = _evaluate(registry, surface)
@@ -306,10 +317,18 @@ def test_down_entry_cap_085(registry):
 
 
 # ── Test 10 ─────────────────────────────────────────────────────────────────
-def test_version_bumped():
-    """YAML version must be 6.1.1."""
+def test_version_at_least_611():
+    """YAML version must be >= 6.1.1 (forward-compat: 6.1.2, 6.2.0, ...).
+
+    Originally pinned to '6.1.1' exactly; relaxed in v6.1.2 so subsequent
+    minor bumps don't unseat this file's direction-asymmetric regression
+    coverage. A dedicated ``test_version_bumped`` lives in the v6.1.2
+    test file for the exact-version pin.
+    """
     data = yaml.safe_load(V6_YAML.read_text())
-    assert data["version"] == "6.1.1", f"expected 6.1.1, got {data['version']}"
+    version = data["version"]
+    parts = tuple(int(x) for x in str(version).split("."))
+    assert parts >= (6, 1, 1), f"expected version >= 6.1.1, got {version}"
 
 
 # ── Test 11 ─────────────────────────────────────────────────────────────────
@@ -323,4 +342,33 @@ def test_risk_off_override_still_false():
     assert data["gate_params"]["risk_off_override_enabled"] is False, (
         f"risk_off_override_enabled must be False (Montreal hotfix), "
         f"got {data['gate_params']['risk_off_override_enabled']}"
+    )
+
+
+# ── Test 12 ─────────────────────────────────────────────────────────────────
+def test_tradeable_v4_regimes_volatile_only():
+    """Montreal parity (2026-04-21): v6 restricted to volatile_trend only.
+
+    Live Montreal data: volatile_trend 69% WR vs calm/risk_off 42-47% WR.
+    Manually patched on Montreal prod at 17:47 UTC. This guard prevents a
+    merge/rebase from reintroducing calm_trend or risk_off.
+    """
+    data = yaml.safe_load(V6_YAML.read_text())
+    assert data["gate_params"]["tradeable_v4_regimes"] == ["volatile_trend"], (
+        f"tradeable_v4_regimes must be exactly ['volatile_trend'] "
+        f"(Montreal parity), got {data['gate_params']['tradeable_v4_regimes']}"
+    )
+
+
+# ── Test 13 ─────────────────────────────────────────────────────────────────
+def test_max_offset_sec_montreal_parity():
+    """Montreal parity: max_offset_sec pinned to 200.
+
+    Montreal prod runs 200; develop had drifted to 240. Pin both to 200 to
+    keep live + repo in sync.
+    """
+    data = yaml.safe_load(V6_YAML.read_text())
+    assert data["gate_params"]["max_offset_sec"] == 200, (
+        f"max_offset_sec must be 200 (Montreal parity), "
+        f"got {data['gate_params']['max_offset_sec']}"
     )
