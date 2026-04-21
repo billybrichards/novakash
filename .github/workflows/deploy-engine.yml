@@ -24,24 +24,28 @@ name: Deploy Engine to Montreal
 # CI checks (syntax, tests) run on PRs. Deploy only on push to develop.
 
 on:
-  push:
-    branches: [develop]
-    paths:
-      - 'engine/**'
-      - '.github/workflows/**'
-      - 'scripts/restart_engine.sh'
-      - '.github/workflows/deploy-engine.yml'
-      - '!engine/**/*.md'
-      - '!engine/**/*.txt'
-  pull_request:
-    branches: [develop]
-    paths:
-      - 'engine/**'
-      - '.github/workflows/**'
-      - 'scripts/restart_engine.sh'
-      - '.github/workflows/deploy-engine.yml'
-      - '!engine/**/*.md'
-      - '!engine/**/*.txt'
+  # DISABLED 2026-04-21: push/pull_request auto-triggers disabled after
+  # .env wipe incident (see audit task / Hub note). Re-enable once
+  # post-deploy health probe + .env integrity check are hardened.
+  #
+  # push:
+  #   branches: [develop]
+  #   paths:
+  #     - 'engine/**'
+  #     - '.github/workflows/**'
+  #     - 'scripts/restart_engine.sh'
+  #     - '.github/workflows/deploy-engine.yml'
+  #     - '!engine/**/*.md'
+  #     - '!engine/**/*.txt'
+  # pull_request:
+  #   branches: [develop]
+  #   paths:
+  #     - 'engine/**'
+  #     - '.github/workflows/**'
+  #     - 'scripts/restart_engine.sh'
+  #     - '.github/workflows/deploy-engine.yml'
+  #     - '!engine/**/*.md'
+  #     - '!engine/**/*.txt'
   workflow_dispatch:
 
 concurrency:
@@ -226,6 +230,15 @@ jobs:
           ssh -i ~/.ssh/deploy_key novakash@"$HOST" bash -s <<'REMOTE'
           set -e
           ENV_FILE=/home/novakash/novakash/engine/.env
+          # Only prune backups if the current .env is valid (non-empty). If it
+          # is missing or empty, skip so we don't erase the .rollback lineage
+          # that recovery depends on (.env wipe incident 2026-04-21).
+          if [ ! -s "$ENV_FILE" ]; then
+            echo "::warning::.env missing or empty — skipping backup pruning to preserve .rollback"
+            touch "$ENV_FILE"
+            chmod 600 "$ENV_FILE"
+            exit 0
+          fi
           touch "$ENV_FILE"
           chmod 600 "$ENV_FILE"
           cp "$ENV_FILE" "${ENV_FILE}.bak.$(date +%s)"
@@ -301,6 +314,19 @@ jobs:
           } > .env.new
           ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'cat > /home/novakash/novakash/engine/.env' < .env.new
           ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'wc -l /home/novakash/novakash/engine/.env'
+          # Verify .env landed correctly (post .env wipe incident 2026-04-21).
+          REMOTE_LINES=$(ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'wc -l < /home/novakash/novakash/engine/.env')
+          LOCAL_LINES=$(wc -l < .env.new)
+          if [ "$REMOTE_LINES" -lt 10 ]; then
+            echo "::error::.env write FAILED — remote has only $REMOTE_LINES lines (expected ~$LOCAL_LINES). Aborting deploy."
+            exit 1
+          fi
+          # Verify DATABASE_URL present (critical for engine boot)
+          if ! ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'grep -q "^DATABASE_URL=" /home/novakash/novakash/engine/.env'; then
+            echo "::error::.env missing DATABASE_URL — aborting."
+            exit 1
+          fi
+          echo "✓ .env verified on host ($REMOTE_LINES lines, DATABASE_URL present)"
         env:
           DEPLOY_DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DEPLOY_COINGLASS_API_KEY: ${{ secrets.COINGLASS_API_KEY }}
@@ -418,24 +444,36 @@ jobs:
           ssh -i ~/.ssh/deploy_key novakash@"$HOST" \
             'bash /home/novakash/novakash/scripts/restart_engine.sh'
 
-      - name: Wait for engine startup
-        run: sleep 30
-
-      - name: Post-deploy health probe -- process count
+      - name: Post-deploy health probe -- process alive + db.connected
         id: health_probe
+        # Two-phase probe (hardened after .env wipe incident 2026-04-21 where a
+        # 5s probe caught the python process pre-validation-crash).
+        #   t+5s:  process must exist
+        #   t+20s: process must STILL exist AND engine.log must contain
+        #          'db.connected' (proves boot got past pydantic validation).
         run: |
-          ssh -i ~/.ssh/deploy_key novakash@"$HOST" bash -s <<'REMOTE'
-          set -e
-          # Use pgrep -c to get count directly (avoids self-match bug)
-          count=$(pgrep -cf 'python3 main.py' 2>/dev/null || echo 0)
-          echo "engine process count: $count"
-          if [ "$count" -lt 1 ] || [ "$count" -gt 2 ]; then
-            echo "::error::expected 1-2 python3 main.py processes, got $count"
-            pgrep -fa 'python3 main.py' || true
+          sleep 5
+          PID_COUNT_INITIAL=$(ssh -i ~/.ssh/deploy_key novakash@"$HOST" "pgrep -cf 'python3 main.py' || echo 0")
+          if [ "$PID_COUNT_INITIAL" -lt 1 ]; then
+            echo "::error::engine not alive at t+5s"
             exit 1
           fi
-          echo "engine process check: passed (PIDs: $(pgrep -f 'python3 main.py' | tr '\n' ' '))"
-          REMOTE
+
+          sleep 15
+          PID_COUNT_FINAL=$(ssh -i ~/.ssh/deploy_key novakash@"$HOST" "pgrep -cf 'python3 main.py' || echo 0")
+          if [ "$PID_COUNT_FINAL" -lt 1 ]; then
+            echo "::error::engine crashed between t+5s and t+20s (pydantic validation? missing .env?)"
+            ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'tail -50 /home/novakash/engine.log' || true
+            exit 1
+          fi
+
+          # Verify engine actually booted to db.connected (not just process-alive)
+          if ! ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'tail -100 /home/novakash/engine.log | grep -q "db.connected"'; then
+            echo "::error::engine process running but db.connected not found in last 100 log lines"
+            ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'tail -100 /home/novakash/engine.log' || true
+            exit 1
+          fi
+          echo "✓ engine healthy: PID alive at t+5s and t+20s, db.connected confirmed"
 
       - name: Post-deploy health probe -- error signatures
         id: error_signatures
