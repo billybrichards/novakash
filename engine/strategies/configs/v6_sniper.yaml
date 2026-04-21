@@ -92,7 +92,7 @@ gate_params:
   # wider local window. Overnight data will reveal whether v6 captures
   # any T > 180 or T < 60 trades or if sister-repo gates still block.
   min_offset_sec: 30
-  max_offset_sec: 240
+  max_offset_sec: 200
 
   # ── Ensemble conviction bucket thresholds (note #183, tightened in v6.1.0) ──
   # v6.1.0: 0.20 → 0.22 (strong), 0.90 → 0.92 (high), 0.10 → 0.08 (low).
@@ -152,8 +152,11 @@ gate_params:
   # ── Time-of-day block (v6.0.1: disabled — removed per Billy) ──
   blocked_utc_hours: []
 
-  # ── Regime gate (v6.0.1: risk_off added per Billy; chop still blocked) ──
-  tradeable_v4_regimes: [calm_trend, volatile_trend, risk_off]
+  # ── Regime gate (Montreal parity 2026-04-21: restricted to volatile_trend only) ──
+  # Montreal prod data: volatile_trend 69% WR vs calm/risk_off 42-47% WR.
+  # Previously [calm_trend, volatile_trend, risk_off] — manually patched on Montreal
+  # at 17:47 UTC. This YAML now reflects live prod state to prevent regression.
+  tradeable_v4_regimes: [volatile_trend]
 
   # ── Ensemble signal source selection ──
   ensemble_signal_source: ensemble

@@ -324,3 +324,32 @@ def test_risk_off_override_still_false():
         f"risk_off_override_enabled must be False (Montreal hotfix), "
         f"got {data['gate_params']['risk_off_override_enabled']}"
     )
+
+
+# ── Test 12 ─────────────────────────────────────────────────────────────────
+def test_tradeable_v4_regimes_volatile_only():
+    """Montreal parity (2026-04-21): v6 restricted to volatile_trend only.
+
+    Live Montreal data: volatile_trend 69% WR vs calm/risk_off 42-47% WR.
+    Manually patched on Montreal prod at 17:47 UTC. This guard prevents a
+    merge/rebase from reintroducing calm_trend or risk_off.
+    """
+    data = yaml.safe_load(V6_YAML.read_text())
+    assert data["gate_params"]["tradeable_v4_regimes"] == ["volatile_trend"], (
+        f"tradeable_v4_regimes must be exactly ['volatile_trend'] "
+        f"(Montreal parity), got {data['gate_params']['tradeable_v4_regimes']}"
+    )
+
+
+# ── Test 13 ─────────────────────────────────────────────────────────────────
+def test_max_offset_sec_montreal_parity():
+    """Montreal parity: max_offset_sec pinned to 200.
+
+    Montreal prod runs 200; develop had drifted to 240. Pin both to 200 to
+    keep live + repo in sync.
+    """
+    data = yaml.safe_load(V6_YAML.read_text())
+    assert data["gate_params"]["max_offset_sec"] == 200, (
+        f"max_offset_sec must be 200 (Montreal parity), "
+        f"got {data['gate_params']['max_offset_sec']}"
+    )
