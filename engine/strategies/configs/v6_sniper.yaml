@@ -1,5 +1,23 @@
 name: v6_sniper
-version: "6.1.1"
+version: "6.1.2"
+# v6.1.2 — 2026-04-21 — Tier-1 rules: LGB alignment + head agreement + conf floor.
+#   Rationale (Hub note #204 / audit #263):
+#     * DOWN lgb<0.30: 91% WR (n=11) vs DOWN lgb 0.30-0.50: 33% WR — REQUIRE lgb aligned
+#     * UP lgb>0.70: 89% WR — REQUIRE lgb aligned on UP side as well
+#     * |lgb - path1| < 0.10 = 100% WR (n=8); >= 0.30 degrades to ~71% — REQUIRE heads close
+#     * confidence_score 0.55-0.70: 60% WR (break-even); >= 0.90: 100% (n=8) — FLOOR 0.70
+#     * path1_age NOT tightened — all 4 losses were at age<15s, no correlation.
+#   Changes (all new gate_params, additive to v6.1.1):
+#     * require_lgb_aligned: true  — actively require LGB agreement, not just "no oppose"
+#         - lgb_aligned_down_max: 0.30  (DOWN: lgb must be < 0.30)
+#         - lgb_aligned_up_min:   0.70  (UP:   lgb must be > 0.70)
+#     * max_head_disagreement: 0.30 — |lgb - path1| must be < 0.30
+#     * min_confidence_score:  0.70 — floor on |probability_used - 0.5| * 2
+#   Projected outcome (small-sample caveat): WR 85.2% → 91.7%.
+#   Preserves v6.1.1 values (direction-asymmetric UP gates, volatile-only regime,
+#   max_offset_sec: 200, risk_off_override_enabled: false, mid_range_both_buckets,
+#   path1_max_age_s: 90 — data showed no correlation, intentionally NOT tightened).
+#
 # v6.1.1 — 2026-04-20 — direction-asymmetric gating (stricter UP, DOWN unchanged).
 #   Rationale (live Montreal data, today):
 #     * v6 DOWN: 83% WR (10W/2L), +$24.27, ROI +68.6%.
@@ -82,6 +100,17 @@ timescale: 5m
 gates: []
 
 gate_params:
+  # ── Tier-1 rules (v6.1.2) — per Hub note #204 / audit #263 ──
+  # DOWN lgb<0.30: 91% WR (n=11) vs lgb 0.30-0.50: 33% WR — REQUIRE lgb aligned
+  # |lgb-path1|<0.10: 100% WR (n=8); >0.30 degrades to 71% — REQUIRE heads close
+  # conf_score 0.55-0.70: 60% WR (break-even); >=0.90: 100% (n=8) — FLOOR 0.70
+  # (path1_age NOT tightened — all 4 losses were at age<15s, no correlation)
+  require_lgb_aligned: true
+  lgb_aligned_down_max: 0.30        # DOWN requires lgb < 0.30
+  lgb_aligned_up_min: 0.70          # UP requires lgb > 0.70
+  max_head_disagreement: 0.30        # |lgb - path1| must be < 0.30
+  min_confidence_score: 0.70         # |p-0.5|*2 >= 0.70 (stricter than bucket HIGH=0.55)
+
   # ── Timing window (v6.0.2: widened per Billy for overnight run) ──
   # Previously [60, 180]. Widened to [30, 240] since v6's other gates
   # (agree_strong / pegged_path1 / VPIN / source agreement) are strict
@@ -131,6 +160,11 @@ gate_params:
   # non-null). Proper fix: add ``probability_classifier_inferred_at`` to
   # FullDataSurface (data_surface PR, follow-up). 90s absorbs the
   # 5-min window reuse without letting truly stale classifier through.
+  # v6.1.2 (2026-04-21): intentionally NOT tightened. Hub note #204 / audit #263
+  # showed all 4 losses were at age<15s with no correlation to freshness, so
+  # the path1_age tightening originally proposed was DROPPED from the Tier-1
+  # spec. Leave at 90 (v6.0.2 stopgap) until a future data pass justifies a
+  # change.
   path1_max_age_s: 90
   path1_skip_on_null: true
 
