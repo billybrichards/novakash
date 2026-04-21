@@ -12,6 +12,8 @@ pgdata/
 caddy_data/
 caddy_config/
 .worktrees/
+.claude/worktrees/
+.claude/settings.local.json
 
 # v11: large log archives (87MB+, keep locally only for post-mortem analysis)
 docs/log_archive/
