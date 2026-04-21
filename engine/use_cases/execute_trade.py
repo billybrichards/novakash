@@ -26,9 +26,11 @@ Feature flag: ENGINE_REGISTRY_EXECUTE (default false).
 
 from __future__ import annotations
 
+import os
+import time as _time
 import structlog
 from dataclasses import replace
-from typing import Optional
+from typing import Any, Optional
 
 from domain.ports import (
     PolymarketClientPort,
@@ -72,6 +74,109 @@ _REAL_ERROR_REASON_PREFIXES: tuple[str, ...] = (
     "gtc_submit_error",
     "execution_error",
 )
+
+# ── Default eval-offset recheck knobs (v6 late-fill defense, 2026-04-21) ──
+#
+# Defence-in-depth: even if a strategy's timing gate passes because
+# ``surface.eval_offset`` is stale (set once when a CLOSING milestone
+# emitted and no newer milestone has fired), we re-verify against the
+# wall clock RIGHT BEFORE dispatching to the executor. Two checks:
+#
+#   1. Past-close guard: if wall-clock is at or past window close, abort
+#      unconditionally — any fill now would be after resolution.
+#   2. Min-offset guard: if the current offset (close_ts - now) is below
+#      the strategy's min_offset_sec, skip with a clear drift reason.
+#
+# The min floor is read from ``decision.metadata["min_offset_sec"]``
+# when the strategy sets it (preferred — matches strategy YAML) and
+# falls back to _EVAL_OFFSET_MIN_DEFAULT. The default deliberately
+# matches v6_sniper's default and is below every other 5m strategy's
+# min_offset so this guard does not mis-fire on well-configured
+# strategies. Operators can bump it via EVAL_OFFSET_RECHECK_MIN_SEC.
+_EVAL_OFFSET_MIN_DEFAULT = int(
+    os.environ.get("EVAL_OFFSET_RECHECK_MIN_SEC", "30")
+)
+
+# Known timeframe → window-duration mapping. Keeps the recheck self-contained
+# instead of importing value-objects internals. Missing timeframes fall back
+# to 300s (5m) which is the dominant case.
+_TIMEFRAME_DURATION_SECS: dict[str, int] = {
+    "5m": 300,
+    "15m": 900,
+    "1h": 3600,
+    "4h": 14400,
+}
+
+
+def _recheck_timing_before_execute(
+    window_key: "WindowKey",
+    decision: "StrategyDecision",
+    *,
+    now_fn: Any = None,
+    min_offset_sec: Optional[int] = None,
+) -> Optional[str]:
+    """Defence-in-depth timing recheck, called right before FAK dispatch.
+
+    Returns None if the trade should proceed; otherwise returns a string
+    skip_reason that the caller must surface. Purely stateless — no
+    side effects, no logging.
+
+    Gates, in order:
+      * ``eval_offset_past_close`` — wall clock is at/past window close.
+      * ``eval_offset_drift`` — current offset < strategy min_offset.
+    """
+    now = (now_fn() if callable(now_fn) else _time.time())
+
+    # Compute window close ts from the key. WindowKey stores duration_secs
+    # post-__post_init__ (synced from the timeframe string).
+    duration = getattr(window_key, "duration_secs", 0) or _TIMEFRAME_DURATION_SECS.get(
+        getattr(window_key, "timeframe", "5m"), 300
+    )
+    window_ts = int(getattr(window_key, "window_ts", 0) or 0)
+    if window_ts <= 0:
+        # Can't reason about timing without a window anchor — fall open so
+        # we don't silently block every legitimate trade. The strategy's
+        # own gates remain authoritative in this degenerate case.
+        return None
+
+    close_ts = window_ts + int(duration)
+    current_offset = close_ts - int(now)
+
+    # Cross-window guard — if wall-clock is past close, the window is
+    # resolved or resolving; any fill at this point is a stale-surface
+    # artefact and must abort.
+    if current_offset <= 0:
+        return (
+            f"eval_offset_past_close: offset={current_offset}s "
+            f"(window {window_ts} already closed)"
+        )
+
+    # Minimum-offset floor — pulled from decision metadata when the
+    # strategy propagates it (preferred). Numeric fallback matches
+    # v6_sniper's default; operators can override via env.
+    if min_offset_sec is None:
+        min_offset_sec = _EVAL_OFFSET_MIN_DEFAULT
+        meta = getattr(decision, "metadata", None) or {}
+        # Strategies may publish the gate param directly or under a
+        # nested gate_params dict. Accept both for forward compat.
+        candidate = meta.get("min_offset_sec")
+        if candidate is None:
+            gp = meta.get("gate_params") or {}
+            if isinstance(gp, dict):
+                candidate = gp.get("min_offset_sec")
+        if candidate is not None:
+            try:
+                min_offset_sec = int(candidate)
+            except (TypeError, ValueError):
+                pass
+
+    if current_offset < int(min_offset_sec):
+        return (
+            f"eval_offset_drift: current={current_offset}s "
+            f"< min={int(min_offset_sec)}s (surface stale?)"
+        )
+
+    return None
 
 
 def _is_real_order_error(failure_reason: str | None) -> bool:
@@ -204,6 +309,37 @@ class ExecuteTradeUseCase:
             )
             # Fail safe: if we can't check dedup, proceed anyway
             # The CLOB will reject if already filled
+
+        # ── Step 1.5: Timing recheck (v6 late-fill defence) ────────────
+        # Re-verify wall-clock timing BEFORE sizing / executing. The
+        # strategy's own timing gate reads ``surface.eval_offset``, which
+        # is set once when a CLOSING milestone emits; if the downstream
+        # flow (dedup clear → retry / RFQ / GTC poll) drifts past the
+        # strategy's min_offset, surface.eval_offset is stale and the
+        # gate won't fire. This re-check uses the wall clock.
+        timing_skip = _recheck_timing_before_execute(
+            window_key,
+            decision,
+            now_fn=self._clock.now,
+        )
+        if timing_skip:
+            log.warning(
+                "execute_trade.timing_recheck_blocked",
+                strategy=sid,
+                direction=direction,
+                window=str(window_key),
+                failure_reason=timing_skip,
+            )
+            if claim_acquired and hasattr(self._window_state, "clear_trade_claim"):
+                try:
+                    await self._window_state.clear_trade_claim(window_key)
+                except Exception:
+                    pass
+            return _failed(
+                timing_skip,
+                strategy_id=sid,
+                direction=direction,
+            )
 
         # ── Step 2: Stake calculation ──────────────────────────────────
         stake = self._calculate_stake(decision)

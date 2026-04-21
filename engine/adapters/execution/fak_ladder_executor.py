@@ -53,6 +53,17 @@ _DEFAULT_ENABLE_GTC_FALLBACK = False
 # skip cleanly (no phantom rows, no orphan fills).
 _DEFAULT_ENABLE_RFQ = True
 
+# ── FAK ladder total-elapsed timeout (v6 late-fill defence, 2026-04-21) ──
+# Incident: window 1776803100, order 0x9cb301f2 filled at T-16 (16s before
+# window close) because a FAK ladder started at T-68 kept retrying even
+# when wall-clock had drifted past the strategy's min_offset_sec=30 gate.
+# A hard total-elapsed cap on the entire execute_order() call bounds the
+# damage regardless of which phase (FAK / RFQ / GTC poll) is running.
+# Default 20s — well under any 5m-window min_offset_sec (>=30s) — so the
+# ladder cannot chew through enough wall-clock to fill after the timing
+# guard should have fired. Override with FAK_LADDER_MAX_ELAPSED_S.
+_DEFAULT_MAX_LADDER_ELAPSED_S = 20.0
+
 
 class FAKLadderExecutor(OrderExecutionPort):
     """Live execution: FAK ladder -> RFQ -> GTC fallback.
@@ -72,11 +83,23 @@ class FAKLadderExecutor(OrderExecutionPort):
         gtc_max_wait: int = DEFAULT_GTC_MAX_WAIT,
         enable_gtc_fallback: Optional[bool] = None,
         enable_rfq: Optional[bool] = None,
+        max_ladder_elapsed_s: Optional[float] = None,
     ) -> None:
         self._poly = poly_client
         self._pi_bonus = pi_bonus_cents
         self._gtc_poll_interval = gtc_poll_interval
         self._gtc_max_wait = gtc_max_wait
+        if max_ladder_elapsed_s is None:
+            env_val = os.environ.get(
+                "FAK_LADDER_MAX_ELAPSED_S",
+                str(_DEFAULT_MAX_LADDER_ELAPSED_S),
+            )
+            try:
+                self._max_ladder_elapsed_s = float(env_val)
+            except (TypeError, ValueError):
+                self._max_ladder_elapsed_s = _DEFAULT_MAX_LADDER_ELAPSED_S
+        else:
+            self._max_ladder_elapsed_s = float(max_ladder_elapsed_s)
         if enable_gtc_fallback is None:
             env = os.environ.get("FAK_LADDER_ENABLE_GTC", "").strip().lower()
             self._enable_gtc_fallback = env in ("1", "true", "yes", "on")
@@ -115,7 +138,47 @@ class FAKLadderExecutor(OrderExecutionPort):
         start = time.time()
         fak_prices: list[float] = []
 
+        def _elapsed() -> float:
+            return time.time() - start
+
+        def _timeout_result(elapsed: float) -> ExecutionResult:
+            """Build a skip-style ExecutionResult for a ladder-timeout abort.
+
+            Intentionally uses execution_mode='none' + a clearly-prefixed
+            failure_reason so dashboards + reconcilers treat this as a
+            benign skip (no fill, no trade row), not a CLOB-infra error.
+            Counters keyed off _REAL_ERROR_REASON_PREFIXES in
+            ``execute_trade.py`` must NOT include ``fak_ladder_timeout``.
+            """
+            logger.warning(
+                "fak_ladder.timeout",
+                extra={
+                    "elapsed_s": round(elapsed, 2),
+                    "max_s": self._max_ladder_elapsed_s,
+                    "fak_prices": fak_prices,
+                },
+            )
+            return ExecutionResult(
+                success=False,
+                failure_reason=(
+                    f"fak_ladder_timeout: {elapsed:.1f}s > "
+                    f"{self._max_ladder_elapsed_s:.1f}s"
+                ),
+                stake_usd=stake_usd,
+                execution_mode="none",
+                fak_attempts=len(fak_prices),
+                fak_prices=fak_prices,
+                token_id=token_id,
+                execution_start=start,
+                execution_end=time.time(),
+            )
+
         # ── Phase 1: FAK ladder ─────────────────────────────────────────
+        # Pre-entry timeout check is cheap; abort-after checks bound
+        # the remaining phases.
+        if _elapsed() > self._max_ladder_elapsed_s:
+            return _timeout_result(_elapsed())
+
         try:
             from execution.fok_ladder import FOKLadder
 
@@ -163,6 +226,13 @@ class FAKLadderExecutor(OrderExecutionPort):
                 extra={"error": str(exc)[:200]},
             )
 
+        # Post-phase-1 timeout check — FAK ladder's internal retry sleep
+        # plus two attempts can easily burn 10-15s even when each attempt
+        # is quick. Aborting here means RFQ + GTC fallbacks don't stack
+        # more wall-clock on top of an already-slow ladder.
+        if _elapsed() > self._max_ladder_elapsed_s:
+            return _timeout_result(_elapsed())
+
         # ── Phase 2: RFQ ────────────────────────────────────────────────
         # Gate added 2026-04-17: RFQ started returning 404s with
         # "market not found for token X" for seemingly valid token IDs,
@@ -180,6 +250,10 @@ class FAKLadderExecutor(OrderExecutionPort):
             )
             if rfq_result is not None:
                 return rfq_result
+            # Post-RFQ timeout check — only relevant when RFQ bailed out
+            # with no fill. Skip GTC entirely if we're already over budget.
+            if _elapsed() > self._max_ladder_elapsed_s:
+                return _timeout_result(_elapsed())
         else:
             logger.info(
                 "fak_ladder.rfq_skipped",
