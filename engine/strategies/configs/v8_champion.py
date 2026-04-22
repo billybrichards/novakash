@@ -42,6 +42,16 @@ _STRATEGY_ID = "v8_champion"
 _VERSION = "8.0.0"
 _ENTRY_CAP = 0.80
 
+# Probability-source modes for the v8 hook. "prod" (default) reads the
+# existing surface.poly_confidence / probability_lgb / probability_classifier
+# stack. "cedar" reads the parallel surface.*_cedar fields populated by
+# DataSurfaceManager from /v2/probability/cedar — used by the shadow A/B
+# variants v8_champion_cedar + v8_champion_cedar_strict. Any other value
+# is treated as "prod" (forward-compatible — e.g. a future "sequoia"
+# source would just need fields wired into the surface).
+_PROBABILITY_SOURCE_PROD = "prod"
+_PROBABILITY_SOURCE_CEDAR = "cedar"
+
 
 # ── YAML / env knobs ────────────────────────────────────────────────────────
 def _min_offset_sec() -> int:
@@ -311,18 +321,56 @@ def evaluate_v8_champion(
     )
 
     # ── 6. Ensemble bucket (HIGH conviction required) ──────────────────────
-    probability_up = surface.poly_confidence
-    if probability_up is None:
-        gates.append(_gate("ensemble_bucket", False, "poly_confidence=None"))
-        return _skip("ensemble_bucket: no probability_up", gates)
+    # Probability source: defaults to prod (poly_confidence / probability_lgb
+    # / probability_classifier). v8_champion_cedar + v8_champion_cedar_strict
+    # flip this to "cedar" via gate_params.v2_probability_source to read the
+    # parallel cedar fields populated from /v2/probability/cedar. When cedar
+    # is selected but surface.probability_up_cedar is None (endpoint
+    # unavailable / hasn't populated yet / stale), SKIP with
+    # ``cedar_source_unavailable`` so the strategy degrades gracefully and
+    # the shadow log captures the reason distinctly from prod skips.
+    prob_source = _gp.get_str(
+        "v2_probability_source",
+        "V8_V2_PROBABILITY_SOURCE",
+        _PROBABILITY_SOURCE_PROD,
+    ).strip().lower()
+
+    if prob_source == _PROBABILITY_SOURCE_CEDAR:
+        probability_up = getattr(surface, "probability_up_cedar", None)
+        p_lgb = getattr(surface, "probability_lgb_cedar", None)
+        p_path1 = getattr(surface, "probability_classifier_cedar", None)
+        if probability_up is None:
+            gates.append(
+                _gate(
+                    "cedar_source",
+                    False,
+                    "probability_up_cedar=None (endpoint unavailable)",
+                )
+            )
+            return _skip(
+                "cedar_source_unavailable: probability_up_cedar is None",
+                gates,
+                extras={"v2_probability_source": prob_source},
+            )
+        gates.append(
+            _gate(
+                "cedar_source",
+                True,
+                f"cedar p_up={probability_up:.3f}",
+            )
+        )
+    else:
+        probability_up = surface.poly_confidence
+        p_lgb = getattr(surface, "probability_lgb", None)
+        p_path1 = getattr(surface, "probability_classifier", None)
+        if probability_up is None:
+            gates.append(_gate("ensemble_bucket", False, "poly_confidence=None"))
+            return _skip("ensemble_bucket: no probability_up", gates)
 
     direction = surface.poly_direction
     if direction is None:
-        # Fall back: infer from probability_up.
+        # Fall back: infer from probability_up (which is now source-specific).
         direction = "UP" if probability_up > 0.5 else "DOWN"
-
-    p_lgb = getattr(surface, "probability_lgb", None)
-    p_path1 = getattr(surface, "probability_classifier", None)
     bucket, is_agree_strong, is_pegged_path1 = _classify_bucket(
         p_lgb, p_path1, probability_up, direction
     )
@@ -477,5 +525,24 @@ def evaluate_v8_champion(
             "fill_price": fill_price,
             "chainlink_delta": surface.delta_chainlink,
             "tiingo_delta": surface.delta_tiingo,
+            # Source-of-probability + prod-vs-cedar diagnostics so the
+            # shadow log can align v8_champion (prod) vs cedar variants
+            # row-by-row. Prod fields included regardless of source so
+            # cedar rows carry the "what would prod have seen" deltas.
+            "v2_probability_source": prob_source,
+            "probability_up_prod": surface.poly_confidence,
+            "probability_lgb_prod": getattr(surface, "probability_lgb", None),
+            "probability_classifier_prod": getattr(
+                surface, "probability_classifier", None
+            ),
+            "probability_up_cedar": getattr(
+                surface, "probability_up_cedar", None
+            ),
+            "probability_lgb_cedar": getattr(
+                surface, "probability_lgb_cedar", None
+            ),
+            "probability_classifier_cedar": getattr(
+                surface, "probability_classifier_cedar", None
+            ),
         },
     )

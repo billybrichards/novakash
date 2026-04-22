@@ -189,6 +189,26 @@ class FullDataSurface:
     # "no_eval_blocked" skips. This field tracks the real inference age.
     probability_classifier_inferred_at: Optional[float] = None
 
+    # ── Cedar LGB candidate fields (2026-04-21 shadow A/B) ────────────────
+    # Populated from /v2/probability/cedar (Montreal ML box). BTC-only
+    # initially. When the cedar endpoint is unreachable, these stay None
+    # and cedar-sourced strategies (v8_champion_cedar*) SKIP with
+    # ``cedar_source_unavailable`` — prod v8_champion is unaffected.
+    #
+    # Contract mirror of the prod probability block: probability_up_cedar
+    # is the ensemble blended prob (equivalent of surface.poly_confidence
+    # on the prod side); probability_lgb_cedar is the LGB direction head;
+    # probability_classifier_cedar is the TimesFM Path1 classifier head.
+    # v4_regime_cedar is optional — present when the cedar snapshot ships
+    # its own regime label, absent when the caller should reuse the prod
+    # ``v4_regime``. Strategies decide how to consume; the v8_champion
+    # hook only swaps the probability stack based on
+    # ``gate_params.v2_probability_source``.
+    probability_up_cedar: Optional[float] = None
+    probability_lgb_cedar: Optional[float] = None
+    probability_classifier_cedar: Optional[float] = None
+    v4_regime_cedar: Optional[str] = None
+
 
 class DataSurfaceManager:
     """Keeps FullDataSurface fresh in memory. No blocking I/O at decision time.
@@ -251,6 +271,28 @@ class DataSurfaceManager:
         self._alert_cb = None
         self._degraded_since: Optional[float] = None
         self._alert_stale_threshold_s = 45.0  # alert after 45s stale
+
+        # ── Cedar LGB candidate cache (shadow A/B, 2026-04-21) ───────────
+        # Per-asset cache slot for /v2/probability/cedar. Mirrors the v4
+        # cache shape exactly (same {asset: dict} + ts pattern introduced
+        # by the per-asset refactor). Cedar endpoint is served by the ML
+        # box alongside the prod /v2/probability route. Missing endpoint
+        # or non-200s leave the cache at its defaulted-empty state — the
+        # surface builder then emits cedar fields as None and cedar
+        # strategies SKIP gracefully (``cedar_source_unavailable``).
+        #
+        # BTC-only until the ML box ships multi-asset cedar. ETH/SOL/XRP
+        # in _active_assets are skipped by _fetch_cedar_asset.
+        self._cached_cedar: dict[str, dict] = {}
+        self._cached_cedar_ts: dict[str, float] = {}
+        self._cedar_url = os.environ.get(
+            "CEDAR_PROBABILITY_URL",
+            "http://3.98.114.0:8080/v2/probability/cedar",
+        )
+        # Sticky disable: once we see a hard negative (404/405/501, DNS
+        # error, repeated timeout) we stop hammering the endpoint for the
+        # rest of this process's lifetime. Resets on engine restart.
+        self._cedar_disabled: bool = False
 
     def set_active_assets(self, assets: list[str]) -> None:
         """Set which assets the refresh loop polls /v4/snapshot for.
@@ -371,6 +413,19 @@ class DataSurfaceManager:
             return
         for asset in list(self._active_assets):
             await self._fetch_v4_asset(asset)
+        # Parallel cedar fetch (BTC-only, shadow A/B). Isolated in its
+        # own try/except so any cedar failure leaves prod v4 cache
+        # untouched and strategies consuming prod probabilities continue
+        # normally. Non-fatal — cedar strategies will just SKIP until the
+        # ML box responds.
+        if not self._cedar_disabled:
+            try:
+                await self._fetch_cedar_asset("BTC")
+            except Exception as exc:
+                log.warning(
+                    "data_surface.cedar_fetch_unexpected_error",
+                    error=str(exc)[:200],
+                )
 
     async def _fetch_v4_asset(self, asset: str) -> None:
         """Fetch /v4/snapshot for a single asset and update its cache slot."""
@@ -465,6 +520,68 @@ class DataSurfaceManager:
         # Fire degraded alert if the cache age now exceeds the threshold.
         if is_primary:
             self._maybe_fire_degraded_alert(age)
+
+    async def _fetch_cedar_asset(self, asset: str) -> None:
+        """Fetch /v2/probability/cedar for an asset and cache the payload.
+
+        Shadow A/B path — the ML box exposes a parallel endpoint to
+        /v2/probability that runs the cedar LGB candidate alongside the
+        prod model. Shape is assumed to mirror the existing probability
+        payload: ``{"probability_up": float, "probability_lgb": float,
+        "probability_classifier": float, "regime": str?}`` plus any
+        metadata the ML box includes.
+
+        This method is deliberately permissive about missing keys — when
+        cedar returns 200 but with a partial payload, we cache whatever
+        arrived and let ``get_surface`` read None for absent fields.
+
+        Non-2xx responses or connection errors DO NOT propagate — they
+        set ``_cedar_disabled=True`` (hard negatives) or simply log
+        (transient). Prod v4 cache is never touched.
+        """
+        if not self._session:
+            return
+        asset_key = asset.upper()
+        url = self._cedar_url
+        params = {"asset": asset_key}
+        try:
+            async with self._session.get(url, params=params) as resp:
+                if resp.status in (404, 405, 501):
+                    # Hard negative — endpoint not deployed yet. Go quiet
+                    # until restart so we don't spam logs.
+                    log.info(
+                        "data_surface.cedar_endpoint_unavailable",
+                        asset=asset_key,
+                        status=resp.status,
+                        url=url,
+                    )
+                    self._cedar_disabled = True
+                    return
+                if resp.status != 200:
+                    log.warning(
+                        "data_surface.cedar_fetch_http_error",
+                        asset=asset_key,
+                        status=resp.status,
+                    )
+                    return
+                body = await resp.json()
+                if not isinstance(body, dict):
+                    log.warning(
+                        "data_surface.cedar_bad_payload",
+                        asset=asset_key,
+                        body_type=type(body).__name__,
+                    )
+                    return
+                self._cached_cedar[asset_key] = body
+                self._cached_cedar_ts[asset_key] = time.time()
+        except asyncio.TimeoutError:
+            log.warning("data_surface.cedar_fetch_timeout", asset=asset_key)
+        except Exception as exc:
+            log.warning(
+                "data_surface.cedar_fetch_error",
+                asset=asset_key,
+                error=str(exc)[:200],
+            )
 
     def _maybe_fire_degraded_alert(self, age: Optional[float]) -> None:
         """Schedule a BTC /v4/snapshot degraded Telegram alert if threshold crossed.
@@ -661,6 +778,37 @@ class DataSurfaceManager:
         # Seconds to close
         seconds_to_close = eval_offset
 
+        # ── Cedar shadow probabilities (2026-04-21 A/B) ──────────────────
+        # Per-asset read from _cached_cedar. Stale (>60s) treated as
+        # absent so cedar strategies SKIP on stale rather than firing
+        # against frozen data. BTC-only today; non-BTC windows simply
+        # read None and, for GHOST cedar strategies, SKIP cleanly.
+        cedar_p_up: Optional[float] = None
+        cedar_p_lgb: Optional[float] = None
+        cedar_p_classifier: Optional[float] = None
+        cedar_regime: Optional[str] = None
+        cedar_payload = self._cached_cedar.get(asset_key)
+        cedar_ts = self._cached_cedar_ts.get(asset_key, 0.0)
+        if cedar_payload and cedar_ts and (time.time() - cedar_ts) <= 60:
+            try:
+                raw_up = cedar_payload.get("probability_up")
+                if raw_up is not None:
+                    cedar_p_up = float(raw_up)
+                raw_lgb = cedar_payload.get("probability_lgb")
+                if raw_lgb is not None:
+                    cedar_p_lgb = float(raw_lgb)
+                raw_cls = cedar_payload.get("probability_classifier")
+                if raw_cls is not None:
+                    cedar_p_classifier = float(raw_cls)
+                raw_regime = cedar_payload.get("regime")
+                if raw_regime is not None:
+                    cedar_regime = str(raw_regime)
+            except (TypeError, ValueError) as exc:
+                log.warning(
+                    "data_surface.cedar_payload_coerce_error",
+                    error=str(exc)[:200],
+                )
+
         # ── Isotonic-calibrated P(UP) passthrough (novakash-timesfm PR #107) ──
         # The V4 snapshot may include the new additive fields
         # ``probability_up_calibrated`` + ``isotonic_version`` alongside the
@@ -843,6 +991,11 @@ class DataSurfaceManager:
             seconds_to_close=seconds_to_close,
             # Per-field inference timestamp for Path1 classifier
             probability_classifier_inferred_at=classifier_inferred_at,
+            # Cedar shadow A/B passthrough (2026-04-21)
+            probability_up_cedar=cedar_p_up,
+            probability_lgb_cedar=cedar_p_lgb,
+            probability_classifier_cedar=cedar_p_classifier,
+            v4_regime_cedar=cedar_regime,
         )
 
 
