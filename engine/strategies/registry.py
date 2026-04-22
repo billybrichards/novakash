@@ -1420,6 +1420,12 @@ class StrategyRegistry:
             if hook_fn:
                 hook_result = hook_fn(surface)
                 if hook_result is not None:
+                    # Override strategy_id/version from the YAML config name,
+                    # not the hardcoded _STRATEGY_ID in the hook. Shared hooks
+                    # (e.g. v8_champion.py used by cedar variants) would
+                    # otherwise tag every decision as "v8_champion".
+                    hook_result.strategy_id = name
+                    hook_result.strategy_version = config.version
                     if hook_result.action == "SKIP":
                         return hook_result  # Hook skipped — honour immediately
                     # Hook returned TRADE — run YAML gates as post-filters
