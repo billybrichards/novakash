@@ -1,4 +1,9 @@
-"""Per-strategy trade-attempt card — outcome enum coverage."""
+"""Per-strategy trade-attempt card — outcome enum coverage.
+
+FILLED outcomes use ``_send`` (immediate); SKIPPED/FAILED outcomes use
+``_send_queued`` (fire-and-forget via priority queue). Tests capture
+both paths to verify rendering.
+"""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
@@ -38,7 +43,13 @@ async def test_each_outcome_renders_expected_emoji_and_reason(
     async def _fake_send(text: str) -> None:
         sent.append(text)
 
-    with patch.object(alerter, "_send", side_effect=_fake_send):
+    def _fake_send_queued(text: str, priority=None) -> None:
+        sent.append(text)
+
+    with (
+        patch.object(alerter, "_send", side_effect=_fake_send),
+        patch.object(alerter, "_send_queued", side_effect=_fake_send_queued),
+    ):
         await alerter.send_trade_attempt_result(
             strategy="v4_fusion",
             window_ts=1_712_345_678,
@@ -82,7 +93,11 @@ async def test_filled_card_includes_stake_and_price():
 async def test_skipped_card_includes_gate_reason():
     alerter = _alerter()
     sent: list[str] = []
-    with patch.object(alerter, "_send", side_effect=lambda t: sent.append(t)):
+
+    def _fake_send_queued(text: str, priority=None) -> None:
+        sent.append(text)
+
+    with patch.object(alerter, "_send_queued", side_effect=_fake_send_queued):
         await alerter.send_trade_attempt_result(
             strategy="v4_fusion",
             window_ts=1_712_345_678,
@@ -100,7 +115,11 @@ async def test_skipped_card_includes_gate_reason():
 async def test_unknown_outcome_falls_back_but_still_sends():
     alerter = _alerter()
     sent: list[str] = []
-    with patch.object(alerter, "_send", side_effect=lambda t: sent.append(t)):
+
+    def _fake_send_queued(text: str, priority=None) -> None:
+        sent.append(text)
+
+    with patch.object(alerter, "_send_queued", side_effect=_fake_send_queued):
         await alerter.send_trade_attempt_result(
             strategy="v4_fusion",
             window_ts=1_712_345_678,

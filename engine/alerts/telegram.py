@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import enum
 import os
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
@@ -37,6 +38,18 @@ log = structlog.get_logger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/sendMessage"
 TELEGRAM_PHOTO_BASE = "https://api.telegram.org/bot{token}/sendPhoto"
+
+
+# ── Priority queue for Telegram sends ─────────────────────────────────────────
+# CRITICAL messages (fills, kill switch) are sent immediately on the caller's
+# coroutine — zero queuing delay. NORMAL/LOW messages are dispatched through
+# an asyncio.PriorityQueue so they never block the trading hot-path.
+
+class _TGPriority(enum.IntEnum):
+    """Lower numeric value = higher priority (PriorityQueue is min-heap)."""
+    CRITICAL = 0   # fills, kill switch — bypass queue entirely
+    NORMAL = 10     # trade decisions, window summaries
+    LOW = 20        # skip summaries, diagnostics, AI follow-ups
 
 _DIR_EMOJI = {"UP": "📈", "DOWN": "📉", "YES": "📈", "NO": "📉"}
 _REGIME_EMOJI = {
@@ -256,6 +269,17 @@ class TelegramAlerter:
             collections.OrderedDict()
         )
         self._resolved_dedup_cap: int = 512
+
+        # ── Shared session + priority queue (instant-notification fix) ────────
+        # A single aiohttp.ClientSession is reused across all sends instead
+        # of creating/tearing one per message.  A background worker drains a
+        # priority queue for NORMAL/LOW messages so they never block the
+        # trading hot-path. CRITICAL messages skip the queue entirely.
+        self._shared_session: Optional[aiohttp.ClientSession] = None
+        self._send_queue: asyncio.PriorityQueue = asyncio.PriorityQueue(maxsize=200)
+        self._queue_worker_task: Optional[asyncio.Task] = None
+        self._queue_seq: int = 0  # tiebreaker for equal-priority items
+        self._shutting_down: bool = False
 
     async def _emit_narrative_v2_trade(
         self,
@@ -1242,19 +1266,28 @@ class TelegramAlerter:
             telegram_message_id=decision_msg_id,
         )
 
-        # AI analysis (shorter in v8.0 — 1 sentence max)
+        # AI analysis — fire-and-forget so it never blocks the decision card.
+        # The analysis_msg_id returned is always None now (backward-compat:
+        # callers that unpacked the tuple still work; nothing relies on
+        # the analysis message_id).
         analysis_msg_id = None
         if decision == "TRADE":
+            async def _send_ai_followup():
+                try:
+                    prompt = (
+                        f"BTC 5m {direction} trade. Tiingo Δ{delta_str}, VPIN {vpin:.2f} ({regime}). "
+                        f"Source: {delta_source}. 1 sentence: win probability + key risk."
+                    )
+                    ai_text, ai_source = await self._ai.assess(prompt, timeout_s=6)
+                    if ai_text:
+                        analysis_card = f"🤖 `{ai_source.upper()}` — _{ai_text[:300]}_"
+                        self._send_queued(analysis_card, _TGPriority.LOW)
+                except Exception as exc:
+                    self._log.warning("ai.decision_analysis_failed", error=str(exc)[:100])
             try:
-                prompt = (
-                    f"BTC 5m {direction} trade. Tiingo Δ{delta_str}, VPIN {vpin:.2f} ({regime}). "
-                    f"Source: {delta_source}. 1 sentence: win probability + key risk."
-                )
-                ai_text, ai_source = await self._ai.assess(prompt, timeout_s=6)
-                analysis_card = f"🤖 `{ai_source.upper()}` — _{ai_text[:300]}_"
-                analysis_msg_id = await self._send_with_id(analysis_card)
-            except Exception as exc:
-                self._log.warning("ai.decision_analysis_failed", error=str(exc)[:100])
+                asyncio.create_task(_send_ai_followup())
+            except RuntimeError:
+                pass
 
         return decision_msg_id, analysis_msg_id
 
@@ -3064,40 +3097,46 @@ class TelegramAlerter:
         if not self.trade_alerts_enabled:
             return
         # ── Narrative V2 dual-fire (Phase G.2 + G.7) ──────────────────────────
+        # Fire-and-forget so the core resolution card sends instantly.
         if self._v2_ready():
+            async def _v2_resolved_fire():
+                try:
+                    await self._emit_narrative_v2_resolved(
+                        order=order,
+                        window_ts=window_ts,
+                        asset=asset,
+                        timeframe=timeframe,
+                        open_price=open_price,
+                        close_price=close_price,
+                    )
+                except Exception as exc:
+                    self._log.warning(
+                        "telegram.narrative_v2_dual_fire_failed",
+                        which="resolved",
+                        error=str(exc)[:200],
+                    )
+                # G.7: also emit shadow report for this window (silent if no
+                # GHOST decisions persisted yet for this timeframe).
+                try:
+                    _actual_dir = "UP" if close_price > open_price else "DOWN"
+                    await self.emit_shadow_report_v2(
+                        asset=asset,
+                        timeframe=timeframe,
+                        window_ts=window_ts,
+                        actual_direction=_actual_dir,
+                        actual_open_usd=float(open_price),
+                        actual_close_usd=float(close_price),
+                    )
+                except Exception as exc:
+                    self._log.warning(
+                        "telegram.narrative_v2_dual_fire_failed",
+                        which="shadow_report",
+                        error=str(exc)[:200],
+                    )
             try:
-                await self._emit_narrative_v2_resolved(
-                    order=order,
-                    window_ts=window_ts,
-                    asset=asset,
-                    timeframe=timeframe,
-                    open_price=open_price,
-                    close_price=close_price,
-                )
-            except Exception as exc:
-                self._log.warning(
-                    "telegram.narrative_v2_dual_fire_failed",
-                    which="resolved",
-                    error=str(exc)[:200],
-                )
-            # G.7: also emit shadow report for this window (silent if no
-            # GHOST decisions persisted yet for this timeframe).
-            try:
-                _actual_dir = "UP" if close_price > open_price else "DOWN"
-                await self.emit_shadow_report_v2(
-                    asset=asset,
-                    timeframe=timeframe,
-                    window_ts=window_ts,
-                    actual_direction=_actual_dir,
-                    actual_open_usd=float(open_price),
-                    actual_close_usd=float(close_price),
-                )
-            except Exception as exc:
-                self._log.warning(
-                    "telegram.narrative_v2_dual_fire_failed",
-                    which="shadow_report",
-                    error=str(exc)[:200],
-                )
+                asyncio.create_task(_v2_resolved_fire())
+            except RuntimeError:
+                pass
         try:
             meta = order.metadata or {}
             mode = self._mode_tag()
@@ -3131,58 +3170,68 @@ class TelegramAlerter:
                 f"",
             ]
 
-            # AI assessment
-            try:
-                assessment = await self._generate_assessment(
-                    order=order,
-                    asset=asset,
-                    timeframe=timeframe,
-                    open_price=open_price,
-                    close_price=close_price,
-                    delta_pct=delta_pct,
-                    vpin=vpin,
-                    regime=regime,
-                    twap_result=twap_result,
-                    timesfm_forecast=timesfm_forecast,
-                    win_streak=win_streak,
-                    loss_streak=loss_streak,
-                )
-                if assessment:
-                    lines.append(f"🤖 _{assessment}_")
-                    lines.append(f"")
-            except Exception:
-                pass
-
             pf = self._portfolio_line()
             if pf:
                 lines.append(pf)
 
+            # Send the core card immediately — no waiting for AI.
             await self._send("\n".join(lines))
 
-            # Send chart if we have price ticks
-            if price_ticks and len(price_ticks) > 5:
+            # AI assessment + chart sent as fire-and-forget follow-ups so
+            # the core resolution card arrives within milliseconds.
+            async def _send_ai_and_chart():
                 try:
-                    from alerts.chart_generator import window_sparkline
-
-                    chart = window_sparkline(
-                        prices=price_ticks,
-                        open_price=open_price,
-                        close_price=close_price,
-                        direction=_dir,
-                        entry_price=tp,
-                        outcome=outcome,
+                    assessment = await self._generate_assessment(
+                        order=order,
                         asset=asset,
                         timeframe=timeframe,
-                        window_ts=window_ts,
-                        trade_placed=True,
+                        open_price=open_price,
+                        close_price=close_price,
+                        delta_pct=delta_pct,
+                        vpin=vpin,
+                        regime=regime,
+                        twap_result=twap_result,
+                        timesfm_forecast=timesfm_forecast,
+                        win_streak=win_streak,
+                        loss_streak=loss_streak,
                     )
-                    if chart:
-                        caption = (
-                            f"{result_emoji} {asset} {timeframe} — {pnl_sign}${pnl:.2f}"
+                    if assessment:
+                        self._send_queued(
+                            f"🤖 _{assessment}_",
+                            _TGPriority.LOW,
                         )
-                        await self._send_photo(chart, caption)
-                except Exception as exc:
-                    self._log.debug("telegram.chart_failed", error=str(exc))
+                except Exception:
+                    pass
+                # Send chart if we have price ticks
+                if price_ticks and len(price_ticks) > 5:
+                    try:
+                        from alerts.chart_generator import window_sparkline
+
+                        chart = window_sparkline(
+                            prices=price_ticks,
+                            open_price=open_price,
+                            close_price=close_price,
+                            direction=_dir,
+                            entry_price=tp,
+                            outcome=outcome,
+                            asset=asset,
+                            timeframe=timeframe,
+                            window_ts=window_ts,
+                            trade_placed=True,
+                        )
+                        if chart:
+                            caption = (
+                                f"{result_emoji} {asset} {timeframe} — {pnl_sign}${pnl:.2f}"
+                            )
+                            self._send_photo_queued(
+                                chart, caption, _TGPriority.LOW,
+                            )
+                    except Exception as exc:
+                        self._log.debug("telegram.chart_failed", error=str(exc))
+            try:
+                asyncio.create_task(_send_ai_and_chart())
+            except RuntimeError:
+                pass  # no event loop (test env)
 
         except Exception as exc:
             self._log.warning("telegram.trade_resolved_failed", error=str(exc))
@@ -3480,40 +3529,46 @@ class TelegramAlerter:
         it; the narrative-v2 path forwards selected keys to the renderer.
         """
         # ── Narrative V2 dual-fire (Phase G.1) ────────────────────────────────
-        # Non-blocking: swallows every error so legacy path always runs.
+        # Fire-and-forget via asyncio.create_task so it never blocks the
+        # FILL card or the legacy card below.
         if (
             self._narrative_v2_enabled
             and self._narrative_v2_publish is not None
             and self._narrative_v2_clock is not None
             and self._narrative_v2_tallies is not None
         ):
+            async def _v2_fire():
+                try:
+                    await self._emit_narrative_v2_trade(
+                        strategy_id=strategy_id,
+                        strategy_version=strategy_version,
+                        direction=direction,
+                        confidence=confidence,
+                        confidence_score=confidence_score,
+                        gate_results=gate_results or [],
+                        stake_usd=stake_usd,
+                        fill_price=fill_price,
+                        fill_size=fill_size,
+                        order_type=order_type,
+                        order_id=order_id,
+                        execution_mode=execution_mode,
+                        timeframe=timeframe,
+                        btc_price=btc_price,
+                        vpin=vpin,
+                        eval_offset=eval_offset,
+                        paper_mode=paper_mode,
+                        success=success,
+                        decision_metadata=decision_metadata,
+                    )
+                except Exception as exc:
+                    self._log.warning(
+                        "telegram.narrative_v2_dual_fire_failed",
+                        error=str(exc)[:200],
+                    )
             try:
-                await self._emit_narrative_v2_trade(
-                    strategy_id=strategy_id,
-                    strategy_version=strategy_version,
-                    direction=direction,
-                    confidence=confidence,
-                    confidence_score=confidence_score,
-                    gate_results=gate_results or [],
-                    stake_usd=stake_usd,
-                    fill_price=fill_price,
-                    fill_size=fill_size,
-                    order_type=order_type,
-                    order_id=order_id,
-                    execution_mode=execution_mode,
-                    timeframe=timeframe,
-                    btc_price=btc_price,
-                    vpin=vpin,
-                    eval_offset=eval_offset,
-                    paper_mode=paper_mode,
-                    success=success,
-                    decision_metadata=decision_metadata,
-                )
-            except Exception as exc:
-                self._log.warning(
-                    "telegram.narrative_v2_dual_fire_failed",
-                    error=str(exc)[:200],
-                )
+                asyncio.create_task(_v2_fire())
+            except RuntimeError:
+                pass  # no event loop (test env)
 
         try:
             dir_emoji = "⬇" if direction == "DOWN" else "⬆"
@@ -3583,7 +3638,13 @@ class TelegramAlerter:
 
             text = "\n".join(lines)
             await self._send(text)
-            await self._log_notification(f"strategy_trade_{strategy_id}", text[:2000])
+            # Fire-and-forget DB log — don't block caller.
+            try:
+                asyncio.create_task(
+                    self._log_notification(f"strategy_trade_{strategy_id}", text[:2000])
+                )
+            except RuntimeError:
+                pass
             self._log.info(
                 "telegram.strategy_trade_sent",
                 strategy=strategy_id,
@@ -3645,11 +3706,14 @@ class TelegramAlerter:
         """One per-strategy card at T-0 for each TRADE-advised decision.
 
         ``outcome`` must be one of ``_TRADE_ATTEMPT_EMOJI`` keys. Unknown
-        values render with a generic ⚠️ + raw label so the card still
+        values render with a generic warning + raw label so the card still
         surfaces instead of silently dropping.
 
-        Stays bounded to five or six lines — the user wants rapid scan
+        Stays bounded to five or six lines -- the user wants rapid scan
         across multiple strategies per window.
+
+        FILLED outcomes send immediately; SKIPPED/FAILED outcomes are
+        queued so they never delay fills.
         """
         if not self._bot_token or not self._chat_id:
             return
@@ -3675,8 +3739,15 @@ class TelegramAlerter:
             lines.append(f"order: `{order_id[:20]}`")
         lines.append(f"window: `{window_ts}`")
 
+        text = "\n".join(lines)
         try:
-            await self._send("\n".join(lines))
+            if outcome == "FILLED":
+                # FILLED cards are critical — send immediately.
+                await self._send(text)
+            else:
+                # SKIPPED/FAILED cards are diagnostic — queue them so
+                # they never block a sibling strategy's FILL card.
+                self._send_queued(text, _TGPriority.NORMAL)
         except Exception as exc:
             self._log.bind(strategy=strategy, outcome=outcome).warning(
                 "telegram.trade_attempt_result_failed",
@@ -3808,12 +3879,106 @@ class TelegramAlerter:
         except Exception:
             return "🔬 CoinGlass: ⚠️"
 
+    # ── Shared aiohttp session management ────────────────────────────────────
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """Return (and lazily create) a long-lived ``aiohttp.ClientSession``.
+
+        Reusing a single session avoids the overhead of TCP connect +
+        TLS handshake per message (~200-400 ms saved per send on high-
+        latency hosts). The session is closed by ``close()``.
+        """
+        if self._shared_session is None or self._shared_session.closed:
+            self._shared_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=10),
+            )
+        return self._shared_session
+
+    async def close(self) -> None:
+        """Shut down the queue worker and close the shared session."""
+        self._shutting_down = True
+        if self._queue_worker_task and not self._queue_worker_task.done():
+            self._queue_worker_task.cancel()
+            try:
+                await self._queue_worker_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._shared_session and not self._shared_session.closed:
+            await self._shared_session.close()
+
+    # ── Priority queue worker ─────────────────────────────────────────────────
+
+    def _ensure_queue_worker(self) -> None:
+        """Start the background queue drain loop if not already running."""
+        if (
+            self._queue_worker_task is None
+            or self._queue_worker_task.done()
+        ):
+            try:
+                self._queue_worker_task = asyncio.create_task(
+                    self._queue_drain_loop()
+                )
+            except RuntimeError:
+                # No running event loop (e.g. during tests). Silently skip.
+                pass
+
+    async def _queue_drain_loop(self) -> None:
+        """Background worker: pull items from the priority queue and send.
+
+        Items are ``(priority, seq, coro_factory)`` tuples where
+        ``coro_factory`` is a zero-arg async callable that performs the
+        actual HTTP send. ``seq`` is a monotonically increasing int that
+        breaks ties within the same priority level (FIFO within a level).
+        """
+        while not self._shutting_down:
+            try:
+                priority, _seq, coro_factory = await asyncio.wait_for(
+                    self._send_queue.get(), timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+            try:
+                await coro_factory()
+            except Exception as exc:
+                self._log.debug(
+                    "telegram.queue_worker_send_error",
+                    error=str(exc)[:200],
+                )
+            finally:
+                self._send_queue.task_done()
+
+    def _enqueue(
+        self,
+        priority: _TGPriority,
+        coro_factory,
+    ) -> None:
+        """Push a send operation onto the priority queue (non-blocking).
+
+        If the queue is full, the oldest LOW-priority item is silently
+        dropped to make room.
+        """
+        self._ensure_queue_worker()
+        self._queue_seq += 1
+        item = (int(priority), self._queue_seq, coro_factory)
+        try:
+            self._send_queue.put_nowait(item)
+        except asyncio.QueueFull:
+            self._log.warning("telegram.queue_full_dropping")
+            # Queue is bounded; non-critical messages may be lost.
+            # This is preferable to blocking the trading hot-path.
+
     # ── Internal send helpers ──────────────────────────────────────────────────
 
-    async def _send_with_id(self, text: str) -> Optional[int]:
-        """Send text and return Telegram message_id (for logging)."""
-        if not self._bot_token or not self._chat_id:
-            return None
+    async def _do_send_text(
+        self, text: str, *, session: aiohttp.ClientSession
+    ) -> Optional[int]:
+        """Low-level: POST text to Telegram, return message_id or None.
+
+        Uses the caller-provided session (shared). Falls back to
+        plain-text if Markdown parse fails.
+        """
         payload = {
             "chat_id": self._chat_id,
             "text": text,
@@ -3821,37 +3986,45 @@ class TelegramAlerter:
             "disable_web_page_preview": True,
         }
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self._url,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data.get("result", {}).get("message_id")
-                    body = await resp.text()
-                    if "can't parse entities" in body:
-                        plain = dict(payload)
-                        del plain["parse_mode"]
-                        async with session.post(
-                            self._url,
-                            json=plain,
-                            timeout=aiohttp.ClientTimeout(total=10),
-                        ) as r2:
-                            if r2.status == 200:
-                                d2 = await r2.json()
-                                return d2.get("result", {}).get("message_id")
+            async with session.post(
+                self._url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("result", {}).get("message_id")
+                body = await resp.text()
+                if "can't parse entities" in body:
+                    plain = dict(payload)
+                    del plain["parse_mode"]
+                    async with session.post(
+                        self._url,
+                        json=plain,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as r2:
+                        if r2.status == 200:
+                            d2 = await r2.json()
+                            return d2.get("result", {}).get("message_id")
+                        self._log.warning("telegram.send_failed", status=r2.status)
+                else:
+                    self._log.warning(
+                        "telegram.api_error",
+                        status=resp.status,
+                        body=body[:200],
+                    )
         except Exception as exc:
             self._log.warning("telegram.send_error", error=str(exc))
         return None
 
-    async def _send_photo_with_id(
-        self, photo_bytes: bytes, caption: str = ""
+    async def _do_send_photo(
+        self,
+        photo_bytes: bytes,
+        caption: str = "",
+        *,
+        session: aiohttp.ClientSession,
     ) -> Optional[int]:
-        """Send photo and return Telegram message_id."""
-        if not self._bot_token or not self._chat_id or not photo_bytes:
-            return None
+        """Low-level: POST a photo to Telegram, return message_id or None."""
         try:
             form = aiohttp.FormData()
             form.add_field("chat_id", str(self._chat_id))
@@ -3861,88 +4034,91 @@ class TelegramAlerter:
             if caption:
                 form.add_field("caption", caption[:1024])
                 form.add_field("parse_mode", "Markdown")
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self._photo_url,
-                    data=form,
-                    timeout=aiohttp.ClientTimeout(total=15),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data.get("result", {}).get("message_id")
-                    body = await resp.text()
-                    self._log.warning(
-                        "telegram.photo_failed", status=resp.status, body=body[:100]
-                    )
+            async with session.post(
+                self._photo_url,
+                data=form,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("result", {}).get("message_id")
+                body = await resp.text()
+                self._log.warning(
+                    "telegram.photo_failed", status=resp.status, body=body[:100]
+                )
         except Exception as exc:
             self._log.warning("telegram.photo_error", error=str(exc))
         return None
 
+    # ── Public send entry points (backward-compatible signatures) ─────────────
+
+    async def _send_with_id(self, text: str) -> Optional[int]:
+        """Send text and return Telegram message_id (for logging).
+
+        Sends immediately using the shared session — no queue.
+        Callers that need the message_id must await this.
+        """
+        if not self._bot_token or not self._chat_id:
+            return None
+        session = await self._get_session()
+        return await self._do_send_text(text, session=session)
+
+    async def _send_photo_with_id(
+        self, photo_bytes: bytes, caption: str = ""
+    ) -> Optional[int]:
+        """Send photo and return Telegram message_id."""
+        if not self._bot_token or not self._chat_id or not photo_bytes:
+            return None
+        session = await self._get_session()
+        return await self._do_send_photo(
+            photo_bytes, caption, session=session,
+        )
+
     async def _send(self, text: str) -> None:
+        """Send text — uses shared session, immediate dispatch."""
         if not self._bot_token or not self._chat_id:
             return
-        payload = {
-            "chat_id": self._chat_id,
-            "text": text,
-            "parse_mode": "Markdown",
-            "disable_web_page_preview": True,
-        }
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self._url,
-                    json=payload,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status != 200:
-                        body = await resp.text()
-                        if "can't parse entities" in body:
-                            # Retry without markdown
-                            plain = {**payload}
-                            del plain["parse_mode"]
-                            async with session.post(
-                                self._url,
-                                json=plain,
-                                timeout=aiohttp.ClientTimeout(total=10),
-                            ) as r2:
-                                if r2.status != 200:
-                                    self._log.warning(
-                                        "telegram.send_failed", status=r2.status
-                                    )
-                        else:
-                            self._log.warning(
-                                "telegram.api_error",
-                                status=resp.status,
-                                body=body[:200],
-                            )
-        except Exception as exc:
-            self._log.warning("telegram.send_error", error=str(exc))
+        session = await self._get_session()
+        await self._do_send_text(text, session=session)
 
     async def _send_photo(self, photo_bytes: bytes, caption: str = "") -> None:
         """Send a PNG chart via Telegram sendPhoto."""
         if not self._bot_token or not self._chat_id or not photo_bytes:
             return
-        try:
-            form = aiohttp.FormData()
-            form.add_field("chat_id", str(self._chat_id))
-            form.add_field(
-                "photo", photo_bytes, content_type="image/png", filename="chart.png"
-            )
-            if caption:
-                form.add_field("caption", caption[:1024])
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    self._photo_url,
-                    data=form,
-                    timeout=aiohttp.ClientTimeout(total=15),
-                ) as resp:
-                    if resp.status != 200:
-                        body = await resp.text()
-                        self._log.warning(
-                            "telegram.photo_failed", status=resp.status, body=body[:200]
-                        )
-        except Exception as exc:
-            self._log.warning("telegram.photo_error", error=str(exc))
+        session = await self._get_session()
+        await self._do_send_photo(photo_bytes, caption, session=session)
+
+    def _send_queued(
+        self, text: str, priority: _TGPriority = _TGPriority.NORMAL
+    ) -> None:
+        """Fire-and-forget: enqueue a text message at the given priority.
+
+        Does NOT block the caller. Returns immediately.
+        """
+        if not self._bot_token or not self._chat_id:
+            return
+
+        async def _factory():
+            session = await self._get_session()
+            await self._do_send_text(text, session=session)
+
+        self._enqueue(priority, _factory)
+
+    def _send_photo_queued(
+        self,
+        photo_bytes: bytes,
+        caption: str = "",
+        priority: _TGPriority = _TGPriority.NORMAL,
+    ) -> None:
+        """Fire-and-forget: enqueue a photo send."""
+        if not self._bot_token or not self._chat_id or not photo_bytes:
+            return
+
+        async def _factory():
+            session = await self._get_session()
+            await self._do_send_photo(photo_bytes, caption, session=session)
+
+        self._enqueue(priority, _factory)
 
 
 # Helper (module-level to avoid closure issues)

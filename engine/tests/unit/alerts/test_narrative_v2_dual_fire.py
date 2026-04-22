@@ -1,8 +1,12 @@
 """Phase G.1 test: TelegramAlerter.send_strategy_trade_alert dual-fires
 through the narrative-v2 pipeline when enabled.
+
+The v2 dual-fire is dispatched via ``asyncio.create_task`` (fire-and-forget)
+so tests yield to the event loop after calling the method under test.
 """
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from typing import Optional
 
@@ -80,6 +84,7 @@ async def test_dual_fire_disabled_by_default():
         eval_offset=62,
         paper_mode=False,
     )
+    await asyncio.sleep(0)
     assert capturing.sent == []
 
 
@@ -113,6 +118,8 @@ async def test_dual_fire_renders_override_label_when_enabled():
         eval_offset=62,
         paper_mode=False,
     )
+    # v2 dual-fire is dispatched via create_task; yield to let it complete.
+    await asyncio.sleep(0)
     assert len(capturing.sent) == 1
     msg = capturing.sent[0]
     assert "conf=OVERRIDE:risk_off (0.65)" in msg
@@ -150,6 +157,8 @@ async def test_dual_fire_legacy_gate_key_accepted():
         vpin=0.60,
         paper_mode=False,
     )
+    # v2 dual-fire is dispatched via create_task; yield to let it complete.
+    await asyncio.sleep(0)
     assert len(capturing.sent) == 1
     assert "conf=HIGH" in capturing.sent[0]
 
@@ -184,6 +193,8 @@ async def test_dual_fire_swallows_errors_and_keeps_legacy_running():
         btc_price=75_000.0,
         paper_mode=False,
     )
+    # Let the fire-and-forget task run (and fail silently).
+    await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio
@@ -210,6 +221,7 @@ async def test_dual_fire_skips_when_btc_price_zero():
         btc_price=0.0,
         paper_mode=False,
     )
+    await asyncio.sleep(0)
     assert capturing.sent == []
 
 
@@ -235,4 +247,5 @@ async def test_dual_fire_skips_unknown_direction():
         timeframe="5m",
         btc_price=75_000.0,
     )
+    await asyncio.sleep(0)
     assert capturing.sent == []
