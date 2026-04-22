@@ -118,7 +118,16 @@ version: "6.1.4"
 # Primary signal: LGB + Path1 ensemble (surface.poly_confidence).
 # Conviction buckets from note #183 (7d). CLOB sizing schedule from
 # v4_down_only (the 86% winner). Defensive gates from v4_fusion.
-mode: LIVE
+#
+# 2026-04-21: Flipped LIVE → GHOST. v8_champion becomes the primary LIVE
+# strategy (mode: LIVE in v8_champion.yaml). v6_sniper retained as GHOST
+# so its WR can be compared side-by-side with v8 on the same windows —
+# two LIVE strategies on the same window would duplicate capital, which
+# we want to avoid while v8 accumulates a new baseline. All v6.1.x gates
+# and their Hub-note citations are preserved unchanged below (only the
+# ``mode`` line moved). Rollback: flip mode back to LIVE and set
+# v8_champion.yaml mode: GHOST, then restart the engine.
+mode: GHOST
 asset: BTC
 timescale: 5m
 

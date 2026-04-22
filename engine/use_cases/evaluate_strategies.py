@@ -162,6 +162,22 @@ class EvaluateStrategiesUseCase:
                         metadata_json=json.dumps({
                             # Strategy-specific metadata (gates, V4 fields etc)
                             **decision.metadata,
+                            # Top-level ``regime`` field (2026-04-21 fix):
+                            # Strategy Lab + shadow reports previously read
+                            # ``regime: None`` because only ``_ctx.v4_regime``
+                            # carried it. Promote it to a top-level key so
+                            # every decision row is queryable by regime.
+                            # Strategy hook-provided value wins over ctx.
+                            "regime": (
+                                decision.metadata.get("regime")
+                                or decision.metadata.get("v4_regime")
+                                or (
+                                    ctx.v4_snapshot.regime
+                                    if ctx and ctx.v4_snapshot
+                                    else None
+                                )
+                                or (ctx.regime if ctx else None)
+                            ),
                             # Shared context injected at the use case level
                             # so every strategy record has the full signal vector
                             "_ctx": {

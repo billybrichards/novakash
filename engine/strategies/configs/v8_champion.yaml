@@ -1,0 +1,106 @@
+name: v8_champion
+version: "8.0.0"
+# v8_champion — 2026-04-21 — new primary LIVE strategy (supersedes v6_sniper).
+#
+# Proposed by v8_agent (Hub note #209). Refinements layered on top based on
+# recent shadow data:
+#
+#   Refinement 1 — inherit v6.1.4's UP fill-floor (up_min_fill_price: 0.55).
+#     v5_ensemble shadow since 2026-04-18 shows UP at 18% WR across all
+#     strategies. v6.1.4 surgical fix (n=50 resolved UP trades):
+#       UP fill < 0.55 + volatile_trend: 2W/8L  → 20% WR, -$18.54, ROI -60%.
+#       UP fill ≥ 0.55 + volatile_trend: 12W/3L → 80% WR, +$8.39,  ROI +12%.
+#     v8 inherits this gate verbatim — cheap contrarian UP bleeds capital.
+#
+#   Refinement 2 — ensure asymmetric direction handling.
+#     Base v8 proposal treated UP/DOWN symmetrically (HIGH conv + volatile/chop +
+#     fill 0.30-0.65 + not-h{0,5,14}). v8 applies stricter UP rule via Refinement 1.
+#
+#   Refinement 3 — regime field fix (see registry.py + StrategyDecisionRecord).
+#     Shadow decisions show regime: None — not a v8 issue but paired PR for the
+#     recording path so v8's shadow data is analysable from the start.
+#
+# Primary signal: ensemble blended probability (surface.poly_confidence) —
+# same as v5_ensemble / v6_sniper. HIGH conviction only (agree_strong or
+# pegged_path1 bucket). Regime allowlist EXPANDED vs v6 to include chop.
+# Fill-band narrower than v6 mid-range gate: [0.30, 0.65] sweet spot.
+#
+# Hour-of-day block: h00 / h05 / h14 UTC — per v8 proposal data.
+#
+# Sizing: quarter-Kelly (fraction=0.025), max 5.8% collateral. Schedule
+# mirrors v5_ensemble's conviction ladder, weighted toward HIGH.
+#
+# Rollback: edit mode: LIVE → GHOST in this file + restart engine. v6_sniper
+# can be flipped back LIVE at the same time to restore previous lineup.
+mode: LIVE            # per Billy; skips the 72h GHOST warmup
+asset: BTC
+timescale: 5m
+
+# All logic is in the hook. YAML-declared gates: [] so registry's
+# pre_gate_hook runs alone (matches v5_ensemble / v6_sniper pattern).
+gates: []
+
+gate_params:
+  # ── Entry window (inherit v6.1.4 tight range) ─────────────────────────
+  min_offset_sec: 30
+  max_offset_sec: 200
+
+  # ── Regime (EXPANDED vs v6 — adds chop) ───────────────────────────────
+  # v6_sniper: [volatile_trend] only.
+  # v8_champion: [volatile_trend, chop] — per v8 proposal shadow-data pull.
+  tradeable_v4_regimes: [volatile_trend, chop]
+
+  # ── Conviction (v5_ensemble buckets, HIGH only) ───────────────────────
+  require_high_conviction: true
+  bucket_abs_dist_strong: 0.20
+  bucket_path1_extreme_high: 0.90
+  bucket_path1_extreme_low: 0.10
+
+  # ── Fill-band (v5_ensemble sweet spot) ────────────────────────────────
+  fill_band_min: 0.30
+  fill_band_max: 0.65
+
+  # ── UP asymmetric (Refinement 1 — inherit v6.1.4) ─────────────────────
+  # When direction == UP, require CLOB ask >= 0.55 AND both conviction
+  # buckets (agree_strong AND pegged_path1). Set up_min_fill_price to 0.0
+  # to disable (sentinel → gate skipped).
+  up_min_fill_price: 0.55
+  up_require_both_buckets: true
+
+  # ── Hour-of-day block (h00, h05, h14 UTC) ─────────────────────────────
+  blocked_utc_hours: [0, 5, 14]
+
+  # ── Source agreement (chainlink + tiingo must be present; null-block) ─
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  # v8 does NOT skip on oracle direction disagreement (conviction buckets
+  # + VPIN guard + fill-band considered sufficient selectivity).
+  skip_on_oracle_disagree: false
+
+  # ── VPIN guard ────────────────────────────────────────────────────────
+  vpin_min: 0.40
+  vpin_max: 0.85
+
+  # ── risk_off path — not override enabled (kept blocked via regime list)
+  risk_off_override_enabled: false
+
+  # ── Ensemble source ───────────────────────────────────────────────────
+  ensemble_signal_source: ensemble
+  # Read RAW probability_up (not calibrated) while bucket thresholds
+  # are measured on raw values. Flip to false when isotonic shadow
+  # re-validates buckets on calibrated data.
+  prefer_raw_probability: true
+
+sizing:
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.025            # quarter-Kelly per v8 proposal
+  max_collateral_pct: 0.058  # 5.8% of bankroll per v8 proposal
+  schedule:
+    - { threshold: 0.55, modifier: 2.0, label: "high_conv_full" }
+    - { threshold: 0.35, modifier: 1.2, label: "mid" }
+    - { threshold: 0.25, modifier: 1.0, label: "low" }
+    - { threshold: 0.0,  modifier: 0.0, label: "skip" }
+
+hooks_file: v8_champion.py
+pre_gate_hook: evaluate_v8_champion
