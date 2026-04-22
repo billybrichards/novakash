@@ -71,14 +71,14 @@ gate_params:
   source_agreement_require_chainlink: true
   source_agreement_require_tiingo: true
   skip_on_oracle_disagree: false
-  health_gate: degraded
+  health_gate: unsafe
   skip_stale_sources: true
 
   # ── Time-of-day block (disabled — let shadow data reveal patterns) ──
   blocked_utc_hours: []
 
   # ── Regime gate (same as v6: calm_trend, volatile_trend, risk_off) ──
-  tradeable_v4_regimes: [calm_trend, volatile_trend, risk_off]
+  tradeable_v4_regimes: [calm_trend, volatile_trend, risk_off, chop]
 
   # ── Entry-price cap (slightly more conservative than v6's 0.85) ──
   # 15m windows have wider spreads; cap at 0.80 to limit downside

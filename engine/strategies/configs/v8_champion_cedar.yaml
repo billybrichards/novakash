@@ -8,7 +8,7 @@ version: "8.0.0-cedar"
 # wider fill band + lower UP fill floor unlocks additional edge when backed
 # by the cedar model:
 #
-#   fill_band_max: 0.70     (prod v8: 0.65) — accepts slightly richer fills
+#   fill_band_max: 0.82     (prod v8: 0.65) — accepts richer fills when confident
 #   up_min_fill_price: 0.50 (prod v8: 0.55) — loosens UP floor
 #
 # Purpose (three strategies running in parallel):
@@ -23,8 +23,8 @@ version: "8.0.0-cedar"
 # probability_up_cedar is None, this strategy SKIPs with
 # ``cedar_source_unavailable``. Prod v8_champion is unaffected.
 #
-# Rollback: edit mode: GHOST → DISABLED in this file + restart engine.
-mode: GHOST
+# Rollback: edit mode: LIVE → DISABLED in this file + restart engine.
+mode: LIVE
 asset: BTC
 timescale: 5m
 
@@ -55,7 +55,7 @@ gate_params:
 
   # ── Fill-band (TWEAKED — wider than prod v8's 0.65) ───────────────────
   fill_band_min: 0.30
-  fill_band_max: 0.70
+  fill_band_max: 0.82
 
   # ── UP asymmetric (TWEAKED — lower UP floor than prod v8's 0.55) ──────
   up_min_fill_price: 0.50

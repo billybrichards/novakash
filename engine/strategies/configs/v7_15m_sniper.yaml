@@ -71,14 +71,19 @@ gate_params:
   source_agreement_require_chainlink: true
   source_agreement_require_tiingo: true
   skip_on_oracle_disagree: false
-  health_gate: degraded
+  # health_gate relaxed for 15m: the v4 surface eval_band check is
+  # calibrated for 5m windows. At T-400 to T-300 in 15m, the surface
+  # reports "suboptimal" eval_band which is correct for 5m but wrong
+  # for 15m's wider entry window. Allow degraded to pass.
+  health_gate: unsafe
   skip_stale_sources: true
 
   # ── Time-of-day block (disabled — let shadow data reveal patterns) ──
   blocked_utc_hours: []
 
   # ── Regime gate (same as v6: calm_trend, volatile_trend, risk_off) ──
-  tradeable_v4_regimes: [calm_trend, volatile_trend, risk_off]
+  # Expanded vs v6: include chop (classifier trained across all regimes)
+  tradeable_v4_regimes: [calm_trend, volatile_trend, risk_off, chop]
 
   # ── Entry-price cap (slightly more conservative than v6's 0.85) ──
   # 15m windows have wider spreads; cap at 0.80 to limit downside
