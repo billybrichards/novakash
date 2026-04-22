@@ -468,8 +468,10 @@ jobs:
           fi
 
           # Verify engine actually booted to db.connected (not just process-alive)
-          if ! ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'tail -100 /home/novakash/engine.log | grep -q "db.connected"'; then
-            echo "::error::engine process running but db.connected not found in last 100 log lines"
+          # Window: tail -500 (~50s of engine-log volume at ~10Hz); banner
+          # scrolls past 100 lines in ~10s, causing false failures.
+          if ! ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'tail -500 /home/novakash/engine.log | grep -q "db.connected"'; then
+            echo "::error::engine process running but db.connected not found in last 500 log lines"
             ssh -i ~/.ssh/deploy_key novakash@"$HOST" 'tail -100 /home/novakash/engine.log' || true
             exit 1
           fi
