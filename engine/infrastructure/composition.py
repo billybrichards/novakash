@@ -494,14 +494,22 @@ class CompositionRoot:
                     "strategies", "configs",
                 )
                 # Assets the data-surface refresh loop polls /v4/snapshot
-                # for. Union of 5m (BTC) and 15m (FIFTEEN_MIN_ASSETS) feed
-                # assets so every active window has a per-asset cache slot
+                # for. Union of FIVE_MIN_ASSETS + FIFTEEN_MIN_ASSETS env
+                # vars so every active window has a per-asset cache slot
                 # and strategies never silently read another asset's data.
+                #
+                # Read env directly — the `fifteen_min_assets` local below
+                # is defined AFTER this block, so referencing it here
+                # raised NameError on startup, which killed the whole
+                # strategy-registry init (v6_sniper LIVE went silent with
+                # `strategy_registry_init_error`). Always read env twice
+                # so this block stays independent of execution order.
                 _surface_assets: list[str] = []
-                _five_min_assets = os.environ.get(
-                    "FIVE_MIN_ASSETS", "BTC"
+                _five_min_assets = os.environ.get("FIVE_MIN_ASSETS", "BTC").split(",")
+                _fifteen_min_assets_env = os.environ.get(
+                    "FIFTEEN_MIN_ASSETS", "BTC"
                 ).split(",")
-                for _a in _five_min_assets + list(fifteen_min_assets):
+                for _a in _five_min_assets + _fifteen_min_assets_env:
                     _a_up = (_a or "").strip().upper()
                     if _a_up and _a_up not in _surface_assets:
                         _surface_assets.append(_a_up)
