@@ -37,7 +37,7 @@ gate_params:
   max_offset_sec: 200
 
   # ── Regime (EXPANDED vs v6 — adds chop) ───────────────────────────────
-  tradeable_v4_regimes: [volatile_trend, chop]
+  tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
 
   # ── Conviction (v5_ensemble buckets, HIGH only) ───────────────────────
   require_high_conviction: true
