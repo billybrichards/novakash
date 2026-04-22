@@ -334,7 +334,7 @@ class V4Strategy(EntryStrategy):
         collateral = Money.usd(
             self._portfolio.starting_capital.amount * self._bet_fraction * size_mult
         )
-        requested_notional = collateral.amount * self._portfolio.leverage
+        requested_notional = collateral * self._portfolio.leverage
 
         # Gate 9.5: mark divergence
         if self._v4_max_mark_divergence_bps > 0:
@@ -454,7 +454,7 @@ class V4Strategy(EntryStrategy):
             )
 
             actual_notional = Money.usd(
-                fill.filled_notional if fill.filled_notional > 0 else requested_notional
+                fill.filled_notional if fill.filled_notional > 0 else requested_notional.amount
             )
 
             position.confirm_entry(
