@@ -1424,8 +1424,14 @@ class StrategyRegistry:
                     # not the hardcoded _STRATEGY_ID in the hook. Shared hooks
                     # (e.g. v8_champion.py used by cedar variants) would
                     # otherwise tag every decision as "v8_champion".
-                    hook_result.strategy_id = name
-                    hook_result.strategy_version = config.version
+                    # StrategyDecision is frozen — use dataclasses.replace.
+                    if hook_result.strategy_id != name:
+                        from dataclasses import replace as _dc_replace
+                        hook_result = _dc_replace(
+                            hook_result,
+                            strategy_id=name,
+                            strategy_version=config.version,
+                        )
                     if hook_result.action == "SKIP":
                         return hook_result  # Hook skipped — honour immediately
                     # Hook returned TRADE — run YAML gates as post-filters
