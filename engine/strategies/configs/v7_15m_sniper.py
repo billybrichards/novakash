@@ -523,6 +523,28 @@ def evaluate_polymarket_15m_sniper(
         if direction not in ("UP", "DOWN"):
             direction = None
 
+    # ── Classifier-only mode (no sister TimesFM model for this asset) ────
+    # BTC has a full TimesFM stack — classifier + LGB + polymarket outcome
+    # block (direction, timing, trade_advised, etc). ETH/SOL/XRP serve
+    # ``status=no_model`` snapshots (2026-04-20) where only the classifier
+    # head is populated; the entire poly block is absent. Detect that case
+    # here so the downstream poly_trade_advised / timing / direction gates
+    # don't reject every non-BTC eval.
+    #
+    # Signal: poly_trade_advised, poly_timing and poly_direction are all
+    # None — i.e. the poly block was missing, not merely negative. (A
+    # negative trade_advised with a real reason is a different skip path.)
+    classifier_only_mode = (
+        surface.poly_trade_advised is None
+        and surface.poly_timing is None
+        and surface.poly_direction is None
+    )
+    if classifier_only_mode:
+        gates.append(_gate(
+            "classifier_only_mode", True,
+            "sister no_model; using p_classifier directly",
+        ))
+
     # ── Conviction bucket (classifier-only, no LGB) ─────────────────────
     bucket = _classify_bucket(p_classifier)
     bucket_extras = {
@@ -565,7 +587,16 @@ def evaluate_polymarket_15m_sniper(
             gates.append(_gate("source_agreement", True, f"both agree {cl_dir}"))
 
     # ── trade_advised (bucket-aware risk_off override) ──────────────────
-    if not (surface.poly_trade_advised or False):
+    # Skipped entirely in classifier_only_mode: the sister model is
+    # no_model for this asset, so there is no poly_trade_advised signal
+    # to consult. The classifier conviction + downstream oracle-agreement
+    # gates carry the load instead.
+    if classifier_only_mode:
+        gates.append(_gate(
+            "trade_advised", True,
+            "skipped (classifier_only_mode — no poly advice available)",
+        ))
+    elif not (surface.poly_trade_advised or False):
         reason = surface.poly_reason or "no_poly_advice"
         if _try_bucket_risk_off_override(reason, bucket, direction, surface, gates):
             gates.append(_gate(
@@ -659,9 +690,19 @@ def evaluate_polymarket_15m_sniper(
             gates.append(_gate("tiingo_agreement", True, "Tiingo agrees"))
 
     # ── Health badge ────────────────────────────────────────────────────
+    # Skipped in classifier_only_mode: the badge's eval_band_in_optimal
+    # input is derived from poly_timing which is None by construction for
+    # no_model assets, and v4_conviction is also None, so the badge would
+    # always score UNSAFE. Sources + VPIN + classifier distance are checked
+    # independently above.
     health_gate = _health_gate()
     distance = abs(p_classifier - 0.5) if p_classifier is not None else 0.0
-    if health_gate != "off":
+    if classifier_only_mode and health_gate != "off":
+        gates.append(_gate(
+            "health_badge", True,
+            "skipped (classifier_only_mode)",
+        ))
+    elif health_gate != "off":
         health = _compute_health_badge(surface, distance, direction)
         block_on = {
             "unsafe": {HealthStatus.UNSAFE},
@@ -733,5 +774,6 @@ def evaluate_polymarket_15m_sniper(
             "classifier_age_source": age_source,
             "timescale": "15m",
             "entry_cap_override": _cap_override,
+            "classifier_only_mode": classifier_only_mode,
         },
     )

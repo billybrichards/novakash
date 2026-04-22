@@ -280,7 +280,11 @@ jobs:
             echo "# Feeds & Services"
             echo "FIVE_MIN_ENABLED=true"
             echo "FIFTEEN_MIN_ENABLED=true"
-            echo "FIFTEEN_MIN_ASSETS=BTC"
+            # FIFTEEN_MIN_ASSETS: BTC (LIVE v6_sniper) + ETH/SOL/XRP (GHOST
+            # v7_15m_sniper_{eth,sol,xrp}). Sister TimesFM now serves the
+            # classifier head for all four; v7 hook runs in classifier-only
+            # mode for non-BTC (no_model snapshots, no poly block).
+            echo "FIFTEEN_MIN_ASSETS=BTC,ETH,SOL,XRP"
             echo "V4_FUSION_ENABLED=true"
             # v4.3.0 risk_off override DISABLED 2026-04-17 — losing money on
             # regime=risk_off even with HIGH conviction + oracle agreement.

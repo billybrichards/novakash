@@ -209,6 +209,7 @@ class DataSurfaceManager:
         cg_feeds: Optional[dict] = None,
         twap_tracker: Any = None,
         binance_state: Any = None,
+        active_assets: Optional[list[str]] = None,
     ):
         self._v4_url = v4_base_url or os.environ.get(
             "TIMESFM_URL", "http://localhost:8001"
@@ -222,8 +223,23 @@ class DataSurfaceManager:
         self._binance_state = binance_state
 
         self._session = None  # aiohttp.ClientSession -- persistent
-        self._cached_v4: Optional[dict] = None
-        self._cached_v4_ts: float = 0.0
+        # Per-asset v4 snapshot cache (audit #267).
+        # Historical bug: a single-slot cache would hold ONE asset's payload
+        # (always BTC in practice). A non-BTC window then read BTC data into
+        # its surface — silent corruption. These dicts are keyed by UPPER
+        # asset (BTC/ETH/SOL/XRP) so ETH windows read ETH snapshots etc.
+        # Empty dicts mean "no cache yet" — get_surface falls through to
+        # poly=None, forcing strategies into their classifier-only / no_poly
+        # paths rather than reading stale neighbour data.
+        self._cached_v4: dict[str, dict] = {}
+        self._cached_v4_ts: dict[str, float] = {}
+        # Assets that the refresh loop polls /v4/snapshot for. Defaults to
+        # BTC only for backward-compat with single-asset callers/tests. The
+        # orchestrator overrides this via set_active_assets() once it knows
+        # the feed asset list.
+        self._active_assets: list[str] = [
+            a.upper() for a in (active_assets or ["BTC"])
+        ]
         self._refresh_interval = 2.0
         self._running = False
         self._task: Optional[asyncio.Task] = None
@@ -235,6 +251,17 @@ class DataSurfaceManager:
         self._alert_cb = None
         self._degraded_since: Optional[float] = None
         self._alert_stale_threshold_s = 45.0  # alert after 45s stale
+
+    def set_active_assets(self, assets: list[str]) -> None:
+        """Set which assets the refresh loop polls /v4/snapshot for.
+
+        Call after the feed list is known (typically from
+        FIFTEEN_MIN_ASSETS) so ETH/SOL/XRP snapshots start populating
+        alongside BTC. Case-insensitive — stored as upper.
+        """
+        if not assets:
+            return
+        self._active_assets = [a.upper() for a in assets]
 
     def set_alerter(self, alert_cb: Any) -> None:
         """Register a coroutine(text, level) for TimesFM health alerts.
@@ -324,49 +351,85 @@ class DataSurfaceManager:
             await asyncio.sleep(self._refresh_interval)
 
     async def _fetch_v4(self) -> None:
-        """Fetch V4 snapshot and cache it in memory.
+        """Fetch V4 snapshot for every active asset and cache per-asset.
 
-        Observability: every failure is logged with a reason. When the cache
-        goes stale (>30s since last successful fetch), escalates to ERROR so
-        it's visible in alerting. Empty polymarket block is a distinct failure
-        mode from transport timeout — log it separately so the TimesFM
-        feature-pipeline freeze (PR #47 class) gets caught early.
+        Per-asset cache (audit #267): BTC has a full LGB+classifier stack
+        and a populated polymarket outcome block; ETH/SOL/XRP (2026-04-20)
+        serve classifier-only snapshots with ``status=no_model`` and an
+        empty poly block. We must:
+
+          1. keep strict poly validation for BTC (still primary/LIVE),
+          2. accept ``no_model`` / empty-poly payloads for non-BTC assets
+             as long as the classifier head is present, so v7_15m_sniper
+             can still read probability_classifier,
+          3. key the cache by asset — not a single slot.
+
+        Alerting tracks BTC only (it is the LIVE asset). Non-BTC failures
+        are logged but do NOT fire Telegram to avoid noise.
         """
         if not self._session:
             return
+        for asset in list(self._active_assets):
+            await self._fetch_v4_asset(asset)
+
+    async def _fetch_v4_asset(self, asset: str) -> None:
+        """Fetch /v4/snapshot for a single asset and update its cache slot."""
         url = f"{self._v4_url}/v4/snapshot"
-        params = {"asset": "BTC", "timescales": "5m,15m", "strategy": "polymarket_5m"}
-        age = time.time() - self._cached_v4_ts if self._cached_v4_ts else None
+        params = {"asset": asset, "timescales": "5m,15m", "strategy": "polymarket_5m"}
+        is_primary = asset.upper() == "BTC"
+        cached_ts = self._cached_v4_ts.get(asset, 0.0)
+        age = time.time() - cached_ts if cached_ts else None
         try:
             async with self._session.get(url, params=params) as resp:
                 if resp.status != 200:
-                    log_fn = log.error if age is not None and age > 30 else log.warning
+                    log_fn = log.error if (
+                        is_primary and age is not None and age > 30
+                    ) else log.warning
                     log_fn(
                         "data_surface.v4_fetch_http_error",
+                        asset=asset,
                         status=resp.status,
                         cache_age_s=round(age, 1) if age is not None else None,
                     )
+                    if is_primary:
+                        self._maybe_fire_degraded_alert(age)
                     return
                 body = await resp.json()
-                # Validate downstream critical fields BEFORE replacing cache.
-                # TimesFM can serve 200 OK with an empty polymarket block when
-                # its v2 feature pipeline freezes (see PR #47 class bug) —
-                # treat that as a fetch failure, not a success, to avoid
-                # feeding stale cache to strategies via a poisoned surface.
-                ts5 = (body.get("timescales") or {}).get("5m", {})
-                poly = ts5.get("polymarket_live_recommended_outcome") or {}
-                if not poly or poly.get("timing") is None:
-                    log_fn = log.error if age is not None and age > 30 else log.warning
-                    log_fn(
-                        "data_surface.v4_empty_polymarket",
-                        poly_keys=len(poly),
-                        cache_age_s=round(age, 1) if age is not None else None,
-                    )
-                    return
-                self._cached_v4 = body
-                self._cached_v4_ts = time.time()
-                # RECOVERY alert — we were degraded and now we're not.
-                if self._degraded_since is not None and self._alert_cb is not None:
+                # BTC: full stack required — reject empty poly block (PR #47
+                # feature-pipeline freeze class bug).
+                # Non-BTC: accept classifier-only (no_model) payloads. Still
+                # require SOME content so a totally empty body doesn't get
+                # cached.
+                if is_primary:
+                    ts5 = (body.get("timescales") or {}).get("5m", {})
+                    poly = ts5.get("polymarket_live_recommended_outcome") or {}
+                    if not poly or poly.get("timing") is None:
+                        log_fn = log.error if (
+                            age is not None and age > 30
+                        ) else log.warning
+                        log_fn(
+                            "data_surface.v4_empty_polymarket",
+                            asset=asset,
+                            poly_keys=len(poly),
+                            cache_age_s=round(age, 1) if age is not None else None,
+                        )
+                        self._maybe_fire_degraded_alert(age)
+                        return
+                else:
+                    # Non-BTC: accept no_model payloads. Sanity check: body
+                    # must have a timescales block (otherwise it's an error
+                    # page, not a valid snapshot).
+                    if not isinstance(body.get("timescales"), dict):
+                        log.warning(
+                            "data_surface.v4_missing_timescales",
+                            asset=asset,
+                            status=body.get("status"),
+                        )
+                        return
+                self._cached_v4[asset] = body
+                self._cached_v4_ts[asset] = time.time()
+                # BTC recovery alert — we were degraded and now we're not.
+                if is_primary and self._degraded_since is not None and self._alert_cb is not None:
                     down_s = int(time.time() - self._degraded_since)
                     try:
                         await self._alert_cb(
@@ -379,38 +442,62 @@ class DataSurfaceManager:
                     self._degraded_since = None
                 return
         except asyncio.TimeoutError:
-            log_fn = log.error if age is not None and age > 30 else log.warning
+            log_fn = log.error if (
+                is_primary and age is not None and age > 30
+            ) else log.warning
             log_fn(
                 "data_surface.v4_fetch_timeout",
+                asset=asset,
                 cache_age_s=round(age, 1) if age is not None else None,
             )
         except Exception as exc:
-            log_fn = log.error if age is not None and age > 30 else log.warning
+            log_fn = log.error if (
+                is_primary and age is not None and age > 30
+            ) else log.warning
             log_fn(
                 "data_surface.v4_fetch_error",
+                asset=asset,
                 error=str(exc)[:200],
                 cache_age_s=round(age, 1) if age is not None else None,
             )
 
-        # Any fall-through to here = this tick did not replace the cache.
-        # If the cache age now crosses the alert threshold and we have not
-        # already alerted, fire a Telegram alert so Daisy sees the outage
-        # even though strategies continue to skip silently.
-        if age is not None and age > self._alert_stale_threshold_s:
-            if self._degraded_since is None:
-                self._degraded_since = time.time() - age
-                if self._alert_cb is not None:
-                    try:
-                        await self._alert_cb(
-                            f"TimesFM /v4/snapshot degraded — cache stale "
-                            f"{int(age)}s. Strategies will skip until recovery.",
-                            "error",
-                        )
-                    except Exception as exc:
-                        log.warning(
-                            "data_surface.degraded_alert_failed",
-                            error=str(exc)[:200],
-                        )
+        # BTC-only: any fall-through = this tick did not replace the cache.
+        # Fire degraded alert if the cache age now exceeds the threshold.
+        if is_primary:
+            self._maybe_fire_degraded_alert(age)
+
+    def _maybe_fire_degraded_alert(self, age: Optional[float]) -> None:
+        """Schedule a BTC /v4/snapshot degraded Telegram alert if threshold crossed.
+
+        Idempotent via ``_degraded_since``. Awaits the alert callback on the
+        caller's task so the log order stays consistent.
+        """
+        if age is None or age <= self._alert_stale_threshold_s:
+            return
+        if self._degraded_since is not None:
+            return
+        self._degraded_since = time.time() - age
+        if self._alert_cb is None:
+            return
+        # Fire alert on current task — caller is already inside an async
+        # coroutine (either _fetch_v4_asset or _fetch_v4 prime path).
+        async def _fire() -> None:
+            try:
+                await self._alert_cb(
+                    f"TimesFM /v4/snapshot degraded — cache stale "
+                    f"{int(age)}s. Strategies will skip until recovery.",
+                    "error",
+                )
+            except Exception as exc:
+                log.warning(
+                    "data_surface.degraded_alert_failed",
+                    error=str(exc)[:200],
+                )
+        try:
+            asyncio.create_task(_fire())
+        except RuntimeError:
+            # No running loop (test context) — skip firing.
+            pass
 
     def get_surface(
         self,
@@ -522,20 +609,29 @@ class DataSurfaceManager:
         gamma_up = getattr(window, "up_price", None)
         gamma_down = getattr(window, "down_price", None)
 
-        # V4 snapshot from cache — reject cache older than 60s.
+        # V4 snapshot from per-asset cache — reject cache older than 60s.
         # A stale cache causes strategies to evaluate against frozen poly
         # data, which is what produced the 2026-04-16 "timing=early"
         # silent-skip incident (TimesFM /v4/snapshot hung; engine kept
         # serving stale cache for an hour). Treating stale cache as
         # absent forces strategies into `timing="unknown"` rather than
         # acting on stale "early"/"optimal" labels.
+        #
+        # Audit #267: cache is keyed by asset so ETH/SOL/XRP windows
+        # read their own snapshots instead of silently inheriting BTC
+        # payloads. An asset with no cache entry yet falls through to
+        # poly=None (and classifier=None) — strategies then hit their
+        # staleness / no_eval branches, which is the correct behaviour.
         timeframe = getattr(window, "timeframe", "5m")
-        v4 = self._cached_v4
-        if v4 and self._cached_v4_ts:
-            age = time.time() - self._cached_v4_ts
+        asset_key = asset.upper() if asset else "BTC"
+        v4 = self._cached_v4.get(asset_key)
+        asset_ts = self._cached_v4_ts.get(asset_key, 0.0)
+        if v4 and asset_ts:
+            age = time.time() - asset_ts
             if age > 60:
                 log.error(
                     "data_surface.v4_cache_stale",
+                    asset=asset_key,
                     cache_age_s=round(age, 1),
                     reason="stale cache rejected; strategies will see poly=None",
                 )
@@ -605,7 +701,7 @@ class DataSurfaceManager:
                         payload_ts = float(_raw_ts)
                 except (TypeError, ValueError):
                     payload_ts = None
-            classifier_inferred_at = payload_ts or (self._cached_v4_ts or None)
+            classifier_inferred_at = payload_ts or (asset_ts or None)
 
         return FullDataSurface(
             # Identity
