@@ -24,7 +24,7 @@ version: "8.0.0-cedar"
 # ``cedar_source_unavailable``. Prod v8_champion is unaffected.
 #
 # Rollback: edit mode: LIVE → DISABLED in this file + restart engine.
-mode: LIVE
+mode: GHOST
 asset: BTC
 timescale: 5m
 
