@@ -183,15 +183,6 @@ def test_down_lgb_aligned_passes(registry):
     assert g["passed"] is True, g
 
 
-@pytest.mark.skip(
-    reason=(
-        "v6.1.3 emergency DOWN-only: UP direction is blocked at the bucket "
-        "classification stage (impossible up_bucket_* thresholds), so the "
-        "lgb_aligned gate is never reached for UP-direction surfaces. "
-        "Test will start passing again once UP is re-enabled by reverting "
-        "the emergency thresholds to v6.1.2 values (0.28 / 0.95)."
-    )
-)
 def test_up_requires_lgb_aligned(registry):
     """UP + lgb=0.65 (<= lgb_aligned_up_min 0.70) → SKIP."""
     surface = _make_up_surface(
@@ -206,15 +197,6 @@ def test_up_requires_lgb_aligned(registry):
     assert g is not None and g["passed"] is False
 
 
-@pytest.mark.skip(
-    reason=(
-        "v6.1.3 emergency DOWN-only: UP direction is blocked at the bucket "
-        "classification stage (impossible up_bucket_* thresholds), so the "
-        "lgb_aligned gate is never reached for UP-direction surfaces. "
-        "Test will start passing again once UP is re-enabled by reverting "
-        "the emergency thresholds to v6.1.2 values (0.28 / 0.95)."
-    )
-)
 def test_up_lgb_aligned_passes(registry):
     """UP + lgb=0.85 + path1=0.98 → lgb_aligned passes."""
     surface = _make_up_surface(

@@ -1,27 +1,22 @@
-"""Tests for v6_sniper v6.1.3 — EMERGENCY DOWN-only (UP blocked via impossible thresholds).
+"""Tests for v6_sniper v6.1.4 — surgical UP re-enable via fill-price floor.
 
-Incident (2026-04-22, Montreal live):
-  * v6 UP direction: 0W/4L, -$16.70, 100% loss rate at fills 0.36-0.44.
-    Classifier/ensemble appears systematically contrarian on UP today.
-  * v6 DOWN direction: 1W/0L (100% WR).
-  * Decision: block UP completely; keep DOWN trading.
+This file originally covered the v6.1.3 emergency DOWN-only block (impossible
+thresholds 1.01/1.01). v6.1.4 replaces that blanket block with a surgical
+fill-price gate informed by n=50 resolved UP trades (Montreal live,
+2026-04-20 → 2026-04-22):
 
-Mechanism (YAML-only, no python hook changes):
-  * up_bucket_abs_dist_strong: 0.28 → 1.01
-      `is_agree_strong` requires |probability_up - 0.5| >= 1.01.
-      Since |p-0.5| maxes at 0.5, this is unreachable.
-  * up_bucket_path1_extreme_high: 0.95 → 1.01
-      `is_pegged_path1` upper-bound requires p_path1 >= 1.01.
-      Since path1 maxes at 1.0, this is unreachable.
-  * `up_require_both_buckets: true` (unchanged v6.1.1) forces UP trades to
-    satisfy BOTH is_agree_strong AND is_pegged_path1 — both impossible →
-    UP always hits the `direction_asym_up_insufficient_conviction` skip.
+    UP fill < 0.55 / volatile_trend: 2W/8L → 20% WR, -$18.54, ROI -60%.
+    UP fill ≥ 0.55 / volatile_trend: 12W/3L → 80% WR, +$8.39,  ROI +12%.
 
-DOWN direction uses the shared bucket knobs (0.22 / 0.92 / 0.08) and is
-completely unaffected.
+Today's 4 UP losses (fills 0.36-0.44) all land in the LOSER bucket → all
+blocked by `up_min_fill_price: 0.55`.
 
-To re-enable UP: restore up_bucket_abs_dist_strong → 0.28 and
-up_bucket_path1_extreme_high → 0.95 (v6.1.2 tuning).
+Guards here:
+  * v6.1.3 impossible thresholds REVERTED (0.28 / 0.95 — v6.1.2 tuning).
+  * NEW `up_min_fill_price` knob present and set to 0.55.
+  * DOWN shared knobs unchanged (0.22 / 0.92 / 0.08).
+  * Version bumped past 6.1.3.
+  * Prior Montreal safety patches preserved.
 """
 
 from __future__ import annotations
@@ -38,38 +33,52 @@ V6_YAML = (
 )
 
 
-def test_up_down_only_emergency_thresholds_block_up():
-    """The two UP-only knobs must be set to impossible values (1.01) so UP
-    trades cannot pass the direction_asym_up double-bucket gate.
-
-    Regression guard — if a future tuning PR tries to re-enable UP without
-    explicitly overriding both knobs to in-range values AND bumping the
-    YAML version past 6.1.3, this test will fail and flag the escape.
+def test_up_bucket_thresholds_reverted_from_emergency():
+    """v6.1.3 used impossible 1.01/1.01 thresholds as an emergency UP block.
+    v6.1.4 replaces that with a surgical fill-price gate, so the impossible
+    thresholds MUST be reverted to v6.1.2 values (0.28 / 0.95).
     """
     data = yaml.safe_load(V6_YAML.read_text())
     gp = data["gate_params"]
-    assert gp["up_bucket_abs_dist_strong"] == 1.01, (
-        "emergency DOWN-only: up_bucket_abs_dist_strong must be 1.01 "
-        f"(impossible); got {gp['up_bucket_abs_dist_strong']}"
+    assert gp["up_bucket_abs_dist_strong"] == 0.28, (
+        "v6.1.4 must revert emergency up_bucket_abs_dist_strong to 0.28 "
+        f"(v6.1.2 tuning); got {gp['up_bucket_abs_dist_strong']}"
     )
-    assert gp["up_bucket_path1_extreme_high"] == 1.01, (
-        "emergency DOWN-only: up_bucket_path1_extreme_high must be 1.01 "
-        f"(impossible); got {gp['up_bucket_path1_extreme_high']}"
+    assert gp["up_bucket_path1_extreme_high"] == 0.95, (
+        "v6.1.4 must revert emergency up_bucket_path1_extreme_high to 0.95 "
+        f"(v6.1.2 tuning); got {gp['up_bucket_path1_extreme_high']}"
     )
-    # Double-bucket requirement must still be on, otherwise EITHER condition
-    # being True would let UP trade.
+    # Double-bucket requirement unchanged — stricter UP filter still applies.
     assert gp["up_require_both_buckets"] is True, (
-        "up_require_both_buckets must be True to make the emergency block "
-        "work; got False"
+        "up_require_both_buckets must stay True (v6.1.1 direction-asym filter); "
+        f"got {gp['up_require_both_buckets']}"
+    )
+
+
+def test_up_min_fill_price_knob_present():
+    """v6.1.4 surgical gate: UP trades below a CLOB ask floor are skipped.
+
+    Data: UP fill < 0.55 was 20% WR / -60% ROI (loser bucket). All 4 of
+    today's UP losses were at fills 0.36-0.44 and fall below this floor.
+    """
+    data = yaml.safe_load(V6_YAML.read_text())
+    gp = data["gate_params"]
+    assert "up_min_fill_price" in gp, (
+        "v6.1.4 must add up_min_fill_price knob to gate_params"
+    )
+    value = gp["up_min_fill_price"]
+    # Sanity bounds — must be in (0, 1) and >= 0.50 for meaningful coverage.
+    assert 0.50 <= value < 1.0, (
+        f"up_min_fill_price must be in [0.50, 1.0); got {value}"
+    )
+    # Specifically the data-derived 0.55 target.
+    assert value == 0.55, (
+        f"v6.1.4 spec sets up_min_fill_price to 0.55; got {value}"
     )
 
 
 def test_down_thresholds_unchanged():
-    """DOWN uses shared bucket knobs — v6.1.0/v6.1.2 values must be intact.
-
-    Any accidental tightening/loosening of these would change DOWN behaviour,
-    which is explicitly out of scope for the v6.1.3 emergency fix.
-    """
+    """DOWN uses shared bucket knobs — v6.1.0/v6.1.2 values intact."""
     data = yaml.safe_load(V6_YAML.read_text())
     gp = data["gate_params"]
     assert gp["bucket_abs_dist_strong"] == 0.22, (
@@ -85,16 +94,18 @@ def test_down_thresholds_unchanged():
     )
 
 
-def test_version_bumped_to_613():
-    """YAML version must reflect the v6.1.3 emergency bump."""
+def test_version_bumped_past_613():
+    """YAML version must be >= 6.1.4 (past the v6.1.3 emergency block)."""
     data = yaml.safe_load(V6_YAML.read_text())
-    assert data["version"] == "6.1.3", (
-        f"expected 6.1.3 (emergency DOWN-only), got {data['version']}"
+    parts = tuple(int(x) for x in str(data["version"]).split("."))
+    assert parts >= (6, 1, 4), (
+        f"expected version >= 6.1.4 (v6.1.4 surgical UP re-enable), "
+        f"got {data['version']}"
     )
 
 
 def test_prior_safety_patches_preserved():
-    """v6.1.3 is additive — prior Montreal safety patches must stay in place."""
+    """v6.1.4 is additive — prior Montreal safety patches stay in place."""
     data = yaml.safe_load(V6_YAML.read_text())
     gp = data["gate_params"]
     assert gp["risk_off_override_enabled"] is False, (

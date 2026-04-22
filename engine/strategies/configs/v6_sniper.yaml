@@ -1,5 +1,21 @@
 name: v6_sniper
-version: "6.1.3"
+version: "6.1.4"
+# v6.1.4 — 2026-04-22 — surgical UP re-enable: fill-price gate (supersedes v6.1.3 blanket block).
+#   Data pull (n=50 resolved UP trades, 2026-04-20 → 2026-04-22 Montreal live):
+#     * UP fill < 0.55 + volatile_trend: 2W/8L  → 20% WR, -$18.54, ROI -60%. LOSER.
+#     * UP fill ≥ 0.55 + volatile_trend: 12W/3L → 80% WR, +$8.39,  ROI +12%. WINNER.
+#     * All 4 of today's UP losses (fills 0.36-0.44) land in the LOSER bucket.
+#   Change vs v6.1.3 (which used impossible 1.01/1.01 thresholds):
+#     * REVERT up_bucket_abs_dist_strong 1.01 → 0.28 (v6.1.2 tuning)
+#     * REVERT up_bucket_path1_extreme_high 1.01 → 0.95 (v6.1.2 tuning)
+#     * NEW    up_min_fill_price: 0.55 — UP skipped if CLOB ask < 0.55
+#               (contrarian/cheap UP has historically been unprofitable even with
+#                otherwise strong conviction signals).
+#   Hook: small additive gate after fill_price resolution, before direction_asym_up.
+#   Simulated block rate: 70% of historical UP trades blocked, including 100%
+#   of today's 4 UP losses. Surviving UP: 80% WR, +12% ROI (n=15).
+#   To disable new gate: set up_min_fill_price: 0.0 (sentinel → gate skipped).
+#
 # v6.1.3 — 2026-04-22 — EMERGENCY DOWN-only (UP direction blocked via impossible thresholds).
 #   Incident (today, Montreal live):
 #     * v6 UP: 0W/4L, -$16.70, 100% loss rate at fills 0.36-0.44 (contrarian).
@@ -13,7 +29,7 @@ version: "6.1.3"
 #     unreachable for UP, UP always hits the `direction_asym_up_insufficient_conviction`
 #     skip branch. DOWN direction is COMPLETELY UNAFFECTED — uses the shared
 #     bucket_abs_dist_strong/bucket_path1_extreme_* knobs (0.22 / 0.92 / 0.08).
-#   To re-enable UP: restore both values to 0.28 / 0.95 (v6.1.2 tuning).
+#   Superseded by v6.1.4 (surgical fill-price gate replaces the blanket block).
 #
 # v6.1.2 — 2026-04-21 — Tier-1 rules: LGB alignment + head agreement + conf floor.
 #   Rationale (Hub note #204 / audit #263):
@@ -153,25 +169,18 @@ gate_params:
   # All four keys below are UP-only overrides — when direction == "UP" the hook
   # prefers these; otherwise it falls back to the shared thresholds above.
   up_require_both_buckets: true            # UP must satisfy agree_strong AND pegged_path1
-  # ── EMERGENCY DOWN-only (2026-04-22) ────────────────────────────────────
-  # Live Montreal data today: v6 UP direction 0W/4L (-$16.70, 100% loss rate
-  # at fills 0.36-0.44 — classifier appears systematically contrarian today).
-  # v6 DOWN direction: 1W/0L (100% WR). Keep v6 trading DOWN only.
-  #
-  # Mechanism: `is_agree_strong` requires |p_up - 0.5| >= up_bucket_abs_dist_strong,
-  # max is 0.5, so 1.01 is unreachable. `is_pegged_path1` (upper-bound branch)
-  # requires p_path1 >= up_bucket_path1_extreme_high, max is 1.0, so 1.01 is
-  # unreachable. With `up_require_both_buckets: true`, UP must satisfy BOTH —
-  # since `is_agree_strong` is impossible, UP is always skipped via the
-  # `direction_asym_up_insufficient_conviction` path. DOWN direction continues
-  # using the shared `bucket_abs_dist_strong`/`bucket_path1_extreme_*` knobs
-  # (0.22 / 0.92 / 0.08) and is completely unaffected.
-  #
-  # To re-enable UP: restore both values to the v6.1.2 tuning (0.28 / 0.95)
-  # and optionally revert this comment block.
-  up_bucket_abs_dist_strong: 1.01          # EMERGENCY DOWN-only: was 0.28; impossible
-  up_bucket_path1_extreme_high: 1.01       # EMERGENCY DOWN-only: was 0.95; impossible
+  up_bucket_abs_dist_strong: 0.28          # UP-only (v6.1.2 tuning; was impossible 1.01 in v6.1.3)
+  up_bucket_path1_extreme_high: 0.95       # UP-only (v6.1.2 tuning; was impossible 1.01 in v6.1.3)
   up_entry_cap_override: 0.75              # UP-only entry cap (was shared 0.85)
+
+  # ── v6.1.4 UP-only minimum fill-price gate (surgical replacement of v6.1.3 block) ──
+  # Data (n=50 resolved UP trades, 2026-04-20 → 2026-04-22, Montreal live):
+  #   UP fill < 0.55 (volatile_trend): 2W/8L → 20% WR, -$18.54, ROI -60%. LOSER.
+  #   UP fill ≥ 0.55 (volatile_trend): 12W/3L → 80% WR, +$8.39,  ROI +12%. WINNER.
+  # Today's 4 UP losses all fell at fills 0.36-0.44 (all blocked by this gate).
+  # When direction == UP and the CLOB ask is below this floor, v6 skips with
+  # reason `up_fill_below_min`. Set to 0.0 to disable the gate (sentinel).
+  up_min_fill_price: 0.55
 
   # ── v6.1.0 mid-range fill gate (Hub note #198) ──
   # Fills in [0.35, 0.60] are the break-even zone after 7.2% Polymarket
