@@ -53,8 +53,8 @@ gate_params:
   up_min_fill_price: 0.55
   up_require_both_buckets: true
 
-  # ── Hour-of-day block (h00, h05, h14 UTC) ─────────────────────────────
-  blocked_utc_hours: [0, 5, 14]
+  # ── Hour-of-day block — cedar trades all daytime, blocked overnight only
+  blocked_utc_hours: [0, 1, 2, 3, 4, 5]
 
   # ── Source agreement (chainlink + tiingo must be present; null-block) ─
   source_agreement_require_chainlink: true
