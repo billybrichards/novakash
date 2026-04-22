@@ -118,10 +118,17 @@ def _evaluate(registry, surface):
 
 
 # ── Registry load sanity ────────────────────────────────────────────────────
-def test_v6_sniper_registered_as_live(registry):
+def test_v6_sniper_registered(registry):
     assert "v6_sniper" in registry.strategy_names
     cfg = registry.configs["v6_sniper"]
-    assert cfg.mode == "LIVE"
+    # 2026-04-21: flipped LIVE → GHOST when v8_champion took over as primary
+    # LIVE. Accept either so a future re-promotion doesn't need a test edit,
+    # but the expected mode today is GHOST.
+    assert cfg.mode in ("LIVE", "GHOST")
+    assert cfg.mode == "GHOST", (
+        "v6_sniper is expected to be GHOST while v8_champion runs sole LIVE; "
+        "flip deliberately when re-promoting."
+    )
     # Version pin relaxed in v6.1.2 — this file covers code paths shared
     # across 6.1.x and forward; see ``test_v6_sniper_v6_1_2.test_version_bumped``
     # for the exact-version pin on the currently-LIVE release.

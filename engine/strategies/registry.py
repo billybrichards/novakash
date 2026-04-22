@@ -451,6 +451,32 @@ class StrategyRegistry:
                         import asyncio, json, time
                         from domain.value_objects import StrategyDecisionRecord
 
+                        # Regime field fix (2026-04-21): shadow_decisions were
+                        # landing in DB with ``regime: None`` because the
+                        # decision-write path never captured surface.v4_regime.
+                        # Inject it into metadata on EVERY path (TRADE / SKIP /
+                        # ERROR) so Strategy Lab queries are analysable and
+                        # per-regime WR splits work out of the box.
+                        meta_to_write = dict(decision.metadata or {})
+                        # Top-level ``regime`` is what the Strategy Lab reads.
+                        # Fall back to vpin regime when v4_regime absent —
+                        # matches the resolution policy inside _evaluate_one_inner.
+                        resolved_regime = getattr(surface, "v4_regime", None) or getattr(
+                            surface, "regime", None
+                        )
+                        # Only overwrite when absent; strategy hooks may have
+                        # already set a richer value and we don't want to
+                        # clobber that.
+                        if meta_to_write.get("regime") is None:
+                            meta_to_write["regime"] = resolved_regime
+                        # Mirror under the legacy ``v4_regime`` key that v4_fusion
+                        # / v5_ensemble / v6_sniper already emit — keeps consumers
+                        # that read either key happy.
+                        if meta_to_write.get("v4_regime") is None:
+                            meta_to_write["v4_regime"] = getattr(
+                                surface, "v4_regime", None
+                            )
+
                         record = StrategyDecisionRecord(
                             strategy_id=name,
                             strategy_version=config.version,
@@ -469,7 +495,7 @@ class StrategyRegistry:
                             collateral_pct=decision.collateral_pct,
                             entry_reason=decision.entry_reason,
                             skip_reason=decision.skip_reason,
-                            metadata_json=json.dumps(decision.metadata or {}),
+                            metadata_json=json.dumps(meta_to_write),
                             evaluated_at=time.time(),
                         )
 
