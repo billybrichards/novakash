@@ -287,7 +287,7 @@ class DataSurfaceManager:
         self._cached_cedar_ts: dict[str, float] = {}
         self._cedar_url = os.environ.get(
             "CEDAR_PROBABILITY_URL",
-            "http://3.98.114.0:8080/v2/probability/cedar",
+            "http://16.52.14.182:8080/v2/probability/cedar",
         )
         # Sticky disable: once we see a hard negative (404/405/501, DNS
         # error, repeated timeout) we stop hammering the endpoint for the
