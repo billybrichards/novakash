@@ -1,5 +1,20 @@
 name: v6_sniper
-version: "6.1.2"
+version: "6.1.3"
+# v6.1.3 — 2026-04-22 — EMERGENCY DOWN-only (UP direction blocked via impossible thresholds).
+#   Incident (today, Montreal live):
+#     * v6 UP: 0W/4L, -$16.70, 100% loss rate at fills 0.36-0.44 (contrarian).
+#     * v6 DOWN: 1W/0L (100% WR).
+#     * Classifier/ensemble appears systematically wrong on UP today.
+#   Change (YAML-only — no python hook changes):
+#     * up_bucket_abs_dist_strong: 0.28  → 1.01 (impossible — |p-0.5| max is 0.5)
+#     * up_bucket_path1_extreme_high: 0.95 → 1.01 (impossible — path1 max is 1.0)
+#     With `up_require_both_buckets: true` (already v6.1.1), any UP trade must
+#     satisfy BOTH `is_agree_strong` AND `is_pegged_path1`. Since both are now
+#     unreachable for UP, UP always hits the `direction_asym_up_insufficient_conviction`
+#     skip branch. DOWN direction is COMPLETELY UNAFFECTED — uses the shared
+#     bucket_abs_dist_strong/bucket_path1_extreme_* knobs (0.22 / 0.92 / 0.08).
+#   To re-enable UP: restore both values to 0.28 / 0.95 (v6.1.2 tuning).
+#
 # v6.1.2 — 2026-04-21 — Tier-1 rules: LGB alignment + head agreement + conf floor.
 #   Rationale (Hub note #204 / audit #263):
 #     * DOWN lgb<0.30: 91% WR (n=11) vs DOWN lgb 0.30-0.50: 33% WR — REQUIRE lgb aligned
@@ -138,8 +153,24 @@ gate_params:
   # All four keys below are UP-only overrides — when direction == "UP" the hook
   # prefers these; otherwise it falls back to the shared thresholds above.
   up_require_both_buckets: true            # UP must satisfy agree_strong AND pegged_path1
-  up_bucket_abs_dist_strong: 0.28          # UP-only agree_strong (was shared 0.22)
-  up_bucket_path1_extreme_high: 0.95       # UP-only pegged upper bound (was shared 0.92)
+  # ── EMERGENCY DOWN-only (2026-04-22) ────────────────────────────────────
+  # Live Montreal data today: v6 UP direction 0W/4L (-$16.70, 100% loss rate
+  # at fills 0.36-0.44 — classifier appears systematically contrarian today).
+  # v6 DOWN direction: 1W/0L (100% WR). Keep v6 trading DOWN only.
+  #
+  # Mechanism: `is_agree_strong` requires |p_up - 0.5| >= up_bucket_abs_dist_strong,
+  # max is 0.5, so 1.01 is unreachable. `is_pegged_path1` (upper-bound branch)
+  # requires p_path1 >= up_bucket_path1_extreme_high, max is 1.0, so 1.01 is
+  # unreachable. With `up_require_both_buckets: true`, UP must satisfy BOTH —
+  # since `is_agree_strong` is impossible, UP is always skipped via the
+  # `direction_asym_up_insufficient_conviction` path. DOWN direction continues
+  # using the shared `bucket_abs_dist_strong`/`bucket_path1_extreme_*` knobs
+  # (0.22 / 0.92 / 0.08) and is completely unaffected.
+  #
+  # To re-enable UP: restore both values to the v6.1.2 tuning (0.28 / 0.95)
+  # and optionally revert this comment block.
+  up_bucket_abs_dist_strong: 1.01          # EMERGENCY DOWN-only: was 0.28; impossible
+  up_bucket_path1_extreme_high: 1.01       # EMERGENCY DOWN-only: was 0.95; impossible
   up_entry_cap_override: 0.75              # UP-only entry cap (was shared 0.85)
 
   # ── v6.1.0 mid-range fill gate (Hub note #198) ──

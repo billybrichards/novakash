@@ -183,6 +183,15 @@ def test_down_lgb_aligned_passes(registry):
     assert g["passed"] is True, g
 
 
+@pytest.mark.skip(
+    reason=(
+        "v6.1.3 emergency DOWN-only: UP direction is blocked at the bucket "
+        "classification stage (impossible up_bucket_* thresholds), so the "
+        "lgb_aligned gate is never reached for UP-direction surfaces. "
+        "Test will start passing again once UP is re-enabled by reverting "
+        "the emergency thresholds to v6.1.2 values (0.28 / 0.95)."
+    )
+)
 def test_up_requires_lgb_aligned(registry):
     """UP + lgb=0.65 (<= lgb_aligned_up_min 0.70) → SKIP."""
     surface = _make_up_surface(
@@ -197,6 +206,15 @@ def test_up_requires_lgb_aligned(registry):
     assert g is not None and g["passed"] is False
 
 
+@pytest.mark.skip(
+    reason=(
+        "v6.1.3 emergency DOWN-only: UP direction is blocked at the bucket "
+        "classification stage (impossible up_bucket_* thresholds), so the "
+        "lgb_aligned gate is never reached for UP-direction surfaces. "
+        "Test will start passing again once UP is re-enabled by reverting "
+        "the emergency thresholds to v6.1.2 values (0.28 / 0.95)."
+    )
+)
 def test_up_lgb_aligned_passes(registry):
     """UP + lgb=0.85 + path1=0.98 → lgb_aligned passes."""
     surface = _make_up_surface(
@@ -276,9 +294,15 @@ def test_min_confidence_score_passes(registry):
 
 # ── Regression guards ──────────────────────────────────────────────────────
 def test_version_bumped():
-    """YAML version must be exactly 6.1.2."""
+    """YAML version must be >= 6.1.2 (forward-compat for 6.1.3 emergency bump).
+
+    v6.1.2 Tier-1 features are preserved under v6.1.3; the emergency bump
+    blocks UP at the bucket stage but does not remove Tier-1 gates.
+    """
     data = yaml.safe_load(V6_YAML.read_text())
-    assert data["version"] == "6.1.2", f"expected 6.1.2, got {data['version']}"
+    version = data["version"]
+    parts = tuple(int(x) for x in str(version).split("."))
+    assert parts >= (6, 1, 2), f"expected version >= 6.1.2, got {version}"
 
 
 def test_risk_off_override_still_false():

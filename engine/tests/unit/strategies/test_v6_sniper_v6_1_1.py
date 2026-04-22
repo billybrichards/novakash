@@ -153,18 +153,32 @@ def test_up_requires_both_buckets(registry):
     assert decision.action == "SKIP", (
         f"expected SKIP, got {decision.action} skip_reason={decision.skip_reason}"
     )
-    assert "direction_asym_up" in (decision.skip_reason or ""), (
-        f"expected direction_asym_up in skip_reason, got {decision.skip_reason}"
-    )
-    g = _gate_result(decision, "direction_asym_up")
-    assert g is not None and g["passed"] is False
-    assert "up_dist_strong=0.28" in g["reason"]
-    assert "up_peg_high=0.95" in g["reason"]
+    # v6.1.3: UP blocked at the bucket stage (mid_conf_blocked) because the
+    # emergency up_bucket_* thresholds (1.01) make `pegged_path1` and
+    # `agree_strong` unreachable for UP. Under v6.1.1 this same surface was
+    # blocked at the direction_asym_up gate instead — both are UP-blocking
+    # paths. The direction_asym_up gate is checked AFTER the bucket gate,
+    # so it is not reached once the bucket is rejected. Either skip reason
+    # is acceptable evidence that UP is refused.
+    assert any(
+        token in (decision.skip_reason or "")
+        for token in ("direction_asym_up", "mid_conf_blocked")
+    ), f"expected UP-refused skip reason, got {decision.skip_reason}"
 
 
 # ── Test 2 ──────────────────────────────────────────────────────────────────
 def test_up_allowed_when_both_buckets(registry):
-    """UP + both buckets: dist=0.46 + path1=0.96 → TRADE."""
+    """v6.1.3 EMERGENCY DOWN-only: UP can no longer satisfy the double-bucket
+    even with the strongest possible signal (dist=0.46, path1=0.96) because
+    up_bucket_abs_dist_strong (1.01) and up_bucket_path1_extreme_high (1.01)
+    are now impossible thresholds. The surface that USED to TRADE under
+    v6.1.1/v6.1.2 now SKIPs — that's the intended behaviour of the
+    emergency block.
+
+    Historical behaviour (v6.1.1, v6.1.2): this surface returned TRADE.
+    To restore: revert up_bucket_abs_dist_strong → 0.28 and
+    up_bucket_path1_extreme_high → 0.95 in v6_sniper.yaml.
+    """
     surface = _make_up_surface(
         poly_confidence=0.96, poly_confidence_distance=0.46,
         probability_lgb=0.90, probability_classifier=0.96,
@@ -172,12 +186,17 @@ def test_up_allowed_when_both_buckets(registry):
         clob_up_ask=0.65, clob_down_ask=0.35,
     )
     decision = _evaluate(registry, surface)
-    assert decision.action == "TRADE", (
-        f"expected TRADE, got {decision.action} skip_reason={decision.skip_reason}"
+    assert decision.action == "SKIP", (
+        f"v6.1.3 emergency: expected SKIP (UP blocked), got {decision.action} "
+        f"skip_reason={decision.skip_reason}"
     )
-    g = _gate_result(decision, "direction_asym_up")
-    assert g is not None and g["passed"] is True
-    assert "UP double-bucket satisfied" in g["reason"]
+    # v6.1.3: UP blocks at the bucket stage (mid_conf_blocked). Historical
+    # (v6.1.1/v6.1.2) would SKIP here too but via direction_asym_up gate.
+    # Accept either UP-refused skip reason.
+    assert any(
+        token in (decision.skip_reason or "")
+        for token in ("direction_asym_up", "mid_conf_blocked")
+    ), f"expected UP-refused skip reason, got {decision.skip_reason}"
 
 
 # ── Test 3 ──────────────────────────────────────────────────────────────────
@@ -282,17 +301,31 @@ def test_down_peg_unchanged(registry):
 
 # ── Test 8 ──────────────────────────────────────────────────────────────────
 def test_up_entry_cap_075(registry):
-    """UP decision carries entry_cap = 0.75 (UP-specific override)."""
+    """v6.1.3 EMERGENCY DOWN-only: UP can no longer TRADE so entry_cap is
+    never exercised on UP. Prior to v6.1.3 this test asserted
+    ``decision.entry_cap == 0.75``; that assertion is now moot because UP
+    always SKIPs. We keep the test as a regression guard for the SKIP path.
+
+    To re-enable the historical assertion: revert the emergency UP threshold
+    bumps in v6_sniper.yaml (1.01 → 0.28 / 0.95) and restore the original
+    assert body.
+    """
     surface = _make_up_surface(
         poly_confidence=0.96, poly_confidence_distance=0.46,
         probability_lgb=0.90, probability_classifier=0.96,
         clob_up_ask=0.65, clob_down_ask=0.35,
     )
     decision = _evaluate(registry, surface)
-    assert decision.action == "TRADE", decision.skip_reason
-    assert decision.entry_cap == pytest.approx(0.75), (
-        f"expected UP entry_cap=0.75, got {decision.entry_cap}"
+    assert decision.action == "SKIP", (
+        f"v6.1.3 emergency: UP must SKIP; got {decision.action} "
+        f"skip_reason={decision.skip_reason}"
     )
+    # v6.1.3: bucket rejects UP first (mid_conf_blocked). Accept either the
+    # bucket-stage rejection or the later direction_asym_up gate.
+    assert any(
+        token in (decision.skip_reason or "")
+        for token in ("direction_asym_up", "mid_conf_blocked")
+    ), f"expected UP-refused skip reason, got {decision.skip_reason}"
 
 
 # ── Test 9 ──────────────────────────────────────────────────────────────────

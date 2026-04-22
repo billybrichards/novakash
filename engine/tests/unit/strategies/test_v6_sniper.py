@@ -130,6 +130,13 @@ def test_v6_sniper_registered_as_live(registry):
 
 
 # ── #1-#4 agree_strong bucket ──────────────────────────────────────────────
+@pytest.mark.skip(
+    reason=(
+        "v6.1.3 EMERGENCY DOWN-only: UP-direction TRADE paths are blocked "
+        "by impossible up_bucket_* thresholds (1.01). Test will re-pass once "
+        "UP is re-enabled by reverting to v6.1.2 values (0.28 / 0.95)."
+    )
+)
 def test_1_agree_strong_both_up_accepts(registry):
     """Both models agree UP + stringent UP thresholds -> ACCEPT.
 
@@ -198,6 +205,13 @@ def test_4_agree_strong_dist_too_low_rejects(registry):
 
 
 # ── #5-#8 pegged_path1 bucket ──────────────────────────────────────────────
+@pytest.mark.skip(
+    reason=(
+        "v6.1.3 EMERGENCY DOWN-only: UP-direction TRADE paths blocked. "
+        "See DOWN-side pegged_path1 coverage in test_8 below; UP coverage "
+        "returns once emergency UP thresholds are reverted."
+    )
+)
 def test_5_pegged_path1_lgb_indifferent_accepts(registry):
     """path1=0.97 + LGB=0.52 (indifferent) -> ACCEPT (relaxed).
 
@@ -221,6 +235,12 @@ def test_5_pegged_path1_lgb_indifferent_accepts(registry):
     assert decision.metadata["conviction_bucket"] == "pegged_path1"
 
 
+@pytest.mark.skip(
+    reason=(
+        "v6.1.3 EMERGENCY DOWN-only: UP-direction TRADE paths blocked. "
+        "UP coverage returns once emergency UP thresholds are reverted."
+    )
+)
 def test_6_pegged_path1_lgb_agrees_accepts(registry):
     """path1=0.97 + LGB=0.65 (agrees) -> ACCEPT."""
     surface = _make_surface(
@@ -234,6 +254,15 @@ def test_6_pegged_path1_lgb_agrees_accepts(registry):
     assert decision.metadata["conviction_bucket"] == "pegged_path1"
 
 
+@pytest.mark.skip(
+    reason=(
+        "v6.1.3 EMERGENCY DOWN-only: UP-direction bucket gate short-circuits "
+        "before pegged_path1_blocked_by_lgb is reachable (bucket falls to "
+        "mid_conf_blocked). DOWN-side coverage of lgb-blocks-pegged remains "
+        "implicit via test_classify_bucket logic; full path returns once UP "
+        "emergency thresholds are reverted."
+    )
+)
 def test_7_pegged_path1_lgb_strongly_opposite_rejects(registry):
     """path1=0.97 (UP) + LGB=0.30 (DOWN, |dist|=0.20 > 0.10) -> REJECT."""
     surface = _make_surface(
@@ -417,6 +446,12 @@ def test_15b_chop_regime_still_rejected(registry):
     assert "regime_not_tradeable" in (decision.skip_reason or "")
 
 
+@pytest.mark.skip(
+    reason=(
+        "v6.1.3 EMERGENCY DOWN-only: UP peg boundary test asserts TRADE; "
+        "UP now blocked by impossible thresholds. Reverts once UP re-enabled."
+    )
+)
 def test_16_pegged_high_boundary_just_inside(registry):
     """v6.1.1: UP peg threshold is 0.95, so path1=0.96 just inside ACCEPTs.
 
