@@ -50,7 +50,7 @@ from domain.value_objects import StrategyDecision
 from strategies import gate_params as _gp
 
 _STRATEGY_ID = "v6_sniper"
-_VERSION = "6.1.2"
+_VERSION = "6.1.4"
 
 
 # ── Tunable knobs (YAML gate_params → env fallback → default) ──────────────
@@ -134,6 +134,21 @@ def _up_entry_cap_override() -> Optional[float]:
     when unset or set to 0."""
     v = _gp.get_float(
         "up_entry_cap_override", "V6_SNIPER_UP_ENTRY_CAP_OVERRIDE", 0.0
+    )
+    return v if v > 0 else None
+
+
+def _up_min_fill_price() -> Optional[float]:
+    """UP-only minimum CLOB ask (v6.1.4).
+
+    Returns None (gate disabled) when the YAML value is 0 or missing.
+    When set, any UP trade whose resolved fill_price is below this floor is
+    skipped with reason ``up_fill_below_min``. Data: n=50 resolved UP trades,
+    2026-04-20 → 2026-04-22 Montreal live: UP fill < 0.55 was 20% WR / -60%
+    ROI; UP fill >= 0.55 was 80% WR / +12% ROI (in volatile_trend regime).
+    """
+    v = _gp.get_float(
+        "up_min_fill_price", "V6_SNIPER_UP_MIN_FILL_PRICE", 0.0
     )
     return v if v > 0 else None
 
@@ -1118,6 +1133,39 @@ def evaluate_polymarket_sniper(
     mid_min = _mid_range_fill_min()
     mid_max = _mid_range_fill_max()
     fill_price = _resolve_fill_price(surface, direction)
+
+    # ── v6.1.4 UP-only minimum fill-price floor ─────────────────────────────
+    # Data (n=50 resolved UP trades, 2026-04-20 → 2026-04-22 Montreal live):
+    #   UP fill < 0.55 / volatile_trend: 2W/8L → 20% WR, -$18.54, ROI -60%.
+    #   UP fill ≥ 0.55 / volatile_trend: 12W/3L → 80% WR, +$8.39, ROI +12%.
+    # Today's 4 UP losses (fills 0.36-0.44) all land in the LOSER bucket.
+    # Gate fires before the direction-asymmetric bucket checks so cheap
+    # contrarian UP trades are cut regardless of other signal strength.
+    _up_min_fill = _up_min_fill_price()
+    if (
+        direction == "UP"
+        and _up_min_fill is not None
+        and fill_price is not None
+        and fill_price < _up_min_fill
+    ):
+        gates.append(
+            _gate(
+                "up_min_fill_price",
+                False,
+                (
+                    f"UP fill={fill_price:.3f} < up_min_fill_price "
+                    f"{_up_min_fill:.2f} (v6.1.4 contrarian-UP block)"
+                ),
+            )
+        )
+        return _skip(
+            (
+                f"up_fill_below_min: {fill_price:.3f} < {_up_min_fill:.2f}"
+            ),
+            gates,
+            extras={"fill_price": fill_price, "up_min_fill_price": _up_min_fill},
+        )
+
     _dist = abs(probability_up - 0.5)
     # v6.1.1: direction-asymmetric thresholds — UP uses stricter bounds.
     if direction == "UP":
