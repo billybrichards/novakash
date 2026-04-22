@@ -493,6 +493,20 @@ class CompositionRoot:
                     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                     "strategies", "configs",
                 )
+                # Assets the data-surface refresh loop polls /v4/snapshot
+                # for. Union of 5m (BTC) and 15m (FIFTEEN_MIN_ASSETS) feed
+                # assets so every active window has a per-asset cache slot
+                # and strategies never silently read another asset's data.
+                _surface_assets: list[str] = []
+                _five_min_assets = os.environ.get(
+                    "FIVE_MIN_ASSETS", "BTC"
+                ).split(",")
+                for _a in _five_min_assets + list(fifteen_min_assets):
+                    _a_up = (_a or "").strip().upper()
+                    if _a_up and _a_up not in _surface_assets:
+                        _surface_assets.append(_a_up)
+                if not _surface_assets:
+                    _surface_assets = ["BTC"]
                 self._data_surface_mgr = DataSurfaceManager(
                     v4_base_url=os.environ.get("TIMESFM_URL", "http://localhost:8001"),
                     tiingo_feed=getattr(self, "_tiingo_feed", None),
@@ -505,6 +519,7 @@ class CompositionRoot:
                     binance_state=self._aggregator
                     if hasattr(self, "_aggregator")
                     else None,
+                    active_assets=_surface_assets,
                 )
 
                 # Wire decision repo for per-eval strategy_decisions writes
