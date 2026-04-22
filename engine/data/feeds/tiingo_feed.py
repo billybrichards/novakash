@@ -10,6 +10,14 @@ API endpoint:
 Data written to: ticks_tiingo table in Railway PostgreSQL.
 
 Tiingo key: TIINGO_API_KEY from .env
+
+Asset subset override: ``TIINGO_ASSETS`` env var (comma-separated, upper-case).
+Defaults to ``BTC,ETH,SOL,XRP``. Used to roll the feed back to BTC-only at
+runtime without code changes if the Tiingo plan does not support a ticker
+(empirical rollback knob — PR #321 surfaced v7_15m_sniper_{eth,sol,xrp}
+skips with ``feature_stale: tiingo missing at eval`` which would be either
+(a) Tiingo not returning a ticker or (b) this feed failing to parse it;
+this override lets Daisy bisect).
 """
 
 from __future__ import annotations
@@ -23,17 +31,59 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-# Asset ticker map: internal asset name → Tiingo ticker
-TICKERS = {
+# Full asset ticker map: internal asset name → Tiingo ticker.
+# Keep this dict stable — the composition reads it, tests assert on it.
+# Runtime subset selection is via ``_resolve_tickers()`` below.
+ALL_TICKERS = {
     "BTC": "btcusd",
     "ETH": "ethusd",
     "SOL": "solusd",
     "XRP": "xrpusd",
 }
 
+# Back-compat alias — callers (and tests) import ``TICKERS`` directly.
+# It mirrors the full map so existing imports keep working even when a
+# runtime subset is active on a given feed instance.
+TICKERS = ALL_TICKERS
+
 POLL_INTERVAL = 2  # seconds (Tiingo paid: 10K req/hr = 2.7/s, 2s is safe)
 API_BASE = "https://api.tiingo.com/tiingo/crypto/top"
 SOURCE = "tiingo"
+
+
+def _resolve_tickers(
+    explicit_assets: Optional[list[str]] = None,
+) -> dict[str, str]:
+    """Resolve the asset→ticker map for this feed instance.
+
+    Precedence (highest first):
+      1. ``explicit_assets`` constructor arg (composition-driven)
+      2. ``TIINGO_ASSETS`` env var (ops-driven rollback knob)
+      3. ``ALL_TICKERS`` (BTC+ETH+SOL+XRP default)
+
+    Unknown asset names are dropped with a warning — fail-open rather than
+    crashing the feed boot on a typo. An empty resolved set falls back to
+    ``ALL_TICKERS`` so the feed always has something to poll.
+    """
+    selected: Optional[list[str]] = explicit_assets
+    if selected is None:
+        env_val = os.environ.get("TIINGO_ASSETS", "").strip()
+        if env_val:
+            selected = [s.strip().upper() for s in env_val.split(",") if s.strip()]
+    if not selected:
+        return dict(ALL_TICKERS)
+
+    out: dict[str, str] = {}
+    unknown: list[str] = []
+    for asset in selected:
+        asset_up = asset.upper()
+        if asset_up in ALL_TICKERS:
+            out[asset_up] = ALL_TICKERS[asset_up]
+        else:
+            unknown.append(asset_up)
+    if unknown:
+        log.warning("tiingo_feed.unknown_assets_skipped", unknown=unknown)
+    return out if out else dict(ALL_TICKERS)
 
 
 class TiingoFeed:
@@ -48,11 +98,20 @@ class TiingoFeed:
         last_message_at: Timestamp of the most recent successful poll.
     """
 
-    def __init__(self, api_key: str, pool) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        pool,
+        assets: Optional[list[str]] = None,
+    ) -> None:
         """
         Args:
             api_key: Tiingo API key (TIINGO_API_KEY from .env)
             pool:    asyncpg.Pool from DBClient._pool for ticks_tiingo writes
+            assets:  Optional subset of ``ALL_TICKERS.keys()`` to poll.
+                     Defaults to the full set (BTC/ETH/SOL/XRP) or the
+                     ``TIINGO_ASSETS`` env override. See
+                     :func:`_resolve_tickers` for precedence.
         """
         self._api_key = api_key
         self._pool = pool
@@ -60,10 +119,20 @@ class TiingoFeed:
         self._connected = False
         self._last_message_at: Optional[datetime] = None
         self._session = None
-        self._tickers_param = ",".join(TICKERS.values())
+        # Per-instance ticker map — resolved once at init so every poll uses
+        # the same stable set. Full map stays in ALL_TICKERS for callers.
+        self._tickers: dict[str, str] = _resolve_tickers(assets)
+        self._tickers_param = ",".join(self._tickers.values())
         # In-memory cache: updated on EVERY poll tick. Keyed by asset name.
         # Read by DataSurfaceManager for zero-I/O delta calculation.
         self.latest_prices: dict[str, float] = {}
+        # Observability: log the asset set each poll returns. Flips to
+        # True after the first successful poll so we only emit the INFO
+        # "assets_received" summary on that first success + whenever the
+        # received set changes (missing assets = Tiingo plan / ticker
+        # dropped). Otherwise it's DEBUG to avoid log spam every 2s.
+        self._logged_initial_assets = False
+        self._last_received_assets: frozenset[str] = frozenset()
 
     # ─── Public Status ────────────────────────────────────────────────────────
 
@@ -89,7 +158,7 @@ class TiingoFeed:
 
         log.info(
             "tiingo_feed.starting",
-            assets=list(TICKERS.keys()),
+            assets=list(self._tickers.keys()),
             interval=POLL_INTERVAL,
         )
 
@@ -135,11 +204,13 @@ class TiingoFeed:
             data = await resp.json()
 
         rows = []
+        received_assets: list[str] = []
         for item in data:
             ticker = item.get("ticker", "").lower()
-            # Map ticker back to asset
+            # Map ticker back to asset — use per-instance map so a BTC-only
+            # feed doesn't accidentally accept ETH/SOL/XRP rows.
             asset = next(
-                (k for k, v in TICKERS.items() if v == ticker), None
+                (k for k, v in self._tickers.items() if v == ticker), None
             )
             if not asset:
                 continue
@@ -168,6 +239,7 @@ class TiingoFeed:
             # Update in-memory cache on every poll tick
             if last_price is not None:
                 self.latest_prices[asset] = last_price
+                received_assets.append(asset)
 
             rows.append((
                 asset,
@@ -178,6 +250,22 @@ class TiingoFeed:
                 ask_exchange,
                 last_exchange,
             ))
+
+        # Observability: emit the received-set once on startup and again
+        # whenever it changes. Lets Montreal log-grep confirm ETH/SOL/XRP
+        # ticks arrive post PR #321.
+        received_set = frozenset(received_assets)
+        requested_set = frozenset(self._tickers.keys())
+        missing = requested_set - received_set
+        if (not self._logged_initial_assets) or (received_set != self._last_received_assets):
+            log.info(
+                "tiingo_feed.assets_received",
+                requested=sorted(requested_set),
+                received=sorted(received_set),
+                missing=sorted(missing),
+            )
+            self._logged_initial_assets = True
+            self._last_received_assets = received_set
 
         if rows:
             await self._write_rows(rows)
