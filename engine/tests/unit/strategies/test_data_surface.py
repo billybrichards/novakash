@@ -166,3 +166,69 @@ class TestDataSurfaceManager:
         # 1713000000 = 2024-04-13 12:00:00 UTC
         surface = mgr.get_surface(FakeWindow(window_ts=1713000000), 120)
         assert surface.hour_utc is not None
+
+    # ── Cedar shadow A/B fields (2026-04-21) ─────────────────────────────
+    def test_cedar_fields_absent_when_no_cache(self):
+        """With no cedar payload cached, cedar fields on the surface all
+        default to None. This is the steady state before the ML box
+        deploys /v2/probability/cedar — cedar strategies see None and
+        SKIP with ``cedar_source_unavailable``."""
+        mgr = self._make_manager()
+        surface = mgr.get_surface(FakeWindow(), 120)
+        assert surface.probability_up_cedar is None
+        assert surface.probability_lgb_cedar is None
+        assert surface.probability_classifier_cedar is None
+        assert surface.v4_regime_cedar is None
+
+    def test_cedar_fields_populated_from_cache(self):
+        """Injecting a cached cedar payload directly populates the cedar
+        fields on subsequent surfaces. Mirrors what the background
+        refresh loop does after a successful /v2/probability/cedar call.
+        """
+        mgr = self._make_manager()
+        mgr._cached_cedar["BTC"] = {
+            "probability_up": 0.72,
+            "probability_lgb": 0.68,
+            "probability_classifier": 0.91,
+            "regime": "volatile_trend",
+        }
+        mgr._cached_cedar_ts["BTC"] = time.time()
+
+        surface = mgr.get_surface(FakeWindow(), 120)
+        assert surface.probability_up_cedar == pytest.approx(0.72)
+        assert surface.probability_lgb_cedar == pytest.approx(0.68)
+        assert surface.probability_classifier_cedar == pytest.approx(0.91)
+        assert surface.v4_regime_cedar == "volatile_trend"
+
+    def test_cedar_fields_none_when_cache_stale(self):
+        """Cedar cache older than 60s should be treated as absent so
+        strategies don't trade against frozen model output. This mirrors
+        the existing 60s staleness policy on the v4 snapshot cache."""
+        mgr = self._make_manager()
+        mgr._cached_cedar["BTC"] = {
+            "probability_up": 0.72,
+            "probability_lgb": 0.68,
+            "probability_classifier": 0.91,
+        }
+        # 120s old — past the 60s staleness threshold.
+        mgr._cached_cedar_ts["BTC"] = time.time() - 120
+
+        surface = mgr.get_surface(FakeWindow(), 120)
+        assert surface.probability_up_cedar is None
+        assert surface.probability_lgb_cedar is None
+        assert surface.probability_classifier_cedar is None
+
+    def test_cedar_partial_payload_reads_available_fields(self):
+        """Cedar endpoint returning only probability_up (no LGB / no
+        classifier) should populate p_up and leave the rest None —
+        strategies then see pegged_path1=unavailable and skip on bucket
+        classification rather than the cedar_source gate. Preserves the
+        forward-compat contract if the ML box ships an incremental v1."""
+        mgr = self._make_manager()
+        mgr._cached_cedar["BTC"] = {"probability_up": 0.45}
+        mgr._cached_cedar_ts["BTC"] = time.time()
+
+        surface = mgr.get_surface(FakeWindow(), 120)
+        assert surface.probability_up_cedar == pytest.approx(0.45)
+        assert surface.probability_lgb_cedar is None
+        assert surface.probability_classifier_cedar is None
