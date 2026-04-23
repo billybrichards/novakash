@@ -29,7 +29,7 @@ const PaperDashboard      = lazy(() => import('./pages/PaperDashboard.jsx'));
 const PlaywrightDashboard = lazy(() => import('./pages/PlaywrightDashboard.jsx'));
 const ExecutionHQ         = lazy(() => import('./pages/execution-hq/ExecutionHQ.jsx'));
 const LiveTrading         = lazy(() => import('./pages/LiveTrading.jsx'));
-const FactoryFloor        = lazy(() => import('./pages/FactoryFloor.jsx'));
+const FactoryFloor        = lazy(() => import('./pages/factory-floor/FactoryFloor.jsx'));
 const V58Monitor          = lazy(() => import('./pages/V58Monitor.jsx'));
 const WindowResults       = lazy(() => import('./pages/WindowResults.jsx'));
 const StrategyAnalysis    = lazy(() => import('./pages/StrategyAnalysis.jsx'));
@@ -137,6 +137,11 @@ export default function App() {
             <Route path="system" element={<System />} />
             <Route path="monitor" element={<Monitor />} />
             <Route path="compare" element={<Compare />} />
+            <Route path="factory" element={
+              <Suspense fallback={<Loading label="Loading factory floor..." />}>
+                <FactoryFloor />
+              </Suspense>
+            } />
             {/* Pages promoted out of /archive — now first-class nav entries. */}
             <Route path="analysis" element={
               <Suspense fallback={<Loading label="Loading analysis…" />}>

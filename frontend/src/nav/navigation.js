@@ -20,6 +20,7 @@ export const NAV_SECTIONS = [
     color: '#14b8a6',
     items: [
       { path: '/monitor',       label: 'Live Monitor',   icon: '🛰️' },
+      { path: '/factory',       label: 'Factory Floor',  icon: '🏭' },
     ],
   },
   {
