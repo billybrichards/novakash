@@ -902,6 +902,24 @@ class CLOBReconciler:
                         tx_hash=tx_hash[:16] + "..." if tx_hash else None,
                     )
 
+                    # Telegram notification
+                    try:
+                        pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+                        tx_link = (
+                            f"[tx](https://polygonscan.com/tx/{tx_hash})"
+                            if tx_hash
+                            else "manual"
+                        )
+                        await self._alerter.send_raw_message(
+                            f"{pnl_emoji} *On-chain redeem → WIN*\n"
+                            f"Trade `#{trade_id}` resolved\n"
+                            f"Payout: ${usdc_redeemed:.2f} | PnL: ${pnl:+.2f}\n"
+                            f"Condition: `{condition_id[:16]}…`\n"
+                            f"{tx_link}",
+                        )
+                    except Exception:
+                        pass  # non-critical
+
                 return updated
 
         except Exception as exc:
