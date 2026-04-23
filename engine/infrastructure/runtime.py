@@ -733,6 +733,20 @@ class EngineRuntime:
                             error=str(exc)[:200],
                         )
                 await self._redeemer.connect()
+                # Connect on-chain transport if wired (derives EOA, fetches chain_id)
+                if (
+                    self._redeemer.has_onchain_transport
+                    and hasattr(self._redeemer, "_onchain_transport")
+                    and self._redeemer._onchain_transport is not None
+                ):
+                    try:
+                        await self._redeemer._onchain_transport.connect()
+                        log.info("orchestrator.onchain_transport_connected")
+                    except Exception as exc:
+                        log.error(
+                            "orchestrator.onchain_transport_connect_failed",
+                            error=str(exc)[:200],
+                        )
                 self._tasks.append(
                     asyncio.create_task(self._redeemer_loop(), name="redeemer:sweep")
                 )
@@ -3391,6 +3405,36 @@ class EngineRuntime:
                             "orchestrator.send_redeem_alert_failed",
                             error=str(exc)[:200],
                         )
+
+                    # On-chain redemption resolution: for each successfully
+                    # redeemed position that came via the on-chain path, resolve
+                    # the matching trades in the DB so they show WIN + PnL
+                    # without waiting for the CLOB reconciler's next poll.
+                    if self._reconciler:
+                        for detail in result.get("details", []):
+                            if (
+                                detail.get("success")
+                                and detail.get("method") == "onchain"
+                                and detail.get("conditionId")
+                            ):
+                                try:
+                                    updated = await self._reconciler.resolve_from_redeem(
+                                        condition_id=detail["conditionId"],
+                                        tx_hash=detail.get("tx_hash", "") or "",
+                                        usdc_redeemed=float(detail.get("payout_usdc", 0.0)),
+                                    )
+                                    if updated > 0:
+                                        log.info(
+                                            "orchestrator.redeem_resolved_trades",
+                                            condition=detail["conditionId"][:20] + "...",
+                                            trades_updated=updated,
+                                        )
+                                except Exception as exc:
+                                    log.error(
+                                        "orchestrator.redeem_resolve_failed",
+                                        condition=detail.get("conditionId", "?")[:20],
+                                        error=str(exc)[:200],
+                                    )
 
                 # After every sweep — send a fresh snapshot so the user sees the
                 # pending-wins list shrink in real time. If this fails the sweep

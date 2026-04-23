@@ -173,7 +173,10 @@ ERC20_BALANCE_ABI = [
 
 class PositionRedeemer:
     """
-    Redeems resolved Polymarket positions via the Builder Relayer API.
+    Redeems resolved Polymarket positions back to USDC.
+
+    Primary path: direct on-chain via factory.proxy() (no quota, no 429s).
+    Fallback path: Builder Relayer API (100/day quota, requires API key).
 
     Works with Magic.link proxy wallets (unlike direct Gnosis Safe calls).
 
@@ -181,7 +184,8 @@ class PositionRedeemer:
     - Polygon RPC URL (for web3 contract calls / USDC balance)
     - Private key of the EOA that owns the proxy wallet
     - Proxy (funder) wallet address on Polymarket
-    - Builder Relayer API key (BUILDER_KEY env var or builder_key param)
+    - (Optional) On-chain scanner + transport for direct redemption
+    - (Optional) Builder Relayer API key for fallback path
 
     All operations are async. Synchronous SDK calls are wrapped in asyncio.to_thread().
     """
@@ -195,6 +199,8 @@ class PositionRedeemer:
         builder_key: Optional[str] = None,
         attempts_repo: Optional[object] = None,
         trades_repo: Optional[object] = None,
+        onchain_scanner: Optional[object] = None,
+        onchain_transport: Optional[object] = None,
     ) -> None:
         self._rpc_url = rpc_url
         self._private_key = private_key
@@ -256,12 +262,14 @@ class PositionRedeemer:
         # Optional trades repo — when wired, successful redemptions flip
         # ``trades.redeemed``/``redemption_tx``/``redeemed_at`` so audits,
         # dashboards, and future sweeps can distinguish truly-settled
-        # positions from stale "WIN" rows that never got swept. Without
-        # this repo the sweep still works on-chain but the trades table
-        # is a poor source of truth (see the April 18 2026 postmortem:
-        # 1,285 cumulative WIN rows, zero with redeemed=true or a
-        # redemption_tx populated).
+        # positions from stale "WIN" rows that never got swept.
         self._trades_repo = trades_repo
+
+        # ── On-chain direct redemption (primary path) ────────────────────────
+        # When both are wired, on-chain path is used for scanning AND redeeming.
+        # Builder Relayer becomes the fallback only if on-chain send fails.
+        self._onchain_scanner = onchain_scanner
+        self._onchain_transport = onchain_transport
 
     @property
     def daily_quota_limit(self) -> int:
@@ -270,6 +278,112 @@ class PositionRedeemer:
     @property
     def hourly_quota_limit(self) -> int:
         return self._hourly_quota_limit
+
+    @property
+    def has_onchain_transport(self) -> bool:
+        """True when the direct on-chain redemption path is available."""
+        return self._onchain_transport is not None
+
+    # ── On-Chain Direct Redemption Methods ────────────────────────────────────
+
+    async def scan_onchain_redeemable(
+        self,
+        condition_ids: list[str],
+    ) -> list:
+        """Scan condition IDs using the on-chain scanner (ground truth).
+
+        Returns a list of RedeemablePosition dataclasses from the scanner.
+        Falls back to empty list if scanner is not wired.
+        """
+        if self._onchain_scanner is None:
+            return []
+        try:
+            return await self._onchain_scanner.scan_redeemable(condition_ids)
+        except Exception as exc:
+            self._log.error(
+                "redeemer.onchain_scan_error", error=str(exc)[:200]
+            )
+            return []
+
+    async def redeem_position_onchain(self, condition_id: str) -> dict:
+        """Redeem a single position via direct on-chain factory.proxy().
+
+        No cooldown/quota logic — on-chain txns have no relayer limits.
+        Falls back to Builder Relayer if on-chain transport is not wired
+        or if the on-chain send fails.
+
+        Returns:
+            dict with keys: success, tx_hash, payout_usdc, gas_used, error, method
+        """
+        if self._onchain_transport is not None:
+            try:
+                result = await self._onchain_transport.redeem(condition_id)
+                if result.success:
+                    self._log.info(
+                        "redeemer.onchain_redeem_success",
+                        condition=condition_id[:20] + "...",
+                        tx_hash=result.tx_hash,
+                        payout_usdc=result.payout_usdc,
+                    )
+                    if self._attempts_repo is not None:
+                        try:
+                            await self._attempts_repo.record(
+                                condition_id=condition_id,
+                                outcome="SUCCESS",
+                                tx_hash=result.tx_hash,
+                            )
+                        except Exception:
+                            pass
+                    return {
+                        "success": True,
+                        "tx_hash": result.tx_hash,
+                        "payout_usdc": result.payout_usdc,
+                        "gas_used": result.gas_used,
+                        "error": None,
+                        "method": "onchain",
+                    }
+                else:
+                    self._log.warning(
+                        "redeemer.onchain_redeem_failed",
+                        condition=condition_id[:20] + "...",
+                        error=result.error,
+                        tx_hash=result.tx_hash,
+                        fallback="builder_relayer",
+                    )
+                    if self._attempts_repo is not None:
+                        try:
+                            await self._attempts_repo.record(
+                                condition_id=condition_id,
+                                outcome="FAILED",
+                                tx_hash=result.tx_hash,
+                                error=f"onchain: {result.error}"[:200] if result.error else None,
+                            )
+                        except Exception:
+                            pass
+            except Exception as exc:
+                self._log.error(
+                    "redeemer.onchain_redeem_exception",
+                    condition=condition_id[:20] + "...",
+                    error=str(exc)[:200],
+                    fallback="builder_relayer",
+                )
+
+            # Fallback to Builder Relayer
+            self._log.info(
+                "redeemer.fallback_to_relayer",
+                condition=condition_id[:20] + "...",
+            )
+
+        # No on-chain transport or on-chain failed — use Builder Relayer
+        success = await self.redeem_position(condition_id)
+        return {
+            "success": success,
+            "tx_hash": None,
+            "payout_usdc": 0.0,
+            "gas_used": 0,
+            "error": None if success else "relayer_fallback",
+            "method": "relayer",
+        }
 
     async def _scan_redeemable_positions(self) -> list[dict]:
         """
@@ -803,7 +917,11 @@ class PositionRedeemer:
     ) -> dict:
         if self._paper_mode:
             return self._empty_result(redeem_type)
-        if self._in_cooldown():
+
+        # On-chain path skips cooldown/quota entirely (no relayer limits).
+        # Only gate on cooldown when we'd fall back to the relayer.
+        use_onchain = self.has_onchain_transport
+        if not use_onchain and self._in_cooldown():
             self._log_cooldown_active()
             result = self._empty_result(redeem_type)
             result.update(self.cooldown_status())
@@ -830,18 +948,36 @@ class PositionRedeemer:
         total_value = 0.0
         details: list[dict] = []
         failed_details: list[dict] = []
+        tx_hashes: list[str] = []
 
         for pos in positions:
             try:
-                success = await self.redeem_position(pos["conditionId"])
-                details.append(
-                    {
+                if use_onchain:
+                    # Primary: direct on-chain (falls back to relayer internally)
+                    oc_result = await self.redeem_position_onchain(pos["conditionId"])
+                    success = oc_result["success"]
+                    if oc_result.get("tx_hash"):
+                        tx_hashes.append(oc_result["tx_hash"])
+                    detail = {
                         "conditionId": pos["conditionId"],
                         "outcome": pos["outcome"],
                         "pnl": pos["pnl"],
                         "success": success,
+                        "method": oc_result.get("method", "onchain"),
+                        "payout_usdc": oc_result.get("payout_usdc", 0.0),
                     }
-                )
+                else:
+                    # Fallback: Builder Relayer only
+                    success = await self.redeem_position(pos["conditionId"])
+                    detail = {
+                        "conditionId": pos["conditionId"],
+                        "outcome": pos["outcome"],
+                        "pnl": pos["pnl"],
+                        "success": success,
+                        "method": "relayer",
+                    }
+
+                details.append(detail)
                 if success:
                     redeemed += 1
                     total_pnl += pos["pnl"]
@@ -852,10 +988,14 @@ class PositionRedeemer:
                         losses += 1
                 else:
                     failed += 1
+                    error_msg = (
+                        oc_result.get("error", "non-success") if use_onchain
+                        else "relayer returned non-success"
+                    )
                     failed_details.append(
                         {
                             "condition_id": pos.get("conditionId"),
-                            "error": "relayer returned non-success",
+                            "error": error_msg,
                         }
                     )
             except Exception as exc:
@@ -904,7 +1044,7 @@ class PositionRedeemer:
             "total_value": total_value,
             "usdc_before": usdc_before,
             "usdc_after": usdc_after,
-            "tx_hashes": [],
+            "tx_hashes": tx_hashes,
             "details": details,
             "failed_details": failed_details,
             "paper_mode": False,
