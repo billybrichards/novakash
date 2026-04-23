@@ -822,6 +822,97 @@ class CLOBReconciler:
             )
 
     # ------------------------------------------------------------------
+    # On-chain redemption resolution
+    # ------------------------------------------------------------------
+
+    async def resolve_from_redeem(
+        self,
+        condition_id: str,
+        tx_hash: str,
+        usdc_redeemed: float,
+    ) -> int:
+        """Resolve trades in the DB after a successful on-chain redemption.
+
+        Matches the condition_id to unresolved trades via the metadata JSONB
+        column (``metadata->>'condition_id'``) and updates them to
+        RESOLVED_WIN with computed PnL.
+
+        Args:
+            condition_id: hex condition ID of the redeemed position
+            tx_hash: Polygon tx hash of the redemption
+            usdc_redeemed: USDC payout amount from the Transfer log
+
+        Returns:
+            Number of trade rows updated.
+        """
+        try:
+            async with self._pool.acquire() as conn:
+                # Find unresolved trades matching this condition_id
+                rows = await conn.fetch(
+                    """SELECT id, stake_usd
+                       FROM trades
+                       WHERE outcome IS NULL
+                         AND is_live = true
+                         AND (
+                             metadata->>'condition_id' = $1
+                             OR metadata->>'conditionId' = $1
+                         )""",
+                    condition_id,
+                )
+
+                if not rows:
+                    self._log.debug(
+                        "reconciler.redeem_resolve.no_match",
+                        condition=condition_id[:20] + "...",
+                    )
+                    return 0
+
+                updated = 0
+                for row in rows:
+                    trade_id = row["id"]
+                    stake = float(row["stake_usd"] or 0)
+                    # PnL = payout - stake. For a win, usdc_redeemed is the
+                    # total payout for ALL shares. If multiple trades share the
+                    # same condition_id, split proportionally (rare edge case
+                    # for 5-min markets). Single-trade case dominates.
+                    if len(rows) == 1:
+                        pnl = round(usdc_redeemed - stake, 4)
+                    else:
+                        # Proportional split by stake
+                        total_stake = sum(float(r["stake_usd"] or 0) for r in rows)
+                        share = stake / total_stake if total_stake > 0 else 1.0 / len(rows)
+                        pnl = round(usdc_redeemed * share - stake, 4)
+
+                    await conn.execute(
+                        """UPDATE trades
+                           SET outcome = 'WIN',
+                               pnl_usd = $1,
+                               resolved_at = NOW(),
+                               status = 'RESOLVED_WIN'
+                           WHERE id = $2 AND outcome IS NULL""",
+                        pnl,
+                        trade_id,
+                    )
+                    updated += 1
+                    self._log.info(
+                        "reconciler.redeem_resolved",
+                        trade_id=trade_id,
+                        condition=condition_id[:20] + "...",
+                        pnl=f"${pnl:.2f}",
+                        tx_hash=tx_hash[:16] + "..." if tx_hash else None,
+                    )
+
+                return updated
+
+        except Exception as exc:
+            self._log.error(
+                "reconciler.redeem_resolve_error",
+                condition=condition_id[:20] + "...",
+                error=str(exc)[:200],
+            )
+            return 0
+
+    # ------------------------------------------------------------------
     # Report loop (every 5 min)
     # ------------------------------------------------------------------
 

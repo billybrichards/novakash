@@ -185,7 +185,9 @@ class CompositionRoot:
         self._alerter.set_poly_client(self._poly_client)
         self._alerter.set_location("MTL", "v11.2")
 
-        # ── Builder Relayer Redeemer ──────────────────────────────────────────
+        # ── On-Chain Redemption Pipeline ─────────────────────────────────────
+        # Primary: direct on-chain scan + factory.proxy() redeem.
+        # Fallback: Builder Relayer API (kept for backwards compat).
         from execution.redeemer import PositionRedeemer
         from adapters.persistence.pg_redeem_attempts import (
             PgRedeemAttemptsRepository,
@@ -200,14 +202,45 @@ class CompositionRoot:
         # Trades repo writes redemption state back onto the canonical
         # trades table so audits, P&L dashboards, and future sweeps can
         # distinguish truly-settled positions from stale WIN rows.
-        # Before this was wired the ``redeemed`` / ``redemption_tx`` /
-        # ``redeemed_at`` columns were never populated by any service —
-        # the redeemer ran on-chain but left the DB as a lying source
-        # of truth.
         redeem_trades_repo: Optional[PgTradeRepository] = None
         db_pool = getattr(self._db, "_pool", None) if self._db is not None else None
         if db_pool is not None:
             redeem_trades_repo = PgTradeRepository(db_pool)
+
+        # On-chain scanner + transport: wired when we have the private key
+        # and at least one RPC URL. The scanner needs 2+ RPCs for consensus;
+        # we build the list from POLYGON_RPC_URL (primary) plus any
+        # POLYGON_RPC_URL_2 / POLYGON_RPC_URL_3 env vars (fallbacks).
+        _onchain_scanner = None
+        _onchain_transport = None
+        if settings.polygon_rpc_url and settings.poly_private_key and settings.poly_funder_address:
+            rpc_urls = [settings.polygon_rpc_url]
+            for suffix in ("_2", "_3", "_BACKUP"):
+                extra = os.environ.get(f"POLYGON_RPC_URL{suffix}", "")
+                if extra:
+                    rpc_urls.append(extra)
+            # Free public Polygon RPC as last-resort second endpoint
+            if len(rpc_urls) < 2:
+                rpc_urls.append("https://polygon-rpc.com")
+
+            try:
+                from execution.onchain_scanner import OnChainPositionScanner
+                _onchain_scanner = OnChainPositionScanner(
+                    rpc_urls=rpc_urls,
+                    proxy_address=settings.poly_funder_address,
+                )
+            except Exception as exc:
+                log.warning("composition.onchain_scanner_init_failed", error=str(exc)[:200])
+
+            try:
+                from execution.onchain_transport import OnChainRedemptionTransport
+                _onchain_transport = OnChainRedemptionTransport(
+                    rpc_url=settings.polygon_rpc_url,
+                    private_key=settings.poly_private_key,
+                    proxy_address=settings.poly_funder_address,
+                )
+            except Exception as exc:
+                log.warning("composition.onchain_transport_init_failed", error=str(exc)[:200])
 
         self._redeemer = PositionRedeemer(
             rpc_url=settings.polygon_rpc_url,
@@ -217,6 +250,8 @@ class CompositionRoot:
             builder_key=settings.builder_key or os.environ.get("BUILDER_KEY", ""),
             attempts_repo=redeem_attempts_repo,
             trades_repo=redeem_trades_repo,
+            onchain_scanner=_onchain_scanner,
+            onchain_transport=_onchain_transport,
         )
 
         # ── Playwright browser automation (replaces on-chain redeemer) ────────
