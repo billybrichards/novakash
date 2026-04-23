@@ -190,11 +190,24 @@ class CompositionRoot:
         from adapters.persistence.pg_redeem_attempts import (
             PgRedeemAttemptsRepository,
         )
+        from adapters.persistence.pg_trade_repo import PgTradeRepository
 
         # Attempts repo backs the "skip condition_ids with >=3 failed
         # attempts in 24h" gate in redeem_position(). Passing the DBClient
         # lets the repo pull the shared pool lazily — survives DB reconnects.
         redeem_attempts_repo = PgRedeemAttemptsRepository(db_client=self._db)
+
+        # Trades repo writes redemption state back onto the canonical
+        # trades table so audits, P&L dashboards, and future sweeps can
+        # distinguish truly-settled positions from stale WIN rows.
+        # Before this was wired the ``redeemed`` / ``redemption_tx`` /
+        # ``redeemed_at`` columns were never populated by any service —
+        # the redeemer ran on-chain but left the DB as a lying source
+        # of truth.
+        redeem_trades_repo: Optional[PgTradeRepository] = None
+        db_pool = getattr(self._db, "_pool", None) if self._db is not None else None
+        if db_pool is not None:
+            redeem_trades_repo = PgTradeRepository(db_pool)
 
         self._redeemer = PositionRedeemer(
             rpc_url=settings.polygon_rpc_url,
@@ -203,6 +216,7 @@ class CompositionRoot:
             paper_mode=settings.paper_mode,
             builder_key=settings.builder_key or os.environ.get("BUILDER_KEY", ""),
             attempts_repo=redeem_attempts_repo,
+            trades_repo=redeem_trades_repo,
         )
 
         # ── Playwright browser automation (replaces on-chain redeemer) ────────
