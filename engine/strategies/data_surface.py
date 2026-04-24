@@ -222,6 +222,7 @@ class DataSurfaceManager:
         self,
         *,
         v4_base_url: Optional[str] = None,
+        v4_fallback_url: Optional[str] = None,
         tiingo_feed: Any = None,
         chainlink_feed: Any = None,
         clob_feed: Any = None,
@@ -234,6 +235,30 @@ class DataSurfaceManager:
         self._v4_url = v4_base_url or os.environ.get(
             "TIMESFM_URL", "http://localhost:8001"
         )
+        # Optional fallback host used when the primary /v4/snapshot fetch
+        # fails (non-200, timeout, transport error). Classifier handoff
+        # (hub note #226 + #228, 2026-04-24): primary TIMESFM_URL is
+        # flipped to the classifier box so the engine can read
+        # ``probability_classifier`` (pc) off every snapshot for shadow
+        # logging. TIMESFM_FALLBACK_URL points back at the pre-flip
+        # primary so a classifier-box outage doesn't blind the engine.
+        # ``None`` / empty-string disables the fallback.
+        self._v4_fallback_url = (
+            v4_fallback_url
+            or os.environ.get("TIMESFM_FALLBACK_URL")
+            or None
+        )
+        if self._v4_fallback_url == "":
+            self._v4_fallback_url = None
+        # Per-asset fetch telemetry. ``_last_fetch_latency_ms`` is the
+        # wall-clock duration of the most recent successful /v4/snapshot
+        # response; surfaces read this into metadata as
+        # ``pc_fetch_latency_ms`` for burn-in p95 analysis (note #226
+        # promotion checklist). ``_last_fetch_source`` tracks whether the
+        # cache was refreshed from primary or fallback so ops can grep
+        # for "engine fell back to pre-flip box" incidents.
+        self._last_fetch_latency_ms: dict[str, float] = {}
+        self._last_fetch_source: dict[str, str] = {}
         self._tiingo = tiingo_feed
         self._chainlink = chainlink_feed
         self._clob = clob_feed
@@ -428,27 +453,68 @@ class DataSurfaceManager:
                 )
 
     async def _fetch_v4_asset(self, asset: str) -> None:
-        """Fetch /v4/snapshot for a single asset and update its cache slot."""
-        url = f"{self._v4_url}/v4/snapshot"
+        """Fetch /v4/snapshot for a single asset and update its cache slot.
+
+        Classifier-box shadow read (note #226): the primary host is
+        ``TIMESFM_URL`` (now pointed at the classifier box so the
+        snapshot includes ``probability_classifier``). If that fetch
+        fails, we transparently retry against ``TIMESFM_FALLBACK_URL``
+        (the pre-flip primary, LGB-only). The fallback snapshot is
+        accepted and cached exactly like the primary so trade decisions
+        keep flowing — the only cost is ``pc`` is missing from that
+        tick, which strategies handle via the existing None-fallback.
+        """
+        ok = await self._try_fetch_snapshot(asset, self._v4_url, source="primary")
+        if ok:
+            return
+        if self._v4_fallback_url:
+            log.warning(
+                "data_surface.v4_fallback_attempt",
+                asset=asset,
+                fallback_url=self._v4_fallback_url,
+            )
+            ok = await self._try_fetch_snapshot(
+                asset, self._v4_fallback_url, source="fallback"
+            )
+            if ok:
+                return
+
+        # Both primary and fallback failed — reuse existing alert path.
+        cached_ts = self._cached_v4_ts.get(asset, 0.0)
+        age = time.time() - cached_ts if cached_ts else None
+        if asset.upper() == "BTC":
+            self._maybe_fire_degraded_alert(age)
+
+    async def _try_fetch_snapshot(
+        self, asset: str, base_url: str, *, source: str
+    ) -> bool:
+        """Attempt one /v4/snapshot fetch against ``base_url``.
+
+        Returns True if the cache was updated. Latency is recorded in
+        ``_last_fetch_latency_ms`` on success so ``get_surface`` can
+        stamp it on the decision metadata for burn-in p95 analysis.
+        """
+        url = f"{base_url}/v4/snapshot"
         params = {"asset": asset, "timescales": "5m,15m", "strategy": "polymarket_5m"}
         is_primary = asset.upper() == "BTC"
         cached_ts = self._cached_v4_ts.get(asset, 0.0)
         age = time.time() - cached_ts if cached_ts else None
+        t0 = time.monotonic()
         try:
             async with self._session.get(url, params=params) as resp:
                 if resp.status != 200:
                     log_fn = log.error if (
                         is_primary and age is not None and age > 30
+                        and source == "primary"
                     ) else log.warning
                     log_fn(
                         "data_surface.v4_fetch_http_error",
                         asset=asset,
                         status=resp.status,
+                        source=source,
                         cache_age_s=round(age, 1) if age is not None else None,
                     )
-                    if is_primary:
-                        self._maybe_fire_degraded_alert(age)
-                    return
+                    return False
                 body = await resp.json()
                 # BTC: full stack required — reject empty poly block (PR #47
                 # feature-pipeline freeze class bug).
@@ -461,15 +527,16 @@ class DataSurfaceManager:
                     if not poly or poly.get("timing") is None:
                         log_fn = log.error if (
                             age is not None and age > 30
+                            and source == "primary"
                         ) else log.warning
                         log_fn(
                             "data_surface.v4_empty_polymarket",
                             asset=asset,
                             poly_keys=len(poly),
+                            source=source,
                             cache_age_s=round(age, 1) if age is not None else None,
                         )
-                        self._maybe_fire_degraded_alert(age)
-                        return
+                        return False
                 else:
                     # Non-BTC: accept no_model payloads. Sanity check: body
                     # must have a timescales block (otherwise it's an error
@@ -478,11 +545,15 @@ class DataSurfaceManager:
                         log.warning(
                             "data_surface.v4_missing_timescales",
                             asset=asset,
+                            source=source,
                             status=body.get("status"),
                         )
-                        return
+                        return False
+                latency_ms = (time.monotonic() - t0) * 1000.0
                 self._cached_v4[asset] = body
                 self._cached_v4_ts[asset] = time.time()
+                self._last_fetch_latency_ms[asset] = latency_ms
+                self._last_fetch_source[asset] = source
                 # BTC recovery alert — we were degraded and now we're not.
                 if is_primary and self._degraded_since is not None and self._alert_cb is not None:
                     down_s = int(time.time() - self._degraded_since)
@@ -495,31 +566,31 @@ class DataSurfaceManager:
                     except Exception as exc:
                         log.warning("data_surface.recovery_alert_failed", error=str(exc)[:200])
                     self._degraded_since = None
-                return
+                return True
         except asyncio.TimeoutError:
             log_fn = log.error if (
                 is_primary and age is not None and age > 30
+                and source == "primary"
             ) else log.warning
             log_fn(
                 "data_surface.v4_fetch_timeout",
                 asset=asset,
+                source=source,
                 cache_age_s=round(age, 1) if age is not None else None,
             )
         except Exception as exc:
             log_fn = log.error if (
                 is_primary and age is not None and age > 30
+                and source == "primary"
             ) else log.warning
             log_fn(
                 "data_surface.v4_fetch_error",
                 asset=asset,
                 error=str(exc)[:200],
+                source=source,
                 cache_age_s=round(age, 1) if age is not None else None,
             )
-
-        # BTC-only: any fall-through = this tick did not replace the cache.
-        # Fire degraded alert if the cache age now exceeds the threshold.
-        if is_primary:
-            self._maybe_fire_degraded_alert(age)
+        return False
 
     async def _fetch_cedar_asset(self, asset: str) -> None:
         """Fetch /v2/probability/cedar for an asset and cache the payload.
@@ -582,6 +653,26 @@ class DataSurfaceManager:
                 asset=asset_key,
                 error=str(exc)[:200],
             )
+
+    def get_fetch_telemetry(self, asset: str) -> dict:
+        """Return last-fetch telemetry for ``asset``.
+
+        Used by the registry decision-writer to stamp
+        ``pc_fetch_latency_ms`` + ``pc_fetch_source`` onto
+        ``strategy_decisions.metadata_json`` for the burn-in analysis
+        (note #226 promotion checklist item 6: latency p95 < 500 ms).
+        Returns ``{}`` if no successful fetch has happened yet for this
+        asset — consumers should treat missing keys as "no data".
+        """
+        key = asset.upper() if asset else "BTC"
+        out: dict = {}
+        lat = self._last_fetch_latency_ms.get(key)
+        if lat is not None:
+            out["pc_fetch_latency_ms"] = round(lat, 2)
+        src = self._last_fetch_source.get(key)
+        if src is not None:
+            out["pc_fetch_source"] = src
+        return out
 
     def _maybe_fire_degraded_alert(self, age: Optional[float]) -> None:
         """Schedule a BTC /v4/snapshot degraded Telegram alert if threshold crossed.

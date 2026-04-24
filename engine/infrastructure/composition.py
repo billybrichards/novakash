@@ -568,6 +568,7 @@ class CompositionRoot:
                     _surface_assets = ["BTC"]
                 self._data_surface_mgr = DataSurfaceManager(
                     v4_base_url=os.environ.get("TIMESFM_URL", "http://localhost:8001"),
+                    v4_fallback_url=os.environ.get("TIMESFM_FALLBACK_URL") or None,
                     tiingo_feed=getattr(self, "_tiingo_feed", None),
                     chainlink_feed=getattr(self, "_chainlink_multi_feed", None)
                     or getattr(self, "_chainlink_feed", None),
