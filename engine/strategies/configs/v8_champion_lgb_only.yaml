@@ -54,7 +54,7 @@ gate_params:
   # CASCADE. A window may pass tradeable_v4_regimes but still be blocked if
   # direction==DOWN and vpin regime in this list.
   block_down_vpin_regimes: [TRANSITION]
-  block_up_vpin_regimes: []
+  block_up_vpin_regimes: [TRANSITION]
 
   # ── Conviction (LGB-only — NO classifier bucket) ──────────────────────
   # v8 uses ensemble agree_strong / pegged_path1 buckets that require both
