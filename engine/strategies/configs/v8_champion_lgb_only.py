@@ -89,6 +89,71 @@ def _post_loss_cooldown_min() -> int:
     )
 
 
+# ── TRANSITION strong-oracle bypass (2026-04-24) ───────────────────────────
+# When TRANSITION regime would block UP or DOWN, allow bypass if chainlink +
+# tiingo BOTH agree direction AND avg(|Δcl|,|Δti|) >= threshold AND LGB
+# conviction is strong. Binance excluded by design. See note #228.
+def _transition_strong_bypass_enabled() -> bool:
+    return _gp.get_bool(
+        "transition_strong_bypass_enabled",
+        "V8LGB_TRANSITION_STRONG_BYPASS_ENABLED",
+        True,
+    )
+
+
+def _transition_bypass_min_avg_pct_delta() -> float:
+    """Threshold expressed in PERCENT (0.05 = 0.05%).
+
+    Surface deltas are FRACTIONAL (e.g. -0.0007 = -0.07%). We divide by 100
+    at comparison time.
+    """
+    return _gp.get_float(
+        "transition_bypass_min_avg_pct_delta",
+        "V8LGB_TRANSITION_BYPASS_MIN_AVG_PCT_DELTA",
+        0.05,
+    )
+
+
+def _transition_bypass_min_lgb_dist() -> float:
+    return _gp.get_float(
+        "transition_bypass_min_lgb_dist",
+        "V8LGB_TRANSITION_BYPASS_MIN_LGB_DIST",
+        0.20,
+    )
+
+
+def _should_bypass_transition(
+    direction: str,
+    pl: float,
+    delta_chainlink: Optional[float],
+    delta_tiingo: Optional[float],
+) -> tuple[bool, str]:
+    """Return (bypass, diag_string). See note #228 for rule."""
+    if not _transition_strong_bypass_enabled():
+        return (False, "bypass_disabled")
+    if delta_chainlink is None or delta_tiingo is None:
+        return (False, "oracle_missing")
+    # Surface deltas are fractional; threshold param is in percent.
+    avg_mag_frac = (abs(delta_chainlink) + abs(delta_tiingo)) / 2.0
+    min_avg_frac = _transition_bypass_min_avg_pct_delta() / 100.0
+    sign_agree = (
+        (direction == "UP" and delta_chainlink > 0 and delta_tiingo > 0)
+        or (direction == "DOWN" and delta_chainlink < 0 and delta_tiingo < 0)
+    )
+    pl_dist = abs(pl - 0.5)
+    lgb_strong = pl_dist >= _transition_bypass_min_lgb_dist()
+    if avg_mag_frac >= min_avg_frac and sign_agree and lgb_strong:
+        return (
+            True,
+            f"avg_mag={avg_mag_frac * 100:.4f}% pl_dist={pl_dist:.3f}",
+        )
+    return (
+        False,
+        f"avg_mag={avg_mag_frac * 100:.4f}% sign_agree={sign_agree} "
+        f"lgb_strong={lgb_strong}",
+    )
+
+
 # ── In-memory cooldown state ───────────────────────────────────────────────
 # Reset on process restart; DB fallback covers the cold-start case.
 _last_loss_epoch: Optional[int] = None
@@ -283,40 +348,55 @@ def evaluate_v8_champion_lgb_only(
     # ── 3b. Per-direction vpin-regime block (AFTER direction known) ────────
     # NB: checked against surface.regime (CALM / NORMAL / TRANSITION /
     # CASCADE), not v4_regime. TRANSITION is a vol-regime value.
+    #
+    # TRANSITION strong-oracle bypass (2026-04-24): when the regime gate
+    # would block UP or DOWN in TRANSITION, allow bypass if chainlink +
+    # tiingo BOTH agree direction AND avg(|Δcl|,|Δti|) >= threshold AND
+    # LGB dist is strong. See note #228.
     vpin_regime = getattr(surface, "regime", None)
-    if direction == "DOWN" and vpin_regime in _block_down_vpin_regimes():
-        gates.append(
-            _gate(
-                "vpin_regime_direction",
-                False,
-                f"DOWN blocked in vpin regime={vpin_regime}",
-            )
-        )
-        return _skip(
-            f"vpin_regime_direction: DOWN blocked in {vpin_regime}",
-            gates,
-            direction=direction,
-        )
-    if direction == "UP" and vpin_regime in _block_up_vpin_regimes():
-        gates.append(
-            _gate(
-                "vpin_regime_direction",
-                False,
-                f"UP blocked in vpin regime={vpin_regime}",
-            )
-        )
-        return _skip(
-            f"vpin_regime_direction: UP blocked in {vpin_regime}",
-            gates,
-            direction=direction,
-        )
-    gates.append(
-        _gate(
-            "vpin_regime_direction",
-            True,
-            f"{direction} allowed in vpin regime={vpin_regime}",
-        )
+    regime_would_block = (
+        (direction == "DOWN" and vpin_regime in _block_down_vpin_regimes())
+        or (direction == "UP" and vpin_regime in _block_up_vpin_regimes())
     )
+    if regime_would_block:
+        bypass, diag = _should_bypass_transition(
+            direction,
+            p_up,
+            surface.delta_chainlink,
+            surface.delta_tiingo,
+        )
+        if bypass:
+            gates.append(
+                _gate(
+                    "vpin_regime_direction",
+                    True,
+                    f"transition_strong_bypass: {direction} in "
+                    f"{vpin_regime} {diag}",
+                )
+            )
+        else:
+            gates.append(
+                _gate(
+                    "vpin_regime_direction",
+                    False,
+                    f"{direction} blocked in vpin regime={vpin_regime} "
+                    f"(no bypass: {diag})",
+                )
+            )
+            return _skip(
+                f"vpin_regime_direction: {direction} blocked in "
+                f"{vpin_regime}",
+                gates,
+                direction=direction,
+            )
+    else:
+        gates.append(
+            _gate(
+                "vpin_regime_direction",
+                True,
+                f"{direction} allowed in vpin regime={vpin_regime}",
+            )
+        )
 
     # ── 7. Oracle direction agreement (if enabled) ─────────────────────────
     if _skip_on_oracle_disagree():

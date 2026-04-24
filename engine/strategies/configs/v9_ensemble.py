@@ -157,6 +157,72 @@ def _fallback_to_lgb_on_pc_null() -> bool:
     )
 
 
+# ── TRANSITION strong-oracle bypass (2026-04-24, note #228) ────────────────
+# Independent bypass for the TRANSITION block (R5). Fires when chainlink +
+# tiingo BOTH agree direction AND avg(|Δcl|,|Δti|) >= threshold AND LGB
+# conviction is strong. Binance excluded by design. Runs alongside the
+# existing VHC bypass — either path may unblock the regime gate.
+def _transition_strong_bypass_enabled() -> bool:
+    return _gp.get_bool(
+        "transition_strong_bypass_enabled",
+        "V9_TRANSITION_STRONG_BYPASS_ENABLED",
+        True,
+    )
+
+
+def _transition_bypass_min_avg_pct_delta() -> float:
+    """Threshold expressed in PERCENT (0.05 = 0.05%).
+
+    Surface deltas are FRACTIONAL (e.g. -0.0007 = -0.07%). We divide by 100
+    at comparison time.
+    """
+    return _gp.get_float(
+        "transition_bypass_min_avg_pct_delta",
+        "V9_TRANSITION_BYPASS_MIN_AVG_PCT_DELTA",
+        0.05,
+    )
+
+
+def _transition_bypass_min_lgb_dist() -> float:
+    return _gp.get_float(
+        "transition_bypass_min_lgb_dist",
+        "V9_TRANSITION_BYPASS_MIN_LGB_DIST",
+        0.20,
+    )
+
+
+def _should_bypass_transition(
+    direction: str,
+    pl: float,
+    delta_chainlink: Optional[float],
+    delta_tiingo: Optional[float],
+) -> tuple[bool, str]:
+    """Return (bypass, diag_string). See note #228 for rule."""
+    if not _transition_strong_bypass_enabled():
+        return (False, "bypass_disabled")
+    if delta_chainlink is None or delta_tiingo is None:
+        return (False, "oracle_missing")
+    # Surface deltas are fractional; threshold param is in percent.
+    avg_mag_frac = (abs(delta_chainlink) + abs(delta_tiingo)) / 2.0
+    min_avg_frac = _transition_bypass_min_avg_pct_delta() / 100.0
+    sign_agree = (
+        (direction == "UP" and delta_chainlink > 0 and delta_tiingo > 0)
+        or (direction == "DOWN" and delta_chainlink < 0 and delta_tiingo < 0)
+    )
+    pl_dist = abs(pl - 0.5)
+    lgb_strong = pl_dist >= _transition_bypass_min_lgb_dist()
+    if avg_mag_frac >= min_avg_frac and sign_agree and lgb_strong:
+        return (
+            True,
+            f"avg_mag={avg_mag_frac * 100:.4f}% pl_dist={pl_dist:.3f}",
+        )
+    return (
+        False,
+        f"avg_mag={avg_mag_frac * 100:.4f}% sign_agree={sign_agree} "
+        f"lgb_strong={lgb_strong}",
+    )
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 def _pc_weight_for_offset(offset: int) -> float:
     """Return the classifier weight based on T-minus offset bracket.
@@ -496,7 +562,12 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             )
         )
 
-    # ── 11. TRANSITION regime block (R5) — VHC bypassable ─────────────────
+    # ── 11. TRANSITION regime block (R5) — VHC OR strong-oracle bypassable ─
+    # Two independent bypass paths:
+    #   (a) VHC reinforcement (pc_dist >= vhc_threshold + pc/pl direction agree)
+    #   (b) Strong-oracle bypass (chainlink+tiingo agree + |Δ| strong + LGB
+    #       dist strong) — note #228, recovers high-conviction TRANSITION
+    #       windows the symmetric block would otherwise drop.
     vpin_regime = getattr(surface, "regime", None)
     blocked_down = vpin_regime in _block_down_vpin_regimes()
     blocked_up = vpin_regime in _block_up_vpin_regimes()
@@ -504,7 +575,14 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         direction == "UP" and blocked_up
     )
     if regime_blocked:
-        if is_vhc and _vhc_bypass_transition():
+        vhc_bypass_ok = is_vhc and _vhc_bypass_transition()
+        strong_bypass_ok, strong_diag = _should_bypass_transition(
+            direction,
+            pl,
+            surface.delta_chainlink,
+            surface.delta_tiingo,
+        )
+        if vhc_bypass_ok:
             gates.append(
                 _gate(
                     "vpin_regime_direction",
@@ -514,12 +592,22 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                 )
             )
             vhc_bypasses.append("transition_regime")
+        elif strong_bypass_ok:
+            gates.append(
+                _gate(
+                    "vpin_regime_direction",
+                    True,
+                    f"transition_strong_bypass: {direction} in "
+                    f"{vpin_regime} {strong_diag}",
+                )
+            )
         else:
             gates.append(
                 _gate(
                     "vpin_regime_direction",
                     False,
-                    f"{direction} blocked in vpin regime={vpin_regime}",
+                    f"{direction} blocked in vpin regime={vpin_regime} "
+                    f"(no bypass: {strong_diag})",
                 )
             )
             return _skip_v9(

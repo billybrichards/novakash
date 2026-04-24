@@ -138,6 +138,9 @@ def _bind_gate_params():
         "vpin_min": 0.40,
         "vpin_max": 1.0,
         "post_loss_cooldown_min": 20,
+        "transition_strong_bypass_enabled": True,
+        "transition_bypass_min_avg_pct_delta": 0.05,
+        "transition_bypass_min_lgb_dist": 0.20,
     }
     token = _gp.set_active(params)
     reset_cooldown()
@@ -349,6 +352,125 @@ def test_timing_out_of_window_skips():
     d = evaluate_v8_champion_lgb_only(s)
     assert d.action == "SKIP"
     assert "timing" in d.skip_reason
+
+
+# ── TRANSITION strong-oracle bypass (note #228, 2026-04-24) ────────────────
+class TestTransitionBypass:
+    """Bypass TRANSITION regime block when chainlink+tiingo agree and LGB strong.
+
+    Uses direct _should_bypass_transition where possible to isolate the rule
+    from the rest of the gate stack, and at least one end-to-end test that
+    exercises the v8 hook integration.
+    """
+
+    def test_down_transition_bypass_with_strong_oracles(self):
+        # TRANSITION + DOWN + oracles strongly DOWN + LGB dist 0.30 (strong).
+        # Default _block_down_vpin_regimes=[TRANSITION] — without the bypass
+        # this would SKIP.
+        s = _make_surface(
+            regime="TRANSITION",
+            probability_lgb=0.20,            # dist = 0.30 >= 0.20 lgb floor
+            delta_chainlink=-0.0007,         # -0.07% fraction
+            delta_tiingo=-0.0008,            # -0.08% fraction
+            delta_binance=-0.0001,           # excluded from bypass
+            clob_down_ask=0.65,
+            poly_max_entry_price=0.65,
+        )
+        d = evaluate_v8_champion_lgb_only(s)
+        assert d.action == "TRADE", d.skip_reason
+        assert d.direction == "DOWN"
+        gate_names = [g["gate"] for g in d.metadata["gate_results"]]
+        assert "vpin_regime_direction" in gate_names
+        regime_gate = [
+            g for g in d.metadata["gate_results"]
+            if g["gate"] == "vpin_regime_direction"
+        ][-1]
+        assert regime_gate["passed"] is True
+        assert "transition_strong_bypass" in regime_gate.get("reason", "")
+
+    def test_down_transition_NO_bypass_weak_oracles(self):
+        # Same TRANSITION + DOWN but avg oracle magnitude below threshold.
+        s = _make_surface(
+            regime="TRANSITION",
+            probability_lgb=0.20,
+            delta_chainlink=-0.0002,         # avg = 0.025% < 0.05%
+            delta_tiingo=-0.0003,
+            clob_down_ask=0.65,
+            poly_max_entry_price=0.65,
+        )
+        d = evaluate_v8_champion_lgb_only(s)
+        assert d.action == "SKIP"
+        assert "vpin_regime_direction" in d.skip_reason
+
+    def test_up_transition_bypass_with_strong_oracles(self, monkeypatch):
+        # Symmetric UP case — need block_up_vpin_regimes active for block
+        # to fire at all (default v8 YAML is empty for UP).
+        params = dict(_gp._ACTIVE.get() or {})  # type: ignore[attr-defined]
+        params["block_up_vpin_regimes"] = ["TRANSITION"]
+        token = _gp.set_active(params)
+        try:
+            s = _up_surface(
+                regime="TRANSITION",
+                probability_lgb=0.80,         # dist = 0.30
+                delta_chainlink=0.0007,
+                delta_tiingo=0.0008,
+                clob_up_ask=0.65,
+                poly_max_entry_price=0.65,
+            )
+            d = evaluate_v8_champion_lgb_only(s)
+            assert d.action == "TRADE", d.skip_reason
+            assert d.direction == "UP"
+        finally:
+            _gp.reset_active(token)
+
+    def test_bypass_blocked_when_lgb_weak(self):
+        # Oracles strong but LGB dist 0.12 < 0.20 threshold → no bypass.
+        # NB: LGB dist floor for DOWN is 0.10, so the lgb_bucket gate passes
+        # with p_up=0.38 (dist=0.12); bypass's 0.20 threshold is the decider.
+        s = _make_surface(
+            regime="TRANSITION",
+            probability_lgb=0.38,            # dist = 0.12 passes lgb_bucket
+            delta_chainlink=-0.0007,
+            delta_tiingo=-0.0008,
+            clob_down_ask=0.65,
+            poly_max_entry_price=0.65,
+        )
+        d = evaluate_v8_champion_lgb_only(s)
+        assert d.action == "SKIP"
+        assert "vpin_regime_direction" in d.skip_reason
+
+    def test_bypass_blocked_when_oracles_disagree(self):
+        # chainlink DOWN but tiingo UP — oracle_direction fires first anyway,
+        # but the regime-gate bypass check would also reject.
+        s = _make_surface(
+            regime="TRANSITION",
+            probability_lgb=0.20,            # bet DOWN
+            delta_chainlink=-0.0007,
+            delta_tiingo=+0.0008,
+            clob_down_ask=0.65,
+            poly_max_entry_price=0.65,
+        )
+        d = evaluate_v8_champion_lgb_only(s)
+        assert d.action == "SKIP"
+
+    def test_bypass_respects_disabled_flag(self, monkeypatch):
+        params = dict(_gp._ACTIVE.get() or {})  # type: ignore[attr-defined]
+        params["transition_strong_bypass_enabled"] = False
+        token = _gp.set_active(params)
+        try:
+            s = _make_surface(
+                regime="TRANSITION",
+                probability_lgb=0.20,
+                delta_chainlink=-0.0007,
+                delta_tiingo=-0.0008,
+                clob_down_ask=0.65,
+                poly_max_entry_price=0.65,
+            )
+            d = evaluate_v8_champion_lgb_only(s)
+            assert d.action == "SKIP"
+            assert "vpin_regime_direction" in d.skip_reason
+        finally:
+            _gp.reset_active(token)
 
 
 # ── Hour block ─────────────────────────────────────────────────────────────

@@ -153,6 +153,9 @@ def _bind_gate_params():
         "conviction_medium_dist": 0.12,
         "conviction_low_dist": 0.05,
         "fallback_to_lgb_on_pc_null": True,
+        "transition_strong_bypass_enabled": True,
+        "transition_bypass_min_avg_pct_delta": 0.05,
+        "transition_bypass_min_lgb_dist": 0.20,
     }
     token = _gp.set_active(params)
     reset_cooldown()
@@ -352,11 +355,16 @@ class TestVhcReinforcement:
 
     def test_non_vhc_blocked_by_transition(self):
         # Same setup but pc=0.35 (pc_dist=0.15 < 0.25 — not VHC).
-        # TRANSITION block should still fire.
+        # TRANSITION block should still fire. NB: oracles must also be
+        # weak enough to not trigger the 2026-04-24 transition_strong_bypass
+        # (avg |Δ| < 0.05% OR pl_dist < 0.20). Here pl=0.30 dist=0.20 meets
+        # LGB strong, so we set oracles weak to force SKIP.
         s = _make_surface(
             regime="TRANSITION",
             probability_classifier=0.35,
             probability_lgb=0.30,
+            delta_chainlink=-0.0002,  # 0.02% < 0.05% threshold
+            delta_tiingo=-0.0003,
         )
         d = evaluate_v9_ensemble(s)
         assert d.action == "SKIP"
@@ -432,6 +440,118 @@ class TestLgbSafetyFloor:
         d = evaluate_v9_ensemble(s)
         assert d.action == "TRADE", d.skip_reason
         assert "up_dist_floor" in d.metadata["vhc_bypasses"]
+
+
+# ── TRANSITION strong-oracle bypass (note #228, 2026-04-24) ────────────────
+class TestTransitionBypass:
+    """Bypass independent from VHC. Either path can unblock TRANSITION gate.
+
+    Strong-oracle bypass: chainlink+tiingo agree direction AND
+    avg(|Δcl|, |Δti|) >= 0.05% AND |pl-0.5| >= 0.20. Binance excluded.
+    """
+
+    def test_down_transition_bypass_with_strong_oracles_non_vhc(self):
+        # DOWN in TRANSITION. pc=0.35 (not VHC; pc_dist=0.15 < 0.25).
+        # Strong oracles + LGB dist 0.20 → strong-oracle bypass fires.
+        # Disagreement |0.35-0.30|=0.05 passes veto.
+        s = _make_surface(
+            regime="TRANSITION",
+            probability_classifier=0.35,
+            probability_lgb=0.30,             # dist 0.20 meets bypass floor
+            delta_chainlink=-0.0007,
+            delta_tiingo=-0.0008,
+            clob_down_ask=0.65,
+            poly_max_entry_price=0.65,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "TRADE", d.skip_reason
+        assert d.direction == "DOWN"
+        regime_gates = [
+            g for g in d.metadata["gate_results"]
+            if g["gate"] == "vpin_regime_direction"
+        ]
+        assert regime_gates
+        assert regime_gates[-1]["passed"] is True
+        # Must be the strong-oracle path, not VHC
+        assert "transition_strong_bypass" in regime_gates[-1]["reason"]
+        assert d.metadata.get("is_vhc") is False
+
+    def test_down_transition_NO_bypass_weak_oracles(self):
+        # TRANSITION + DOWN + strong LGB but weak oracles → no bypass.
+        s = _make_surface(
+            regime="TRANSITION",
+            probability_classifier=0.35,
+            probability_lgb=0.30,
+            delta_chainlink=-0.0002,
+            delta_tiingo=-0.0003,
+            clob_down_ask=0.65,
+            poly_max_entry_price=0.65,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "SKIP"
+        assert "vpin_regime_direction" in d.skip_reason
+
+    def test_up_transition_bypass_with_strong_oracles_non_vhc(self):
+        # Symmetric UP case. block_up_vpin_regimes=[TRANSITION] is the v9 default.
+        # NB: pl=0.71 (dist=0.21) because pl=0.70 hits FP 0.19999 edge.
+        s = _up_surface(
+            regime="TRANSITION",
+            probability_classifier=0.65,       # pc_dist=0.15 not VHC
+            probability_lgb=0.71,              # dist 0.21 strong
+            delta_chainlink=0.0007,
+            delta_tiingo=0.0008,
+            clob_up_ask=0.65,
+            poly_max_entry_price=0.65,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "TRADE", d.skip_reason
+        assert d.direction == "UP"
+        assert d.metadata.get("is_vhc") is False
+
+    def test_bypass_blocked_when_lgb_weak(self):
+        # Oracles strong but LGB dist 0.12 < 0.20 → no strong-oracle bypass.
+        # Also not VHC. DOWN dist_min=0.10 keeps the lgb_safety_floor passing.
+        s = _make_surface(
+            regime="TRANSITION",
+            probability_classifier=0.40,      # pc_dist=0.10 not VHC
+            probability_lgb=0.38,             # dist 0.12 passes safety floor
+            delta_chainlink=-0.0007,
+            delta_tiingo=-0.0008,
+            clob_down_ask=0.65,
+            poly_max_entry_price=0.65,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "SKIP"
+        assert "vpin_regime_direction" in d.skip_reason
+
+    def test_bypass_blocked_when_oracles_disagree(self):
+        # chainlink DOWN, tiingo UP — oracle_direction fires first anyway.
+        s = _make_surface(
+            regime="TRANSITION",
+            probability_classifier=0.35,
+            probability_lgb=0.30,
+            delta_chainlink=-0.0007,
+            delta_tiingo=+0.0008,
+            clob_down_ask=0.65,
+            poly_max_entry_price=0.65,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "SKIP"
+
+    def test_vhc_bypass_still_works_alongside_strong_bypass(self):
+        # Both bypass conditions met. VHC path takes priority in gate reason.
+        s = _make_surface(
+            regime="TRANSITION",
+            probability_classifier=0.20,      # VHC
+            probability_lgb=0.25,             # dist 0.25 strong
+            delta_chainlink=-0.0007,
+            delta_tiingo=-0.0008,
+            clob_down_ask=0.65,
+            poly_max_entry_price=0.65,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "TRADE", d.skip_reason
+        assert "transition_regime" in d.metadata["vhc_bypasses"]
 
 
 # ── Timing / hour block sanity ─────────────────────────────────────────────
