@@ -72,7 +72,7 @@ from strategies.configs.v8_champion_lgb_only import (
 )
 
 _STRATEGY_ID = "v9_ensemble"
-_VERSION = "9.0.0"
+_VERSION = "9.0.1"
 _ENTRY_CAP = 0.80
 
 

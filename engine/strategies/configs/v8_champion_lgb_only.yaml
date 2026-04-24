@@ -1,5 +1,5 @@
 name: v8_champion_lgb_only
-version: "8.0.0-lgb-0.1"
+version: "8.0.0-lgb-0.2"
 # v8_champion_lgb_only — 2026-04-24 — LGB-only fine-tune variant.
 #
 # Purpose: iterate on LGB-only path without destabilising v8_champion LIVE.

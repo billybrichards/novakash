@@ -185,7 +185,7 @@ def test_registered_as_ghost(registry):
     assert "v9_ensemble" in registry.strategy_names
     cfg = registry.configs["v9_ensemble"]
     assert cfg.mode == "GHOST"
-    assert cfg.version == "9.0.0"
+    assert cfg.version == "9.0.1"
     assert cfg.timescale == "5m"
     assert cfg.asset == "BTC"
     gp = cfg.gate_params
@@ -628,7 +628,7 @@ def test_full_stack_trade_up_with_metadata():
     assert d.action == "TRADE", d.skip_reason
     assert d.direction == "UP"
     assert d.strategy_id == "v9_ensemble"
-    assert d.strategy_version == "9.0.0"
+    assert d.strategy_version == "9.0.1"
     md = d.metadata
     assert md["probability_classifier"] == 0.75
     assert md["probability_lgb"] == 0.72

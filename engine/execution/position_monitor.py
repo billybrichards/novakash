@@ -182,12 +182,14 @@ class PositionMonitor:
                     signal_flipped = True
 
         if exit_oracle_flip_enabled and not signal_flipped:
-            cl_delta = getattr(surface, "delta_chainlink", None) or 0
-            ti_delta = getattr(surface, "delta_tiingo", None) or 0
-            cl_dir = "UP" if cl_delta > 0 else "DOWN"
-            ti_dir = "UP" if ti_delta > 0 else "DOWN"
-            if cl_dir != pos.direction and ti_dir != pos.direction:
-                signal_flipped = True
+            cl_delta = getattr(surface, "delta_chainlink", None)
+            ti_delta = getattr(surface, "delta_tiingo", None)
+            if cl_delta is not None and ti_delta is not None:
+                cl_dir = "UP" if cl_delta > 0 else ("DOWN" if cl_delta < 0 else None)
+                ti_dir = "UP" if ti_delta > 0 else ("DOWN" if ti_delta < 0 else None)
+                if (cl_dir is not None and ti_dir is not None
+                        and cl_dir != pos.direction and ti_dir != pos.direction):
+                    signal_flipped = True
 
         if signal_flipped:
             pos.consecutive_flip_count += 1
@@ -234,7 +236,7 @@ class PositionMonitor:
             True if exit was executed (or shadow-logged), False if no position found.
         """
         key = f"{strategy_id}:{window_ts}"
-        pos = self._positions.get(key)
+        pos = self._positions.pop(key, None)  # pop IMMEDIATELY — prevents double-entry
         if pos is None:
             return False
 
@@ -259,8 +261,6 @@ class PositionMonitor:
             await self._send_exit_alert(
                 pos, reason, executed=False, shadow=True
             )
-            # Remove from tracking
-            self._positions.pop(key, None)
             return True
 
         # Real exit: place SELL FAK order
@@ -287,9 +287,6 @@ class PositionMonitor:
         await self._send_exit_alert(
             pos, reason, executed=sell_success, shadow=False
         )
-
-        # Remove from tracking regardless of sell success
-        self._positions.pop(key, None)
 
         return sell_success
 

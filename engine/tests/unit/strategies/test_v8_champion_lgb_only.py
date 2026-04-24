@@ -170,7 +170,7 @@ def test_registered_as_live(registry):
     assert "v8_champion_lgb_only" in registry.strategy_names
     cfg = registry.configs["v8_champion_lgb_only"]
     assert cfg.mode == "LIVE"
-    assert cfg.version == "8.0.0-lgb-0.1"
+    assert cfg.version == "8.0.0-lgb-0.2"
     assert cfg.timescale == "5m"
     assert cfg.asset == "BTC"
     gp = cfg.gate_params

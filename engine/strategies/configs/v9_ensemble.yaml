@@ -1,5 +1,5 @@
 name: v9_ensemble
-version: "9.0.0"
+version: "9.0.1"
 # v9_ensemble — 2026-04-24 — Reinforced-Agreement LGB + v2-classifier ensemble.
 #
 # Purpose: layer the v2 classifier head (`probability_classifier`, "pc") on top

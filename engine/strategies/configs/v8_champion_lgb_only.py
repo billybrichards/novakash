@@ -47,7 +47,7 @@ from strategies.configs.v8_champion import (
 )
 
 _STRATEGY_ID = "v8_champion_lgb_only"
-_VERSION = "8.0.0-lgb-0.1"
+_VERSION = "8.0.0-lgb-0.2"
 _ENTRY_CAP = 0.80
 
 
