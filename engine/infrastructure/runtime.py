@@ -253,6 +253,19 @@ class EngineRuntime:
                 "orchestrator.seed_strategy_configs_failed", error=str(exc)[:200]
             )
 
+        # Audit #291: start the runtime-override manager so GHOST↔LIVE flips
+        # and gate_param tweaks land without an engine restart. Populates the
+        # cache synchronously on first call then refreshes every 30s.
+        try:
+            from strategies.runtime_override import get_runtime_override_manager
+
+            mgr = get_runtime_override_manager(db_pool=self._db._pool)
+            await mgr.start()
+        except Exception as exc:
+            log.warning(
+                "orchestrator.runtime_override_start_failed", error=str(exc)[:200]
+            )
+
         # ── Inject pool into heartbeat repo (pool available after connect()) ─────
         self._root._pg_system_repo._pool = self._db._pool
 

@@ -47,6 +47,7 @@ from api.config_v2 import router as config_v2_router
 from api.agent_ops import router as agent_ops_router
 from api.strategy_decisions import router as strategy_decisions_router
 from api.strategies import router as strategies_router
+from api.strategies_override import router as strategies_override_router
 from api.window_traces import router as window_traces_router
 from api.gate_traces import router as gate_traces_router
 
@@ -828,6 +829,11 @@ app.include_router(
 )
 # STRATEGIES: registry listing for FE Strategies page (audit #216)
 app.include_router(strategies_router, prefix="/api", tags=["strategies"])
+# Audit #291: runtime override CRUD (GHOST↔LIVE + gate_param hot-flip).
+# Mounted under /api with strategies tag; auth-gated identically to /api/system/*.
+app.include_router(
+    strategies_override_router, prefix="/api", tags=["strategies-override"]
+)
 app.include_router(window_traces_router, prefix="/api", tags=["window-traces"])
 # GATE-TRACES: per-gate pass/fail heatmap from gate_check_traces (audit #188)
 app.include_router(gate_traces_router, prefix="/api", tags=["gate-traces"])

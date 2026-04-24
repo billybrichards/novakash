@@ -11,7 +11,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace as _dc_replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -24,6 +24,7 @@ from domain.value_objects import GateCheckTrace, StrategyDecision, WindowEvaluat
 from strategies import gate_params as _gate_params
 from strategies.data_surface import DataSurfaceManager, FullDataSurface
 from strategies.gates.base import Gate, GateResult
+from strategies.runtime_override import apply_runtime_overrides
 
 log = structlog.get_logger(__name__)
 
@@ -429,6 +430,14 @@ class StrategyRegistry:
 
         decisions = []
         for name, config in self._configs.items():
+            # Apply DB runtime override (audit #291): flips mode/gate_params
+            # without engine restart. No-op when cache is empty or no override
+            # is set for this strategy. Full logic in strategies.runtime_override.
+            _eff_mode, _eff_params = apply_runtime_overrides(
+                name, config.mode, config.gate_params
+            )
+            if _eff_mode != config.mode or _eff_params != config.gate_params:
+                config = _dc_replace(config, mode=_eff_mode, gate_params=_eff_params)
             if config.mode == "DISABLED":
                 continue
             if config.timescale != window_tf:
