@@ -486,6 +486,43 @@ class StrategyRegistry:
                                 surface, "v4_regime", None
                             )
 
+                        # Classifier shadow logging (note #226, phase 1a).
+                        # Stamp pc / pl on EVERY strategy_decisions row,
+                        # even for strategies that don't consume pc today
+                        # (v8_champion_lgb_only is LIVE and ignores it).
+                        # This is the audit trail for the 48h burn-in —
+                        # no other place in the pipeline records pc on a
+                        # per-evaluation, per-strategy basis keyed by
+                        # asset + window_ts + eval_offset.
+                        # Only fill when absent so strategies that already
+                        # surfaced richer values (e.g. v9_ensemble's own
+                        # pc/pl snapshot + disagreement) keep their version.
+                        p_classifier = getattr(surface, "probability_classifier", None)
+                        p_lgb = getattr(surface, "probability_lgb", None)
+                        if (
+                            "probability_classifier" not in meta_to_write
+                            and p_classifier is not None
+                        ):
+                            meta_to_write["probability_classifier"] = p_classifier
+                        if (
+                            "probability_lgb" not in meta_to_write
+                            and p_lgb is not None
+                        ):
+                            meta_to_write["probability_lgb"] = p_lgb
+                        # Fetch telemetry for burn-in p95 latency checks.
+                        # Stamped only when absent — strategy hooks don't
+                        # know this field; it's owned by the data_surface
+                        # layer which did the HTTP call.
+                        try:
+                            telemetry = self._data_surface.get_fetch_telemetry(
+                                getattr(window, "asset", "BTC")
+                            )
+                        except Exception:
+                            telemetry = {}
+                        for tk, tv in telemetry.items():
+                            if tk not in meta_to_write:
+                                meta_to_write[tk] = tv
+
                         record = StrategyDecisionRecord(
                             strategy_id=name,
                             strategy_version=config.version,
