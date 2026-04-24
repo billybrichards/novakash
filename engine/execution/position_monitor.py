@@ -321,8 +321,8 @@ class PositionMonitor:
             sell_price = max(0.01, pos.fill_price - 0.10)
             sell_size = pos.fill_size
 
-            # Floor size to 2 decimals (CLOB requirement)
-            sell_size = math.floor(sell_size * 100) / 100
+            # Round size to 3dp to match CLOB precision
+            sell_size = round(sell_size, 3)
             if sell_size <= 0:
                 return False
 

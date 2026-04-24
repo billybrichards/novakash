@@ -689,7 +689,27 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
 
     # ── 10. Hard LGB safety floor (R6) ────────────────────────────────────
     pl_dist = abs(pl - 0.5)
-    min_dist_pl = _lgb_dist_min_up() if direction == "UP" else _lgb_dist_min_down()
+
+    # Check if classifier HC agrees — allows relaxed LGB floor
+    pc_hc_agrees = False
+    if pc is not None:
+        _pc_dir_for_hc = "UP" if pc > 0.5 else "DOWN"
+        _pc_hc = abs(pc - 0.5) >= 0.15
+        pc_hc_agrees = _pc_hc and _pc_dir_for_hc == direction
+
+    if direction == "UP":
+        min_dist_pl = (
+            _gp.get_float("lgb_dist_min_up_with_hc_agree", "V9_LGB_DIST_MIN_UP_HC", 0.05)
+            if pc_hc_agrees
+            else _lgb_dist_min_up()
+        )
+    else:
+        min_dist_pl = (
+            _gp.get_float("lgb_dist_min_down_with_hc_agree", "V9_LGB_DIST_MIN_DOWN_HC", 0.05)
+            if pc_hc_agrees
+            else _lgb_dist_min_down()
+        )
+
     allow_lgb_bypass = (
         is_vhc and direction == "UP" and _vhc_bypass_up_dist()
     )
@@ -711,7 +731,8 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                     "lgb_safety_floor",
                     False,
                     f"{direction} pl_dist={pl_dist:.3f} < "
-                    f"min {min_dist_pl:.3f}",
+                    f"min {min_dist_pl:.3f}"
+                    f"{' (hc_agree relaxed)' if pc_hc_agrees else ''}",
                 )
             )
             reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
@@ -726,7 +747,8 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             _gate(
                 "lgb_safety_floor",
                 True,
-                f"{direction} pl_dist={pl_dist:.3f} >= {min_dist_pl:.3f}",
+                f"{direction} pl_dist={pl_dist:.3f} >= {min_dist_pl:.3f}"
+                f"{' (hc_agree relaxed)' if pc_hc_agrees else ''}",
             )
         )
 

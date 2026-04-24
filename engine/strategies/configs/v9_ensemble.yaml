@@ -132,10 +132,12 @@ gate_params:
   # ── R6 hard LGB safety floor (inherited keys from v8_lgb_only) ───────
   lgb_dist_min_up: 0.15
   lgb_dist_min_down: 0.10
+  lgb_dist_min_up_with_hc_agree: 0.05    # relaxed UP floor when classifier HC + agrees direction
+  lgb_dist_min_down_with_hc_agree: 0.05  # relaxed DOWN floor when classifier HC + agrees direction
 
   # ── v9 ensemble-specific params ──────────────────────────────────────
   # R2 disagreement veto
-  ensemble_disagreement_threshold: 0.30   # |pc - pl| > X => SKIP (was 0.25; loosen for first burn-in)
+  ensemble_disagreement_threshold: 0.35   # |pc - pl| > X => SKIP (was 0.30; loosen further — 0.30 caused borderline rounding kills)
 
   # R3 direction agreement
   require_direction_agreement: true

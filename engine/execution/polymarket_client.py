@@ -475,7 +475,7 @@ class PolymarketClient:
             )
             raise ValueError(f"Token price {price} below 30¢ floor — skipping")
 
-        size = round(stake_usd / float(price), 2)
+        size = round(stake_usd / float(price), 3)  # 3dp to match CLOB precision
 
         # ── GTD expiry: auto-expire when the 5m/15m window closes ──────
         # Extract window_ts from market_slug: "btc-updown-5m-1775256000"
@@ -518,13 +518,13 @@ class PolymarketClient:
         limit_price = round(float(price), 4)
         limit_price = max(limit_price, PRICE_FLOOR)
 
-        order_size = round(stake_usd / limit_price, 2)
+        order_size = round(stake_usd / limit_price, 3)  # 3dp to match CLOB precision
         # Fix maker_amount precision: price * size must have ≤ 2 decimal places
-        for _adj in range(100):
+        for _adj in range(1000):
             _maker = round(limit_price * order_size, 6)
             if abs(_maker - round(_maker, 2)) < 1e-9:
                 break
-            order_size -= 0.01
+            order_size = round(order_size - 0.001, 3)
         # Enforce Polymarket minimum order size (5 shares)
         order_size = max(order_size, 5.0)
 
@@ -739,22 +739,21 @@ class PolymarketClient:
 
         client = self._clob_client
 
-        # CLOB requires: price max 4 decimals, size (maker) max 2 decimals
-        # Floor size to avoid taker amount exceeding 4 decimal precision
+        # CLOB requires: price max 4 decimals, size 3dp to match CLOB precision
         import math
 
         _price = round(price, 4)
-        _size = math.floor(size * 100) / 100  # Floor to 2 decimals
+        _size = round(size, 3)  # 3dp to match CLOB precision
         # CLOB requires maker_amount (price*size) to have ≤ 2 decimal places
-        for _adj in range(100):
+        for _adj in range(1000):
             _maker = round(_price * _size, 6)
             if abs(_maker - round(_maker, 2)) < 1e-9:
                 break
-            _size -= 0.01
+            _size = round(_size - 0.001, 3)
         _size = max(_size, 0.01)
         if _size <= 0:
             return {"filled": False, "size_matched": 0, "order_id": None}
-        _size_str = f"{_size:.2f}"
+        _size_str = f"{_size:.3f}"
         _price_str = f"{_price:.4f}"
 
         order_args = OrderArgs(
@@ -868,9 +867,7 @@ class PolymarketClient:
         # The py-clob-client SDK supports both via OrderType enum.
         if self.paper_mode:
             # Paper mode: simulate fill at requested price
-            import math
-
-            _sim_size = math.floor(size * 100) / 100
+            _sim_size = round(size, 3)  # 3dp to match CLOB precision
             return {
                 "filled": True,
                 "size_matched": _sim_size,
@@ -908,12 +905,12 @@ class PolymarketClient:
         import math
 
         _price = round(price, 4)
-        _size = math.floor(size * 100) / 100
-        for _adj in range(100):
+        _size = round(size, 3)  # 3dp to match CLOB precision
+        for _adj in range(1000):
             _maker = round(_price * _size, 6)
             if abs(_maker - round(_maker, 2)) < 1e-9:
                 break
-            _size -= 0.01
+            _size = round(_size - 0.001, 3)
         _size = max(_size, 0.01)
         if _size <= 0:
             return {"filled": False, "size_matched": 0, "order_id": None}
@@ -921,7 +918,7 @@ class PolymarketClient:
         order_args = OrderArgs(
             token_id=token_id,
             price=float(f"{_price:.4f}"),
-            size=float(f"{_size:.2f}"),
+            size=float(f"{_size:.3f}"),
             side=BUY,
         )
 
@@ -1248,9 +1245,7 @@ class PolymarketClient:
             dict with keys: filled (bool), size_matched (float), order_id (str).
         """
         if self.paper_mode:
-            import math
-
-            _sim_size = math.floor(size * 100) / 100
+            _sim_size = round(size, 3)  # 3dp to match CLOB precision
             return {
                 "filled": True,
                 "size_matched": _sim_size,
@@ -1275,13 +1270,13 @@ class PolymarketClient:
         import math
 
         _price = round(price, 4)
-        _size = math.floor(size * 100) / 100
+        _size = round(size, 3)  # 3dp to match CLOB precision
         # CLOB requires maker_amount (price*size) to have <= 2 decimal places
-        for _adj in range(100):
+        for _adj in range(1000):
             _maker = round(_price * _size, 6)
             if abs(_maker - round(_maker, 2)) < 1e-9:
                 break
-            _size -= 0.01
+            _size = round(_size - 0.001, 3)
         _size = max(_size, 0.01)
         if _size <= 0:
             return {"filled": False, "size_matched": 0, "order_id": None}
@@ -1289,7 +1284,7 @@ class PolymarketClient:
         order_args = OrderArgs(
             token_id=token_id,
             price=float(f"{_price:.4f}"),
-            size=float(f"{_size:.2f}"),
+            size=float(f"{_size:.3f}"),
             side=SELL,
         )
 
