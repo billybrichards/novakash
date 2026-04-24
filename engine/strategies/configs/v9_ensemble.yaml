@@ -110,8 +110,8 @@ gate_params:
   tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
 
   # R5 symmetric TRANSITION block (both directions, VHC can bypass)
-  block_down_vpin_regimes: [TRANSITION]
-  block_up_vpin_regimes: [TRANSITION]
+  block_down_vpin_regimes: []  # removed — v9 gate stack sufficient
+  block_up_vpin_regimes: []  # removed — v9 gate stack sufficient
 
   source_agreement_require_chainlink: true
   source_agreement_require_tiingo: true
@@ -126,7 +126,7 @@ gate_params:
   up_min_fill_price: 0.55
   down_min_fill_price: 0.15
 
-  blocked_utc_hours: [0, 1, 2, 3, 4, 5]
+  blocked_utc_hours: []  # 24/7 trading enabled 2026-04-24
   post_loss_cooldown_min: 20
 
   # ── R6 hard LGB safety floor (inherited keys from v8_lgb_only) ───────
