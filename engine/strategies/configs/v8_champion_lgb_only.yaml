@@ -33,7 +33,7 @@ version: "8.0.0-lgb-0.1"
 #        kills more wins than losses on today's data. Rejected.
 #
 # Rollback: `mode: LIVE -> GHOST` in this YAML + restart engine.
-mode: GHOST
+mode: LIVE
 asset: BTC
 timescale: 5m
 

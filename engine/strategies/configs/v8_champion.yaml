@@ -32,7 +32,7 @@ version: "8.0.0"
 #
 # Rollback: edit mode: LIVE → GHOST in this file + restart engine. v6_sniper
 # can be flipped back LIVE at the same time to restore previous lineup.
-mode: LIVE
+mode: GHOST
 asset: BTC
 timescale: 5m
 
