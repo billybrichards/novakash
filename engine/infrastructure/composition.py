@@ -539,6 +539,7 @@ class CompositionRoot:
             try:
                 from strategies.data_surface import DataSurfaceManager
                 from strategies.registry import StrategyRegistry
+                from execution.position_monitor import PositionMonitor
 
                 config_dir = os.path.join(
                     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -610,6 +611,11 @@ class CompositionRoot:
                         error=str(exc)[:200],
                     )
 
+                _position_monitor = PositionMonitor(
+                    alerter=self._alerter,
+                    poly_client=getattr(self, '_poly_client', None),
+                )
+
                 self._strategy_registry = StrategyRegistry(
                     config_dir,
                     self._data_surface_mgr,
@@ -621,6 +627,7 @@ class CompositionRoot:
                     # window_snapshots on every window eval so SQL analysis
                     # works as first-class columns (not JSONB extraction).
                     db=self._db,
+                    position_monitor=_position_monitor,
                 )
                 self._strategy_registry.load_all()
                 log.info(
