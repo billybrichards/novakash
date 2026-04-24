@@ -78,6 +78,17 @@ def _bucket_abs_dist_strong() -> float:
     )
 
 
+def _up_bucket_abs_dist_strong() -> float:
+    """Separate conviction floor for UP direction. Falls back to the
+    shared ``bucket_abs_dist_strong`` when not set, so existing configs
+    behave identically until the operator explicitly sets a higher bar."""
+    return _gp.get_float(
+        "up_bucket_abs_dist_strong",
+        "V8_UP_BUCKET_ABS_DIST_STRONG",
+        _bucket_abs_dist_strong(),
+    )
+
+
 def _bucket_path1_extreme_high() -> float:
     return _gp.get_float(
         "bucket_path1_extreme_high", "V8_BUCKET_PATH1_EXTREME_HIGH", 0.90
@@ -125,6 +136,12 @@ def _require_chainlink() -> bool:
 def _require_tiingo() -> bool:
     return _gp.get_bool(
         "source_agreement_require_tiingo", "V8_REQUIRE_TIINGO", True
+    )
+
+
+def _skip_on_oracle_disagree() -> bool:
+    return _gp.get_bool(
+        "skip_on_oracle_disagree", "V8_SKIP_ON_ORACLE_DISAGREE", True
     )
 
 
@@ -185,7 +202,11 @@ def _classify_bucket(
     if p_path1 is None:
         return "no_eval", False, False
 
-    strong_thr = _bucket_abs_dist_strong()
+    # Use direction-specific conviction threshold for UP
+    if direction and direction.upper() == "UP":
+        strong_thr = _up_bucket_abs_dist_strong()
+    else:
+        strong_thr = _bucket_abs_dist_strong()
     high = _bucket_path1_extreme_high()
     low = _bucket_path1_extreme_low()
 
@@ -360,11 +381,21 @@ def evaluate_v8_champion(
             )
         )
     else:
-        probability_up = surface.poly_confidence
         p_lgb = getattr(surface, "probability_lgb", None)
         p_path1 = getattr(surface, "probability_classifier", None)
+        # v8 primary signal source: "lgb" uses LGB alone (69.3% WR on 215
+        # windows), "ensemble" uses the 50/50 LGB+classifier blend (63.3%).
+        # Classifier has degenerate UP bias (97% UP predictions) — dragging
+        # ensemble down. Default to LGB until classifier is retrained.
+        _signal_source = _gp.get_str(
+            "primary_signal_source", "V8_PRIMARY_SIGNAL_SOURCE", "lgb"
+        )
+        if _signal_source == "lgb" and p_lgb is not None:
+            probability_up = p_lgb
+        else:
+            probability_up = surface.poly_confidence
         if probability_up is None:
-            gates.append(_gate("ensemble_bucket", False, "poly_confidence=None"))
+            gates.append(_gate("ensemble_bucket", False, "probability_up=None"))
             return _skip("ensemble_bucket: no probability_up", gates)
 
     direction = surface.poly_direction
@@ -392,6 +423,43 @@ def evaluate_v8_champion(
     gates.append(
         _gate("ensemble_bucket", True, f"bucket={bucket} HIGH conviction")
     )
+
+    # ── 6b. Oracle direction agreement ────────────────────────────────────
+    # Skip when chainlink or tiingo delta points opposite to trade direction.
+    # Re-enabled 2026-04-23: two DOWN losses had oracles pointing UP.
+    if _skip_on_oracle_disagree() and direction is not None:
+        cl_delta = surface.delta_chainlink
+        ti_delta = surface.delta_tiingo
+        cl_dir = "UP" if (cl_delta and cl_delta > 0) else ("DOWN" if (cl_delta and cl_delta < 0) else None)
+        ti_dir = "UP" if (ti_delta and ti_delta > 0) else ("DOWN" if (ti_delta and ti_delta < 0) else None)
+
+        disagree_sources: list[str] = []
+        if cl_dir and cl_dir != direction:
+            disagree_sources.append(f"chainlink={cl_dir}")
+        if ti_dir and ti_dir != direction:
+            disagree_sources.append(f"tiingo={ti_dir}")
+
+        if disagree_sources:
+            reason = f"oracle_disagree: trade={direction} but {', '.join(disagree_sources)}"
+            gates.append(_gate("oracle_direction", False, reason))
+            return _skip(
+                reason,
+                gates,
+                direction=direction,
+                bucket=bucket,
+            )
+        gates.append(
+            _gate(
+                "oracle_direction",
+                True,
+                f"oracles agree with {direction} (cl={cl_dir} ti={ti_dir})",
+            )
+        )
+
+    # ── 6c. Classifier direction agreement — DISABLED ──────────────────
+    # Removed 2026-04-23: classifier has degenerate UP bias (97% UP
+    # predictions). Gate was blocking good DOWN trades. See Hub note #215.
+    # Will re-enable when classifier is retrained with balanced outputs.
 
     # ── 7. Fill-band ───────────────────────────────────────────────────────
     # Use CLOB ask on the side we are buying (UP → clob_up_ask, DOWN →

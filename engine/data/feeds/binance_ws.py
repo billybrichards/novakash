@@ -14,9 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import time
 from datetime import datetime
 from decimal import Decimal
 from typing import Callable, Awaitable, Optional
+import aiohttp
 import websockets
 import structlog
 
@@ -27,6 +30,13 @@ log = structlog.get_logger(__name__)
 BINANCE_SPOT_WSS = "wss://stream.binance.com:9443/stream"
 BINANCE_FUTURES_WSS = "wss://fstream.binance.com/stream"
 RECONNECT_DELAY_MAX = 60  # seconds
+
+# REST fallback: poll aggTrades when WS is dead. Kicks in after
+# REST_FALLBACK_AFTER_S seconds without WS data.
+BINANCE_SPOT_REST = "https://api.binance.com/api/v3/aggTrades"
+BINANCE_FUTURES_REST = "https://fapi.binance.com/fapi/v1/aggTrades"
+REST_FALLBACK_AFTER_S = float(os.environ.get("BINANCE_REST_FALLBACK_AFTER", "10"))
+REST_POLL_INTERVAL_S = float(os.environ.get("BINANCE_REST_POLL_INTERVAL", "2"))
 
 
 class BinanceWebSocketFeed:
@@ -78,25 +88,27 @@ class BinanceWebSocketFeed:
 
     @property
     def _stream_url(self) -> str:
+        # 2026-04-23: The combined /stream?streams= endpoint silently
+        # drops data with websockets 15.x (compression negotiation bug).
+        # Single /ws/<stream> path works reliably with compression=None.
+        stream_name = f"{self.symbol}@aggTrade"
         if self.venue == "spot":
-            # Spot: aggTrade only (for BTC spot price)
-            streams = [f"{self.symbol}@aggTrade"]
-            base = BINANCE_SPOT_WSS
+            return f"wss://stream.binance.com:9443/ws/{stream_name}"
         else:
-            # Futures: aggTrade + depth + forceOrder (for VPIN + cascades)
-            streams = [
-                f"{self.symbol}@aggTrade",
-                f"{self.symbol}@depth20@100ms",
-                f"{self.symbol}@forceOrder",
-            ]
-            base = BINANCE_FUTURES_WSS
-        return f"{base}?streams={'/'.join(streams)}"
+            return f"wss://fstream.binance.com/ws/{stream_name}"
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        """Start the WebSocket feed with automatic reconnection."""
+        """Start the WebSocket feed with automatic reconnection.
+
+        Also starts a REST polling fallback that kicks in when WS is
+        stale for >10 seconds. REST polls aggTrades every 2s — enough
+        for VPIN bucket accumulation.
+        """
         self._running = True
+        # Start REST fallback alongside WS
+        asyncio.create_task(self._rest_poll_loop(), name=f"binance_rest_{self.venue}")
         while self._running:
             try:
                 await self._connect()
@@ -118,12 +130,68 @@ class BinanceWebSocketFeed:
         self._connected = False
         log.info("binance_ws.stopped", venue=self.venue)
 
+    # ─── REST fallback ────────────────────────────────────────────────────────
+
+    async def _rest_poll_loop(self) -> None:
+        """Poll aggTrades via REST when WS is stale. Runs alongside WS loop."""
+        rest_url = BINANCE_SPOT_REST if self.venue == "spot" else BINANCE_FUTURES_REST
+        last_trade_id: int = 0
+        _logged_fallback = False
+
+        while self._running:
+            await asyncio.sleep(REST_POLL_INTERVAL_S)
+            # Only poll when WS hasn't delivered data recently
+            if self._last_message_at is not None:
+                age = (datetime.utcnow() - self._last_message_at).total_seconds()
+                if age < REST_FALLBACK_AFTER_S:
+                    if _logged_fallback:
+                        log.info("binance_rest.ws_recovered", venue=self.venue)
+                        _logged_fallback = False
+                    continue
+
+            if not _logged_fallback:
+                log.warning(
+                    "binance_rest.fallback_active",
+                    venue=self.venue,
+                    ws_age=round((datetime.utcnow() - self._last_message_at).total_seconds(), 1)
+                    if self._last_message_at else "never",
+                )
+                _logged_fallback = True
+
+            try:
+                params = f"?symbol=BTCUSDT&limit=100"
+                if last_trade_id > 0:
+                    params += f"&fromId={last_trade_id + 1}"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(rest_url + params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                        trades = await resp.json()
+                for t in trades:
+                    tid = int(t["a"])
+                    if tid <= last_trade_id:
+                        continue
+                    last_trade_id = tid
+                    data = {
+                        "s": t.get("s", "BTCUSDT"),
+                        "p": t["p"],
+                        "q": t["q"],
+                        "m": t["m"],
+                        "T": t["T"],
+                    }
+                    await self._dispatch(f"{self.symbol}@aggTrade", data)
+                    self._last_message_at = datetime.utcnow()
+            except Exception as exc:
+                log.debug("binance_rest.poll_error", venue=self.venue, error=str(exc)[:100])
+
     # ─── Internal ─────────────────────────────────────────────────────────────
 
     async def _connect(self) -> None:
         """Open WebSocket connection and dispatch messages."""
         log.info("binance_ws.connecting", venue=self.venue, url=self._stream_url)
-        async with websockets.connect(self._stream_url) as ws:
+        # compression=None: websockets 15.x enables permessage-deflate by
+        # default; Binance's server accepts the Upgrade but then silently
+        # stops sending frames, causing an indefinite hang.  Disabling
+        # compression restores data flow (verified 2026-04-23).
+        async with websockets.connect(self._stream_url, compression=None) as ws:
             self._connected = True
             log.info("binance_ws.connected", venue=self.venue, symbol=self.symbol)
             async for raw in ws:
@@ -131,8 +199,16 @@ class BinanceWebSocketFeed:
                     break
                 try:
                     envelope = json.loads(raw)
-                    stream: str = envelope.get("stream", "")
-                    data: dict = envelope.get("data", {})
+                    # Combined stream: {"stream": "...", "data": {...}}
+                    # Single stream:   {"e": "aggTrade", "p": "...", ...}
+                    if "stream" in envelope:
+                        stream = envelope["stream"]
+                        data = envelope.get("data", {})
+                    else:
+                        # Single /ws/ stream — infer stream name from event type
+                        etype = envelope.get("e", "")
+                        stream = f"{self.symbol}@{etype}" if etype else ""
+                        data = envelope
                     await self._dispatch(stream, data)
                     self._last_message_at = datetime.utcnow()
                 except Exception as exc:
