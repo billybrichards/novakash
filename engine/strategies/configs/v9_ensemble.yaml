@@ -135,16 +135,16 @@ gate_params:
 
   # ── v9 ensemble-specific params ──────────────────────────────────────
   # R2 disagreement veto
-  ensemble_disagreement_threshold: 0.25   # |pc - pl| > X => SKIP
+  ensemble_disagreement_threshold: 0.30   # |pc - pl| > X => SKIP (was 0.25; loosen for first burn-in)
 
   # R3 direction agreement
   require_direction_agreement: true
 
   # R4 T-minus-aware blend weights
-  pc_weight_t_60: 0.55      # T-minus 30-60s
-  pc_weight_t_120: 0.50     # 60-120s
-  pc_weight_t_180: 0.45     # 120-180s
-  pc_weight_t_200: 0.35     # 180-200s
+  pc_weight_t_60: 0.70      # T-minus 30-60s  (was 0.55; classifier acc=82.4%, leads)
+  pc_weight_t_120: 0.55     # 60-120s         (was 0.50; acc=75.2%)
+  pc_weight_t_180: 0.40     # 120-180s        (was 0.45; acc=71.1%)
+  pc_weight_t_200: 0.25     # 180-200s        (was 0.35; acc=65.9%, LGB leads)
 
   # R9 VHC reinforcement thresholds + bypass
   vhc_threshold: 0.25          # |pc - 0.5| >= X AND agreement => VERY_HIGH

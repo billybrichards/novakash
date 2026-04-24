@@ -203,7 +203,7 @@ def test_registered_as_ghost(registry):
         "fallback_to_lgb_on_pc_null",
     ):
         assert key in gp, f"missing gate_param: {key}"
-    assert gp["ensemble_disagreement_threshold"] == 0.25
+    assert gp["ensemble_disagreement_threshold"] == 0.30
     assert gp["vhc_threshold"] == 0.25
     assert gp["vhc_kelly_multiplier"] == 2.0
     assert gp["block_up_vpin_regimes"] == ["TRANSITION"]
