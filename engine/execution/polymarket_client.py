@@ -1222,6 +1222,136 @@ class PolymarketClient:
 
     # place_market_order_legacy DELETED in v10 cleanup (was duplicate of place_market_order)
 
+    # ------------------------------------------------------------------
+    # SELL-side FAK — post-fill exit system (2026-04-24)
+    # ------------------------------------------------------------------
+
+    async def place_sell_fak(
+        self,
+        token_id: str,
+        price: float,
+        size: float,
+    ) -> dict:
+        """Place a SELL Fill-And-Kill order to close an open position.
+
+        Mirrors place_market_order() but with side=SELL. Used by the
+        PositionMonitor to exit positions when signals flip.
+
+        Paper mode simulates a fill at the requested price.
+
+        Args:
+            token_id: CLOB outcome token ID to sell.
+            price: Minimum sell price (worst acceptable price).
+            size: Number of shares to sell.
+
+        Returns:
+            dict with keys: filled (bool), size_matched (float), order_id (str).
+        """
+        if self.paper_mode:
+            import math
+
+            _sim_size = math.floor(size * 100) / 100
+            return {
+                "filled": True,
+                "size_matched": _sim_size,
+                "order_id": f"paper-sell-fak-{uuid.uuid4().hex[:8]}",
+            }
+
+        if not self._clob_client:
+            raise RuntimeError("CLOB client not connected — call connect() first")
+
+        # Phantom-trade guard
+        if not getattr(self._clob_client, "creds", None):
+            raise RuntimeError(
+                "CLOB client has no auth creds — refusing to submit a live "
+                "sell order against a read-only (paper-mode) client."
+            )
+
+        from py_clob_client.clob_types import OrderArgs, OrderType
+        from py_clob_client.order_builder.constants import SELL
+
+        client = self._clob_client
+
+        import math
+
+        _price = round(price, 4)
+        _size = math.floor(size * 100) / 100
+        # CLOB requires maker_amount (price*size) to have <= 2 decimal places
+        for _adj in range(100):
+            _maker = round(_price * _size, 6)
+            if abs(_maker - round(_maker, 2)) < 1e-9:
+                break
+            _size -= 0.01
+        _size = max(_size, 0.01)
+        if _size <= 0:
+            return {"filled": False, "size_matched": 0, "order_id": None}
+
+        order_args = OrderArgs(
+            token_id=token_id,
+            price=float(f"{_price:.4f}"),
+            size=float(f"{_size:.2f}"),
+            side=SELL,
+        )
+
+        def _sign_and_submit():
+            signed = client.create_order(order_args)
+            return client.post_order(signed, OrderType.FAK)
+
+        self._log.info(
+            "place_sell_fak.submitting",
+            token_id=token_id[:20] + "...",
+            price=f"${price:.4f}",
+            size=f"{size:.2f}",
+        )
+
+        response = await asyncio.to_thread(_sign_and_submit)
+
+        def _get(obj, key, default=None):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        order_id = (
+            _get(response, "orderID")
+            or _get(response, "id")
+            or f"sell-fak-{uuid.uuid4().hex[:12]}"
+        )
+        status_raw = _get(response, "status", "UNKNOWN") or "UNKNOWN"
+        status = str(status_raw).lower()
+        making_raw = _get(response, "makingAmount", "0")
+        taking_raw = _get(response, "takingAmount", "0")
+
+        try:
+            making_amount = float(making_raw) if making_raw else 0.0
+        except (ValueError, TypeError):
+            making_amount = 0.0
+        try:
+            taking_amount = float(taking_raw) if taking_raw else 0.0
+        except (ValueError, TypeError):
+            taking_amount = 0.0
+
+        # For a SELL: makingAmount = shares sold, takingAmount = USDC received
+        size_matched = making_amount
+        filled = (status == "matched") or (size_matched > 0)
+
+        self._log.info(
+            "place_sell_fak.result",
+            filled=filled,
+            size_matched=size_matched,
+            taking_amount=taking_amount,
+            order_id=str(order_id)[:20],
+            status=status,
+        )
+
+        return {
+            "filled": filled,
+            "size_matched": size_matched,
+            "order_id": str(order_id),
+            "making_amount": making_amount,
+            "taking_amount": taking_amount,
+            "status": status,
+        }
+
     def get_current_market_slug(self) -> str:
         """Return the slug for the current 5-minute BTC up/down window.
 

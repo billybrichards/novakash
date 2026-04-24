@@ -157,6 +157,87 @@ def _fallback_to_lgb_on_pc_null() -> bool:
     )
 
 
+# ── Delta alignment gate (2026-04-24, note #301) ──────────────────────────
+def _delta_gate_enabled() -> bool:
+    return _gp.get_bool(
+        "delta_gate_enabled", "V9_DELTA_GATE_ENABLED", True
+    )
+
+
+def _min_alignment_bps() -> float:
+    return _gp.get_float(
+        "min_alignment_bps", "V9_MIN_ALIGNMENT_BPS", 1.0
+    )
+
+
+# ── 3-tick entry confirmation (2026-04-24, note #298) ─────────────────────
+def _min_consecutive_pass_ticks() -> int:
+    return _gp.get_int(
+        "min_consecutive_pass_ticks",
+        "V9_MIN_CONSECUTIVE_PASS_TICKS",
+        3,
+    )
+
+
+# ── Post-fill exit monitoring params (2026-04-24, note #299) ──────────────
+def _exit_monitor_enabled() -> bool:
+    return _gp.get_bool(
+        "exit_monitor_enabled", "V9_EXIT_MONITOR_ENABLED", True
+    )
+
+
+def _exit_shadow_mode() -> bool:
+    return _gp.get_bool(
+        "exit_shadow_mode", "V9_EXIT_SHADOW_MODE", True
+    )
+
+
+def _exit_min_hold_seconds() -> int:
+    return _gp.get_int(
+        "exit_min_hold_seconds", "V9_EXIT_MIN_HOLD_SECONDS", 10
+    )
+
+
+def _exit_no_exit_last_seconds() -> int:
+    return _gp.get_int(
+        "exit_no_exit_last_seconds", "V9_EXIT_NO_EXIT_LAST_SECONDS", 30
+    )
+
+
+def _exit_consecutive_flip_ticks() -> int:
+    return _gp.get_int(
+        "exit_consecutive_flip_ticks",
+        "V9_EXIT_CONSECUTIVE_FLIP_TICKS",
+        3,
+    )
+
+
+def _exit_lgb_flip_enabled() -> bool:
+    return _gp.get_bool(
+        "exit_lgb_flip_enabled", "V9_EXIT_LGB_FLIP_ENABLED", True
+    )
+
+
+def _exit_oracle_flip_enabled() -> bool:
+    return _gp.get_bool(
+        "exit_oracle_flip_enabled", "V9_EXIT_ORACLE_FLIP_ENABLED", True
+    )
+
+
+def _exit_max_retries() -> int:
+    return _gp.get_int(
+        "exit_max_retries", "V9_EXIT_MAX_RETRIES", 1
+    )
+
+
+def _exit_retry_timeout_seconds() -> int:
+    return _gp.get_int(
+        "exit_retry_timeout_seconds",
+        "V9_EXIT_RETRY_TIMEOUT_SECONDS",
+        5,
+    )
+
+
 # ── TRANSITION strong-oracle bypass (2026-04-24, note #228) ────────────────
 # Independent bypass for the TRANSITION block (R5). Fires when chainlink +
 # tiingo BOTH agree direction AND avg(|Δcl|,|Δti|) >= threshold AND LGB
@@ -221,6 +302,44 @@ def _should_bypass_transition(
         f"avg_mag={avg_mag_frac * 100:.4f}% sign_agree={sign_agree} "
         f"lgb_strong={lgb_strong}",
     )
+
+
+# ── 3-tick entry confirmation state machine (independent from v8) ─────────
+_v9_consecutive_pass: dict[str, tuple[int, str]] = {}
+
+
+def check_confirmation_v9(strategy_id: str, window_ts: int, direction: str) -> bool:
+    """Check if we have enough consecutive passing ticks for v9."""
+    required = _min_consecutive_pass_ticks()
+    if required <= 0:
+        return True
+
+    key = f"{strategy_id}:{window_ts}"
+    prev = _v9_consecutive_pass.get(key)
+    if prev and prev[1] == direction:
+        count = prev[0] + 1
+    else:
+        count = 1
+    _v9_consecutive_pass[key] = (count, direction)
+    return count >= required
+
+
+def get_confirmation_count_v9(strategy_id: str, window_ts: int) -> int:
+    """Return the current consecutive pass count for v9. Used by tests."""
+    key = f"{strategy_id}:{window_ts}"
+    prev = _v9_consecutive_pass.get(key)
+    return prev[0] if prev else 0
+
+
+def reset_confirmation_v9(strategy_id: str, window_ts: int) -> None:
+    """Reset v9 confirmation counter on SKIP."""
+    key = f"{strategy_id}:{window_ts}"
+    _v9_consecutive_pass.pop(key, None)
+
+
+def reset_all_confirmations_v9() -> None:
+    """Clear all v9 confirmation state. Used by tests."""
+    _v9_consecutive_pass.clear()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -515,6 +634,54 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         )
     )
 
+    # ── 9b. Delta alignment gate (AFTER direction known, BEFORE safety floor)
+    # Skip if chainlink delta is moving AGAINST bet direction by more than
+    # min_alignment_bps. See Hub note #301 / audit task #301.
+    if _delta_gate_enabled() and surface.delta_chainlink is not None:
+        alignment_bps = surface.delta_chainlink * 10000  # fraction to bps
+        min_bps = _min_alignment_bps()
+        if direction == "UP" and alignment_bps < -min_bps:
+            gates.append(
+                _gate(
+                    "delta_gate",
+                    False,
+                    f"chainlink {alignment_bps:.1f}bp against UP "
+                    f"(threshold: -{min_bps:.1f}bp)",
+                )
+            )
+            reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
+            return _skip_v9(
+                f"delta_gate: chainlink {alignment_bps:.1f}bp against UP",
+                gates,
+                direction=direction,
+            )
+        if direction == "DOWN" and alignment_bps > min_bps:
+            gates.append(
+                _gate(
+                    "delta_gate",
+                    False,
+                    f"chainlink +{alignment_bps:.1f}bp against DOWN "
+                    f"(threshold: +{min_bps:.1f}bp)",
+                )
+            )
+            reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
+            return _skip_v9(
+                f"delta_gate: chainlink +{alignment_bps:.1f}bp against DOWN",
+                gates,
+                direction=direction,
+            )
+        gates.append(
+            _gate(
+                "delta_gate",
+                True,
+                f"chainlink {alignment_bps:.1f}bp aligned with {direction}",
+            )
+        )
+    elif _delta_gate_enabled():
+        gates.append(
+            _gate("delta_gate", True, "chainlink delta unavailable, skip gate")
+        )
+
     # ── Determine VHC reinforcement early — gates below use it for bypass ─
     pc_dist = abs(pc - 0.5)
     is_vhc = pc_dist >= _vhc_threshold() and pc_dir == pl_dir
@@ -547,6 +714,7 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                     f"min {min_dist_pl:.3f}",
                 )
             )
+            reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
             return _skip_v9(
                 f"lgb_safety_floor: {direction} pl_dist={pl_dist:.3f} "
                 f"< {min_dist_pl:.3f}",
@@ -610,6 +778,7 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                     f"(no bypass: {strong_diag})",
                 )
             )
+            reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
             return _skip_v9(
                 f"vpin_regime_direction: {direction} blocked in {vpin_regime}",
                 gates,
@@ -638,6 +807,7 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                     f"cl={cl_dir} ti={ti_dir} vs {direction}",
                 )
             )
+            reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
             return _skip_v9(
                 f"oracle_direction: disagree cl={cl_dir} ti={ti_dir} "
                 f"vs {direction}",
@@ -657,6 +827,7 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         fill_price = getattr(surface, "poly_max_entry_price", None)
     if fill_price is None:
         gates.append(_gate("fill_band", False, "no CLOB ask / poly_max_entry"))
+        reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
         return _skip_v9(
             "fill_band: no fill price available",
             gates,
@@ -673,6 +844,7 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                 f"fill={fill_price:.3f} outside [{fmin:.2f},{fmax:.2f}]",
             )
         )
+        reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
         return _skip_v9(
             f"fill_band: price={fill_price:.3f} outside "
             f"[{fmin:.2f},{fmax:.2f}]",
@@ -698,6 +870,7 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                     f"UP fill={fill_price:.3f} < {floor:.2f}",
                 )
             )
+            reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
             return _skip_v9(
                 f"up_fill_floor: fill={fill_price:.3f} < {floor:.2f}",
                 gates,
@@ -722,6 +895,7 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                     f"DOWN fill={fill_price:.3f} < {floor:.2f}",
                 )
             )
+            reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
             return _skip_v9(
                 f"down_fill_floor: fill={fill_price:.3f} < {floor:.2f}",
                 gates,
@@ -745,6 +919,7 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                 f"{remaining}s remaining",
             )
         )
+        reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
         return _skip_v9(
             f"post_loss_cooldown: {remaining // 60}m {remaining % 60}s "
             f"remaining",
@@ -754,6 +929,33 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
     gates.append(
         _gate("post_loss_cooldown", True, "no active cooldown")
     )
+
+    # ── 16. 3-tick entry confirmation (2026-04-24, note #298) ────────────
+    _wts = getattr(surface, "window_ts", 0) or 0
+    required = _min_consecutive_pass_ticks()
+    if required > 0:
+        confirmed = check_confirmation_v9(_STRATEGY_ID, _wts, direction)
+        count = get_confirmation_count_v9(_STRATEGY_ID, _wts)
+        if not confirmed:
+            gates.append(
+                _gate(
+                    "entry_confirmation",
+                    False,
+                    f"{count}/{required} consecutive pass ticks",
+                )
+            )
+            return _skip_v9(
+                f"entry_confirmation: {count}/{required} ticks",
+                gates,
+                direction=direction,
+            )
+        gates.append(
+            _gate(
+                "entry_confirmation",
+                True,
+                f"{count}/{required} consecutive pass ticks — confirmed",
+            )
+        )
 
     # ── TRADE ──────────────────────────────────────────────────────────────
     label, score, is_vhc_final = _classify_conviction(pu, pc, pc_dir, pl_dir)
@@ -801,6 +1003,17 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             "chainlink_delta": surface.delta_chainlink,
             "tiingo_delta": surface.delta_tiingo,
             "primary_signal_source": "ensemble",
+            "exit_monitor_enabled": _exit_monitor_enabled(),
+            "exit_params": {
+                "exit_shadow_mode": _exit_shadow_mode(),
+                "exit_min_hold_seconds": _exit_min_hold_seconds(),
+                "exit_no_exit_last_seconds": _exit_no_exit_last_seconds(),
+                "exit_consecutive_flip_ticks": _exit_consecutive_flip_ticks(),
+                "exit_lgb_flip_enabled": _exit_lgb_flip_enabled(),
+                "exit_oracle_flip_enabled": _exit_oracle_flip_enabled(),
+                "exit_max_retries": _exit_max_retries(),
+                "exit_retry_timeout_seconds": _exit_retry_timeout_seconds(),
+            },
         },
     )
 
@@ -810,4 +1023,8 @@ __all__ = [
     "evaluate_v9_ensemble",
     "record_loss",
     "reset_cooldown",
+    "check_confirmation_v9",
+    "get_confirmation_count_v9",
+    "reset_confirmation_v9",
+    "reset_all_confirmations_v9",
 ]

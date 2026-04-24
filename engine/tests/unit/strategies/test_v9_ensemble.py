@@ -29,6 +29,7 @@ from strategies.configs.v9_ensemble import (
     evaluate_v9_ensemble,
     record_loss,
     reset_cooldown,
+    reset_all_confirmations_v9,
     _pc_weight_for_offset,
     _pc_weight_t_60,
     _pc_weight_t_120,
@@ -156,14 +157,19 @@ def _bind_gate_params():
         "transition_strong_bypass_enabled": True,
         "transition_bypass_min_avg_pct_delta": 0.05,
         "transition_bypass_min_lgb_dist": 0.20,
+        # Disable new features for legacy tests — tested separately
+        "delta_gate_enabled": False,
+        "min_consecutive_pass_ticks": 0,
     }
     token = _gp.set_active(params)
     reset_cooldown()
+    reset_all_confirmations_v9()
     try:
         yield
     finally:
         _gp.reset_active(token)
         reset_cooldown()
+        reset_all_confirmations_v9()
 
 
 # ── Registry load sanity ───────────────────────────────────────────────────

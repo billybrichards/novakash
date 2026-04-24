@@ -25,6 +25,7 @@ from strategies.configs.v8_champion_lgb_only import (
     evaluate_v8_champion_lgb_only,
     record_loss,
     reset_cooldown,
+    reset_all_confirmations,
 )
 from strategies import gate_params as _gp
 from strategies.data_surface import DataSurfaceManager, FullDataSurface
@@ -141,14 +142,19 @@ def _bind_gate_params():
         "transition_strong_bypass_enabled": True,
         "transition_bypass_min_avg_pct_delta": 0.05,
         "transition_bypass_min_lgb_dist": 0.20,
+        # Disable new features for legacy tests — tested separately
+        "delta_gate_enabled": False,
+        "min_consecutive_pass_ticks": 0,
     }
     token = _gp.set_active(params)
     reset_cooldown()
+    reset_all_confirmations()
     try:
         yield
     finally:
         _gp.reset_active(token)
         reset_cooldown()
+        reset_all_confirmations()
 
 
 # ── Registry load sanity ───────────────────────────────────────────────────
@@ -160,10 +166,10 @@ def registry():
     return reg
 
 
-def test_registered_as_ghost(registry):
+def test_registered_as_live(registry):
     assert "v8_champion_lgb_only" in registry.strategy_names
     cfg = registry.configs["v8_champion_lgb_only"]
-    assert cfg.mode == "GHOST"
+    assert cfg.mode == "LIVE"
     assert cfg.version == "8.0.0-lgb-0.1"
     assert cfg.timescale == "5m"
     assert cfg.asset == "BTC"
