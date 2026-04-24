@@ -960,6 +960,7 @@ class PositionRedeemer:
                         tx_hashes.append(oc_result["tx_hash"])
                     detail = {
                         "conditionId": pos["conditionId"],
+                        "tokenId": pos.get("tokenId", "") or pos.get("asset", ""),
                         "outcome": pos["outcome"],
                         "pnl": pos["pnl"],
                         "success": success,
@@ -971,6 +972,7 @@ class PositionRedeemer:
                     success = await self.redeem_position(pos["conditionId"])
                     detail = {
                         "conditionId": pos["conditionId"],
+                        "tokenId": pos.get("tokenId", "") or pos.get("asset", ""),
                         "outcome": pos["outcome"],
                         "pnl": pos["pnl"],
                         "success": success,
