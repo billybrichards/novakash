@@ -165,6 +165,10 @@ def _bind_gate_params():
         # Disable new features for legacy tests — tested separately
         "delta_gate_enabled": False,
         "min_consecutive_pass_ticks": 0,
+        # PL VHC bypass — enabled by default
+        "pl_vhc_bypass_enabled": True,
+        "pl_vhc_threshold": 0.25,
+        "pl_vhc_require_pc_agreement": True,
     }
     token = _gp.set_active(params)
     reset_cooldown()
@@ -209,6 +213,9 @@ def test_registered_as_ghost(registry):
         "vhc_bypass_oracle_direction",
         "vhc_kelly_multiplier",
         "fallback_to_lgb_on_pc_null",
+        "pl_vhc_bypass_enabled",
+        "pl_vhc_threshold",
+        "pl_vhc_require_pc_agreement",
     ):
         assert key in gp, f"missing gate_param: {key}"
     assert gp["ensemble_disagreement_threshold"] == 0.35
@@ -875,6 +882,9 @@ class TestVhcBypassAllSignalGates:
             "transition_bypass_min_lgb_dist": 0.20,
             "delta_gate_enabled": False,
             "min_consecutive_pass_ticks": 0,
+            "pl_vhc_bypass_enabled": True,
+            "pl_vhc_threshold": 0.25,
+            "pl_vhc_require_pc_agreement": True,
         }
         token = _gp.set_active(params)
         try:
@@ -887,3 +897,175 @@ class TestVhcBypassAllSignalGates:
             assert "ensemble_disagreement" in d.skip_reason
         finally:
             _gp.reset_active(token)
+
+
+# ── PL VHC bypass with classifier cross-veto (note #238) ─────────────────
+class TestPlVhcBypass:
+    """When LGB hits VHC (|pl - 0.5| >= 0.25), bypass signal-quality gates
+    unless classifier actively disagrees on direction (cross-veto).
+    Only fires when pc VHC didn't already fire.
+    """
+
+    def test_pl_vhc_bypasses_disagreement(self):
+        """pl=0.17 DOWN (VHC), pc=0.45 DOWN (agrees) -> TRADE DOWN.
+
+        |pl-0.5| = 0.33 >= 0.25. pc_dir=DOWN agrees with pl_dir=DOWN.
+        |pc-pl| = 0.28 > 0.25 disagreement threshold, but PL-VHC bypasses.
+        pc_dist=0.05 < 0.25 so pc VHC does NOT fire — pl VHC path.
+        """
+        s = _make_surface(
+            probability_lgb=0.17,           # DOWN, dist=0.33 VHC
+            probability_classifier=0.45,    # DOWN, dist=0.05 NOT VHC
+            delta_chainlink=-0.005,
+            delta_tiingo=-0.004,
+            clob_down_ask=0.55,
+            poly_max_entry_price=0.55,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "TRADE", d.skip_reason
+        assert d.direction == "DOWN"  # follows LGB direction
+        assert d.metadata["is_pl_vhc"] is True
+        assert d.metadata["pl_vhc_bypass"] is True
+        assert d.metadata["pl_vhc_cross_veto"] is False
+        assert d.metadata["is_vhc"] is True  # VHC final flag set
+        assert d.metadata["conviction_label"] == "VERY_HIGH"
+        assert d.confidence_score >= 0.55
+
+    def test_pl_vhc_cross_veto(self):
+        """pl=0.17 DOWN (VHC), pc=0.55 UP (disagrees) -> SKIP (cross-veto).
+
+        |pl-0.5| = 0.33 >= 0.25 but classifier says UP while LGB says DOWN.
+        Cross-veto fires.
+        """
+        s = _make_surface(
+            probability_lgb=0.17,           # DOWN, dist=0.33 VHC
+            probability_classifier=0.55,    # UP — disagrees with LGB
+            delta_chainlink=-0.005,
+            delta_tiingo=-0.004,
+            clob_down_ask=0.55,
+            poly_max_entry_price=0.55,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "SKIP"
+        # Should be blocked by direction_agreement or disagreement
+        # (cross-veto means pl_vhc did not activate, so no bypass)
+        assert d.metadata.get("pl_vhc_cross_veto") is True or \
+            "direction_agreement" in (d.skip_reason or "") or \
+            "ensemble_disagreement" in (d.skip_reason or "")
+
+    def test_pl_vhc_pc_none(self):
+        """pl=0.80 UP (VHC), pc=None -> TRADE UP (no cross-veto, classifier absent).
+
+        When pc is None, v9 falls back to v8_lgb_only. But the test
+        validates that the fallback_to_lgb_on_pc_null path handles the
+        VHC LGB correctly (trade goes through via v8_lgb_only fallback).
+        """
+        s = _up_surface(
+            probability_lgb=0.80,           # UP, dist=0.30 VHC
+            probability_classifier=None,    # absent
+        )
+        d = evaluate_v9_ensemble(s)
+        # pc=None triggers fallback to v8_lgb_only, which should trade UP
+        assert d.action == "TRADE", d.skip_reason
+        assert d.direction == "UP"
+        assert d.metadata.get("fallback_reason") == "pc_null"
+
+    def test_pl_vhc_below_threshold(self):
+        """pl=0.35 DOWN (dist=0.15, below 0.25) -> no bypass.
+
+        Even though LGB says DOWN, dist is only 0.15 < 0.25 threshold.
+        If pc disagrees, normal gates apply.
+        """
+        s = _make_surface(
+            probability_lgb=0.35,           # DOWN, dist=0.15 < 0.25
+            probability_classifier=0.55,    # UP — disagrees
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "SKIP"
+        # Should be blocked by direction_agreement (no VHC bypass)
+        assert "direction_agreement" in (d.skip_reason or "")
+
+    def test_pl_vhc_not_when_pc_vhc_fires(self):
+        """pl=0.80 UP (VHC), pc=0.80 UP (VHC) -> pc VHC fires, pl VHC doesn't.
+
+        When both models are VHC and agree, pc VHC takes precedence.
+        pl VHC should NOT double-fire.
+        """
+        s = _up_surface(
+            probability_lgb=0.80,           # UP, dist=0.30 VHC
+            probability_classifier=0.80,    # UP, dist=0.30 VHC
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "TRADE", d.skip_reason
+        assert d.direction == "UP"
+        assert d.metadata["is_vhc"] is True
+        # pc VHC fires; pl VHC does NOT fire (only when pc VHC misses)
+        assert d.metadata["is_pl_vhc"] is False
+
+    def test_pl_vhc_direction_follows_lgb(self):
+        """When PL VHC fires and bypasses gates, direction follows LGB.
+
+        pl=0.17 DOWN (VHC), pc=0.55 UP (disagrees on direction).
+        |pc-pl| = 0.38 > 0.25 disagreement threshold -> PL-VHC bypasses.
+        Direction should be DOWN (from LGB), not UP (from classifier).
+        pc_dist = 0.05 < 0.25 so pc VHC does NOT fire.
+        Cross-veto: pc=0.55 UP but pl=0.17 DOWN -> BUT wait, cross-veto
+        checks direction. pc says UP, pl says DOWN -> veto fires.
+        Instead use: pc=0.45 DOWN (agrees), oracles UP (to trigger bypass).
+        """
+        # pl=0.17 DOWN VHC, pc=0.45 DOWN (agrees). Oracles point UP
+        # so oracle_direction gate triggers -> PL-VHC bypasses it.
+        # Direction should follow LGB = DOWN.
+        s = _make_surface(
+            probability_lgb=0.17,           # DOWN, dist=0.33 VHC
+            probability_classifier=0.45,    # DOWN, dist=0.05 NOT VHC, agrees
+            delta_chainlink=+0.005,         # UP — triggers oracle_direction
+            delta_tiingo=+0.004,            # UP
+            clob_down_ask=0.55,
+            poly_max_entry_price=0.55,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "TRADE", d.skip_reason
+        assert d.direction == "DOWN"  # follows LGB, not classifier
+        assert d.metadata["is_pl_vhc"] is True
+        assert d.metadata["vhc_overriding_direction"] is True
+        # probability_used should be pl (LGB) when pl_vhc + overriding
+        assert d.metadata["probability_used"] == 0.17
+
+    def test_pl_vhc_bypasses_oracle_direction(self):
+        """PL VHC should bypass oracle_direction when oracles disagree.
+
+        pl=0.17 DOWN (VHC), pc=0.40 DOWN (agrees). Oracles UP.
+        """
+        s = _make_surface(
+            probability_lgb=0.17,           # DOWN, dist=0.33 VHC
+            probability_classifier=0.40,    # DOWN, agrees
+            delta_chainlink=+0.005,         # UP — opposite to DOWN
+            delta_tiingo=+0.004,            # UP
+            clob_down_ask=0.55,
+            poly_max_entry_price=0.55,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "TRADE", d.skip_reason
+        assert d.direction == "DOWN"
+        assert "oracle_direction" in d.metadata["vhc_bypasses"]
+        assert d.metadata["is_pl_vhc"] is True
+
+    def test_pl_vhc_bypasses_transition_regime(self):
+        """PL VHC should bypass TRANSITION block.
+
+        pl=0.17 DOWN (VHC), pc=0.40 DOWN (agrees). TRANSITION regime.
+        """
+        s = _make_surface(
+            regime="TRANSITION",
+            probability_lgb=0.17,           # DOWN, dist=0.33 VHC
+            probability_classifier=0.40,    # DOWN, agrees
+            delta_chainlink=-0.005,
+            delta_tiingo=-0.004,
+            clob_down_ask=0.55,
+            poly_max_entry_price=0.55,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "TRADE", d.skip_reason
+        assert "transition_regime" in d.metadata["vhc_bypasses"]
+        assert d.metadata["is_pl_vhc"] is True
