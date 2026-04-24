@@ -16,13 +16,13 @@ Gate order (TRADE path):
    4. Source agreement       (shared — v8 helper)
    5. VPIN guard             (shared — v8 helper)
    6. PC availability        (R1 — fallback to v8_lgb_only on pc=None)
-   7. Disagreement veto      (R2)
-   8. Direction agreement    (R3)
-   9. T-minus blend          (R4 — compute pu, direction)
-  10. Hard LGB safety floor  (R6 — bypassable by VHC for UP dist)
+   7. Disagreement veto      (R2 — bypassable by VHC)
+   8. Direction agreement    (R3 — bypassable by VHC)
+   9. T-minus blend          (R4 — compute pu, direction; VHC uses pc_dir)
+  10. Hard LGB safety floor  (R6 — bypassable by VHC for all directions)
   11. TRANSITION regime      (R5 — bypassable by VHC)
-  12. Oracle direction       (shared)
-  13. Fill band              (R7 — shared)
+  12. Oracle direction       (shared — bypassable by VHC)
+  13. Fill band              (R7 — shared, NOT bypassed by VHC)
   14. UP / DOWN fill floors  (R8 — shared, NOT bypassed by VHC)
   15. Post-loss cooldown     (R15 — shared, NOT bypassed by VHC)
 
@@ -122,6 +122,28 @@ def _vhc_bypass_transition() -> bool:
 def _vhc_bypass_up_dist() -> bool:
     return _gp.get_bool(
         "vhc_bypass_up_dist", "V9_VHC_BYPASS_UP_DIST", True
+    )
+
+
+def _vhc_bypass_disagreement() -> bool:
+    return _gp.get_bool(
+        "vhc_bypass_disagreement", "V9_VHC_BYPASS_DISAGREEMENT", True
+    )
+
+
+def _vhc_bypass_lgb_safety_floor() -> bool:
+    return _gp.get_bool(
+        "vhc_bypass_lgb_safety_floor",
+        "V9_VHC_BYPASS_LGB_SAFETY_FLOOR",
+        True,
+    )
+
+
+def _vhc_bypass_oracle_direction() -> bool:
+    return _gp.get_bool(
+        "vhc_bypass_oracle_direction",
+        "V9_VHC_BYPASS_ORACLE_DIRECTION",
+        True,
     )
 
 
@@ -578,59 +600,103 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         _gate("pc_availability", True, f"pc={pc:.3f} present")
     )
 
+    # ── Early VHC detection (before signal-quality gates) ────────────────
+    # VHC bypass uses pc_dist alone — if the classifier is very confident,
+    # we trust it even when LGB disagrees. The conviction _scoring_ tier
+    # (VERY_HIGH label) still requires pc_dir == pl_dir (see
+    # _classify_conviction). This separation lets VHC override signal gates
+    # while keeping scoring conservative.
+    pc_dir = "UP" if pc > 0.5 else "DOWN"
+    pl_dir = "UP" if pl > 0.5 else "DOWN"
+    pc_dist = abs(pc - 0.5)
+    is_vhc_bypass = pc_dist >= _vhc_threshold()
+    vhc_bypasses: list[str] = []
+
     # ── 7. Disagreement veto (R2) ──────────────────────────────────────────
     disagree_thr = _ensemble_disagreement_threshold()
     disagreement = abs(pc - pl)
     if disagreement > disagree_thr:
+        if is_vhc_bypass and _vhc_bypass_disagreement():
+            gates.append(
+                _gate(
+                    "ensemble_disagreement",
+                    True,
+                    f"VHC bypass: |pc-pl|={disagreement:.3f} > "
+                    f"{disagree_thr:.2f} but pc_dist={pc_dist:.3f} "
+                    f">= {_vhc_threshold():.2f}",
+                )
+            )
+            vhc_bypasses.append("ensemble_disagreement")
+        else:
+            gates.append(
+                _gate(
+                    "ensemble_disagreement",
+                    False,
+                    f"|pc-pl|={disagreement:.3f} > {disagree_thr:.2f}",
+                )
+            )
+            return _skip_v9(
+                f"ensemble_disagreement: diff={disagreement:.3f}",
+                gates,
+            )
+    else:
         gates.append(
             _gate(
                 "ensemble_disagreement",
-                False,
-                f"|pc-pl|={disagreement:.3f} > {disagree_thr:.2f}",
+                True,
+                f"|pc-pl|={disagreement:.3f} <= {disagree_thr:.2f}",
             )
         )
-        return _skip_v9(
-            f"ensemble_disagreement: diff={disagreement:.3f}",
-            gates,
-        )
-    gates.append(
-        _gate(
-            "ensemble_disagreement",
-            True,
-            f"|pc-pl|={disagreement:.3f} <= {disagree_thr:.2f}",
-        )
-    )
 
     # ── 8. Direction agreement (R3) ────────────────────────────────────────
-    pc_dir = "UP" if pc > 0.5 else "DOWN"
-    pl_dir = "UP" if pl > 0.5 else "DOWN"
     if _require_direction_agreement() and pc_dir != pl_dir:
-        gates.append(
-            _gate(
-                "direction_agreement",
-                False,
-                f"pc_dir={pc_dir} pl_dir={pl_dir} disagree",
+        if is_vhc_bypass and _vhc_bypass_disagreement():
+            gates.append(
+                _gate(
+                    "direction_agreement",
+                    True,
+                    f"VHC bypass: pc_dir={pc_dir} pl_dir={pl_dir} "
+                    f"disagree but pc_dist={pc_dist:.3f} "
+                    f">= {_vhc_threshold():.2f}",
+                )
             )
+            if "direction_agreement" not in vhc_bypasses:
+                vhc_bypasses.append("direction_agreement")
+        else:
+            gates.append(
+                _gate(
+                    "direction_agreement",
+                    False,
+                    f"pc_dir={pc_dir} pl_dir={pl_dir} disagree",
+                )
+            )
+            return _skip_v9(
+                f"direction_agreement: pc={pc_dir} pl={pl_dir}", gates
+            )
+    else:
+        gates.append(
+            _gate("direction_agreement", True, f"both {pc_dir}")
         )
-        return _skip_v9(
-            f"direction_agreement: pc={pc_dir} pl={pl_dir}", gates
-        )
-    gates.append(
-        _gate("direction_agreement", True, f"both {pc_dir}")
-    )
 
     # ── 9. T-minus blend (R4) ──────────────────────────────────────────────
+    # When VHC is bypassing disagreement, use classifier direction — the
+    # blended pu may not make sense when the two models disagree.
     pc_weight = _pc_weight_for_offset(offset)
     pl_weight = 1.0 - pc_weight
     pu = pc_weight * pc + pl_weight * pl
-    direction = "UP" if pu > 0.5 else "DOWN"
+    vhc_overriding_direction = bool(vhc_bypasses)  # any signal gate bypassed
+    if vhc_overriding_direction:
+        direction = pc_dir
+    else:
+        direction = "UP" if pu > 0.5 else "DOWN"
     gates.append(
         _gate(
             "ensemble_blend",
             True,
             f"pu={pu:.3f} "
             f"(pc={pc:.3f}*{pc_weight:.2f} + pl={pl:.3f}*{pl_weight:.2f}) "
-            f"direction={direction}",
+            f"direction={direction}"
+            f"{' (VHC→pc_dir)' if vhc_overriding_direction else ''}",
         )
     )
 
@@ -682,11 +748,6 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             _gate("delta_gate", True, "chainlink delta unavailable, skip gate")
         )
 
-    # ── Determine VHC reinforcement early — gates below use it for bypass ─
-    pc_dist = abs(pc - 0.5)
-    is_vhc = pc_dist >= _vhc_threshold() and pc_dir == pl_dir
-    vhc_bypasses: list[str] = []
-
     # ── 10. Hard LGB safety floor (R6) ────────────────────────────────────
     pl_dist = abs(pl - 0.5)
 
@@ -710,8 +771,11 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             else _lgb_dist_min_down()
         )
 
-    allow_lgb_bypass = (
-        is_vhc and direction == "UP" and _vhc_bypass_up_dist()
+    # VHC bypass for LGB safety floor — UP uses existing flag, full
+    # bypass (both directions) uses the new vhc_bypass_lgb_safety_floor.
+    allow_lgb_bypass = is_vhc_bypass and (
+        (direction == "UP" and _vhc_bypass_up_dist())
+        or _vhc_bypass_lgb_safety_floor()
     )
     if pl_dist < min_dist_pl:
         if allow_lgb_bypass:
@@ -719,12 +783,12 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                 _gate(
                     "lgb_safety_floor",
                     True,
-                    f"UP bypass by VHC: pl_dist={pl_dist:.3f} < "
+                    f"{direction} VHC bypass: pl_dist={pl_dist:.3f} < "
                     f"{min_dist_pl:.3f} but pc_dist={pc_dist:.3f} "
                     f">= {_vhc_threshold():.2f}",
                 )
             )
-            vhc_bypasses.append("up_dist_floor")
+            vhc_bypasses.append("lgb_safety_floor")
         else:
             gates.append(
                 _gate(
@@ -754,7 +818,7 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
 
     # ── 11. TRANSITION regime block (R5) — VHC OR strong-oracle bypassable ─
     # Two independent bypass paths:
-    #   (a) VHC reinforcement (pc_dist >= vhc_threshold + pc/pl direction agree)
+    #   (a) VHC reinforcement (pc_dist >= vhc_threshold)
     #   (b) Strong-oracle bypass (chainlink+tiingo agree + |Δ| strong + LGB
     #       dist strong) — note #228, recovers high-conviction TRANSITION
     #       windows the symmetric block would otherwise drop.
@@ -765,7 +829,7 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         direction == "UP" and blocked_up
     )
     if regime_blocked:
-        vhc_bypass_ok = is_vhc and _vhc_bypass_transition()
+        vhc_bypass_ok = is_vhc_bypass and _vhc_bypass_transition()
         strong_bypass_ok, strong_diag = _should_bypass_transition(
             direction,
             pl,
@@ -822,23 +886,44 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         cl_dir = "UP" if cl_delta > 0 else "DOWN"
         ti_dir = "UP" if ti_delta > 0 else "DOWN"
         if direction != cl_dir or direction != ti_dir:
+            if is_vhc_bypass and _vhc_bypass_oracle_direction():
+                gates.append(
+                    _gate(
+                        "oracle_direction",
+                        True,
+                        f"VHC bypass: cl={cl_dir} ti={ti_dir} vs "
+                        f"{direction} but pc_dist={pc_dist:.3f} "
+                        f">= {_vhc_threshold():.2f}",
+                    )
+                )
+                vhc_bypasses.append("oracle_direction")
+            else:
+                gates.append(
+                    _gate(
+                        "oracle_direction",
+                        False,
+                        f"cl={cl_dir} ti={ti_dir} vs {direction}",
+                    )
+                )
+                reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
+                return _skip_v9(
+                    f"oracle_direction: disagree cl={cl_dir} ti={ti_dir} "
+                    f"vs {direction}",
+                    gates,
+                    direction=direction,
+                )
+        else:
             gates.append(
                 _gate(
                     "oracle_direction",
-                    False,
-                    f"cl={cl_dir} ti={ti_dir} vs {direction}",
+                    True,
+                    f"oracles agree with {direction}",
                 )
             )
-            reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
-            return _skip_v9(
-                f"oracle_direction: disagree cl={cl_dir} ti={ti_dir} "
-                f"vs {direction}",
-                gates,
-                direction=direction,
-            )
-    gates.append(
-        _gate("oracle_direction", True, f"oracles agree with {direction}")
-    )
+    else:
+        gates.append(
+            _gate("oracle_direction", True, f"oracles agree with {direction}")
+        )
 
     # ── 13. Fill band (R7) ─────────────────────────────────────────────────
     if direction == "UP":
@@ -980,7 +1065,17 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         )
 
     # ── TRADE ──────────────────────────────────────────────────────────────
+    # When VHC is overriding signal gates, use pc_dist as confidence_score
+    # (classifier confidence, not blended). The conviction tier still uses
+    # the standard _classify_conviction for label/scoring, but we override
+    # the score when VHC-bypassing to reflect classifier-only confidence.
     label, score, is_vhc_final = _classify_conviction(pu, pc, pc_dir, pl_dir)
+
+    if vhc_overriding_direction:
+        # Classifier-only confidence: always flag as VHC
+        is_vhc_final = True
+        label = "VERY_HIGH"
+        score = 0.60  # above 0.55 threshold for vhc_reinforced sizing
     confidence_level = (
         "HIGH" if label in ("VERY_HIGH", "HIGH") else "MEDIUM"
     )
@@ -1002,13 +1097,15 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         metadata={
             "gate_results": gates,
             "poly_direction": direction,
-            "poly_confidence_distance": abs(pu - 0.5),
+            "poly_confidence_distance": (
+                pc_dist if vhc_overriding_direction else abs(pu - 0.5)
+            ),
             "v4_regime": v4_regime,
             "vpin": vpin,
             "vpin_regime": vpin_regime,
             "probability_lgb": pl,
             "probability_classifier": pc,
-            "probability_used": pu,
+            "probability_used": pc if vhc_overriding_direction else pu,
             "pc_weight": pc_weight,
             "pl_weight": pl_weight,
             "pc_dist": pc_dist,
@@ -1018,6 +1115,7 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             "conviction_label": label,
             "is_vhc": is_vhc_final,
             "vhc_bypasses": vhc_bypasses,
+            "vhc_overriding_direction": vhc_overriding_direction,
             "vhc_kelly_multiplier": (
                 _vhc_kelly_multiplier() if is_vhc_final else None
             ),
