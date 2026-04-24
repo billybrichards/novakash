@@ -830,29 +830,47 @@ class CLOBReconciler:
         condition_id: str,
         tx_hash: str,
         usdc_redeemed: float,
+        token_id: str = "",
+        outcome: str = "WIN",
     ) -> int:
         """Resolve trades in the DB after a successful on-chain redemption.
 
-        Matches the condition_id to unresolved trades via the metadata JSONB
-        column (``metadata->>'condition_id'``) and updates them to
-        RESOLVED_WIN with computed PnL.
+        Tier 1: match unresolved trades via ``metadata->>'condition_id'`` /
+        ``metadata->>'conditionId'``. This is the happy path for strategies
+        whose trade metadata includes a condition_id (v4 et al).
+
+        Tier 2 (fallback): if no condition_id match AND ``token_id`` is
+        non-empty, fall back to the same prefix-match pattern used by
+        ``_backfill_on_startup``. This is what unblocks v8_champion trades —
+        those metadata dicts only carry ``token_id`` + ``market_slug``, never
+        ``condition_id``, so the pre-fix Tier-1-only resolver silently
+        returned 0 rows for every v8 redeem.
+
+        Handles both WIN and LOSS outcomes; pre-fix the method hardcoded
+        ``outcome='WIN'`` / ``status='RESOLVED_WIN'`` so LOSS redemptions
+        (uncommon but real — e.g. USDC dust from losing NegRisk auto-settles)
+        also left trades stranded.
 
         Args:
             condition_id: hex condition ID of the redeemed position
             tx_hash: Polygon tx hash of the redemption
             usdc_redeemed: USDC payout amount from the Transfer log
+            token_id: ERC-1155 token ID (required for v8 Tier-2 fallback)
+            outcome: "WIN" or "LOSS"
 
         Returns:
-            Number of trade rows updated.
+            Number of trade rows actually updated (excludes races where
+            ReconcilePositionsUseCase already resolved the row).
         """
+        status = "RESOLVED_WIN" if outcome == "WIN" else "RESOLVED_LOSS"
+
         try:
             async with self._pool.acquire() as conn:
-                # Find unresolved trades matching this condition_id
+                # Tier 1: condition_id match
                 rows = await conn.fetch(
-                    """SELECT id, stake_usd
+                    """SELECT id, stake_usd, outcome
                        FROM trades
-                       WHERE outcome IS NULL
-                         AND is_live = true
+                       WHERE is_live = true
                          AND (
                              metadata->>'condition_id' = $1
                              OR metadata->>'conditionId' = $1
@@ -860,46 +878,125 @@ class CLOBReconciler:
                     condition_id,
                 )
 
+                match_method = "condition_id"
+
+                # Tier 2: token_id prefix fallback (v8_champion regression
+                # path — metadata has no condition_id, only token_id)
+                if not rows and token_id:
+                    rows = await conn.fetch(
+                        """SELECT id, stake_usd, outcome
+                           FROM trades
+                           WHERE is_live = true
+                             AND metadata->>'token_id' IS NOT NULL
+                             AND (
+                                 metadata->>'token_id' LIKE $1 || '%'
+                                 OR $1 LIKE metadata->>'token_id' || '%'
+                             )""",
+                        token_id,
+                    )
+                    if rows:
+                        match_method = "token_id_fallback"
+                        self._log.info(
+                            "reconciler.redeem_resolve.token_id_fallback",
+                            condition=condition_id[:20] + "...",
+                            token_id=token_id[:20] + "...",
+                            rows=len(rows),
+                        )
+
                 if not rows:
                     self._log.debug(
                         "reconciler.redeem_resolve.no_match",
                         condition=condition_id[:20] + "...",
+                        token_id=(token_id[:20] + "...") if token_id else "",
                     )
                     return 0
 
+                # Separate already-resolved (UC won the race) from unresolved
+                unresolved_rows = [r for r in rows if r["outcome"] is None]
+                resolved_rows = [r for r in rows if r["outcome"] is not None]
+
+                for r in resolved_rows:
+                    self._log.info(
+                        "reconciler.redeem_resolve.race_already_resolved",
+                        trade_id=r["id"],
+                        existing_outcome=r["outcome"],
+                        condition=condition_id[:20] + "...",
+                        match_method=match_method,
+                    )
+
+                if not unresolved_rows:
+                    return 0
+
+                total_stake_unresolved = sum(
+                    float(r["stake_usd"] or 0) for r in unresolved_rows
+                )
+
                 updated = 0
-                for row in rows:
+                for row in unresolved_rows:
                     trade_id = row["id"]
                     stake = float(row["stake_usd"] or 0)
-                    # PnL = payout - stake. For a win, usdc_redeemed is the
-                    # total payout for ALL shares. If multiple trades share the
-                    # same condition_id, split proportionally (rare edge case
-                    # for 5-min markets). Single-trade case dominates.
-                    if len(rows) == 1:
-                        pnl = round(usdc_redeemed - stake, 4)
-                    else:
-                        # Proportional split by stake
-                        total_stake = sum(float(r["stake_usd"] or 0) for r in rows)
-                        share = stake / total_stake if total_stake > 0 else 1.0 / len(rows)
-                        pnl = round(usdc_redeemed * share - stake, 4)
 
-                    await conn.execute(
+                    if outcome == "WIN":
+                        # PnL = payout - stake. usdc_redeemed is the total
+                        # payout for ALL shares under this condition_id. If
+                        # multiple trades share it, split proportionally.
+                        if len(unresolved_rows) == 1:
+                            pnl = round(usdc_redeemed - stake, 4)
+                        else:
+                            share = (
+                                stake / total_stake_unresolved
+                                if total_stake_unresolved > 0
+                                else 1.0 / len(unresolved_rows)
+                            )
+                            pnl = round(usdc_redeemed * share - stake, 4)
+                    else:
+                        # LOSS — full stake is lost regardless of any residual
+                        # USDC dust returned by the redeem call.
+                        pnl = round(-stake, 4)
+
+                    # Idempotent UPDATE: the WHERE outcome IS NULL guard
+                    # ensures a racing UC won't get clobbered. Parametrise
+                    # outcome/status so LOSS path stamps RESOLVED_LOSS.
+                    result = await conn.execute(
                         """UPDATE trades
-                           SET outcome = 'WIN',
-                               pnl_usd = $1,
+                           SET outcome = $1,
+                               pnl_usd = $2,
                                resolved_at = NOW(),
-                               status = 'RESOLVED_WIN'
-                           WHERE id = $2 AND outcome IS NULL""",
+                               status = $3,
+                               polymarket_tx_hash = COALESCE(polymarket_tx_hash, $4)
+                           WHERE id = $5 AND outcome IS NULL""",
+                        outcome,
                         pnl,
+                        status,
+                        tx_hash or None,
                         trade_id,
                     )
+                    # Parse "UPDATE N" suffix; 0 means a race beat us between
+                    # SELECT and UPDATE
+                    row_count = 0
+                    try:
+                        row_count = int(str(result).split()[-1])
+                    except (ValueError, IndexError):
+                        pass
+                    if row_count == 0:
+                        self._log.info(
+                            "reconciler.redeem_resolve.race_already_resolved",
+                            trade_id=trade_id,
+                            existing_outcome="(raced during update)",
+                            condition=condition_id[:20] + "...",
+                            match_method=match_method,
+                        )
+                        continue
+
                     updated += 1
                     self._log.info(
                         "reconciler.redeem_resolved",
                         trade_id=trade_id,
                         condition=condition_id[:20] + "...",
+                        outcome=outcome,
                         pnl=f"${pnl:.2f}",
                         tx_hash=tx_hash[:16] + "..." if tx_hash else None,
+                        match_method=match_method,
                     )
 
                 return updated
