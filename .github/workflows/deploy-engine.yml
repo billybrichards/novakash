@@ -76,15 +76,23 @@ jobs:
           done
           echo "Python syntax check passed ($(find engine/ -name '*.py' -not -path '*/__pycache__/*' | wc -l | tr -d ' ') files)"
 
-      - name: Run pytest (if tests exist)
+      - name: Run pytest (BLOCKING — deploy refuses on test failure)
+        # Changed 2026-04-24: previously non-blocking. Made blocking after
+        # #340 reconciler fix landed — the suite now covers the
+        # resolve_from_redeem token_id fallback, and a regression there
+        # silently breaks the hub trades write-back (the #340 symptom).
+        # Dep install failures remain non-blocking (transient pypi flakes
+        # shouldn't gate a deploy); test execution itself is blocking.
         run: |
           if [ -d "engine/tests" ] && find engine/tests -name 'test_*.py' | grep -q .; then
-            pip install -q pytest 2>/dev/null || true
-            # Install engine deps if requirements.txt exists
+            pip install -q pytest 2>/dev/null || { echo "::error::pytest install failed"; exit 1; }
             if [ -f "engine/requirements.txt" ]; then
-              pip install -q -r engine/requirements.txt 2>/dev/null || echo "::warning::Some engine deps failed to install — tests may be limited"
+              pip install -q -r engine/requirements.txt 2>/dev/null || echo "::warning::engine deps partial install (non-blocking for deps only)"
             fi
-            python3 -m pytest engine/tests/ -x --tb=short -q 2>/dev/null || echo "::warning::Some tests failed (non-blocking for now)"
+            if ! python3 -m pytest engine/tests/ -x --tb=short -q; then
+              echo "::error::engine tests failed — refusing to deploy"
+              exit 1
+            fi
           else
             echo "No test files found in engine/tests/ — skipping"
           fi
@@ -178,6 +186,23 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           echo "StrictHostKeyChecking no" >> ~/.ssh/config
           echo "UserKnownHostsFile=/dev/null" >> ~/.ssh/config
+
+      - name: Echo target host (audit trail + catches stale ENGINE_HOST secret)
+        # Prints the host and a connectivity probe before any write operation.
+        # If ENGINE_HOST is stale (EIP rotated, secret not updated), the SSH
+        # error surfaces in logs with the attempted IP visible — no more
+        # silent "Permission denied" mysteries during an incident.
+        run: |
+          echo "Deploy target host: ${HOST}"
+          echo "Expected Montreal engine instance: i-0785ed930423ae9fd (ca-central-1)"
+          # Connectivity probe: SSH with BatchMode + 10s timeout. Non-fatal
+          # (the next step attempts the real SSH too) but surfaces errors
+          # early with host info visible.
+          if ! ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=10 \
+                   novakash@"$HOST" 'hostname -I; uname -n' 2>&1; then
+            echo "::error::SSH probe to ${HOST} failed — check ENGINE_HOST secret matches current EIP"
+            exit 1
+          fi
 
       - name: Ensure host directories exist
         run: |
