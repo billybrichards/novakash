@@ -153,6 +153,33 @@ export const STRATEGIES = {
     gateLabel: '8-gate pipeline + DUNE',
     thresholds: {},
   },
+  v8_champion_lgb_only: {
+    id: 'v8_champion_lgb_only',
+    label: 'V8 CHAMPION LGB-ONLY',
+    shortLabel: 'V8_LGB',
+    color: '#fb923c',
+    colorDim: 'rgba(251,146,60,0.14)',
+    direction: 'ANY',
+    description:
+      'LGB-only fine-tune variant of v8_champion. Classifier intentionally '
+      + 'disabled. Adds 20-min post-loss cooldown, blocks DOWN in TRANSITION '
+      + 'vpin regime, relaxes fill_band LOW with explicit DOWN floor 0.15. '
+      + 'GHOST until 7d shadow validates — see Hub note #222.',
+    configKey: 'V8_CHAMPION_LGB_ONLY_MODE',
+    defaultMode: 'GHOST',
+    timescale: '5m',
+    asset: 'BTC',
+    gateLabel: 'LGB-only · cooldown 20m · fill [0.00,0.82]',
+    thresholds: {
+      lgbDistMinDown: 0.10,
+      lgbDistMinUp: 0.15,
+      fillBandMin: 0.00,
+      fillBandMax: 0.82,
+      downMinFillPrice: 0.15,
+      postLossCooldownMin: 20,
+    },
+    inCurrentLineup: true,
+  },
 };
 
 export const STRATEGY_LIST = Object.values(STRATEGIES);
@@ -166,6 +193,7 @@ export const CURRENT_LINEUP_IDS = [
   'v5_ensemble',
   'v4_fusion',
   'v5_fresh',
+  'v8_champion_lgb_only',
 ];
 
 // Legacy strategy ids — surfaced behind an "archive" toggle on Window
