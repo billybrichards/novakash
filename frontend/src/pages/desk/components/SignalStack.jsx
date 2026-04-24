@@ -8,7 +8,10 @@
 //   pl = probability_lgb (LGB head)
 //
 // VHC banner fires at |pc - 0.5| >= 0.25 (per note #226 — 89–94% dir_acc).
-// SOURCE CONFLICT badge fires at |pc - pl| > 0.25.
+// SOURCE CONFLICT badge prefers the server's `ensemble_config.disagreement_detected`
+// flag on the 5m snapshot (hub computes it — authoritative). Falls back to the
+// client-side |pc − pl| > 0.25 calc when ensemble_config is absent (older
+// snapshots or offline model).
 
 import React from 'react';
 import { T } from '../../../theme/tokens.js';
@@ -31,12 +34,19 @@ const TIER_COLOURS = {
 export default function SignalStack({ fiveMin, pu, pc, pl, windowDelta }) {
   const tier = convictionTier(pu);
   const dir = directionFromProbUp(pu);
-  const conflict = isSourceConflict(pc, pl);
   const vhc = isClassifierHighConviction(pc);
-  const disagree = probDisagreement(pc, pl);
+
+  // Prefer server flag; fall back to client math when ensemble_config absent.
+  const ensembleCfg = fiveMin?.ensemble_config;
+  const serverDisagreeMag = num(ensembleCfg?.disagreement_magnitude);
+  const conflict = ensembleCfg?.disagreement_detected != null
+    ? Boolean(ensembleCfg.disagreement_detected)
+    : isSourceConflict(pc, pl);
+  const clientDisagree = probDisagreement(pc, pl);
+  const disagree = serverDisagreeMag != null ? serverDisagreeMag : clientDisagree;
 
   const vpin = num(fiveMin?.vpin ?? fiveMin?.vpin_current);
-  const regime = fiveMin?.regime || fiveMin?.regime_label || null;
+  const regime = fiveMin?.regime || null;
   const vol = num(fiveMin?.volatility ?? fiveMin?.vol);
   const funding = num(fiveMin?.funding_rate ?? fiveMin?.funding);
   const takerBS = num(fiveMin?.taker_buy_sell ?? fiveMin?.taker_buy_sell_ratio);

@@ -17,7 +17,7 @@
 //   4s   — /api/v58/strategy-decisions (current window)
 //   10s  — /api/windows/current (server authority)
 //   10s  — /api/ticks/chainlink ETH/SOL/XRP sparks
-//   30s  — /api/v58/strategy-decisions-resolved (last 20 table)
+//   30s  — /api/v58/strategy-decisions?resolved=true (last 20 table)
 //   1s   — client countdown tick
 //   On demand: POST /api/desk/picks
 //
@@ -54,7 +54,12 @@ export default function Desk() {
   const snap = useSnapshot('BTC', 2_000);
   const { pu, pc, pl } = pickProbs(snap.fiveMin);
 
-  // System status — engine mode for the header chip.
+  // System status — engine status string for the header chip.
+  //
+  // TODO: Hub /api/system/status does not expose LIVE/PAPER/KILLED yet —
+  // follow-up audit needed to extend endpoint. Today it returns
+  // { status: "online", data: { status: "active", bankroll: ... } } with
+  // no mode/kill-switch field. We surface data.status as-is.
   const [systemStatus, setSystemStatus] = useState(null);
   useEffect(() => {
     let cancelled = false;
@@ -63,9 +68,10 @@ export default function Desk() {
         const r = await api.get('/api/system/status');
         const body = r?.data ?? r;
         if (cancelled) return;
-        // Normalise — some deploys return { mode: 'paper' }, others return
-        // { paper_enabled: true } etc.
-        setSystemStatus(normaliseMode(body));
+        const inner = body?.data?.status;
+        setSystemStatus(
+          typeof inner === 'string' && inner ? inner.toUpperCase() : '?',
+        );
       } catch {
         if (!cancelled) setSystemStatus('?');
       }
@@ -114,11 +120,9 @@ export default function Desk() {
   const yesMid = num(snap.fiveMin?.yes_mid ?? snap.fiveMin?.poly_yes_mid);
   const noMid  = num(snap.fiveMin?.no_mid  ?? snap.fiveMin?.poly_no_mid);
 
-  // Regime label — prefer 5m snapshot; fall back to top-level.
-  const regime = snap.fiveMin?.regime
-              ?? snap.fiveMin?.regime_label
-              ?? snap.data?.regime
-              ?? null;
+  // Regime label — field is `regime` per /v4/snapshot (confirmed). Prefer
+  // 5m block, fall back to top-level.
+  const regime = snap.fiveMin?.regime ?? snap.data?.regime ?? null;
   const vol = num(snap.fiveMin?.volatility ?? snap.fiveMin?.vol);
 
   return (
@@ -189,18 +193,6 @@ const gridStyle = {
   gridTemplateColumns: 'minmax(0, 3fr) minmax(0, 2fr)',
   gap: 12,
 };
-
-function normaliseMode(body) {
-  if (!body) return '?';
-  if (typeof body.mode === 'string') {
-    return body.mode.toUpperCase();
-  }
-  if (body.killed === true) return 'KILLED';
-  if (body.live_enabled === true) return 'LIVE';
-  if (body.paper_enabled === true) return 'PAPER';
-  if (typeof body.status === 'string') return body.status.toUpperCase();
-  return '?';
-}
 
 function pickPrice(block) {
   if (!block) return null;

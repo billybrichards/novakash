@@ -1,8 +1,19 @@
 // /desk — resolved per-strategy decisions for the last-N-windows table.
 //
-// Pulls GET /api/v58/strategy-decisions-resolved?strategy_id=X&limit=N
+// Pulls GET /api/v58/strategy-decisions?strategy_id=X&timeframe=5m&resolved=true&limit=N
 // for each tracked strategy, then re-buckets by window_ts so the table
 // can look up "what did v6_sniper call for window_epoch=XYZ".
+//
+// There is no separate /strategy-decisions-resolved path — the same
+// v58 endpoint serves resolved-enriched rows via the ?resolved=true
+// query flag (see hub/api/v58_monitor.py L3790-L3870).
+//
+// There is also no `actual_direction` field on the response; derive it
+// from (direction, outcome) via `deriveActualDirection` below.
+//
+// Rows with sot_reconciliation_state='engine_optimistic' + outcome='LOSS'
+// are accounting-only losses (wallet untouched per hub note #64) — flag
+// them via `isAccountingOnlyLoss` so the UI can annotate rather than hide.
 //
 // Uses Promise.allSettled so a single strategy endpoint failing does
 // not blank the whole table.
@@ -33,7 +44,7 @@ export function useResolvedDecisions({
       strategyIds.map(sid =>
         api
           .get(
-            `/api/v58/strategy-decisions-resolved?strategy_id=${encodeURIComponent(sid)}&timeframe=${timeframe}&limit=${limit}`,
+            `/api/v58/strategy-decisions?strategy_id=${encodeURIComponent(sid)}&timeframe=${encodeURIComponent(timeframe)}&resolved=true&limit=${limit}`,
           )
           .then(r => ({ sid, body: r?.data ?? r })),
       ),
@@ -87,6 +98,27 @@ export function indexByWindowEpoch(rows) {
     }
   }
   return out;
+}
+
+// Derive the realised market direction from (decision direction, outcome).
+// The v58 endpoint does NOT return actual_direction — only `direction`
+// (what the strategy called) + `outcome` ('WIN' | 'LOSS' | null). So:
+//   WIN  → actual == direction
+//   LOSS → actual is the opposite
+//   null → unresolved (return null)
+export function deriveActualDirection(direction, outcome) {
+  if (outcome == null) return null;
+  if (!direction) return null;
+  if (outcome === 'WIN') return direction;
+  return direction === 'UP' ? 'DOWN' : 'UP';
+}
+
+// Accounting-only loss flag: wallet untouched per hub note #64.
+export function isAccountingOnlyLoss(row) {
+  return (
+    row?.sot_reconciliation_state === 'engine_optimistic' &&
+    row?.outcome === 'LOSS'
+  );
 }
 
 export function toEpoch(v) {

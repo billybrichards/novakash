@@ -4,11 +4,18 @@
 // Consensus · actual · Δ final
 //
 // Data:
-//  - `picks`           : GET /api/desk/picks (operator's choices)
-//  - `resolvedByStrat` : GET /api/v58/strategy-decisions-resolved per sid
-//  - `actual` + `Δ final` are sourced from the operator picks row
-//    (`actual_direction` from the server-side join) when present; fall
-//    back to any resolved row with non-null actual.
+//  - `picks`           : GET /api/desk/picks (operator's choices — picks
+//                        do carry actual_direction from the server-side
+//                        join via the strategy_decisions_resolved view)
+//  - `resolvedByStrat` : GET /api/v58/strategy-decisions?resolved=true per sid
+//                        (these rows do NOT carry actual_direction — derive
+//                        it from direction + outcome via deriveActualDirection)
+//  - `actual` + `Δ final` prefer picks; fall back to the derived value
+//    from any resolved strategy row with a known outcome.
+//  - Rows with sot_reconciliation_state='engine_optimistic' + outcome='LOSS'
+//    are flagged as accounting-only losses (wallet untouched, hub note #64).
+//    They still count toward WR from the decision's perspective, but the
+//    tooltip tells the operator the wallet didn't move.
 //
 // Footer: rolling WR per column via `computeWr` from src/lib/wr.js.
 // Colour-coded with the canonical `wrColor` helper.
@@ -16,7 +23,11 @@
 import React, { useMemo } from 'react';
 import { T, wrColor } from '../../../theme/tokens.js';
 import { computeWr } from '../../../lib/wr.js';
-import { indexByWindowEpoch } from '../hooks/useResolvedDecisions.js';
+import {
+  indexByWindowEpoch,
+  deriveActualDirection,
+  isAccountingOnlyLoss,
+} from '../hooks/useResolvedDecisions.js';
 
 const TRACKED = ['v6_sniper', 'v4_fusion', 'v5_ensemble', 'v5_fresh'];
 
@@ -58,13 +69,15 @@ export default function LastWindowsTable({ picks, resolvedByStrategy }) {
     let actual = pick?.actual_direction || null;
     let pnl = pick?.pnl_usd ?? null;
 
+    let anyAccountingOnlyLoss = false;
     for (const sid of TRACKED) {
       const r = indexed[sid].get(epoch);
       perStrategy[sid] = r || null;
-      // Infer actual from any strategy's actual_direction if picks didn't supply.
+      // Derive actual from direction + outcome — v58 does not expose it.
       if (!actual && r) {
-        actual = r.actual_direction || r.actualDirection || null;
+        actual = deriveActualDirection(r.direction, r.outcome);
       }
+      if (r && isAccountingOnlyLoss(r)) anyAccountingOnlyLoss = true;
     }
     // Consensus = majority among tracked strategies' direction.
     const dirs = TRACKED
@@ -73,7 +86,7 @@ export default function LastWindowsTable({ picks, resolvedByStrategy }) {
     const counts = dirs.reduce((acc, d) => (acc[d] = (acc[d] || 0) + 1, acc), {});
     const consensus = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || null;
 
-    return { epoch, pick, perStrategy, actual, pnl, consensus };
+    return { epoch, pick, perStrategy, actual, pnl, consensus, anyAccountingOnlyLoss };
   });
 
   // Compute WR per column.
@@ -136,7 +149,15 @@ export default function LastWindowsTable({ picks, resolvedByStrategy }) {
                 </td>
                 <td style={tdStyle}>
                   {r.actual
-                    ? <span style={{ color: r.actual === 'UP' ? T.profit : T.loss }}>{r.actual}</span>
+                    ? <span style={{ color: r.actual === 'UP' ? T.profit : T.loss }}>
+                        {r.actual}
+                        {r.anyAccountingOnlyLoss ? (
+                          <span
+                            title="engine_optimistic + LOSS — accounting-only (wallet untouched per hub note #64)"
+                            style={{ marginLeft: 4, color: T.label2, fontSize: 10 }}
+                          >†</span>
+                        ) : null}
+                      </span>
                     : <span style={{ color: T.label }}>—</span>}
                 </td>
                 <td style={tdStyle}>
