@@ -1,5 +1,5 @@
 name: v9_ensemble
-version: "9.0.0"
+version: "9.0.1"
 # v9_ensemble — 2026-04-24 — Reinforced-Agreement LGB + v2-classifier ensemble.
 #
 # Purpose: layer the v2 classifier head (`probability_classifier`, "pc") on top
@@ -105,7 +105,7 @@ gates: []
 
 gate_params:
   # ── All v8_lgb_only gates inherited (same defaults) ──────────────────
-  min_offset_sec: 30
+  min_offset_sec: 24                   # was 30; lowered for 3-tick confirmation room
   max_offset_sec: 200
   tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
 
@@ -132,19 +132,21 @@ gate_params:
   # ── R6 hard LGB safety floor (inherited keys from v8_lgb_only) ───────
   lgb_dist_min_up: 0.15
   lgb_dist_min_down: 0.10
+  lgb_dist_min_up_with_hc_agree: 0.05    # relaxed UP floor when classifier HC + agrees direction
+  lgb_dist_min_down_with_hc_agree: 0.05  # relaxed DOWN floor when classifier HC + agrees direction
 
   # ── v9 ensemble-specific params ──────────────────────────────────────
   # R2 disagreement veto
-  ensemble_disagreement_threshold: 0.25   # |pc - pl| > X => SKIP
+  ensemble_disagreement_threshold: 0.35   # |pc - pl| > X => SKIP (was 0.30; loosen further — 0.30 caused borderline rounding kills)
 
   # R3 direction agreement
   require_direction_agreement: true
 
   # R4 T-minus-aware blend weights
-  pc_weight_t_60: 0.55      # T-minus 30-60s
-  pc_weight_t_120: 0.50     # 60-120s
-  pc_weight_t_180: 0.45     # 120-180s
-  pc_weight_t_200: 0.35     # 180-200s
+  pc_weight_t_60: 0.70      # T-minus 30-60s  (was 0.55; classifier acc=82.4%, leads)
+  pc_weight_t_120: 0.55     # 60-120s         (was 0.50; acc=75.2%)
+  pc_weight_t_180: 0.40     # 120-180s        (was 0.45; acc=71.1%)
+  pc_weight_t_200: 0.25     # 180-200s        (was 0.35; acc=65.9%, LGB leads)
 
   # R9 VHC reinforcement thresholds + bypass
   vhc_threshold: 0.25          # |pc - 0.5| >= X AND agreement => VERY_HIGH
@@ -164,6 +166,24 @@ gate_params:
   conviction_high_dist: 0.20       # |pu - 0.5| >= 0.20 => HIGH
   conviction_medium_dist: 0.12     # |pu - 0.5| >= 0.12 => MEDIUM
   conviction_low_dist: 0.05        # |pu - 0.5| >= 0.05 => LOW
+
+  # ── Delta alignment gate (NEW 2026-04-24, note #301) ──────────────────
+  delta_gate_enabled: true
+  min_alignment_bps: 1.0               # skip if chainlink > 1bp against bet direction
+
+  # ── 3-tick entry confirmation (NEW 2026-04-24, note #298) ────────────
+  min_consecutive_pass_ticks: 3        # 0 = disabled (fire on first pass)
+
+  # ── Post-fill exit monitoring (NEW 2026-04-24, note #299) ────────────
+  exit_monitor_enabled: true
+  exit_shadow_mode: true               # shadow = log exits, don't execute sells
+  exit_min_hold_seconds: 10
+  exit_no_exit_last_seconds: 30
+  exit_consecutive_flip_ticks: 3
+  exit_lgb_flip_enabled: true
+  exit_oracle_flip_enabled: true
+  exit_max_retries: 1
+  exit_retry_timeout_seconds: 5
 
   # ── Primary signal source ────────────────────────────────────────────
   primary_signal_source: ensemble

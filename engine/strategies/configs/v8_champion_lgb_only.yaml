@@ -1,5 +1,5 @@
 name: v8_champion_lgb_only
-version: "8.0.0-lgb-0.1"
+version: "8.0.0-lgb-0.2"
 # v8_champion_lgb_only — 2026-04-24 — LGB-only fine-tune variant.
 #
 # Purpose: iterate on LGB-only path without destabilising v8_champion LIVE.
@@ -42,7 +42,7 @@ gates: []
 
 gate_params:
   # ── Entry window ─────────────────────────────────────────────────────
-  min_offset_sec: 30
+  min_offset_sec: 24                   # was 30; lowered for 3-tick confirmation room
   max_offset_sec: 200
 
   # ── Regime allowlist (inherits v8) ───────────────────────────────────
@@ -102,6 +102,33 @@ gate_params:
   transition_strong_bypass_enabled: true
   transition_bypass_min_avg_pct_delta: 0.05   # in PERCENT (0.05 = 0.05%)
   transition_bypass_min_lgb_dist: 0.20
+
+  # ── Delta alignment gate (NEW 2026-04-24, note #301) ──────────────────
+  # Skip if chainlink delta at eval time is moving AGAINST bet direction
+  # by more than min_alignment_bps. 14d sim shows +$51.16 on 45 trades,
+  # avoids 44% losses, kills 5% wins (Hub note #236).
+  delta_gate_enabled: true
+  min_alignment_bps: 1.0               # skip if chainlink > 1bp against bet direction
+
+  # ── 3-tick entry confirmation (NEW 2026-04-24, note #298) ────────────
+  # Require N consecutive 2s evaluations where all gates pass AND direction
+  # stays the same before firing FAK order. Prevents flicker entries like
+  # window 1777051800 (17:30 UTC loss).
+  min_consecutive_pass_ticks: 3        # 0 = disabled (fire on first pass)
+
+  # ── Post-fill exit monitoring (NEW 2026-04-24, note #299) ────────────
+  # After FAK fill, continue evaluating every 2s. If signal flips for
+  # exit_consecutive_flip_ticks consecutive ticks, sell position on CLOB.
+  # T-60 sim shows 60% loss recovery with 25% false-exit rate (Hub note #236).
+  exit_monitor_enabled: true
+  exit_shadow_mode: true               # shadow = log exits, don't execute sells
+  exit_min_hold_seconds: 10            # don't exit within first 10s
+  exit_no_exit_last_seconds: 30        # don't try selling in last 30s (thin book)
+  exit_consecutive_flip_ticks: 3       # 3 consecutive flipped ticks (6s) before selling
+  exit_lgb_flip_enabled: true          # exit if LGB crosses 0.5
+  exit_oracle_flip_enabled: true       # exit if chainlink + tiingo both reverse
+  exit_max_retries: 1                  # sell retry count
+  exit_retry_timeout_seconds: 5        # timeout per sell attempt
 
   # ── Primary signal source ─────────────────────────────────────────────
   primary_signal_source: lgb

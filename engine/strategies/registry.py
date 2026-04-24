@@ -134,6 +134,7 @@ class StrategyRegistry:
         decision_repo: Any = None,
         trace_repo: Any = None,
         db: Any = None,
+        position_monitor: Any = None,
     ):
         self._config_dir = Path(config_dir)
         self._data_surface = data_surface
@@ -147,6 +148,10 @@ class StrategyRegistry:
         # window_evaluation_traces.surface_json. Stays None when not wired
         # (tests, legacy composition paths) — writer is a no-op then.
         self._db = db
+        # Post-fill exit monitoring (2026-04-24). PositionMonitor tracks
+        # open positions and triggers exits when signals flip. Stays None
+        # when not wired (tests, legacy composition paths).
+        self._position_monitor = position_monitor
         self._configs: dict[str, StrategyConfig] = {}
         self._pipelines: dict[str, list[Gate]] = {}
         self._hooks: dict[str, dict[str, Callable]] = {}
@@ -598,6 +603,23 @@ class StrategyRegistry:
                         # offset within the same window.
                         if result.success:
                             self._executed_windows[name] = window_ts
+                            # Register fill with PositionMonitor for exit
+                            # monitoring (2026-04-24). Only LIVE fills with
+                            # exit_monitor_enabled in metadata.
+                            if self._position_monitor is not None:
+                                _exit_enabled = (
+                                    decision.metadata or {}
+                                ).get("exit_monitor_enabled", False)
+                                if _exit_enabled and result.fill_price:
+                                    self._position_monitor.on_fill(
+                                        strategy_id=name,
+                                        window_ts=window_ts,
+                                        direction=decision.direction or "UP",
+                                        fill_price=result.fill_price,
+                                        fill_size=result.fill_size or 0,
+                                        order_id=result.order_id or "",
+                                        token_id=result.token_id or "",
+                                    )
                         log.info(
                             "registry.executed",
                             strategy=name,
@@ -654,6 +676,71 @@ class StrategyRegistry:
                         strategy_version=config.version,
                     )
                 )
+        # ── Post-fill exit evaluation (2026-04-24) ───────────────────────
+        # For each open monitored position, evaluate whether signals have
+        # flipped and an exit should be triggered. Runs on every eval tick.
+        if self._position_monitor is not None:
+            for pos_key, pos in list(
+                self._position_monitor.get_open_positions().items()
+            ):
+                try:
+                    _p_cfg = self._configs.get(pos.strategy_id)
+                    if _p_cfg is None:
+                        continue
+                    _exit_params = {}
+                    # Read exit params from the strategy's gate_params YAML
+                    _gp = _p_cfg.gate_params
+                    _exit_params = {
+                        "exit_monitor_enabled": _gp.get(
+                            "exit_monitor_enabled", True
+                        ),
+                        "exit_min_hold_seconds": _gp.get(
+                            "exit_min_hold_seconds", 10
+                        ),
+                        "exit_no_exit_last_seconds": _gp.get(
+                            "exit_no_exit_last_seconds", 30
+                        ),
+                        "exit_consecutive_flip_ticks": _gp.get(
+                            "exit_consecutive_flip_ticks", 3
+                        ),
+                        "exit_lgb_flip_enabled": _gp.get(
+                            "exit_lgb_flip_enabled", True
+                        ),
+                        "exit_oracle_flip_enabled": _gp.get(
+                            "exit_oracle_flip_enabled", True
+                        ),
+                    }
+                    exit_reason = self._position_monitor.evaluate_exit(
+                        strategy_id=pos.strategy_id,
+                        window_ts=pos.window_ts,
+                        surface=surface,
+                        **_exit_params,
+                    )
+                    if exit_reason:
+                        _shadow = _gp.get("exit_shadow_mode", True)
+                        _max_retries = _gp.get("exit_max_retries", 1)
+                        _retry_timeout = _gp.get(
+                            "exit_retry_timeout_seconds", 5
+                        )
+                        import asyncio as _aio
+
+                        _aio.create_task(
+                            self._position_monitor.execute_exit(
+                                strategy_id=pos.strategy_id,
+                                window_ts=pos.window_ts,
+                                reason=exit_reason,
+                                exit_shadow_mode=_shadow,
+                                exit_max_retries=_max_retries,
+                                exit_retry_timeout_seconds=_retry_timeout,
+                            )
+                        )
+                except Exception as _exc:
+                    log.warning(
+                        "registry.exit_eval_error",
+                        position=pos_key,
+                        error=str(_exc)[:200],
+                    )
+
         # Send per-window summary at final eval offset
         # 5m windows: T-60 (eval_offset <= 62)
         # 15m windows: T-270 (eval_offset <= 280, first eval in trade window)

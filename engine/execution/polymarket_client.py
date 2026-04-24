@@ -475,7 +475,7 @@ class PolymarketClient:
             )
             raise ValueError(f"Token price {price} below 30¢ floor — skipping")
 
-        size = round(stake_usd / float(price), 2)
+        size = round(stake_usd / float(price), 3)  # 3dp to match CLOB precision
 
         # ── GTD expiry: auto-expire when the 5m/15m window closes ──────
         # Extract window_ts from market_slug: "btc-updown-5m-1775256000"
@@ -518,13 +518,13 @@ class PolymarketClient:
         limit_price = round(float(price), 4)
         limit_price = max(limit_price, PRICE_FLOOR)
 
-        order_size = round(stake_usd / limit_price, 2)
+        order_size = round(stake_usd / limit_price, 3)  # 3dp to match CLOB precision
         # Fix maker_amount precision: price * size must have ≤ 2 decimal places
-        for _adj in range(100):
+        for _adj in range(1000):
             _maker = round(limit_price * order_size, 6)
             if abs(_maker - round(_maker, 2)) < 1e-9:
                 break
-            order_size -= 0.01
+            order_size = round(order_size - 0.001, 3)
         # Enforce Polymarket minimum order size (5 shares)
         order_size = max(order_size, 5.0)
 
@@ -739,22 +739,21 @@ class PolymarketClient:
 
         client = self._clob_client
 
-        # CLOB requires: price max 4 decimals, size (maker) max 2 decimals
-        # Floor size to avoid taker amount exceeding 4 decimal precision
+        # CLOB requires: price max 4 decimals, size 3dp to match CLOB precision
         import math
 
         _price = round(price, 4)
-        _size = math.floor(size * 100) / 100  # Floor to 2 decimals
+        _size = round(size, 3)  # 3dp to match CLOB precision
         # CLOB requires maker_amount (price*size) to have ≤ 2 decimal places
-        for _adj in range(100):
+        for _adj in range(1000):
             _maker = round(_price * _size, 6)
             if abs(_maker - round(_maker, 2)) < 1e-9:
                 break
-            _size -= 0.01
+            _size = round(_size - 0.001, 3)
         _size = max(_size, 0.01)
         if _size <= 0:
             return {"filled": False, "size_matched": 0, "order_id": None}
-        _size_str = f"{_size:.2f}"
+        _size_str = f"{_size:.3f}"
         _price_str = f"{_price:.4f}"
 
         order_args = OrderArgs(
@@ -868,9 +867,7 @@ class PolymarketClient:
         # The py-clob-client SDK supports both via OrderType enum.
         if self.paper_mode:
             # Paper mode: simulate fill at requested price
-            import math
-
-            _sim_size = math.floor(size * 100) / 100
+            _sim_size = round(size, 3)  # 3dp to match CLOB precision
             return {
                 "filled": True,
                 "size_matched": _sim_size,
@@ -908,12 +905,12 @@ class PolymarketClient:
         import math
 
         _price = round(price, 4)
-        _size = math.floor(size * 100) / 100
-        for _adj in range(100):
+        _size = round(size, 3)  # 3dp to match CLOB precision
+        for _adj in range(1000):
             _maker = round(_price * _size, 6)
             if abs(_maker - round(_maker, 2)) < 1e-9:
                 break
-            _size -= 0.01
+            _size = round(_size - 0.001, 3)
         _size = max(_size, 0.01)
         if _size <= 0:
             return {"filled": False, "size_matched": 0, "order_id": None}
@@ -921,7 +918,7 @@ class PolymarketClient:
         order_args = OrderArgs(
             token_id=token_id,
             price=float(f"{_price:.4f}"),
-            size=float(f"{_size:.2f}"),
+            size=float(f"{_size:.3f}"),
             side=BUY,
         )
 
@@ -1221,6 +1218,134 @@ class PolymarketClient:
             return (None, None)
 
     # place_market_order_legacy DELETED in v10 cleanup (was duplicate of place_market_order)
+
+    # ------------------------------------------------------------------
+    # SELL-side FAK — post-fill exit system (2026-04-24)
+    # ------------------------------------------------------------------
+
+    async def place_sell_fak(
+        self,
+        token_id: str,
+        price: float,
+        size: float,
+    ) -> dict:
+        """Place a SELL Fill-And-Kill order to close an open position.
+
+        Mirrors place_market_order() but with side=SELL. Used by the
+        PositionMonitor to exit positions when signals flip.
+
+        Paper mode simulates a fill at the requested price.
+
+        Args:
+            token_id: CLOB outcome token ID to sell.
+            price: Minimum sell price (worst acceptable price).
+            size: Number of shares to sell.
+
+        Returns:
+            dict with keys: filled (bool), size_matched (float), order_id (str).
+        """
+        if self.paper_mode:
+            _sim_size = round(size, 3)  # 3dp to match CLOB precision
+            return {
+                "filled": True,
+                "size_matched": _sim_size,
+                "order_id": f"paper-sell-fak-{uuid.uuid4().hex[:8]}",
+            }
+
+        if not self._clob_client:
+            raise RuntimeError("CLOB client not connected — call connect() first")
+
+        # Phantom-trade guard
+        if not getattr(self._clob_client, "creds", None):
+            raise RuntimeError(
+                "CLOB client has no auth creds — refusing to submit a live "
+                "sell order against a read-only (paper-mode) client."
+            )
+
+        from py_clob_client.clob_types import OrderArgs, OrderType
+        from py_clob_client.order_builder.constants import SELL
+
+        client = self._clob_client
+
+        import math
+
+        _price = round(price, 4)
+        _size = round(size, 3)  # 3dp to match CLOB precision
+        # CLOB requires maker_amount (price*size) to have <= 2 decimal places
+        for _adj in range(1000):
+            _maker = round(_price * _size, 6)
+            if abs(_maker - round(_maker, 2)) < 1e-9:
+                break
+            _size = round(_size - 0.001, 3)
+        _size = max(_size, 0.01)
+        if _size <= 0:
+            return {"filled": False, "size_matched": 0, "order_id": None}
+
+        order_args = OrderArgs(
+            token_id=token_id,
+            price=float(f"{_price:.4f}"),
+            size=float(f"{_size:.3f}"),
+            side=SELL,
+        )
+
+        def _sign_and_submit():
+            signed = client.create_order(order_args)
+            return client.post_order(signed, OrderType.FAK)
+
+        self._log.info(
+            "place_sell_fak.submitting",
+            token_id=token_id[:20] + "...",
+            price=f"${price:.4f}",
+            size=f"{size:.2f}",
+        )
+
+        response = await asyncio.to_thread(_sign_and_submit)
+
+        def _get(obj, key, default=None):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
+        order_id = (
+            _get(response, "orderID")
+            or _get(response, "id")
+            or f"sell-fak-{uuid.uuid4().hex[:12]}"
+        )
+        status_raw = _get(response, "status", "UNKNOWN") or "UNKNOWN"
+        status = str(status_raw).lower()
+        making_raw = _get(response, "makingAmount", "0")
+        taking_raw = _get(response, "takingAmount", "0")
+
+        try:
+            making_amount = float(making_raw) if making_raw else 0.0
+        except (ValueError, TypeError):
+            making_amount = 0.0
+        try:
+            taking_amount = float(taking_raw) if taking_raw else 0.0
+        except (ValueError, TypeError):
+            taking_amount = 0.0
+
+        # For a SELL: makingAmount = shares sold, takingAmount = USDC received
+        size_matched = making_amount
+        filled = (status == "matched") or (size_matched > 0)
+
+        self._log.info(
+            "place_sell_fak.result",
+            filled=filled,
+            size_matched=size_matched,
+            taking_amount=taking_amount,
+            order_id=str(order_id)[:20],
+            status=status,
+        )
+
+        return {
+            "filled": filled,
+            "size_matched": size_matched,
+            "order_id": str(order_id),
+            "making_amount": making_amount,
+            "taking_amount": taking_amount,
+            "status": status,
+        }
 
     def get_current_market_slug(self) -> str:
         """Return the slug for the current 5-minute BTC up/down window.

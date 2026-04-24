@@ -6,12 +6,18 @@ LGB-only variant of v8_champion. Same gate stack as v8 with 4 changes:
   - Gate 9b NEW: down_fill_floor (0.15) replaces lost fill_band LOW guard
   - Gate 10 NEW: post-loss cooldown (20 min default)
 
+2026-04-24 additions:
+  - Gate 6b NEW: delta alignment gate (skip if chainlink >1bp against direction)
+  - Gate 11 NEW: 3-tick entry confirmation (require N consecutive passing evals)
+  - Post-fill exit monitoring integration (PositionMonitor wiring)
+
 Helper imports reused from v8_champion.py to avoid divergence. Post-loss
 cooldown is in-memory first, with a DB fallback lookup for cold starts
 (engine restart during an active cooldown).
 
 See Hub note #222 for the tactical spec and note #221 for strategic
-rationale + evidence.
+rationale + evidence. See notes #236, #298, #299, #301 for the
+delta-gate, 3-tick, and exit system specs.
 """
 from __future__ import annotations
 
@@ -41,7 +47,7 @@ from strategies.configs.v8_champion import (
 )
 
 _STRATEGY_ID = "v8_champion_lgb_only"
-_VERSION = "8.0.0-lgb-0.1"
+_VERSION = "8.0.0-lgb-0.2"
 _ENTRY_CAP = 0.80
 
 
@@ -119,6 +125,87 @@ def _transition_bypass_min_lgb_dist() -> float:
         "transition_bypass_min_lgb_dist",
         "V8LGB_TRANSITION_BYPASS_MIN_LGB_DIST",
         0.20,
+    )
+
+
+# ── Delta alignment gate (2026-04-24, note #301) ──────────────────────────
+def _delta_gate_enabled() -> bool:
+    return _gp.get_bool(
+        "delta_gate_enabled", "V8LGB_DELTA_GATE_ENABLED", True
+    )
+
+
+def _min_alignment_bps() -> float:
+    return _gp.get_float(
+        "min_alignment_bps", "V8LGB_MIN_ALIGNMENT_BPS", 1.0
+    )
+
+
+# ── 3-tick entry confirmation (2026-04-24, note #298) ─────────────────────
+def _min_consecutive_pass_ticks() -> int:
+    return _gp.get_int(
+        "min_consecutive_pass_ticks",
+        "V8LGB_MIN_CONSECUTIVE_PASS_TICKS",
+        3,
+    )
+
+
+# ── Post-fill exit monitoring params (2026-04-24, note #299) ──────────────
+def _exit_monitor_enabled() -> bool:
+    return _gp.get_bool(
+        "exit_monitor_enabled", "V8LGB_EXIT_MONITOR_ENABLED", True
+    )
+
+
+def _exit_shadow_mode() -> bool:
+    return _gp.get_bool(
+        "exit_shadow_mode", "V8LGB_EXIT_SHADOW_MODE", True
+    )
+
+
+def _exit_min_hold_seconds() -> int:
+    return _gp.get_int(
+        "exit_min_hold_seconds", "V8LGB_EXIT_MIN_HOLD_SECONDS", 10
+    )
+
+
+def _exit_no_exit_last_seconds() -> int:
+    return _gp.get_int(
+        "exit_no_exit_last_seconds", "V8LGB_EXIT_NO_EXIT_LAST_SECONDS", 30
+    )
+
+
+def _exit_consecutive_flip_ticks() -> int:
+    return _gp.get_int(
+        "exit_consecutive_flip_ticks",
+        "V8LGB_EXIT_CONSECUTIVE_FLIP_TICKS",
+        3,
+    )
+
+
+def _exit_lgb_flip_enabled() -> bool:
+    return _gp.get_bool(
+        "exit_lgb_flip_enabled", "V8LGB_EXIT_LGB_FLIP_ENABLED", True
+    )
+
+
+def _exit_oracle_flip_enabled() -> bool:
+    return _gp.get_bool(
+        "exit_oracle_flip_enabled", "V8LGB_EXIT_ORACLE_FLIP_ENABLED", True
+    )
+
+
+def _exit_max_retries() -> int:
+    return _gp.get_int(
+        "exit_max_retries", "V8LGB_EXIT_MAX_RETRIES", 1
+    )
+
+
+def _exit_retry_timeout_seconds() -> int:
+    return _gp.get_int(
+        "exit_retry_timeout_seconds",
+        "V8LGB_EXIT_RETRY_TIMEOUT_SECONDS",
+        5,
     )
 
 
@@ -203,6 +290,62 @@ def reset_cooldown() -> None:
     """Clear the in-memory cooldown timestamp. Used by tests."""
     global _last_loss_epoch
     _last_loss_epoch = None
+
+
+# ── 3-tick entry confirmation state machine ──────────────────────────────
+# Keyed by strategy_id:window_ts. Tracks consecutive passing evals where
+# all gates pass AND direction stays the same. Reset on any SKIP.
+_consecutive_pass: dict[str, tuple[int, str]] = {}
+
+
+def check_confirmation(strategy_id: str, window_ts: int, direction: str) -> bool:
+    """Check if we have enough consecutive passing ticks.
+
+    Returns True when count >= min_consecutive_pass_ticks (proceed to TRADE),
+    False otherwise (continue accumulating).
+    """
+    required = _min_consecutive_pass_ticks()
+    if required <= 0:
+        return True  # disabled
+
+    key = f"{strategy_id}:{window_ts}"
+    prev = _consecutive_pass.get(key)
+    if prev and prev[1] == direction:
+        count = prev[0] + 1
+    else:
+        count = 1  # reset on direction change or first tick
+    _consecutive_pass[key] = (count, direction)
+    return count >= required
+
+
+def get_confirmation_count(strategy_id: str, window_ts: int) -> int:
+    """Return the current consecutive pass count for a key. Used by tests."""
+    key = f"{strategy_id}:{window_ts}"
+    prev = _consecutive_pass.get(key)
+    return prev[0] if prev else 0
+
+
+def reset_confirmation(strategy_id: str, window_ts: int) -> None:
+    """Reset confirmation counter on SKIP. Also called on window resolution."""
+    key = f"{strategy_id}:{window_ts}"
+    _consecutive_pass.pop(key, None)
+
+
+def reset_all_confirmations() -> None:
+    """Clear all confirmation state. Used by tests."""
+    _consecutive_pass.clear()
+
+
+def _skip_lgb(
+    reason: str,
+    gates: list[dict],
+    *,
+    direction: Optional[str] = None,
+    window_ts: int = 0,
+) -> StrategyDecision:
+    """SKIP wrapper that resets 3-tick confirmation counter."""
+    reset_confirmation(_STRATEGY_ID, window_ts)
+    return _skip(reason, gates, direction=direction)
 
 
 # ── Hook entry ──────────────────────────────────────────────────────────────
@@ -345,6 +488,54 @@ def evaluate_v8_champion_lgb_only(
         )
     )
 
+    # ── 6b. Delta alignment gate (AFTER direction known, BEFORE fill_band)
+    # Skip if chainlink delta is moving AGAINST bet direction by more than
+    # min_alignment_bps. See Hub note #301 / audit task #301.
+    if _delta_gate_enabled() and surface.delta_chainlink is not None:
+        alignment_bps = surface.delta_chainlink * 10000  # fraction to bps
+        min_bps = _min_alignment_bps()
+        if direction == "UP" and alignment_bps < -min_bps:
+            gates.append(
+                _gate(
+                    "delta_gate",
+                    False,
+                    f"chainlink {alignment_bps:.1f}bp against UP "
+                    f"(threshold: -{min_bps:.1f}bp)",
+                )
+            )
+            reset_confirmation(_STRATEGY_ID, getattr(surface, "window_ts", 0))
+            return _skip(
+                f"delta_gate: chainlink {alignment_bps:.1f}bp against UP",
+                gates,
+                direction=direction,
+            )
+        if direction == "DOWN" and alignment_bps > min_bps:
+            gates.append(
+                _gate(
+                    "delta_gate",
+                    False,
+                    f"chainlink +{alignment_bps:.1f}bp against DOWN "
+                    f"(threshold: +{min_bps:.1f}bp)",
+                )
+            )
+            reset_confirmation(_STRATEGY_ID, getattr(surface, "window_ts", 0))
+            return _skip(
+                f"delta_gate: chainlink +{alignment_bps:.1f}bp against DOWN",
+                gates,
+                direction=direction,
+            )
+        gates.append(
+            _gate(
+                "delta_gate",
+                True,
+                f"chainlink {alignment_bps:.1f}bp aligned with {direction}",
+            )
+        )
+    elif _delta_gate_enabled():
+        gates.append(
+            _gate("delta_gate", True, "chainlink delta unavailable, skip gate")
+        )
+
     # ── 3b. Per-direction vpin-regime block (AFTER direction known) ────────
     # NB: checked against surface.regime (CALM / NORMAL / TRANSITION /
     # CASCADE), not v4_regime. TRANSITION is a vol-regime value.
@@ -383,6 +574,7 @@ def evaluate_v8_champion_lgb_only(
                     f"(no bypass: {diag})",
                 )
             )
+            reset_confirmation(_STRATEGY_ID, getattr(surface, "window_ts", 0))
             return _skip(
                 f"vpin_regime_direction: {direction} blocked in "
                 f"{vpin_regime}",
@@ -412,6 +604,7 @@ def evaluate_v8_champion_lgb_only(
                     f"cl={cl_dir} ti={ti_dir} vs {direction}",
                 )
             )
+            reset_confirmation(_STRATEGY_ID, getattr(surface, "window_ts", 0))
             return _skip(
                 f"oracle_direction: disagree cl={cl_dir} ti={ti_dir} "
                 f"vs {direction}",
@@ -431,6 +624,7 @@ def evaluate_v8_champion_lgb_only(
         fill_price = getattr(surface, "poly_max_entry_price", None)
     if fill_price is None:
         gates.append(_gate("fill_band", False, "no CLOB ask / poly_max_entry"))
+        reset_confirmation(_STRATEGY_ID, getattr(surface, "window_ts", 0))
         return _skip(
             "fill_band: no fill price available",
             gates,
@@ -447,6 +641,7 @@ def evaluate_v8_champion_lgb_only(
                 f"fill={fill_price:.3f} outside [{fmin:.2f},{fmax:.2f}]",
             )
         )
+        reset_confirmation(_STRATEGY_ID, getattr(surface, "window_ts", 0))
         return _skip(
             f"fill_band: price={fill_price:.3f} outside "
             f"[{fmin:.2f},{fmax:.2f}]",
@@ -472,6 +667,7 @@ def evaluate_v8_champion_lgb_only(
                     f"UP fill={fill_price:.3f} < {floor:.2f}",
                 )
             )
+            reset_confirmation(_STRATEGY_ID, getattr(surface, "window_ts", 0))
             return _skip(
                 f"up_fill_floor: fill={fill_price:.3f} < {floor:.2f}",
                 gates,
@@ -496,6 +692,7 @@ def evaluate_v8_champion_lgb_only(
                     f"DOWN fill={fill_price:.3f} < {floor:.2f}",
                 )
             )
+            reset_confirmation(_STRATEGY_ID, getattr(surface, "window_ts", 0))
             return _skip(
                 f"down_fill_floor: fill={fill_price:.3f} < {floor:.2f}",
                 gates,
@@ -519,6 +716,7 @@ def evaluate_v8_champion_lgb_only(
                 f"{remaining}s remaining",
             )
         )
+        reset_confirmation(_STRATEGY_ID, getattr(surface, "window_ts", 0))
         return _skip(
             f"post_loss_cooldown: {remaining // 60}m {remaining % 60}s "
             f"remaining",
@@ -528,6 +726,35 @@ def evaluate_v8_champion_lgb_only(
     gates.append(
         _gate("post_loss_cooldown", True, "no active cooldown")
     )
+
+    # ── 11. 3-tick entry confirmation (2026-04-24, note #298) ────────────
+    # All gates passed. Check if we have enough consecutive passing evals
+    # before firing the FAK order. Prevents flicker entries.
+    _wts = getattr(surface, "window_ts", 0) or 0
+    required = _min_consecutive_pass_ticks()
+    if required > 0:
+        confirmed = check_confirmation(_STRATEGY_ID, _wts, direction)
+        count = get_confirmation_count(_STRATEGY_ID, _wts)
+        if not confirmed:
+            gates.append(
+                _gate(
+                    "entry_confirmation",
+                    False,
+                    f"{count}/{required} consecutive pass ticks",
+                )
+            )
+            return _skip(
+                f"entry_confirmation: {count}/{required} ticks",
+                gates,
+                direction=direction,
+            )
+        gates.append(
+            _gate(
+                "entry_confirmation",
+                True,
+                f"{count}/{required} consecutive pass ticks — confirmed",
+            )
+        )
 
     # ── TRADE ──────────────────────────────────────────────────────────────
     # Use dist as the conviction score so clob_sizing schedule thresholds
@@ -562,5 +789,16 @@ def evaluate_v8_champion_lgb_only(
             "chainlink_delta": surface.delta_chainlink,
             "tiingo_delta": surface.delta_tiingo,
             "primary_signal_source": "lgb",
+            "exit_monitor_enabled": _exit_monitor_enabled(),
+            "exit_params": {
+                "exit_shadow_mode": _exit_shadow_mode(),
+                "exit_min_hold_seconds": _exit_min_hold_seconds(),
+                "exit_no_exit_last_seconds": _exit_no_exit_last_seconds(),
+                "exit_consecutive_flip_ticks": _exit_consecutive_flip_ticks(),
+                "exit_lgb_flip_enabled": _exit_lgb_flip_enabled(),
+                "exit_oracle_flip_enabled": _exit_oracle_flip_enabled(),
+                "exit_max_retries": _exit_max_retries(),
+                "exit_retry_timeout_seconds": _exit_retry_timeout_seconds(),
+            },
         },
     )

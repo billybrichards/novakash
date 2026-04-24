@@ -264,19 +264,19 @@ class FOKLadder:
 
     @staticmethod
     def _calc_size(price: float, stake_usd: float) -> float:
-        """Calculate CLOB-compliant size (2dp price, clean maker_amount ≤2dp).
+        """Calculate CLOB-compliant size (3dp size, 2dp price, clean maker_amount ≤2dp).
 
         Enforces Polymarket minimum of 5 shares. If calculated size < 5,
         bumps up to 5 (the stake will be slightly higher than requested).
         """
         _price = round(price, 2)  # CLOB enforces 2dp on FAK/FOK prices
-        size = math.floor(stake_usd / _price * 100) / 100
+        size = round(stake_usd / _price, 3)  # 3dp to match CLOB precision
         # Ensure maker_amount (price × size) is clean to 2dp
-        for _ in range(100):
+        for _ in range(1000):
             _maker = round(_price * size, 6)
             if abs(_maker - round(_maker, 2)) < 1e-9:
                 break
-            size -= 0.01
+            size = round(size - 0.001, 3)
         # Enforce Polymarket minimum order size
         size = max(size, FOKLadder.POLY_MIN_SHARES)
         return size

@@ -29,6 +29,7 @@ from strategies.configs.v9_ensemble import (
     evaluate_v9_ensemble,
     record_loss,
     reset_cooldown,
+    reset_all_confirmations_v9,
     _pc_weight_for_offset,
     _pc_weight_t_60,
     _pc_weight_t_120,
@@ -127,6 +128,8 @@ def _bind_gate_params():
         "block_up_vpin_regimes": ["TRANSITION"],
         "lgb_dist_min_down": 0.10,
         "lgb_dist_min_up": 0.15,
+        "lgb_dist_min_up_with_hc_agree": 0.05,
+        "lgb_dist_min_down_with_hc_agree": 0.05,
         "fill_band_min": 0.00,
         "fill_band_max": 0.82,
         "up_min_fill_price": 0.55,
@@ -156,14 +159,19 @@ def _bind_gate_params():
         "transition_strong_bypass_enabled": True,
         "transition_bypass_min_avg_pct_delta": 0.05,
         "transition_bypass_min_lgb_dist": 0.20,
+        # Disable new features for legacy tests — tested separately
+        "delta_gate_enabled": False,
+        "min_consecutive_pass_ticks": 0,
     }
     token = _gp.set_active(params)
     reset_cooldown()
+    reset_all_confirmations_v9()
     try:
         yield
     finally:
         _gp.reset_active(token)
         reset_cooldown()
+        reset_all_confirmations_v9()
 
 
 # ── Registry load sanity ───────────────────────────────────────────────────
@@ -179,7 +187,7 @@ def test_registered_as_ghost(registry):
     assert "v9_ensemble" in registry.strategy_names
     cfg = registry.configs["v9_ensemble"]
     assert cfg.mode == "GHOST"
-    assert cfg.version == "9.0.0"
+    assert cfg.version == "9.0.1"
     assert cfg.timescale == "5m"
     assert cfg.asset == "BTC"
     gp = cfg.gate_params
@@ -197,7 +205,7 @@ def test_registered_as_ghost(registry):
         "fallback_to_lgb_on_pc_null",
     ):
         assert key in gp, f"missing gate_param: {key}"
-    assert gp["ensemble_disagreement_threshold"] == 0.25
+    assert gp["ensemble_disagreement_threshold"] == 0.35
     assert gp["vhc_threshold"] == 0.25
     assert gp["vhc_kelly_multiplier"] == 2.0
     assert gp["block_up_vpin_regimes"] == ["TRANSITION"]
@@ -372,10 +380,26 @@ class TestVhcReinforcement:
 
     def test_vhc_bypasses_up_dist_floor(self):
         # UP direction, pl=0.60 → pl_dist=0.10 < 0.15 UP floor.
-        # pc=0.85 (pc_dist=0.35 >= 0.25 VHC) agrees UP. Should bypass LGB floor.
+        # pc=0.85 (pc_dist=0.35 >= 0.25 VHC) agrees UP.
+        # With HC-agree bypass (|pc-0.5|=0.35 >= 0.15), floor relaxes to 0.05,
+        # so pl_dist=0.10 >= 0.05 passes normally (no VHC bypass needed).
         s = _up_surface(
             probability_classifier=0.85,
             probability_lgb=0.60,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "TRADE", d.skip_reason
+        # HC-agree relaxes floor so VHC bypass isn't triggered
+        assert d.metadata["is_vhc"] is True
+
+    def test_vhc_bypasses_up_dist_floor_no_hc_agree(self):
+        # When HC-agree is disabled (pc close to 0.5), VHC bypass still works.
+        # pl=0.54 (dist=0.04 < 0.05 even with HC-agree), pc=0.76 (VHC: dist=0.26 >= 0.25).
+        # pc is HC (0.26 >= 0.15) and agrees UP, so floor relaxes to 0.05.
+        # But pl_dist=0.04 < 0.05, so VHC bypass must fire.
+        s = _up_surface(
+            probability_classifier=0.76,
+            probability_lgb=0.54,
         )
         d = evaluate_v9_ensemble(s)
         assert d.action == "TRADE", d.skip_reason
@@ -429,13 +453,27 @@ class TestLgbSafetyFloor:
         assert d.action == "SKIP"
         assert "lgb_safety_floor" in d.skip_reason
 
-    def test_pc_screaming_pl_weak_up_bypassed_by_vhc(self):
-        # UP direction, pc=0.80 (pc_dist=0.30 >= 0.25 VHC), pl=0.56 (dist=0.06
-        # < 0.15 UP floor). UP direction DOES allow VHC bypass of LGB floor.
+    def test_pc_screaming_pl_weak_up_hc_agree_relaxes_floor(self):
+        # UP direction, pc=0.80 (pc_dist=0.30, HC: >= 0.15), pl=0.56 (dist=0.06).
+        # HC-agree relaxes floor from 0.15 to 0.05. pl_dist=0.06 >= 0.05 passes.
         # |diff| = 0.24 < 0.25, passes disagreement. Both UP, passes direction.
         s = _up_surface(
             probability_classifier=0.80,
             probability_lgb=0.56,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "TRADE", d.skip_reason
+        # HC-agree relaxes the floor so VHC bypass not needed
+        assert d.metadata["is_vhc"] is True
+
+    def test_pl_very_weak_still_blocked_even_with_hc_agree(self):
+        # UP direction, pc=0.76 (VHC: dist=0.26 >= 0.25, HC agrees: 0.26 >= 0.15),
+        # pl=0.53 (dist=0.03 < 0.05 relaxed floor).
+        # HC-agree relaxes to 0.05 but 0.03 < 0.05, so VHC bypass must fire.
+        # |diff| = 0.23 < 0.25 passes disagreement.
+        s = _up_surface(
+            probability_classifier=0.76,
+            probability_lgb=0.53,
         )
         d = evaluate_v9_ensemble(s)
         assert d.action == "TRADE", d.skip_reason
@@ -622,7 +660,7 @@ def test_full_stack_trade_up_with_metadata():
     assert d.action == "TRADE", d.skip_reason
     assert d.direction == "UP"
     assert d.strategy_id == "v9_ensemble"
-    assert d.strategy_version == "9.0.0"
+    assert d.strategy_version == "9.0.1"
     md = d.metadata
     assert md["probability_classifier"] == 0.75
     assert md["probability_lgb"] == 0.72
