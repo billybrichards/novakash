@@ -123,7 +123,7 @@ gate_params:
   fill_band_min: 0.00
   fill_band_max: 0.82
 
-  up_min_fill_price: 0.55
+  up_min_fill_price: 0.20                # was 0.55; lowered — v9 gate stack sufficient
   down_min_fill_price: 0.15
 
   blocked_utc_hours: []  # 24/7 trading enabled 2026-04-24
