@@ -8,9 +8,10 @@ PostgreSQL (reads) and a shared system_state table.
 
 from __future__ import annotations
 
+import asyncio
 import structlog
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -50,6 +51,43 @@ from api.window_traces import router as window_traces_router
 from api.gate_traces import router as gate_traces_router
 
 log = structlog.get_logger(__name__)
+
+
+# ─── Audit-task #255 F1 — matview refresh task ──────────────────────────────
+# Refreshes `strategy_skip_resolved` every 5 minutes so tuning queries stay
+# fresh without hammering strategy_decisions directly. REFRESH ... CONCURRENTLY
+# means readers are never blocked. The task is resilient: any exception logs
+# + sleeps, never crashes the hub.
+
+_MATVIEW_REFRESH_INTERVAL_S = 300  # 5 minutes
+_matview_refresh_task: Optional[asyncio.Task] = None
+
+
+async def _refresh_skip_bucket_matview_loop() -> None:
+    """Background refresh of strategy_skip_resolved (audit #255 F1)."""
+    from sqlalchemy import text
+    from db.database import get_session
+
+    # Small delay on boot so the initial CREATE MATERIALIZED VIEW has time
+    # to commit before we try to refresh it.
+    await asyncio.sleep(30)
+
+    while True:
+        try:
+            async for session in get_session():
+                await session.execute(
+                    text("REFRESH MATERIALIZED VIEW CONCURRENTLY strategy_skip_resolved")
+                )
+                await session.commit()
+                log.info("hub.audit_255_matview_refreshed")
+                break
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning(
+                "hub.audit_255_matview_refresh_error", error=str(exc)[:300]
+            )
+        await asyncio.sleep(_MATVIEW_REFRESH_INTERVAL_S)
 
 
 @asynccontextmanager
@@ -515,11 +553,224 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     log.info("hub.v59_phantom_trades_marked", count=n_phantom)
             except Exception as ph_exc:
                 log.warning("hub.v59_phantom_migration_error", error=str(ph_exc))
+
+            # ─── Audit-task #255 — accelerate skip-bucket analysis ──────────
+            # F2: composite + partial + GIN + expression indexes on
+            # strategy_decisions. Idempotent via IF NOT EXISTS. Canonical
+            # source: hub/db/migrations/versions/20260420_03_strategy_decisions_indexes.sql
+            try:
+                await session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_sd_strategy_action_evaluated "
+                    "ON strategy_decisions (strategy_id, action, evaluated_at DESC)"
+                ))
+                await session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_sd_skip_reason "
+                    "ON strategy_decisions (strategy_id, skip_reason, evaluated_at DESC) "
+                    "WHERE action = 'SKIP'"
+                ))
+                await session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_sd_dedup_key "
+                    "ON strategy_decisions ((metadata_json->>'dedup_key')) "
+                    "WHERE metadata_json ? 'dedup_key'"
+                ))
+                await session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS idx_sd_metadata_path_ops "
+                    "ON strategy_decisions USING GIN (metadata_json jsonb_path_ops)"
+                ))
+                await session.commit()
+                log.info("hub.audit_255_f2_indexes_applied")
+            except Exception as f2_exc:
+                log.warning("hub.audit_255_f2_error", error=str(f2_exc)[:300])
+
+            # F4: backfill window_snapshots.actual_direction from ticks_chainlink
+            # for windows in the v6 LIVE era that are missing resolution. Only
+            # touches rows where actual_direction IS NULL — idempotent.
+            # Canonical source:
+            #   hub/db/migrations/versions/20260420_04_backfill_actual_direction_from_chainlink.sql
+            try:
+                await session.execute(text("""
+                    UPDATE window_snapshots ws
+                    SET
+                        actual_direction = CASE
+                            WHEN close_chain.price > open_chain.price THEN 'UP'
+                            WHEN close_chain.price < open_chain.price THEN 'DOWN'
+                            ELSE NULL
+                        END,
+                        open_price = COALESCE(ws.open_price, open_chain.price),
+                        close_price = COALESCE(ws.close_price, close_chain.price)
+                    FROM
+                        LATERAL (
+                            SELECT price FROM ticks_chainlink
+                            WHERE asset = ws.asset
+                              AND ts <= TO_TIMESTAMP(ws.window_ts) + INTERVAL '10 seconds'
+                              AND ts >= TO_TIMESTAMP(ws.window_ts) - INTERVAL '60 seconds'
+                            ORDER BY ABS(EXTRACT(EPOCH FROM (ts - TO_TIMESTAMP(ws.window_ts)))) ASC
+                            LIMIT 1
+                        ) AS open_chain,
+                        LATERAL (
+                            SELECT price FROM ticks_chainlink
+                            WHERE asset = ws.asset
+                              AND ts <= TO_TIMESTAMP(ws.window_ts + 300) + INTERVAL '10 seconds'
+                              AND ts >= TO_TIMESTAMP(ws.window_ts + 300) - INTERVAL '60 seconds'
+                            ORDER BY ABS(EXTRACT(EPOCH FROM (ts - TO_TIMESTAMP(ws.window_ts + 300)))) ASC
+                            LIMIT 1
+                        ) AS close_chain
+                    WHERE ws.actual_direction IS NULL
+                      AND ws.timeframe = '5m'
+                      AND ws.window_ts >= EXTRACT(EPOCH FROM TIMESTAMP '2026-04-18 00:00:00 UTC')
+                      AND ws.window_ts <= EXTRACT(EPOCH FROM NOW()) - 300
+                """))
+                await session.commit()
+                log.info("hub.audit_255_f4_backfill_applied")
+            except Exception as f4_exc:
+                log.warning("hub.audit_255_f4_error", error=str(f4_exc)[:300])
+
+            # F1: materialised view strategy_skip_resolved.
+            # DROP + CREATE makes the upgrade path deterministic; in steady
+            # state this runs once per hub boot (~1-5s depending on row count).
+            # Canonical source:
+            #   hub/db/migrations/versions/20260420_02_strategy_skip_resolved_matview.sql
+            try:
+                await session.execute(text("DROP MATERIALIZED VIEW IF EXISTS strategy_skip_resolved CASCADE"))
+                await session.execute(text("""
+                    CREATE MATERIALIZED VIEW strategy_skip_resolved AS
+                    WITH latest_decision AS (
+                        SELECT DISTINCT ON (strategy_id, asset, window_ts, timeframe)
+                            strategy_id, strategy_version, asset, window_ts, timeframe,
+                            eval_offset, mode, action, direction, confidence,
+                            confidence_score, entry_cap, collateral_pct,
+                            entry_reason, skip_reason, executed, order_id,
+                            fill_price, fill_size, metadata_json,
+                            metadata_json->>'dedup_key' AS dedup_key,
+                            evaluated_at
+                        FROM strategy_decisions
+                        ORDER BY strategy_id, asset, window_ts, timeframe, evaluated_at DESC
+                    ),
+                    re_eval_counts AS (
+                        SELECT strategy_id, asset, window_ts, timeframe,
+                               COUNT(*) AS re_eval_count
+                        FROM strategy_decisions
+                        GROUP BY strategy_id, asset, window_ts, timeframe
+                    )
+                    SELECT
+                        ld.strategy_id, ld.strategy_version, ld.asset,
+                        ld.window_ts, ld.timeframe, ld.eval_offset, ld.mode,
+                        ld.action, ld.direction, ld.confidence, ld.confidence_score,
+                        ld.entry_cap, ld.collateral_pct, ld.entry_reason,
+                        ld.skip_reason, ld.executed, ld.order_id, ld.fill_price,
+                        ld.fill_size, ld.metadata_json, ld.dedup_key,
+                        ld.evaluated_at,
+                        rc.re_eval_count,
+                        COALESCE(snap.actual_direction, UPPER(snap.poly_winner)) AS resolved_direction,
+                        snap.close_price AS resolved_close_price,
+                        snap.open_price AS resolved_open_price,
+                        CASE
+                            WHEN ld.direction IS NOT NULL
+                             AND COALESCE(snap.actual_direction, UPPER(snap.poly_winner)) IS NOT NULL
+                            THEN CASE
+                                WHEN ld.direction = COALESCE(snap.actual_direction, UPPER(snap.poly_winner))
+                                THEN 'WIN' ELSE 'LOSS'
+                            END
+                            ELSE NULL
+                        END AS hypo_outcome,
+                        t.outcome AS real_outcome,
+                        t.pnl_usd AS real_pnl_usd,
+                        t.resolved_at AS real_resolved_at,
+                        t.sot_reconciliation_state
+                    FROM latest_decision ld
+                    JOIN re_eval_counts rc USING (strategy_id, asset, window_ts, timeframe)
+                    LEFT JOIN window_snapshots snap
+                        ON snap.asset = ld.asset
+                       AND snap.window_ts = ld.window_ts
+                       AND snap.timeframe = ld.timeframe
+                    LEFT JOIN LATERAL (
+                        SELECT outcome, pnl_usd, resolved_at, sot_reconciliation_state
+                        FROM trades
+                        WHERE trades.order_id = ld.order_id
+                          AND ld.order_id IS NOT NULL
+                        ORDER BY resolved_at DESC NULLS LAST, created_at DESC
+                        LIMIT 1
+                    ) t ON TRUE
+                """))
+                await session.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_strategy_skip_resolved "
+                    "ON strategy_skip_resolved (strategy_id, asset, window_ts, timeframe)"
+                ))
+                await session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_ssr_strategy_action "
+                    "ON strategy_skip_resolved (strategy_id, action)"
+                ))
+                await session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_ssr_skip_reason "
+                    "ON strategy_skip_resolved (strategy_id, skip_reason) "
+                    "WHERE action = 'SKIP'"
+                ))
+                await session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_ssr_evaluated_at "
+                    "ON strategy_skip_resolved (evaluated_at DESC)"
+                ))
+                await session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_ssr_resolved "
+                    "ON strategy_skip_resolved (strategy_id, hypo_outcome) "
+                    "WHERE hypo_outcome IS NOT NULL"
+                ))
+                await session.commit()
+                log.info("hub.audit_255_f1_matview_applied")
+            except Exception as f1_exc:
+                log.warning("hub.audit_255_f1_error", error=str(f1_exc)[:300])
+
+            # F6: GRANT SELECT to the analysis role `novakash`. Idempotent —
+            # runs inside a DO block that no-ops when the role doesn't exist
+            # (dev environments).
+            # Canonical source:
+            #   hub/db/migrations/versions/20260420_05_grant_read_novakash.sql
+            try:
+                await session.execute(text("""
+                    DO $$
+                    BEGIN
+                        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'novakash') THEN
+                            GRANT SELECT ON strategy_decisions           TO novakash;
+                            GRANT SELECT ON trades                        TO novakash;
+                            GRANT SELECT ON signals                       TO novakash;
+                            GRANT SELECT ON signal_evaluations            TO novakash;
+                            GRANT SELECT ON ticks_chainlink               TO novakash;
+                            GRANT SELECT ON ticks_tiingo                  TO novakash;
+                            GRANT SELECT ON window_snapshots              TO novakash;
+                            GRANT SELECT ON window_traces                 TO novakash;
+                            GRANT SELECT ON strategy_skip_resolved        TO novakash;
+                            GRANT SELECT ON strategy_decisions_resolved   TO novakash;
+                        END IF;
+                    END $$
+                """))
+                await session.commit()
+                log.info("hub.audit_255_f6_grants_applied")
+            except Exception as f6_exc:
+                log.warning("hub.audit_255_f6_error", error=str(f6_exc)[:300])
+
             break
     except Exception as exc:
         log.warning("hub.migration_error", error=str(exc))
+
+    # Audit #255 F1: spin up the background matview refresh loop.
+    global _matview_refresh_task
+    try:
+        _matview_refresh_task = asyncio.create_task(
+            _refresh_skip_bucket_matview_loop()
+        )
+        log.info("hub.audit_255_matview_refresh_loop_started")
+    except Exception as exc:
+        log.warning(
+            "hub.audit_255_matview_refresh_start_error", error=str(exc)[:300]
+        )
+
     yield
     log.info("hub.stopping")
+    if _matview_refresh_task is not None:
+        _matview_refresh_task.cancel()
+        try:
+            await _matview_refresh_task
+        except (asyncio.CancelledError, Exception):
+            pass
     await close_db()
 
 

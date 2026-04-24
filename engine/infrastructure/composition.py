@@ -500,6 +500,8 @@ class CompositionRoot:
             # Pass the db_client — the repo extracts the pool lazily via _get_pool()
             # so it works even though the pool isn't connected at __init__ time
             _decision_repo = PgStrategyDecisionRepository(db_client=self._db)
+            # Audit #255 F5 — expose for the runtime-level trade recorder wiring.
+            self._strategy_decision_repo = _decision_repo
 
             self._evaluate_strategies_uc = EvaluateStrategiesUseCase(
                 strategies=strategy_pairs,
@@ -593,6 +595,11 @@ class CompositionRoot:
                     _decision_repo = PgStrategyDecisionRepository(
                         db_client=self._db,
                     )
+                    # Audit #255 F5 — expose for the runtime TradeRecorder path.
+                    # Only set when the earlier EvaluateStrategiesUseCase branch
+                    # hasn't already wired it.
+                    if getattr(self, "_strategy_decision_repo", None) is None:
+                        self._strategy_decision_repo = _decision_repo
                     _trace_repo = PgWindowTraceRepository(
                         db_client=self._db,
                     )
