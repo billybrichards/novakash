@@ -2317,6 +2317,34 @@ class EngineRuntime:
                                         "orchestrator.redeemer_start_failed",
                                         error=str(exc),
                                     )
+
+                            # Start CLOBReconciler if switching TO live and it
+                            # wasn't started at boot (because boot was paper).
+                            # Same double-start guard as the redeemer above.
+                            if not want_paper and self._reconciler is None:
+                                _use_reconciler = os.environ.get(
+                                    "RECONCILER_ENABLED", "true"
+                                ).lower() == "true"
+                                if _use_reconciler:
+                                    try:
+                                        from reconciliation.reconciler import CLOBReconciler
+
+                                        self._reconciler = CLOBReconciler(
+                                            poly_client=self._poly_client,
+                                            db_pool=self._db._pool,
+                                            alerter=self._alerter,
+                                            shutdown_event=self._shutdown_event,
+                                        )
+                                        await self._reconciler.start()
+                                        log.info(
+                                            "orchestrator.clob_reconciler_started_on_mode_switch"
+                                        )
+                                    except Exception as exc:
+                                        log.error(
+                                            "orchestrator.clob_reconciler_start_failed_on_mode_switch",
+                                            error=str(exc)[:200],
+                                        )
+                                        self._reconciler = None
                 except Exception as exc:
                     log.debug("mode_sync.failed", error=str(exc)[:80])
 

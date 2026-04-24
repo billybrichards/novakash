@@ -1,87 +1,52 @@
 name: v8_champion_cedar_strict
-version: "8.0.0-cedar-strict"
-# v8_champion_cedar_strict — 2026-04-21 — GHOST shadow A/B variant.
-#
-# Reads the cedar LGB candidate from /v2/probability/cedar (same as
-# v8_champion_cedar) but with ALL GATES IDENTICAL to prod v8_champion.
-#
-# Purpose: isolates MODEL effect from STRATEGY effect. Running all three
-# in parallel:
-#
-#   v8_champion              — LIVE, prod model, prod gates
-#   v8_champion_cedar        — GHOST, CEDAR model, tweaked gates
-#   v8_champion_cedar_strict — GHOST, CEDAR model, prod gates (this file)
-#
-# Comparison:
-#   cedar_strict vs v8_champion  → pure MODEL difference (prod → cedar)
-#   cedar        vs cedar_strict → pure GATES difference (prod → tweaked)
-#   cedar        vs v8_champion  → combined model + gates delta
-#
-# Graceful degradation identical to v8_champion_cedar: cedar endpoint
-# missing / probability_up_cedar None → SKIP with
-# ``cedar_source_unavailable``. Prod v8_champion unaffected.
-#
-# Rollback: edit mode: GHOST → DISABLED + restart engine.
+version: 8.0.0-cedar-strict
 mode: GHOST
 asset: BTC
 timescale: 5m
-
 gates: []
-
 gate_params:
-  # ── Probability source (selects cedar stack) ──────────────────────────
   v2_probability_source: cedar
-
-  # ── Entry window (inherit v6.1.4 tight range) ─────────────────────────
   min_offset_sec: 30
-  max_offset_sec: 200
-
-  # ── Regime (EXPANDED vs v6 — adds chop) ───────────────────────────────
-  tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
-
-  # ── Conviction (v5_ensemble buckets, HIGH only) ───────────────────────
+  max_offset_sec: 240
+  tradeable_v4_regimes:
+  - volatile_trend
+  - chop
+  - risk_off
+  - calm_trend
   require_high_conviction: true
-  bucket_abs_dist_strong: 0.20
-  bucket_path1_extreme_high: 0.90
-  bucket_path1_extreme_low: 0.10
-
-  # ── Fill-band (IDENTICAL to prod v8_champion — 0.30 to 0.65) ──────────
-  fill_band_min: 0.30
-  fill_band_max: 0.65
-
-  # ── UP asymmetric (IDENTICAL to prod v8_champion — floor 0.55) ────────
-  up_min_fill_price: 0.55
+  bucket_abs_dist_strong: 0.15
+  bucket_path1_extreme_high: 0.9
+  bucket_path1_extreme_low: 0.1
+  fill_band_min: 0.3
+  fill_band_max: 0.82
+  up_min_fill_price: 0.0
   up_require_both_buckets: true
-
-  # ── Hour-of-day block — cedar trades all daytime, blocked overnight only
-  blocked_utc_hours: [0, 1, 2, 3, 4, 5]
-
-  # ── Source agreement (chainlink + tiingo must be present; null-block) ─
+  blocked_utc_hours: []
   source_agreement_require_chainlink: true
   source_agreement_require_tiingo: true
   skip_on_oracle_disagree: false
-
-  # ── VPIN guard ────────────────────────────────────────────────────────
-  vpin_min: 0.40
-  vpin_max: 0.85
-
-  # ── risk_off path — not override enabled (kept blocked via regime list)
+  vpin_min: 0.4
+  vpin_max: 1.0
   risk_off_override_enabled: false
-
-  # ── Ensemble source ───────────────────────────────────────────────────
   ensemble_signal_source: ensemble
   prefer_raw_probability: true
-
 sizing:
   type: custom
   custom_hook: clob_sizing
   fraction: 0.025
   max_collateral_pct: 0.058
   schedule:
-    - { threshold: 0.55, modifier: 2.0, label: "high_conv_full" }
-    - { threshold: 0.35, modifier: 1.2, label: "mid" }
-    - { threshold: 0.25, modifier: 1.0, label: "low" }
-    - { threshold: 0.0,  modifier: 0.0, label: "skip" }
-
+  - threshold: 0.55
+    modifier: 2.0
+    label: high_conv_full
+  - threshold: 0.35
+    modifier: 1.2
+    label: mid
+  - threshold: 0.25
+    modifier: 1.0
+    label: low
+  - threshold: 0.0
+    modifier: 0.0
+    label: skip
 hooks_file: v8_champion.py
 pre_gate_hook: evaluate_v8_champion

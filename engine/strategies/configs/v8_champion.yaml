@@ -41,7 +41,9 @@ timescale: 5m
 gates: []
 
 gate_params:
-  # ── Entry window (inherit v6.1.4 tight range) ─────────────────────────
+  # ── Entry window (T-200 to T-30 before close) ─────────────────────────
+  # eval_offset = seconds before window close. [30, 200] = trade from
+  # T-200 to T-30. Reverted 2026-04-23: offset IS seconds-before-close.
   min_offset_sec: 30
   max_offset_sec: 200
 
@@ -53,20 +55,22 @@ gate_params:
 
   # ── Conviction (v5_ensemble buckets, HIGH only) ───────────────────────
   require_high_conviction: true
-  bucket_abs_dist_strong: 0.20
+  bucket_abs_dist_strong: 0.10
+  # UP requires higher conviction (70% WR at 0.15+ vs 42% at 0.10-0.15)
+  up_bucket_abs_dist_strong: 0.15
   bucket_path1_extreme_high: 0.90
   bucket_path1_extreme_low: 0.10
 
   # ── Fill-band (v5_ensemble sweet spot) ────────────────────────────────
   fill_band_min: 0.30
-  fill_band_max: 0.65
+  fill_band_max: 0.82
 
   # ── UP asymmetric (Refinement 1 — inherit v6.1.4) ─────────────────────
   # When direction == UP, require CLOB ask >= 0.55 AND both conviction
   # buckets (agree_strong AND pegged_path1). Set up_min_fill_price to 0.0
   # to disable (sentinel → gate skipped).
   up_min_fill_price: 0.55
-  up_require_both_buckets: true
+  up_require_both_buckets: false
 
   # ── Hour-of-day block — overnight only, daytime open
   blocked_utc_hours: [0, 1, 2, 3, 4, 5]
@@ -74,18 +78,22 @@ gate_params:
   # ── Source agreement (chainlink + tiingo must be present; null-block) ─
   source_agreement_require_chainlink: true
   source_agreement_require_tiingo: true
-  # v8 does NOT skip on oracle direction disagreement (conviction buckets
-  # + VPIN guard + fill-band considered sufficient selectivity).
-  skip_on_oracle_disagree: false
+  # Re-enabled 2026-04-23: two DOWN losses had oracles pointing UP while
+  # model said DOWN. Both lost. Oracle agreement catches this (-$8.16 saved).
+  # Monitor via audit task for skipped wins while enabled.
+  skip_on_oracle_disagree: true
 
   # ── VPIN guard ────────────────────────────────────────────────────────
   vpin_min: 0.40
-  vpin_max: 0.85
+  vpin_max: 1.0
 
   # ── risk_off path — not override enabled (kept blocked via regime list)
   risk_off_override_enabled: false
 
-  # ── Ensemble source ───────────────────────────────────────────────────
+  # ── Primary signal source ──────────────────────────────────────────────
+  # "lgb" = LGB alone (69.3% WR, N=215). "ensemble" = 50/50 LGB+classifier
+  # (63.3% WR). Classifier has degenerate UP bias — use LGB until retrained.
+  primary_signal_source: lgb
   ensemble_signal_source: ensemble
   # Read RAW probability_up (not calibrated) while bucket thresholds
   # are measured on raw values. Flip to false when isotonic shadow
