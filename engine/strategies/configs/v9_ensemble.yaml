@@ -1,0 +1,177 @@
+name: v9_ensemble
+version: "9.0.0"
+# v9_ensemble — 2026-04-24 — Reinforced-Agreement LGB + v2-classifier ensemble.
+#
+# Purpose: layer the v2 classifier head (`probability_classifier`, "pc") on top
+# of the LGB vote (`probability_lgb`, "pl") used by v8_champion_lgb_only. We do
+# not 50:50 blend blindly — the design gates on *agreement* and *reinforcement*
+# so we capture high-conviction moves where both models concur and reject
+# anything where they disagree materially.
+#
+# Primary sources:
+#   - Hub note #221 — v8_champion_lgb_only strategic plan
+#   - Hub note #222 — v8_champion_lgb_only FULL implementation (template pattern)
+#   - Hub note #226 — v2 classifier performance report + engine handoff
+#     (pc stats, ensemble weights, T-minus decay discussion)
+#
+# Classifier wiring status: the v2 classifier head runs on the shadow box
+# 16.54.184.137:8080 (phase 1 of note #226). The engine has NOT yet been wired
+# to read `probability_classifier` from that box — this strategy therefore
+# falls back to the v8_champion_lgb_only path whenever `pc is None`. Wiring is
+# a separate engine-side PR on the classifier-box handoff track. Until then
+# v9_ensemble behaves identically to v8_champion_lgb_only in GHOST.
+#
+# Refinements (all ordered as runtime gates; see v9_ensemble.py):
+#
+#   R1  — pc availability fallback. If surface.probability_classifier is None,
+#         delegate to v8_champion_lgb_only gate logic (pc warming/box down).
+#         Logged as fallback_reason: pc_null.
+#
+#   R2  — DISAGREEMENT veto. |pc - pl| > 0.25 → SKIP
+#         (ensemble_disagreement). Classifier and LGB disagreeing by more
+#         than a quarter of probability space is a strong signal that one
+#         of them is wrong; better to sit out than guess which.
+#
+#   R3  — DIRECTION agreement. Both pc and pl must be on the same side of
+#         0.5. Even if |pc - pl| < 0.25, crossing 0.5 means the two models
+#         disagree on direction — SKIP.
+#
+#   R4  — T-minus-aware blend. Classifier has a freshness advantage at
+#         T-60 (more recent TimesFM surface) and degrades into T-200 as
+#         the surface ages. LGB is asset-feature heavy and holds up
+#         better late. Weight pc higher at short T:
+#
+#              T-30-60s   pc_weight=0.55 pl_weight=0.45
+#              T-60-120s  pc_weight=0.50 pl_weight=0.50
+#              T-120-180s pc_weight=0.45 pl_weight=0.55
+#              T-180-200s pc_weight=0.35 pl_weight=0.65
+#
+#         pu = pc_weight * pc + pl_weight * pl
+#         direction = UP if pu > 0.5 else DOWN
+#
+#   R5  — TRANSITION symmetric block. Both UP and DOWN are blocked in
+#         vpin regime == TRANSITION. Per today's forensics (note #222 R2
+#         addendum) TRANSITION is a universally worse cell, not just
+#         DOWN-skewed. Symmetric block with VHC bypass (R9) recaptures
+#         the high-conviction tail.
+#
+#   R6  — Hard LGB safety floor. Even with a screaming pc, require pl to
+#         clear the same conviction bar v8_lgb_only enforces:
+#             UP:   abs(pl - 0.5) >= 0.15
+#             DOWN: abs(pl - 0.5) >= 0.10
+#         Prevents pc-only false trades if the classifier has a silent
+#         bug (stale feed, calibration drift) that LGB would catch.
+#
+#   R7  — Fill-band [0.00, 0.82]. Same as v8_lgb_only R3.
+#   R8  — UP fill floor 0.55 / DOWN fill floor 0.15. Same as v8_lgb_only.
+#
+#   R9  — VHC reinforcement tier. When |pc - 0.5| >= 0.25 AND pc direction
+#         == pl direction we consider this a "very high conviction"
+#         reinforced trade:
+#             - Kelly multiplier 2.0x (raise to 2.5x after 30 VHC trades)
+#             - Bypasses TRANSITION block (R5)
+#             - Bypasses UP dist floor (R6 UP)
+#         Still required: fill_band, up/down fill floor, oracle direction,
+#         source agreement, post_loss_cooldown. These are capital-safety
+#         gates we never bypass.
+#
+#   R10 — Oracle direction agreement — same as v8_lgb_only.
+#   R11 — Source agreement (chainlink + tiingo) — same as v8_lgb_only.
+#   R12 — VPIN [0.40, 1.0] — same as v8_lgb_only.
+#   R13 — UTC hour block [0,1,2,3,4,5] — same as v8_lgb_only.
+#   R14 — eval_offset in [30, 200] — same as v8_lgb_only.
+#   R15 — Post-loss cooldown 20 min — same as v8_lgb_only.
+#
+# Conviction tiers (post all gates pass):
+#
+#   VERY_HIGH : abs(pc - 0.5) >= 0.25 AND pc_direction == pl_direction
+#               Kelly multiplier 2.5x (start 2.0x; upgrade after validation)
+#   HIGH      : abs(pu - 0.5) >= 0.20 OR abs(pc - 0.5) >= 0.20    -> 2.0x
+#   MEDIUM    : abs(pu - 0.5) >= 0.12                             -> 1.2x
+#   LOW       : abs(pu - 0.5) >= 0.05                             -> 1.0x
+#
+# Rollback: `mode: GHOST` is the shipping default. Flip to LIVE only after:
+#   (a) classifier box wired in engine per note #226 phase 1a
+#   (b) 48h shadow burn-in with pc present
+#   (c) 7d v9_ensemble GHOST shadow vs v8_lgb_only LIVE
+#   (d) Billy approval
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+# All logic in hook. gates: [] matches v5_ensemble / v6_sniper / v8_champion /
+# v8_champion_lgb_only pattern.
+gates: []
+
+gate_params:
+  # ── All v8_lgb_only gates inherited (same defaults) ──────────────────
+  min_offset_sec: 30
+  max_offset_sec: 200
+  tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
+
+  # R5 symmetric TRANSITION block (both directions, VHC can bypass)
+  block_down_vpin_regimes: [TRANSITION]
+  block_up_vpin_regimes: [TRANSITION]
+
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  skip_on_oracle_disagree: true
+
+  vpin_min: 0.40
+  vpin_max: 1.0
+
+  fill_band_min: 0.00
+  fill_band_max: 0.82
+
+  up_min_fill_price: 0.55
+  down_min_fill_price: 0.15
+
+  blocked_utc_hours: [0, 1, 2, 3, 4, 5]
+  post_loss_cooldown_min: 20
+
+  # ── R6 hard LGB safety floor (inherited keys from v8_lgb_only) ───────
+  lgb_dist_min_up: 0.15
+  lgb_dist_min_down: 0.10
+
+  # ── v9 ensemble-specific params ──────────────────────────────────────
+  # R2 disagreement veto
+  ensemble_disagreement_threshold: 0.25   # |pc - pl| > X => SKIP
+
+  # R3 direction agreement
+  require_direction_agreement: true
+
+  # R4 T-minus-aware blend weights
+  pc_weight_t_60: 0.55      # T-minus 30-60s
+  pc_weight_t_120: 0.50     # 60-120s
+  pc_weight_t_180: 0.45     # 120-180s
+  pc_weight_t_200: 0.35     # 180-200s
+
+  # R9 VHC reinforcement thresholds + bypass
+  vhc_threshold: 0.25          # |pc - 0.5| >= X AND agreement => VERY_HIGH
+  vhc_bypass_transition: true  # VHC bypasses TRANSITION block
+  vhc_bypass_up_dist: true     # VHC bypasses UP dist floor
+  vhc_kelly_multiplier: 2.0    # START 2.0x; raise to 2.5x after 30 VHC trades
+
+  # Conviction tier cutoffs (on pu for HIGH/MEDIUM/LOW)
+  conviction_high_dist: 0.20       # |pu - 0.5| >= 0.20 => HIGH
+  conviction_medium_dist: 0.12     # |pu - 0.5| >= 0.12 => MEDIUM
+  conviction_low_dist: 0.05        # |pu - 0.5| >= 0.05 => LOW
+
+  # ── Primary signal source ────────────────────────────────────────────
+  primary_signal_source: ensemble
+  fallback_to_lgb_on_pc_null: true
+
+sizing:
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.025
+  max_collateral_pct: 0.058
+  schedule:
+    - { threshold: 0.55, modifier: 2.5, label: "vhc_reinforced" }
+    - { threshold: 0.45, modifier: 2.0, label: "high" }
+    - { threshold: 0.35, modifier: 1.2, label: "medium" }
+    - { threshold: 0.25, modifier: 1.0, label: "low" }
+    - { threshold: 0.0,  modifier: 0.0, label: "skip" }
+
+hooks_file: v9_ensemble.py
+pre_gate_hook: evaluate_v9_ensemble

@@ -180,6 +180,37 @@ export const STRATEGIES = {
     },
     inCurrentLineup: true,
   },
+  v9_ensemble: {
+    id: 'v9_ensemble',
+    label: 'V9 ENSEMBLE',
+    shortLabel: 'V9E',
+    color: '#ec4899',
+    colorDim: 'rgba(236,72,153,0.14)',
+    direction: 'ANY',
+    description:
+      'Reinforced-Agreement LGB + v2-classifier ensemble. Disagreement veto '
+      + '(|pc-pl|>0.25), direction agreement, T-minus-aware blend weights, '
+      + 'VHC reinforcement tier (2.0x Kelly, bypasses TRANSITION + UP dist). '
+      + 'Falls back to v8_lgb_only when pc=None. GHOST until classifier '
+      + 'wiring + 7d shadow — see Hub notes #221, #222, #226.',
+    configKey: 'V9_ENSEMBLE_MODE',
+    defaultMode: 'GHOST',
+    timescale: '5m',
+    asset: 'BTC',
+    gateLabel: 'LGB+pc ensemble · VHC reinforced · disagreement veto',
+    thresholds: {
+      ensembleDisagreementThreshold: 0.25,
+      vhcThreshold: 0.25,
+      vhcKellyMultiplier: 2.0,
+      lgbDistMinDown: 0.10,
+      lgbDistMinUp: 0.15,
+      fillBandMin: 0.00,
+      fillBandMax: 0.82,
+      downMinFillPrice: 0.15,
+      postLossCooldownMin: 20,
+    },
+    inCurrentLineup: true,
+  },
 };
 
 export const STRATEGY_LIST = Object.values(STRATEGIES);
@@ -194,6 +225,7 @@ export const CURRENT_LINEUP_IDS = [
   'v4_fusion',
   'v5_fresh',
   'v8_champion_lgb_only',
+  'v9_ensemble',
 ];
 
 // Legacy strategy ids — surfaced behind an "archive" toggle on Window
