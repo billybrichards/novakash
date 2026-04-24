@@ -14,16 +14,22 @@ Audit: CA-01 / CA-04 (Clean Architecture migration).
 
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 import asyncpg
+import httpx
 import structlog
 
 from domain.ports import WindowStateRepository
 from domain.value_objects import WindowKey, WindowOutcome
 
 log = structlog.get_logger(__name__)
+
+_GAMMA_BASE = "https://gamma-api.polymarket.com"
+_SLUG_PREFIX = "btc-updown-5m-"
 
 
 class PgWindowRepository(WindowStateRepository):
@@ -1058,28 +1064,183 @@ class PgWindowRepository(WindowStateRepository):
             )
             return None
 
+    async def populate_oracle_outcomes(
+        self, lookback_seconds: int = 900, min_age_seconds: int = 360
+    ) -> int:
+        """Poll Polymarket Gamma for resolved 5m BTC UP/DOWN markets and stamp
+        oracle_outcome on window_snapshots. Windows must be between
+        min_age_seconds and lookback_seconds old.
+
+        Windows resolve every 5 min; this runs on the 2-min reconcile loop so
+        every newly-closed window gets oracle_outcome within ~2 min of Gamma
+        publishing resolution.
+        """
+        if not self._pool:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """SELECT DISTINCT window_ts
+                       FROM window_snapshots
+                       WHERE asset = 'BTC' AND timeframe = '5m'
+                         AND oracle_outcome IS NULL
+                         AND window_ts < EXTRACT(EPOCH FROM NOW())::bigint - $1
+                         AND window_ts > EXTRACT(EPOCH FROM NOW())::bigint - $2
+                       ORDER BY window_ts""",
+                    min_age_seconds,
+                    lookback_seconds,
+                )
+        except Exception as exc:
+            log.warning("pg_window_repo.poll_oracle_list_failed", error=str(exc)[:100])
+            return 0
+
+        windows = [r["window_ts"] for r in rows]
+        if not windows:
+            return 0
+
+        total_updated = 0
+        async with httpx.AsyncClient(
+            timeout=10.0,
+            headers={"User-Agent": "novakash-engine/oracle-poll"},
+        ) as client:
+            sem = asyncio.Semaphore(4)
+
+            async def _fetch(ts: int) -> Optional[str]:
+                async with sem:
+                    slug = f"{_SLUG_PREFIX}{ts}"
+                    try:
+                        r = await client.get(
+                            f"{_GAMMA_BASE}/events", params={"slug": slug}
+                        )
+                        if r.status_code != 200:
+                            return None
+                        data = r.json()
+                        if not isinstance(data, list) or not data:
+                            return None
+                        for event in data:
+                            for m in event.get("markets", []) or []:
+                                if m.get("slug") != slug:
+                                    continue
+                                if not m.get("closed"):
+                                    return None
+                                if m.get("umaResolutionStatus") not in (
+                                    None,
+                                    "resolved",
+                                ):
+                                    return None
+                                outcomes_raw = m.get("outcomes") or "[]"
+                                prices_raw = m.get("outcomePrices") or "[]"
+                                try:
+                                    outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else outcomes_raw
+                                    prices = json.loads(prices_raw) if isinstance(prices_raw, str) else prices_raw
+                                except Exception:
+                                    return None
+                                if not (isinstance(outcomes, list) and isinstance(prices, list) and len(outcomes) == len(prices)):
+                                    return None
+                                for name, price in zip(outcomes, prices):
+                                    try:
+                                        if float(price) >= 0.999:
+                                            return "UP" if str(name).strip().lower().startswith("u") else "DOWN"
+                                    except (TypeError, ValueError):
+                                        continue
+                        return None
+                    except Exception:
+                        return None
+
+            results = await asyncio.gather(
+                *[_fetch(ts) for ts in windows], return_exceptions=True
+            )
+
+        outcomes = [
+            (ts, outcome)
+            for ts, outcome in zip(windows, results)
+            if isinstance(outcome, str) and outcome in ("UP", "DOWN")
+        ]
+        if not outcomes:
+            log.info(
+                "pg_window_repo.poll_oracle_no_resolutions",
+                polled=len(windows),
+            )
+            return 0
+
+        try:
+            async with self._pool.acquire() as conn:
+                for ts, outcome in outcomes:
+                    result = await conn.execute(
+                        """UPDATE window_snapshots
+                           SET oracle_outcome = $2,
+                               poly_resolved_outcome = $2,
+                               poly_winner = $2
+                           WHERE asset = 'BTC' AND timeframe = '5m'
+                             AND window_ts = $1
+                             AND oracle_outcome IS NULL""",
+                        ts,
+                        outcome,
+                    )
+                    total_updated += int(result.split()[-1]) if result else 0
+        except Exception as exc:
+            log.warning(
+                "pg_window_repo.poll_oracle_write_failed", error=str(exc)[:100]
+            )
+            return total_updated
+
+        log.info(
+            "pg_window_repo.poll_oracle_done",
+            polled=len(windows),
+            resolved=len(outcomes),
+            rows_updated=total_updated,
+        )
+        return total_updated
+
     async def label_resolved_windows(self, min_age_seconds: int = 360) -> int:
-        """Bulk-stamp actual_direction on windows with close_price but no label.
+        """Bulk-stamp actual_direction on resolved windows using oracle sources.
 
         Implements WindowStateRepository.label_resolved_windows.
-        Polymarket 5-min UP/DOWN resolves via Chainlink oracle:
-        close_price > open_price → UP, else DOWN.
+
+        Priority chain (Polymarket 5m markets resolve via Chainlink oracle,
+        so Binance tape is the WRONG source — 42.9% disagreement on backfill
+        audit 2026-04-18):
+            1. window_snapshots.oracle_outcome (Polymarket Gamma, gold)
+            2. window_predictions.chainlink_close vs chainlink_open
+            3. window_snapshots.delta_chainlink sign (fallback)
+            4. NULL (skip — do NOT guess from binance open/close)
         """
         if not self._pool:
             return 0
         try:
             async with self._pool.acquire() as conn:
                 result = await conn.execute(
-                    """UPDATE window_snapshots
-                       SET actual_direction = CASE
-                           WHEN close_price > open_price THEN 'UP'
-                           ELSE 'DOWN'
-                       END
-                       WHERE actual_direction IS NULL
-                         AND close_price IS NOT NULL
-                         AND open_price IS NOT NULL
-                         AND close_price != open_price
-                         AND window_ts < EXTRACT(EPOCH FROM NOW())::bigint - $1""",
+                    """WITH labels AS (
+                           SELECT ws.window_ts, ws.asset, ws.timeframe,
+                                  CASE
+                                      WHEN ws.oracle_outcome IN ('UP','DOWN') THEN ws.oracle_outcome
+                                      WHEN wp.chainlink_close IS NOT NULL
+                                           AND wp.chainlink_open IS NOT NULL
+                                           AND wp.chainlink_close > wp.chainlink_open THEN 'UP'
+                                      WHEN wp.chainlink_close IS NOT NULL
+                                           AND wp.chainlink_open IS NOT NULL
+                                           AND wp.chainlink_close < wp.chainlink_open THEN 'DOWN'
+                                      WHEN ws.delta_chainlink IS NOT NULL
+                                           AND ws.delta_chainlink > 0 THEN 'UP'
+                                      WHEN ws.delta_chainlink IS NOT NULL
+                                           AND ws.delta_chainlink < 0 THEN 'DOWN'
+                                      ELSE NULL
+                                  END AS label
+                           FROM window_snapshots ws
+                           LEFT JOIN window_predictions wp
+                             ON wp.window_ts = ws.window_ts
+                            AND wp.asset     = ws.asset
+                            AND wp.timeframe = ws.timeframe
+                           WHERE ws.actual_direction IS NULL
+                             AND ws.window_ts < EXTRACT(EPOCH FROM NOW())::bigint - $1
+                       )
+                       UPDATE window_snapshots ws
+                       SET actual_direction = labels.label
+                       FROM labels
+                       WHERE ws.window_ts = labels.window_ts
+                         AND ws.asset     = labels.asset
+                         AND ws.timeframe = labels.timeframe
+                         AND labels.label IS NOT NULL""",
                     min_age_seconds,
                 )
                 count = int(result.split()[-1]) if result else 0
