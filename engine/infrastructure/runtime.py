@@ -3412,9 +3412,12 @@ class EngineRuntime:
                     # without waiting for the CLOB reconciler's next poll.
                     if self._reconciler:
                         for detail in result.get("details", []):
+                            # Relax the onchain-only gate — relayer-path
+                            # redemptions also need to write back to trades.
+                            # Resolver is idempotent (outcome IS NULL guard)
+                            # so a post-relayer reconciler poll won't clobber.
                             if (
                                 detail.get("success")
-                                and detail.get("method") == "onchain"
                                 and detail.get("conditionId")
                             ):
                                 try:
@@ -3422,6 +3425,8 @@ class EngineRuntime:
                                         condition_id=detail["conditionId"],
                                         tx_hash=detail.get("tx_hash", "") or "",
                                         usdc_redeemed=float(detail.get("payout_usdc", 0.0)),
+                                        token_id=detail.get("tokenId", "") or "",
+                                        outcome=detail.get("outcome", "WIN"),
                                     )
                                     if updated > 0:
                                         log.info(
