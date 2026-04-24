@@ -151,6 +151,9 @@ def _bind_gate_params():
         "vhc_threshold": 0.25,
         "vhc_bypass_transition": True,
         "vhc_bypass_up_dist": True,
+        "vhc_bypass_disagreement": True,
+        "vhc_bypass_lgb_safety_floor": True,
+        "vhc_bypass_oracle_direction": True,
         "vhc_kelly_multiplier": 2.0,
         "conviction_high_dist": 0.20,
         "conviction_medium_dist": 0.12,
@@ -186,7 +189,7 @@ def registry():
 def test_registered_as_ghost(registry):
     assert "v9_ensemble" in registry.strategy_names
     cfg = registry.configs["v9_ensemble"]
-    assert cfg.mode == "GHOST"
+    assert cfg.mode == "LIVE"
     assert cfg.version == "9.0.1"
     assert cfg.timescale == "5m"
     assert cfg.asset == "BTC"
@@ -201,6 +204,9 @@ def test_registered_as_ghost(registry):
         "vhc_threshold",
         "vhc_bypass_transition",
         "vhc_bypass_up_dist",
+        "vhc_bypass_disagreement",
+        "vhc_bypass_lgb_safety_floor",
+        "vhc_bypass_oracle_direction",
         "vhc_kelly_multiplier",
         "fallback_to_lgb_on_pc_null",
     ):
@@ -229,16 +235,17 @@ def test_default_up_surface_trades():
 # ── R2: Disagreement veto ──────────────────────────────────────────────────
 class TestDisagreementVeto:
     def test_abs_diff_over_threshold_skips(self):
-        # pc=0.80, pl=0.50: |diff| = 0.30 > 0.25 → SKIP (also crosses 0.5
-        # but disagreement should fire first since it's gate 7).
-        s = _up_surface(probability_classifier=0.80, probability_lgb=0.50)
+        # pc=0.65, pl=0.35: |diff| = 0.30 > 0.25 → SKIP. pc_dist=0.15 < 0.25
+        # so NOT VHC (no VHC bypass). Direction disagrees too (UP vs DOWN).
+        s = _up_surface(probability_classifier=0.65, probability_lgb=0.35)
         d = evaluate_v9_ensemble(s)
         assert d.action == "SKIP"
         assert "ensemble_disagreement" in d.skip_reason
 
     def test_exactly_at_threshold_allowed(self):
         # |pc - pl| = 0.25 exactly — veto is strictly ">", not ">=", so allowed.
-        s = _up_surface(probability_classifier=0.80, probability_lgb=0.55)
+        # Use non-VHC values: pc=0.70 (dist=0.20), pl=0.45 → |diff|=0.25.
+        s = _up_surface(probability_classifier=0.70, probability_lgb=0.45)
         d = evaluate_v9_ensemble(s)
         # Should get past disagreement gate; may fail later gates depending
         # on conviction but we check the veto specifically didn't fire.
@@ -403,7 +410,7 @@ class TestVhcReinforcement:
         )
         d = evaluate_v9_ensemble(s)
         assert d.action == "TRADE", d.skip_reason
-        assert "up_dist_floor" in d.metadata["vhc_bypasses"]
+        assert "lgb_safety_floor" in d.metadata["vhc_bypasses"]
 
 
 # ── R1: pc=None fallback ───────────────────────────────────────────────────
@@ -440,13 +447,11 @@ class TestPcNullFallback:
 # ── R6: Hard LGB safety floor ──────────────────────────────────────────────
 class TestLgbSafetyFloor:
     def test_pc_screaming_pl_weak_down_skips(self):
-        # DOWN direction, pc=0.25 (strong) but pl=0.47 (weak, dist=0.03 < 0.10).
-        # Disagreement |0.25-0.47|=0.22 < 0.25 passes veto. Direction agrees
-        # (both DOWN). LGB safety floor must catch this.
-        # NB: pc_dist = 0.25 exactly = vhc_threshold → is_vhc=True, BUT
-        # DOWN direction does not bypass LGB floor (only UP does).
+        # DOWN direction, pc=0.35 (not VHC, dist=0.15 < 0.25) but pl=0.47
+        # (weak, dist=0.03 < 0.10). |diff|=0.12 < 0.25 passes disagreement.
+        # Direction agrees (both DOWN). LGB safety floor must catch this.
         s = _make_surface(
-            probability_classifier=0.25,
+            probability_classifier=0.35,
             probability_lgb=0.47,
         )
         d = evaluate_v9_ensemble(s)
@@ -477,7 +482,7 @@ class TestLgbSafetyFloor:
         )
         d = evaluate_v9_ensemble(s)
         assert d.action == "TRADE", d.skip_reason
-        assert "up_dist_floor" in d.metadata["vhc_bypasses"]
+        assert "lgb_safety_floor" in d.metadata["vhc_bypasses"]
 
 
 # ── TRANSITION strong-oracle bypass (note #228, 2026-04-24) ────────────────
@@ -671,3 +676,214 @@ def test_full_stack_trade_up_with_metadata():
     assert "gate_results" in md
     # pc_dist=0.25 >= vhc_threshold 0.25 so is_vhc should be True.
     assert md["is_vhc"] is True
+
+
+# ── VHC full signal-gate bypass (2026-04-24) ──────────────────────────────
+class TestVhcBypassAllSignalGates:
+    """When |pc - 0.5| >= 0.25 (VHC), classifier overrides all signal-quality
+    gates. Capital-safety gates (fill_band, fill_floors, cooldown, timing,
+    utc_hour, v4_regime, vpin, source_agreement) still required.
+    """
+
+    def test_vhc_bypasses_disagreement(self):
+        """VHC pc should bypass ensemble_disagreement even when models diverge."""
+        # pc=0.15 (DOWN, pc_dist=0.35 VHC), pl=0.55 (UP).
+        # |diff|=0.40 > 0.25 threshold → disagreement fires without VHC bypass.
+        # Oracles DOWN to match classifier direction.
+        s = _make_surface(
+            probability_classifier=0.15,
+            probability_lgb=0.55,
+            delta_chainlink=-0.005,
+            delta_tiingo=-0.004,
+            clob_down_ask=0.55,
+            poly_max_entry_price=0.55,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "TRADE", d.skip_reason
+        assert d.direction == "DOWN"  # follows classifier, not LGB
+        assert "ensemble_disagreement" in d.metadata["vhc_bypasses"]
+        assert d.metadata["vhc_overriding_direction"] is True
+        assert d.metadata["is_vhc"] is True
+        assert d.metadata["conviction_label"] == "VERY_HIGH"
+        assert d.confidence_score >= 0.55
+
+    def test_vhc_bypasses_direction_agreement(self):
+        """VHC pc should bypass direction_agreement when pc/pl disagree on side."""
+        # pc=0.80 (UP, dist=0.30 VHC), pl=0.45 (DOWN).
+        # |diff|=0.35 > 0.25 → disagreement also fires, both bypassed.
+        # Oracles UP to match classifier.
+        s = _up_surface(
+            probability_classifier=0.80,
+            probability_lgb=0.45,
+            delta_chainlink=+0.005,
+            delta_tiingo=+0.004,
+            clob_up_ask=0.60,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "TRADE", d.skip_reason
+        assert d.direction == "UP"  # follows classifier
+        assert "direction_agreement" in d.metadata["vhc_bypasses"]
+        assert d.metadata["vhc_overriding_direction"] is True
+
+    def test_vhc_bypasses_oracle_direction(self):
+        """VHC pc should bypass oracle_direction when oracles disagree."""
+        # pc=0.80 (UP, dist=0.30 VHC), pl=0.70 (UP, agree).
+        # Oracles point DOWN → oracle_direction would block without VHC.
+        s = _up_surface(
+            probability_classifier=0.80,
+            probability_lgb=0.70,
+            delta_chainlink=-0.005,
+            delta_tiingo=-0.004,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "TRADE", d.skip_reason
+        assert "oracle_direction" in d.metadata["vhc_bypasses"]
+
+    def test_vhc_bypasses_lgb_safety_floor_down(self):
+        """VHC should bypass lgb_safety_floor for DOWN direction (new)."""
+        # pc=0.15 (DOWN, dist=0.35 VHC), pl=0.47 (DOWN, dist=0.03 < 0.10 floor).
+        # |diff|=0.32 > 0.25 disagreement threshold — also VHC-bypassed.
+        # Oracles DOWN.
+        s = _make_surface(
+            probability_classifier=0.15,
+            probability_lgb=0.47,
+            delta_chainlink=-0.005,
+            delta_tiingo=-0.004,
+            clob_down_ask=0.55,
+            poly_max_entry_price=0.55,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "TRADE", d.skip_reason
+        assert d.direction == "DOWN"
+        assert "lgb_safety_floor" in d.metadata["vhc_bypasses"]
+
+    def test_vhc_still_blocked_by_fill_band(self):
+        """Fill band is a capital-safety gate — VHC must NOT bypass it."""
+        # pc=0.15 (VHC DOWN), pl=0.30, fill_price=0.90 > 0.82 max.
+        s = _make_surface(
+            probability_classifier=0.15,
+            probability_lgb=0.30,
+            clob_down_ask=0.90,
+            poly_max_entry_price=0.90,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "SKIP"
+        assert "fill_band" in d.skip_reason
+
+    def test_vhc_still_blocked_by_cooldown(self):
+        """Post-loss cooldown is a risk gate — VHC must NOT bypass it."""
+        record_loss(int(time.time()) - 600)  # 10 min ago, within 20 min window
+        s = _make_surface(
+            probability_classifier=0.15,
+            probability_lgb=0.30,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "SKIP"
+        assert "post_loss_cooldown" in d.skip_reason
+
+    def test_non_vhc_still_blocked_by_disagreement(self):
+        """Regression: non-VHC trades must still be blocked by disagreement."""
+        # pc=0.65 (UP, dist=0.15 < 0.25, NOT VHC), pl=0.30 (DOWN).
+        # |diff|=0.35 > 0.25 → disagreement should fire.
+        s = _up_surface(
+            probability_classifier=0.65,
+            probability_lgb=0.30,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "SKIP"
+        assert "ensemble_disagreement" in d.skip_reason
+
+    def test_vhc_direction_follows_classifier(self):
+        """When VHC bypasses, trade direction follows pc, not blended pu."""
+        # pc=0.20 (DOWN, dist=0.30 VHC), pl=0.60 (UP).
+        # Blended pu at T-120: 0.50*0.20 + 0.50*0.60 = 0.40 → DOWN by pu too.
+        # But with pc=0.80 (UP, dist=0.30), pl=0.45 (DOWN):
+        # pu = 0.50*0.80 + 0.50*0.45 = 0.625 → UP by pu.
+        # Here direction should follow classifier (UP), not pu (also UP), but
+        # the metadata should show vhc_overriding_direction=True.
+        s = _up_surface(
+            probability_classifier=0.80,
+            probability_lgb=0.45,
+            delta_chainlink=+0.005,
+            delta_tiingo=+0.004,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "TRADE", d.skip_reason
+        assert d.direction == "UP"
+        assert d.metadata["vhc_overriding_direction"] is True
+        # probability_used should be pc, not pu
+        assert d.metadata["probability_used"] == 0.80
+
+    def test_vhc_still_blocked_by_up_fill_floor(self):
+        """UP fill floor is a capital-safety gate — VHC must NOT bypass it."""
+        # pc=0.80 (UP, VHC), pl=0.70 (UP agree), fill=0.50 < 0.55 floor.
+        s = _up_surface(
+            probability_classifier=0.80,
+            probability_lgb=0.70,
+            clob_up_ask=0.50,
+            poly_max_entry_price=0.50,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "SKIP"
+        assert "up_fill_floor" in d.skip_reason
+
+    def test_vhc_still_blocked_by_timing(self):
+        """Timing is a capital-safety gate — VHC must NOT bypass it."""
+        s = _make_surface(
+            probability_classifier=0.15,
+            probability_lgb=0.30,
+            eval_offset=250,
+        )
+        d = evaluate_v9_ensemble(s)
+        assert d.action == "SKIP"
+        assert "timing" in d.skip_reason
+
+    def test_vhc_bypass_disabled_by_flag(self):
+        """When vhc_bypass_disagreement=false, VHC cannot bypass disagreement."""
+        params = {
+            "min_offset_sec": 30, "max_offset_sec": 200,
+            "tradeable_v4_regimes": ["volatile_trend", "chop", "risk_off", "calm_trend"],
+            "block_down_vpin_regimes": ["TRANSITION"],
+            "block_up_vpin_regimes": ["TRANSITION"],
+            "lgb_dist_min_down": 0.10, "lgb_dist_min_up": 0.15,
+            "lgb_dist_min_up_with_hc_agree": 0.05,
+            "lgb_dist_min_down_with_hc_agree": 0.05,
+            "fill_band_min": 0.00, "fill_band_max": 0.82,
+            "up_min_fill_price": 0.55, "down_min_fill_price": 0.15,
+            "blocked_utc_hours": [0, 1, 2, 3, 4, 5],
+            "source_agreement_require_chainlink": True,
+            "source_agreement_require_tiingo": True,
+            "skip_on_oracle_disagree": True,
+            "vpin_min": 0.40, "vpin_max": 1.0,
+            "post_loss_cooldown_min": 20,
+            "ensemble_disagreement_threshold": 0.25,
+            "require_direction_agreement": True,
+            "pc_weight_t_60": 0.55, "pc_weight_t_120": 0.50,
+            "pc_weight_t_180": 0.45, "pc_weight_t_200": 0.35,
+            "vhc_threshold": 0.25,
+            "vhc_bypass_transition": True,
+            "vhc_bypass_up_dist": True,
+            "vhc_bypass_disagreement": False,  # DISABLED
+            "vhc_bypass_lgb_safety_floor": True,
+            "vhc_bypass_oracle_direction": True,
+            "vhc_kelly_multiplier": 2.0,
+            "conviction_high_dist": 0.20, "conviction_medium_dist": 0.12,
+            "conviction_low_dist": 0.05,
+            "fallback_to_lgb_on_pc_null": True,
+            "transition_strong_bypass_enabled": True,
+            "transition_bypass_min_avg_pct_delta": 0.05,
+            "transition_bypass_min_lgb_dist": 0.20,
+            "delta_gate_enabled": False,
+            "min_consecutive_pass_ticks": 0,
+        }
+        token = _gp.set_active(params)
+        try:
+            s = _up_surface(
+                probability_classifier=0.80,
+                probability_lgb=0.45,
+            )
+            d = evaluate_v9_ensemble(s)
+            assert d.action == "SKIP"
+            assert "ensemble_disagreement" in d.skip_reason
+        finally:
+            _gp.reset_active(token)
