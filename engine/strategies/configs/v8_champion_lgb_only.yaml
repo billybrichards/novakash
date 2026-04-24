@@ -1,0 +1,114 @@
+name: v8_champion_lgb_only
+version: "8.0.0-lgb-0.1"
+# v8_champion_lgb_only — 2026-04-24 — LGB-only fine-tune variant.
+#
+# Purpose: iterate on LGB-only path without destabilising v8_champion LIVE.
+# Classifier is intentionally disabled while upgraded/retrained model is in
+# development. This strategy explicitly does NOT depend on probability_classifier
+# or p_path1. Instead it uses probability_lgb directly with a simplified
+# dist-based conviction threshold.
+#
+# Refinements over v8_champion (all evidence-backed, see Hub note #221 + audit #280):
+#
+#   R1 — post-loss cooldown 20 min. Grid on today's 38 trades: 18-25min window
+#        gives +$34.64 sim vs baseline +$2.64; 30min kills 2 extra wins for no
+#        added loss-avoidance. See note #221 evidence appendix.
+#
+#   R2 — block DOWN in TRANSITION regime. Today's data: TRANSITION/DOWN 3W/5L=38%,
+#        worst single cell. UP in TRANSITION is fine (75%). Per-direction regime gate.
+#        NB: TRANSITION is the vpin vol regime (surface.regime), not v4_regime.
+#
+#   R3 — fill_band LOW drop 0.30 -> 0.00. 14d backtest on oracle outcomes: LOW-side
+#        blocked windows were 4/7 wins, PnL +$69.03 if allowed. See audit #280.
+#
+#   R4 — explicit down_fill_floor 0.15 replaces former LOW floor for DOWN trades.
+#        Prevents thin-book DOWN fills after dropping fill_band LOW. 0.15 is
+#        conservative; revisit at 30d sample.
+#
+#   R5 — HOLD on dist asymmetry inversion. Tier 1 proposal (DOWN >=0.15, UP >=0.10)
+#        was REJECTED against today's data. Today's DOWN WR does not improve with
+#        higher dist. Hold and revisit with 7d shadow.
+#
+#   R6 — HOLD on edge-vs-clob filter. Most winners had NEGATIVE edge; any threshold
+#        kills more wins than losses on today's data. Rejected.
+#
+# Rollback: `mode: LIVE -> GHOST` in this YAML + restart engine.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+# All logic in hook. gates: [] matches v5_ensemble / v6_sniper / v8_champion pattern.
+gates: []
+
+gate_params:
+  # ── Entry window ─────────────────────────────────────────────────────
+  min_offset_sec: 30
+  max_offset_sec: 200
+
+  # ── Regime allowlist (inherits v8) ───────────────────────────────────
+  tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
+
+  # ── R2: per-direction regime exclusion (NEW) ──────────────────────────
+  # Regimes where DOWN direction is additionally blocked. Checked against
+  # the vpin vol regime (surface.regime) — values CALM / NORMAL / TRANSITION /
+  # CASCADE. A window may pass tradeable_v4_regimes but still be blocked if
+  # direction==DOWN and vpin regime in this list.
+  block_down_vpin_regimes: [TRANSITION]
+  block_up_vpin_regimes: []
+
+  # ── Conviction (LGB-only — NO classifier bucket) ──────────────────────
+  # v8 uses ensemble agree_strong / pegged_path1 buckets that require both
+  # probability_lgb and probability_classifier. LGB-only ignores classifier
+  # and uses raw LGB dist from 0.5 instead.
+  use_classifier_bucket: false        # explicit flag; hook reads this
+  lgb_dist_min_down: 0.10              # DOWN requires |p_up - 0.5| >= 0.10
+  lgb_dist_min_up: 0.15                # UP requires |p_up - 0.5| >= 0.15
+  # HOLD: note #221 proposed inversion (DOWN >=0.15). Data does not support yet.
+  # Keep v8 values until 7d shadow provides more loss samples.
+
+  # ── R3: fill-band bounds (dropped LOW) ───────────────────────────────
+  fill_band_min: 0.00                  # v8 = 0.30; R3 relaxes
+  fill_band_max: 0.82                  # v8 = 0.82 (kept — HIGH cap saves money)
+
+  # ── UP asymmetric (inherits v8 R1) ────────────────────────────────────
+  up_min_fill_price: 0.55
+  up_require_both_buckets: false       # classifier off; both-buckets N/A
+
+  # ── R4: DOWN floor (NEW) ──────────────────────────────────────────────
+  down_min_fill_price: 0.15            # conservative start
+
+  # ── Hour-of-day block ────────────────────────────────────────────────
+  blocked_utc_hours: [0, 1, 2, 3, 4, 5]
+
+  # ── Source agreement + oracle direction ──────────────────────────────
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  skip_on_oracle_disagree: true        # unchanged — gate proven (note #219)
+
+  # ── VPIN guard ───────────────────────────────────────────────────────
+  vpin_min: 0.40
+  vpin_max: 1.0
+
+  # ── R1: post-loss cooldown (NEW) ──────────────────────────────────────
+  post_loss_cooldown_min: 20           # minutes; 0 = disabled
+
+  # ── Primary signal source ─────────────────────────────────────────────
+  primary_signal_source: lgb
+  prefer_raw_probability: true         # note #220 clarifies: probability_lgb is
+                                       # already T=1.07 temp-calibrated at train time
+                                       # (not strictly raw). Flip to false when
+                                       # audit #276 stratified regime calibration wires.
+
+sizing:
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.025
+  max_collateral_pct: 0.058
+  schedule:
+    - { threshold: 0.55, modifier: 2.0, label: "high_conv_full" }
+    - { threshold: 0.35, modifier: 1.2, label: "mid" }
+    - { threshold: 0.25, modifier: 1.0, label: "low" }
+    - { threshold: 0.0,  modifier: 0.0, label: "skip" }
+
+hooks_file: v8_champion_lgb_only.py
+pre_gate_hook: evaluate_v8_champion_lgb_only
