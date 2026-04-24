@@ -318,7 +318,7 @@ class PositionMonitor:
             # Price: sell at market (use a low limit to ensure fill)
             # For binary tokens: sell YES at any price above 0.01
             # The py_clob_client supports SELL side via the same OrderArgs
-            sell_price = max(0.01, pos.fill_price - 0.10)
+            sell_price = 0.01  # aggressive: take any bid, we want OUT fast
             sell_size = pos.fill_size
 
             # Round size to 3dp to match CLOB precision
