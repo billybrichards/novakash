@@ -157,6 +157,14 @@ gate_params:
   vhc_bypass_oracle_direction: true # VHC bypasses oracle_direction gate
   vhc_kelly_multiplier: 2.0    # START 2.0x; raise to 2.5x after 30 VHC trades
 
+  # ── PL VHC bypass (LGB very-high-confidence, note #238) ─────────────
+  # When LGB hits VHC (|pl - 0.5| >= threshold), bypass signal-quality
+  # gates UNLESS classifier actively disagrees on direction (cross-veto).
+  # Only fires when pc VHC didn't already fire.
+  pl_vhc_bypass_enabled: true
+  pl_vhc_threshold: 0.25                  # |pl - 0.5| >= X
+  pl_vhc_require_pc_agreement: true       # cross-veto: skip if pc disagrees direction
+
   # ── TRANSITION strong-oracle bypass (NEW 2026-04-24, note #228) ──────
   # Independent of VHC. Allows bypass of TRANSITION block if chainlink +
   # tiingo BOTH agree direction AND avg(|delta_chainlink|, |delta_tiingo|)

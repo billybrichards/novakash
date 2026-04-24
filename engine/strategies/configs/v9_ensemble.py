@@ -153,6 +153,27 @@ def _vhc_kelly_multiplier() -> float:
     )
 
 
+# ── PL VHC bypass (LGB very-high-confidence, note #238) ─────────────────
+def _pl_vhc_bypass_enabled() -> bool:
+    return _gp.get_bool(
+        "pl_vhc_bypass_enabled", "V9_PL_VHC_BYPASS_ENABLED", True
+    )
+
+
+def _pl_vhc_threshold() -> float:
+    return _gp.get_float(
+        "pl_vhc_threshold", "V9_PL_VHC_THRESHOLD", 0.25
+    )
+
+
+def _pl_vhc_require_pc_agreement() -> bool:
+    return _gp.get_bool(
+        "pl_vhc_require_pc_agreement",
+        "V9_PL_VHC_REQUIRE_PC_AGREEMENT",
+        True,
+    )
+
+
 def _conviction_high_dist() -> float:
     return _gp.get_float(
         "conviction_high_dist", "V9_CONVICTION_HIGH_DIST", 0.20
@@ -612,6 +633,39 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
     is_vhc_bypass = pc_dist >= _vhc_threshold()
     vhc_bypasses: list[str] = []
 
+    # ── PL VHC detection (LGB very-high-confidence, note #238) ────────────
+    # Only fires when pc VHC didn't already fire. Cross-veto: if classifier
+    # actively disagrees on direction, don't trust LGB alone.
+    is_pl_vhc = False
+    pl_vhc_meta: dict = {}
+    if not is_vhc_bypass and _pl_vhc_bypass_enabled():
+        pl_dist_check = abs(pl - 0.5)
+        if pl_dist_check >= _pl_vhc_threshold():
+            pc_dir_check = (
+                ("UP" if pc > 0.5 else "DOWN") if pc is not None else None
+            )
+            pl_dir_check = "UP" if pl > 0.5 else "DOWN"
+            if (
+                not _pl_vhc_require_pc_agreement()
+                or pc_dir_check is None
+                or pc_dir_check == pl_dir_check
+            ):
+                is_pl_vhc = True
+                pl_vhc_meta = {
+                    "pl_vhc_bypass": True,
+                    "pl_vhc_cross_veto": False,
+                    "pl_vhc_pl_dir": pl_dir_check,
+                    "pl_vhc_pc_dir": pc_dir_check,
+                }
+            else:
+                # Cross-veto: classifier disagrees with LGB direction
+                pl_vhc_meta = {
+                    "pl_vhc_bypass": False,
+                    "pl_vhc_cross_veto": True,
+                    "pl_vhc_pl_dir": pl_dir_check,
+                    "pl_vhc_pc_dir": pc_dir_check,
+                }
+
     # ── 7. Disagreement veto (R2) ──────────────────────────────────────────
     disagree_thr = _ensemble_disagreement_threshold()
     disagreement = abs(pc - pl)
@@ -624,6 +678,17 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                     f"VHC bypass: |pc-pl|={disagreement:.3f} > "
                     f"{disagree_thr:.2f} but pc_dist={pc_dist:.3f} "
                     f">= {_vhc_threshold():.2f}",
+                )
+            )
+            vhc_bypasses.append("ensemble_disagreement")
+        elif is_pl_vhc:
+            gates.append(
+                _gate(
+                    "ensemble_disagreement",
+                    True,
+                    f"PL-VHC bypass: |pc-pl|={disagreement:.3f} > "
+                    f"{disagree_thr:.2f} but pl_dist={abs(pl - 0.5):.3f} "
+                    f">= {_pl_vhc_threshold():.2f}",
                 )
             )
             vhc_bypasses.append("ensemble_disagreement")
@@ -662,6 +727,18 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             )
             if "direction_agreement" not in vhc_bypasses:
                 vhc_bypasses.append("direction_agreement")
+        elif is_pl_vhc:
+            gates.append(
+                _gate(
+                    "direction_agreement",
+                    True,
+                    f"PL-VHC bypass: pc_dir={pc_dir} pl_dir={pl_dir} "
+                    f"disagree but pl_dist={abs(pl - 0.5):.3f} "
+                    f">= {_pl_vhc_threshold():.2f}",
+                )
+            )
+            if "direction_agreement" not in vhc_bypasses:
+                vhc_bypasses.append("direction_agreement")
         else:
             gates.append(
                 _gate(
@@ -685,7 +762,10 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
     pl_weight = 1.0 - pc_weight
     pu = pc_weight * pc + pl_weight * pl
     vhc_overriding_direction = bool(vhc_bypasses)  # any signal gate bypassed
-    if vhc_overriding_direction:
+    if is_pl_vhc and vhc_overriding_direction:
+        # PL VHC: trade direction follows LGB, not classifier
+        direction = pl_dir
+    elif vhc_overriding_direction:
         direction = pc_dir
     else:
         direction = "UP" if pu > 0.5 else "DOWN"
@@ -773,10 +853,13 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
 
     # VHC bypass for LGB safety floor — UP uses existing flag, full
     # bypass (both directions) uses the new vhc_bypass_lgb_safety_floor.
-    allow_lgb_bypass = is_vhc_bypass and (
-        (direction == "UP" and _vhc_bypass_up_dist())
-        or _vhc_bypass_lgb_safety_floor()
-    )
+    # PL VHC also bypasses (LGB is screaming, floor is redundant).
+    allow_lgb_bypass = (
+        is_vhc_bypass and (
+            (direction == "UP" and _vhc_bypass_up_dist())
+            or _vhc_bypass_lgb_safety_floor()
+        )
+    ) or is_pl_vhc
     if pl_dist < min_dist_pl:
         if allow_lgb_bypass:
             gates.append(
@@ -829,7 +912,7 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         direction == "UP" and blocked_up
     )
     if regime_blocked:
-        vhc_bypass_ok = is_vhc_bypass and _vhc_bypass_transition()
+        vhc_bypass_ok = (is_vhc_bypass and _vhc_bypass_transition()) or is_pl_vhc
         strong_bypass_ok, strong_diag = _should_bypass_transition(
             direction,
             pl,
@@ -837,12 +920,19 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             surface.delta_tiingo,
         )
         if vhc_bypass_ok:
+            bypass_tag = "PL-VHC" if is_pl_vhc else "VHC"
+            bypass_detail = (
+                f"pl_dist={abs(pl - 0.5):.3f} >= "
+                f"{_pl_vhc_threshold():.2f}"
+                if is_pl_vhc
+                else f"pc_dist={pc_dist:.3f} >= {_vhc_threshold():.2f}"
+            )
             gates.append(
                 _gate(
                     "vpin_regime_direction",
                     True,
-                    f"{direction} bypassed {vpin_regime} by VHC "
-                    f"(pc_dist={pc_dist:.3f} >= {_vhc_threshold():.2f})",
+                    f"{direction} bypassed {vpin_regime} by {bypass_tag} "
+                    f"({bypass_detail})",
                 )
             )
             vhc_bypasses.append("transition_regime")
@@ -886,14 +976,21 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
         cl_dir = "UP" if cl_delta > 0 else "DOWN"
         ti_dir = "UP" if ti_delta > 0 else "DOWN"
         if direction != cl_dir or direction != ti_dir:
-            if is_vhc_bypass and _vhc_bypass_oracle_direction():
+            if (is_vhc_bypass and _vhc_bypass_oracle_direction()) or is_pl_vhc:
+                bypass_tag = "PL-VHC" if is_pl_vhc else "VHC"
+                bypass_detail = (
+                    f"pl_dist={abs(pl - 0.5):.3f} >= "
+                    f"{_pl_vhc_threshold():.2f}"
+                    if is_pl_vhc
+                    else f"pc_dist={pc_dist:.3f} >= "
+                    f"{_vhc_threshold():.2f}"
+                )
                 gates.append(
                     _gate(
                         "oracle_direction",
                         True,
-                        f"VHC bypass: cl={cl_dir} ti={ti_dir} vs "
-                        f"{direction} but pc_dist={pc_dist:.3f} "
-                        f">= {_vhc_threshold():.2f}",
+                        f"{bypass_tag} bypass: cl={cl_dir} ti={ti_dir} "
+                        f"vs {direction} but {bypass_detail}",
                     )
                 )
                 vhc_bypasses.append("oracle_direction")
@@ -1071,7 +1168,15 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
     # the score when VHC-bypassing to reflect classifier-only confidence.
     label, score, is_vhc_final = _classify_conviction(pu, pc, pc_dir, pl_dir)
 
-    if vhc_overriding_direction:
+    if is_pl_vhc and vhc_overriding_direction:
+        # PL VHC: LGB-only confidence, flag as VHC
+        is_vhc_final = True
+        label = "VERY_HIGH"
+        score = abs(pl - 0.5)  # LGB confidence distance
+        # Ensure score clears vhc_reinforced sizing threshold (0.55)
+        if score < 0.55:
+            score = 0.60
+    elif vhc_overriding_direction:
         # Classifier-only confidence: always flag as VHC
         is_vhc_final = True
         label = "VERY_HIGH"
@@ -1098,14 +1203,20 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             "gate_results": gates,
             "poly_direction": direction,
             "poly_confidence_distance": (
-                pc_dist if vhc_overriding_direction else abs(pu - 0.5)
+                abs(pl - 0.5) if (is_pl_vhc and vhc_overriding_direction)
+                else pc_dist if vhc_overriding_direction
+                else abs(pu - 0.5)
             ),
             "v4_regime": v4_regime,
             "vpin": vpin,
             "vpin_regime": vpin_regime,
             "probability_lgb": pl,
             "probability_classifier": pc,
-            "probability_used": pc if vhc_overriding_direction else pu,
+            "probability_used": (
+                pl if (is_pl_vhc and vhc_overriding_direction)
+                else pc if vhc_overriding_direction
+                else pu
+            ),
             "pc_weight": pc_weight,
             "pl_weight": pl_weight,
             "pc_dist": pc_dist,
@@ -1114,6 +1225,8 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             "disagreement": disagreement,
             "conviction_label": label,
             "is_vhc": is_vhc_final,
+            "is_pl_vhc": is_pl_vhc,
+            **pl_vhc_meta,
             "vhc_bypasses": vhc_bypasses,
             "vhc_overriding_direction": vhc_overriding_direction,
             "vhc_kelly_multiplier": (
