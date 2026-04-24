@@ -95,7 +95,7 @@ version: "9.0.1"
 #   (b) 48h shadow burn-in with pc present
 #   (c) 7d v9_ensemble GHOST shadow vs v8_lgb_only LIVE
 #   (d) Billy approval
-mode: GHOST
+mode: LIVE
 asset: BTC
 timescale: 5m
 
