@@ -9,6 +9,7 @@ export const NAV_SECTIONS = [
     color: '#a855f7',
     items: [
       { path: '/',            label: 'Dashboard',      icon: '📊' },
+      { path: '/desk',        label: 'Desk',           icon: '🎯' },
       { path: '/trades',      label: 'Trades',         icon: '📋' },
       { path: '/windows',     label: 'Windows',        icon: '🪟' },
       { path: '/wallet',      label: 'Wallet',         icon: '👛' },
