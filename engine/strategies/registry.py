@@ -695,19 +695,16 @@ class StrategyRegistry:
                             "exit_monitor_enabled", True
                         ),
                         "exit_min_hold_seconds": _gp.get(
-                            "exit_min_hold_seconds", 10
+                            "exit_min_hold_seconds", 45
                         ),
                         "exit_no_exit_last_seconds": _gp.get(
                             "exit_no_exit_last_seconds", 30
                         ),
-                        "exit_consecutive_flip_ticks": _gp.get(
-                            "exit_consecutive_flip_ticks", 3
+                        "exit_mark_min_pct": _gp.get(
+                            "exit_mark_min_pct", 0.45
                         ),
-                        "exit_lgb_flip_enabled": _gp.get(
-                            "exit_lgb_flip_enabled", True
-                        ),
-                        "exit_oracle_flip_enabled": _gp.get(
-                            "exit_oracle_flip_enabled", True
+                        "exit_mark_ticks": _gp.get(
+                            "exit_mark_ticks", 10
                         ),
                     }
                     exit_reason = self._position_monitor.evaluate_exit(

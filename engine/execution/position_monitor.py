@@ -2,8 +2,8 @@
 
 After a FAK/FOK buy fills, the PositionMonitor tracks the position and
 continues evaluating every 2s (on the existing eval loop cadence). If
-the signal flips for N consecutive ticks, it triggers a sell via the
-CLOB client.
+the CLOB bid drops below a mark-to-market threshold for N consecutive
+ticks, it triggers a sell via the CLOB client.
 
 Architecture:
   - MonitoredPosition: dataclass tracking a single open position
@@ -15,6 +15,12 @@ Integration:
   - evaluate_exit() called every 2s in the eval loop for each open position
   - execute_exit() places a SELL FAK order on the CLOB to close the position
 
+Exit logic (mark-to-market stop-loss):
+  - For UP positions: mark = clob_up_bid (or 1 - clob_down_ask)
+  - For DOWN positions: mark = clob_down_bid (or 1 - clob_up_ask)
+  - If mark < exit_mark_min_pct * fill_price for exit_mark_ticks
+    consecutive ticks, trigger exit.
+
 Safety:
   - exit_shadow_mode: when True, logs exits but does NOT place sell orders
   - exit_min_hold_seconds: minimum hold time before exit can trigger
@@ -22,7 +28,7 @@ Safety:
   - exit_max_retries: sell retry count
   - exit_retry_timeout_seconds: per-sell-attempt timeout
 
-See Hub notes #236 (exit system spec) and #298/#299 (audit tasks).
+See Hub notes #236 (exit system spec), #298/#299 (audit tasks), #240.
 """
 from __future__ import annotations
 
@@ -53,7 +59,8 @@ class MonitoredPosition:
     order_id: str
     token_id: str
     filled_at_epoch: float
-    consecutive_flip_count: int = 0
+    consecutive_flip_count: int = 0  # legacy, kept for compat
+    mark_loss_tick_count: int = 0
 
 
 class PositionMonitor:
@@ -126,27 +133,35 @@ class PositionMonitor:
         surface: "FullDataSurface",
         *,
         exit_monitor_enabled: bool = True,
-        exit_min_hold_seconds: int = 10,
+        exit_min_hold_seconds: int = 45,
         exit_no_exit_last_seconds: int = 30,
-        exit_consecutive_flip_ticks: int = 3,
-        exit_lgb_flip_enabled: bool = True,
-        exit_oracle_flip_enabled: bool = True,
+        exit_mark_min_pct: float = 0.45,
+        exit_mark_ticks: int = 10,
+        # Legacy params (ignored, kept for call-site compat during rollout)
+        exit_consecutive_flip_ticks: int = 5,
+        exit_lgb_flip_enabled: bool = False,
+        exit_oracle_flip_enabled: bool = False,
     ) -> Optional[str]:
-        """Check whether a monitored position should exit.
+        """Check whether a monitored position should exit via mark-to-market.
 
-        Called every 2s from the strategy eval loop. Returns an exit
-        reason string if exit should trigger, or None to hold.
+        Called every 2s from the strategy eval loop. Uses CLOB bid prices
+        to determine if the position has lost too much value. If the
+        mark-to-market ratio (current bid / fill price) stays below
+        exit_mark_min_pct for exit_mark_ticks consecutive evaluations,
+        triggers a stop-loss exit.
 
         Args:
             strategy_id: Strategy that owns the position.
             window_ts: Window timestamp of the position.
-            surface: Current FullDataSurface for signal evaluation.
+            surface: Current FullDataSurface with CLOB bid/ask data.
             exit_monitor_enabled: Master switch for exit monitoring.
             exit_min_hold_seconds: Minimum seconds to hold before allowing exit.
             exit_no_exit_last_seconds: Don't exit in final N seconds before close.
-            exit_consecutive_flip_ticks: Number of consecutive flipped evals to trigger exit.
-            exit_lgb_flip_enabled: Enable LGB probability flip detection.
-            exit_oracle_flip_enabled: Enable oracle (chainlink+tiingo) flip detection.
+            exit_mark_min_pct: Exit if bid < this fraction of fill price.
+            exit_mark_ticks: Number of consecutive ticks below threshold to trigger.
+            exit_consecutive_flip_ticks: Legacy (unused).
+            exit_lgb_flip_enabled: Legacy (unused).
+            exit_oracle_flip_enabled: Legacy (unused).
 
         Returns:
             Exit reason string or None.
@@ -167,39 +182,43 @@ class PositionMonitor:
             return None
 
         # Safety rail: don't exit in last N seconds (thin book risk)
-        eval_offset = getattr(surface, "eval_offset", None) or 0
-        if eval_offset > 0 and eval_offset < exit_no_exit_last_seconds:
+        seconds_to_close = getattr(surface, "eval_offset_sec", None) or getattr(surface, "eval_offset", None) or 0
+        if seconds_to_close > 0 and seconds_to_close < exit_no_exit_last_seconds:
             return None
 
-        # Check exit triggers
-        signal_flipped = False
+        # Mark-to-market: get current bid for our token
+        if pos.direction == "UP":
+            up_bid = getattr(surface, "clob_up_bid", None)
+            dn_ask = getattr(surface, "clob_down_ask", None)
+            if up_bid is not None and float(up_bid) > 0.01:
+                mark = float(up_bid)
+            elif dn_ask is not None:
+                mark = 1.0 - float(dn_ask)
+            else:
+                return None  # can't price, skip
+        else:  # DOWN
+            dn_bid = getattr(surface, "clob_down_bid", None)
+            up_ask = getattr(surface, "clob_up_ask", None)
+            if dn_bid is not None and float(dn_bid) > 0.01:
+                mark = float(dn_bid)
+            elif up_ask is not None:
+                mark = 1.0 - float(up_ask)
+            else:
+                return None  # can't price, skip
 
-        if exit_lgb_flip_enabled:
-            p_up = getattr(surface, "probability_lgb", None)
-            if p_up is not None:
-                lgb_dir = "UP" if p_up > 0.5 else "DOWN"
-                if lgb_dir != pos.direction:
-                    signal_flipped = True
+        mark_pct = mark / pos.fill_price if pos.fill_price > 0 else 1.0
 
-        if exit_oracle_flip_enabled and not signal_flipped:
-            cl_delta = getattr(surface, "delta_chainlink", None)
-            ti_delta = getattr(surface, "delta_tiingo", None)
-            if cl_delta is not None and ti_delta is not None:
-                cl_dir = "UP" if cl_delta > 0 else ("DOWN" if cl_delta < 0 else None)
-                ti_dir = "UP" if ti_delta > 0 else ("DOWN" if ti_delta < 0 else None)
-                if (cl_dir is not None and ti_dir is not None
-                        and cl_dir != pos.direction and ti_dir != pos.direction):
-                    signal_flipped = True
-
-        if signal_flipped:
-            pos.consecutive_flip_count += 1
+        # Stop-loss check
+        if mark_pct < exit_mark_min_pct:
+            pos.mark_loss_tick_count += 1
         else:
-            pos.consecutive_flip_count = 0
+            pos.mark_loss_tick_count = 0  # reset on recovery
 
-        if pos.consecutive_flip_count >= exit_consecutive_flip_ticks:
+        if pos.mark_loss_tick_count >= exit_mark_ticks:
             return (
-                f"exit_signal_flip: {pos.consecutive_flip_count} consecutive "
-                f"ticks flipped against {pos.direction}"
+                f"mark_stop_loss: mark={mark:.3f} "
+                f"({mark_pct:.0%} of fill) for "
+                f"{pos.mark_loss_tick_count} ticks"
             )
 
         return None
@@ -392,7 +411,7 @@ class PositionMonitor:
                     "fill_size": pos.fill_size,
                     "order_id": pos.order_id,
                     "held_seconds": time.time() - pos.filled_at_epoch,
-                    "consecutive_flip_count": pos.consecutive_flip_count,
+                    "mark_loss_tick_count": pos.mark_loss_tick_count,
                 }),
                 evaluated_at=time.time(),
             )
@@ -423,7 +442,7 @@ class PositionMonitor:
             f"{emoji} *EXIT {mode}* — {pos.strategy_id}\n"
             f"direction: `{pos.direction}` window: `{pos.window_ts}`\n"
             f"fill: `${pos.fill_price:.3f}` size: `{pos.fill_size:.2f}`\n"
-            f"held: `{held_secs:.0f}s` flips: `{pos.consecutive_flip_count}`\n"
+            f"held: `{held_secs:.0f}s` mark_ticks: `{pos.mark_loss_tick_count}`\n"
             f"reason: {reason}"
         )
 

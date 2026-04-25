@@ -165,7 +165,7 @@ def _exit_shadow_mode() -> bool:
 
 def _exit_min_hold_seconds() -> int:
     return _gp.get_int(
-        "exit_min_hold_seconds", "V8LGB_EXIT_MIN_HOLD_SECONDS", 10
+        "exit_min_hold_seconds", "V8LGB_EXIT_MIN_HOLD_SECONDS", 45
     )
 
 
@@ -175,23 +175,36 @@ def _exit_no_exit_last_seconds() -> int:
     )
 
 
+def _exit_mark_min_pct() -> float:
+    return _gp.get_float(
+        "exit_mark_min_pct", "V8LGB_EXIT_MARK_MIN_PCT", 0.45
+    )
+
+
+def _exit_mark_ticks() -> int:
+    return _gp.get_int(
+        "exit_mark_ticks", "V8LGB_EXIT_MARK_TICKS", 10
+    )
+
+
+# Legacy signal-flip params (disabled, kept for reference)
 def _exit_consecutive_flip_ticks() -> int:
     return _gp.get_int(
         "exit_consecutive_flip_ticks",
         "V8LGB_EXIT_CONSECUTIVE_FLIP_TICKS",
-        3,
+        5,
     )
 
 
 def _exit_lgb_flip_enabled() -> bool:
     return _gp.get_bool(
-        "exit_lgb_flip_enabled", "V8LGB_EXIT_LGB_FLIP_ENABLED", True
+        "exit_lgb_flip_enabled", "V8LGB_EXIT_LGB_FLIP_ENABLED", False
     )
 
 
 def _exit_oracle_flip_enabled() -> bool:
     return _gp.get_bool(
-        "exit_oracle_flip_enabled", "V8LGB_EXIT_ORACLE_FLIP_ENABLED", True
+        "exit_oracle_flip_enabled", "V8LGB_EXIT_ORACLE_FLIP_ENABLED", False
     )
 
 
@@ -794,9 +807,8 @@ def evaluate_v8_champion_lgb_only(
                 "exit_shadow_mode": _exit_shadow_mode(),
                 "exit_min_hold_seconds": _exit_min_hold_seconds(),
                 "exit_no_exit_last_seconds": _exit_no_exit_last_seconds(),
-                "exit_consecutive_flip_ticks": _exit_consecutive_flip_ticks(),
-                "exit_lgb_flip_enabled": _exit_lgb_flip_enabled(),
-                "exit_oracle_flip_enabled": _exit_oracle_flip_enabled(),
+                "exit_mark_min_pct": _exit_mark_min_pct(),
+                "exit_mark_ticks": _exit_mark_ticks(),
                 "exit_max_retries": _exit_max_retries(),
                 "exit_retry_timeout_seconds": _exit_retry_timeout_seconds(),
             },

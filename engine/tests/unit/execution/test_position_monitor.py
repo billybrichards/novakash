@@ -1,11 +1,13 @@
-"""Tests for PositionMonitor — post-fill exit monitoring system (Feature 4).
+"""Tests for PositionMonitor — mark-to-market stop-loss exit system.
 
 Validates:
   - Position registration via on_fill()
-  - Exit evaluation logic (LGB flip, oracle flip, consecutive ticks)
+  - Mark-to-market exit logic (CLOB bid vs fill price threshold)
   - Safety rails (min hold, no exit last N seconds)
   - Shadow mode (log but don't sell)
   - Position cleanup
+
+See Hub note #240.
 """
 from __future__ import annotations
 
@@ -72,7 +74,7 @@ def _make_surface(**overrides) -> FullDataSurface:
 def test_on_fill_registers_position():
     monitor = PositionMonitor()
     monitor.on_fill(
-        strategy_id="v8_champion_lgb_only",
+        strategy_id="v9_ensemble",
         window_ts=100,
         direction="DOWN",
         fill_price=0.55,
@@ -82,7 +84,7 @@ def test_on_fill_registers_position():
     )
     assert monitor.position_count == 1
     positions = monitor.get_open_positions()
-    pos = positions["v8_champion_lgb_only:100"]
+    pos = positions["v9_ensemble:100"]
     assert pos.direction == "DOWN"
     assert pos.fill_price == 0.55
     assert pos.fill_size == 10.0
@@ -96,7 +98,213 @@ def test_remove_position():
     assert monitor.position_count == 0
 
 
-# ── Exit evaluation tests ────────────────────────────────────────────────
+# ── Mark-to-market exit evaluation tests ──────────────────────────────────
+
+def test_mark_below_threshold_triggers_after_n_ticks():
+    """Mark below 45% of fill for 10 ticks should trigger stop-loss."""
+    monitor = PositionMonitor()
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
+    pos = monitor._positions["strat:100"]
+    pos.filled_at_epoch = time.time() - 60  # past min hold
+
+    # DOWN position: mark = clob_down_bid
+    # 0.20 / 0.55 = 36% of fill < 45% threshold
+    surface = _make_surface(eval_offset=120, clob_down_bid=0.20)
+
+    # Ticks 1-9: accumulate but don't trigger
+    for i in range(9):
+        result = monitor.evaluate_exit(
+            "strat", 100, surface,
+            exit_mark_min_pct=0.45,
+            exit_mark_ticks=10,
+        )
+        assert result is None, f"Should not trigger on tick {i + 1}"
+        assert pos.mark_loss_tick_count == i + 1
+
+    # Tick 10: trigger
+    result = monitor.evaluate_exit(
+        "strat", 100, surface,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=10,
+    )
+    assert result is not None
+    assert "mark_stop_loss" in result
+    assert "36%" in result  # 0.20/0.55 = 36%
+
+
+def test_mark_above_threshold_resets_counter():
+    """Mark recovering above threshold should reset the tick counter."""
+    monitor = PositionMonitor()
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
+    pos = monitor._positions["strat:100"]
+    pos.filled_at_epoch = time.time() - 60
+
+    bad_surface = _make_surface(eval_offset=120, clob_down_bid=0.20)
+    ok_surface = _make_surface(eval_offset=120, clob_down_bid=0.50)
+
+    # Accumulate 5 bad ticks
+    for _ in range(5):
+        monitor.evaluate_exit(
+            "strat", 100, bad_surface,
+            exit_mark_min_pct=0.45,
+            exit_mark_ticks=10,
+        )
+    assert pos.mark_loss_tick_count == 5
+
+    # One recovery tick resets counter
+    monitor.evaluate_exit(
+        "strat", 100, ok_surface,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=10,
+    )
+    assert pos.mark_loss_tick_count == 0
+
+
+def test_mark_null_bid_skips():
+    """If no CLOB bid data available, evaluate_exit returns None (can't price)."""
+    monitor = PositionMonitor()
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
+    pos = monitor._positions["strat:100"]
+    pos.filled_at_epoch = time.time() - 60
+
+    # No bid data at all
+    surface = _make_surface(
+        eval_offset=120,
+        clob_down_bid=None,
+        clob_up_ask=None,
+    )
+    result = monitor.evaluate_exit(
+        "strat", 100, surface,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=10,
+    )
+    assert result is None
+    assert pos.mark_loss_tick_count == 0  # should not increment
+
+
+def test_min_hold_respected():
+    """Position within min_hold_seconds should never trigger exit."""
+    monitor = PositionMonitor()
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
+    # Just registered — within min_hold_seconds
+
+    # Very bad mark that would trigger immediately
+    surface = _make_surface(eval_offset=120, clob_down_bid=0.01)
+    result = monitor.evaluate_exit(
+        "strat", 100, surface,
+        exit_min_hold_seconds=45,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,  # would trigger on single tick
+    )
+    assert result is None
+
+
+def test_no_exit_last_seconds_respected():
+    """Should not exit when eval_offset < exit_no_exit_last_seconds."""
+    monitor = PositionMonitor()
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
+    pos = monitor._positions["strat:100"]
+    pos.filled_at_epoch = time.time() - 60
+
+    # eval_offset 20 < 30 = too close to close
+    surface = _make_surface(eval_offset=20, clob_down_bid=0.01)
+    result = monitor.evaluate_exit(
+        "strat", 100, surface,
+        exit_no_exit_last_seconds=30,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result is None
+
+
+def test_up_position_uses_up_bid_or_1_minus_dn_ask():
+    """UP position should use clob_up_bid as mark, falling back to 1 - clob_down_ask."""
+    monitor = PositionMonitor()
+    monitor.on_fill("strat", 100, "UP", 0.45, 10.0, "order1")
+    pos = monitor._positions["strat:100"]
+    pos.filled_at_epoch = time.time() - 60
+
+    # Case 1: clob_up_bid available and > 0.01
+    # up_bid = 0.15, fill = 0.45 => mark_pct = 0.333 < 0.45 => bad
+    surface = _make_surface(eval_offset=120, clob_up_bid=0.15, clob_down_ask=0.90)
+    result = monitor.evaluate_exit(
+        "strat", 100, surface,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result is not None
+    assert "mark_stop_loss" in result
+
+    # Reset position
+    pos.mark_loss_tick_count = 0
+
+    # Case 2: clob_up_bid is None, fallback to 1 - clob_down_ask
+    # 1 - 0.90 = 0.10, 0.10/0.45 = 22% < 45% => bad
+    surface2 = _make_surface(eval_offset=120, clob_up_bid=None, clob_down_ask=0.90)
+    result2 = monitor.evaluate_exit(
+        "strat", 100, surface2,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result2 is not None
+    assert "mark_stop_loss" in result2
+
+    # Reset position
+    pos.mark_loss_tick_count = 0
+
+    # Case 3: clob_up_bid is 0.0 (too low, <= 0.01), fallback to 1 - down_ask
+    # 1 - 0.55 = 0.45, 0.45/0.45 = 100% > 45% => safe
+    surface3 = _make_surface(eval_offset=120, clob_up_bid=0.0, clob_down_ask=0.55)
+    result3 = monitor.evaluate_exit(
+        "strat", 100, surface3,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result3 is None
+
+
+def test_down_position_uses_dn_bid_or_1_minus_up_ask():
+    """DOWN position should use clob_down_bid as mark, falling back to 1 - clob_up_ask."""
+    monitor = PositionMonitor()
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
+    pos = monitor._positions["strat:100"]
+    pos.filled_at_epoch = time.time() - 60
+
+    # Case 1: clob_down_bid available
+    # dn_bid = 0.20, fill = 0.55 => mark_pct = 0.364 < 0.45 => bad
+    surface = _make_surface(eval_offset=120, clob_down_bid=0.20, clob_up_ask=0.85)
+    result = monitor.evaluate_exit(
+        "strat", 100, surface,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result is not None
+    assert "mark_stop_loss" in result
+
+    pos.mark_loss_tick_count = 0
+
+    # Case 2: clob_down_bid is None, fallback to 1 - clob_up_ask
+    # 1 - 0.85 = 0.15, 0.15/0.55 = 27% < 45% => bad
+    surface2 = _make_surface(eval_offset=120, clob_down_bid=None, clob_up_ask=0.85)
+    result2 = monitor.evaluate_exit(
+        "strat", 100, surface2,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result2 is not None
+    assert "mark_stop_loss" in result2
+
+    pos.mark_loss_tick_count = 0
+
+    # Case 3: both None => can't price, skip
+    surface3 = _make_surface(eval_offset=120, clob_down_bid=None, clob_up_ask=None)
+    result3 = monitor.evaluate_exit(
+        "strat", 100, surface3,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result3 is None
+
 
 def test_evaluate_exit_returns_none_when_no_position():
     monitor = PositionMonitor()
@@ -107,130 +315,50 @@ def test_evaluate_exit_returns_none_when_no_position():
 def test_evaluate_exit_returns_none_when_disabled():
     monitor = PositionMonitor()
     monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
-    # Force filled_at to be in the past
     pos = monitor._positions["strat:100"]
-    pos.filled_at_epoch = time.time() - 30
+    pos.filled_at_epoch = time.time() - 60
     result = monitor.evaluate_exit(
-        "strat", 100, _make_surface(),
+        "strat", 100, _make_surface(clob_down_bid=0.01),
         exit_monitor_enabled=False,
     )
     assert result is None
 
 
-def test_evaluate_exit_returns_none_within_min_hold():
+def test_mark_at_exact_threshold_does_not_trigger():
+    """Mark exactly at exit_mark_min_pct should NOT trigger (not strictly less)."""
     monitor = PositionMonitor()
-    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
-    # Just registered = within min_hold_seconds
-    surface = _make_surface(probability_lgb=0.70)  # flipped to UP
+    # fill=1.0 so mark_pct = mark directly
+    monitor.on_fill("strat", 100, "DOWN", 1.0, 10.0, "order1")
+    pos = monitor._positions["strat:100"]
+    pos.filled_at_epoch = time.time() - 60
+
+    # 0.45/1.0 = 45% = exactly at threshold. < 0.45 is False (not strictly less)
+    surface = _make_surface(eval_offset=120, clob_down_bid=0.45)
     result = monitor.evaluate_exit(
         "strat", 100, surface,
-        exit_min_hold_seconds=10,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
     )
     assert result is None
+    assert pos.mark_loss_tick_count == 0
 
 
-def test_evaluate_exit_returns_none_in_last_seconds():
+def test_mark_just_below_threshold_triggers():
+    """Mark just below threshold should accumulate ticks."""
     monitor = PositionMonitor()
-    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
+    monitor.on_fill("strat", 100, "DOWN", 1.0, 10.0, "order1")
     pos = monitor._positions["strat:100"]
-    pos.filled_at_epoch = time.time() - 30
-    # eval_offset < exit_no_exit_last_seconds = too close to close
-    surface = _make_surface(
-        eval_offset=20,  # less than 30
-        probability_lgb=0.70,  # flipped
-    )
+    pos.filled_at_epoch = time.time() - 60
+
+    # 0.449/1.0 = 44.9% < 45% threshold
+    surface = _make_surface(eval_offset=120, clob_down_bid=0.449)
     result = monitor.evaluate_exit(
         "strat", 100, surface,
-        exit_no_exit_last_seconds=30,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
     )
-    assert result is None
-
-
-def test_evaluate_exit_lgb_flip_accumulates():
-    """LGB flip should accumulate consecutive_flip_count."""
-    monitor = PositionMonitor()
-    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
-    pos = monitor._positions["strat:100"]
-    pos.filled_at_epoch = time.time() - 30  # past min hold
-
-    # Surface with LGB flipped to UP (DOWN bet, so this is a flip)
-    flipped_surface = _make_surface(
-        eval_offset=120,
-        probability_lgb=0.70,  # UP
-        delta_chainlink=-0.005,  # still DOWN-aligned oracles
-        delta_tiingo=-0.004,
-    )
-
-    # Tick 1: flip count = 1
-    result1 = monitor.evaluate_exit(
-        "strat", 100, flipped_surface,
-        exit_consecutive_flip_ticks=3,
-    )
-    assert result1 is None
-    assert pos.consecutive_flip_count == 1
-
-    # Tick 2: flip count = 2
-    result2 = monitor.evaluate_exit(
-        "strat", 100, flipped_surface,
-        exit_consecutive_flip_ticks=3,
-    )
-    assert result2 is None
-    assert pos.consecutive_flip_count == 2
-
-    # Tick 3: flip count = 3 → exit triggered
-    result3 = monitor.evaluate_exit(
-        "strat", 100, flipped_surface,
-        exit_consecutive_flip_ticks=3,
-    )
-    assert result3 is not None
-    assert "exit_signal_flip" in result3
-    assert "3 consecutive" in result3
-
-
-def test_evaluate_exit_resets_on_non_flip():
-    """Non-flip tick should reset the consecutive flip counter."""
-    monitor = PositionMonitor()
-    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
-    pos = monitor._positions["strat:100"]
-    pos.filled_at_epoch = time.time() - 30
-
-    flipped = _make_surface(eval_offset=120, probability_lgb=0.70)
-    aligned = _make_surface(eval_offset=120, probability_lgb=0.30)
-
-    # Two flips then one aligned
-    monitor.evaluate_exit("strat", 100, flipped, exit_consecutive_flip_ticks=3)
-    monitor.evaluate_exit("strat", 100, flipped, exit_consecutive_flip_ticks=3)
-    assert pos.consecutive_flip_count == 2
-
-    monitor.evaluate_exit("strat", 100, aligned, exit_consecutive_flip_ticks=3)
-    assert pos.consecutive_flip_count == 0
-
-
-def test_evaluate_exit_oracle_flip():
-    """Both chainlink and tiingo flipping should trigger oracle exit."""
-    monitor = PositionMonitor()
-    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
-    pos = monitor._positions["strat:100"]
-    pos.filled_at_epoch = time.time() - 30
-
-    # LGB still agrees DOWN but oracles both flipped UP
-    oracle_flipped = _make_surface(
-        eval_offset=120,
-        probability_lgb=0.30,  # still DOWN
-        delta_chainlink=+0.005,  # UP
-        delta_tiingo=+0.004,  # UP
-    )
-
-    for _ in range(3):
-        result = monitor.evaluate_exit(
-            "strat", 100, oracle_flipped,
-            exit_consecutive_flip_ticks=3,
-            exit_lgb_flip_enabled=False,
-            exit_oracle_flip_enabled=True,
-        )
-
     assert result is not None
-    assert "exit_signal_flip" in result
+    assert "mark_stop_loss" in result
 
 
 # ── Shadow mode test ───────────────────────────────────────────────────────
@@ -245,7 +373,7 @@ async def test_execute_exit_shadow_mode():
     monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1", "token-abc")
 
     result = await monitor.execute_exit(
-        "strat", 100, "test_reason",
+        "strat", 100, "mark_stop_loss: mark=0.200 (36% of fill) for 10 ticks",
         exit_shadow_mode=True,
     )
     assert result is True
@@ -280,7 +408,7 @@ async def test_execute_exit_live_calls_sell():
     monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1", "token-abc")
 
     result = await monitor.execute_exit(
-        "strat", 100, "exit_signal_flip: 3 consecutive ticks flipped",
+        "strat", 100, "mark_stop_loss: mark=0.200 (36% of fill) for 10 ticks",
         exit_shadow_mode=False,
     )
     assert result is True
