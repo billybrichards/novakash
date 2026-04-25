@@ -212,6 +212,25 @@ class FAKLadderExecutor(OrderExecutionPort):
                     execution_end=time.time(),
                 )
 
+            # Surface CLOB auth/infra abort reasons so they propagate to
+            # the final ExecutionResult instead of being masked as a benign
+            # market-side no-fill. Checked before Phase 2/3 fallbacks.
+            if fok_result.abort_reason and (
+                "clob_auth_error" in (fok_result.abort_reason or "")
+                or "book_error" in (fok_result.abort_reason or "")
+            ):
+                return ExecutionResult(
+                    success=False,
+                    failure_reason=fok_result.abort_reason,
+                    stake_usd=stake_usd,
+                    execution_mode="none",
+                    fak_attempts=fok_result.attempts,
+                    fak_prices=fak_prices,
+                    token_id=token_id,
+                    execution_start=start,
+                    execution_end=time.time(),
+                )
+
             logger.info(
                 "fak_ladder.exhausted",
                 extra={

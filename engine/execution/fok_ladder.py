@@ -176,6 +176,14 @@ class FOKLadder:
                     attempt=attempt, price=f"${price:.2f}", size=f"{size:.2f}",
                     note="maker_amount precision rejected by CLOB")
                 return {"size_matched": 0, "order_id": None, "filled": False}
+            # CLOB client not connected / no auth creds — infra error, not
+            # market condition. Log at error level so it's visible in monitoring.
+            if "not connected" in err_str or "no auth creds" in err_str:
+                self._log.error("price_ladder.clob_not_connected",
+                    attempt=attempt, error=err_str[:200],
+                    hint="poly_client may not have reconnected after mode switch")
+                return {"size_matched": 0, "order_id": None, "filled": False,
+                        "abort_reason": f"clob_auth_error: {err_str[:100]}"}
             self._log.warning("price_ladder.order_error",
                 attempt=attempt, error=err_str[:200])
             return None
