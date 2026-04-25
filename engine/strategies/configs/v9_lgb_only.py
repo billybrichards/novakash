@@ -37,7 +37,7 @@ def evaluate_v9_lgb_only(surface: "FullDataSurface") -> StrategyDecision:
     # a runtime override of fallback_to_lgb_on_pc_null=false cannot break
     # isolation. Without this, a bad override + race could re-enable classifier.
     _orig_pc = getattr(surface, "probability_classifier", None)
-    surface.probability_classifier = None
+    object.__setattr__(surface, "probability_classifier", None)
 
     # Force fallback flag in case runtime override tries to disable it
     from strategies import gate_params as _gp_mod
