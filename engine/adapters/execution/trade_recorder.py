@@ -125,6 +125,11 @@ class DBTradeRecorder(TradeRecorderPort):
                     window_seconds=300,
                     market_id=result.market_slug,
                     metadata={
+                        # Spread decision metadata first so signal-strength fields
+                        # (probability_lgb, probability_classifier, pl_dist, pc_dist,
+                        # disagreement, is_vhc, etc.) survive into trades.metadata.
+                        # Execution-specific keys below overlay any same-named keys.
+                        **(decision.metadata or {}),
                         "strategy_id": decision.strategy_id,
                         "strategy_version": decision.strategy_version,
                         "direction": decision.direction,
