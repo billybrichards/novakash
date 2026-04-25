@@ -658,10 +658,28 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                 ("UP" if pc > 0.5 else "DOWN") if pc is not None else None
             )
             pl_dir_check = "UP" if pl > 0.5 else "DOWN"
+            # Oracle-majority cross-veto: only let classifier veto
+            # pl-VHC when oracles ALSO support classifier direction.
+            # If oracles agree with LGB, classifier alone can't veto.
+            # Evidence: 3/3 correct on 2026-04-24 data (Hub note #240).
+            _cl_delta = getattr(surface, "delta_chainlink", None)
+            _ti_delta = getattr(surface, "delta_tiingo", None)
+            _cl_dir = ("UP" if _cl_delta > 0 else "DOWN") if _cl_delta is not None else None
+            _ti_dir = ("UP" if _ti_delta > 0 else "DOWN") if _ti_delta is not None else None
+            # Require BOTH oracles non-null AND agree with LGB.
+            # Null oracles = can't confirm = veto holds (safer).
+            _oracles_with_lgb = (
+                _cl_dir is not None
+                and _ti_dir is not None
+                and _cl_dir == pl_dir_check
+                and _ti_dir == pl_dir_check
+            )
+
             if (
                 not _pl_vhc_require_pc_agreement()
                 or pc_dir_check is None
                 or pc_dir_check == pl_dir_check
+                or _oracles_with_lgb  # oracles back LGB → classifier alone can't veto
             ):
                 is_pl_vhc = True
                 pl_vhc_meta = {
@@ -669,14 +687,16 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                     "pl_vhc_cross_veto": False,
                     "pl_vhc_pl_dir": pl_dir_check,
                     "pl_vhc_pc_dir": pc_dir_check,
+                    "pl_vhc_oracles_with_lgb": _oracles_with_lgb,
                 }
             else:
-                # Cross-veto: classifier disagrees with LGB direction
+                # Cross-veto: classifier + oracles disagree with LGB
                 pl_vhc_meta = {
                     "pl_vhc_bypass": False,
                     "pl_vhc_cross_veto": True,
                     "pl_vhc_pl_dir": pl_dir_check,
                     "pl_vhc_pc_dir": pc_dir_check,
+                    "pl_vhc_oracles_with_lgb": _oracles_with_lgb,
                 }
 
     # ── 7. Disagreement veto (R2) ──────────────────────────────────────────
