@@ -337,8 +337,13 @@ class ExecuteTradeUseCase:
             if claim_acquired and hasattr(self._window_state, "clear_trade_claim"):
                 try:
                     await self._window_state.clear_trade_claim(window_key)
-                except Exception:
-                    pass
+                except Exception as _clr_exc:
+                    log.warning(
+                        "execute_trade.clear_claim_failed",
+                        window=str(window_key),
+                        phase="timing_recheck",
+                        error=str(_clr_exc)[:200],
+                    )
             return _failed(
                 timing_skip,
                 strategy_id=sid,
@@ -441,8 +446,13 @@ class ExecuteTradeUseCase:
             if claim_acquired and hasattr(self._window_state, "clear_trade_claim"):
                 try:
                     await self._window_state.clear_trade_claim(window_key)
-                except Exception:
-                    pass
+                except Exception as _clr_exc:
+                    log.warning(
+                        "execute_trade.clear_claim_failed",
+                        window=str(window_key),
+                        phase="execution_error",
+                        error=str(_clr_exc)[:200],
+                    )
             await self._on_order_error()
             log.error(
                 "execute_trade.execution_error",
@@ -474,8 +484,13 @@ class ExecuteTradeUseCase:
             if claim_acquired and hasattr(self._window_state, "clear_trade_claim"):
                 try:
                     await self._window_state.clear_trade_claim(window_key)
-                except Exception:
-                    pass
+                except Exception as _clr_exc:
+                    log.warning(
+                        "execute_trade.clear_claim_failed",
+                        window=str(window_key),
+                        phase="order_not_filled",
+                        error=str(_clr_exc)[:200],
+                    )
             # Only real submit/infra errors increment the breaker counter.
             # Benign no-fills (empty book, FAK exhausted, GTC unfilled) are
             # market conditions, not faults — they skip cleanly.

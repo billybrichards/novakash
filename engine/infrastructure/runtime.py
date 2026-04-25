@@ -2234,27 +2234,38 @@ class EngineRuntime:
 
                             # Update risk manager
                             self._risk_manager._paper_mode = want_paper
+                            _clob_connected = want_paper  # paper needs no CLOB
                             if not want_paper:
                                 try:
                                     # Reconnect BEFORE any authenticated call.
                                     await self._poly_client.connect()
+                                    _clob_connected = True
                                 except Exception as exc:
                                     log.error(
                                         "mode_switch.clob_connect_failed_pre_rebaseline",
                                         error=str(exc)[:200],
                                     )
-                                try:
-                                    _live_wallet = await self._poly_client.get_balance()
-                                    await self._risk_manager.rebaseline_live_bankroll(
-                                        _live_wallet
-                                    )
-                                except Exception as exc:
-                                    log.error(
-                                        "mode_switch.live_risk_rebaseline_failed",
-                                        error=str(exc)[:200],
-                                    )
+                                    _clob_connected = False
+                                if _clob_connected:
+                                    try:
+                                        _live_wallet = await self._poly_client.get_balance()
+                                        await self._risk_manager.rebaseline_live_bankroll(
+                                            _live_wallet
+                                        )
+                                    except Exception as exc:
+                                        log.error(
+                                            "mode_switch.live_risk_rebaseline_failed",
+                                            error=str(exc)[:200],
+                                        )
 
                             # Keep registry execution aligned with runtime mode.
+                            # Gate: only rewire to FAKLadderExecutor when the
+                            # CLOB client actually connected.  If connect()
+                            # failed, the poly_client._clob_client is None and
+                            # every FAK submit would raise "CLOB client not
+                            # connected", producing fill_price=None / mode=none
+                            # failures that look like market-side no-fills but
+                            # are really auth/infra errors.
                             if (
                                 self._strategy_registry
                                 and getattr(
@@ -2262,37 +2273,43 @@ class EngineRuntime:
                                 )
                                 is not None
                             ):
-                                try:
-                                    from adapters.execution.paper_executor import (
-                                        PaperExecutor,
-                                    )
-                                    from adapters.execution.fak_ladder_executor import (
-                                        FAKLadderExecutor,
-                                    )
-
-                                    _execute_uc = self._strategy_registry._execute_uc
-                                    _execute_uc._paper_mode = want_paper
-                                    _execute_uc._executor = (
-                                        PaperExecutor()
-                                        if want_paper
-                                        else FAKLadderExecutor(
-                                            poly_client=self._poly_client
-                                        )
-                                    )
-                                    log.info(
-                                        "mode_switch.execute_uc_rewired",
-                                        paper_mode=want_paper,
-                                        executor=(
-                                            "PaperExecutor"
-                                            if want_paper
-                                            else "FAKLadderExecutor"
-                                        ),
-                                    )
-                                except Exception as exc:
+                                if not _clob_connected and not want_paper:
                                     log.error(
-                                        "mode_switch.execute_uc_rewire_failed",
-                                        error=str(exc)[:200],
+                                        "mode_switch.execute_uc_not_rewired",
+                                        reason="CLOB connect failed; keeping PaperExecutor to avoid silent failures",
                                     )
+                                else:
+                                    try:
+                                        from adapters.execution.paper_executor import (
+                                            PaperExecutor,
+                                        )
+                                        from adapters.execution.fak_ladder_executor import (
+                                            FAKLadderExecutor,
+                                        )
+
+                                        _execute_uc = self._strategy_registry._execute_uc
+                                        _execute_uc._paper_mode = want_paper
+                                        _execute_uc._executor = (
+                                            PaperExecutor()
+                                            if want_paper
+                                            else FAKLadderExecutor(
+                                                poly_client=self._poly_client
+                                            )
+                                        )
+                                        log.info(
+                                            "mode_switch.execute_uc_rewired",
+                                            paper_mode=want_paper,
+                                            executor=(
+                                                "PaperExecutor"
+                                                if want_paper
+                                                else "FAKLadderExecutor"
+                                            ),
+                                        )
+                                    except Exception as exc:
+                                        log.error(
+                                            "mode_switch.execute_uc_rewire_failed",
+                                            error=str(exc)[:200],
+                                        )
 
                             # Update alerter mode tag
                             if self._alerter:
@@ -2318,8 +2335,13 @@ class EngineRuntime:
                             # CLOB client was already reconnected above (before
                             # rebaseline) so we only need to log success here.
                             # Kept for backwards-compat with downstream log grep.
-                            if not want_paper:
+                            if not want_paper and _clob_connected:
                                 log.info("mode_switch.clob_connected")
+                            elif not want_paper:
+                                log.error(
+                                    "mode_switch.clob_NOT_connected",
+                                    hint="LIVE mode active but CLOB client failed to connect; trades will use PaperExecutor",
+                                )
 
                             # Start redeemer if switching TO live — guard against
                             # double-registration on repeated paper→live flips.
