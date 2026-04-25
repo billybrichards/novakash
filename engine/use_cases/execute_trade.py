@@ -170,11 +170,15 @@ def _recheck_timing_before_execute(
             except (TypeError, ValueError):
                 pass
 
-    if current_offset < int(min_offset_sec):
-        return (
-            f"eval_offset_drift: current={current_offset}s "
-            f"< min={int(min_offset_sec)}s (surface stale?)"
-        )
+    # Disabled: strategy gate already verified timing. Re-enforcing
+    # min_offset here causes false blocks when 3-tick entry confirmation
+    # burns 6s after the strategy gate passes at T-24.
+    # Only the past-close guard (current_offset <= 0) above matters.
+    # if current_offset < int(min_offset_sec):
+    #     return (
+    #         f"eval_offset_drift: current={current_offset}s "
+    #         f"< min={int(min_offset_sec)}s (surface stale?)"
+    #     )
 
     return None
 
