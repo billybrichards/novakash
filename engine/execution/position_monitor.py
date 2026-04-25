@@ -21,22 +21,18 @@ Exit logic (mark-to-market stop-loss):
   - If mark < exit_mark_min_pct * fill_price for exit_mark_ticks
     consecutive ticks, trigger exit.
 
-Timing:
-  - Exits only evaluated between T-48 and T-30 (eval_offset window).
-    After T-30 the orderbook gets thin; after T-0 Polymarket deletes
-    the orderbook entirely, causing "orderbook does not exist" errors.
-  - Old exit_min_hold_seconds / exit_no_exit_last_seconds REMOVED --
-    eval_offset window handles both constraints.
-
 Safety:
   - exit_shadow_mode: when True, logs exits but does NOT place sell orders
+  - exit_eval_start_offset: start checking exits at this T-minus offset
+  - exit_eval_end_offset: stop checking exits at this T-minus offset (thin book)
   - exit_max_retries: sell retry count
   - exit_retry_timeout_seconds: per-sell-attempt timeout
-  - Sell size uses CLOB-confirmed size (not engine estimate) to avoid
-    "not enough balance" from SOT reconciler mismatch. Falls back to
-    engine_size * 0.95 (5% haircut) when confirmed unavailable.
 
-See Hub notes #236 (exit system spec), #298/#299 (audit tasks), #240.
+Guards (PR #365 + Montreal deploy):
+  - Stale position cleanup: positions older than 330s (window + grace) are popped
+  - Window match: surface.window_ts must match pos.window_ts
+
+See Hub notes #236 (exit system spec), #298/#299 (audit tasks), #240, #365.
 """
 from __future__ import annotations
 
@@ -67,7 +63,6 @@ class MonitoredPosition:
     order_id: str
     token_id: str
     filled_at_epoch: float
-    confirmed_size: float = 0.0  # CLOB-confirmed fill size (from SOT reconciler)
     consecutive_flip_count: int = 0  # legacy, kept for compat
     mark_loss_tick_count: int = 0
 
@@ -107,16 +102,10 @@ class PositionMonitor:
         fill_size: float,
         order_id: str,
         token_id: str = "",
-        confirmed_size: float = 0.0,
     ) -> None:
         """Register a new fill for exit monitoring.
 
         Called from registry.py after a successful LIVE execution.
-
-        Args:
-            confirmed_size: CLOB-confirmed fill size from SOT reconciler.
-                If 0.0 (unavailable), sell path falls back to
-                fill_size * 0.95 (5% haircut safety margin).
         """
         key = f"{strategy_id}:{window_ts}"
         self._positions[key] = MonitoredPosition(
@@ -128,7 +117,6 @@ class PositionMonitor:
             order_id=order_id,
             token_id=token_id,
             filled_at_epoch=time.time(),
-            confirmed_size=confirmed_size,
         )
         self._log.info(
             "position_monitor.registered",
@@ -136,7 +124,6 @@ class PositionMonitor:
             direction=direction,
             fill_price=f"${fill_price:.3f}",
             fill_size=f"{fill_size:.2f}",
-            confirmed_size=f"{confirmed_size:.2f}",
         )
 
     # ------------------------------------------------------------------
@@ -152,11 +139,11 @@ class PositionMonitor:
         exit_monitor_enabled: bool = True,
         exit_eval_start_offset: int = 48,
         exit_eval_end_offset: int = 30,
-        exit_mark_min_pct: float = 0.3145,
-        exit_mark_ticks: int = 6,
+        exit_mark_min_pct: float = 0.45,
+        exit_mark_ticks: int = 10,
         # Legacy params (ignored, kept for call-site compat during rollout)
-        exit_min_hold_seconds: int = 0,
-        exit_no_exit_last_seconds: int = 0,
+        exit_min_hold_seconds: int = 45,
+        exit_no_exit_last_seconds: int = 30,
         exit_consecutive_flip_ticks: int = 5,
         exit_lgb_flip_enabled: bool = False,
         exit_oracle_flip_enabled: bool = False,
@@ -169,25 +156,17 @@ class PositionMonitor:
         exit_mark_min_pct for exit_mark_ticks consecutive evaluations,
         triggers a stop-loss exit.
 
-        Timing: exits are only evaluated between T-48 and T-30
-        (configurable via exit_eval_start_offset / exit_eval_end_offset).
-        This prevents:
-          - Selling into closed orderbooks after window resolution (T-0)
-          - Selling into thin books in the final seconds
-        The old exit_min_hold_seconds / exit_no_exit_last_seconds params
-        are IGNORED -- eval_offset window handles both constraints.
-
         Args:
             strategy_id: Strategy that owns the position.
             window_ts: Window timestamp of the position.
             surface: Current FullDataSurface with CLOB bid/ask data.
             exit_monitor_enabled: Master switch for exit monitoring.
-            exit_eval_start_offset: Start checking exits at T-N (seconds before close).
-            exit_eval_end_offset: Stop checking exits at T-N (seconds before close).
+            exit_eval_start_offset: Start checking exits at this T-minus offset.
+            exit_eval_end_offset: Stop checking exits at this T-minus offset.
             exit_mark_min_pct: Exit if bid < this fraction of fill price.
             exit_mark_ticks: Number of consecutive ticks below threshold to trigger.
-            exit_min_hold_seconds: Legacy (ignored -- timing via eval_offset).
-            exit_no_exit_last_seconds: Legacy (ignored -- timing via eval_offset).
+            exit_min_hold_seconds: Legacy (unused, kept for call-site compat).
+            exit_no_exit_last_seconds: Legacy (unused, kept for call-site compat).
             exit_consecutive_flip_ticks: Legacy (unused).
             exit_lgb_flip_enabled: Legacy (unused).
             exit_oracle_flip_enabled: Legacy (unused).
@@ -203,17 +182,36 @@ class PositionMonitor:
         if pos is None:
             return None
 
-        # Timing gate: only evaluate exits within the eval_offset window.
-        # eval_offset = seconds before window close. We check exits between
-        # exit_eval_start_offset (e.g. T-48) and exit_eval_end_offset (e.g. T-30).
-        # Outside this window we return None -- no exit evaluation.
-        eval_offset = getattr(surface, "eval_offset", None) or getattr(surface, "eval_offset_sec", None)
-        if eval_offset is None:
-            return None  # can't determine timing
+        # ── Stale position guard ────────────────────────────────────────
+        # Window duration (300s) + grace (30s) = 330s. If the position is
+        # older than this, the window has long since resolved — clean up.
+        now = time.time()
+        if now - pos.filled_at_epoch > 330:
+            self._log.info(
+                "position_monitor.stale_cleanup",
+                key=key,
+                held_seconds=f"{now - pos.filled_at_epoch:.0f}",
+            )
+            self._positions.pop(key, None)
+            return None
 
-        # Only check exits between T-48 and T-30 (configurable)
-        if eval_offset > exit_eval_start_offset or eval_offset < exit_eval_end_offset:
-            return None  # outside exit evaluation window
+        # ── Window match guard ──────────────────────────────────────────
+        # Surface may be for a different window than the position we're
+        # evaluating. Skip if window_ts doesn't match.
+        surface_window_ts = getattr(surface, "window_ts", None)
+        if surface_window_ts is not None and surface_window_ts != pos.window_ts:
+            return None
+
+        # ── Timing gate (PR #365) ──────────────────────────────────────
+        # eval_offset is seconds-before-close. Only evaluate exits when
+        # the surface offset falls within the configured window:
+        #   exit_eval_end_offset <= eval_offset <= exit_eval_start_offset
+        eval_offset = getattr(surface, "eval_offset", None)
+        if eval_offset is not None:
+            if eval_offset > exit_eval_start_offset:
+                return None  # too early — haven't reached start offset yet
+            if eval_offset < exit_eval_end_offset:
+                return None  # too late — book gets thin
 
         # Mark-to-market: get current bid for our token
         if pos.direction == "UP":
@@ -367,11 +365,7 @@ class PositionMonitor:
             # For binary tokens: sell YES at any price above 0.01
             # The py_clob_client supports SELL side via the same OrderArgs
             sell_price = 0.01  # aggressive: take any bid, we want OUT fast
-
-            # Use CLOB-confirmed size if available (SOT reconciler truth).
-            # Fall back to engine fill_size * 0.95 (5% haircut) to avoid
-            # "not enough balance" errors from size mismatch.
-            sell_size = pos.confirmed_size or round(pos.fill_size * 0.95, 3)
+            sell_size = pos.fill_size
 
             # Round size to 3dp to match CLOB precision
             sell_size = round(sell_size, 3)
@@ -442,8 +436,6 @@ class PositionMonitor:
                     "shadow": shadow,
                     "fill_price": pos.fill_price,
                     "fill_size": pos.fill_size,
-                    "confirmed_size": pos.confirmed_size,
-                    "sell_size_used": pos.confirmed_size or round(pos.fill_size * 0.95, 3),
                     "order_id": pos.order_id,
                     "held_seconds": time.time() - pos.filled_at_epoch,
                     "mark_loss_tick_count": pos.mark_loss_tick_count,
@@ -472,14 +464,11 @@ class PositionMonitor:
         held_secs = time.time() - pos.filled_at_epoch
         mode = "SHADOW" if shadow else ("EXECUTED" if executed else "FAILED")
         emoji = {"SHADOW": "\U0001f441\ufe0f", "EXECUTED": "\U0001f4b0", "FAILED": "\u274c"}.get(mode, "\u2753")
-        _sell_size = pos.confirmed_size or round(pos.fill_size * 0.95, 3)
-        _size_src = "clob" if pos.confirmed_size else "engine*0.95"
 
         msg = (
             f"{emoji} *EXIT {mode}* — {pos.strategy_id}\n"
             f"direction: `{pos.direction}` window: `{pos.window_ts}`\n"
             f"fill: `${pos.fill_price:.3f}` size: `{pos.fill_size:.2f}`\n"
-            f"sell_size: `{_sell_size:.2f}` ({_size_src})\n"
             f"held: `{held_secs:.0f}s` mark_ticks: `{pos.mark_loss_tick_count}`\n"
             f"reason: {reason}"
         )

@@ -514,6 +514,31 @@ class StrategyRegistry:
                             and p_lgb is not None
                         ):
                             meta_to_write["probability_lgb"] = p_lgb
+                        # ── Audit #307: ret_since_open, CoinGlass, v4_regime ───
+                        # ret_since_open: return since window open at decision time
+                        if "ret_since_open" not in meta_to_write:
+                            _cur = getattr(surface, "current_price", None)
+                            _opn = getattr(surface, "open_price", None)
+                            if _cur and _opn and _opn > 0:
+                                meta_to_write["ret_since_open"] = round(
+                                    (_cur - _opn) / _opn, 6
+                                )
+
+                        # CoinGlass 6 fields (from surface at score time)
+                        for _cg_key in (
+                            "cg_oi_usd",
+                            "cg_funding_rate",
+                            "cg_taker_buy_vol",
+                            "cg_taker_sell_vol",
+                            "cg_liq_total",
+                            "cg_liq_long",
+                            "cg_liq_short",
+                        ):
+                            if _cg_key not in meta_to_write:
+                                _cg_val = getattr(surface, _cg_key, None)
+                                if _cg_val is not None:
+                                    meta_to_write[_cg_key] = _cg_val
+
                         # Fetch telemetry for burn-in p95 latency checks.
                         # Stamped only when absent — strategy hooks don't
                         # know this field; it's owned by the data_surface
