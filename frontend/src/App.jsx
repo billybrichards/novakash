@@ -18,6 +18,7 @@ import Wallet from './pages/Wallet.jsx';
 import Strategies from './pages/Strategies.jsx';
 import Monitor from './pages/Monitor.jsx';
 import Compare from './pages/compare/Compare.jsx';
+import Desk from './pages/desk/Desk.jsx';
 
 // Archive wrapper
 import ArchiveCenter from './pages/archive/ArchiveCenter.jsx';
@@ -137,6 +138,7 @@ export default function App() {
             <Route path="system" element={<System />} />
             <Route path="monitor" element={<Monitor />} />
             <Route path="compare" element={<Compare />} />
+            <Route path="desk" element={<Desk />} />
             <Route path="factory" element={
               <Suspense fallback={<Loading label="Loading factory floor..." />}>
                 <FactoryFloor />

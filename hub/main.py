@@ -46,6 +46,7 @@ from api.config_v2 import router as config_v2_router
 # AGENT-OPS: Claude Agent SDK background task runners
 from api.agent_ops import router as agent_ops_router
 from api.strategy_decisions import router as strategy_decisions_router
+from api.desk import router as desk_router
 from api.strategies import router as strategies_router
 from api.strategies_override import router as strategies_override_router
 from api.window_traces import router as window_traces_router
@@ -748,6 +749,38 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             except Exception as f6_exc:
                 log.warning("hub.audit_255_f6_error", error=str(f6_exc)[:300])
 
+            # /desk Phase 1 — operator manual-pick journal (note #218).
+            # Mirrors hub/db/migrations/versions/20260424_01_desk_picks.sql
+            # so Railway boots apply without a separate migration pass.
+            try:
+                await session.execute(text(
+                    """
+                    CREATE TABLE IF NOT EXISTS desk_picks (
+                        id             BIGSERIAL PRIMARY KEY,
+                        window_epoch   BIGINT NOT NULL,
+                        asset          TEXT NOT NULL DEFAULT 'BTC',
+                        timeframe      TEXT NOT NULL DEFAULT '5m',
+                        pick           TEXT NOT NULL CHECK (pick IN ('UP','DOWN','SKIP')),
+                        t_remaining_s  INTEGER NOT NULL,
+                        notes          TEXT,
+                        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                    """
+                ))
+                await session.execute(text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_desk_picks_window_asset_tf "
+                    "ON desk_picks (window_epoch, asset, timeframe)"
+                ))
+                await session.execute(text(
+                    "CREATE INDEX IF NOT EXISTS ix_desk_picks_window "
+                    "ON desk_picks (window_epoch DESC)"
+                ))
+                await session.commit()
+                log.info("hub.desk_picks_migrated")
+            except Exception as dp_exc:
+                log.warning("hub.desk_picks_migration_error", error=str(dp_exc)[:300])
+
             break
     except Exception as exc:
         log.warning("hub.migration_error", error=str(exc))
@@ -837,6 +870,8 @@ app.include_router(
 app.include_router(window_traces_router, prefix="/api", tags=["window-traces"])
 # GATE-TRACES: per-gate pass/fail heatmap from gate_check_traces (audit #188)
 app.include_router(gate_traces_router, prefix="/api", tags=["gate-traces"])
+# DESK: /desk Phase 1 — window clock + operator manual-pick journal (note #218)
+app.include_router(desk_router, prefix="/api", tags=["desk"])
 
 
 @app.get("/health", tags=["health"])
