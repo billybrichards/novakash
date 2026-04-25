@@ -57,7 +57,8 @@ FIVE_MIN_ENTRY_OFFSET: int = _env_int("FIVE_MIN_ENTRY_OFFSET", 60)  # seconds be
 
 # Multi-offset evaluation: comma-separated list of T-minus values
 # v10: Dynamic offset generation from FIVE_MIN_EVAL_INTERVAL env var.
-# Default interval=2 → 91 offsets (T-240, T-238, ..., T-62, T-60) = 2s polling.
+# Default interval=2 → 109 offsets (T-240, T-238, ..., T-26, T-24) = 2s polling.
+# Extended to T-24 to cover exit monitor window (T-48 to T-30).
 # Set interval=10 for v9 behavior (18 offsets). Set to 1 for 1s polling.
 # Override with explicit FIVE_MIN_EVAL_OFFSETS for custom offsets.
 _eval_interval = int(os.environ.get("FIVE_MIN_EVAL_INTERVAL", "2"))
@@ -65,7 +66,7 @@ _eval_offsets_explicit = os.environ.get("FIVE_MIN_EVAL_OFFSETS", "")
 if _eval_offsets_explicit:
     _eval_offsets_raw = _eval_offsets_explicit
 else:
-    _eval_offsets_raw = ",".join(str(x) for x in range(240, 59, -_eval_interval))
+    _eval_offsets_raw = ",".join(str(x) for x in range(240, 23, -_eval_interval))
 FIVE_MIN_EVAL_OFFSETS: list[int] = sorted(
     [int(x.strip()) for x in _eval_offsets_raw.split(",") if x.strip().isdigit()],
     reverse=True,  # largest offset first (earliest in window)

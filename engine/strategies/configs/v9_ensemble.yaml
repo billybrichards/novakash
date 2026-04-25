@@ -95,7 +95,7 @@ version: "9.0.1"
 #   (b) 48h shadow burn-in with pc present
 #   (c) 7d v9_ensemble GHOST shadow vs v8_lgb_only LIVE
 #   (d) Billy approval
-mode: LIVE
+mode: GHOST
 asset: BTC
 timescale: 5m
 
@@ -185,7 +185,7 @@ gate_params:
   # ── 3-tick entry confirmation (NEW 2026-04-24, note #298) ────────────
   min_consecutive_pass_ticks: 3        # 0 = disabled (fire on first pass)
 
-  # ── Post-fill exit monitoring (note #299, updated #240) ───────────────
+  # ── Post-fill exit monitoring (note #299, updated #240, #365) ─────────
   exit_monitor_enabled: true
   exit_shadow_mode: false              # real exits enabled — sells on mark stop-loss
   exit_eval_start_offset: 48           # start checking exits at T-48
@@ -194,11 +194,16 @@ gate_params:
   exit_retry_timeout_seconds: 5
 
   # Mark-to-market stop-loss (replaces signal-flip, note #240)
-  exit_mark_min_pct: 0.3145           # exit if CLOB bid < 31.45% of fill price for N ticks
-  exit_mark_ticks: 6                   # 6 consecutive ticks (~12s) sustained below threshold
+  exit_mark_min_pct: 0.70             # 70% of fill price
+  exit_mark_ticks: 3                   # 3 consecutive ticks (~6s)
+
+  # Legacy signal-flip params (DISABLED — replaced by mark-to-market)
+  exit_lgb_flip_enabled: false
+  exit_oracle_flip_enabled: false
+  exit_consecutive_flip_ticks: 5       # kept for reference, not used
 
   # ── Primary signal source ────────────────────────────────────────────
-  primary_signal_source: ensemble
+  primary_signal_source: ensemble  # classifier re-enabled; v9_lgb_only handles LGB-only LIVE
   fallback_to_lgb_on_pc_null: true
 
 sizing:
