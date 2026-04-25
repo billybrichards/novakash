@@ -37,6 +37,15 @@ import StrategyDecisions from './components/StrategyDecisions.jsx';
 import YourPlay from './components/YourPlay.jsx';
 import LastWindowsTable from './components/LastWindowsTable.jsx';
 
+// Phase 2 components
+import ClobLadder from './components/ClobLadder.jsx';
+import QuantileFan from './components/QuantileFan.jsx';
+import VpinChart from './components/VpinChart.jsx';
+import DivergenceBanner from './components/DivergenceBanner.jsx';
+import RegimeRibbon from './components/RegimeRibbon.jsx';
+import LiquidationFlow from './components/LiquidationFlow.jsx';
+import { useClobBook } from './hooks/useClobBook.js';
+
 import { useWindow } from './hooks/useWindow.js';
 import { useSnapshot, pickProbs } from './hooks/useSnapshot.js';
 import { usePicks } from './hooks/usePicks.js';
@@ -125,6 +134,11 @@ export default function Desk() {
   const regime = snap.fiveMin?.regime ?? snap.data?.regime ?? null;
   const vol = num(snap.fiveMin?.volatility ?? snap.fiveMin?.vol);
 
+  // Phase 2: CLOB book — fetched once here, passed to both the ladder
+  // and the divergence banner to avoid duplicate requests.
+  const clob = useClobBook({ windowEpoch: win.windowEpoch, asset: 'BTC', pollMs: 10_000 });
+  const impliedPUp = clob.book?.implied_p_up ?? null;
+
   return (
     <div>
       <PageHeader
@@ -145,13 +159,39 @@ export default function Desk() {
         vol={vol}
       />
 
+      {/* Phase 2: sticky divergence banner — fires on server-flagged
+          ensemble disagreement OR implied-vs-model > 10pt. */}
+      <ErrBoundary label="Divergence banner">
+        <DivergenceBanner
+          fiveMin={snap.fiveMin}
+          pu={pu}
+          pc={pc}
+          pl={pl}
+          impliedPUp={impliedPUp}
+        />
+      </ErrBoundary>
+
       <div style={gridStyle}>
         <div>
           <ErrBoundary label="Price chart">
             <PriceChart asset="BTC" windowEpoch={win.windowEpoch} pollMs={4_000} />
           </ErrBoundary>
+          <ErrBoundary label="Quantile fan">
+            <QuantileFan
+              fiveMin={snap.fiveMin}
+              targetPrice={win.targetPriceChainlink}
+            />
+          </ErrBoundary>
           <ErrBoundary label="Cross-asset sparks">
             <CrossAssetSparks pollMs={10_000} />
+          </ErrBoundary>
+          <ErrBoundary label="CLOB ladder">
+            <ClobLadder
+              book={clob.book}
+              unavailable={clob.unavailable}
+              error={clob.error}
+              modelPUp={pu}
+            />
           </ErrBoundary>
         </div>
         <div>
@@ -163,6 +203,15 @@ export default function Desk() {
               pl={pl}
               windowDelta={windowDelta}
             />
+          </ErrBoundary>
+          <ErrBoundary label="Regime ribbon">
+            <RegimeRibbon fiveMin={snap.fiveMin} />
+          </ErrBoundary>
+          <ErrBoundary label="VPIN chart">
+            <VpinChart snapshot={snap.data} />
+          </ErrBoundary>
+          <ErrBoundary label="Liquidation flow">
+            <LiquidationFlow snapshot={snap.data} />
           </ErrBoundary>
           <ErrBoundary label="Strategy decisions">
             <StrategyDecisions windowEpoch={win.windowEpoch} pollMs={4_000} />
