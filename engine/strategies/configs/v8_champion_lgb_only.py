@@ -22,6 +22,7 @@ delta-gate, 3-tick, and exit system specs.
 from __future__ import annotations
 
 import datetime as _dt
+import os as _os
 import time as _time
 from typing import TYPE_CHECKING, Optional
 
@@ -260,32 +261,60 @@ _last_loss_epoch: Optional[int] = None
 
 
 def _load_last_loss_from_db() -> Optional[int]:
-    """Find most recent v8_champion_lgb_only LOSS in trades table.
+    """Find most recent v8/v9 LOSS resolved_at across cooldown-sharing strategies.
 
-    Best-effort cold-start lookup so a restart during an active cooldown
-    still honours it. Returns None on any failure (missing table, pool
-    not wired, driver mismatch) — the cooldown gate then behaves as if
-    no prior loss existed, which is safe for GHOST and fails-open for
-    LIVE. Real cooldown signal is the in-memory ``_last_loss_epoch``
-    fed from ``record_loss`` by the outcome reconciler.
+    Queries trades.resolved_at for any LOSS in v8_champion_lgb_only, v9_ensemble,
+    or v9_lgb_only. All three share this cooldown module via import, so a loss
+    in any of them gates the others. Returns None on failure — cooldown then
+    fails-open (no cooldown applied). Cheap query (<1ms with index on resolved_at).
     """
-    return None
+    db_url = _os.environ.get("DATABASE_URL")
+    if not db_url:
+        return None
+    try:
+        import psycopg2  # type: ignore
+        # asyncpg-style URL → psycopg2 URL
+        sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://").replace(
+            "+asyncpg", ""
+        )
+        with psycopg2.connect(sync_url, connect_timeout=2) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT EXTRACT(EPOCH FROM resolved_at)::bigint
+                       FROM trades
+                       WHERE outcome = 'LOSS'
+                         AND strategy_id IN (
+                             'v8_champion_lgb_only',
+                             'v9_ensemble',
+                             'v9_lgb_only'
+                         )
+                         AND resolved_at IS NOT NULL
+                       ORDER BY resolved_at DESC
+                       LIMIT 1"""
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row else None
+    except Exception:
+        return None
 
 
 def _in_cooldown(now_epoch: int) -> tuple[bool, int]:
     """Returns (in_cooldown, seconds_remaining).
 
-    Checks in-memory first, falls back to DB lookup on cold start.
+    Always reads DB (cheap query) to catch losses recorded by the reconciler
+    across process boundaries. In-memory ``_last_loss_epoch`` from
+    ``record_loss()`` takes precedence when newer (e.g. set by tests).
     """
     global _last_loss_epoch
     cooldown_sec = _post_loss_cooldown_min() * 60
     if cooldown_sec <= 0:
         return (False, 0)
-    if _last_loss_epoch is None:
-        _last_loss_epoch = _load_last_loss_from_db()
-    if _last_loss_epoch is None:
+    db_last = _load_last_loss_from_db()
+    # Use newer of in-memory and DB
+    last = max(filter(None, [_last_loss_epoch, db_last]), default=None)
+    if last is None:
         return (False, 0)
-    elapsed = now_epoch - _last_loss_epoch
+    elapsed = now_epoch - last
     if elapsed < cooldown_sec:
         return (True, cooldown_sec - elapsed)
     return (False, 0)
