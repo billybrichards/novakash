@@ -438,8 +438,7 @@ class EngineRuntime:
         # exist yet (404) or the DB query fails, we log and continue.
         try:
             if self._use_strategy_registry and self._db and self._db._pool:
-                import os
-                from engine.adapters.prediction.timesfm_seeder import (
+                from adapters.prediction.timesfm_seeder import (
                     seed_timesfm_buffer,
                 )
 
