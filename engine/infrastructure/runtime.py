@@ -431,6 +431,35 @@ class EngineRuntime:
         except Exception as exc:
             log.warning("orchestrator.vpin_warm_start_failed", error=str(exc))
 
+        # ── TimesFM Buffer Seed: pre-fill ML price buffer to avoid cold-start ──
+        # After engine restart the TimesFM service needs ~900 ticks before LGB
+        # predictions are accurate. Seed from ticks_binance so predictions are
+        # usable from tick zero. Non-fatal — if the /v4/seed endpoint doesn't
+        # exist yet (404) or the DB query fails, we log and continue.
+        try:
+            if self._use_strategy_registry and self._db and self._db._pool:
+                import os
+                from engine.adapters.prediction.timesfm_seeder import (
+                    seed_timesfm_buffer,
+                )
+
+                _timesfm_url = os.environ.get(
+                    "TIMESFM_URL", "http://16.52.14.182:8080"
+                )
+                seeded = await seed_timesfm_buffer(
+                    self._db._pool, _timesfm_url
+                )
+                if seeded > 0:
+                    log.info(
+                        "orchestrator.timesfm_buffer_seeded",
+                        prices_sent=seeded,
+                        timesfm_url=_timesfm_url,
+                    )
+        except Exception as exc:
+            log.warning(
+                "orchestrator.timesfm_seed_failed", error=str(exc)[:200]
+            )
+
         # 2. Connect exchange clients
         try:
             await self._poly_client.connect()

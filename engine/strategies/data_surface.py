@@ -387,10 +387,42 @@ class DataSurfaceManager:
         )
 
         # Prime the snapshot cache before the registry starts evaluating.
+        # Cold-start fix: eagerly fetch /v4/snapshot so v4_regime is
+        # populated from tick zero — otherwise strategies SKIP for 5-15
+        # minutes until the first Polymarket window closes and the eval
+        # loop fires.
         try:
             await self._fetch_v4()
-        except Exception:
-            pass
+            # Log what we got so ops can verify cold-start priming worked.
+            for asset_key in list(self._active_assets):
+                v4 = self._cached_v4.get(asset_key)
+                if v4:
+                    ts5 = (v4.get("timescales") or {}).get("5m", {})
+                    log.info(
+                        "data_surface.startup_v4_fetch",
+                        asset=asset_key,
+                        regime=ts5.get("regime"),
+                        probability_lgb=ts5.get("probability_lgb"),
+                        probability_classifier=ts5.get("probability_classifier"),
+                        poly_timing=(
+                            (ts5.get("polymarket_live_recommended_outcome") or {})
+                            .get("timing")
+                        ),
+                        cache_populated=True,
+                    )
+                else:
+                    log.warning(
+                        "data_surface.startup_v4_fetch",
+                        asset=asset_key,
+                        cache_populated=False,
+                        reason="fetch returned no usable data; strategies will skip until next refresh",
+                    )
+        except Exception as exc:
+            log.warning(
+                "data_surface.startup_v4_fetch_failed",
+                error=str(exc)[:200],
+                reason="non-fatal; background refresh loop will retry",
+            )
 
         self._running = True
         self._task = asyncio.create_task(self._refresh_loop())
