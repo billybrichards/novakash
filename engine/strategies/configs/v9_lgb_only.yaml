@@ -100,8 +100,8 @@ gate_params:
   exit_retry_timeout_seconds: 5
 
   # Mark-to-market stop-loss
-  exit_mark_min_pct: 0.3145
-  exit_mark_ticks: 10
+  exit_mark_min_pct: 0.70             # 70% of fill price
+  exit_mark_ticks: 3                   # 3 consecutive ticks (~6s)
 
   # Legacy (disabled)
   exit_lgb_flip_enabled: false
