@@ -119,19 +119,14 @@ gate_params:
   # ── Post-fill exit monitoring (note #299, updated #240) ───────────────
   exit_monitor_enabled: true
   exit_shadow_mode: true               # shadow = log exits, don't execute sells
-  exit_min_hold_seconds: 45            # don't exit within first 45s
-  exit_no_exit_last_seconds: 30        # don't try selling in last 30s (thin book)
+  exit_eval_start_offset: 48           # start checking exits at T-48
+  exit_eval_end_offset: 30             # stop checking at T-30 (book gets thin)
   exit_max_retries: 1                  # sell retry count
   exit_retry_timeout_seconds: 5        # timeout per sell attempt
 
   # Mark-to-market stop-loss (replaces signal-flip, note #240)
-  exit_mark_min_pct: 0.45             # exit if CLOB bid < 45% of fill price for N ticks
-  exit_mark_ticks: 10                  # 10 consecutive ticks (~20s) below threshold
-
-  # Legacy signal-flip params (DISABLED — replaced by mark-to-market)
-  exit_lgb_flip_enabled: false
-  exit_oracle_flip_enabled: false
-  exit_consecutive_flip_ticks: 5       # kept for reference, not used
+  exit_mark_min_pct: 0.3145           # exit if CLOB bid < 31.45% of fill price for N ticks
+  exit_mark_ticks: 6                   # 6 consecutive ticks (~12s) sustained below threshold
 
   # ── Primary signal source ─────────────────────────────────────────────
   primary_signal_source: lgb

@@ -1,10 +1,11 @@
-"""Tests for PositionMonitor — mark-to-market stop-loss exit system.
+"""Tests for PositionMonitor -- mark-to-market stop-loss exit system.
 
 Validates:
-  - Position registration via on_fill()
+  - Position registration via on_fill() (including confirmed_size)
   - Mark-to-market exit logic (CLOB bid vs fill price threshold)
-  - Safety rails (min hold, no exit last N seconds)
+  - eval_offset timing window (T-48 to T-30)
   - Shadow mode (log but don't sell)
+  - Sell size uses confirmed_size (or 95% haircut fallback)
   - Position cleanup
 
 See Hub note #240.
@@ -28,7 +29,7 @@ from strategies.data_surface import FullDataSurface
 def _make_surface(**overrides) -> FullDataSurface:
     defaults = dict(
         asset="BTC", timescale="5m", window_ts=1713010800,
-        eval_offset=120, assembled_at=time.time(),
+        eval_offset=40, assembled_at=time.time(),  # T-40: inside exit window
         current_price=84500.0, open_price=85000.0,
         delta_binance=-0.005, delta_tiingo=-0.004, delta_chainlink=-0.005,
         delta_pct=-0.005, delta_source="chainlink",
@@ -63,7 +64,7 @@ def _make_surface(**overrides) -> FullDataSurface:
         cg_liq_total=500_000.0, cg_liq_long=300_000.0,
         cg_liq_short=200_000.0, cg_long_short_ratio=1.2,
         timesfm_expected_move_bps=50.0, timesfm_vol_forecast_bps=80.0,
-        hour_utc=12, seconds_to_close=120,
+        hour_utc=12, seconds_to_close=40,
     )
     defaults.update(overrides)
     return FullDataSurface(**defaults)
@@ -88,6 +89,25 @@ def test_on_fill_registers_position():
     assert pos.direction == "DOWN"
     assert pos.fill_price == 0.55
     assert pos.fill_size == 10.0
+    assert pos.confirmed_size == 0.0  # default when not provided
+
+
+def test_on_fill_with_confirmed_size():
+    """confirmed_size from CLOB SOT reconciler should be stored."""
+    monitor = PositionMonitor()
+    monitor.on_fill(
+        strategy_id="v9_ensemble",
+        window_ts=100,
+        direction="DOWN",
+        fill_price=0.55,
+        fill_size=15.24,
+        order_id="test-order-123",
+        token_id="token-abc",
+        confirmed_size=14.69,
+    )
+    pos = monitor.get_open_positions()["v9_ensemble:100"]
+    assert pos.fill_size == 15.24
+    assert pos.confirmed_size == 14.69
 
 
 def test_remove_position():
@@ -98,34 +118,190 @@ def test_remove_position():
     assert monitor.position_count == 0
 
 
-# ── Mark-to-market exit evaluation tests ──────────────────────────────────
+# ── eval_offset timing window tests ─────────────────────────────────────────
 
-def test_mark_below_threshold_triggers_after_n_ticks():
-    """Mark below 45% of fill for 10 ticks should trigger stop-loss."""
+def test_exit_blocked_before_eval_start_offset():
+    """eval_offset > exit_eval_start_offset should block exit (too early)."""
     monitor = PositionMonitor()
     monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
     pos = monitor._positions["strat:100"]
-    pos.filled_at_epoch = time.time() - 60  # past min hold
+    pos.filled_at_epoch = time.time() - 120
+
+    # eval_offset=120 is way before T-48 window
+    surface = _make_surface(eval_offset=120, clob_down_bid=0.05)
+    result = monitor.evaluate_exit(
+        "strat", 100, surface,
+        exit_eval_start_offset=48,
+        exit_eval_end_offset=30,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result is None
+
+
+def test_exit_blocked_after_eval_end_offset():
+    """eval_offset < exit_eval_end_offset should block exit (too late, thin book)."""
+    monitor = PositionMonitor()
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
+    pos = monitor._positions["strat:100"]
+    pos.filled_at_epoch = time.time() - 120
+
+    # eval_offset=20 is past T-30 cutoff
+    surface = _make_surface(eval_offset=20, clob_down_bid=0.05)
+    result = monitor.evaluate_exit(
+        "strat", 100, surface,
+        exit_eval_start_offset=48,
+        exit_eval_end_offset=30,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result is None
+
+
+def test_exit_blocked_after_window_close():
+    """eval_offset=0 (window closed) must never trigger exit -- this was the bug."""
+    monitor = PositionMonitor()
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
+    pos = monitor._positions["strat:100"]
+    pos.filled_at_epoch = time.time() - 300
+
+    # eval_offset=0 means window has closed -- orderbook deleted
+    surface = _make_surface(eval_offset=0, clob_down_bid=0.05)
+    result = monitor.evaluate_exit(
+        "strat", 100, surface,
+        exit_eval_start_offset=48,
+        exit_eval_end_offset=30,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result is None
+
+
+def test_exit_allowed_inside_window():
+    """eval_offset between start and end should allow exit evaluation."""
+    monitor = PositionMonitor()
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
+    pos = monitor._positions["strat:100"]
+    pos.filled_at_epoch = time.time() - 120
+
+    # eval_offset=40 is inside T-48..T-30 window
+    # clob_down_bid=0.05 => mark_pct = 0.05/0.55 = 9% < 45% => triggers
+    surface = _make_surface(eval_offset=40, clob_down_bid=0.05)
+    result = monitor.evaluate_exit(
+        "strat", 100, surface,
+        exit_eval_start_offset=48,
+        exit_eval_end_offset=30,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result is not None
+    assert "mark_stop_loss" in result
+
+
+def test_exit_blocked_when_eval_offset_none():
+    """If eval_offset is None, can't determine timing -- no exit."""
+    monitor = PositionMonitor()
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
+    pos = monitor._positions["strat:100"]
+    pos.filled_at_epoch = time.time() - 120
+
+    # Construct surface with eval_offset=None
+    surface = _make_surface(eval_offset=None, clob_down_bid=0.05)
+    result = monitor.evaluate_exit(
+        "strat", 100, surface,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result is None
+
+
+def test_exit_at_boundary_offsets():
+    """Test exact boundary values: T-48 and T-30."""
+    monitor = PositionMonitor()
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
+    pos = monitor._positions["strat:100"]
+    pos.filled_at_epoch = time.time() - 120
+
+    # clob_down_bid=0.05 => mark_pct = 0.05/0.55 = 9% < 45% => will trigger if in window
+
+    # Exactly T-48 should be allowed (eval_offset == exit_eval_start_offset)
+    surface_48 = _make_surface(eval_offset=48, clob_down_bid=0.05)
+    result = monitor.evaluate_exit(
+        "strat", 100, surface_48,
+        exit_eval_start_offset=48,
+        exit_eval_end_offset=30,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result is not None  # T-48 is inside window
+
+    pos.mark_loss_tick_count = 0
+
+    # Exactly T-30 should be allowed (eval_offset == exit_eval_end_offset)
+    surface_30 = _make_surface(eval_offset=30, clob_down_bid=0.05)
+    result = monitor.evaluate_exit(
+        "strat", 100, surface_30,
+        exit_eval_start_offset=48,
+        exit_eval_end_offset=30,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result is not None  # T-30 is inside window
+
+    pos.mark_loss_tick_count = 0
+
+    # T-49 should be blocked (just outside)
+    surface_49 = _make_surface(eval_offset=49, clob_down_bid=0.05)
+    result = monitor.evaluate_exit(
+        "strat", 100, surface_49,
+        exit_eval_start_offset=48,
+        exit_eval_end_offset=30,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result is None
+
+    # T-29 should be blocked (just outside)
+    surface_29 = _make_surface(eval_offset=29, clob_down_bid=0.05)
+    result = monitor.evaluate_exit(
+        "strat", 100, surface_29,
+        exit_eval_start_offset=48,
+        exit_eval_end_offset=30,
+        exit_mark_min_pct=0.45,
+        exit_mark_ticks=1,
+    )
+    assert result is None
+
+
+# ── Mark-to-market exit evaluation tests ──────────────────────────────────
+
+def test_mark_below_threshold_triggers_after_n_ticks():
+    """Mark below 45% of fill for 6 ticks should trigger stop-loss."""
+    monitor = PositionMonitor()
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
+    pos = monitor._positions["strat:100"]
+    pos.filled_at_epoch = time.time() - 60
 
     # DOWN position: mark = clob_down_bid
     # 0.20 / 0.55 = 36% of fill < 45% threshold
-    surface = _make_surface(eval_offset=120, clob_down_bid=0.20)
+    # eval_offset=40 is inside T-48..T-30 window
+    surface = _make_surface(eval_offset=40, clob_down_bid=0.20)
 
-    # Ticks 1-9: accumulate but don't trigger
-    for i in range(9):
+    # Ticks 1-5: accumulate but don't trigger
+    for i in range(5):
         result = monitor.evaluate_exit(
             "strat", 100, surface,
             exit_mark_min_pct=0.45,
-            exit_mark_ticks=10,
+            exit_mark_ticks=6,
         )
         assert result is None, f"Should not trigger on tick {i + 1}"
         assert pos.mark_loss_tick_count == i + 1
 
-    # Tick 10: trigger
+    # Tick 6: trigger
     result = monitor.evaluate_exit(
         "strat", 100, surface,
         exit_mark_min_pct=0.45,
-        exit_mark_ticks=10,
+        exit_mark_ticks=6,
     )
     assert result is not None
     assert "mark_stop_loss" in result
@@ -139,23 +315,23 @@ def test_mark_above_threshold_resets_counter():
     pos = monitor._positions["strat:100"]
     pos.filled_at_epoch = time.time() - 60
 
-    bad_surface = _make_surface(eval_offset=120, clob_down_bid=0.20)
-    ok_surface = _make_surface(eval_offset=120, clob_down_bid=0.50)
+    bad_surface = _make_surface(clob_down_bid=0.20)
+    ok_surface = _make_surface(clob_down_bid=0.50)
 
-    # Accumulate 5 bad ticks
-    for _ in range(5):
+    # Accumulate 3 bad ticks
+    for _ in range(3):
         monitor.evaluate_exit(
             "strat", 100, bad_surface,
             exit_mark_min_pct=0.45,
-            exit_mark_ticks=10,
+            exit_mark_ticks=6,
         )
-    assert pos.mark_loss_tick_count == 5
+    assert pos.mark_loss_tick_count == 3
 
     # One recovery tick resets counter
     monitor.evaluate_exit(
         "strat", 100, ok_surface,
         exit_mark_min_pct=0.45,
-        exit_mark_ticks=10,
+        exit_mark_ticks=6,
     )
     assert pos.mark_loss_tick_count == 0
 
@@ -169,52 +345,17 @@ def test_mark_null_bid_skips():
 
     # No bid data at all
     surface = _make_surface(
-        eval_offset=120,
+        eval_offset=40,
         clob_down_bid=None,
         clob_up_ask=None,
     )
     result = monitor.evaluate_exit(
         "strat", 100, surface,
         exit_mark_min_pct=0.45,
-        exit_mark_ticks=10,
+        exit_mark_ticks=6,
     )
     assert result is None
     assert pos.mark_loss_tick_count == 0  # should not increment
-
-
-def test_min_hold_respected():
-    """Position within min_hold_seconds should never trigger exit."""
-    monitor = PositionMonitor()
-    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
-    # Just registered — within min_hold_seconds
-
-    # Very bad mark that would trigger immediately
-    surface = _make_surface(eval_offset=120, clob_down_bid=0.01)
-    result = monitor.evaluate_exit(
-        "strat", 100, surface,
-        exit_min_hold_seconds=45,
-        exit_mark_min_pct=0.45,
-        exit_mark_ticks=1,  # would trigger on single tick
-    )
-    assert result is None
-
-
-def test_no_exit_last_seconds_respected():
-    """Should not exit when eval_offset < exit_no_exit_last_seconds."""
-    monitor = PositionMonitor()
-    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1")
-    pos = monitor._positions["strat:100"]
-    pos.filled_at_epoch = time.time() - 60
-
-    # eval_offset 20 < 30 = too close to close
-    surface = _make_surface(eval_offset=20, clob_down_bid=0.01)
-    result = monitor.evaluate_exit(
-        "strat", 100, surface,
-        exit_no_exit_last_seconds=30,
-        exit_mark_min_pct=0.45,
-        exit_mark_ticks=1,
-    )
-    assert result is None
 
 
 def test_up_position_uses_up_bid_or_1_minus_dn_ask():
@@ -226,7 +367,7 @@ def test_up_position_uses_up_bid_or_1_minus_dn_ask():
 
     # Case 1: clob_up_bid available and > 0.01
     # up_bid = 0.15, fill = 0.45 => mark_pct = 0.333 < 0.45 => bad
-    surface = _make_surface(eval_offset=120, clob_up_bid=0.15, clob_down_ask=0.90)
+    surface = _make_surface(eval_offset=40, clob_up_bid=0.15, clob_down_ask=0.90)
     result = monitor.evaluate_exit(
         "strat", 100, surface,
         exit_mark_min_pct=0.45,
@@ -240,7 +381,7 @@ def test_up_position_uses_up_bid_or_1_minus_dn_ask():
 
     # Case 2: clob_up_bid is None, fallback to 1 - clob_down_ask
     # 1 - 0.90 = 0.10, 0.10/0.45 = 22% < 45% => bad
-    surface2 = _make_surface(eval_offset=120, clob_up_bid=None, clob_down_ask=0.90)
+    surface2 = _make_surface(eval_offset=40, clob_up_bid=None, clob_down_ask=0.90)
     result2 = monitor.evaluate_exit(
         "strat", 100, surface2,
         exit_mark_min_pct=0.45,
@@ -254,7 +395,7 @@ def test_up_position_uses_up_bid_or_1_minus_dn_ask():
 
     # Case 3: clob_up_bid is 0.0 (too low, <= 0.01), fallback to 1 - down_ask
     # 1 - 0.55 = 0.45, 0.45/0.45 = 100% > 45% => safe
-    surface3 = _make_surface(eval_offset=120, clob_up_bid=0.0, clob_down_ask=0.55)
+    surface3 = _make_surface(eval_offset=40, clob_up_bid=0.0, clob_down_ask=0.55)
     result3 = monitor.evaluate_exit(
         "strat", 100, surface3,
         exit_mark_min_pct=0.45,
@@ -272,7 +413,7 @@ def test_down_position_uses_dn_bid_or_1_minus_up_ask():
 
     # Case 1: clob_down_bid available
     # dn_bid = 0.20, fill = 0.55 => mark_pct = 0.364 < 0.45 => bad
-    surface = _make_surface(eval_offset=120, clob_down_bid=0.20, clob_up_ask=0.85)
+    surface = _make_surface(eval_offset=40, clob_down_bid=0.20, clob_up_ask=0.85)
     result = monitor.evaluate_exit(
         "strat", 100, surface,
         exit_mark_min_pct=0.45,
@@ -285,7 +426,7 @@ def test_down_position_uses_dn_bid_or_1_minus_up_ask():
 
     # Case 2: clob_down_bid is None, fallback to 1 - clob_up_ask
     # 1 - 0.85 = 0.15, 0.15/0.55 = 27% < 45% => bad
-    surface2 = _make_surface(eval_offset=120, clob_down_bid=None, clob_up_ask=0.85)
+    surface2 = _make_surface(eval_offset=40, clob_down_bid=None, clob_up_ask=0.85)
     result2 = monitor.evaluate_exit(
         "strat", 100, surface2,
         exit_mark_min_pct=0.45,
@@ -297,7 +438,7 @@ def test_down_position_uses_dn_bid_or_1_minus_up_ask():
     pos.mark_loss_tick_count = 0
 
     # Case 3: both None => can't price, skip
-    surface3 = _make_surface(eval_offset=120, clob_down_bid=None, clob_up_ask=None)
+    surface3 = _make_surface(eval_offset=40, clob_down_bid=None, clob_up_ask=None)
     result3 = monitor.evaluate_exit(
         "strat", 100, surface3,
         exit_mark_min_pct=0.45,
@@ -318,7 +459,7 @@ def test_evaluate_exit_returns_none_when_disabled():
     pos = monitor._positions["strat:100"]
     pos.filled_at_epoch = time.time() - 60
     result = monitor.evaluate_exit(
-        "strat", 100, _make_surface(clob_down_bid=0.01),
+        "strat", 100, _make_surface(eval_offset=40, clob_down_bid=0.01),
         exit_monitor_enabled=False,
     )
     assert result is None
@@ -333,7 +474,7 @@ def test_mark_at_exact_threshold_does_not_trigger():
     pos.filled_at_epoch = time.time() - 60
 
     # 0.45/1.0 = 45% = exactly at threshold. < 0.45 is False (not strictly less)
-    surface = _make_surface(eval_offset=120, clob_down_bid=0.45)
+    surface = _make_surface(eval_offset=40, clob_down_bid=0.45)
     result = monitor.evaluate_exit(
         "strat", 100, surface,
         exit_mark_min_pct=0.45,
@@ -351,7 +492,7 @@ def test_mark_just_below_threshold_triggers():
     pos.filled_at_epoch = time.time() - 60
 
     # 0.449/1.0 = 44.9% < 45% threshold
-    surface = _make_surface(eval_offset=120, clob_down_bid=0.449)
+    surface = _make_surface(eval_offset=40, clob_down_bid=0.449)
     result = monitor.evaluate_exit(
         "strat", 100, surface,
         exit_mark_min_pct=0.45,
@@ -373,7 +514,7 @@ async def test_execute_exit_shadow_mode():
     monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1", "token-abc")
 
     result = await monitor.execute_exit(
-        "strat", 100, "mark_stop_loss: mark=0.200 (36% of fill) for 10 ticks",
+        "strat", 100, "mark_stop_loss: mark=0.200 (36% of fill) for 6 ticks",
         exit_shadow_mode=True,
     )
     assert result is True
@@ -392,7 +533,7 @@ async def test_execute_exit_no_position():
     assert result is False
 
 
-# ── Sell-side execution test ──────────────────────────────────────────────
+# ── Sell-side execution tests ──────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_execute_exit_live_calls_sell():
@@ -408,9 +549,60 @@ async def test_execute_exit_live_calls_sell():
     monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1", "token-abc")
 
     result = await monitor.execute_exit(
-        "strat", 100, "mark_stop_loss: mark=0.200 (36% of fill) for 10 ticks",
+        "strat", 100, "mark_stop_loss: mark=0.200 (36% of fill) for 6 ticks",
         exit_shadow_mode=False,
     )
     assert result is True
     mock_poly.place_sell_fak.assert_called_once()
     assert monitor.position_count == 0
+
+
+@pytest.mark.asyncio
+async def test_sell_uses_confirmed_size_when_available():
+    """Sell should use confirmed_size (CLOB truth) instead of fill_size."""
+    mock_poly = MagicMock()
+    mock_poly.place_sell_fak = AsyncMock(return_value={
+        "filled": True,
+        "size_matched": 14.69,
+        "order_id": "sell-order-456",
+    })
+
+    monitor = PositionMonitor(poly_client=mock_poly)
+    # Engine thinks 15.24 shares, CLOB confirmed 14.69
+    monitor.on_fill(
+        "strat", 100, "DOWN", 0.55, 15.24, "order1", "token-abc",
+        confirmed_size=14.69,
+    )
+
+    await monitor.execute_exit(
+        "strat", 100, "mark_stop_loss",
+        exit_shadow_mode=False,
+    )
+
+    # Should sell 14.69 (confirmed), not 15.24 (engine) or 14.478 (95%)
+    call_args = mock_poly.place_sell_fak.call_args
+    assert call_args.kwargs["size"] == 14.69
+
+
+@pytest.mark.asyncio
+async def test_sell_uses_haircut_when_no_confirmed_size():
+    """Without confirmed_size, sell should use fill_size * 0.95 (5% haircut)."""
+    mock_poly = MagicMock()
+    mock_poly.place_sell_fak = AsyncMock(return_value={
+        "filled": True,
+        "size_matched": 9.5,
+        "order_id": "sell-order-789",
+    })
+
+    monitor = PositionMonitor(poly_client=mock_poly)
+    # No confirmed_size (default 0.0)
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1", "token-abc")
+
+    await monitor.execute_exit(
+        "strat", 100, "mark_stop_loss",
+        exit_shadow_mode=False,
+    )
+
+    # Should sell round(10.0 * 0.95, 3) = 9.5
+    call_args = mock_poly.place_sell_fak.call_args
+    assert call_args.kwargs["size"] == 9.5
