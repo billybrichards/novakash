@@ -29,31 +29,21 @@ def evaluate_v9_lgb_only(surface: "FullDataSurface") -> StrategyDecision:
     before delegating. This ensures v9_ensemble takes the fallback-to-
     v8_lgb_only path regardless of whether the classifier box is serving.
 
-    Safety: also force-overrides fallback_to_lgb_on_pc_null via gate_params
-    so even a runtime DB override cannot re-enable the classifier path.
+    With pc=None, v9_ensemble gate R1 immediately delegates to
+    evaluate_v8_champion_lgb_only (zero classifier code paths reached).
+    Even if fallback_to_lgb_on_pc_null were overridden to False, the
+    ensemble path would TypeError on abs(None - pl) and emit ERROR
+    (crash > wrong trade).
     """
     # Force LGB-only: null out classifier so v9_ensemble takes fallback path.
-    # Belt-and-suspenders: also force the fallback flag via gate_params so
-    # a runtime override of fallback_to_lgb_on_pc_null=false cannot break
-    # isolation. Without this, a bad override + race could re-enable classifier.
+    # Uses object.__setattr__ because FullDataSurface is a frozen dataclass.
     _orig_pc = getattr(surface, "probability_classifier", None)
     object.__setattr__(surface, "probability_classifier", None)
-
-    # Force fallback flag in case runtime override tries to disable it
-    from strategies import gate_params as _gp_mod
-    _active_params = getattr(_gp_mod, "_ACTIVE", None)
-    _orig_fallback = None
-    if _active_params is not None and hasattr(_active_params, "get"):
-        _orig_fallback = _active_params.get("fallback_to_lgb_on_pc_null")
-        _active_params["fallback_to_lgb_on_pc_null"] = True
-
     try:
         decision = _evaluate_v9(surface)
     finally:
         # Restore so other strategies sharing the surface still see pc
-        surface.probability_classifier = _orig_pc
-        if _active_params is not None and _orig_fallback is not None:
-            _active_params["fallback_to_lgb_on_pc_null"] = _orig_fallback
+        object.__setattr__(surface, "probability_classifier", _orig_pc)
 
     # Fix audit: stamp pc=None in metadata so decision logs correctly
     # reflect that classifier was NOT used (even though surface had it)
