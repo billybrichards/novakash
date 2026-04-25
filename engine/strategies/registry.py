@@ -611,6 +611,13 @@ class StrategyRegistry:
                                     decision.metadata or {}
                                 ).get("exit_monitor_enabled", False)
                                 if _exit_enabled and result.fill_price:
+                                    # Use CLOB-confirmed size if available
+                                    # from the execution result (size_matched).
+                                    # Falls back to 0.0 (on_fill will use
+                                    # fill_size * 0.95 haircut for sell).
+                                    _confirmed = getattr(
+                                        result, "size_matched", 0.0
+                                    ) or 0.0
                                     self._position_monitor.on_fill(
                                         strategy_id=name,
                                         window_ts=window_ts,
@@ -619,6 +626,7 @@ class StrategyRegistry:
                                         fill_size=result.fill_size or 0,
                                         order_id=result.order_id or "",
                                         token_id=result.token_id or "",
+                                        confirmed_size=_confirmed,
                                     )
                         log.info(
                             "registry.executed",
@@ -694,17 +702,17 @@ class StrategyRegistry:
                         "exit_monitor_enabled": _gp.get(
                             "exit_monitor_enabled", True
                         ),
-                        "exit_min_hold_seconds": _gp.get(
-                            "exit_min_hold_seconds", 45
+                        "exit_eval_start_offset": _gp.get(
+                            "exit_eval_start_offset", 48
                         ),
-                        "exit_no_exit_last_seconds": _gp.get(
-                            "exit_no_exit_last_seconds", 30
+                        "exit_eval_end_offset": _gp.get(
+                            "exit_eval_end_offset", 30
                         ),
                         "exit_mark_min_pct": _gp.get(
-                            "exit_mark_min_pct", 0.45
+                            "exit_mark_min_pct", 0.3145
                         ),
                         "exit_mark_ticks": _gp.get(
-                            "exit_mark_ticks", 10
+                            "exit_mark_ticks", 6
                         ),
                     }
                     exit_reason = self._position_monitor.evaluate_exit(
