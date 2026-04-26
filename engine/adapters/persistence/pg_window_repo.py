@@ -1024,12 +1024,21 @@ class PgWindowRepository(WindowStateRepository):
                     order_id,
                 )
                 if strategy_id:
+                    # Audit #322 (2026-04-26): when a pessimistic claim
+                    # was placed via try_claim_fill_slot the row already
+                    # exists with order_id = 'pending'. UPSERT to stamp
+                    # the real order_id; without DO UPDATE the row
+                    # would stay as the placeholder forever.
                     await conn.execute(
                         """
                         INSERT INTO strategy_window_fills
                             (asset, window_ts, timeframe, strategy_id, order_id, filled_at)
                         VALUES ($1, $2, $3, $4, $5, $6)
-                        ON CONFLICT (asset, window_ts, timeframe, strategy_id) DO NOTHING
+                        ON CONFLICT (asset, window_ts, timeframe, strategy_id) DO UPDATE
+                            SET order_id = EXCLUDED.order_id,
+                                filled_at = EXCLUDED.filled_at
+                            WHERE strategy_window_fills.order_id = $7
+                               OR strategy_window_fills.order_id IS NULL
                         """,
                         key.asset,
                         key.window_ts,
@@ -1037,6 +1046,7 @@ class PgWindowRepository(WindowStateRepository):
                         strategy_id,
                         order_id,
                         now,
+                        self.PLACEHOLDER_ORDER_ID,
                     )
             log.debug(
                 "db.mark_traded",
@@ -1084,6 +1094,159 @@ class PgWindowRepository(WindowStateRepository):
                 error=str(exc)[:120],
             )
             return False
+
+    # ── Pessimistic fill-slot claim (audit #322, 2026-04-26) ──────────
+    #
+    # Design rationale:
+    #   The 15s lease (window_claims) is in-flight protection only.
+    #   A FAK ladder can take ~2 minutes; the lease auto-expires while
+    #   the order is still in flight. Once it expires, the next eval
+    #   tick observes has_filled=False (no row written until AFTER the
+    #   fill confirms in mark_traded) AND can re-acquire the lease,
+    #   then fires a fresh FAK. Smoking gun on window 1777238100:
+    #   v10_lgb_only fired 3 FAKs across 21:18:24–21:19:24, then ALL
+    #   THREE confirmed with real fills 21:20:37–21:20:56. Single
+    #   strategy_window_fills row written (the first), the other two
+    #   silently lost the UNIQUE-constraint race after the fact —
+    #   trades booked, marker absent.
+    #
+    # Fix: write a PLACEHOLDER row to strategy_window_fills BEFORE
+    # firing FAK. INSERT … ON CONFLICT DO NOTHING returning whether a
+    # row was actually inserted. If we lost the race, we don't fire
+    # FAK at all. If we won, we own the slot for the rest of the
+    # window — no other attempt for the same (window, strategy) can
+    # ever win the slot unless we explicitly release it.
+    #
+    # Release semantics: release_fill_slot ONLY deletes the
+    # placeholder (order_id = 'pending'). Once mark_traded UPDATEs the
+    # row with a real order_id, release becomes a no-op — protecting
+    # us from a late release attempt accidentally clearing a real
+    # fill marker.
+
+    PLACEHOLDER_ORDER_ID = "pending"
+
+    async def try_claim_fill_slot(
+        self,
+        key: WindowKey,
+        strategy_id: str,
+    ) -> bool:
+        """Atomically claim the fill slot for (key, strategy_id) BEFORE
+        firing the order. Returns True if we won the slot, False if
+        another concurrent attempt already holds it.
+
+        Writes a placeholder row to ``strategy_window_fills`` with
+        ``order_id = 'pending'``. Subsequent :meth:`has_filled` checks
+        return True — including for repeat attempts in the same
+        process — preventing a third concurrent attempt from firing.
+
+        On UNIQUE-constraint violation (= someone else won), returns
+        False without raising. On any other DB error, returns False
+        and logs WARN — fail-closed here is correct: better to skip a
+        legitimate trade than book a duplicate when our pessimistic
+        guard is unreachable.
+        """
+        if not self._pool:
+            # No DB → no protection possible. Defer to the lease
+            # (which is also DB-backed but a 15s window vs a full
+            # FAK lifetime is the tighter race we cannot avoid).
+            return True
+        if not strategy_id:
+            return True
+        try:
+            async with self._pool.acquire() as conn:
+                now = datetime.now(timezone.utc)
+                # ON CONFLICT DO NOTHING + RETURNING tells us whether
+                # we actually inserted. RETURNING returns 0 rows if a
+                # conflict was hit and we were the loser.
+                inserted = await conn.fetchval(
+                    """
+                    INSERT INTO strategy_window_fills
+                        (asset, window_ts, timeframe, strategy_id,
+                         order_id, filled_at)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    ON CONFLICT (asset, window_ts, timeframe, strategy_id)
+                        DO NOTHING
+                    RETURNING 1
+                    """,
+                    key.asset,
+                    key.window_ts,
+                    key.timeframe,
+                    strategy_id,
+                    self.PLACEHOLDER_ORDER_ID,
+                    now,
+                )
+                won = inserted is not None
+                log.debug(
+                    "db.try_claim_fill_slot",
+                    key=str(key),
+                    strategy=strategy_id,
+                    won=won,
+                )
+                return won
+        except Exception as exc:
+            log.warning(
+                "db.try_claim_fill_slot_failed",
+                key=str(key),
+                strategy=strategy_id,
+                error=str(exc)[:120],
+            )
+            # Fail-closed: don't proceed with a fill if we cannot
+            # establish the pessimistic guard. The caller will return
+            # a benign skip reason and try again next eval tick.
+            return False
+
+    async def release_fill_slot(
+        self,
+        key: WindowKey,
+        strategy_id: str,
+    ) -> None:
+        """Release a placeholder claim if FAK didn't fill. Idempotent
+        and safe to call on the success path: the WHERE clause
+        restricts the DELETE to rows whose order_id is still the
+        placeholder — once :meth:`mark_traded` has stamped a real
+        order_id, this becomes a no-op.
+        """
+        if not self._pool:
+            return
+        if not strategy_id:
+            return
+        try:
+            async with self._pool.acquire() as conn:
+                tag = await conn.execute(
+                    """
+                    DELETE FROM strategy_window_fills
+                     WHERE asset = $1
+                       AND window_ts = $2
+                       AND timeframe = $3
+                       AND strategy_id = $4
+                       AND order_id = $5
+                    """,
+                    key.asset,
+                    key.window_ts,
+                    key.timeframe,
+                    strategy_id,
+                    self.PLACEHOLDER_ORDER_ID,
+                )
+                # asyncpg returns 'DELETE <n>' as the command tag.
+                rows = 0
+                if isinstance(tag, str) and tag.startswith("DELETE "):
+                    try:
+                        rows = int(tag.split(" ", 1)[1])
+                    except (ValueError, IndexError):
+                        rows = 0
+                log.debug(
+                    "db.release_fill_slot",
+                    key=str(key),
+                    strategy=strategy_id,
+                    rows_deleted=rows,
+                )
+        except Exception as exc:
+            log.warning(
+                "db.release_fill_slot_failed",
+                key=str(key),
+                strategy=strategy_id,
+                error=str(exc)[:120],
+            )
 
     # ── Lease-based dedup (audit #316, #317, #320) ──────────────────────
     #

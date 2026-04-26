@@ -566,6 +566,98 @@ class ExecuteTradeUseCase:
                 direction=direction,
             )
 
+        # ── Step 5.5: Pessimistic fill-slot claim (audit #322) ─────────
+        # SMOKING GUN, 2026-04-26: v10_lgb_only filled SIX times on
+        # window 1777238100 (PID 838090, 21:18:24–21:20:56). Forensics:
+        #
+        #   * Step 0.5 has_filled() check passed all six times — the
+        #     marker is only written AFTER FAK confirms in Step 8, but
+        #     the FAK ladder takes ~2 minutes.
+        #   * Per-strategy lease (15s TTL) auto-expired between eval
+        #     ticks while the previous attempt's FAK was still in
+        #     flight. Each new attempt found a clean lease to acquire.
+        #   * All six FAKs eventually confirmed; only the FIRST mark_traded
+        #     INSERT succeeded — the other five silently lost on the
+        #     UNIQUE constraint AFTER the trades were already booked.
+        #
+        # Fix: pessimistically claim strategy_window_fills with a
+        # placeholder ('pending') BEFORE firing FAK. UNIQUE constraint
+        # on (asset, window_ts, timeframe, strategy_id) ensures only
+        # one concurrent attempt wins. Subsequent has_filled() checks
+        # observe the placeholder row and short-circuit.
+        #
+        # Placement: AFTER risk/guardrail/token checks so a blocked
+        # attempt doesn't claim and immediately release the slot
+        # (cheaper to fail fast on the cheaper checks first). BEFORE
+        # the executor call so the slot is held for the full FAK
+        # lifetime.
+        #
+        # Failure mode: try_claim_fill_slot returns False if another
+        # in-process attempt already holds the placeholder. We treat
+        # this exactly like a dedup hit — release the lease (we still
+        # hold it), DO NOT call execute_order, return a benign skip.
+        slot_claimed = False
+        if hasattr(self._window_state, "try_claim_fill_slot"):
+            try:
+                slot_claimed = await self._window_state.try_claim_fill_slot(
+                    window_key, sid
+                )
+            except Exception as exc:
+                # Fail-closed defensive: refuse to fire FAK if our
+                # pessimistic guard is broken. The lease (acquired in
+                # Step 1) provides 15s residual in-flight protection;
+                # next eval tick will retry.
+                log.warning(
+                    "execute_trade.try_claim_fill_slot_error",
+                    strategy=sid,
+                    window=str(window_key),
+                    error=str(exc)[:200],
+                )
+                await _release_claim("fill_slot_claim_error")
+                return _failed(
+                    "fill_slot_claim_error",
+                    strategy_id=sid,
+                    direction=direction,
+                    stake_usd=stake.adjusted_stake,
+                    token_id=token_id,
+                )
+            if not slot_claimed:
+                log.info(
+                    "execute_trade.already_claimed_this_window",
+                    strategy=sid,
+                    window=str(window_key),
+                    direction=direction,
+                )
+                await _release_claim("already_claimed_this_window")
+                return _failed(
+                    "already_claimed_this_window",
+                    strategy_id=sid,
+                    direction=direction,
+                    stake_usd=stake.adjusted_stake,
+                    token_id=token_id,
+                )
+
+        # Helper: release the pessimistic fill-slot claim if FAK did
+        # not result in a real fill. Safe to call on the success
+        # path too — the WHERE clause inside the adapter restricts
+        # the DELETE to placeholder rows only.
+        async def _release_fill_slot(phase: str) -> None:
+            if not slot_claimed:
+                return
+            if hasattr(self._window_state, "release_fill_slot"):
+                try:
+                    await self._window_state.release_fill_slot(
+                        window_key, sid
+                    )
+                except Exception as _rel_exc:
+                    log.warning(
+                        "execute_trade.release_fill_slot_failed",
+                        strategy=sid,
+                        window=str(window_key),
+                        phase=phase,
+                        error=str(_rel_exc)[:200],
+                    )
+
         # ── Step 6: Execute order ──────────────────────────────────────
         entry_cap = decision.entry_cap or DEFAULT_ENTRY_CAP
         start_ts = self._clock.now()
@@ -579,6 +671,7 @@ class ExecuteTradeUseCase:
                 price_floor=PRICE_FLOOR,
             )
         except Exception as exc:
+            await _release_fill_slot("execution_error")
             await _release_claim("execution_error")
             await self._on_order_error()
             log.error(
@@ -608,6 +701,11 @@ class ExecuteTradeUseCase:
         )
 
         if not result.success:
+            # Audit #322: release the pessimistic fill-slot too — FAK
+            # didn't produce a real fill so the slot can be retried by
+            # the next eval tick. Order matters less but mirrors the
+            # acquire order in reverse.
+            await _release_fill_slot("order_not_filled")
             await _release_claim("order_not_filled")
             # Only real submit/infra errors increment the breaker counter.
             # Benign no-fills (empty book, FAK exhausted, GTC unfilled) are
