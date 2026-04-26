@@ -706,77 +706,12 @@ class EngineRuntime:
             )
         )
 
-        # 6c. Ensure shadow columns exist in window_snapshots
-        try:
-            await self._db.ensure_shadow_columns()
-        except Exception as exc:
-            log.warning("orchestrator.ensure_shadow_columns_failed", error=str(exc))
-
-        # 6c2. Ensure post-resolution analysis table exists
-        try:
-            await self._db.ensure_post_resolution_table()
-        except Exception as exc:
-            log.warning(
-                "orchestrator.ensure_post_resolution_table_failed", error=str(exc)
-            )
-
-        try:
-            await self._db.ensure_window_predictions_table()
-        except Exception as exc:
-            log.warning(
-                "orchestrator.ensure_window_predictions_table_failed", error=str(exc)
-            )
-
-        # 6d. Ensure v8.0 columns exist in trades table
-        try:
-            await self._db.ensure_v8_trade_columns()
-        except Exception as exc:
-            log.warning("orchestrator.ensure_v8_trade_columns_failed", error=str(exc))
-
-        # 6d2. POLY-SOT: ensure manual_trades has the source-of-truth columns.
-        # Hub also ensures these on its own startup, but the engine restart
-        # cycle is independent and the SOT reconciler loop will fail loudly
-        # if it tries to write a column that doesn't exist yet.
-        try:
-            await self._db.ensure_manual_trades_sot_columns()
-        except Exception as exc:
-            log.warning(
-                "orchestrator.ensure_manual_trades_sot_columns_failed", error=str(exc)
-            )
-
-        # 6d3. POLY-SOT-b: same for the `trades` table — automatic engine
-        # trades now get the same SOT treatment as operator manual trades.
-        try:
-            await self._db.ensure_trades_sot_columns()
-        except Exception as exc:
-            log.warning("orchestrator.ensure_trades_sot_columns_failed", error=str(exc))
-
-        # 6d4. Strategy executions table (for persistent window dedup)
-        try:
-            await self._db._pool.execute("""
-                CREATE TABLE IF NOT EXISTS strategy_executions (
-                    strategy_id TEXT NOT NULL,
-                    window_ts   BIGINT NOT NULL,
-                    order_id    TEXT,
-                    executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    PRIMARY KEY (strategy_id, window_ts)
-                )
-            """)
-            await self._db._pool.execute(
-                "CREATE INDEX IF NOT EXISTS idx_strategy_executions_ts "
-                "ON strategy_executions (executed_at DESC)"
-            )
-        except Exception as exc:
-            log.warning(
-                "orchestrator.ensure_strategy_executions_failed", error=str(exc)
-            )
-
-        # ── DATA SURFACE: wire feeds + warmup + start BEFORE slow recovery
-        # work below. Strategies evaluate every 2s and need feeds wired
-        # from t=0 — previously this block lived AFTER the (sometimes 5+
-        # minute) CLOB reconciler `_backfill_on_startup`, leaving strategies
-        # to skip with `source_agreement: chainlink,tiingo missing` for
-        # the duration of the hang. Audit 2026-04-26.
+        # ── DATA SURFACE: wire feeds + warmup + start BEFORE the DDL /
+        # recovery / reconciler work below. Strategies evaluate every 2s
+        # and need feeds wired from t=0. Previously this block sat AFTER
+        # six `ensure_*` DDLs and a 5+ minute CLOB reconciler — strategies
+        # skipped with `source_agreement: chainlink,tiingo missing` for
+        # the entire duration of any hang in those phases. Audit 2026-04-26.
         async with self._phase("chainlink_inject"):
             if self._five_min_feed and self._chainlink_multi_feed:
                 self._five_min_feed._chainlink_feed = self._chainlink_multi_feed
@@ -821,11 +756,84 @@ class EngineRuntime:
                         error=str(exc)[:200],
                     )
 
+        # ── DDL migrations: run in BACKGROUND. These ``ensure_*`` calls
+        # add columns and create tables. They are idempotent and can lag
+        # behind the engine coming online. Previously they were a sequence
+        # of inline awaits between feed init and data_surface, so a stuck
+        # DDL could keep the data surface offline indefinitely.
+        async def _ensure_ddls_bg() -> None:
+            t0 = time.monotonic()
+            steps = [
+                ("ensure_shadow_columns", self._db.ensure_shadow_columns),
+                ("ensure_post_resolution_table", self._db.ensure_post_resolution_table),
+                (
+                    "ensure_window_predictions_table",
+                    self._db.ensure_window_predictions_table,
+                ),
+                ("ensure_v8_trade_columns", self._db.ensure_v8_trade_columns),
+                (
+                    "ensure_manual_trades_sot_columns",
+                    self._db.ensure_manual_trades_sot_columns,
+                ),
+                ("ensure_trades_sot_columns", self._db.ensure_trades_sot_columns),
+            ]
+            for name, fn in steps:
+                step_t0 = time.monotonic()
+                try:
+                    await fn()
+                    log.info(
+                        "orchestrator.ddl_done",
+                        step=name,
+                        elapsed_ms=int((time.monotonic() - step_t0) * 1000),
+                    )
+                except Exception as exc:
+                    log.warning(
+                        f"orchestrator.{name}_failed", error=str(exc)[:200]
+                    )
+
+            # 6d4. Strategy executions table — separate because it's a raw
+            # CREATE TABLE not on the DBClient API.
+            try:
+                await self._db._pool.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS strategy_executions (
+                        strategy_id TEXT NOT NULL,
+                        window_ts   BIGINT NOT NULL,
+                        order_id    TEXT,
+                        executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (strategy_id, window_ts)
+                    )
+                    """
+                )
+                await self._db._pool.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_strategy_executions_ts "
+                    "ON strategy_executions (executed_at DESC)"
+                )
+            except Exception as exc:
+                log.warning(
+                    "orchestrator.ensure_strategy_executions_failed",
+                    error=str(exc)[:200],
+                )
+            log.info(
+                "orchestrator.ddl_migrations_done",
+                total_elapsed_ms=int((time.monotonic() - t0) * 1000),
+            )
+
+        _ddl_task = asyncio.create_task(_ensure_ddls_bg(), name="ddl_migrations")
+        self._tasks.append(_ddl_task)
+
         # 6f. Recover open trades — runs in BACKGROUND. Previously a
         # synchronous await here added ~22s to startup before the engine
         # was ready to trade. Open trades only matter for resolution
         # tracking (not for placing new trades) so it's safe to defer.
+        # Waits for DDL migrations first because `get_open_trades` reads
+        # columns added by ``ensure_trades_sot_columns``.
         async def _recover_open_trades_bg() -> None:
+            try:
+                await _ddl_task
+            except Exception:
+                # DDL task already logs its own failures; continue regardless
+                pass
             t0 = time.monotonic()
             try:
                 recovered = await self._order_manager.recover_open_trades(self._db)
@@ -856,6 +864,13 @@ class EngineRuntime:
         if not self._settings.paper_mode and _use_reconciler:
 
             async def _start_clob_reconciler_bg() -> None:
+                # CLOBReconciler reads `trades.metadata->>'token_id'` and
+                # writes `trade_bible.resolution_source` — both depend on
+                # DDL migrations completing.
+                try:
+                    await _ddl_task
+                except Exception:
+                    pass
                 t0 = time.monotonic()
                 try:
                     from reconciliation.reconciler import CLOBReconciler
@@ -978,23 +993,41 @@ class EngineRuntime:
             )
 
         # 9. Playwright automation (balance / screenshot only — redeem handled by redeemer)
+        # Spawned as a background task — the browser launch can hang on
+        # occasion and must never block ``orchestrator.started``.
         if self._playwright:
-            try:
-                await self._playwright.start()
-                await self._db.ensure_playwright_tables()
-                self._tasks.append(
-                    asyncio.create_task(
-                        self._playwright_balance_loop(), name="playwright:balance"
+
+            async def _start_playwright_bg() -> None:
+                t0 = time.monotonic()
+                try:
+                    await self._playwright.start()
+                    await self._db.ensure_playwright_tables()
+                    self._tasks.append(
+                        asyncio.create_task(
+                            self._playwright_balance_loop(),
+                            name="playwright:balance",
+                        )
                     )
-                )
-                self._tasks.append(
-                    asyncio.create_task(
-                        self._playwright_screenshot_loop(), name="playwright:screenshot"
+                    self._tasks.append(
+                        asyncio.create_task(
+                            self._playwright_screenshot_loop(),
+                            name="playwright:screenshot",
+                        )
                     )
+                    log.info(
+                        "orchestrator.playwright_started",
+                        elapsed_ms=int((time.monotonic() - t0) * 1000),
+                    )
+                except Exception as e:
+                    log.error(
+                        "orchestrator.playwright_start_failed", error=str(e)
+                    )
+
+            self._tasks.append(
+                asyncio.create_task(
+                    _start_playwright_bg(), name="playwright_starter"
                 )
-                log.info("orchestrator.playwright_started")
-            except Exception as e:
-                log.error("orchestrator.playwright_start_failed", error=str(e))
+            )
 
         if not self._settings.paper_mode and not _use_reconciler:
             # Legacy position monitor (disabled when CLOB reconciler is active)
@@ -1027,7 +1060,25 @@ class EngineRuntime:
         # NOTE: log server now starts at the top of start() so /logs and
         # /health are reachable from t=0 even if later phases stall.
 
-        await self._alerter.send_system_alert("Engine started", level="info")
+        # Final Telegram alert — fire-and-forget with a 5s timeout so a
+        # stalled Telegram bot API never holds up ``orchestrator.started``.
+        async def _send_started_alert() -> None:
+            try:
+                await asyncio.wait_for(
+                    self._alerter.send_system_alert("Engine started", level="info"),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                log.warning("orchestrator.started_alert_timeout")
+            except Exception as exc:
+                log.warning(
+                    "orchestrator.started_alert_failed", error=str(exc)[:200]
+                )
+
+        self._tasks.append(
+            asyncio.create_task(_send_started_alert(), name="started_alert")
+        )
+
         log.info(
             "orchestrator.started",
             tasks=len(self._tasks),
