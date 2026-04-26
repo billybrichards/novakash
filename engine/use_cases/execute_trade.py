@@ -351,12 +351,65 @@ class ExecuteTradeUseCase:
                 direction=direction,
             )
 
+        # ── Step 0.5: Per-strategy filled-marker (audit #321) ──────────
+        # SMOKING GUN, 2026-04-26: v10_lgb_only filled 3x on window
+        # 1777234800 (20:21:12, 20:21:40, 20:22:11). After per-strategy
+        # lease keys (#390) was_traded was demoted to elif and never
+        # fired; the lease (15s TTL, released on fill) was the ONLY
+        # protection — once it released, the same strategy could re-
+        # acquire and re-fill seconds later.
+        #
+        # The terminal invariant lives in strategy_window_fills (audit
+        # #321): one row per (asset, window_ts, timeframe, strategy_id)
+        # written by mark_traded after a successful fill. Checking it
+        # here, BEFORE lease acquisition, ensures:
+        #   * Repeat attempts short-circuit without ever touching the
+        #     lease table (no wasted 15s TTL holds).
+        #   * The dedup state cannot be poisoned by a failed release on
+        #     a window we already filled.
+        #   * Sibling strategies (different strategy_id) are NOT
+        #     blocked — independent rows.
+        #
+        # Fail-open on DB error: if has_filled errors, the lease still
+        # provides 15s in-flight protection as a backstop.
+        if hasattr(self._window_state, "has_filled"):
+            try:
+                if await self._window_state.has_filled(window_key, sid):
+                    log.info(
+                        "execute_trade.already_filled_this_window",
+                        strategy=sid,
+                        window=str(window_key),
+                        direction=direction,
+                    )
+                    return _failed(
+                        "already_filled_this_window",
+                        strategy_id=sid,
+                        direction=direction,
+                    )
+            except Exception as exc:
+                log.warning(
+                    "execute_trade.has_filled_check_error",
+                    strategy=sid,
+                    window=str(window_key),
+                    error=str(exc)[:200],
+                )
+                # Fall through to lease — better to take a duplicate-fill
+                # risk than freeze the strategy on a transient DB blip.
+
         # ── Step 1: Dedup / atomic claim ───────────────────────────────
         # Audit #320 (2026-04-26): try_claim_trade is now per-strategy AND
         # returns (bool, claim_id). The claim_id MUST be threaded back to
         # clear_trade_claim on failure paths, otherwise the DB row lingers
         # for the full LEASE_TTL_SECONDS and blocks the same strategy's
         # subsequent eval retries within the window.
+        #
+        # Audit #321 (2026-04-26): was_traded re-promoted to a parallel
+        # check (no longer elif). The lease is in-flight only; the
+        # terminal "already filled" check is in Step 0.5 above. was_traded
+        # remains as a defensive backstop — it's per-window not per-
+        # strategy in the current schema, so it errs on the side of
+        # blocking a fill if the strategy_window_fills table is missing
+        # for any reason on an upgrade.
         try:
             if hasattr(self._window_state, "try_claim_trade"):
                 claim_result = await self._window_state.try_claim_trade(
@@ -579,11 +632,26 @@ class ExecuteTradeUseCase:
             )
 
         # ── Step 8: Mark traded ────────────────────────────────────────
+        # Audit #321 (2026-04-26): pass strategy_id so the per-strategy
+        # filled-marker (strategy_window_fills) is written. Without this,
+        # has_filled() at Step 0.5 on the next eval tick would return
+        # False and we'd happily fill again. Best-effort: mark_traded is
+        # idempotent (ON CONFLICT DO NOTHING on the new table); legacy
+        # WindowStateRepository implementations without the strategy_id
+        # kwarg fall back via the Optional default to the old signature.
         try:
-            await self._window_state.mark_traded(
-                window_key,
-                result.order_id or "unknown",
-            )
+            try:
+                await self._window_state.mark_traded(
+                    window_key,
+                    result.order_id or "unknown",
+                    strategy_id=sid,
+                )
+            except TypeError:
+                # Legacy port impl without strategy_id kwarg.
+                await self._window_state.mark_traded(
+                    window_key,
+                    result.order_id or "unknown",
+                )
         except Exception as exc:
             log.warning(
                 "execute_trade.mark_traded_error",

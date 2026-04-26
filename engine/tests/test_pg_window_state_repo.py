@@ -202,16 +202,97 @@ class TestLoadRecentTraded:
 class TestEnsureTable:
     def test_creates(self, repo, conn):
         asyncio.run(repo.ensure_window_states_table())
-        # 3 calls for window_states + 4 for window_claims:
-        #   - CREATE TABLE
-        #   - ALTER ADD COLUMN strategy_id (idempotent migration)
-        #   - DO $$ migration block (idempotent PK swap)
-        #   - CREATE INDEX
-        # Total: 7
-        assert len(conn.execute_calls) == 7
+        # window_states: CREATE TABLE + 2 indexes = 3
+        # window_claims: CREATE TABLE + ADD COLUMN + DO $$ + INDEX = 4
+        # strategy_window_fills (audit #321): CREATE TABLE + INDEX = 2
+        # Total: 9
+        assert len(conn.execute_calls) == 9
         qs = [q for q, _ in conn.execute_calls]
         assert any("CREATE TABLE IF NOT EXISTS window_states" in q for q in qs)
         assert any("CREATE TABLE IF NOT EXISTS window_claims" in q for q in qs)
         # Audit #320 migration: must add strategy_id col + swap PK
         assert any("ADD COLUMN IF NOT EXISTS strategy_id" in q for q in qs)
         assert any("DROP CONSTRAINT" in q and "ADD PRIMARY KEY" in q for q in qs)
+        # Audit #321 (2026-04-26): per-strategy filled-marker table
+        assert any("CREATE TABLE IF NOT EXISTS strategy_window_fills" in q for q in qs)
+        assert any("idx_strategy_window_fills_filled_at" in q for q in qs)
+
+
+class TestHasFilled:
+    """Audit #321 (2026-04-26) — per-strategy filled-marker queries.
+
+    Backs the once-per-window-per-strategy invariant in execute_trade.
+    Smoking gun: v10_lgb_only filled 3x on window 1777234800 because
+    nothing tracked WHICH strategy had filled the window — only that
+    SOME order was placed.
+    """
+
+    def test_returns_true_when_marker_exists(self, repo, conn):
+        conn.fetchval_result = True
+        key = make_window_key("BTC", 1_777_234_800, "5m")
+        assert (
+            asyncio.run(repo.has_filled(key, "v10_lgb_only")) is True
+        )
+        # The query must be scoped to strategy_window_fills, NOT window_states
+        # (which has no strategy_id column).
+        q, a = conn.execute_calls[0]
+        assert "strategy_window_fills" in q
+        assert a[0] == "BTC"
+        assert a[1] == 1_777_234_800
+        assert a[2] == "5m"
+        assert a[3] == "v10_lgb_only"
+
+    def test_returns_false_when_no_marker(self, repo, conn):
+        conn.fetchval_result = False
+        key = make_window_key("BTC", 1_777_234_800, "5m")
+        assert (
+            asyncio.run(repo.has_filled(key, "v10_lgb_only")) is False
+        )
+
+    def test_returns_false_when_strategy_id_missing(self, repo, conn):
+        # Defensive: empty strategy_id must NOT be confused with the
+        # "no marker yet" sentinel — return False without hitting the DB.
+        key = make_window_key("BTC", 1, "5m")
+        assert asyncio.run(repo.has_filled(key, "")) is False
+        # No DB call was made.
+        assert conn.execute_calls == []
+
+    def test_no_pool_returns_false(self):
+        from adapters.persistence.pg_window_repo import PgWindowRepository
+
+        key = make_window_key("BTC", 1, "5m")
+        assert (
+            asyncio.run(PgWindowRepository(None).has_filled(key, "v10")) is False
+        )
+
+
+class TestMarkTradedThreadsStrategyId:
+    """Audit #321 — mark_traded with strategy_id writes BOTH the legacy
+    window_states row AND the new per-strategy strategy_window_fills row.
+    """
+
+    def test_writes_both_tables_when_strategy_id_provided(self, repo, conn):
+        key = make_window_key("BTC", 1_777_234_800, "5m")
+        asyncio.run(repo.mark_traded(key, "0xabc", strategy_id="v10_lgb_only"))
+        qs = [q for q, _ in conn.execute_calls]
+        assert any("INSERT INTO window_states" in q for q in qs)
+        assert any("INSERT INTO strategy_window_fills" in q for q in qs)
+        # Verify strategy_id is the 4th positional arg on the marker insert.
+        marker_call = next(
+            (q, a) for q, a in conn.execute_calls
+            if "strategy_window_fills" in q
+        )
+        _, args = marker_call
+        assert args[3] == "v10_lgb_only"
+
+    def test_legacy_signature_no_strategy_id(self, repo, conn):
+        """Backfill compatibility: callers (e.g. legacy five_min_vpin
+        pending markers) that don't pass strategy_id only write the
+        legacy window_states row. The marker table is left alone — there
+        is nothing to mark per-strategy yet.
+        """
+        key = make_window_key("BTC", 1, "5m")
+        asyncio.run(repo.mark_traded(key, "pending"))
+        qs = [q for q, _ in conn.execute_calls]
+        assert any("INSERT INTO window_states" in q for q in qs)
+        assert not any("INSERT INTO strategy_window_fills" in q for q in qs)

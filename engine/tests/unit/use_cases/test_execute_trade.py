@@ -144,6 +144,11 @@ def _build_use_case(
         (not was_traded),
         ("test-claim-id" if not was_traded else None),
     )
+    # Audit #321 (2026-04-26): per-strategy filled-marker. Default False
+    # so existing tests proceed past the new Step 0.5 check. New
+    # regression suite (test_execute_trade_per_strategy_invariant.py)
+    # exercises the True path.
+    mock_window_state.has_filled.return_value = False
     mock_alerter = AsyncMock()
     mock_alerter.send_strategy_trade_alert = AsyncMock()
     mock_recorder = AsyncMock()
