@@ -907,6 +907,15 @@ class EngineRuntime:
                         self._data_surface_mgr.set_alerter(
                             self._alerter.send_system_alert
                         )
+                # Cold-start warmup: seed the in-memory surface from the
+                # most recent signal_evaluations row(s) BEFORE the
+                # background refresh loop kicks off so strategies have
+                # usable (slightly stale) values from tick 0 instead of
+                # SKIPping for 5–6 minutes while feeds fan out. Fail-open:
+                # any DB error is logged + swallowed inside the method.
+                if hasattr(self._data_surface_mgr, "warmup_from_db"):
+                    db_pool = getattr(self._db, "_pool", None) if self._db else None
+                    await self._data_surface_mgr.warmup_from_db(db_pool)
                 await self._data_surface_mgr.start()
                 log.info("orchestrator.data_surface_manager_started")
             except Exception as exc:
