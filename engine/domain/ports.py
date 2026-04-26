@@ -336,6 +336,42 @@ class WindowStateRepository(abc.ABC):
         """
         ...
 
+    async def try_claim_fill_slot(
+        self,
+        key: WindowKey,
+        strategy_id: str,
+    ) -> bool:
+        """Pessimistic per-(window, strategy) fill-slot claim used to
+        prevent multi-fills when the lease auto-expires before a
+        slow FAK ladder confirms.
+
+        Returns ``True`` if the slot was claimed (we own it), ``False``
+        if another concurrent attempt already holds it.
+
+        Default implementation returns True (no-op fail-open) for
+        adapters that have not been upgraded — the lease still
+        provides 15s in-flight protection. Production adapters MUST
+        override and back this with a UNIQUE-constrained INSERT.
+
+        Audit #322 (2026-04-26): added after a 6-fill smoking-gun on
+        v10_lgb_only / window 1777238100 where the lease released
+        between successive eval ticks while three FAK ladders were
+        in flight.
+        """
+        return True
+
+    async def release_fill_slot(
+        self,
+        key: WindowKey,
+        strategy_id: str,
+    ) -> None:
+        """Release a pessimistic fill-slot claim that did NOT result in
+        a fill (FAK no-fill, risk block after claim, etc.). Idempotent;
+        once :meth:`mark_traded` has stamped a real order_id this is a
+        no-op and safe to skip.
+        """
+        return None
+
     @abc.abstractmethod
     async def try_claim_trade(
         self,
