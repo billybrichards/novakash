@@ -290,6 +290,34 @@ class ExecuteTradeUseCase:
 
         claim_id: Optional[str] = None  # threaded from try_claim_trade → clear_trade_claim
 
+        # ── Diagnostic: log entry inputs so post-mortem can see exactly
+        # what timing_recheck saw. Forensics 2026-04-26 (window 1777232100
+        # dedup_hits 5+ minutes past close with no timing_recheck_blocked):
+        # without entry visibility we couldn't tell whether the recheck
+        # was even being called. Cheap log; one per execute attempt.
+        try:
+            _entry_now = self._clock.now()
+            _entry_duration = getattr(window_key, "duration_secs", 0) or 300
+            _entry_close_ts = int(window_key.window_ts) + int(_entry_duration)
+            _entry_offset = _entry_close_ts - int(_entry_now)
+            log.info(
+                "execute_trade.entry",
+                strategy=sid,
+                direction=direction,
+                window=str(window_key),
+                window_ts=int(window_key.window_ts),
+                duration_secs=int(_entry_duration),
+                close_ts=int(_entry_close_ts),
+                now_ts=int(_entry_now),
+                current_offset=int(_entry_offset),
+                slug=getattr(window_market, "market_slug", ""),
+            )
+        except Exception as _diag_exc:
+            log.warning(
+                "execute_trade.entry_diag_error",
+                error=str(_diag_exc)[:200],
+            )
+
         # ── Step 0: Timing recheck (BEFORE claim acquisition) ──────────
         # CRITICAL ORDERING (audit #317 root-cause, 2026-04-26): the
         # wall-clock past-close guard MUST run before we touch the lease.

@@ -406,3 +406,36 @@ async def test_execute_proceeds_when_timing_ok():
 
     assert result.success is True
     mock_executor.execute_order.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_execute_blocks_5min_past_close_smoking_gun():
+    """Regression for forensics 2026-04-26 (window 1777232100):
+    decisions emitted 5+ minutes past close were reaching the executor
+    and either dedup'ing or 404'ing on a torn-down orderbook. The
+    timing recheck must catch this and never touch CLOB or the lease.
+
+    Window opens at ts=1_776_800_000, closes at +300=1_776_800_300.
+    Wall clock = close + 329s (matches forensics offset).
+    """
+    window_ts = 1_776_800_000
+    close_ts = window_ts + 300
+    clock = _FakeClock(start=close_ts + 329)  # 5m29s past close
+
+    uc, mock_executor, mock_window_state = _build_use_case(clock=clock)
+    decision = _decision(metadata={})  # No min_offset_sec — env default
+    market = _market(window_ts)
+
+    result = await uc.execute(
+        decision=decision,
+        window_market=market,
+        current_btc_price=84000.0,
+        open_price=84100.0,
+    )
+
+    assert result.success is False
+    assert (result.failure_reason or "").startswith("eval_offset_past_close")
+    # Critical invariants:
+    mock_executor.execute_order.assert_not_called()         # No CLOB
+    mock_window_state.try_claim_trade.assert_not_called()   # No lease
+    mock_window_state.clear_trade_claim.assert_not_called() # Nothing to clear

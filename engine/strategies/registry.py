@@ -626,6 +626,43 @@ class StrategyRegistry:
                     and not _already_executed
                     and not self._paper_mode
                 ):
+                    # ── Defense-in-depth: reject past-close evals before
+                    # we even hit ExecuteTradeUseCase. Forensics 2026-04-26
+                    # window 1777232100: a LIVE TRADE decision was being
+                    # dispatched against a window 5+ min past close. The
+                    # DEFINITIVE check still lives in execute_trade.Step 0
+                    # (timing_recheck) but doing a quick gate here means
+                    # we never even build a stake / take a lease for an
+                    # unambiguously-dead window. Cheap arithmetic, never
+                    # blocks a fresh window.
+                    try:
+                        import time as _t_now
+                        _w_dur = (
+                            900 if window_tf == "15m"
+                            else 3600 if window_tf == "1h"
+                            else 14400 if window_tf == "4h"
+                            else 300
+                        )
+                        _w_close = int(window_ts) + int(_w_dur)
+                        _w_offset = _w_close - int(_t_now.time())
+                        if _w_offset <= 0:
+                            log.warning(
+                                "registry.dispatch_past_close_blocked",
+                                strategy=name,
+                                window_ts=int(window_ts),
+                                close_ts=_w_close,
+                                current_offset=_w_offset,
+                                timeframe=window_tf,
+                            )
+                            # Surface as a normal SKIP-equivalent: no
+                            # execute, no lease, no CLOB. Registry's
+                            # logging continues with the existing flow.
+                            continue
+                    except Exception as _stale_exc:
+                        log.warning(
+                            "registry.dispatch_stale_check_error",
+                            error=str(_stale_exc)[:200],
+                        )
                     try:
                         result = await self._execute_uc.execute(
                             decision=decision,
