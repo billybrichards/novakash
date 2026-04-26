@@ -215,9 +215,15 @@ class FAKLadderExecutor(OrderExecutionPort):
             # Surface CLOB auth/infra abort reasons so they propagate to
             # the final ExecutionResult instead of being masked as a benign
             # market-side no-fill. Checked before Phase 2/3 fallbacks.
+            #
+            # ``book_unavailable_404`` (audit 2026-04-26) is the orderbook
+            # propagation-lag skip — not a fault, but RFQ on the same
+            # token_id will also 404, so we short-circuit Phase 2/3
+            # entirely and let the strategy retry on the next eval.
             if fok_result.abort_reason and (
                 "clob_auth_error" in (fok_result.abort_reason or "")
                 or "book_error" in (fok_result.abort_reason or "")
+                or "book_unavailable_404" in (fok_result.abort_reason or "")
             ):
                 return ExecutionResult(
                     success=False,
