@@ -69,7 +69,14 @@ async def _handle_health(request: web.Request) -> web.Response:
 
 
 async def start_log_server() -> web.AppRunner | None:
-    """Start the log server.  Returns the runner (for cleanup) or None on failure."""
+    """Start the log server.  Returns the runner (for cleanup) or None on failure.
+
+    Robust against the common "address already in use" race after an engine
+    restart — the previous PID's socket may sit in TIME_WAIT for ~60s. We
+    enable SO_REUSEADDR and retry briefly so the server comes up reliably,
+    even when restarts happen back-to-back.
+    """
+    import asyncio
     import structlog
 
     log = structlog.get_logger("log_server")
@@ -80,12 +87,34 @@ async def start_log_server() -> web.AppRunner | None:
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", LOG_PORT)
-    try:
-        await site.start()
-        log.info("log_server.started", port=LOG_PORT, log_file=LOG_FILE)
-        return runner
-    except OSError as exc:
-        log.warning("log_server.start_failed", error=str(exc))
-        await runner.cleanup()
-        return None
+
+    # SO_REUSEADDR + SO_REUSEPORT allow rebinding while the old socket is in
+    # TIME_WAIT after a fast restart. Without this, the engine logged
+    # "address already in use" once and gave up — leaving operators with no
+    # HTTP log tail at the very moment they needed it most.
+    site = web.TCPSite(runner, "0.0.0.0", LOG_PORT, reuse_address=True, reuse_port=True)
+
+    last_exc: OSError | None = None
+    for attempt in range(5):
+        try:
+            await site.start()
+            log.info(
+                "log_server.started",
+                port=LOG_PORT,
+                log_file=LOG_FILE,
+                attempt=attempt + 1,
+            )
+            return runner
+        except OSError as exc:
+            last_exc = exc
+            log.warning(
+                "log_server.bind_retry",
+                error=str(exc),
+                attempt=attempt + 1,
+                max_attempts=5,
+            )
+            await asyncio.sleep(1.0)
+
+    log.warning("log_server.start_failed", error=str(last_exc))
+    await runner.cleanup()
+    return None

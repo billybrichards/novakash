@@ -170,21 +170,62 @@ class EngineRuntime:
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _phase(name: str):
+        """
+        Context manager that logs entry + duration of a startup phase.
+
+        Use to make startup timing visible: each phase logs a `start` and a
+        `done` event with elapsed_ms. Failures log a `failed` event but do
+        not propagate — the rest of startup continues. This was added after
+        a 6m 27s silent hang in `_backfill_on_startup` (audit 2026-04-26).
+        """
+        import contextlib
+
+        @contextlib.asynccontextmanager
+        async def _cm():
+            t0 = time.monotonic()
+            log.info("orchestrator.phase.start", phase=name)
+            try:
+                yield
+                log.info(
+                    "orchestrator.phase.done",
+                    phase=name,
+                    elapsed_ms=int((time.monotonic() - t0) * 1000),
+                )
+            except Exception as exc:
+                log.warning(
+                    "orchestrator.phase.failed",
+                    phase=name,
+                    elapsed_ms=int((time.monotonic() - t0) * 1000),
+                    error=str(exc)[:200],
+                )
+
+        return _cm()
+
     async def start(self) -> None:
         """
         Initialise all components, wire callbacks, and start all tasks.
 
-        Order:
+        Order (post-2026-04-26 startup-ordering refactor):
         1. Geoblock check (live mode only) — G6
         2. Connect DB
-        3. Connect exchange clients
-        4. Start strategies
-        5. Start feed tasks
-        6. Start heartbeat task
-        7. Start resolution polling task
-        8. Start market state fan-out loop
+        3. Start log server EARLY — must always be reachable for debugging
+        4. Wire trace tables, runtime overrides, ticker, feeds (all fast)
+        5. Spawn feed tasks (background)
+        6. Wire data_surface_mgr (set_feeds + warmup + start) — strategies
+           depend on this and it must be ready BEFORE any slow await
+        7. Spawn slow recovery / reconciler work as background tasks so the
+           orchestrator's `start()` returns promptly
+        8. Spawn heartbeat / resolution / market-state loops
+        9. orchestrator.started — engine is now fully online
+
+        Invariant: nothing between `orchestrator.starting` and
+        `orchestrator.started` may await a remote call that can hang for
+        more than ~5 seconds. Slow work goes in `asyncio.create_task`.
         """
         log.info("orchestrator.starting")
+        _start_t0 = time.monotonic()
 
         # ── G6: Geoblock check (live mode only) ────────────────────────────────
         if not self._settings.paper_mode:
@@ -218,13 +259,29 @@ class EngineRuntime:
         # ── Startup continues ──────────────────────────────────────────────────
 
         # 1. Connect DB
-        try:
-            await self._db.connect()
-            # Wire DB to alerter for notification logging
-            self._alerter.set_db_client(self._db)
-        except Exception as exc:
-            log.error("orchestrator.db_connect_failed", error=str(exc))
-            raise
+        async with self._phase("db_connect"):
+            try:
+                await self._db.connect()
+                # Wire DB to alerter for notification logging
+                self._alerter.set_db_client(self._db)
+            except Exception as exc:
+                log.error("orchestrator.db_connect_failed", error=str(exc))
+                raise
+
+        # ── Log server: start as early as possible so /logs and /health are
+        # reachable even if subsequent startup phases are slow. Previously
+        # this was at the very end of start() — meaning a hang in any
+        # earlier phase left operators with NO HTTP debug surface for the
+        # full duration of the hang. Now it comes up before any remote call.
+        self._log_server_runner = None
+        if os.environ.get("ENGINE_LOG_SERVER", "true").lower() in ("true", "1", "yes"):
+            async with self._phase("log_server_start"):
+                try:
+                    self._log_server_runner = await start_log_server()
+                except Exception as exc:
+                    log.warning(
+                        "orchestrator.log_server_error", error=str(exc)[:200]
+                    )
 
         # Ensure window_snapshots table exists (non-fatal if it fails)
         try:
@@ -714,35 +771,117 @@ class EngineRuntime:
                 "orchestrator.ensure_strategy_executions_failed", error=str(exc)
             )
 
-        # 6f. Recover open trades from previous sessions (startup trade recovery)
-        try:
-            recovered = await self._order_manager.recover_open_trades(self._db)
-            log.info("orchestrator.trades_recovered", count=recovered)
-            if recovered > 0:
-                await self._alerter.send_raw_message(
-                    f"♻️ *Trade Recovery*\nRecovered `{recovered}` open trade(s) from previous session.\n"
-                    f"Oracle polling will resolve them automatically."
-                )
-        except Exception as exc:
-            log.warning("orchestrator.trade_recovery_failed", error=str(exc))
+        # ── DATA SURFACE: wire feeds + warmup + start BEFORE slow recovery
+        # work below. Strategies evaluate every 2s and need feeds wired
+        # from t=0 — previously this block lived AFTER the (sometimes 5+
+        # minute) CLOB reconciler `_backfill_on_startup`, leaving strategies
+        # to skip with `source_agreement: chainlink,tiingo missing` for
+        # the duration of the hang. Audit 2026-04-26.
+        async with self._phase("chainlink_inject"):
+            if self._five_min_feed and self._chainlink_multi_feed:
+                self._five_min_feed._chainlink_feed = self._chainlink_multi_feed
+                log.info("orchestrator.chainlink_injected_into_5min_feed")
+            if (
+                getattr(self, "_fifteen_min_feed", None)
+                and self._chainlink_multi_feed
+            ):
+                self._fifteen_min_feed._chainlink_feed = self._chainlink_multi_feed
+                log.info("orchestrator.chainlink_injected_into_15min_feed")
 
-        # 6e. CLOB Reconciler (v10.2) or legacy reconciliation loop
+        if self._strategy_registry and hasattr(self, "_data_surface_mgr"):
+            async with self._phase("data_surface_start"):
+                try:
+                    self._data_surface_mgr.set_feeds(
+                        tiingo_feed=getattr(self, "_tiingo_feed", None),
+                        chainlink_feed=getattr(self, "_chainlink_multi_feed", None)
+                        or getattr(self, "_chainlink_feed", None),
+                        clob_feed=getattr(self, "_clob_feed", None),
+                        vpin_calculator=self._vpin_calc,
+                        cg_feeds=self._cg_feeds,
+                        twap_tracker=self._twap_tracker,
+                        binance_state=self._aggregator
+                        if hasattr(self, "_aggregator")
+                        else None,
+                    )
+                    if hasattr(self, "_alerter") and self._alerter is not None:
+                        if hasattr(self._data_surface_mgr, "set_alerter"):
+                            self._data_surface_mgr.set_alerter(
+                                self._alerter.send_system_alert
+                            )
+                    if hasattr(self._data_surface_mgr, "warmup_from_db"):
+                        db_pool = (
+                            getattr(self._db, "_pool", None) if self._db else None
+                        )
+                        await self._data_surface_mgr.warmup_from_db(db_pool)
+                    await self._data_surface_mgr.start()
+                    log.info("orchestrator.data_surface_manager_started")
+                except Exception as exc:
+                    log.warning(
+                        "orchestrator.data_surface_start_error",
+                        error=str(exc)[:200],
+                    )
+
+        # 6f. Recover open trades — runs in BACKGROUND. Previously a
+        # synchronous await here added ~22s to startup before the engine
+        # was ready to trade. Open trades only matter for resolution
+        # tracking (not for placing new trades) so it's safe to defer.
+        async def _recover_open_trades_bg() -> None:
+            t0 = time.monotonic()
+            try:
+                recovered = await self._order_manager.recover_open_trades(self._db)
+                log.info(
+                    "orchestrator.trades_recovered",
+                    count=recovered,
+                    elapsed_ms=int((time.monotonic() - t0) * 1000),
+                )
+                if recovered > 0:
+                    await self._alerter.send_raw_message(
+                        f"♻️ *Trade Recovery*\nRecovered `{recovered}` open trade(s) from previous session.\n"
+                        f"Oracle polling will resolve them automatically."
+                    )
+            except Exception as exc:
+                log.warning("orchestrator.trade_recovery_failed", error=str(exc))
+
+        self._tasks.append(
+            asyncio.create_task(_recover_open_trades_bg(), name="trade_recovery")
+        )
+
+        # 6e. CLOB Reconciler (v10.2) or legacy reconciliation loop —
+        # runs in BACKGROUND. Its `_backfill_on_startup` calls
+        # `get_position_outcomes()` which has been observed to take
+        # 5+ minutes when Polymarket data-api is slow (audit 2026-04-26).
+        # Backfilling stale positions is an eventually-consistent task,
+        # not a precondition for taking new trades.
         _use_reconciler = os.environ.get("RECONCILER_ENABLED", "true").lower() == "true"
         if not self._settings.paper_mode and _use_reconciler:
-            try:
-                from reconciliation.reconciler import CLOBReconciler
 
-                self._reconciler = CLOBReconciler(
-                    poly_client=self._poly_client,
-                    db_pool=self._db._pool,
-                    alerter=self._alerter,
-                    shutdown_event=self._shutdown_event,
+            async def _start_clob_reconciler_bg() -> None:
+                t0 = time.monotonic()
+                try:
+                    from reconciliation.reconciler import CLOBReconciler
+
+                    self._reconciler = CLOBReconciler(
+                        poly_client=self._poly_client,
+                        db_pool=self._db._pool,
+                        alerter=self._alerter,
+                        shutdown_event=self._shutdown_event,
+                    )
+                    await self._reconciler.start()
+                    log.info(
+                        "orchestrator.clob_reconciler_started",
+                        elapsed_ms=int((time.monotonic() - t0) * 1000),
+                    )
+                except Exception as exc:
+                    log.error(
+                        "orchestrator.clob_reconciler_failed", error=str(exc)
+                    )
+                    self._reconciler = None
+
+            self._tasks.append(
+                asyncio.create_task(
+                    _start_clob_reconciler_bg(), name="clob_reconciler_starter"
                 )
-                await self._reconciler.start()
-                log.info("orchestrator.clob_reconciler_started")
-            except Exception as exc:
-                log.error("orchestrator.clob_reconciler_failed", error=str(exc))
-                self._reconciler = None
+            )
         elif not self._settings.paper_mode:
             # Legacy: old 5-min reconcile loop (fallback when RECONCILER_ENABLED=false)
             self._tasks.append(
@@ -770,52 +909,57 @@ class EngineRuntime:
             asyncio.create_task(self._sot_reconciler_loop(), name="sot_reconciler")
         )
 
-        # 8. Builder Relayer redeemer (live mode only)
-        # playwright_state hosts redeemer quota + cooldown persistence, so
-        # ensure the table exists before the redeemer loop starts — even
-        # when the Playwright browser automation is disabled (Montreal
-        # live config). Prior bug: ensure_playwright_tables() was gated on
-        # self._playwright, so live boxes without browser automation never
-        # created quota_used_today / cooldown_until columns and every
-        # redeemer write errored with "column does not exist".
+        # 8. Builder Relayer redeemer (live mode only) — runs in BACKGROUND.
+        # `redeemer.connect()` and `onchain_transport.connect()` make
+        # network calls that can hang during RPC degradation. Since the
+        # redeemer is only invoked on resolution (not on trade entry), it
+        # can come up after the main orchestrator returns from start().
         if not self._settings.paper_mode:
-            try:
-                await self._db.ensure_playwright_tables()
-                # Ensure redeem_attempts table exists (separate from playwright
-                # quota tracking — used by the 3-failures-in-24h backoff gate).
-                # Reaches the repo via the redeemer's attempts_repo handle.
-                _attempts_repo = getattr(self._redeemer, "_attempts_repo", None)
-                if _attempts_repo is not None and hasattr(
-                    _attempts_repo, "ensure_tables"
-                ):
-                    try:
-                        await _attempts_repo.ensure_tables()
-                    except Exception as exc:
-                        log.warning(
-                            "orchestrator.ensure_redeem_attempts_failed",
-                            error=str(exc)[:200],
+
+            async def _start_redeemer_bg() -> None:
+                t0 = time.monotonic()
+                try:
+                    await self._db.ensure_playwright_tables()
+                    _attempts_repo = getattr(self._redeemer, "_attempts_repo", None)
+                    if _attempts_repo is not None and hasattr(
+                        _attempts_repo, "ensure_tables"
+                    ):
+                        try:
+                            await _attempts_repo.ensure_tables()
+                        except Exception as exc:
+                            log.warning(
+                                "orchestrator.ensure_redeem_attempts_failed",
+                                error=str(exc)[:200],
+                            )
+                    await self._redeemer.connect()
+                    if (
+                        self._redeemer.has_onchain_transport
+                        and hasattr(self._redeemer, "_onchain_transport")
+                        and self._redeemer._onchain_transport is not None
+                    ):
+                        try:
+                            await self._redeemer._onchain_transport.connect()
+                            log.info("orchestrator.onchain_transport_connected")
+                        except Exception as exc:
+                            log.error(
+                                "orchestrator.onchain_transport_connect_failed",
+                                error=str(exc)[:200],
+                            )
+                    self._tasks.append(
+                        asyncio.create_task(
+                            self._redeemer_loop(), name="redeemer:sweep"
                         )
-                await self._redeemer.connect()
-                # Connect on-chain transport if wired (derives EOA, fetches chain_id)
-                if (
-                    self._redeemer.has_onchain_transport
-                    and hasattr(self._redeemer, "_onchain_transport")
-                    and self._redeemer._onchain_transport is not None
-                ):
-                    try:
-                        await self._redeemer._onchain_transport.connect()
-                        log.info("orchestrator.onchain_transport_connected")
-                    except Exception as exc:
-                        log.error(
-                            "orchestrator.onchain_transport_connect_failed",
-                            error=str(exc)[:200],
-                        )
-                self._tasks.append(
-                    asyncio.create_task(self._redeemer_loop(), name="redeemer:sweep")
-                )
-                log.info("orchestrator.redeemer_started")
-            except Exception as e:
-                log.error("orchestrator.redeemer_start_failed", error=str(e))
+                    )
+                    log.info(
+                        "orchestrator.redeemer_started",
+                        elapsed_ms=int((time.monotonic() - t0) * 1000),
+                    )
+                except Exception as e:
+                    log.error("orchestrator.redeemer_start_failed", error=str(e))
+
+            self._tasks.append(
+                asyncio.create_task(_start_redeemer_bg(), name="redeemer_starter")
+            )
 
         # Position snapshot loop — runs in BOTH paper and live mode so the
         # operator always has ground-truth wallet + pending visibility,
@@ -876,63 +1020,19 @@ class EngineRuntime:
                 # Windows doesn't support add_signal_handler
                 pass
 
-        # Inject Chainlink multi-feed into Polymarket feeds for oracle-aligned open price
-        if self._five_min_feed and self._chainlink_multi_feed:
-            self._five_min_feed._chainlink_feed = self._chainlink_multi_feed
-            log.info("orchestrator.chainlink_injected_into_5min_feed")
-        if getattr(self, "_fifteen_min_feed", None) and self._chainlink_multi_feed:
-            self._fifteen_min_feed._chainlink_feed = self._chainlink_multi_feed
-            log.info("orchestrator.chainlink_injected_into_15min_feed")
+        # NOTE: chainlink injection + data_surface_mgr now run earlier in
+        # startup (before the slow recovery work). Keeping this comment as
+        # a tombstone so future readers don't move them back here.
 
-        # Start Strategy Engine v2 DataSurfaceManager background loop
-        # Inject live feed references NOW (they were None at __init__ time)
-        # Use chainlink_multi_feed (has latest_prices dict) not chainlink_feed (RPC, BTC-only)
-        if self._strategy_registry and hasattr(self, "_data_surface_mgr"):
-            try:
-                self._data_surface_mgr.set_feeds(
-                    tiingo_feed=getattr(self, "_tiingo_feed", None),
-                    chainlink_feed=getattr(self, "_chainlink_multi_feed", None)
-                    or getattr(self, "_chainlink_feed", None),
-                    clob_feed=getattr(self, "_clob_feed", None),
-                    vpin_calculator=self._vpin_calc,
-                    cg_feeds=self._cg_feeds,
-                    twap_tracker=self._twap_tracker,
-                    binance_state=self._aggregator
-                    if hasattr(self, "_aggregator")
-                    else None,
-                )
-                # Wire TimesFM degradation alerts to Telegram (2026-04-16 incident).
-                if hasattr(self, "_alerter") and self._alerter is not None:
-                    if hasattr(self._data_surface_mgr, "set_alerter"):
-                        self._data_surface_mgr.set_alerter(
-                            self._alerter.send_system_alert
-                        )
-                # Cold-start warmup: seed the in-memory surface from the
-                # most recent signal_evaluations row(s) BEFORE the
-                # background refresh loop kicks off so strategies have
-                # usable (slightly stale) values from tick 0 instead of
-                # SKIPping for 5–6 minutes while feeds fan out. Fail-open:
-                # any DB error is logged + swallowed inside the method.
-                if hasattr(self._data_surface_mgr, "warmup_from_db"):
-                    db_pool = getattr(self._db, "_pool", None) if self._db else None
-                    await self._data_surface_mgr.warmup_from_db(db_pool)
-                await self._data_surface_mgr.start()
-                log.info("orchestrator.data_surface_manager_started")
-            except Exception as exc:
-                log.warning(
-                    "orchestrator.data_surface_start_error", error=str(exc)[:200]
-                )
-
-        # ── Log server (HTTP tail of engine.log) ──────────────────────────
-        self._log_server_runner = None
-        if os.environ.get("ENGINE_LOG_SERVER", "true").lower() in ("true", "1", "yes"):
-            try:
-                self._log_server_runner = await start_log_server()
-            except Exception as exc:
-                log.warning("orchestrator.log_server_error", error=str(exc)[:200])
+        # NOTE: log server now starts at the top of start() so /logs and
+        # /health are reachable from t=0 even if later phases stall.
 
         await self._alerter.send_system_alert("Engine started", level="info")
-        log.info("orchestrator.started", tasks=len(self._tasks))
+        log.info(
+            "orchestrator.started",
+            tasks=len(self._tasks),
+            elapsed_ms=int((time.monotonic() - _start_t0) * 1000),
+        )
 
     async def run(self) -> None:
         """Start the engine and wait for shutdown."""
