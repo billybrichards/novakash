@@ -289,6 +289,30 @@ class EngineRuntime:
         except Exception as exc:
             log.warning("orchestrator.ensure_window_tables_failed", error=str(exc))
 
+        # Ensure window_states + window_claims tables exist with the
+        # correct PK shape (audit #316/#317/#320). MUST run synchronously
+        # before the first eval tick — a missing table or a stale PK
+        # (pre-#320, missing strategy_id) makes every acquire_lease a
+        # silent no-op, which manifests as "0 fills, no errors" until
+        # someone notices. Previously this DDL existed on PgWindowRepository
+        # but had no startup caller — PR #386 deferred most DDL but never
+        # added this one. Idempotent, fast, dependency-free.
+        try:
+            from adapters.persistence.pg_window_repo import PgWindowRepository
+
+            _bootstrap_repo = PgWindowRepository(self._db._pool)
+            await _bootstrap_repo.ensure_window_states_table()
+            log.info("orchestrator.ensure_window_states_table_ok")
+        except Exception as exc:
+            log.error(
+                "orchestrator.ensure_window_states_table_failed",
+                error=str(exc)[:200],
+                hint=(
+                    "lease-based dedup will be broken until this DDL "
+                    "lands; manual migration may be required"
+                ),
+            )
+
         try:
             if self._strategy_registry and getattr(
                 self._strategy_registry, "_trace_repo", None

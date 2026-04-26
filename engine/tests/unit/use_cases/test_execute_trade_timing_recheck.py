@@ -92,32 +92,32 @@ def test_execute_passes_within_range():
     assert reason is None
 
 
-def test_execute_does_not_abort_below_min_offset():
-    """T-15 against min=30 used to return eval_offset_drift, but the
-    drift check was deliberately disabled (PR 7e31330) because it caused
-    false blocks for strategies whose own gate fires near min_offset
-    (3-tick entry confirmation can burn ~6s after the strategy gate
-    passes at T-24). Only ``eval_offset_past_close`` remains enforced.
+def test_execute_aborts_below_metadata_min_offset():
+    """Audit 2026-04-26: drift check re-enabled. Window 1777227600 had
+    dedup_hits 30+ seconds past close because the registry queued TRADE
+    decisions during the valid window then ran them several seconds
+    later — by the time execute_trade started, current_offset had
+    drifted under min_offset_sec. The fix: when metadata declares
+    min_offset_sec, enforce it against wall-clock here. T-15 against
+    min=30 → eval_offset_drift, abort BEFORE touching the lease.
 
-    See audit #319 — live evidence (2026-04-26) shows enforcing drift
-    here breaks v9_lgb_only / v10_lgb_only entirely. The strategy's own
-    timing gate is the authority on min_offset; this layer is the
-    past-close safety net only.
+    Supersedes the old audit-#319 expectation (drift disabled). The
+    strategy's gate alone is not authoritative once decisions land on
+    a queue.
     """
     from use_cases.execute_trade import _recheck_timing_before_execute
 
     window_ts = 1_776_800_000
     close_ts = window_ts + 300
-    now = close_ts - 15  # T-15
+    now = close_ts - 15  # T-15, below min=30
 
     reason = _recheck_timing_before_execute(
         _window_key(window_ts),
         _decision(metadata={"min_offset_sec": 30}),
         now_fn=lambda: float(now),
     )
-    # Drift check disabled — recheck is past-close only, T-15 is inside
-    # the window so it must fall open.
-    assert reason is None
+    assert reason is not None
+    assert reason.startswith("eval_offset_drift")
 
 
 def test_execute_aborts_past_close():
@@ -154,23 +154,23 @@ def test_execute_aborts_exactly_at_close():
     assert reason.startswith("eval_offset_past_close")
 
 
-def test_execute_does_not_block_on_gate_params_min():
-    """Same as test_execute_does_not_abort_below_min_offset, but for the
-    nested ``gate_params`` metadata path. The recheck must remain a
-    past-close-only gate; min-offset enforcement is the strategy's
-    responsibility (see audit #319)."""
+def test_execute_blocks_on_gate_params_nested_min():
+    """Audit 2026-04-26 (drift re-enabled): nested gate_params path also
+    blocks below the declared min_offset_sec. T-45 against min=60 →
+    eval_offset_drift."""
     from use_cases.execute_trade import _recheck_timing_before_execute
 
     window_ts = 1_776_800_000
     close_ts = window_ts + 300
-    now = close_ts - 45  # T-45 (inside window)
+    now = close_ts - 45  # T-45 below 60
 
     reason = _recheck_timing_before_execute(
         _window_key(window_ts),
         _decision(metadata={"gate_params": {"min_offset_sec": 60}}),
         now_fn=lambda: float(now),
     )
-    assert reason is None
+    assert reason is not None
+    assert reason.startswith("eval_offset_drift")
 
 
 def test_cross_window_guard_blocks_15m_timeframe():
@@ -223,14 +223,32 @@ def test_default_min_offset_constant_still_30s():
     assert _EVAL_OFFSET_MIN_DEFAULT == 30
 
 
-def test_inside_window_with_no_metadata_passes():
-    """No metadata → no min_offset declared → recheck must still fall
-    open inside the window (only past-close blocks)."""
+def test_inside_window_with_no_metadata_uses_env_default_floor():
+    """Audit 2026-04-26: when the strategy doesn't propagate
+    min_offset_sec, the env default (30s) acts as a backstop. T-20
+    is below the 30s default → drift abort."""
     from use_cases.execute_trade import _recheck_timing_before_execute
 
     window_ts = 1_776_800_000
     close_ts = window_ts + 300
-    now = close_ts - 20  # T-20 (still inside)
+    now = close_ts - 20  # T-20, below default 30s
+
+    reason = _recheck_timing_before_execute(
+        _window_key(window_ts),
+        _decision(metadata={}),
+        now_fn=lambda: float(now),
+    )
+    assert reason is not None
+    assert reason.startswith("eval_offset_drift")
+
+
+def test_inside_window_above_default_floor_passes():
+    """Above the env default 30s floor → recheck passes."""
+    from use_cases.execute_trade import _recheck_timing_before_execute
+
+    window_ts = 1_776_800_000
+    close_ts = window_ts + 300
+    now = close_ts - 60  # T-60, well above 30s floor
 
     reason = _recheck_timing_before_execute(
         _window_key(window_ts),
@@ -338,14 +356,11 @@ async def test_execute_blocks_when_wall_clock_past_close():
 
 
 @pytest.mark.asyncio
-async def test_execute_does_not_block_when_below_min_offset():
-    """Integration: T-15 against min_offset=30 used to block at the
-    recheck. After PR 7e31330 / audit #319 the drift check is disabled,
-    so the executor IS reached and a successful (paper) fill happens.
-
-    The strategy's own timing gate is the authority on min_offset; the
-    recheck only catches past-close drift.
-    """
+async def test_execute_blocks_when_below_min_offset():
+    """Integration: T-15 against min_offset=30 must abort BEFORE
+    acquiring the lease. Audit 2026-04-26 reverses the audit #319
+    decision — registry queue effects mean the strategy's own gate
+    is no longer authoritative by the time execute_trade runs."""
     window_ts = 1_776_800_000
     close_ts = window_ts + 300
     clock = _FakeClock(start=close_ts - 15)  # T-15
@@ -361,10 +376,13 @@ async def test_execute_does_not_block_when_below_min_offset():
         open_price=84100.0,
     )
 
-    # Drift check disabled — executor IS hit, paper fill succeeds.
-    assert result.success is True
-    assert result.failure_reason is None
-    mock_executor.execute_order.assert_called_once()
+    assert result.success is False
+    assert (result.failure_reason or "").startswith("eval_offset_drift")
+    mock_executor.execute_order.assert_not_called()
+    # Same invariant as past-close: the lease must NEVER be acquired
+    # for stale evals — keeps dedup state clean.
+    mock_window_state.try_claim_trade.assert_not_called()
+    mock_window_state.clear_trade_claim.assert_not_called()
 
 
 @pytest.mark.asyncio

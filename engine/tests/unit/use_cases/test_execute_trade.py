@@ -851,3 +851,236 @@ async def test_format_trade_alert_failure_reason():
     fill = _make_fill_result(success=False, failure_reason="no_liquidity")
     msg = uc._format_trade_alert(decision, fill, stake=None, btc_price=84000.0, open_price=84100.0)
     assert "no_liquidity" in msg
+
+
+# ─── Lease release on early-return paths (audit 2026-04-26) ──────────────
+#
+# Forensics on window 1777227900 (v9_lgb_only LIVE, 2026-04-26 18:33Z):
+# acquire_lease succeeded (attempt_n=2), then NOTHING — no FAK ladder, no
+# error log, no order_not_filled. The execute path was bailing silently
+# between Step 2 (stake calc) and Step 5 (token resolve) and leaking the
+# lease. The 15s TTL had to expire before the next eval could re-steal.
+# These tests pin every early-return path between lease acquire and
+# order placement to make sure clear_trade_claim is called.
+
+
+@pytest.mark.asyncio
+async def test_release_claim_on_kill_switch_early_return():
+    """Risk-blocked (kill switch) MUST release the lease so the next
+    eval inside the same window can retry without waiting for TTL."""
+    risk = _make_risk_status(kill_switch_active=True)
+    uc, mocks = _build_use_case(risk_status=risk)
+
+    result = await uc.execute(
+        decision=_make_decision(),
+        window_market=_make_window_market(),
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    assert not result.success
+    assert "kill_switch" in result.failure_reason
+    mocks["window_state"].try_claim_trade.assert_called_once()
+    # Bug-1 regression: lease MUST be released with the threaded claim_id
+    mocks["window_state"].clear_trade_claim.assert_called_once()
+    args, kwargs = mocks["window_state"].clear_trade_claim.call_args
+    # Accept positional or keyword form: (key, claim_id)
+    claim_arg = args[1] if len(args) > 1 else kwargs.get("claim_id")
+    assert claim_arg == "test-claim-id"
+
+
+@pytest.mark.asyncio
+async def test_release_claim_on_drawdown_early_return():
+    """Drawdown rejection releases the lease."""
+    risk = _make_risk_status(drawdown_pct=0.50)
+    uc, mocks = _build_use_case(risk_status=risk)
+    result = await uc.execute(
+        decision=_make_decision(),
+        window_market=_make_window_market(),
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    assert not result.success
+    mocks["window_state"].clear_trade_claim.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_release_claim_on_stake_below_minimum():
+    """Stake-below-minimum rejection releases the lease."""
+    risk = _make_risk_status(current_bankroll=10.0)
+    uc, mocks = _build_use_case(risk_status=risk)
+    result = await uc.execute(
+        decision=_make_decision(collateral_pct=0.025),
+        window_market=_make_window_market(),
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    assert not result.success
+    assert "minimum" in result.failure_reason
+    mocks["window_state"].clear_trade_claim.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_release_claim_on_no_token_id():
+    """Missing token_id releases the lease."""
+    uc, mocks = _build_use_case()
+    market = _make_window_market(down_token_id="")
+    result = await uc.execute(
+        decision=_make_decision(direction="DOWN"),
+        window_market=market,
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    assert not result.success
+    assert result.failure_reason == "no_token_id"
+    mocks["window_state"].clear_trade_claim.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_release_claim_on_rate_limit_guardrail():
+    """Guardrail rejection (rate limit) releases the lease so a later
+    eval can retry once cooldown expires."""
+    clock = FakeClock(1000.0)
+    uc, mocks = _build_use_case(clock=clock)
+    decision = _make_decision()
+    market = _make_window_market()
+
+    # First trade succeeds → lease released via mark_traded path (order
+    # filled). We don't assert clear_trade_claim here; we want the
+    # SECOND attempt's release to be visible.
+    await uc.execute(
+        decision=decision,
+        window_market=market,
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+
+    # Reset state for the second call
+    mocks["window_state"].try_claim_trade.reset_mock()
+    mocks["window_state"].clear_trade_claim.reset_mock()
+    mocks["window_state"].try_claim_trade.return_value = (True, "test-claim-id-2")
+
+    # Bump the clock by 5s — well below the 30s rate-limit interval
+    clock.advance(5.0)
+    result = await uc.execute(
+        decision=decision,
+        window_market=market,
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    assert not result.success
+    assert "rate_limit" in result.failure_reason
+    # Bug-1 regression: lease released for the rate-limited attempt
+    mocks["window_state"].clear_trade_claim.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_release_claim_threads_correct_claim_id():
+    """The claim_id threaded to clear_trade_claim must be the one returned
+    by try_claim_trade — not None, not a memoised in-process dict value
+    (audit #320 root cause was a class-level dict that got clobbered)."""
+    risk = _make_risk_status(kill_switch_active=True)
+    uc, mocks = _build_use_case(risk_status=risk)
+    mocks["window_state"].try_claim_trade.return_value = (True, "uuid-deadbeef")
+
+    await uc.execute(
+        decision=_make_decision(),
+        window_market=_make_window_market(),
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    args, kwargs = mocks["window_state"].clear_trade_claim.call_args
+    claim_arg = args[1] if len(args) > 1 else kwargs.get("claim_id")
+    assert claim_arg == "uuid-deadbeef"
+
+
+# ─── Stricter timing recheck (Bug 2 — current_offset < min_offset) ──────
+
+
+def test_recheck_timing_blocks_below_metadata_min_offset_sec():
+    """When metadata.min_offset_sec is set and current_offset has drifted
+    below it (e.g. registry queued the eval and time moved on), the
+    recheck must abort BEFORE we touch the lease."""
+    from use_cases.execute_trade import _recheck_timing_before_execute
+    from domain.value_objects import StrategyDecision, WindowKey
+
+    # Window opened at 1000, 5m duration → close at 1300.
+    # "now" = 1280 → current_offset = 20s, well below strategy min=45s.
+    key = WindowKey(asset="BTC", window_ts=1000, timeframe="5m")
+    decision = StrategyDecision(
+        action="TRADE", direction="DOWN",
+        confidence="HIGH", confidence_score=0.9,
+        entry_cap=0.55, collateral_pct=0.025,
+        strategy_id="v9_lgb_only", strategy_version="9.0",
+        entry_reason="x", skip_reason=None,
+        metadata={"min_offset_sec": 45},
+    )
+    skip = _recheck_timing_before_execute(
+        key, decision, now_fn=lambda: 1280.0,
+    )
+    assert skip is not None
+    assert "eval_offset_drift" in skip
+
+
+def test_recheck_timing_default_floor_blocks_at_15s_remaining():
+    """Even when the strategy doesn't propagate min_offset_sec, the env
+    default (30s) acts as a backstop. current_offset=15 must abort."""
+    from use_cases.execute_trade import _recheck_timing_before_execute
+    from domain.value_objects import StrategyDecision, WindowKey
+
+    key = WindowKey(asset="BTC", window_ts=1000, timeframe="5m")
+    decision = StrategyDecision(
+        action="TRADE", direction="DOWN",
+        confidence="HIGH", confidence_score=0.9,
+        entry_cap=0.55, collateral_pct=0.025,
+        strategy_id="v9_lgb_only", strategy_version="9.0",
+        entry_reason="x", skip_reason=None,
+        metadata={},  # no min_offset_sec → falls back to env default 30s
+    )
+    skip = _recheck_timing_before_execute(
+        key, decision, now_fn=lambda: 1285.0,  # 15s remaining
+    )
+    assert skip is not None
+    assert "eval_offset_drift" in skip
+
+
+def test_recheck_timing_passes_when_above_min_offset():
+    """current_offset above the strategy floor — proceed."""
+    from use_cases.execute_trade import _recheck_timing_before_execute
+    from domain.value_objects import StrategyDecision, WindowKey
+
+    key = WindowKey(asset="BTC", window_ts=1000, timeframe="5m")
+    decision = StrategyDecision(
+        action="TRADE", direction="DOWN",
+        confidence="HIGH", confidence_score=0.9,
+        entry_cap=0.55, collateral_pct=0.025,
+        strategy_id="v9_lgb_only", strategy_version="9.0",
+        entry_reason="x", skip_reason=None,
+        metadata={"min_offset_sec": 45},
+    )
+    # current_offset = 1300 - 1200 = 100s, well above 45s floor
+    skip = _recheck_timing_before_execute(
+        key, decision, now_fn=lambda: 1200.0,
+    )
+    assert skip is None
+
+
+def test_recheck_timing_past_close_takes_priority():
+    """Past-close guard fires regardless of min_offset_sec configuration."""
+    from use_cases.execute_trade import _recheck_timing_before_execute
+    from domain.value_objects import StrategyDecision, WindowKey
+
+    key = WindowKey(asset="BTC", window_ts=1000, timeframe="5m")
+    decision = StrategyDecision(
+        action="TRADE", direction="DOWN",
+        confidence="HIGH", confidence_score=0.9,
+        entry_cap=0.55, collateral_pct=0.025,
+        strategy_id="v9_lgb_only", strategy_version="9.0",
+        entry_reason="x", skip_reason=None,
+        metadata={"min_offset_sec": 45},
+    )
+    # now = 1305 → current_offset = -5
+    skip = _recheck_timing_before_execute(
+        key, decision, now_fn=lambda: 1305.0,
+    )
+    assert skip is not None
+    assert "eval_offset_past_close" in skip
