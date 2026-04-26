@@ -152,6 +152,11 @@ class StrategyRegistry:
         # open positions and triggers exits when signals flip. Stays None
         # when not wired (tests, legacy composition paths).
         self._position_monitor = position_monitor
+        # Engine paper_mode flag — when True, TRADE decisions are logged
+        # but never sent to execute_trade_uc. Prevents paper-mode executions
+        # from inserting window_states rows that block LIVE trades after
+        # mode switch. Updated via set_paper_mode() from runtime.py.
+        self._paper_mode = True  # safe default: paper until told otherwise
         self._configs: dict[str, StrategyConfig] = {}
         self._pipelines: dict[str, list[Gate]] = {}
         self._hooks: dict[str, dict[str, Callable]] = {}
@@ -177,6 +182,10 @@ class StrategyRegistry:
         from use_cases.build_window_summary import BuildWindowSummaryUseCase
 
         self._build_summary_uc = BuildWindowSummaryUseCase()
+
+    def set_paper_mode(self, paper: bool) -> None:
+        """Update engine paper_mode. Called from runtime on mode switch."""
+        self._paper_mode = paper
 
     def load_all(self) -> None:
         """Scan config_dir for *.yaml, build pipelines, load hooks."""
@@ -615,6 +624,7 @@ class StrategyRegistry:
                     and self._execute_uc is not None
                     and window_market is not None
                     and not _already_executed
+                    and not self._paper_mode
                 ):
                     try:
                         result = await self._execute_uc.execute(

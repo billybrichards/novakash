@@ -2325,6 +2325,11 @@ class EngineRuntime:
                                     level="critical" if not want_paper else "info",
                                 )
 
+                            # Tell strategy registry to gate/ungate execution
+                            if self._strategy_registry and hasattr(self._strategy_registry, "set_paper_mode"):
+                                self._strategy_registry.set_paper_mode(want_paper)
+                                log.info("mode_switch.registry_paper_mode", paper_mode=want_paper)
+
                             log.warning(
                                 "mode_switch.complete",
                                 new_mode=new_mode,
