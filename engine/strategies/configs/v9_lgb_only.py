@@ -39,11 +39,21 @@ def evaluate_v9_lgb_only(surface: "FullDataSurface") -> StrategyDecision:
     # Uses object.__setattr__ because FullDataSurface is a frozen dataclass.
     _orig_pc = getattr(surface, "probability_classifier", None)
     object.__setattr__(surface, "probability_classifier", None)
+
+    # When regime is None (cold start / TimesFM warming up), default to
+    # "chop" so the regime gate passes. LGB doesn't need HMM regime to
+    # make predictions — it's just an extra filter. Only v9_lgb_only
+    # gets this bypass; v9_ensemble still requires regime.
+    _orig_regime = getattr(surface, "v4_regime", None)
+    if _orig_regime is None:
+        object.__setattr__(surface, "v4_regime", "chop")
+
     try:
         decision = _evaluate_v9(surface)
     finally:
-        # Restore so other strategies sharing the surface still see pc
         object.__setattr__(surface, "probability_classifier", _orig_pc)
+        if _orig_regime is None:
+            object.__setattr__(surface, "v4_regime", None)
 
     # Fix audit: stamp pc=None in metadata so decision logs correctly
     # reflect that classifier was NOT used (even though surface had it)
