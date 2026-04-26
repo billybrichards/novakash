@@ -307,16 +307,33 @@ class WindowStateRepository(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def try_claim_trade(self, key: WindowKey) -> bool:
-        """Atomically claim a window for execution.
+    async def try_claim_trade(
+        self,
+        key: WindowKey,
+        *,
+        strategy_id: str,
+    ) -> tuple[bool, Optional[str]]:
+        """Atomically claim a window for ``strategy_id``.
 
-        Returns ``True`` only for the first caller that acquires the claim.
+        Returns ``(True, claim_id)`` on first acquisition, ``(False, None)``
+        if the same strategy already holds an active lease.
+
+        Audit #320 (2026-04-26): the lease key is per-strategy, so sibling
+        strategies (v9_lgb_only, v9_ensemble, v10_lgb_only, …) do NOT
+        contend for the same row. The caller MUST thread the returned
+        ``claim_id`` to ``clear_trade_claim`` to release the lease cleanly.
         """
         ...
 
     @abc.abstractmethod
-    async def clear_trade_claim(self, key: WindowKey) -> None:
-        """Release a pending claim when execution never placed an order."""
+    async def clear_trade_claim(
+        self,
+        key: WindowKey,
+        claim_id: Optional[str] = None,
+    ) -> None:
+        """Release a pending claim using the explicit ``claim_id`` from
+        ``try_claim_trade``. ``claim_id=None`` is a no-op with a WARN log;
+        the lease will TTL out naturally."""
         ...
 
     @abc.abstractmethod

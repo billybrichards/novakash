@@ -279,7 +279,8 @@ def _build_use_case(*, clock: _FakeClock):
     mock_risk = MagicMock()
     mock_risk.get_status.return_value = risk
     mock_window_state = AsyncMock()
-    mock_window_state.try_claim_trade.return_value = True
+    # Audit #320: try_claim_trade returns (bool, claim_id) tuple.
+    mock_window_state.try_claim_trade.return_value = (True, "test-claim-id")
     mock_window_state.was_traded.return_value = False
     mock_alerter = AsyncMock()
     mock_recorder = AsyncMock()
