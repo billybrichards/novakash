@@ -997,10 +997,18 @@ class PgWindowRepository(WindowStateRepository):
                 # window_states directly instead of reconstructing from
                 # trades.market_slug. COALESCE preserves any previously-set
                 # value rather than nulling it on subsequent calls.
-                await conn.execute(
-                    "UPDATE window_states SET resolved_at = $2, outcome = $3, "
-                    "actual_direction = COALESCE($6, actual_direction) "
-                    "WHERE asset = $1 AND window_ts = $4 AND timeframe = $5",
+                # INSERT...ON CONFLICT so outcomes persist even when
+                # mark_traded() never ran (GHOST strategies, missed windows).
+                # Plain UPDATE silently affected 0 rows → stale outcomes.
+                result = await conn.execute(
+                    """INSERT INTO window_states
+                       (asset, window_ts, timeframe, resolved_at, outcome, actual_direction)
+                       VALUES ($1, $4, $5, $2, $3, $6)
+                       ON CONFLICT (asset, window_ts, timeframe) DO UPDATE SET
+                         resolved_at = EXCLUDED.resolved_at,
+                         outcome = EXCLUDED.outcome,
+                         actual_direction = COALESCE(EXCLUDED.actual_direction, window_states.actual_direction)
+                    """,
                     key.asset,
                     datetime.now(timezone.utc),
                     outcome_str,
@@ -1008,7 +1016,7 @@ class PgWindowRepository(WindowStateRepository):
                     key.timeframe,
                     actual_direction,
                 )
-            log.debug(
+            log.info(
                 "db.mark_resolved",
                 key=str(key),
                 outcome=outcome_str,
