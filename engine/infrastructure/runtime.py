@@ -20,6 +20,7 @@ from typing import Optional
 import structlog
 
 from alerts.telegram import TelegramAlerter  # noqa: F401
+from infrastructure.log_server import start_log_server
 from config.runtime_config import runtime
 from config.settings import Settings  # noqa: F401
 from config.constants import FIVE_MIN_ENTRY_OFFSET
@@ -913,6 +914,14 @@ class EngineRuntime:
                     "orchestrator.data_surface_start_error", error=str(exc)[:200]
                 )
 
+        # ── Log server (HTTP tail of engine.log) ──────────────────────────
+        self._log_server_runner = None
+        if os.environ.get("ENGINE_LOG_SERVER", "true").lower() in ("true", "1", "yes"):
+            try:
+                self._log_server_runner = await start_log_server()
+            except Exception as exc:
+                log.warning("orchestrator.log_server_error", error=str(exc)[:200])
+
         await self._alerter.send_system_alert("Engine started", level="info")
         log.info("orchestrator.started", tasks=len(self._tasks))
 
@@ -925,6 +934,13 @@ class EngineRuntime:
     async def stop(self) -> None:
         """Graceful shutdown of all components."""
         log.info("orchestrator.stopping")
+
+        # Stop log server
+        if getattr(self, "_log_server_runner", None):
+            try:
+                await self._log_server_runner.cleanup()
+            except Exception:
+                pass
 
         # Stop CLOB Reconciler
         if self._reconciler:
