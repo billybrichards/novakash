@@ -810,7 +810,18 @@ class PositionRedeemer:
 
         try:
             funder = self._proxy_address.lower()
-            url = f"https://data-api.polymarket.com/positions?user={funder}"
+            # Polymarket's data-api defaults to limit=100 when unset. With
+            # 250+ historical positions on this wallet (most resolved LOSS
+            # at curPrice=0), the default page is dominated by stale
+            # losers and silently truncates pending wins. Pass an explicit
+            # limit=500 so the redeemer's win/loss scan sees the full
+            # position set. 500 is enough headroom for current activity
+            # (252 positions on prod 2026-04-26) without burdening the
+            # API. Audit task #322.
+            url = (
+                f"https://data-api.polymarket.com/positions"
+                f"?user={funder}&limit=500"
+            )
             headers = {"User-Agent": "NovakashEngine/1.0"}
 
             async with aiohttp.ClientSession(headers=headers) as session:

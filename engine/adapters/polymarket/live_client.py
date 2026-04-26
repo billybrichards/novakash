@@ -886,7 +886,13 @@ class LivePolymarketClient(PolymarketClientPort):
         try:
             import aiohttp
             funder = self._funder_address.lower()
-            url = f"https://data-api.polymarket.com/positions?user={funder}"
+            # Pass explicit limit=500 — see redeemer.py for full
+            # rationale. Default page size is 100 which silently
+            # truncates wallets with deeper history.
+            url = (
+                f"https://data-api.polymarket.com/positions"
+                f"?user={funder}&limit=500"
+            )
             headers = {"User-Agent": "Mozilla/5.0 NovakashEngine/1.0"}
             
             async with aiohttp.ClientSession(headers=headers) as session:
@@ -918,7 +924,12 @@ class LivePolymarketClient(PolymarketClientPort):
         try:
             import aiohttp
             funder = self._funder_address.lower()
-            url = f"https://data-api.polymarket.com/positions?user={funder}"
+            # Explicit limit=500 — default 100 silently truncates
+            # pending wins on deep wallets. See redeemer.py rationale.
+            url = (
+                f"https://data-api.polymarket.com/positions"
+                f"?user={funder}&limit=500"
+            )
             headers = {"User-Agent": "Mozilla/5.0 NovakashEngine/1.0"}
             
             async with aiohttp.ClientSession(headers=headers) as session:

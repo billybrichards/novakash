@@ -1581,7 +1581,12 @@ class PolymarketClient:
             import aiohttp
 
             funder = self._funder_address.lower()
-            url = f"https://data-api.polymarket.com/positions?user={funder}"
+            # Explicit limit=500 — default 100 silently truncates
+            # pending wins on deep wallets. See redeemer.py rationale.
+            url = (
+                f"https://data-api.polymarket.com/positions"
+                f"?user={funder}&limit=500"
+            )
             headers = {"User-Agent": "Mozilla/5.0 NovakashEngine/1.0"}
 
             async with aiohttp.ClientSession(headers=headers) as session:
@@ -1626,7 +1631,15 @@ class PolymarketClient:
             import aiohttp
 
             funder = self._funder_address.lower()
-            url = f"https://data-api.polymarket.com/positions?user={funder}"
+            # Explicit limit=500 — default 100 silently truncates
+            # pending wins on deep wallets. This was masking a $5.91
+            # pending-win redemption on 2026-04-26 because the first
+            # 100 positions were all stale curPrice=0 losses.
+            # Audit task #322.
+            url = (
+                f"https://data-api.polymarket.com/positions"
+                f"?user={funder}&limit=500"
+            )
             headers = {"User-Agent": "Mozilla/5.0 NovakashEngine/1.0"}
 
             async with aiohttp.ClientSession(headers=headers) as session:
