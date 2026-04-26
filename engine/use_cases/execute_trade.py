@@ -280,6 +280,39 @@ class ExecuteTradeUseCase:
 
         claim_acquired = False
 
+        # ── Step 0: Timing recheck (BEFORE claim acquisition) ──────────
+        # CRITICAL ORDERING (audit #317 root-cause, 2026-04-26): the
+        # wall-clock past-close guard MUST run before we touch the lease.
+        # Stale-surface artefacts where the strategy emits TRADE on a
+        # closed window were poisoning the dedup state — we'd acquire a
+        # 15s lease, then immediately abort here, then call
+        # clear_trade_claim. If the release SQL ever no-ops (claim_id
+        # mismatch, transient DB hiccup, shim race), the lease lingers
+        # for the full TTL window, and every subsequent eval inside that
+        # TTL hits dedup_hit. Multiply by N evals/sec * minutes-past-close
+        # and you get the smoking-gun pattern: hundreds of dedup_hits on
+        # closed windows, no fills, no recovery until the natural lease
+        # expiry steals the row. By aborting before any lease activity,
+        # the dedup state stays clean regardless of release-path bugs.
+        timing_skip = _recheck_timing_before_execute(
+            window_key,
+            decision,
+            now_fn=self._clock.now,
+        )
+        if timing_skip:
+            log.warning(
+                "execute_trade.timing_recheck_blocked",
+                strategy=sid,
+                direction=direction,
+                window=str(window_key),
+                failure_reason=timing_skip,
+            )
+            return _failed(
+                timing_skip,
+                strategy_id=sid,
+                direction=direction,
+            )
+
         # ── Step 1: Dedup / atomic claim ───────────────────────────────
         try:
             if hasattr(self._window_state, "try_claim_trade"):
@@ -313,42 +346,6 @@ class ExecuteTradeUseCase:
             )
             # Fail safe: if we can't check dedup, proceed anyway
             # The CLOB will reject if already filled
-
-        # ── Step 1.5: Timing recheck (v6 late-fill defence) ────────────
-        # Re-verify wall-clock timing BEFORE sizing / executing. The
-        # strategy's own timing gate reads ``surface.eval_offset``, which
-        # is set once when a CLOSING milestone emits; if the downstream
-        # flow (dedup clear → retry / RFQ / GTC poll) drifts past the
-        # strategy's min_offset, surface.eval_offset is stale and the
-        # gate won't fire. This re-check uses the wall clock.
-        timing_skip = _recheck_timing_before_execute(
-            window_key,
-            decision,
-            now_fn=self._clock.now,
-        )
-        if timing_skip:
-            log.warning(
-                "execute_trade.timing_recheck_blocked",
-                strategy=sid,
-                direction=direction,
-                window=str(window_key),
-                failure_reason=timing_skip,
-            )
-            if claim_acquired and hasattr(self._window_state, "clear_trade_claim"):
-                try:
-                    await self._window_state.clear_trade_claim(window_key)
-                except Exception as _clr_exc:
-                    log.warning(
-                        "execute_trade.clear_claim_failed",
-                        window=str(window_key),
-                        phase="timing_recheck",
-                        error=str(_clr_exc)[:200],
-                    )
-            return _failed(
-                timing_skip,
-                strategy_id=sid,
-                direction=direction,
-            )
 
         # ── Step 2: Stake calculation ──────────────────────────────────
         stake = self._calculate_stake(decision)

@@ -1041,12 +1041,17 @@ class PgWindowRepository(WindowStateRepository):
     async def release_lease(self, key: WindowKey, claim_id: str) -> None:
         """Release a lease. Only deletes the row if claim_id matches — prevents
         a slow-failing process from accidentally releasing a successor's lease.
+
+        Returns command tag info via INFO log so ops can verify releases land.
+        Earlier versions logged at DEBUG which masked silent no-op DELETEs in
+        production (audit #317 root-cause: a 0-row DELETE looked identical to a
+        successful one).
         """
         if not self._pool:
             return
         try:
             async with self._pool.acquire() as conn:
-                await conn.execute(
+                result = await conn.execute(
                     """
                     DELETE FROM window_claims
                      WHERE asset = $1 AND window_ts = $2 AND timeframe = $3
@@ -1057,7 +1062,17 @@ class PgWindowRepository(WindowStateRepository):
                     key.timeframe,
                     claim_id,
                 )
-            log.debug("db.release_lease", key=str(key), claim_id=claim_id[:8])
+            # asyncpg returns a command tag like "DELETE 1" / "DELETE 0".
+            try:
+                rows_deleted = int(str(result).split()[-1]) if result else 0
+            except (ValueError, IndexError):
+                rows_deleted = -1
+            log.info(
+                "db.release_lease",
+                key=str(key),
+                claim_id=claim_id[:8],
+                rows_deleted=rows_deleted,
+            )
         except Exception as exc:
             log.warning(
                 "db.release_lease_failed", key=str(key), error=str(exc)[:120]
@@ -1092,6 +1107,15 @@ class PgWindowRepository(WindowStateRepository):
         slot = (key.asset, key.window_ts, key.timeframe)
         claim_id = self._legacy_claim_ids.pop(slot, None)
         if claim_id is None:
+            log.warning(
+                "db.clear_trade_claim.no_memory",
+                key=str(key),
+                hint=(
+                    "Caller invoked clear_trade_claim but no prior "
+                    "try_claim_trade is recorded. Lease will expire "
+                    "naturally within LEASE_TTL_SECONDS."
+                ),
+            )
             return
         await self.release_lease(key, claim_id)
 
