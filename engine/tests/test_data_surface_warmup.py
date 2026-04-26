@@ -266,3 +266,53 @@ class TestLiveValuesWin:
         assert surface.delta_chainlink == pytest.approx(live_delta)
         # Sanity: live differs from warmup, otherwise the test is vacuous.
         assert abs(surface.delta_chainlink - 0.005) > 1e-6
+
+
+class TestWarmupIntegration:
+    """Higher-level integration: warmup + first surface query path.
+
+    The cold-start gap PR #384 fixes is observable as
+    ``source_agreement: chainlink,tiingo missing`` skip reasons in the
+    log for ~5-6 minutes after every restart. These tests pin the
+    end-to-end contract: after warmup_from_db runs, a surface query
+    returns non-None deltas WITHOUT any live feed running yet.
+    """
+
+    def test_warmup_alone_fills_deltas_for_first_window(
+        self, mgr: Any, pool: MockPool, conn: MockConnection
+    ) -> None:
+        """No live feeds wired - warmup is the only source. The first
+        get_surface() call must still return a usable surface (deltas
+        present) so strategies don't skip on the very first window."""
+        conn.fetchrow_result = _row(
+            minutes_ago=2.0,
+            delta_chainlink=0.0023,
+            delta_tiingo=0.0021,
+            delta_source="chainlink",
+        )
+        asyncio.run(mgr.warmup_from_db(pool))
+
+        assert mgr._chainlink is None or not getattr(
+            mgr._chainlink, "latest_prices", None
+        )
+
+        class W:
+            asset = "BTC"
+            window_ts = 1781737200
+            timeframe = "5m"
+            duration_secs = 300
+            open_price = 95000.0
+
+        surface = mgr.get_surface(W(), eval_offset=-90)
+        assert surface.delta_chainlink is not None
+        assert surface.delta_tiingo is not None
+
+    def test_warmup_does_not_block_when_pool_unavailable(
+        self, mgr: Any
+    ) -> None:
+        """warmup_from_db must fail-open: a None pool (e.g. DB connect
+        failed) must never raise - the engine must keep starting."""
+        asyncio.run(mgr.warmup_from_db(None))
+        assert mgr._warmup_cache == {} or all(
+            v is None for v in mgr._warmup_cache.values()
+        )

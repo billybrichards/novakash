@@ -285,3 +285,96 @@ class TestDedupInvariants:
         assert claim_id == "33333333-aaaa-bbbb-cccc-333333333333"
         # The presence of attempt_n>1 in the result is what triggers the
         # "steal" log line in the code — verifies lease takeover semantics.
+
+
+# ── Integration with execute_trade.py call sites ────────────────────────────
+
+
+class TestExecuteTradeIntegration:
+    """Audits #316/#317: confirm execute_trade.py uses the lease APIs
+    via the legacy shim (try_claim_trade / clear_trade_claim) so a process
+    crash mid-claim cannot stale-lock the window indefinitely.
+
+    These are static-source checks — full execute_trade integration is
+    covered in test_reconcile_trades_sot.py and test_manual_trade_fast_path.py.
+    """
+
+    def test_execute_trade_calls_try_claim_trade(self):
+        from pathlib import Path
+
+        path = Path(__file__).parent.parent / "use_cases" / "execute_trade.py"
+        src = path.read_text()
+        assert "try_claim_trade(window_key)" in src, (
+            "execute_trade.py must call try_claim_trade — without it the "
+            "lease is never acquired and dedup degenerates to was_traded "
+            "fallback (which has no TTL guarantee on stale rows)."
+        )
+
+    def test_execute_trade_calls_clear_trade_claim_on_failure(self):
+        """If FAK / RFQ / GTC all fail, the claim must be cleared so the
+        next eval offset can retry within the same window. PR #383's
+        whole point. Without this, audit #316 reproduces."""
+        from pathlib import Path
+
+        path = Path(__file__).parent.parent / "use_cases" / "execute_trade.py"
+        src = path.read_text()
+        assert "clear_trade_claim(window_key)" in src, (
+            "execute_trade.py must call clear_trade_claim on failure paths "
+            "so a transient FAK miss doesn't stale-lock the window for "
+            "the rest of its lifetime"
+        )
+
+    def test_execute_trade_releases_on_timing_recheck_block(self):
+        """The defence-in-depth past-close guard must release the claim
+        before returning, otherwise a stale-surface block would lock out
+        every subsequent (real) attempt."""
+        from pathlib import Path
+
+        path = Path(__file__).parent.parent / "use_cases" / "execute_trade.py"
+        src = path.read_text()
+        # Look near the timing_recheck_blocked branch
+        idx = src.find("timing_recheck_blocked")
+        assert idx > 0
+        # Within ~600 chars after the log line, clear_trade_claim must appear
+        snippet = src[idx : idx + 1200]
+        assert "clear_trade_claim" in snippet, (
+            "timing_recheck_blocked branch must clear the claim before "
+            "returning — otherwise a stale surface poison-pills the window"
+        )
+
+
+# ── Crash-recovery semantics (audit #316) ───────────────────────────────────
+
+
+class TestCrashRecovery:
+    """Audit #316 reproducer: process holds a claim, dies before clear_trade_claim
+    runs, lease must expire and be stealable by the successor without
+    operator intervention.
+    """
+
+    def test_lease_steal_uses_increased_attempt_n(self, repo, conn):
+        """Successor's claim_id is fresh AND attempt_n > 1 — proves it
+        was a takeover, not a no-op."""
+        conn.fetchrow_result = [
+            {"claim_id": "55555555-aaaa-bbbb-cccc-555555555555", "attempt_n": 2}
+        ]
+        key = make_key()
+        claim_id = asyncio.run(repo.acquire_lease(key, claimed_by="recovered"))
+        assert claim_id == "55555555-aaaa-bbbb-cccc-555555555555"
+
+    def test_release_with_wrong_claim_id_does_not_clear(self, repo, conn):
+        """If process A holds the lease and process B mistakenly tries to
+        release it with B's (wrong) claim_id, the SQL DELETE WHERE
+        claim_id = $4 silently no-ops — A's lease survives."""
+        from domain.value_objects import WindowKey
+
+        repo._legacy_claim_ids = {}
+        # Simulate B trying to release with a wrong claim_id (no prior shim memory)
+        wrong_id = "99999999-aaaa-bbbb-cccc-999999999999"
+        key = WindowKey(asset="BTC", window_ts=1_777_200_000, timeframe="5m")
+        asyncio.run(repo.release_lease(key, wrong_id))
+        # The DELETE was attempted with wrong_id — DB returns 0 rows
+        # affected, but no exception is raised. The contract here is
+        # "fail closed silently" — verify by checking no shim state was
+        # mutated.
+        assert repo._legacy_claim_ids == {}

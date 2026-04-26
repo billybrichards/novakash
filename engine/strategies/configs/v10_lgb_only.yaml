@@ -23,7 +23,13 @@ gates: []
 
 gate_params:
   # ── Entry window (widened — v10 still 72.5% at T-180-240) ──────────
-  min_offset_sec: 24
+  # 2026-04-26 (audit #319): bumped from 24 → 45.
+  # FAK ladder takes 10-25s end-to-end (RFQ poll 5s + ladder retries +
+  # CLOB submit). With min_offset_sec=24, fired trades hit
+  # ``eval_offset_past_close`` mid-execution because window closed
+  # before the FAK could fill. 45s gives execution headroom while still
+  # allowing entries up to T-240.
+  min_offset_sec: 45
   max_offset_sec: 240
 
   # ── Regime allowlist ────────────────────────────────────────────────
