@@ -107,21 +107,43 @@ class TestMarkTraded:
 
 
 class TestClaims:
+    """Legacy try_claim_trade/clear_trade_claim tests.
+
+    These now delegate to acquire_lease/release_lease (audit #316/#317).
+    See test_window_claims_lease.py for the new lease-based test suite.
+    """
+
     def test_try_claim_true(self, repo, conn):
-        conn.fetchval_result = 1
+        # New lease impl uses fetchrow against window_claims; need to add
+        # the method to MockConnection.
+        async def fetchrow(q, *a):
+            conn.execute_calls.append((q, a))
+            return {"claim_id": "11111111-aaaa-bbbb-cccc-111111111111", "attempt_n": 1}
+
+        conn.fetchrow = fetchrow
         key = make_window_key("BTC", 1234, "5m")
         assert asyncio.run(repo.try_claim_trade(key)) is True
 
     def test_try_claim_false(self, repo, conn):
-        conn.fetchval_result = None
+        async def fetchrow(q, *a):
+            conn.execute_calls.append((q, a))
+            return None  # active lease held by other → no row returned
+
+        conn.fetchrow = fetchrow
         key = make_window_key("BTC", 1234, "5m")
         assert asyncio.run(repo.try_claim_trade(key)) is False
 
     def test_clear_claim(self, repo, conn):
+        # Pre-populate the shim map (would normally come from a prior
+        # try_claim_trade) — without this, clear_trade_claim is a no-op.
         key = make_window_key("BTC", 1234, "5m")
+        repo._legacy_claim_ids[(key.asset, key.window_ts, key.timeframe)] = (
+            "deadbeef-aaaa-bbbb-cccc-deadbeef0000"
+        )
         asyncio.run(repo.clear_trade_claim(key))
         q, a = conn.execute_calls[0]
-        assert "DELETE FROM window_states" in q
+        # New impl deletes from window_claims, not window_states
+        assert "DELETE FROM window_claims" in q
         assert a[0] == "BTC"
         assert a[1] == 1234
         assert a[2] == "5m"
@@ -175,6 +197,8 @@ class TestLoadRecentTraded:
 class TestEnsureTable:
     def test_creates(self, repo, conn):
         asyncio.run(repo.ensure_window_states_table())
-        assert len(conn.execute_calls) == 3
+        # 3 calls for window_states + 2 for window_claims (table + index)
+        assert len(conn.execute_calls) == 5
         qs = [q for q, _ in conn.execute_calls]
-        assert any("CREATE TABLE" in q for q in qs)
+        assert any("CREATE TABLE IF NOT EXISTS window_states" in q for q in qs)
+        assert any("CREATE TABLE IF NOT EXISTS window_claims" in q for q in qs)
