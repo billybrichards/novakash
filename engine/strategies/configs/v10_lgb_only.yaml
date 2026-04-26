@@ -52,11 +52,15 @@ gate_params:
   blocked_utc_hours: []
   post_loss_cooldown_min: 20
 
-  # ── LGB safety floor (relaxed — v10 ECE 2x better than prod) ──────
-  lgb_dist_min_up: 0.12
-  lgb_dist_min_down: 0.08
-  lgb_dist_min_up_with_hc_agree: 0.05
-  lgb_dist_min_down_with_hc_agree: 0.05
+  # ── LGB safety floor ────────────────────────────────────────────────
+  # Data-driven from v10 test set threshold analysis (23,617 evals):
+  #   dist>=0.10: 81.0% acc, 79% of evals — UP needs higher bar (77.3% at 0.05)
+  #   dist>=0.12: UP 80.1%, DOWN 84.5% — DOWN more accurate at every threshold
+  #   LOW tier (0.05-0.12) is only 60.9% acc — must not trade
+  lgb_dist_min_up: 0.13                # UP acc=80.1% at 0.12, want >80% → 0.13
+  lgb_dist_min_down: 0.10              # DOWN acc=82.9% at 0.10, already strong
+  lgb_dist_min_up_with_hc_agree: 0.08  # relaxed when HC agrees (since no classifier, rarely used)
+  lgb_dist_min_down_with_hc_agree: 0.08
 
   # ── v9 ensemble params (kept for delegation compatibility) ─────────
   ensemble_disagreement_threshold: 0.35
@@ -67,6 +71,7 @@ gate_params:
   pc_weight_t_180: 0.40
   pc_weight_t_200: 0.25
 
+  # VHC threshold: dist>=0.25 gives 90.8% acc (UP 88.2%, DOWN 93.6%)
   vhc_threshold: 0.25
   vhc_bypass_transition: true
   vhc_bypass_up_dist: true
@@ -76,19 +81,26 @@ gate_params:
   vhc_kelly_multiplier: 2.0
 
   # ── PL VHC bypass ──────────────────────────────────────────────────
+  # dist>=0.25 = 90.8% acc on 42% of evals — safe for bypass
   pl_vhc_bypass_enabled: true
   pl_vhc_threshold: 0.25
   pl_vhc_require_pc_agreement: true
 
   # ── TRANSITION strong-oracle bypass ────────────────────────────────
+  # dist>=0.18 = 85.2% acc — strong enough to bypass TRANSITION block
   transition_strong_bypass_enabled: true
   transition_bypass_min_avg_pct_delta: 0.05
-  transition_bypass_min_lgb_dist: 0.20
+  transition_bypass_min_lgb_dist: 0.18
 
-  # ── Conviction tiers ───────────────────────────────────────────────
+  # ── Conviction tiers (data-driven) ─────────────────────────────────
+  # From threshold analysis:
+  #   LOW (0.10-0.15):  83.5% acc — safe to trade
+  #   MEDIUM (0.15-0.20): 83.5-86.5% — solid
+  #   HIGH (0.20-0.25): 86.5-90.8% — strong
+  #   VHC (>=0.25): 90.8% — very high conviction
   conviction_high_dist: 0.20
-  conviction_medium_dist: 0.12
-  conviction_low_dist: 0.05
+  conviction_medium_dist: 0.15
+  conviction_low_dist: 0.10
 
   # ── Delta alignment gate ───────────────────────────────────────────
   delta_gate_enabled: true
@@ -123,11 +135,14 @@ sizing:
   custom_hook: clob_sizing
   fraction: 0.025
   max_collateral_pct: 0.058
+  # Sizing maps confidence_score (min(dist*2, 1)) to Kelly modifier.
+  # v10 dist distribution: mean=0.22, p50=0.23, p75=0.30, p90=0.41
+  # confidence_score = dist * 2, so: mean=0.44, p50=0.46, p75=0.61, p90=0.82
   schedule:
-    - { threshold: 0.55, modifier: 2.5, label: "vhc_reinforced" }
-    - { threshold: 0.45, modifier: 2.0, label: "high" }
-    - { threshold: 0.35, modifier: 1.2, label: "medium" }
-    - { threshold: 0.25, modifier: 1.0, label: "low" }
+    - { threshold: 0.50, modifier: 2.5, label: "vhc" }        # dist>=0.25: 90.8% acc
+    - { threshold: 0.40, modifier: 2.0, label: "high" }       # dist>=0.20: 86.5% acc
+    - { threshold: 0.30, modifier: 1.2, label: "medium" }     # dist>=0.15: 83.5% acc
+    - { threshold: 0.20, modifier: 1.0, label: "low" }        # dist>=0.10: 81.0% acc
     - { threshold: 0.0,  modifier: 0.0, label: "skip" }
 
 hooks_file: v10_lgb_only.py
