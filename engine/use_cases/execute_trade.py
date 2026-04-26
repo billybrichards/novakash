@@ -170,15 +170,25 @@ def _recheck_timing_before_execute(
             except (TypeError, ValueError):
                 pass
 
-    # Disabled: strategy gate already verified timing. Re-enforcing
-    # min_offset here causes false blocks when 3-tick entry confirmation
-    # burns 6s after the strategy gate passes at T-24.
-    # Only the past-close guard (current_offset <= 0) above matters.
-    # if current_offset < int(min_offset_sec):
-    #     return (
-    #         f"eval_offset_drift: current={current_offset}s "
-    #         f"< min={int(min_offset_sec)}s (surface stale?)"
-    #     )
+    # Backstop: even if the strategy gate accepted the eval at T-N, the
+    # decision can sit on a queue or a slow tick path long enough that
+    # wall-clock has crept under the strategy's min_offset_sec by the
+    # time we reach execute_trade. Re-check against wall-clock so we
+    # never fire FAKs in the dead-zone. Audit 2026-04-26 (window
+    # 1777227600 dedup_hits 30+s past close): the past-close guard
+    # alone is insufficient when registry queues TRADE decisions and
+    # processes them several seconds after the strategy gate ran.
+    #
+    # Default floor is conservative (env 30s) — below every 5m strategy's
+    # min_offset_sec (45/30/300) so this never false-blocks a passing
+    # strategy that hasn't propagated min_offset_sec into metadata.
+    # Strategies that DO propagate it via metadata get the exact same
+    # gate the strategy itself enforces, eliminating the drift window.
+    if int(min_offset_sec) > 0 and current_offset < int(min_offset_sec):
+        return (
+            f"eval_offset_drift: current={current_offset}s "
+            f"< min={int(min_offset_sec)}s (surface stale?)"
+        )
 
     return None
 
@@ -364,6 +374,31 @@ class ExecuteTradeUseCase:
         # ── Step 2: Stake calculation ──────────────────────────────────
         stake = self._calculate_stake(decision)
 
+        # Helper: release the lease on any early-return path between
+        # acquire (Step 1) and order placement (Step 6). Audit 2026-04-26
+        # forensics on window 1777227900: lease was acquired by
+        # v9_lgb_only at attempt_n=2, then NOTHING — no FAK ladder, no
+        # error, no order_not_filled. The execute path was bailing
+        # silently between Step 2 and Step 5 (risk_blocked /
+        # guardrail_blocked / no_token_id) and leaking the lease. The
+        # 15s TTL had to expire before the next eval could re-steal,
+        # giving zero fills for the entire window. Every early-return
+        # below MUST go through _release_claim so the next attempt for
+        # the same (window, strategy) starts with a clean slate.
+        async def _release_claim(phase: str) -> None:
+            if claim_id and hasattr(self._window_state, "clear_trade_claim"):
+                try:
+                    await self._window_state.clear_trade_claim(
+                        window_key, claim_id
+                    )
+                except Exception as _clr_exc:
+                    log.warning(
+                        "execute_trade.clear_claim_failed",
+                        window=str(window_key),
+                        phase=phase,
+                        error=str(_clr_exc)[:200],
+                    )
+
         # ── Step 3: Risk check ─────────────────────────────────────────
         raw_status = self._risk.get_status()
         # Adapt dict→RiskStatus if the risk manager returns a dict (legacy)
@@ -388,6 +423,8 @@ class ExecuteTradeUseCase:
                 strategy=sid,
                 stake=stake.adjusted_stake,
                 failure_reason=reason,
+                window=str(window_key),
+                claim_released=bool(claim_id),
             )
             try:
                 await self._alerter.send_system_alert(
@@ -398,6 +435,7 @@ class ExecuteTradeUseCase:
                 )
             except Exception:
                 pass
+            await _release_claim("risk_blocked")
             return _failed(
                 reason,
                 strategy_id=sid,
@@ -412,7 +450,10 @@ class ExecuteTradeUseCase:
                 "execute_trade.guardrail_blocked",
                 strategy=sid,
                 failure_reason=guard_reason,
+                window=str(window_key),
+                claim_released=bool(claim_id),
             )
+            await _release_claim("guardrail_blocked")
             return _failed(
                 guard_reason,
                 strategy_id=sid,
@@ -434,7 +475,10 @@ class ExecuteTradeUseCase:
                 strategy=sid,
                 direction=direction,
                 failure_reason="no_token_id",
+                window=str(window_key),
+                claim_released=bool(claim_id),
             )
+            await _release_claim("no_token_id")
             return _failed(
                 "no_token_id",
                 strategy_id=sid,
@@ -454,18 +498,7 @@ class ExecuteTradeUseCase:
                 price_floor=PRICE_FLOOR,
             )
         except Exception as exc:
-            if claim_id and hasattr(self._window_state, "clear_trade_claim"):
-                try:
-                    await self._window_state.clear_trade_claim(
-                        window_key, claim_id
-                    )
-                except Exception as _clr_exc:
-                    log.warning(
-                        "execute_trade.clear_claim_failed",
-                        window=str(window_key),
-                        phase="execution_error",
-                        error=str(_clr_exc)[:200],
-                    )
+            await _release_claim("execution_error")
             await self._on_order_error()
             log.error(
                 "execute_trade.execution_error",
@@ -494,18 +527,7 @@ class ExecuteTradeUseCase:
         )
 
         if not result.success:
-            if claim_id and hasattr(self._window_state, "clear_trade_claim"):
-                try:
-                    await self._window_state.clear_trade_claim(
-                        window_key, claim_id
-                    )
-                except Exception as _clr_exc:
-                    log.warning(
-                        "execute_trade.clear_claim_failed",
-                        window=str(window_key),
-                        phase="order_not_filled",
-                        error=str(_clr_exc)[:200],
-                    )
+            await _release_claim("order_not_filled")
             # Only real submit/infra errors increment the breaker counter.
             # Benign no-fills (empty book, FAK exhausted, GTC unfilled) are
             # market conditions, not faults — they skip cleanly.
