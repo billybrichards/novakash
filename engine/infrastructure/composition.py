@@ -630,9 +630,16 @@ class CompositionRoot:
                     position_monitor=_position_monitor,
                 )
                 self._strategy_registry.load_all()
+                # Sync paper_mode from settings — registry defaults to True
+                # ("safe") and is only flipped via set_paper_mode() during
+                # mode-switch events. On a clean LIVE startup, no switch fires
+                # so the registry would stay paper forever and execute_uc
+                # never runs. Audit #318 — this was blocking v9_lgb_only fills.
+                self._strategy_registry.set_paper_mode(settings.paper_mode)
                 log.info(
                     "orchestrator.strategy_registry_enabled",
                     strategies=self._strategy_registry.strategy_names,
+                    paper_mode=settings.paper_mode,
                 )
             except Exception as exc:
                 log.error(

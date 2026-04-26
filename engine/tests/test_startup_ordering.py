@@ -220,3 +220,71 @@ async def test_log_server_starts_and_serves_health(monkeypatch, tmp_path) -> Non
                 assert body["status"] == "ok"
     finally:
         await runner.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Source-text invariants (extra hygiene)
+# ---------------------------------------------------------------------------
+
+
+def test_log_server_start_appears_before_clob_reconciler_inline_await() -> None:
+    """No accidental inline `await self._clob_reconciler.start()` may
+    sneak in BEFORE the log_server start. If it does, a slow
+    reconciler boot blocks the operator's only debug surface — the
+    exact regression PR #385 fixed.
+    """
+    src = _read(RUNTIME_PATH)
+    log_idx = _index_of("self._log_server_runner = await start_log_server", src)
+    assert log_idx > 0
+    # Scan everything that precedes the log_server start for any inline
+    # awaits on the reconciler start.
+    prefix = src[:log_idx]
+    assert "await self._clob_reconciler.start()" not in prefix, (
+        "An inline `await self._clob_reconciler.start()` appears before "
+        "the log_server starts — slow reconciler boot will silently "
+        "starve operators of /logs and /health."
+    )
+
+
+def test_log_server_start_appears_before_recover_open_trades_inline_await() -> None:
+    """Same protection for the recover_open_trades inline await."""
+    src = _read(RUNTIME_PATH)
+    log_idx = _index_of("self._log_server_runner = await start_log_server", src)
+    assert log_idx > 0
+    prefix = src[:log_idx]
+    assert "await self._order_manager.recover_open_trades" not in prefix, (
+        "An inline `await self._order_manager.recover_open_trades(...)` "
+        "appears before log_server starts — slow recovery blocks /logs."
+    )
+
+
+def test_db_connect_only_blocking_await_before_log_server() -> None:
+    """The only remote await allowed before log_server is db.connect.
+
+    Anything else (CLOB, Polygon RPC, redeemer, reconciler) is a
+    network call that has hung in production. Pre-log-server is
+    sacred — it must contain at most the DB await.
+    """
+    src = _read(RUNTIME_PATH)
+    log_idx = _index_of("self._log_server_runner = await start_log_server", src)
+    assert log_idx > 0
+    prefix = src[:log_idx]
+    # Every "await" in the prefix should be one of:
+    #   - await self._db.connect()
+    #   - await session.get(...) inside the geoblock try/except
+    #   - any await inside an `async with` context-manager (counted
+    #     conservatively — we only care about top-level patterns)
+    forbidden = (
+        "await self._poly_client",
+        "await self._clob_reconciler",
+        "await self._order_manager.recover_open_trades",
+        "await self._redeemer",
+        "await self._chainlink_multi_feed",
+        "await self._tiingo_feed",
+    )
+    for pat in forbidden:
+        assert pat not in prefix, (
+            f"Forbidden remote await `{pat}` appears before log_server "
+            f"start — this is the exact pattern that caused the "
+            f"6m 27s silent hang on 2026-04-26."
+        )

@@ -23,7 +23,13 @@ gates: []
 
 gate_params:
   # ── All v8_lgb_only gates inherited ──────────────────────────────────
-  min_offset_sec: 24
+  # 2026-04-26 (audit #319): bumped from 24 → 45.
+  # FAK ladder takes 10-25s end-to-end (RFQ poll 5s + ladder retries +
+  # CLOB submit). With min_offset_sec=24, every fired trade hit
+  # ``eval_offset_past_close`` mid-execution because window closed
+  # before the FAK could fill. Empirical: 0/30 fills since 15:30 UTC.
+  # 45s gives execution headroom while still allowing entries up to T-200.
+  min_offset_sec: 45
   max_offset_sec: 200
   tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
 
