@@ -218,6 +218,31 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     "ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS ensemble_model_version TEXT"
                 )
             )
+            # 2026-04-26 (PR 01) — v3/v4 surface cols missed by PR #216.
+            # The legacy DBClient.ensure_window_tables bootstrap that runs on
+            # engine startup (engine/persistence/db_client.py:946) never got
+            # these three additions; the new pg_window_repo bootstrap that
+            # has them is never wired into runtime.py. Without these the
+            # update_window_surface_fields upsert fails every window cycle
+            # for all 4 assets (trading unaffected, fire-and-forget, but log
+            # noise + lost surface analytics). See
+            # hub/db/migrations/versions/20260426_01_window_snapshots_v4_surface_cols.sql
+            # for the full rationale and producer mapping.
+            await session.execute(
+                text(
+                    "ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS strategy_conviction_score DOUBLE PRECISION"
+                )
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS consensus_divergence_bps DOUBLE PRECISION"
+                )
+            )
+            await session.execute(
+                text(
+                    "ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS macro_size_modifier DOUBLE PRECISION"
+                )
+            )
             # Phase-2 (audit #216 follow-up): strategy_configs registry.
             # Engine upserts YAML into this table at startup; hub reads it
             # in preference to the filesystem (see api/strategies.py). See
