@@ -19,15 +19,27 @@ Also 15-minute versions: btc-updown-15m-{ts}, etc.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
+from collections import deque
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Callable, Awaitable, Optional, Dict, List
+from typing import Callable, Awaitable, Optional, Dict, List, Deque
 import httpx
 import structlog
 
 log = structlog.get_logger(__name__)
+
+
+# Concurrency cap for fire-and-forget window-signal callbacks. Without this,
+# the feed loop dispatches a fresh callback every ~2s and they pile up
+# unboundedly when the strategy is slow (e.g. waiting on a saturated DB pool).
+# Tunable via FIVE_MIN_SIGNAL_MAX_INFLIGHT (default 4).
+try:
+    _SIGNAL_MAX_INFLIGHT = max(int(os.environ.get("FIVE_MIN_SIGNAL_MAX_INFLIGHT", "4")), 1)
+except (TypeError, ValueError):
+    _SIGNAL_MAX_INFLIGHT = 4
 
 
 class WindowState(Enum):
@@ -135,6 +147,14 @@ class Polymarket5MinFeed:
         # Background task handle
         self._running = False
         self._task: Optional[asyncio.Task] = None
+
+        # Bounded inflight queue for fire-and-forget window-signal callbacks.
+        # When the strategy is slow (e.g. saturated DB pool), callbacks pile up
+        # and exhaust shared resources. Cap concurrency at _SIGNAL_MAX_INFLIGHT;
+        # if exceeded, drop the OLDEST pending callback so the newest signal
+        # (most actionable) still runs.
+        self._inflight_signals: Deque[asyncio.Task] = deque()
+        self._inflight_max = _SIGNAL_MAX_INFLIGHT
 
         self._log = log.bind(component="Polymarket5MinFeed", assets=self._assets)
         self._log.info(
@@ -338,12 +358,37 @@ class Polymarket5MinFeed:
                 self._log.error("state_change_callback_error", error=str(exc))
 
     async def _emit_window_signal(self, window: WindowInfo) -> None:
-        """Emit T-10s signal to strategy."""
+        """Emit T-10s signal to strategy.
+
+        Fires the strategy callback as a background task so the feed loop
+        is never blocked on slow strategy work. To prevent unbounded pile-up
+        when the strategy is slow (e.g. DB pool saturated), we cap concurrent
+        in-flight callbacks at self._inflight_max. If at the cap, the OLDEST
+        pending task is cancelled and dropped — newer windows are more
+        actionable than stale ones.
+        """
         if self._on_window_signal:
             try:
                 window_snapshot = replace(window)
 
+                # Reap any completed tasks before checking the cap.
+                self._inflight_signals = deque(
+                    t for t in self._inflight_signals if not t.done()
+                )
+
+                # Enforce concurrency cap: drop oldest if we're at the limit.
+                while len(self._inflight_signals) >= self._inflight_max:
+                    oldest = self._inflight_signals.popleft()
+                    if not oldest.done():
+                        oldest.cancel()
+                        self._log.warning(
+                            "window_signal_dropped_oldest",
+                            inflight=len(self._inflight_signals) + 1,
+                            cap=self._inflight_max,
+                        )
+
                 task = asyncio.create_task(self._on_window_signal(window_snapshot))
+                self._inflight_signals.append(task)
 
                 def _log_callback_error(done_task: asyncio.Task) -> None:
                     if done_task.cancelled():
@@ -360,6 +405,7 @@ class Polymarket5MinFeed:
                     open_price=window.open_price,
                     up_price=window.up_price,
                     down_price=window.down_price,
+                    inflight=len(self._inflight_signals),
                 )
             except Exception as exc:
                 self._log.error("window_signal_dispatch_error", error=str(exc))

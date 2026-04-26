@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Optional
 import asyncpg
@@ -53,14 +54,31 @@ class DBClient:
         self._listen_channel: Optional[str] = None
 
     async def connect(self) -> None:
-        """Open the asyncpg connection pool."""
+        """Open the asyncpg connection pool.
+
+        Pool size is tunable via the ENGINE_DB_POOL_SIZE env var (default 30).
+        Multiple consumers share this pool: execute_trade x N strategies,
+        reconciler, redeemer, tick_recorder, decision_repo, trace_repo,
+        sot_reconciler, poly_fills_reconciler. The previous default of 10
+        was insufficient and caused pool exhaustion under load — every
+        execute_trade timed out waiting on a free connection, freezing fills.
+
+        Railway PostgreSQL allows max_connections=100, so 30 is a comfortable
+        ceiling that leaves headroom for the hub's own pool.
+        """
+        try:
+            max_size = int(os.environ.get("ENGINE_DB_POOL_SIZE", "30"))
+        except (TypeError, ValueError):
+            max_size = 30
+        max_size = max(max_size, 4)  # sanity floor
+        min_size = max(max_size // 4, 1)
         self._pool = await asyncpg.create_pool(
             dsn=self._dsn,
-            min_size=2,
-            max_size=10,
+            min_size=min_size,
+            max_size=max_size,
             command_timeout=30,
         )
-        log.info("db.connected")
+        log.info("db.connected", pool_min=min_size, pool_max=max_size)
 
     async def close(self) -> None:
         """Close all pooled connections."""
