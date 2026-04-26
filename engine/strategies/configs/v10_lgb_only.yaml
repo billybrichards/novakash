@@ -14,8 +14,8 @@ version: "10.0.0-lgb"
 # on the surface before delegating to v9_ensemble's gate stack, then restores
 # the original value.
 #
-# Start as GHOST for A/B comparison against v9_lgb_only (LIVE).
-mode: GHOST
+# LIVE — data-driven thresholds from 23,617 test evals.
+mode: LIVE
 asset: BTC
 timescale: 5m
 
