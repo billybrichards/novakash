@@ -63,6 +63,7 @@ class MonitoredPosition:
     order_id: str
     token_id: str
     filled_at_epoch: float
+    confirmed_size: float = 0.0  # CLOB-confirmed fill size (from SOT reconciler)
     consecutive_flip_count: int = 0  # legacy, kept for compat
     mark_loss_tick_count: int = 0
 
@@ -102,10 +103,16 @@ class PositionMonitor:
         fill_size: float,
         order_id: str,
         token_id: str = "",
+        confirmed_size: float = 0.0,
     ) -> None:
         """Register a new fill for exit monitoring.
 
         Called from registry.py after a successful LIVE execution.
+
+        Args:
+            confirmed_size: CLOB-confirmed fill size from SOT reconciler.
+                If 0.0 (unavailable), sell path falls back to
+                fill_size * 0.95 (5% haircut safety margin).
         """
         key = f"{strategy_id}:{window_ts}"
         self._positions[key] = MonitoredPosition(
@@ -117,6 +124,7 @@ class PositionMonitor:
             order_id=order_id,
             token_id=token_id,
             filled_at_epoch=time.time(),
+            confirmed_size=confirmed_size,
         )
         self._log.info(
             "position_monitor.registered",
