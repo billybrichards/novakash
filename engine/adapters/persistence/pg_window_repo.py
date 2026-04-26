@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import asyncpg
@@ -925,23 +925,68 @@ class PgWindowRepository(WindowStateRepository):
             log.warning("db.mark_traded_failed", key=str(key), error=str(exc)[:120])
 
     async def try_claim_trade(self, key: WindowKey) -> bool:
+        """Claim trade slot for a window. Self-heals stale 'pending' rows.
+
+        FAK execution should complete within ~10s. If a 'pending' row from a
+        previous attempt is older than STALE_PENDING_SECONDS, it represents
+        a leak — most likely the failure path's clear_trade_claim never ran
+        (process killed, exception in finally, race). Rather than locking out
+        the entire window, we treat stale claims as releasable: take them over
+        with a fresh claim. Real WIN/LOSS rows have order_id != 'pending' so
+        are never affected.
+
+        See audit #316 (dedup leak) for the design discussion.
+        """
+        STALE_PENDING_SECONDS = 30
         if not self._pool:
             return True
         try:
             async with self._pool.acquire() as conn:
-                row = await conn.fetchval(
-                    """
-                    INSERT INTO window_states (asset, window_ts, timeframe, traded_at, order_id)
-                    VALUES ($1, $2, $3, $4, 'pending')
-                    ON CONFLICT (asset, window_ts, timeframe) DO NOTHING
-                    RETURNING 1
-                    """,
-                    key.asset,
-                    key.window_ts,
-                    key.timeframe,
-                    datetime.now(timezone.utc),
-                )
-                claimed = bool(row)
+                async with conn.transaction():
+                    # Step 1: take over any stale 'pending' row for this window.
+                    # Updates traded_at to now so the claim is fresh; row keeps
+                    # order_id='pending' until clear_trade_claim deletes it OR
+                    # mark_traded sets the real order_id on success.
+                    taken_over = await conn.fetchval(
+                        """
+                        UPDATE window_states
+                           SET traded_at = $4
+                         WHERE asset = $1 AND window_ts = $2 AND timeframe = $3
+                           AND order_id = 'pending'
+                           AND traded_at < $5
+                        RETURNING 1
+                        """,
+                        key.asset,
+                        key.window_ts,
+                        key.timeframe,
+                        datetime.now(timezone.utc),
+                        datetime.now(timezone.utc) - timedelta(seconds=STALE_PENDING_SECONDS),
+                    )
+                    if taken_over:
+                        log.info(
+                            "db.try_claim_trade.stale_takeover",
+                            key=str(key),
+                            stale_threshold_sec=STALE_PENDING_SECONDS,
+                        )
+                        return True
+
+                    # Step 2: normal insert path — only succeeds if no row exists
+                    # OR row exists with non-'pending' order_id (which would mean
+                    # a real fill — the ON CONFLICT DO NOTHING then blocks
+                    # correctly, preserving idempotency for real wins/losses).
+                    row = await conn.fetchval(
+                        """
+                        INSERT INTO window_states (asset, window_ts, timeframe, traded_at, order_id)
+                        VALUES ($1, $2, $3, $4, 'pending')
+                        ON CONFLICT (asset, window_ts, timeframe) DO NOTHING
+                        RETURNING 1
+                        """,
+                        key.asset,
+                        key.window_ts,
+                        key.timeframe,
+                        datetime.now(timezone.utc),
+                    )
+                    claimed = bool(row)
             log.debug("db.try_claim_trade", key=str(key), claimed=claimed)
             return claimed
         except Exception as exc:

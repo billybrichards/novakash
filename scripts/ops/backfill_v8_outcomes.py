@@ -212,41 +212,74 @@ def _direction_to_outcome(direction: str) -> str:
 def resolve_from_tier1(
     trade: dict, positions: list[dict]
 ) -> Optional[tuple[str, float, str]]:
-    """Tier 1: match by token_id prefix against current positions.
+    """Tier 1: match by token_id prefix against current positions, infer
+    outcome from on-chain ``curPrice`` (the only deterministic truth signal).
+
+    Important: Polymarket's data-api position record has an ``outcome`` field
+    but it labels which SIDE the bet is on ("Up"/"Down"), NOT WIN/LOSS — using
+    that field as a resolution signal caused audit #314 (124 trades falsely
+    marked WIN). Truth signal is ``curPrice``: at-or-below 0.01 = LOSS, at-or-
+    above 0.99 = WIN, anything in between = market not yet resolved → skip
+    and let tier2/tier3 try.
 
     Returns (outcome, pnl, reason) or None.
     """
     tid = str(trade["metadata"].get("token_id") or "")
     if not tid:
         return None
+    stake = float(trade["stake_usd"] or 0)
     for p in positions:
         pos_tid = str(p.get("asset") or p.get("tokenId") or "")
         if not _token_prefix_match(tid, pos_tid):
             continue
-        # Polymarket populates `outcome` as WIN/LOSS once market is resolved.
-        # Open positions have outcome "OPEN" → skip (still trading).
-        po = str(p.get("outcome") or "").upper()
-        if po not in ("WIN", "LOSS"):
-            continue
-        stake = float(trade["stake_usd"] or 0)
-        if po == "WIN":
-            # Use Polymarket's pnl which is already net of fees.
-            pnl = float(p.get("pnl", 0))
-        else:
-            pnl = -stake
-        return po, round(pnl, 4), f"tier1: poly_positions match token_id {pos_tid[:20]}"
+        try:
+            cur_price = float(p.get("curPrice", 0))
+        except (TypeError, ValueError):
+            return None
+        if cur_price <= 0.01:
+            return (
+                "LOSS",
+                round(-stake, 4),
+                f"tier1: poly_positions curPrice={cur_price:.4f} (lost)",
+            )
+        if cur_price >= 0.99:
+            # Confirmed winner — prefer Polymarket's realizedPnl when present
+            # (already net of fees / slippage). Fall back to position pnl,
+            # then to a stake-based approximation.
+            try:
+                realized = float(p.get("realizedPnl") or 0)
+            except (TypeError, ValueError):
+                realized = 0.0
+            if realized > 0:
+                pnl = round(realized, 4)
+            else:
+                try:
+                    pnl = round(float(p.get("pnl", 0)), 4)
+                except (TypeError, ValueError):
+                    pnl = 0.0
+            return (
+                "WIN",
+                pnl,
+                f"tier1: poly_positions curPrice={cur_price:.4f} (won)",
+            )
+        # Mid-range curPrice → market not yet resolved on-chain. Skip so a
+        # stale Gamma cache (or window_snapshots) can't override.
+        return None
     return None
 
 
 def gamma_market_resolution(slug: str) -> Optional[dict]:
-    """Query Gamma markets API for a closed market. Returns the market dict
-    with outcomes/outcomePrices/clobTokenIds, or None if not found/unresolved.
+    """Query Gamma markets API for a RESOLVED market. Returns the market dict
+    with outcomes/outcomePrices/clobTokenIds, or None if not found OR if the
+    market is closed-but-not-yet-resolved (where outcomePrices reflects last
+    trade price, not oracle resolution — this caused 124 false WIN marks
+    before the resolution-status guard was added; see audit #314).
 
     Polymarket resolution data shape:
         outcomes: ["Up", "Down"]                       (order matters)
-        outcomePrices: ["0", "1"]   → Down won (1.0)
+        outcomePrices: ["0", "1"]   → Down won (1.0)   (only after resolution)
         clobTokenIds: ["<up_tid>", "<down_tid>"]       (same order as outcomes)
-        umaResolutionStatus: "resolved"
+        umaResolutionStatus: "resolved"                (REQUIRED — not just closed)
         closed: true
     """
     rows = _http_get_json(
@@ -255,6 +288,13 @@ def gamma_market_resolution(slug: str) -> Optional[dict]:
     if not rows:
         return None
     m = rows[0]
+    # Resolution status guard. `closed=true` means trading window ended but
+    # oracle has not necessarily resolved yet. During that gap, outcomePrices
+    # mirrors last trade price (e.g. ["0.31","0.69"] for a tight-priced market)
+    # and a naive `>= 0.5` check would mass-mark losers as winners.
+    resolution_status = str(m.get("umaResolutionStatus") or "").lower()
+    if resolution_status != "resolved":
+        return None
     prices_raw = m.get("outcomePrices")
     tokens_raw = m.get("clobTokenIds")
     # These come back as JSON-encoded strings from Gamma, e.g. '["0", "1"]'.
