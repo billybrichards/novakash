@@ -253,6 +253,21 @@ class EngineRuntime:
                 "orchestrator.seed_strategy_configs_failed", error=str(exc)[:200]
             )
 
+        # Clear stale 'pending' window_states claims from prior runs.
+        # These block dedup and prevent LIVE trades if a prior execution
+        # failed without committing the clear.
+        try:
+            if self._db and self._db._pool:
+                async with self._db._pool.acquire() as conn:
+                    deleted = await conn.execute(
+                        "DELETE FROM window_states WHERE order_id = 'pending'"
+                    )
+                    count = int(deleted.split()[-1]) if deleted else 0
+                    if count > 0:
+                        log.info("orchestrator.stale_claims_cleared", count=count)
+        except Exception as exc:
+            log.warning("orchestrator.stale_claims_clear_failed", error=str(exc)[:200])
+
         # Audit #291: start the runtime-override manager so GHOST↔LIVE flips
         # and gate_param tweaks land without an engine restart. Populates the
         # cache synchronously on first call then refreshes every 30s.
