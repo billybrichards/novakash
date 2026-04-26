@@ -1,0 +1,134 @@
+name: v10_lgb_only
+version: "10.0.0-lgb"
+# v10_lgb_only — 2026-04-26 — v10 LGB model shadow strategy.
+#
+# Reads probability_lgb_v10 from /v4/snapshot (served by novakash-timesfm-repo
+# PR #132/#133). Same gate stack as v9_lgb_only but with tuning refinements
+# for v10's better calibration (ECE=0.039 vs prod 0.088).
+#
+# v10 model: 112 features, Optuna-tuned, 76.0% acc vs prod 70.6% on same
+# test data (Apr 24-25). Trained TRADE-only on 157k rows with CoinGlass,
+# TimesFM quantiles, and engineered interaction features.
+#
+# The hook (v10_lgb_only.py) swaps probability_lgb with probability_lgb_v10
+# on the surface before delegating to v9_ensemble's gate stack, then restores
+# the original value.
+#
+# Start as GHOST for A/B comparison against v9_lgb_only (LIVE).
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+gates: []
+
+gate_params:
+  # ── Entry window (widened — v10 still 72.5% at T-180-240) ──────────
+  min_offset_sec: 24
+  max_offset_sec: 240
+
+  # ── Regime allowlist ────────────────────────────────────────────────
+  tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
+
+  # ── TRANSITION not blocked (v10 handles cascades at 74.4%) ─────────
+  block_down_vpin_regimes: []
+  block_up_vpin_regimes: []
+
+  # ── Source agreement ────────────────────────────────────────────────
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  skip_on_oracle_disagree: true
+
+  # ── VPIN guard ──────────────────────────────────────────────────────
+  vpin_min: 0.40
+  vpin_max: 1.0
+
+  # ── Fill band ───────────────────────────────────────────────────────
+  fill_band_min: 0.00
+  fill_band_max: 0.82
+  up_min_fill_price: 0.20
+  down_min_fill_price: 0.15
+
+  # ── 24/7 trading (v10 robust across sessions) ──────────────────────
+  blocked_utc_hours: []
+  post_loss_cooldown_min: 20
+
+  # ── LGB safety floor (relaxed — v10 ECE 2x better than prod) ──────
+  lgb_dist_min_up: 0.12
+  lgb_dist_min_down: 0.08
+  lgb_dist_min_up_with_hc_agree: 0.05
+  lgb_dist_min_down_with_hc_agree: 0.05
+
+  # ── v9 ensemble params (kept for delegation compatibility) ─────────
+  ensemble_disagreement_threshold: 0.35
+  require_direction_agreement: true
+
+  pc_weight_t_60: 0.70
+  pc_weight_t_120: 0.55
+  pc_weight_t_180: 0.40
+  pc_weight_t_200: 0.25
+
+  vhc_threshold: 0.25
+  vhc_bypass_transition: true
+  vhc_bypass_up_dist: true
+  vhc_bypass_disagreement: true
+  vhc_bypass_lgb_safety_floor: true
+  vhc_bypass_oracle_direction: true
+  vhc_kelly_multiplier: 2.0
+
+  # ── PL VHC bypass ──────────────────────────────────────────────────
+  pl_vhc_bypass_enabled: true
+  pl_vhc_threshold: 0.25
+  pl_vhc_require_pc_agreement: true
+
+  # ── TRANSITION strong-oracle bypass ────────────────────────────────
+  transition_strong_bypass_enabled: true
+  transition_bypass_min_avg_pct_delta: 0.05
+  transition_bypass_min_lgb_dist: 0.20
+
+  # ── Conviction tiers ───────────────────────────────────────────────
+  conviction_high_dist: 0.20
+  conviction_medium_dist: 0.12
+  conviction_low_dist: 0.05
+
+  # ── Delta alignment gate ───────────────────────────────────────────
+  delta_gate_enabled: true
+  min_alignment_bps: 1.0
+
+  # ── 3-tick entry confirmation ──────────────────────────────────────
+  min_consecutive_pass_ticks: 3
+
+  # ── Post-fill exit monitoring ──────────────────────────────────────
+  exit_monitor_enabled: true
+  exit_shadow_mode: true            # shadow until validated in A/B
+  exit_eval_start_offset: 48
+  exit_eval_end_offset: 30
+  exit_max_retries: 1
+  exit_retry_timeout_seconds: 5
+
+  # Mark-to-market stop-loss
+  exit_mark_min_pct: 0.70
+  exit_mark_ticks: 3
+
+  # Legacy (disabled)
+  exit_lgb_flip_enabled: false
+  exit_oracle_flip_enabled: false
+  exit_consecutive_flip_ticks: 5
+
+  # ── Primary signal source ──────────────────────────────────────────
+  primary_signal_source: lgb_v10
+  fallback_to_lgb_on_pc_null: true
+
+sizing:
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.025
+  max_collateral_pct: 0.058
+  schedule:
+    - { threshold: 0.55, modifier: 2.5, label: "vhc_reinforced" }
+    - { threshold: 0.45, modifier: 2.0, label: "high" }
+    - { threshold: 0.35, modifier: 1.2, label: "medium" }
+    - { threshold: 0.25, modifier: 1.0, label: "low" }
+    - { threshold: 0.0,  modifier: 0.0, label: "skip" }
+
+hooks_file: v10_lgb_only.py
+pre_gate_hook: evaluate_v10_lgb_only
