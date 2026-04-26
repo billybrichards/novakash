@@ -21,7 +21,7 @@ log = structlog.get_logger(__name__)
 async def seed_timesfm_buffer(
     db_pool,
     timesfm_base_url: str,
-    lookback_minutes: int = 20,
+    lookback_minutes: int = 120,
     asset: str = "BTC",
 ) -> int:
     """Seed the TimesFM price buffer from recent ticks_binance data.
@@ -77,7 +77,7 @@ async def seed_timesfm_buffer(
 
     # 2. POST to /v4/seed on the TimesFM service.
     url = f"{timesfm_base_url.rstrip('/')}/v4/seed"
-    payload = {"prices": prices, "source": "ticks_binance"}
+    payload = {"features": {"prices": prices}, "source": "ticks_binance"}
 
     try:
         async with aiohttp.ClientSession(
