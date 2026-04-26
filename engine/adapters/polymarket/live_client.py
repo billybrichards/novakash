@@ -311,12 +311,33 @@ class LivePolymarketClient(PolymarketClientPort):
         return order_id
 
     async def get_clob_best_ask(self, token_id: str) -> float:
-        """Query the CLOB order book and return the lowest (best) ask price."""
+        """Query the CLOB order book and return the lowest (best) ask price.
+
+        Wrapped in ``asyncio.wait_for`` (5s) to defeat hung-RPC scenarios.
+        Forensics 2026-04-26 window 1777232100: a single call to
+        ``client.get_order_book(token_id)`` blocked for 8+ minutes against
+        a torn-down orderbook past close, holding the per-strategy lease
+        the entire time and starving every subsequent eval into
+        ``dedup_hit``. Without a timeout the SDK call's underlying urllib
+        socket can stall on connect/read indefinitely.
+        """
         client = self._ensure_client()
         def _fetch_book():
             return client.get_order_book(token_id)
 
-        book = await asyncio.to_thread(_fetch_book)
+        try:
+            book = await asyncio.wait_for(asyncio.to_thread(_fetch_book), timeout=5.0)
+        except asyncio.TimeoutError as exc:
+            self._log.warning(
+                "get_clob_best_ask.timeout",
+                token_id=token_id[:20] + "...",
+                timeout_s=5.0,
+            )
+            # Surface as a generic exception so the FOK ladder treats this
+            # as "book_error" (not a 404 retry path — different signal).
+            raise ValueError(
+                f"CLOB get_order_book timed out after 5s for {token_id[:20]}..."
+            ) from exc
 
         # book.asks is sorted descending — lowest ask is the last element,
         # OR sort ascending and take first. Handle both list and object attrs.

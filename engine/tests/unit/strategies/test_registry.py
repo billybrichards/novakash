@@ -288,10 +288,20 @@ class TestRegistryEvaluate:
         execute_uc = _FakeExecuteUC(failed_result)
         registry = StrategyRegistry(str(tmp_path), mgr, execute_trade_uc=execute_uc)
         registry.load_all()
+        # Default _paper_mode=True silently skips dispatch — for a LIVE
+        # retry test we must flip it explicitly. Pre-existing bug surfaced
+        # 2026-04-26 alongside the past-close veto fix.
+        registry.set_paper_mode(False)
 
         import asyncio
+        import time as _t
 
-        window = FakeWindow(timeframe="15m", window_ts=1713000000)
+        # Use a window that's in the future so the registry-level
+        # past-close veto (forensics 2026-04-26) doesn't reject this
+        # legitimate retry test. 15m window opening 30s from now.
+        _now = int(_t.time())
+        _future_window_ts = _now + 30
+        window = FakeWindow(timeframe="15m", window_ts=_future_window_ts)
         market = SimpleNamespace(up_token_id="up", down_token_id="down")
 
         asyncio.run(
