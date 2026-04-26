@@ -35,6 +35,28 @@ logger = structlog.get_logger(__name__)
 PI_BONUS_CENTS = 0.0314  # π cents
 RETRY_WAIT_S = 2.0
 
+# Book-fetch 404 retry (audit 2026-04-26 — CLOB orderbook propagation lag).
+#
+# Symptom: Gamma publishes a freshly-rolled 5m market with valid token IDs
+# *seconds* before the CLOB order book is indexed. A FAK fired in that
+# window sees the py-clob-client raise:
+#     PolyApiException[status_code=404,
+#         error_message={'error': 'No orderbook exists for the requested token id'}]
+#
+# Same symptom on the trailing edge: once a market crosses ``endDate`` the
+# CLOB tears the book down before Gamma flips ``closed`` to true. Engines
+# evaluating at T-90s on the *previous* window slug can race the book
+# teardown.
+#
+# The right behaviour is identical in both cases: wait briefly, try again
+# once, and if still 404 abort cleanly with a non-fault skip reason. This
+# is conceptually identical to ``abort_floor`` — there is no liquidity for
+# us to hit, but the cause is "book unavailable" rather than "ask too
+# high". Treating it as a real CLOB submit error would burn the circuit
+# breaker on a benign market-state condition.
+BOOK_404_RETRY_DELAY_S = 1.5
+BOOK_404_MAX_RETRIES = 1  # one initial attempt + one retry = two total tries
+
 
 @dataclass
 class FOKResult:
@@ -88,16 +110,11 @@ class FOKLadder:
         cap_plus_pi = round(max_price + pi_bonus, 2)
         attempted_prices: list[float] = []
 
-        # ── Step 1: Check CLOB book ─────────────────────────────────────
-        try:
-            best_ask = await self._poly.get_clob_best_ask(token_id)
-        except Exception as exc:
-            self._log.warning("price_ladder.book_error", error=str(exc)[:200])
-            return FOKResult(
-                filled=False, fill_price=None, fill_step=None, shares=None,
-                attempts=0, order_id=None, abort_reason=f"book_error: {str(exc)[:100]}",
-                order_type=order_type,
-            )
+        # ── Step 1: Check CLOB book (with 404 retry) ────────────────────
+        best_ask = await self._fetch_best_ask_with_retry(token_id, order_type)
+        if isinstance(best_ask, FOKResult):
+            # Helper returned an early-exit FOKResult (book error / 404 exhausted)
+            return best_ask
 
         if best_ask < min_price:
             self._log.warning("price_ladder.abort_floor",
@@ -139,6 +156,94 @@ class FOKLadder:
         return FOKResult(
             filled=False, fill_price=None, fill_step=None, shares=None,
             attempts=2, order_id=None, attempted_prices=attempted_prices,
+            order_type=order_type,
+        )
+
+    @staticmethod
+    def _is_book_404(exc: BaseException) -> bool:
+        """Return True if the exception looks like CLOB ``/book`` 404.
+
+        We avoid importing ``py_clob_client.exceptions.PolyApiException``
+        at module load time so this module stays unit-testable without
+        the SDK installed. Detect via duck-typing (``status_code`` attr)
+        OR via the stringified exception payload.
+        """
+        status = getattr(exc, "status_code", None)
+        if status == 404:
+            return True
+        # Fallback: SDK wraps the response so the repr contains
+        # ``status_code=404`` even when the attribute isn't surfaced.
+        s = str(exc)
+        return "status_code=404" in s and "orderbook" in s.lower()
+
+    async def _fetch_best_ask_with_retry(
+        self, token_id: str, order_type: str,
+    ) -> "float | FOKResult":
+        """Fetch best ask with one 404 retry. Returns float on success or
+        FOKResult on terminal failure.
+
+        Race conditions handled:
+          * New-window race: Gamma publishes the market a few seconds
+            before CLOB indexes the orderbook. Initial GET returns 404,
+            retry after BOOK_404_RETRY_DELAY_S succeeds.
+          * Stale-window race: trailing edge of a window — CLOB has torn
+            down the book, Gamma still says ``closed=False``. Retry will
+            also 404; we exit cleanly with ``book_unavailable_404``,
+            classified as a benign skip (no circuit-breaker hit).
+
+        Non-404 errors (network, parse, etc.) preserve the legacy
+        ``book_error: <details>`` reason so callers can keep treating
+        them as the same surface they always did.
+        """
+        last_exc: Optional[BaseException] = None
+        # Initial attempt + BOOK_404_MAX_RETRIES retries
+        for attempt in range(BOOK_404_MAX_RETRIES + 1):
+            try:
+                return await self._poly.get_clob_best_ask(token_id)
+            except Exception as exc:
+                last_exc = exc
+                if not self._is_book_404(exc):
+                    # Non-404 (no liquidity, network, parse) — never retry.
+                    self._log.warning(
+                        "price_ladder.book_error",
+                        error=str(exc)[:200],
+                        token_id=token_id[:20] + "...",
+                    )
+                    return FOKResult(
+                        filled=False, fill_price=None, fill_step=None,
+                        shares=None, attempts=0, order_id=None,
+                        abort_reason=f"book_error: {str(exc)[:100]}",
+                        order_type=order_type,
+                    )
+                # 404 path: log and (maybe) retry.
+                if attempt < BOOK_404_MAX_RETRIES:
+                    self._log.info(
+                        "price_ladder.book_404_retry",
+                        token_id=token_id[:20] + "...",
+                        attempt=attempt + 1,
+                        retry_in_s=BOOK_404_RETRY_DELAY_S,
+                        note="orderbook propagation lag — retrying once",
+                    )
+                    await asyncio.sleep(BOOK_404_RETRY_DELAY_S)
+                    continue
+                # Exhausted retries.
+                break
+
+        # All attempts 404'd — graceful skip, no circuit-breaker debit.
+        self._log.warning(
+            "price_ladder.book_404_exhausted",
+            token_id=token_id[:20] + "...",
+            attempts=BOOK_404_MAX_RETRIES + 1,
+            error=str(last_exc)[:200] if last_exc else "",
+            note="orderbook unavailable after retries — likely past close or pre-publish",
+        )
+        return FOKResult(
+            filled=False, fill_price=None, fill_step=None, shares=None,
+            attempts=0, order_id=None,
+            abort_reason=(
+                f"book_unavailable_404: orderbook missing after "
+                f"{BOOK_404_MAX_RETRIES + 1} attempts"
+            ),
             order_type=order_type,
         )
 
