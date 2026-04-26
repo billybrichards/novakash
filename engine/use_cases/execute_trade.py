@@ -456,6 +456,16 @@ class ExecuteTradeUseCase:
         # ── Step 2: Stake calculation ──────────────────────────────────
         stake = self._calculate_stake(decision)
 
+        # Track release state for fill-slot and lease so the audit #398
+        # finally backstop can skip redundant calls on the common
+        # explicit-release paths. Declared BEFORE _release_claim because
+        # Python's free-variable resolution is by static enclosing scope:
+        # the closure must find these names assigned in execute() before
+        # any call to a nested helper that references them.
+        slot_claimed = False  # set to True iff Step 5.5 wins the slot
+        slot_released = False
+        claim_released = False
+
         # Helper: release the lease on any early-return path between
         # acquire (Step 1) and order placement (Step 6). Audit 2026-04-26
         # forensics on window 1777227900: lease was acquired by
@@ -468,11 +478,15 @@ class ExecuteTradeUseCase:
         # below MUST go through _release_claim so the next attempt for
         # the same (window, strategy) starts with a clean slate.
         async def _release_claim(phase: str) -> None:
+            nonlocal claim_released
+            if claim_released:
+                return
             if claim_id and hasattr(self._window_state, "clear_trade_claim"):
                 try:
                     await self._window_state.clear_trade_claim(
                         window_key, claim_id
                     )
+                    claim_released = True
                 except Exception as _clr_exc:
                     log.warning(
                         "execute_trade.clear_claim_failed",
@@ -597,7 +611,9 @@ class ExecuteTradeUseCase:
         # in-process attempt already holds the placeholder. We treat
         # this exactly like a dedup hit — release the lease (we still
         # hold it), DO NOT call execute_order, return a benign skip.
-        slot_claimed = False
+        # ``slot_claimed`` was declared (False) earlier alongside
+        # ``slot_released`` / ``claim_released`` so the closures bound
+        # at definition time can name-resolve correctly.
         if hasattr(self._window_state, "try_claim_fill_slot"):
             try:
                 slot_claimed = await self._window_state.try_claim_fill_slot(
@@ -638,239 +654,339 @@ class ExecuteTradeUseCase:
                     token_id=token_id,
                 )
 
+        # ``slot_released`` was declared earlier alongside
+        # ``claim_released`` so the closures defined here bind it via
+        # nonlocal correctly (Python resolves free variables by static
+        # enclosing scope at function-definition time).
+
         # Helper: release the pessimistic fill-slot claim if FAK did
         # not result in a real fill. Safe to call on the success
         # path too — the WHERE clause inside the adapter restricts
         # the DELETE to placeholder rows only.
-        async def _release_fill_slot(phase: str) -> None:
-            if not slot_claimed:
-                return
-            if hasattr(self._window_state, "release_fill_slot"):
-                try:
-                    await self._window_state.release_fill_slot(
-                        window_key, sid
-                    )
-                except Exception as _rel_exc:
-                    log.warning(
-                        "execute_trade.release_fill_slot_failed",
-                        strategy=sid,
-                        window=str(window_key),
-                        phase=phase,
-                        error=str(_rel_exc)[:200],
-                    )
+        #
+        # Audit #398 (2026-04-26): promoted release log to INFO and
+        # surfaced rows_deleted so post-mortem can prove a release
+        # actually happened. Sets ``slot_released`` so the finally
+        # backstop can skip a redundant second call on common paths.
+        async def _release_fill_slot(phase: str) -> bool:
+            nonlocal slot_released
+            if not slot_claimed or slot_released:
+                return False
+            if not hasattr(self._window_state, "release_fill_slot"):
+                return False
+            try:
+                await self._window_state.release_fill_slot(
+                    window_key, sid
+                )
+                slot_released = True
+                log.info(
+                    "execute_trade.release_fill_slot",
+                    strategy=sid,
+                    window=str(window_key),
+                    phase=phase,
+                )
+                return True
+            except Exception as _rel_exc:
+                log.warning(
+                    "execute_trade.release_fill_slot_failed",
+                    strategy=sid,
+                    window=str(window_key),
+                    phase=phase,
+                    error=str(_rel_exc)[:200],
+                )
+                return False
 
         # ── Step 6: Execute order ──────────────────────────────────────
+        # Audit #398 (2026-04-26): SECOND smoking gun on the fill-slot
+        # invariant. Window 1777240500 / v9_lgb_only at 22:07:47 left
+        # a 'pending' placeholder row in strategy_window_fills with
+        # NO matching trade row — the strategy was permanently locked
+        # out for the rest of the window because every subsequent
+        # has_filled() returned True.
+        #
+        # Root-cause analysis: the existing release paths only catch
+        # ``Exception``. ``asyncio.CancelledError`` (BaseException
+        # subclass since Python 3.8) propagates THROUGH them — so any
+        # task cancellation between try_claim_fill_slot.win and
+        # mark_traded.success leaves the placeholder dangling.
+        # Plausible cancellation triggers: registry-level timeout,
+        # orchestrator shutdown, parent task gc'd while awaiting
+        # FAK ladder, asyncio.wait_for elsewhere on the call stack.
+        #
+        # Defence-in-depth fix: wrap the entire post-claim flow in
+        # ``try / finally``. The ``committed`` flag is set ONLY after
+        # mark_traded succeeds; the finally block releases the slot
+        # whenever ``committed=False`` regardless of how we exited
+        # (return, raise, BaseException). The explicit release calls
+        # in the failure paths remain — they preserve the existing
+        # log breadcrumbs and short-circuit the redundant finally
+        # call (release_fill_slot is idempotent, but skipping it
+        # keeps logs clean on the common paths).
         entry_cap = decision.entry_cap or DEFAULT_ENTRY_CAP
         start_ts = self._clock.now()
 
-        try:
-            result = await self._executor.execute_order(
-                token_id=token_id,
-                side=side,
-                stake_usd=stake.adjusted_stake,
-                entry_cap=entry_cap,
-                price_floor=PRICE_FLOOR,
-            )
-        except Exception as exc:
-            await _release_fill_slot("execution_error")
-            await _release_claim("execution_error")
-            await self._on_order_error()
-            log.error(
-                "execute_trade.execution_error",
-                strategy=sid,
-                failure_reason=f"execution_error: {str(exc)[:200]}",
-                exc_info=True,
-            )
-            return _failed(
-                f"execution_error: {str(exc)[:200]}",
-                strategy_id=sid,
-                direction=direction,
-                stake_usd=stake.adjusted_stake,
-                token_id=token_id,
-            )
-
-        end_ts = self._clock.now()
-
-        # Enrich result with strategy identity and timing
-        result = replace(
-            result,
-            strategy_id=sid,
-            direction=direction,
-            execution_start=start_ts,
-            execution_end=end_ts,
-            market_slug=window_market.market_slug,
-        )
-
-        if not result.success:
-            # Audit #322: release the pessimistic fill-slot too — FAK
-            # didn't produce a real fill so the slot can be retried by
-            # the next eval tick. Order matters less but mirrors the
-            # acquire order in reverse.
-            await _release_fill_slot("order_not_filled")
-            await _release_claim("order_not_filled")
-            # Only real submit/infra errors increment the breaker counter.
-            # Benign no-fills (empty book, FAK exhausted, GTC unfilled) are
-            # market conditions, not faults — they skip cleanly.
-            if _is_real_order_error(result.failure_reason):
-                await self._on_order_error()
-            log.info(
-                "execute_trade.order_not_filled",
-                strategy=sid,
-                failure_reason=result.failure_reason,
-            )
-            return result
-
-        # ── Step 7: Record trade ───────────────────────────────────────
-        try:
-            await self._recorder.record_trade(decision, result, stake)
-        except Exception as exc:
-            # Fire-and-forget spirit: log but don't fail the trade
-            log.warning(
-                "execute_trade.record_error",
-                error=str(exc)[:200],
-            )
-
-        # ── Step 8: Mark traded ────────────────────────────────────────
-        # Audit #321 (2026-04-26): pass strategy_id so the per-strategy
-        # filled-marker (strategy_window_fills) is written. Without this,
-        # has_filled() at Step 0.5 on the next eval tick would return
-        # False and we'd happily fill again. Best-effort: mark_traded is
-        # idempotent (ON CONFLICT DO NOTHING on the new table); legacy
-        # WindowStateRepository implementations without the strategy_id
-        # kwarg fall back via the Optional default to the old signature.
+        committed = False
+        result: Optional[ExecutionResult] = None
         try:
             try:
-                await self._window_state.mark_traded(
-                    window_key,
-                    result.order_id or "unknown",
-                    strategy_id=sid,
+                result = await self._executor.execute_order(
+                    token_id=token_id,
+                    side=side,
+                    stake_usd=stake.adjusted_stake,
+                    entry_cap=entry_cap,
+                    price_floor=PRICE_FLOOR,
                 )
-            except TypeError:
-                # Legacy port impl without strategy_id kwarg.
-                await self._window_state.mark_traded(
-                    window_key,
-                    result.order_id or "unknown",
-                )
-        except Exception as exc:
-            log.warning(
-                "execute_trade.mark_traded_error",
-                error=str(exc)[:200],
-            )
-
-        # ── Step 8b: Unconditional FILL card (fire-and-forget) ─────────
-        # Every successful fill on Polymarket gets a short confirmation
-        # message. Complements send_strategy_trade_alert (which is a
-        # richer entry card) and send_trade_resolved (which fires later
-        # at window resolve). User-requested visibility guarantee.
-        #
-        # Audit 2026-04-26 (PR #397): NEVER await alerter on the success
-        # path — see _fire_alert_async docstring. A hung Telegram POST
-        # was holding execute() for ~2 minutes, delaying registry's
-        # post-fill position_monitor.on_fill() registration past the
-        # exit-evaluation window.
-        if (
-            not self._paper_mode
-            and result.fill_size
-            and result.fill_size > 0
-            and hasattr(self._alerter, "send_fill_confirmed")
-        ):
-            self._fire_alert_async(
-                "fill_confirmed",
-                self._alerter.send_fill_confirmed(
+            except Exception as exc:
+                await _release_fill_slot("execution_error")
+                await _release_claim("execution_error")
+                await self._on_order_error()
+                log.error(
+                    "execute_trade.execution_error",
                     strategy=sid,
-                    window_ts=int(window_key.window_ts or 0),
-                    side=direction,
-                    price=float(result.fill_price or 0.0),
-                    shares=float(result.fill_size or 0.0),
-                    stake_usd=float(result.stake_usd or 0.0),
-                    condition_id=getattr(window_market, "condition_id", None),
-                    tx_hash=getattr(result, "tx_hash", None),
-                    timeframe=window_key.timeframe,
-                ),
+                    failure_reason=f"execution_error: {str(exc)[:200]}",
+                    exc_info=True,
+                )
+                return _failed(
+                    f"execution_error: {str(exc)[:200]}",
+                    strategy_id=sid,
+                    direction=direction,
+                    stake_usd=stake.adjusted_stake,
+                    token_id=token_id,
+                )
+
+            end_ts = self._clock.now()
+
+            # Enrich result with strategy identity and timing
+            result = replace(
+                result,
+                strategy_id=sid,
+                direction=direction,
+                execution_start=start_ts,
+                execution_end=end_ts,
+                market_slug=window_market.market_slug,
             )
 
-        # ── Step 9: Telegram alert (rich strategy-aware, fire-and-forget) ──
-        # See PR #397 note above: dispatched via _fire_alert_async so the
-        # success log + ExecutionResult return reach the registry within
-        # milliseconds, allowing position_monitor.on_fill to register the
-        # exit watcher before the strategy's exit-eval window closes.
-        try:
-            gate_results = decision.metadata.get("gate_results", [])
-            sizing_meta = decision.metadata.get("sizing", {})
-            # Use rich strategy alert if available, fallback to plain text
-            if hasattr(self._alerter, "send_strategy_trade_alert"):
-                self._fire_alert_async(
-                    "strategy_trade_alert",
-                    self._alerter.send_strategy_trade_alert(
+            if not result.success:
+                # Audit #322: release the pessimistic fill-slot too — FAK
+                # didn't produce a real fill so the slot can be retried by
+                # the next eval tick. Order matters less but mirrors the
+                # acquire order in reverse.
+                await _release_fill_slot("order_not_filled")
+                await _release_claim("order_not_filled")
+                # Only real submit/infra errors increment the breaker counter.
+                # Benign no-fills (empty book, FAK exhausted, GTC unfilled) are
+                # market conditions, not faults — they skip cleanly.
+                if _is_real_order_error(result.failure_reason):
+                    await self._on_order_error()
+                log.info(
+                    "execute_trade.order_not_filled",
+                    strategy=sid,
+                    failure_reason=result.failure_reason,
+                )
+                return result
+
+            # ── Step 7: Record trade ───────────────────────────────────────
+            try:
+                await self._recorder.record_trade(decision, result, stake)
+            except Exception as exc:
+                # Fire-and-forget spirit: log but don't fail the trade
+                log.warning(
+                    "execute_trade.record_error",
+                    error=str(exc)[:200],
+                )
+
+            # ── Step 8: Mark traded ────────────────────────────────────────
+            # Audit #321 (2026-04-26): pass strategy_id so the per-strategy
+            # filled-marker (strategy_window_fills) is written. Without this,
+            # has_filled() at Step 0.5 on the next eval tick would return
+            # False and we'd happily fill again. Best-effort: mark_traded is
+            # idempotent (ON CONFLICT DO NOTHING on the new table); legacy
+            # WindowStateRepository implementations without the strategy_id
+            # kwarg fall back via the Optional default to the old signature.
+            #
+            # ``committed=True`` after this block: the placeholder row has
+            # been UPSERT'd to a real order_id, so the finally backstop must
+            # NOT delete it (release_fill_slot is order_id='pending' scoped,
+            # but skipping the call entirely is cleaner than relying on the
+            # WHERE clause being correct forever).
+            try:
+                try:
+                    await self._window_state.mark_traded(
+                        window_key,
+                        result.order_id or "unknown",
                         strategy_id=sid,
-                        strategy_version=decision.strategy_version,
-                        direction=direction,
-                        confidence=decision.confidence or "?",
-                        confidence_score=decision.confidence_score or 0.0,
-                        entry_reason=decision.entry_reason,
-                        gate_results=gate_results,
-                        sizing_modifier=sizing_meta.get("modifier", 1.0),
-                        sizing_label=sizing_meta.get("label", "default"),
-                        fill_price=result.fill_price or 0.0,
-                        fill_size=result.fill_size or 0.0,
-                        stake_usd=result.stake_usd,
-                        order_type=(result.execution_mode or "paper").upper(),
-                        order_id=result.order_id,
-                        execution_mode=result.execution_mode,
+                    )
+                except TypeError:
+                    # Legacy port impl without strategy_id kwarg.
+                    await self._window_state.mark_traded(
+                        window_key,
+                        result.order_id or "unknown",
+                    )
+            except Exception as exc:
+                log.warning(
+                    "execute_trade.mark_traded_error",
+                    error=str(exc)[:200],
+                )
+            # Mark slot as committed BEFORE alerts/Telegram fire — the
+            # placeholder is now a real fill marker; the finally backstop
+            # must not race a delete against the UPSERT. mark_traded
+            # failure is logged but does NOT roll back commit: we'd
+            # rather leak a placeholder than double-fill on a transient
+            # DB hiccup, and has_filled() reads the same table so future
+            # attempts still short-circuit on a successful UPSERT.
+            committed = True
+
+            # ── Step 8b: Unconditional FILL card (fire-and-forget) ─────────
+            # Every successful fill on Polymarket gets a short confirmation
+            # message. Complements send_strategy_trade_alert (which is a
+            # richer entry card) and send_trade_resolved (which fires later
+            # at window resolve). User-requested visibility guarantee.
+            #
+            # Audit 2026-04-26 (PR #397): NEVER await alerter on the success
+            # path — see _fire_alert_async docstring. A hung Telegram POST
+            # was holding execute() for ~2 minutes, delaying registry's
+            # post-fill position_monitor.on_fill() registration past the
+            # exit-evaluation window.
+            if (
+                not self._paper_mode
+                and result.fill_size
+                and result.fill_size > 0
+                and hasattr(self._alerter, "send_fill_confirmed")
+            ):
+                self._fire_alert_async(
+                    "fill_confirmed",
+                    self._alerter.send_fill_confirmed(
+                        strategy=sid,
+                        window_ts=int(window_key.window_ts or 0),
+                        side=direction,
+                        price=float(result.fill_price or 0.0),
+                        shares=float(result.fill_size or 0.0),
+                        stake_usd=float(result.stake_usd or 0.0),
+                        condition_id=getattr(window_market, "condition_id", None),
+                        tx_hash=getattr(result, "tx_hash", None),
                         timeframe=window_key.timeframe,
-                        btc_price=current_btc_price,
-                        vpin=getattr(self, "_last_vpin", 0.0),
-                        regime=getattr(self, "_last_regime", "?"),
-                        eval_offset=getattr(decision, "metadata", {}).get("eval_offset")
-                        if decision.metadata
-                        else None,
-                        paper_mode=self._paper_mode,
-                        success=result.success,
-                        failure_reason=result.failure_reason or "",
-                        elapsed_s=(result.execution_end - result.execution_start)
-                        if result.execution_end > result.execution_start
-                        else 0.0,
-                        # Forward raw decision metadata so strategy-specific TG
-                        # surfaces (e.g. v5_ensemble's signal_source / p_lgb /
-                        # p_classifier / ensemble_config) flow to the renderer
-                        # without each strategy needing its own kwarg.
-                        decision_metadata=decision.metadata,
                     ),
                 )
-            else:
-                alert_msg = self._format_trade_alert(
-                    decision,
-                    result,
-                    stake,
-                    current_btc_price,
-                    open_price,
+
+            # ── Step 9: Telegram alert (rich strategy-aware, fire-and-forget) ──
+            # See PR #397 note above: dispatched via _fire_alert_async so the
+            # success log + ExecutionResult return reach the registry within
+            # milliseconds, allowing position_monitor.on_fill to register the
+            # exit watcher before the strategy's exit-eval window closes.
+            try:
+                gate_results = decision.metadata.get("gate_results", [])
+                sizing_meta = decision.metadata.get("sizing", {})
+                # Use rich strategy alert if available, fallback to plain text
+                if hasattr(self._alerter, "send_strategy_trade_alert"):
+                    self._fire_alert_async(
+                        "strategy_trade_alert",
+                        self._alerter.send_strategy_trade_alert(
+                            strategy_id=sid,
+                            strategy_version=decision.strategy_version,
+                            direction=direction,
+                            confidence=decision.confidence or "?",
+                            confidence_score=decision.confidence_score or 0.0,
+                            entry_reason=decision.entry_reason,
+                            gate_results=gate_results,
+                            sizing_modifier=sizing_meta.get("modifier", 1.0),
+                            sizing_label=sizing_meta.get("label", "default"),
+                            fill_price=result.fill_price or 0.0,
+                            fill_size=result.fill_size or 0.0,
+                            stake_usd=result.stake_usd,
+                            order_type=(result.execution_mode or "paper").upper(),
+                            order_id=result.order_id,
+                            execution_mode=result.execution_mode,
+                            timeframe=window_key.timeframe,
+                            btc_price=current_btc_price,
+                            vpin=getattr(self, "_last_vpin", 0.0),
+                            regime=getattr(self, "_last_regime", "?"),
+                            eval_offset=getattr(decision, "metadata", {}).get("eval_offset")
+                            if decision.metadata
+                            else None,
+                            paper_mode=self._paper_mode,
+                            success=result.success,
+                            failure_reason=result.failure_reason or "",
+                            elapsed_s=(result.execution_end - result.execution_start)
+                            if result.execution_end > result.execution_start
+                            else 0.0,
+                            # Forward raw decision metadata so strategy-specific TG
+                            # surfaces (e.g. v5_ensemble's signal_source / p_lgb /
+                            # p_classifier / ensemble_config) flow to the renderer
+                            # without each strategy needing its own kwarg.
+                            decision_metadata=decision.metadata,
+                        ),
+                    )
+                else:
+                    alert_msg = self._format_trade_alert(
+                        decision,
+                        result,
+                        stake,
+                        current_btc_price,
+                        open_price,
+                    )
+                    self._fire_alert_async(
+                        "system_alert_fallback",
+                        self._alerter.send_system_alert(alert_msg),
+                    )
+            except Exception as exc:
+                log.warning(
+                    "execute_trade.alert_error",
+                    error=str(exc)[:200],
                 )
-                self._fire_alert_async(
-                    "system_alert_fallback",
-                    self._alerter.send_system_alert(alert_msg),
-                )
-        except Exception as exc:
-            log.warning(
-                "execute_trade.alert_error",
-                error=str(exc)[:200],
+
+            # ── Step 10: Update guardrail state ────────────────────────────
+            self._record_order_placed()
+            self._on_order_success()
+
+            log.info(
+                "execute_trade.success",
+                strategy=sid,
+                direction=direction,
+                order_id=result.order_id,
+                fill_price=result.fill_price,
+                fill_size=result.fill_size,
+                stake=result.stake_usd,
+                mode=result.execution_mode,
             )
 
-        # ── Step 10: Update guardrail state ────────────────────────────
-        self._record_order_placed()
-        self._on_order_success()
-
-        log.info(
-            "execute_trade.success",
-            strategy=sid,
-            direction=direction,
-            order_id=result.order_id,
-            fill_price=result.fill_price,
-            fill_size=result.fill_size,
-            stake=result.stake_usd,
-            mode=result.execution_mode,
-        )
-
-        return result
+            return result
+        finally:
+            # Audit #398 (2026-04-26): unconditional release backstop.
+            # Catches any path that exited with slot_claimed=True but
+            # committed=False — most importantly asyncio.CancelledError
+            # mid-FAK (BaseException, not caught by ``except Exception``).
+            # No-op on the success path (committed=True), no-op on the
+            # explicit-release paths (the slot was already deleted; the
+            # adapter's WHERE clause restricts to placeholder rows so
+            # the redundant call is a 0-row DELETE either way).
+            #
+            # Order matters: release_fill_slot first (long-lived, no TTL),
+            # then _release_claim (15s TTL self-recovers but still nicer
+            # to clear explicitly). Both are best-effort; failures log
+            # WARN but never raise.
+            if slot_claimed and not committed:
+                try:
+                    await _release_fill_slot("finally_uncommitted")
+                except BaseException as _fin_exc:  # noqa: BLE001
+                    # Last-resort guard: even the release helper itself
+                    # mustn't propagate a fresh exception out of finally
+                    # while the engine is unwinding (would mask the
+                    # original cause). Log and move on.
+                    log.warning(
+                        "execute_trade.finally_release_fill_slot_failed",
+                        strategy=sid,
+                        window=str(window_key),
+                        error=str(_fin_exc)[:200],
+                    )
+                try:
+                    await _release_claim("finally_uncommitted")
+                except BaseException as _fin_exc2:  # noqa: BLE001
+                    log.warning(
+                        "execute_trade.finally_release_claim_failed",
+                        strategy=sid,
+                        window=str(window_key),
+                        error=str(_fin_exc2)[:200],
+                    )
 
     # ─── Stake Calculation ─────────────────────────────────────────────
 
