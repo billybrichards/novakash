@@ -323,6 +323,21 @@ class DataSurfaceManager:
         # rest of this process's lifetime. Resets on engine restart.
         self._cedar_disabled: bool = False
 
+        # ── Cold-start warmup cache (2026-04-26) ──────────────────────────
+        # Per-asset cache of the most-recent ``signal_evaluations`` row read
+        # from the DB at startup by ``warmup_from_db``. Used as a *fallback*
+        # in ``get_surface`` for fields whose live source has not populated
+        # yet (Tiingo + Chainlink delta caches typically take 5–6 minutes
+        # after a restart to fan out through the data-surface pipeline).
+        # Live feed values ALWAYS win over the warmup cache — the warmup is
+        # only consulted when the live read returned None/empty/zero.
+        #
+        # Warmup values are stamped with the source row's ``window_ts`` so
+        # rows older than ``_warmup_max_age_s`` are ignored at read time
+        # (don't seed strategies with hour-old data after a long downtime).
+        self._warmup_cache: dict[str, dict] = {}
+        self._warmup_max_age_s: float = 15 * 60  # 15 minutes
+
     def set_active_assets(self, assets: list[str]) -> None:
         """Set which assets the refresh loop polls /v4/snapshot for.
 
@@ -373,6 +388,122 @@ class DataSurfaceManager:
             self._twap = twap_tracker
         if binance_state is not None:
             self._binance_state = binance_state
+
+    async def warmup_from_db(self, db_pool: Any) -> None:
+        """Seed the in-memory surface from the most recent signal_evaluations row.
+
+        After every engine restart, the Tiingo/Chainlink delta caches +
+        VPIN + CLOB take ~5 minutes to fan out through the data-surface
+        pipeline, even though the underlying feeds start polling within
+        seconds. During that window strategies SKIP every eval with
+        ``feature_stale: chainlink,tiingo missing at eval`` and
+        ``source_agreement: chainlink,tiingo missing``.
+
+        Meanwhile the DB has a perfectly-good ``signal_evaluations`` row
+        from the previous engine instance, written ≤2s before the
+        previous shutdown. Those values are stale by 30–300s but FAR
+        more useful than None — strategies can at least evaluate, and
+        live ticks overwrite the warmup within seconds anyway (live
+        always wins; see ``get_surface``).
+
+        Per active asset, this method:
+          • SELECTs the most recent row (BTC + asset filter, last 15min)
+          • Stores it in ``_warmup_cache`` keyed by asset
+          • Logs ``data_surface.warmup_seeded`` with source ts + age
+          • Logs ``data_surface.warmup_no_recent_row`` when the row is
+            absent or older than the freshness window — strategies will
+            keep skipping until live ticks arrive (existing behaviour).
+
+        Fail-open: any DB error is caught and swallowed. Engine startup
+        must NOT block on this query — it is purely opportunistic.
+        """
+        if db_pool is None:
+            log.info(
+                "data_surface.warmup_skipped",
+                reason="db_pool is None",
+            )
+            return
+        try:
+            now = time.time()
+            for asset in list(self._active_assets):
+                try:
+                    async with db_pool.acquire() as conn:
+                        row = await conn.fetchrow(
+                            """
+                            SELECT
+                                window_ts, asset, timeframe, eval_offset,
+                                clob_up_bid, clob_up_ask,
+                                clob_down_bid, clob_down_ask,
+                                binance_price, chainlink_price, tiingo_close,
+                                delta_pct, delta_tiingo, delta_binance,
+                                delta_chainlink, delta_source,
+                                vpin, regime,
+                                v2_probability_up, v2_model_version,
+                                evaluated_at
+                            FROM signal_evaluations
+                            WHERE asset = $1
+                              AND evaluated_at > NOW() - INTERVAL '15 minutes'
+                            ORDER BY evaluated_at DESC
+                            LIMIT 1
+                            """,
+                            asset,
+                        )
+                except Exception as exc:
+                    log.warning(
+                        "data_surface.warmup_query_error",
+                        asset=asset,
+                        error=str(exc)[:200],
+                    )
+                    continue
+                if row is None:
+                    log.info(
+                        "data_surface.warmup_no_recent_row",
+                        asset=asset,
+                        reason="no signal_evaluations row in last 15 minutes",
+                    )
+                    continue
+                # Convert asyncpg.Record → dict for stable downstream access.
+                seeded = {k: row[k] for k in row.keys()}
+                self._warmup_cache[asset] = seeded
+                evaluated_at = seeded.get("evaluated_at")
+                age_s: Optional[float] = None
+                if evaluated_at is not None:
+                    try:
+                        age_s = max(0.0, now - evaluated_at.timestamp())
+                    except Exception:
+                        age_s = None
+                log.info(
+                    "data_surface.warmup_seeded",
+                    asset=asset,
+                    window_ts=int(seeded.get("window_ts") or 0),
+                    eval_offset=seeded.get("eval_offset"),
+                    age_seconds=round(age_s, 1) if age_s is not None else None,
+                    delta_source=seeded.get("delta_source"),
+                    regime=seeded.get("regime"),
+                )
+        except Exception as exc:
+            log.warning(
+                "data_surface.warmup_unexpected_error",
+                error=str(exc)[:200],
+                reason="non-fatal; engine startup continues without seed",
+            )
+
+    def _get_warmup(self, asset: str) -> Optional[dict]:
+        """Return the warmup row for ``asset`` if still within the freshness
+        window, else None. Used by ``get_surface`` as a per-field fallback."""
+        seeded = self._warmup_cache.get(asset)
+        if not seeded:
+            return None
+        evaluated_at = seeded.get("evaluated_at")
+        if evaluated_at is None:
+            return None
+        try:
+            age_s = time.time() - evaluated_at.timestamp()
+        except Exception:
+            return None
+        if age_s > self._warmup_max_age_s:
+            return None
+        return seeded
 
     async def start(self) -> None:
         """Start background V4 pre-fetch loop."""
@@ -790,6 +921,29 @@ class DataSurfaceManager:
         if btc_price and open_price:
             delta_binance = (btc_price - open_price) / open_price
 
+        # ── Cold-start warmup fallback for deltas (2026-04-26) ────────────
+        # If a delta source is still None (feeds haven't fanned-out yet
+        # post-restart), fall back to the value seeded from the most
+        # recent signal_evaluations row. Live values ALWAYS win — this
+        # only triggers when the live read came back None.
+        _warmup = self._get_warmup(asset)
+        if _warmup is not None:
+            if delta_chainlink is None and _warmup.get("delta_chainlink") is not None:
+                try:
+                    delta_chainlink = float(_warmup["delta_chainlink"])
+                except (TypeError, ValueError):
+                    pass
+            if delta_tiingo is None and _warmup.get("delta_tiingo") is not None:
+                try:
+                    delta_tiingo = float(_warmup["delta_tiingo"])
+                except (TypeError, ValueError):
+                    pass
+            if delta_binance is None and _warmup.get("delta_binance") is not None:
+                try:
+                    delta_binance = float(_warmup["delta_binance"])
+                except (TypeError, ValueError):
+                    pass
+
         # Select primary delta
         # For 5m Polymarket markets: chainlink first (it IS the resolution oracle)
         # For other timescales: tiingo first (higher update frequency)
@@ -827,6 +981,21 @@ class DataSurfaceManager:
                 regime = "NORMAL"
             else:
                 regime = "CALM"
+        # Cold-start warmup fallback: VPIN bucket calculator needs ~50
+        # buckets ($2.5M of trades) to produce a valid value, which can
+        # take 2–4 minutes after a restart. If we have no live value,
+        # reuse the most recent DB row so regime classification works
+        # immediately. Live values overwrite within seconds.
+        if vpin_val == 0.0 and regime == "UNKNOWN" and _warmup is not None:
+            warm_vpin = _warmup.get("vpin")
+            warm_regime = _warmup.get("regime")
+            if warm_vpin is not None:
+                try:
+                    vpin_val = float(warm_vpin)
+                except (TypeError, ValueError):
+                    pass
+            if warm_regime:
+                regime = str(warm_regime)
 
         # TWAP
         twap_delta = None
@@ -848,6 +1017,22 @@ class DataSurfaceManager:
         clob_data = {}
         if self._clob:
             clob_data = getattr(self._clob, "latest_clob", {})
+        # Cold-start warmup fallback: CLOB orderbook poller cycles every
+        # 10s, so a fresh restart leaves clob_data empty for the first
+        # tick or two. Backfill from the warmup row if no live data yet.
+        if not clob_data and _warmup is not None:
+            for live_key, warm_key in (
+                ("clob_up_bid", "clob_up_bid"),
+                ("clob_up_ask", "clob_up_ask"),
+                ("clob_down_bid", "clob_down_bid"),
+                ("clob_down_ask", "clob_down_ask"),
+            ):
+                v = _warmup.get(warm_key)
+                if v is not None:
+                    try:
+                        clob_data[live_key] = float(v)
+                    except (TypeError, ValueError):
+                        pass
 
         # Gamma prices from window
         gamma_up = getattr(window, "up_price", None)
