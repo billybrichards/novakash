@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -876,6 +877,21 @@ class PgWindowRepository(WindowStateRepository):
                     ON window_states (traded_at) WHERE traded_at IS NOT NULL""")
                 await conn.execute("""CREATE INDEX IF NOT EXISTS idx_window_states_resolved_at
                     ON window_states (resolved_at) WHERE resolved_at IS NOT NULL""")
+                # window_claims — lease-based dedup (audit #316). Separate from
+                # window_states so claims (transient leases) and fills (terminal
+                # records) don't share the dual-meaning of order_id='pending'.
+                await conn.execute("""CREATE TABLE IF NOT EXISTS window_claims (
+                    asset VARCHAR(10) NOT NULL,
+                    window_ts BIGINT NOT NULL,
+                    timeframe VARCHAR(10) NOT NULL DEFAULT '5m',
+                    claim_id UUID NOT NULL,
+                    claimed_by TEXT,
+                    claimed_at TIMESTAMPTZ NOT NULL,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    attempt_n INT NOT NULL DEFAULT 1,
+                    PRIMARY KEY (asset, window_ts, timeframe))""")
+                await conn.execute("""CREATE INDEX IF NOT EXISTS idx_window_claims_expires_at
+                    ON window_claims (expires_at)""")
             log.info("db.window_states_table_ensured")
         except Exception as exc:
             log.error("db.ensure_window_states_table_failed", error=str(exc)[:200])
@@ -924,91 +940,160 @@ class PgWindowRepository(WindowStateRepository):
         except Exception as exc:
             log.warning("db.mark_traded_failed", key=str(key), error=str(exc)[:120])
 
-    async def try_claim_trade(self, key: WindowKey) -> bool:
-        """Claim trade slot for a window. Self-heals stale 'pending' rows.
+    # ── Lease-based dedup (audit #316) ──────────────────────────────────
+    #
+    # Design:
+    #   - window_claims (separate table): transient leases with TTL
+    #   - window_states (this table): terminal fill records (real order_id)
+    #   - acquire_lease() returns a claim_id that uniquely identifies the
+    #     attempt. Subsequent release/fill calls MUST pass that claim_id —
+    #     prevents a slow-failing process from clobbering a successor's lease.
+    #   - Expired leases are stolen automatically by the next acquire (no
+    #     janitor needed).
+    #   - mark_traded is idempotent on the real order_id via window_states PK.
+    #
+    # Backward-compat shim: the old try_claim_trade()/clear_trade_claim() API
+    # remains for callers that haven't migrated. They wrap the lease functions
+    # and return a synthesised claim_id we store on the instance. When all
+    # callers use the lease context manager directly, this shim can be removed.
 
-        FAK execution should complete within ~10s. If a 'pending' row from a
-        previous attempt is older than STALE_PENDING_SECONDS, it represents
-        a leak — most likely the failure path's clear_trade_claim never ran
-        (process killed, exception in finally, race). Rather than locking out
-        the entire window, we treat stale claims as releasable: take them over
-        with a fresh claim. Real WIN/LOSS rows have order_id != 'pending' so
-        are never affected.
+    LEASE_TTL_SECONDS = 15
 
-        See audit #316 (dedup leak) for the design discussion.
+    # Per-instance map of (asset, window_ts, timeframe) → claim_id. Used by the
+    # legacy try_claim_trade/clear_trade_claim shim so clear can find the right
+    # claim_id without forcing the caller to track it. Bounded growth: cleared
+    # on release. NOT a substitute for the DB record — purely a shim.
+    _legacy_claim_ids: "dict[tuple[str, int, str], str]" = {}
+
+    async def acquire_lease(
+        self,
+        key: WindowKey,
+        claimed_by: str = "unknown",
+    ) -> Optional[str]:
+        """Acquire a lease on a window for a trade attempt. Returns the
+        ``claim_id`` (uuid) on success, or ``None`` if another process holds
+        an active lease.
+
+        Atomicity: single SQL statement. The ``ON CONFLICT DO UPDATE`` clause
+        with the ``WHERE`` predicate atomically steals expired leases AND
+        rejects active ones — Postgres evaluates the WHERE on the existing row
+        before the UPDATE, so an active lease causes the row to be untouched
+        and the RETURNING returns nothing.
+
+        See audit #316 for the full design rationale.
         """
-        STALE_PENDING_SECONDS = 30
         if not self._pool:
-            return True
+            # Pool-less mode (tests, paper) — return a synthetic id, caller
+            # owns the lease in-process for the call duration.
+            return str(uuid.uuid4())
+        new_claim_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc)
+        expires = now + timedelta(seconds=self.LEASE_TTL_SECONDS)
         try:
             async with self._pool.acquire() as conn:
-                async with conn.transaction():
-                    # Step 1: take over any stale 'pending' row for this window.
-                    # Updates traded_at to now so the claim is fresh; row keeps
-                    # order_id='pending' until clear_trade_claim deletes it OR
-                    # mark_traded sets the real order_id on success.
-                    taken_over = await conn.fetchval(
-                        """
-                        UPDATE window_states
-                           SET traded_at = $4
-                         WHERE asset = $1 AND window_ts = $2 AND timeframe = $3
-                           AND order_id = 'pending'
-                           AND traded_at < $5
-                        RETURNING 1
-                        """,
-                        key.asset,
-                        key.window_ts,
-                        key.timeframe,
-                        datetime.now(timezone.utc),
-                        datetime.now(timezone.utc) - timedelta(seconds=STALE_PENDING_SECONDS),
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO window_claims (
+                        asset, window_ts, timeframe,
+                        claim_id, claimed_by, claimed_at, expires_at, attempt_n
                     )
-                    if taken_over:
-                        log.info(
-                            "db.try_claim_trade.stale_takeover",
-                            key=str(key),
-                            stale_threshold_sec=STALE_PENDING_SECONDS,
-                        )
-                        return True
-
-                    # Step 2: normal insert path — only succeeds if no row exists
-                    # OR row exists with non-'pending' order_id (which would mean
-                    # a real fill — the ON CONFLICT DO NOTHING then blocks
-                    # correctly, preserving idempotency for real wins/losses).
-                    row = await conn.fetchval(
-                        """
-                        INSERT INTO window_states (asset, window_ts, timeframe, traded_at, order_id)
-                        VALUES ($1, $2, $3, $4, 'pending')
-                        ON CONFLICT (asset, window_ts, timeframe) DO NOTHING
-                        RETURNING 1
-                        """,
-                        key.asset,
-                        key.window_ts,
-                        key.timeframe,
-                        datetime.now(timezone.utc),
+                    VALUES ($1, $2, $3, $4::uuid, $5, $6, $7, 1)
+                    ON CONFLICT (asset, window_ts, timeframe) DO UPDATE
+                        SET claim_id = EXCLUDED.claim_id,
+                            claimed_by = EXCLUDED.claimed_by,
+                            claimed_at = EXCLUDED.claimed_at,
+                            expires_at = EXCLUDED.expires_at,
+                            attempt_n = window_claims.attempt_n + 1
+                        WHERE window_claims.expires_at < $6
+                    RETURNING claim_id::text, attempt_n
+                    """,
+                    key.asset,
+                    key.window_ts,
+                    key.timeframe,
+                    new_claim_id,
+                    claimed_by,
+                    now,
+                    expires,
+                )
+                if row is None:
+                    log.debug("db.acquire_lease.busy", key=str(key))
+                    return None
+                claim_id = row["claim_id"]
+                attempt_n = row["attempt_n"]
+                if attempt_n > 1:
+                    log.info(
+                        "db.acquire_lease.steal",
+                        key=str(key),
+                        attempt_n=attempt_n,
+                        claimed_by=claimed_by,
                     )
-                    claimed = bool(row)
-            log.debug("db.try_claim_trade", key=str(key), claimed=claimed)
-            return claimed
+                else:
+                    log.debug(
+                        "db.acquire_lease",
+                        key=str(key),
+                        claim_id=claim_id[:8],
+                    )
+                return claim_id
         except Exception as exc:
-            log.warning("db.try_claim_trade_failed", key=str(key), error=str(exc)[:120])
-            return False
+            log.warning("db.acquire_lease_failed", key=str(key), error=str(exc)[:120])
+            return None
 
-    async def clear_trade_claim(self, key: WindowKey) -> None:
+    async def release_lease(self, key: WindowKey, claim_id: str) -> None:
+        """Release a lease. Only deletes the row if claim_id matches — prevents
+        a slow-failing process from accidentally releasing a successor's lease.
+        """
         if not self._pool:
             return
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
-                    "DELETE FROM window_states WHERE asset = $1 AND window_ts = $2 AND timeframe = $3 AND order_id = 'pending'",
+                    """
+                    DELETE FROM window_claims
+                     WHERE asset = $1 AND window_ts = $2 AND timeframe = $3
+                       AND claim_id = $4::uuid
+                    """,
                     key.asset,
                     key.window_ts,
                     key.timeframe,
+                    claim_id,
                 )
-            log.debug("db.clear_trade_claim", key=str(key))
+            log.debug("db.release_lease", key=str(key), claim_id=claim_id[:8])
         except Exception as exc:
             log.warning(
-                "db.clear_trade_claim_failed", key=str(key), error=str(exc)[:120]
+                "db.release_lease_failed", key=str(key), error=str(exc)[:120]
             )
+
+    # ── Legacy API shim — wraps lease semantics ─────────────────────────
+    # Callers using try_claim_trade / clear_trade_claim still work. The shim
+    # bridges to acquire_lease / release_lease and stores the claim_id in
+    # the per-instance map keyed by (asset, window_ts, timeframe). This lets
+    # us migrate use_cases/execute_trade.py incrementally without breakage.
+
+    async def try_claim_trade(self, key: WindowKey) -> bool:
+        """Legacy shim: acquire_lease + remember claim_id for clear_trade_claim.
+
+        New code should use ``acquire_lease`` directly and pass the returned
+        ``claim_id`` to ``release_lease``. This shim exists so existing
+        execute_trade.py callers work unchanged.
+        """
+        claim_id = await self.acquire_lease(key, claimed_by="legacy_shim")
+        if claim_id is None:
+            return False
+        # Remember claim_id so clear_trade_claim can release the right lease.
+        self._legacy_claim_ids[(key.asset, key.window_ts, key.timeframe)] = claim_id
+        return True
+
+    async def clear_trade_claim(self, key: WindowKey) -> None:
+        """Legacy shim: release_lease using the claim_id remembered from
+        try_claim_trade. If we don't have a claim_id (e.g. process restarted
+        between claim and clear), do nothing — the lease will expire naturally
+        within LEASE_TTL_SECONDS, and the next acquire_lease will steal it.
+        """
+        slot = (key.asset, key.window_ts, key.timeframe)
+        claim_id = self._legacy_claim_ids.pop(slot, None)
+        if claim_id is None:
+            return
+        await self.release_lease(key, claim_id)
 
     async def was_resolved(self, key: WindowKey) -> bool:
         if not self._pool:
