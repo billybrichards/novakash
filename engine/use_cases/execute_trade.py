@@ -108,6 +108,37 @@ _TIMEFRAME_DURATION_SECS: dict[str, int] = {
     "4h": 14400,
 }
 
+# ── Per-step await timeouts (audit 2026-04-26, 7-minute hang forensics) ───
+#
+# Forensics on window 1777242300 (v9_lgb_only) and 1777242900 (v9_lgb_only)
+# showed a 7+ minute gap between ``execute_trade.entry`` (Step 0 entry log)
+# and either:
+#   * ``db.try_claim_fill_slot`` (Step 5.5 DB write), or
+#   * ``execute_trade.release_fill_slot`` (post-FAK release).
+# No log lines fired in between — the awaits silently parked in the asyncio
+# event-loop scheduler queue. py-spy ``sched_count: 226`` while the engine
+# was idle on selector — i.e. 226 scheduled coroutines piled up.
+#
+# Root cause: ``polymarket_5min._emit_window_signal`` does
+# ``asyncio.create_task(self._on_window_signal(...))`` every 2 seconds. Each
+# task fans out to multiple LIVE strategies, and each strategy goes
+# sequentially through ``execute_trade``. With no concurrency cap, the
+# DB pool (max_size=10) saturates and downstream awaits are queued behind
+# pending pool acquisitions. A single hot row UPSERT (try_claim_fill_slot
+# under contention) can stall the whole chain for minutes when the
+# scheduler keeps creating new tasks faster than the pool drains them.
+#
+# Defence: every external await between Step 0 entry and Step 6 FAK call is
+# wrapped in ``asyncio.wait_for`` with an explicit timeout. If the timeout
+# fires we treat it as a benign ``timeout_<phase>`` skip — release any held
+# state and bail out of execute_trade so the next eval tick can retry. This
+# does NOT fix the upstream task-creation pressure (that requires changes
+# to ``_emit_window_signal``), but it bounds the damage so any single
+# stalled await cannot hold a fill_slot lease for 7 minutes and
+# starve every retry.
+DB_AWAIT_TIMEOUT_S = float(os.environ.get("EXECUTE_TRADE_DB_TIMEOUT_S", "5"))
+RISK_AWAIT_TIMEOUT_S = float(os.environ.get("EXECUTE_TRADE_RISK_TIMEOUT_S", "2"))
+
 
 def _recheck_timing_before_execute(
     window_key: "WindowKey",
@@ -352,6 +383,32 @@ class ExecuteTradeUseCase:
                 direction=direction,
             )
 
+        # ── Per-step timing diagnostics (audit 2026-04-26) ────────────
+        # Forensics on the 7-minute hang between Step 0 entry log and
+        # Step 5.5 try_claim_fill_slot showed py-spy ``sched_count: 226``
+        # — the asyncio loop had 226 scheduled coroutines piled up.
+        # Without per-step timing logs we couldn't tell which await was
+        # responsible. Stamp ``_step_t`` after each external await and
+        # log every transition with elapsed_ms. ~10 log lines per
+        # execute_trade call; volume is fine.
+        _step_t = _time.monotonic()
+        _entry_t = _step_t
+
+        def _log_step(step: str, **extra: Any) -> None:
+            nonlocal _step_t
+            t = _time.monotonic()
+            elapsed_ms = int((t - _step_t) * 1000)
+            total_ms = int((t - _entry_t) * 1000)
+            _step_t = t
+            log.info(
+                f"execute_trade.step.{step}",
+                strategy=sid,
+                window=str(window_key),
+                elapsed_ms=elapsed_ms,
+                total_ms=total_ms,
+                **extra,
+            )
+
         # ── Step 0.5: Per-strategy filled-marker (audit #321) ──────────
         # SMOKING GUN, 2026-04-26: v10_lgb_only filled 3x on window
         # 1777234800 (20:21:12, 20:21:40, 20:22:11). After per-strategy
@@ -375,7 +432,15 @@ class ExecuteTradeUseCase:
         # provides 15s in-flight protection as a backstop.
         if hasattr(self._window_state, "has_filled"):
             try:
-                if await self._window_state.has_filled(window_key, sid):
+                # Audit 2026-04-26: timeout wrapper bounds the worst-case
+                # stall when DB pool (asyncpg max_size=10) is saturated.
+                # See module-level DB_AWAIT_TIMEOUT_S note.
+                _has_filled = await asyncio.wait_for(
+                    self._window_state.has_filled(window_key, sid),
+                    timeout=DB_AWAIT_TIMEOUT_S,
+                )
+                _log_step("has_filled", result=bool(_has_filled))
+                if _has_filled:
                     log.info(
                         "execute_trade.already_filled_this_window",
                         strategy=sid,
@@ -387,6 +452,22 @@ class ExecuteTradeUseCase:
                         strategy_id=sid,
                         direction=direction,
                     )
+            except asyncio.TimeoutError:
+                # Stalled DB call. Bail out as a benign skip — the next
+                # eval tick will retry. Critically: do NOT fall through
+                # to lease acquisition because the upstream contention
+                # would just stall there too.
+                log.warning(
+                    "execute_trade.has_filled_timeout",
+                    strategy=sid,
+                    window=str(window_key),
+                    timeout_s=DB_AWAIT_TIMEOUT_S,
+                )
+                return _failed(
+                    f"timeout_has_filled: {DB_AWAIT_TIMEOUT_S:.1f}s",
+                    strategy_id=sid,
+                    direction=direction,
+                )
             except Exception as exc:
                 log.warning(
                     "execute_trade.has_filled_check_error",
@@ -413,8 +494,14 @@ class ExecuteTradeUseCase:
         # for any reason on an upgrade.
         try:
             if hasattr(self._window_state, "try_claim_trade"):
-                claim_result = await self._window_state.try_claim_trade(
-                    window_key, strategy_id=sid
+                # Audit 2026-04-26: timeout wrapper. acquire_lease is a
+                # single UPSERT under a hot row — under pool contention
+                # this can stall behind queued connections.
+                claim_result = await asyncio.wait_for(
+                    self._window_state.try_claim_trade(
+                        window_key, strategy_id=sid
+                    ),
+                    timeout=DB_AWAIT_TIMEOUT_S,
                 )
                 # Backward-compat: pre-#320 returned plain bool. New API
                 # returns (bool, claim_id). Detect either shape.
@@ -423,6 +510,7 @@ class ExecuteTradeUseCase:
                 else:
                     claim_acquired = bool(claim_result)
                     claim_id = None
+                _log_step("try_claim_trade", acquired=bool(claim_acquired))
                 if not claim_acquired:
                     log.info(
                         "execute_trade.dedup_hit",
@@ -434,17 +522,35 @@ class ExecuteTradeUseCase:
                         strategy_id=sid,
                         direction=direction,
                     )
-            elif await self._window_state.was_traded(window_key):
-                log.info(
-                    "execute_trade.dedup_hit",
-                    strategy=sid,
-                    window=str(window_key),
+            else:
+                _was_traded = await asyncio.wait_for(
+                    self._window_state.was_traded(window_key),
+                    timeout=DB_AWAIT_TIMEOUT_S,
                 )
-                return _failed(
-                    "already_traded",
-                    strategy_id=sid,
-                    direction=direction,
-                )
+                _log_step("was_traded", result=bool(_was_traded))
+                if _was_traded:
+                    log.info(
+                        "execute_trade.dedup_hit",
+                        strategy=sid,
+                        window=str(window_key),
+                    )
+                    return _failed(
+                        "already_traded",
+                        strategy_id=sid,
+                        direction=direction,
+                    )
+        except asyncio.TimeoutError:
+            log.warning(
+                "execute_trade.try_claim_trade_timeout",
+                strategy=sid,
+                window=str(window_key),
+                timeout_s=DB_AWAIT_TIMEOUT_S,
+            )
+            return _failed(
+                f"timeout_try_claim_trade: {DB_AWAIT_TIMEOUT_S:.1f}s",
+                strategy_id=sid,
+                direction=direction,
+            )
         except Exception as exc:
             log.warning(
                 "execute_trade.dedup_check_error",
@@ -483,10 +589,25 @@ class ExecuteTradeUseCase:
                 return
             if claim_id and hasattr(self._window_state, "clear_trade_claim"):
                 try:
-                    await self._window_state.clear_trade_claim(
-                        window_key, claim_id
+                    # Audit 2026-04-26: timeout wrapper. clear_trade_claim
+                    # is a single DELETE — under DB pool saturation it
+                    # could be the await that holds the post-FAK release
+                    # for minutes. Bound at DB_AWAIT_TIMEOUT_S; the lease
+                    # TTL self-recovers within 15s anyway.
+                    await asyncio.wait_for(
+                        self._window_state.clear_trade_claim(
+                            window_key, claim_id
+                        ),
+                        timeout=DB_AWAIT_TIMEOUT_S,
                     )
                     claim_released = True
+                except asyncio.TimeoutError:
+                    log.warning(
+                        "execute_trade.clear_claim_timeout",
+                        window=str(window_key),
+                        phase=phase,
+                        timeout_s=DB_AWAIT_TIMEOUT_S,
+                    )
                 except Exception as _clr_exc:
                     log.warning(
                         "execute_trade.clear_claim_failed",
@@ -616,8 +737,33 @@ class ExecuteTradeUseCase:
         # at definition time can name-resolve correctly.
         if hasattr(self._window_state, "try_claim_fill_slot"):
             try:
-                slot_claimed = await self._window_state.try_claim_fill_slot(
-                    window_key, sid
+                # Audit 2026-04-26: timeout wrapper. UPSERT on a hot row
+                # (same window, multiple strategies racing) is the most
+                # likely candidate for the 7-min hang under DB pool
+                # saturation. Capping at DB_AWAIT_TIMEOUT_S means a
+                # stalled UPSERT bails out instead of holding the lease
+                # for minutes.
+                slot_claimed = await asyncio.wait_for(
+                    self._window_state.try_claim_fill_slot(
+                        window_key, sid
+                    ),
+                    timeout=DB_AWAIT_TIMEOUT_S,
+                )
+                _log_step("try_claim_fill_slot", claimed=bool(slot_claimed))
+            except asyncio.TimeoutError:
+                log.warning(
+                    "execute_trade.try_claim_fill_slot_timeout",
+                    strategy=sid,
+                    window=str(window_key),
+                    timeout_s=DB_AWAIT_TIMEOUT_S,
+                )
+                await _release_claim("fill_slot_claim_timeout")
+                return _failed(
+                    f"timeout_try_claim_fill_slot: {DB_AWAIT_TIMEOUT_S:.1f}s",
+                    strategy_id=sid,
+                    direction=direction,
+                    stake_usd=stake.adjusted_stake,
+                    token_id=token_id,
                 )
             except Exception as exc:
                 # Fail-closed defensive: refuse to fire FAK if our
@@ -675,8 +821,19 @@ class ExecuteTradeUseCase:
             if not hasattr(self._window_state, "release_fill_slot"):
                 return False
             try:
-                await self._window_state.release_fill_slot(
-                    window_key, sid
+                # Audit 2026-04-26: timeout wrapper. Forensics on window
+                # 1777242900 showed a 2:21 gap between FAK return and
+                # ``release_fill_slot`` log — the await silently parked
+                # while the DB pool was saturated. Bounding at
+                # DB_AWAIT_TIMEOUT_S means the strategy unblocks fast;
+                # a stale 'pending' row will be cleaned up by either the
+                # next try_claim_fill_slot's stale-takeover (60s TTL)
+                # or the finally backstop on the next attempt.
+                await asyncio.wait_for(
+                    self._window_state.release_fill_slot(
+                        window_key, sid
+                    ),
+                    timeout=DB_AWAIT_TIMEOUT_S,
                 )
                 slot_released = True
                 log.info(
@@ -686,6 +843,19 @@ class ExecuteTradeUseCase:
                     phase=phase,
                 )
                 return True
+            except asyncio.TimeoutError:
+                log.warning(
+                    "execute_trade.release_fill_slot_timeout",
+                    strategy=sid,
+                    window=str(window_key),
+                    phase=phase,
+                    timeout_s=DB_AWAIT_TIMEOUT_S,
+                )
+                # Don't set slot_released — the DELETE may still complete
+                # in the background pool; mark it as "tried but unsure".
+                # Stale-takeover on the next try_claim_fill_slot covers
+                # the worst case.
+                return False
             except Exception as _rel_exc:
                 log.warning(
                     "execute_trade.release_fill_slot_failed",
@@ -729,12 +899,23 @@ class ExecuteTradeUseCase:
         result: Optional[ExecutionResult] = None
         try:
             try:
+                # The FAK ladder has its own internal total-elapsed
+                # timeout (FAK_LADDER_MAX_ELAPSED_S, default 20s). We
+                # do NOT wrap with asyncio.wait_for here because that
+                # would CancelError-bomb the executor mid-flight and
+                # potentially leave a CLOB order half-submitted.
+                _log_step("pre_execute_order")
                 result = await self._executor.execute_order(
                     token_id=token_id,
                     side=side,
                     stake_usd=stake.adjusted_stake,
                     entry_cap=entry_cap,
                     price_floor=PRICE_FLOOR,
+                )
+                _log_step(
+                    "post_execute_order",
+                    success=bool(getattr(result, "success", False)),
+                    failure_reason=getattr(result, "failure_reason", None),
                 )
             except Exception as exc:
                 await _release_fill_slot("execution_error")
@@ -787,7 +968,22 @@ class ExecuteTradeUseCase:
 
             # ── Step 7: Record trade ───────────────────────────────────────
             try:
-                await self._recorder.record_trade(decision, result, stake)
+                # Audit 2026-04-26: timeout wrapper. record_trade is
+                # multiple INSERTs (trades, trade_events, etc) — slow
+                # under DB pool saturation but never load-bearing for
+                # the fill itself.
+                await asyncio.wait_for(
+                    self._recorder.record_trade(decision, result, stake),
+                    timeout=DB_AWAIT_TIMEOUT_S,
+                )
+                _log_step("record_trade")
+            except asyncio.TimeoutError:
+                log.warning(
+                    "execute_trade.record_trade_timeout",
+                    strategy=sid,
+                    window=str(window_key),
+                    timeout_s=DB_AWAIT_TIMEOUT_S,
+                )
             except Exception as exc:
                 # Fire-and-forget spirit: log but don't fail the trade
                 log.warning(
@@ -811,17 +1007,37 @@ class ExecuteTradeUseCase:
             # WHERE clause being correct forever).
             try:
                 try:
-                    await self._window_state.mark_traded(
-                        window_key,
-                        result.order_id or "unknown",
-                        strategy_id=sid,
+                    # Audit 2026-04-26: timeout wrapper. mark_traded is
+                    # the UPSERT that flips placeholder → real order_id.
+                    # If it stalls under pool saturation we still want
+                    # ``committed=True`` to fire so the finally backstop
+                    # doesn't roll back the slot (the fill is real on
+                    # CLOB regardless of our DB state).
+                    await asyncio.wait_for(
+                        self._window_state.mark_traded(
+                            window_key,
+                            result.order_id or "unknown",
+                            strategy_id=sid,
+                        ),
+                        timeout=DB_AWAIT_TIMEOUT_S,
                     )
                 except TypeError:
                     # Legacy port impl without strategy_id kwarg.
-                    await self._window_state.mark_traded(
-                        window_key,
-                        result.order_id or "unknown",
+                    await asyncio.wait_for(
+                        self._window_state.mark_traded(
+                            window_key,
+                            result.order_id or "unknown",
+                        ),
+                        timeout=DB_AWAIT_TIMEOUT_S,
                     )
+                _log_step("mark_traded")
+            except asyncio.TimeoutError:
+                log.warning(
+                    "execute_trade.mark_traded_timeout",
+                    strategy=sid,
+                    window=str(window_key),
+                    timeout_s=DB_AWAIT_TIMEOUT_S,
+                )
             except Exception as exc:
                 log.warning(
                     "execute_trade.mark_traded_error",
