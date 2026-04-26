@@ -858,6 +858,138 @@ async def test_format_trade_alert_failure_reason():
     assert "no_liquidity" in msg
 
 
+# ── PR #397: alerter MUST be fire-and-forget on the success path ──────
+#
+# Production incident 2026-04-26: a hung Telegram POST inside
+# alerter.send_strategy_trade_alert was holding execute() open for ~2
+# minutes after the FAK fill. Registry only registers the position with
+# position_monitor.on_fill AFTER execute() returns, so the strategy's
+# exit-eval window (e.g. exit_eval_start_offset=48 → end_offset=30) had
+# already lapsed before the monitor was wired up — stop-loss was a
+# no-op. Tests below pin the wiring contract: alerter is dispatched but
+# NEVER awaited on the success path.
+
+
+@pytest.mark.asyncio
+async def test_alerter_failure_does_not_block_execute_return():
+    """Hanging alerter must not delay execute() return.
+
+    Simulates the production incident: alerter sleeps for what would be
+    2 min in real life, then raises. execute() must return promptly so
+    the caller (registry) can call position_monitor.on_fill within
+    milliseconds of the fill, well inside the strategy's exit-eval
+    window.
+    """
+    import asyncio
+    import time as _time
+
+    uc, mocks = _build_use_case()
+
+    async def _hang_then_raise(*args, **kwargs):
+        await asyncio.sleep(120)  # mimic Telegram aiohttp hang
+        raise RuntimeError("telegram timeout")
+
+    mocks["alerter"].send_strategy_trade_alert = AsyncMock(
+        side_effect=_hang_then_raise
+    )
+
+    decision = _make_decision(direction="DOWN")
+    market = _make_window_market()
+
+    t0 = _time.monotonic()
+    result = await uc.execute(
+        decision=decision,
+        window_market=market,
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    elapsed = _time.monotonic() - t0
+
+    assert result.success is True
+    # Must return in well under a second; the hung alerter is decoupled.
+    assert elapsed < 0.5, (
+        f"execute() returned in {elapsed:.3f}s — alerter is blocking "
+        f"the critical path (regression of PR #397)"
+    )
+
+    # Alerter call WAS dispatched (synchronously, into a background
+    # task). We just refused to wait for it.
+    mocks["alerter"].send_strategy_trade_alert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_alerter_called_but_not_awaited_on_success_path():
+    """Direct contract test: success path enqueues alerter call but
+    does NOT await it. Verified by checking that execute() returns
+    while the alerter coroutine is still pending.
+    """
+    import asyncio
+
+    uc, mocks = _build_use_case()
+
+    alert_started = asyncio.Event()
+    alert_release = asyncio.Event()
+
+    async def _block(*args, **kwargs):
+        alert_started.set()
+        await alert_release.wait()
+
+    mocks["alerter"].send_strategy_trade_alert = AsyncMock(side_effect=_block)
+
+    result = await uc.execute(
+        decision=_make_decision(direction="DOWN"),
+        window_market=_make_window_market(),
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+
+    # execute() returned with success=True even though the alerter
+    # background task has not finished.
+    assert result.success is True
+    # Yield to let the background task pick up.
+    await asyncio.sleep(0)
+    assert alert_started.is_set(), "alerter should have been dispatched"
+    # Alerter is still parked inside _block — release it so test cleanup
+    # doesn't leave the task pending forever.
+    alert_release.set()
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_risk_blocked_alerter_is_fire_and_forget():
+    """Risk-block path also dispatches the alerter without awaiting.
+
+    Same contract as the success path: a hung BLOCKED-alert send must
+    not delay returning the failure result to the registry.
+    """
+    import asyncio
+    import time as _time
+
+    risk = _make_risk_status(kill_switch_active=True)
+    uc, mocks = _build_use_case(risk_status=risk)
+
+    async def _hang(*args, **kwargs):
+        await asyncio.sleep(120)
+
+    mocks["alerter"].send_system_alert = AsyncMock(side_effect=_hang)
+
+    t0 = _time.monotonic()
+    result = await uc.execute(
+        decision=_make_decision(),
+        window_market=_make_window_market(),
+        current_btc_price=84231.0,
+        open_price=84331.0,
+    )
+    elapsed = _time.monotonic() - t0
+
+    assert not result.success
+    assert "kill_switch" in result.failure_reason
+    assert elapsed < 0.5, (
+        f"risk_blocked path took {elapsed:.3f}s — alerter is blocking"
+    )
+    mocks["alerter"].send_system_alert.assert_called_once()
+
+
 # ─── Lease release on early-return paths (audit 2026-04-26) ──────────────
 #
 # Forensics on window 1777227900 (v9_lgb_only LIVE, 2026-04-26 18:33Z):

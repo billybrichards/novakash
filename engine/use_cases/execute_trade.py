@@ -26,11 +26,12 @@ Feature flag: ENGINE_REGISTRY_EXECUTE (default false).
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time as _time
 import structlog
 from dataclasses import replace
-from typing import Any, Optional
+from typing import Any, Coroutine, Optional
 
 from domain.ports import (
     PolymarketClientPort,
@@ -507,15 +508,15 @@ class ExecuteTradeUseCase:
                 window=str(window_key),
                 claim_released=bool(claim_id),
             )
-            try:
-                await self._alerter.send_system_alert(
+            self._fire_alert_async(
+                "risk_blocked",
+                self._alerter.send_system_alert(
                     f"BLOCKED {sid} {decision.strategy_version}\n"
                     f"Direction: {direction}\n"
                     f"Stake: ${stake.adjusted_stake:.2f}\n"
                     f"Reason: {reason}"
-                )
-            except Exception:
-                pass
+                ),
+            )
             await _release_claim("risk_blocked")
             return _failed(
                 reason,
@@ -756,19 +757,26 @@ class ExecuteTradeUseCase:
                 error=str(exc)[:200],
             )
 
-        # ── Step 8b: Unconditional FILL card ───────────────────────────
+        # ── Step 8b: Unconditional FILL card (fire-and-forget) ─────────
         # Every successful fill on Polymarket gets a short confirmation
         # message. Complements send_strategy_trade_alert (which is a
         # richer entry card) and send_trade_resolved (which fires later
         # at window resolve). User-requested visibility guarantee.
+        #
+        # Audit 2026-04-26 (PR #397): NEVER await alerter on the success
+        # path — see _fire_alert_async docstring. A hung Telegram POST
+        # was holding execute() for ~2 minutes, delaying registry's
+        # post-fill position_monitor.on_fill() registration past the
+        # exit-evaluation window.
         if (
             not self._paper_mode
             and result.fill_size
             and result.fill_size > 0
             and hasattr(self._alerter, "send_fill_confirmed")
         ):
-            try:
-                await self._alerter.send_fill_confirmed(
+            self._fire_alert_async(
+                "fill_confirmed",
+                self._alerter.send_fill_confirmed(
                     strategy=sid,
                     window_ts=int(window_key.window_ts or 0),
                     side=direction,
@@ -778,53 +786,56 @@ class ExecuteTradeUseCase:
                     condition_id=getattr(window_market, "condition_id", None),
                     tx_hash=getattr(result, "tx_hash", None),
                     timeframe=window_key.timeframe,
-                )
-            except Exception as exc:
-                log.bind(strategy=sid).warning(
-                    "execute_trade.fill_confirmed_failed",
-                    error=str(exc)[:200],
-                )
+                ),
+            )
 
-        # ── Step 9: Telegram alert (rich strategy-aware format) ─────────
+        # ── Step 9: Telegram alert (rich strategy-aware, fire-and-forget) ──
+        # See PR #397 note above: dispatched via _fire_alert_async so the
+        # success log + ExecutionResult return reach the registry within
+        # milliseconds, allowing position_monitor.on_fill to register the
+        # exit watcher before the strategy's exit-eval window closes.
         try:
             gate_results = decision.metadata.get("gate_results", [])
             sizing_meta = decision.metadata.get("sizing", {})
             # Use rich strategy alert if available, fallback to plain text
             if hasattr(self._alerter, "send_strategy_trade_alert"):
-                await self._alerter.send_strategy_trade_alert(
-                    strategy_id=sid,
-                    strategy_version=decision.strategy_version,
-                    direction=direction,
-                    confidence=decision.confidence or "?",
-                    confidence_score=decision.confidence_score or 0.0,
-                    entry_reason=decision.entry_reason,
-                    gate_results=gate_results,
-                    sizing_modifier=sizing_meta.get("modifier", 1.0),
-                    sizing_label=sizing_meta.get("label", "default"),
-                    fill_price=result.fill_price or 0.0,
-                    fill_size=result.fill_size or 0.0,
-                    stake_usd=result.stake_usd,
-                    order_type=(result.execution_mode or "paper").upper(),
-                    order_id=result.order_id,
-                    execution_mode=result.execution_mode,
-                    timeframe=window_key.timeframe,
-                    btc_price=current_btc_price,
-                    vpin=getattr(self, "_last_vpin", 0.0),
-                    regime=getattr(self, "_last_regime", "?"),
-                    eval_offset=getattr(decision, "metadata", {}).get("eval_offset")
-                    if decision.metadata
-                    else None,
-                    paper_mode=self._paper_mode,
-                    success=result.success,
-                    failure_reason=result.failure_reason or "",
-                    elapsed_s=(result.execution_end - result.execution_start)
-                    if result.execution_end > result.execution_start
-                    else 0.0,
-                    # Forward raw decision metadata so strategy-specific TG
-                    # surfaces (e.g. v5_ensemble's signal_source / p_lgb /
-                    # p_classifier / ensemble_config) flow to the renderer
-                    # without each strategy needing its own kwarg.
-                    decision_metadata=decision.metadata,
+                self._fire_alert_async(
+                    "strategy_trade_alert",
+                    self._alerter.send_strategy_trade_alert(
+                        strategy_id=sid,
+                        strategy_version=decision.strategy_version,
+                        direction=direction,
+                        confidence=decision.confidence or "?",
+                        confidence_score=decision.confidence_score or 0.0,
+                        entry_reason=decision.entry_reason,
+                        gate_results=gate_results,
+                        sizing_modifier=sizing_meta.get("modifier", 1.0),
+                        sizing_label=sizing_meta.get("label", "default"),
+                        fill_price=result.fill_price or 0.0,
+                        fill_size=result.fill_size or 0.0,
+                        stake_usd=result.stake_usd,
+                        order_type=(result.execution_mode or "paper").upper(),
+                        order_id=result.order_id,
+                        execution_mode=result.execution_mode,
+                        timeframe=window_key.timeframe,
+                        btc_price=current_btc_price,
+                        vpin=getattr(self, "_last_vpin", 0.0),
+                        regime=getattr(self, "_last_regime", "?"),
+                        eval_offset=getattr(decision, "metadata", {}).get("eval_offset")
+                        if decision.metadata
+                        else None,
+                        paper_mode=self._paper_mode,
+                        success=result.success,
+                        failure_reason=result.failure_reason or "",
+                        elapsed_s=(result.execution_end - result.execution_start)
+                        if result.execution_end > result.execution_start
+                        else 0.0,
+                        # Forward raw decision metadata so strategy-specific TG
+                        # surfaces (e.g. v5_ensemble's signal_source / p_lgb /
+                        # p_classifier / ensemble_config) flow to the renderer
+                        # without each strategy needing its own kwarg.
+                        decision_metadata=decision.metadata,
+                    ),
                 )
             else:
                 alert_msg = self._format_trade_alert(
@@ -834,7 +845,10 @@ class ExecuteTradeUseCase:
                     current_btc_price,
                     open_price,
                 )
-                await self._alerter.send_system_alert(alert_msg)
+                self._fire_alert_async(
+                    "system_alert_fallback",
+                    self._alerter.send_system_alert(alert_msg),
+                )
         except Exception as exc:
             log.warning(
                 "execute_trade.alert_error",
@@ -978,14 +992,60 @@ class ExecuteTradeUseCase:
                 errors=self._consecutive_errors,
                 cooldown_s=CIRCUIT_BREAKER_COOLDOWN_S,
             )
-            try:
-                await self._alerter.send_system_alert(
+            self._fire_alert_async(
+                "circuit_breaker_tripped",
+                self._alerter.send_system_alert(
                     f"⚠️ *Circuit breaker tripped*\n"
                     f"{self._consecutive_errors} consecutive order errors\n"
                     f"Cooldown: {CIRCUIT_BREAKER_COOLDOWN_S}s"
+                ),
+            )
+
+    # ─── Async alerter dispatch ────────────────────────────────────────
+    #
+    # Audit 2026-04-26 (PR #397): a hung `aiohttp` POST inside
+    # ``alerter.send_*`` was blocking ``execute()`` for ~2 minutes after
+    # the FAK fill. The registry only registers the position with
+    # ``position_monitor.on_fill`` AFTER ``execute()`` returns, so the
+    # exit-monitor evaluation window (``exit_eval_start_offset`` ..
+    # ``exit_eval_end_offset``) had already elapsed by the time the
+    # monitor was wired up — stop-loss never had a chance to fire.
+    #
+    # Rule: alerter calls are advisory. They MUST NOT sit on the
+    # critical path that gates exit-monitor registration. Every
+    # alerter coroutine on the success / risk-block / circuit-breaker
+    # path is dispatched via ``asyncio.create_task`` so ``execute()``
+    # returns immediately. Failures are caught and logged inside the
+    # background task — the trading path never sees them.
+    def _fire_alert_async(
+        self, label: str, coro: Coroutine[Any, Any, Any]
+    ) -> None:
+        """Run an alerter coroutine in the background, swallow & log errors.
+
+        ``label`` identifies which alerter call emitted the warning if
+        the coroutine raises (e.g. ``"strategy_trade_alert"``).
+        """
+
+        async def _runner() -> None:
+            try:
+                await coro
+            except Exception as exc:
+                log.warning(
+                    "execute_trade.alerter_send_failed",
+                    label=label,
+                    error=str(exc)[:200],
                 )
+
+        try:
+            asyncio.create_task(_runner())
+        except RuntimeError:
+            # No running loop (e.g. during a sync test path). Close the
+            # coroutine to avoid a "coroutine was never awaited" warning
+            # and bail silently — this branch never hits in production.
+            try:
+                coro.close()
             except Exception:
-                pass  # best-effort; log.warning above is the primary signal
+                pass
 
     # ─── Helpers ───────────────────────────────────────────────────────
 
