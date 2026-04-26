@@ -10,6 +10,12 @@ class _FakePolyClient:
         self.place_order_calls = 0
         self.status_calls = 0
         self.rfq_calls = 0
+        # Configurable best-ask for the price-ladder probe added in PR #361
+        # (aggressive sell exit). Default to None → ladder logs a benign
+        # "book_error: no ask" but proceeds with the configured FAK
+        # ladder prices, matching the prior test contract before the
+        # probe was added.
+        self.best_ask_price: float | None = None
 
     async def place_rfq_order(self, **kwargs):
         self.rfq_calls += 1
@@ -22,6 +28,15 @@ class _FakePolyClient:
     async def get_order_status(self, order_id):
         self.status_calls += 1
         return {"status": "LIVE", "size_matched": 0}
+
+    async def get_clob_best_ask(self, token_id: str):
+        """Stub for the FAK price-ladder probe (PR #361).
+
+        Returns the configured best-ask. None → caller logs ``book_error``
+        but proceeds with the static ladder. Tests that exercise the
+        probe explicitly should set ``self.best_ask_price`` first.
+        """
+        return self.best_ask_price
 
 
 @pytest.mark.asyncio

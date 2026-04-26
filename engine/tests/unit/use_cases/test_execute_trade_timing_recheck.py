@@ -92,8 +92,18 @@ def test_execute_passes_within_range():
     assert reason is None
 
 
-def test_execute_aborts_below_min_offset():
-    """current_offset=15s < min=30 → returns eval_offset_drift."""
+def test_execute_does_not_abort_below_min_offset():
+    """T-15 against min=30 used to return eval_offset_drift, but the
+    drift check was deliberately disabled (PR 7e31330) because it caused
+    false blocks for strategies whose own gate fires near min_offset
+    (3-tick entry confirmation can burn ~6s after the strategy gate
+    passes at T-24). Only ``eval_offset_past_close`` remains enforced.
+
+    See audit #319 — live evidence (2026-04-26) shows enforcing drift
+    here breaks v9_lgb_only / v10_lgb_only entirely. The strategy's own
+    timing gate is the authority on min_offset; this layer is the
+    past-close safety net only.
+    """
     from use_cases.execute_trade import _recheck_timing_before_execute
 
     window_ts = 1_776_800_000
@@ -105,10 +115,9 @@ def test_execute_aborts_below_min_offset():
         _decision(metadata={"min_offset_sec": 30}),
         now_fn=lambda: float(now),
     )
-    assert reason is not None
-    assert reason.startswith("eval_offset_drift")
-    assert "current=15s" in reason
-    assert "min=30s" in reason
+    # Drift check disabled — recheck is past-close only, T-15 is inside
+    # the window so it must fall open.
+    assert reason is None
 
 
 def test_execute_aborts_past_close():
@@ -145,23 +154,23 @@ def test_execute_aborts_exactly_at_close():
     assert reason.startswith("eval_offset_past_close")
 
 
-def test_execute_uses_strategy_gate_params_min():
-    """min_offset_sec from nested gate_params metadata overrides default."""
+def test_execute_does_not_block_on_gate_params_min():
+    """Same as test_execute_does_not_abort_below_min_offset, but for the
+    nested ``gate_params`` metadata path. The recheck must remain a
+    past-close-only gate; min-offset enforcement is the strategy's
+    responsibility (see audit #319)."""
     from use_cases.execute_trade import _recheck_timing_before_execute
 
     window_ts = 1_776_800_000
     close_ts = window_ts + 300
-    now = close_ts - 45  # T-45
+    now = close_ts - 45  # T-45 (inside window)
 
-    # Strategy declares min=60 in metadata.gate_params — T-45 must block
     reason = _recheck_timing_before_execute(
         _window_key(window_ts),
         _decision(metadata={"gate_params": {"min_offset_sec": 60}}),
         now_fn=lambda: float(now),
     )
-    assert reason is not None
-    assert reason.startswith("eval_offset_drift")
-    assert "min=60s" in reason
+    assert reason is None
 
 
 def test_cross_window_guard_blocks_15m_timeframe():
@@ -204,27 +213,31 @@ def test_missing_window_ts_falls_open():
     assert reason is None
 
 
-def test_default_min_offset_used_when_metadata_missing():
-    """When metadata doesn't declare min_offset_sec, the helper uses the
-    module default (30s)."""
-    from use_cases.execute_trade import (
-        _recheck_timing_before_execute,
-        _EVAL_OFFSET_MIN_DEFAULT,
-    )
+def test_default_min_offset_constant_still_30s():
+    """The default min_offset constant is parsed from env on import; we
+    pin it to 30s for log/diagnostic stability. The recheck no longer
+    uses this value to block (drift check disabled), but the constant
+    remains read so future re-enables don't need a code change."""
+    from use_cases.execute_trade import _EVAL_OFFSET_MIN_DEFAULT
 
     assert _EVAL_OFFSET_MIN_DEFAULT == 30
 
+
+def test_inside_window_with_no_metadata_passes():
+    """No metadata → no min_offset declared → recheck must still fall
+    open inside the window (only past-close blocks)."""
+    from use_cases.execute_trade import _recheck_timing_before_execute
+
     window_ts = 1_776_800_000
     close_ts = window_ts + 300
-    now = close_ts - 20  # below 30 default
+    now = close_ts - 20  # T-20 (still inside)
 
     reason = _recheck_timing_before_execute(
         _window_key(window_ts),
         _decision(metadata={}),
         now_fn=lambda: float(now),
     )
-    assert reason is not None
-    assert reason.startswith("eval_offset_drift")
+    assert reason is None
 
 
 # ─── Integration-ish wiring tests against ExecuteTradeUseCase.execute ────
@@ -313,9 +326,14 @@ async def test_execute_blocks_when_wall_clock_past_close():
 
 
 @pytest.mark.asyncio
-async def test_execute_blocks_when_below_min_offset():
-    """Integration: T-15 against min_offset=30 must short-circuit at
-    the recheck and not hit the executor."""
+async def test_execute_does_not_block_when_below_min_offset():
+    """Integration: T-15 against min_offset=30 used to block at the
+    recheck. After PR 7e31330 / audit #319 the drift check is disabled,
+    so the executor IS reached and a successful (paper) fill happens.
+
+    The strategy's own timing gate is the authority on min_offset; the
+    recheck only catches past-close drift.
+    """
     window_ts = 1_776_800_000
     close_ts = window_ts + 300
     clock = _FakeClock(start=close_ts - 15)  # T-15
@@ -331,9 +349,10 @@ async def test_execute_blocks_when_below_min_offset():
         open_price=84100.0,
     )
 
-    assert result.success is False
-    assert (result.failure_reason or "").startswith("eval_offset_drift")
-    mock_executor.execute_order.assert_not_called()
+    # Drift check disabled — executor IS hit, paper fill succeeds.
+    assert result.success is True
+    assert result.failure_reason is None
+    mock_executor.execute_order.assert_called_once()
 
 
 @pytest.mark.asyncio
