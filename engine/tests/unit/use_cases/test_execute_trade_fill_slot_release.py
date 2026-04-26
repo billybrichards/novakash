@@ -316,3 +316,86 @@ async def test_success_path_does_not_release_slot():
     assert result.success is True
     # Slot still held — represents the real (now-stamped) fill marker
     assert "BTC/1777240500/5m/v9_lgb_only" in claimed
+
+
+# ─── 2026-04-26 smoking gun: cancel AFTER fill, BEFORE mark_traded ────────
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_fill_before_mark_traded_preserves_slot():
+    """Window 1777245000 / v10_lgb_only: a real CLOB FAK fill returned
+    success=True, then ``window_signal_dropped_oldest`` cancelled the
+    in-flight execute_trade ~1.9s later — somewhere between
+    record_trade and mark_traded. With ``committed = True`` only set
+    AFTER mark_traded, the CancelledError propagated through both
+    inner ``except Exception`` blocks (BaseException is not caught) and
+    hit the outer finally with committed=False. The placeholder was
+    deleted, a concurrent eval tick won try_claim_fill_slot, and we
+    double-filled.
+
+    Fix: set ``committed = True`` immediately after ``execute_order``
+    returns success — the fill is real on CLOB at that point, so the
+    placeholder must be preserved regardless of what happens to
+    record_trade / mark_traded (including BaseException task drop).
+    """
+    window_ts = 1_777_245_000
+    close_ts = window_ts + 300
+    clock = _FakeClock(start=close_ts - 222)  # mirrors live offset 222
+
+    uc, mock_executor, mock_window_state, claimed = _build_use_case(clock=clock)
+    # mock_executor returns success=True from default fixture
+
+    # Cancel inside record_trade — happens AFTER execute_order returned
+    # success but BEFORE the (pre-fix) committed=True assignment.
+    async def _cancel_during_record(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    uc._recorder.record_trade.side_effect = _cancel_during_record
+
+    decision = _decision(strategy_id="v10_lgb_only")
+    market = _market(window_ts)
+
+    with pytest.raises(asyncio.CancelledError):
+        await uc.execute(
+            decision=decision,
+            window_market=market,
+            current_btc_price=78311.84,
+            open_price=78300.0,
+        )
+
+    # CRITICAL: slot is preserved. The fill is real on CLOB; deleting
+    # the placeholder would let the next eval tick double-fill.
+    assert "BTC/1777245000/5m/v10_lgb_only" in claimed
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_mark_traded_preserves_slot():
+    """Same root cause as above but the cancellation lands inside
+    ``mark_traded`` (the UPSERT under DB pool saturation). Pre-fix this
+    also slipped past the inner ``except Exception`` and finally
+    released the slot. Post-fix the committed flag was already set
+    after ``execute_order`` returned success, so finally is a no-op.
+    """
+    window_ts = 1_777_245_000
+    close_ts = window_ts + 300
+    clock = _FakeClock(start=close_ts - 222)
+
+    uc, mock_executor, mock_window_state, claimed = _build_use_case(clock=clock)
+
+    async def _cancel_during_mark(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    mock_window_state.mark_traded.side_effect = _cancel_during_mark
+
+    decision = _decision(strategy_id="v10_lgb_only")
+    market = _market(window_ts)
+
+    with pytest.raises(asyncio.CancelledError):
+        await uc.execute(
+            decision=decision,
+            window_market=market,
+            current_btc_price=78311.84,
+            open_price=78300.0,
+        )
+
+    assert "BTC/1777245000/5m/v10_lgb_only" in claimed

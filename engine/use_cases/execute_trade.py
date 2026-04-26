@@ -966,6 +966,27 @@ class ExecuteTradeUseCase:
                 )
                 return result
 
+            # ── Commit the fill_slot placeholder NOW ───────────────────────
+            # Audit 2026-04-26 (smoking gun window 1777245000):
+            # Setting ``committed = True`` only AFTER mark_traded leaves a
+            # window where ``asyncio.CancelledError`` (BaseException, not
+            # caught by ``except Exception`` in the record_trade /
+            # mark_traded blocks below) propagates straight to the outer
+            # finally with committed=False. The finally then deletes the
+            # placeholder, a concurrent eval tick wins try_claim_fill_slot,
+            # and we double-fill.
+            #
+            # The trigger we observed was ``window_signal_dropped_oldest``
+            # cancelling an in-flight execute_trade ~1.9s after a real
+            # CLOB fill. The fill is REAL on CLOB the moment ``executor.
+            # execute_order`` returned success — from this point forward
+            # we MUST NOT release the placeholder regardless of what
+            # happens to the DB writes. record_trade / mark_traded
+            # failures are merely "leak a placeholder", which is fine:
+            # ``has_filled()`` reads the same table so future attempts
+            # short-circuit on the leaked row (preferable to double-fill).
+            committed = True
+
             # ── Step 7: Record trade ───────────────────────────────────────
             try:
                 # Audit 2026-04-26: timeout wrapper. record_trade is
