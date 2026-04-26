@@ -300,9 +300,16 @@ def _build_use_case(*, clock: _FakeClock):
 @pytest.mark.asyncio
 async def test_execute_blocks_when_wall_clock_past_close():
     """Integration: if ExecuteTradeUseCase is called when the wall clock
-    is past the window's close, it must NOT hit the executor; it must
-    return failure_reason='eval_offset_past_close...' and release the
-    dedup claim."""
+    is past the window's close, it must NOT hit the executor.
+
+    Audit #317 reopen (2026-04-26): the timing recheck runs BEFORE
+    try_claim_trade, so a stale-surface eval short-circuits with zero
+    lease activity. The pre-fix expectation that clear_trade_claim be
+    called is no longer correct — we never acquired in the first place,
+    so there is nothing to clear. Verifying that try_claim_trade is
+    NOT called is the stronger invariant: the dedup state is never
+    poisoned by stale-surface attempts.
+    """
     window_ts = 1_776_800_000
     close_ts = window_ts + 300
     clock = _FakeClock(start=close_ts + 5)  # 5s past close
@@ -321,8 +328,12 @@ async def test_execute_blocks_when_wall_clock_past_close():
     assert result.success is False
     assert (result.failure_reason or "").startswith("eval_offset_past_close")
     mock_executor.execute_order.assert_not_called()
-    # Claim was released so future strategies are free to attempt again
-    mock_window_state.clear_trade_claim.assert_called_once()
+    # CRITICAL: the lease must NEVER be acquired on past-close attempts.
+    # Pre-fix this branch acquired then tried to release, and any release
+    # bug poisoned dedup state for the next 15s. See audit #317 second
+    # occurrence forensics.
+    mock_window_state.try_claim_trade.assert_not_called()
+    mock_window_state.clear_trade_claim.assert_not_called()
 
 
 @pytest.mark.asyncio
