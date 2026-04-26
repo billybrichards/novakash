@@ -1125,6 +1125,26 @@ class PgWindowRepository(WindowStateRepository):
 
     PLACEHOLDER_ORDER_ID = "pending"
 
+    # Audit #398 (2026-04-26): defence-in-depth TTL on placeholder rows.
+    # If execute_trade's try/finally release fails to fire (engine
+    # SIGKILL between try_claim_fill_slot.win and the finally block,
+    # node-level kernel panic, etc.), the placeholder would otherwise
+    # live forever and lock the strategy out of the window.
+    #
+    # Smoking-gun precedent: window 1777240500 / v9_lgb_only (22:07:47)
+    # left a 'pending' row with no matching trade row, and 12 retries
+    # all observed has_filled=True. Manual DELETE was the only recovery.
+    #
+    # 60s window matches:
+    #   * The longest plausible FAK ladder lifetime (FAK_LADDER_MAX_ELAPSED_S
+    #     defaults to 75s but is bounded at 60s for 5m windows by the
+    #     wall-clock past-close guard in execute_trade.Step 0).
+    #   * Comfortably outlives a healthy try_claim → mark_traded round-
+    #     trip (typically <5s including FAK fill).
+    # If a placeholder is older than this, the owning attempt is
+    # definitively dead — steal it.
+    STALE_PLACEHOLDER_TTL_SECONDS = 60
+
     async def try_claim_fill_slot(
         self,
         key: WindowKey,
@@ -1139,11 +1159,20 @@ class PgWindowRepository(WindowStateRepository):
         return True — including for repeat attempts in the same
         process — preventing a third concurrent attempt from firing.
 
-        On UNIQUE-constraint violation (= someone else won), returns
-        False without raising. On any other DB error, returns False
-        and logs WARN — fail-closed here is correct: better to skip a
-        legitimate trade than book a duplicate when our pessimistic
-        guard is unreachable.
+        Stale-placeholder takeover (audit #398): if a previous attempt
+        crashed between try_claim_fill_slot.win and the finally-block
+        release (e.g. SIGKILL mid-FAK), the placeholder row would lock
+        the strategy out of the window forever. The ON CONFLICT DO
+        UPDATE clause STEALS the row when the existing one is still a
+        placeholder (order_id = 'pending') AND older than
+        :attr:`STALE_PLACEHOLDER_TTL_SECONDS`. A real fill (order_id
+        != 'pending') is NEVER overwritten regardless of age.
+
+        On UNIQUE-constraint violation by an active (non-stale)
+        placeholder OR a real fill, returns False without raising.
+        On any DB error, returns False and logs WARN — fail-closed
+        here is correct: better to skip a legitimate trade than book
+        a duplicate when our pessimistic guard is unreachable.
         """
         if not self._pool:
             # No DB → no protection possible. Defer to the lease
@@ -1155,9 +1184,13 @@ class PgWindowRepository(WindowStateRepository):
         try:
             async with self._pool.acquire() as conn:
                 now = datetime.now(timezone.utc)
-                # ON CONFLICT DO NOTHING + RETURNING tells us whether
-                # we actually inserted. RETURNING returns 0 rows if a
-                # conflict was hit and we were the loser.
+                # ON CONFLICT DO UPDATE with a WHERE predicate that
+                # only matches stale placeholders. The RETURNING shape:
+                #   * Fresh INSERT → returns 1.
+                #   * Stale-placeholder steal (DO UPDATE matched) → returns 1.
+                #   * Active placeholder OR real fill → DO UPDATE no-ops
+                #     because WHERE predicate is False; RETURNING returns
+                #     no row → fetchval returns None.
                 inserted = await conn.fetchval(
                     """
                     INSERT INTO strategy_window_fills
@@ -1165,7 +1198,12 @@ class PgWindowRepository(WindowStateRepository):
                          order_id, filled_at)
                     VALUES ($1, $2, $3, $4, $5, $6)
                     ON CONFLICT (asset, window_ts, timeframe, strategy_id)
-                        DO NOTHING
+                        DO UPDATE
+                            SET order_id = EXCLUDED.order_id,
+                                filled_at = EXCLUDED.filled_at
+                            WHERE strategy_window_fills.order_id = $5
+                              AND strategy_window_fills.filled_at
+                                  < NOW() - ($7 || ' seconds')::interval
                     RETURNING 1
                     """,
                     key.asset,
@@ -1174,13 +1212,15 @@ class PgWindowRepository(WindowStateRepository):
                     strategy_id,
                     self.PLACEHOLDER_ORDER_ID,
                     now,
+                    str(int(self.STALE_PLACEHOLDER_TTL_SECONDS)),
                 )
                 won = inserted is not None
-                log.debug(
+                log.info(
                     "db.try_claim_fill_slot",
                     key=str(key),
                     strategy=strategy_id,
                     won=won,
+                    ttl_s=self.STALE_PLACEHOLDER_TTL_SECONDS,
                 )
                 return won
         except Exception as exc:
@@ -1234,7 +1274,12 @@ class PgWindowRepository(WindowStateRepository):
                         rows = int(tag.split(" ", 1)[1])
                     except (ValueError, IndexError):
                         rows = 0
-                log.debug(
+                # Audit #398 (2026-04-26): promoted to INFO so post-mortem
+                # forensics on the fill-slot leak can prove the DELETE
+                # actually fired (and hit a row, vs a redundant call that
+                # matched 0 rows because mark_traded already stamped a real
+                # order_id).
+                log.info(
                     "db.release_fill_slot",
                     key=str(key),
                     strategy=strategy_id,
