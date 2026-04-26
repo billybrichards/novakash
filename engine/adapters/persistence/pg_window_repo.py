@@ -880,16 +880,62 @@ class PgWindowRepository(WindowStateRepository):
                 # window_claims — lease-based dedup (audit #316). Separate from
                 # window_states so claims (transient leases) and fills (terminal
                 # records) don't share the dual-meaning of order_id='pending'.
+                #
+                # PK includes strategy_id (audit #320, 2026-04-26): without
+                # strategy_id, sibling strategies (v9_lgb_only, v9_ensemble,
+                # v10_lgb_only, …) all fight for the SAME row on every eval
+                # tick. The first to acquire holds the lease for 15s,
+                # blocking ALL siblings (dedup_hit cascade), even though
+                # different strategies should be allowed to take independent
+                # positions on the same window. With strategy_id in the PK
+                # each strategy has its own row → no cross-strategy contention.
                 await conn.execute("""CREATE TABLE IF NOT EXISTS window_claims (
                     asset VARCHAR(10) NOT NULL,
                     window_ts BIGINT NOT NULL,
                     timeframe VARCHAR(10) NOT NULL DEFAULT '5m',
+                    strategy_id TEXT NOT NULL DEFAULT '',
                     claim_id UUID NOT NULL,
                     claimed_by TEXT,
                     claimed_at TIMESTAMPTZ NOT NULL,
                     expires_at TIMESTAMPTZ NOT NULL,
                     attempt_n INT NOT NULL DEFAULT 1,
-                    PRIMARY KEY (asset, window_ts, timeframe))""")
+                    PRIMARY KEY (asset, window_ts, timeframe, strategy_id))""")
+                # ── Idempotent migration for existing installs (audit #320) ──
+                # Pre-#320 PK was (asset, window_ts, timeframe). The next 4
+                # statements are no-ops on fresh installs (CREATE TABLE above
+                # already includes strategy_id + new PK) and the migration
+                # path on existing DBs:
+                #   1. Add strategy_id column with a sentinel default for any
+                #      orphan rows (those will TTL out within 15s).
+                #   2. Drop the old PK constraint if present.
+                #   3. Add the new PK including strategy_id.
+                # Each statement is guarded so re-running ensure() is safe.
+                await conn.execute(
+                    """ALTER TABLE window_claims
+                        ADD COLUMN IF NOT EXISTS strategy_id TEXT NOT NULL DEFAULT ''"""
+                )
+                await conn.execute(
+                    """DO $$
+                        DECLARE
+                            pk_cols TEXT;
+                        BEGIN
+                            SELECT string_agg(a.attname, ',' ORDER BY array_position(c.conkey, a.attnum))
+                                INTO pk_cols
+                                FROM pg_constraint c
+                                JOIN pg_attribute a
+                                  ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+                                WHERE c.conrelid = 'window_claims'::regclass
+                                  AND c.contype = 'p';
+                            IF pk_cols IS NOT NULL AND pk_cols !~ 'strategy_id' THEN
+                                EXECUTE 'ALTER TABLE window_claims DROP CONSTRAINT '
+                                    || (SELECT conname FROM pg_constraint
+                                        WHERE conrelid = 'window_claims'::regclass
+                                          AND contype = 'p');
+                                EXECUTE 'ALTER TABLE window_claims ADD PRIMARY KEY '
+                                    || '(asset, window_ts, timeframe, strategy_id)';
+                            END IF;
+                        END $$"""
+                )
                 await conn.execute("""CREATE INDEX IF NOT EXISTS idx_window_claims_expires_at
                     ON window_claims (expires_at)""")
             log.info("db.window_states_table_ensured")
@@ -940,11 +986,14 @@ class PgWindowRepository(WindowStateRepository):
         except Exception as exc:
             log.warning("db.mark_traded_failed", key=str(key), error=str(exc)[:120])
 
-    # ── Lease-based dedup (audit #316) ──────────────────────────────────
+    # ── Lease-based dedup (audit #316, #317, #320) ──────────────────────
     #
     # Design:
     #   - window_claims (separate table): transient leases with TTL
     #   - window_states (this table): terminal fill records (real order_id)
+    #   - PK is (asset, window_ts, timeframe, strategy_id) — each strategy
+    #     has its OWN lease per window. Sibling strategies (v9_lgb_only,
+    #     v9_ensemble, v10_lgb_only, …) cannot starve each other.
     #   - acquire_lease() returns a claim_id that uniquely identifies the
     #     attempt. Subsequent release/fill calls MUST pass that claim_id —
     #     prevents a slow-failing process from clobbering a successor's lease.
@@ -952,36 +1001,57 @@ class PgWindowRepository(WindowStateRepository):
     #     janitor needed).
     #   - mark_traded is idempotent on the real order_id via window_states PK.
     #
-    # Backward-compat shim: the old try_claim_trade()/clear_trade_claim() API
-    # remains for callers that haven't migrated. They wrap the lease functions
-    # and return a synthesised claim_id we store on the instance. When all
-    # callers use the lease context manager directly, this shim can be removed.
+    # Audit #320 forensics (2026-04-26): pre-#320 the PK was per-window
+    # only, and a class-level _legacy_claim_ids dict memoised the
+    # try_claim_trade claim_id. Sibling strategies firing at the same eval
+    # tick clobbered each other's claim_ids in the dict, then
+    # clear_trade_claim deleted the WRONG lease (or no-op'd). Hard
+    # evidence: window_claims.attempt_n=12, 11 consecutive
+    # rows_deleted=0 release logs in 4 minutes, 0 trades in 6 hours.
+    # Fix: PK now includes strategy_id, the legacy in-memory shim is
+    # dropped, and the API surfaces claim_id explicitly so callers thread
+    # it from acquire to release without ever needing a side-table.
 
     LEASE_TTL_SECONDS = 15
-
-    # Per-instance map of (asset, window_ts, timeframe) → claim_id. Used by the
-    # legacy try_claim_trade/clear_trade_claim shim so clear can find the right
-    # claim_id without forcing the caller to track it. Bounded growth: cleared
-    # on release. NOT a substitute for the DB record — purely a shim.
-    _legacy_claim_ids: "dict[tuple[str, int, str], str]" = {}
 
     async def acquire_lease(
         self,
         key: WindowKey,
-        claimed_by: str = "unknown",
+        *,
+        strategy_id: str,
+        claimed_by: Optional[str] = None,
     ) -> Optional[str]:
-        """Acquire a lease on a window for a trade attempt. Returns the
-        ``claim_id`` (uuid) on success, or ``None`` if another process holds
-        an active lease.
+        """Acquire a lease for ``strategy_id`` on ``key``. Returns the
+        ``claim_id`` (uuid) on success, or ``None`` if the same strategy
+        already holds an active lease for this window.
 
-        Atomicity: single SQL statement. The ``ON CONFLICT DO UPDATE`` clause
-        with the ``WHERE`` predicate atomically steals expired leases AND
-        rejects active ones — Postgres evaluates the WHERE on the existing row
-        before the UPDATE, so an active lease causes the row to be untouched
-        and the RETURNING returns nothing.
+        Lease semantics (per (asset, window_ts, timeframe, strategy_id)):
+          * No row → INSERT, attempt_n=1, return new claim_id.
+          * Active lease (expires_at >= now) → return None. The caller's
+            previous in-flight attempt for the SAME strategy hasn't
+            returned yet; refusing prevents a same-strategy double-fire.
+          * Expired lease (expires_at < now) → STEAL: rewrite with new
+            claim_id, attempt_n+1, return new claim_id.
 
-        See audit #316 for the full design rationale.
+        Sibling strategies for the same window NEVER share a row (PK
+        includes strategy_id), so they are mutually independent.
+
+        Atomicity: single SQL statement. The ``ON CONFLICT DO UPDATE``
+        clause with the ``WHERE`` predicate atomically steals expired
+        leases AND rejects active ones — Postgres evaluates the WHERE on
+        the existing row before the UPDATE, so an active lease causes
+        the row to be untouched and the RETURNING returns nothing.
         """
+        if not strategy_id:
+            # Defensive: a missing strategy_id would collapse all callers
+            # into the same row again, recreating audit #320. Surface
+            # immediately rather than silently corrupting the lease table.
+            log.error(
+                "db.acquire_lease.missing_strategy_id",
+                key=str(key),
+                hint="strategy_id is required to scope leases per-strategy",
+            )
+            return None
         if not self._pool:
             # Pool-less mode (tests, paper) — return a synthetic id, caller
             # owns the lease in-process for the call duration.
@@ -989,34 +1059,40 @@ class PgWindowRepository(WindowStateRepository):
         new_claim_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
         expires = now + timedelta(seconds=self.LEASE_TTL_SECONDS)
+        claimed_by_str = claimed_by or strategy_id
         try:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchrow(
                     """
                     INSERT INTO window_claims (
-                        asset, window_ts, timeframe,
+                        asset, window_ts, timeframe, strategy_id,
                         claim_id, claimed_by, claimed_at, expires_at, attempt_n
                     )
-                    VALUES ($1, $2, $3, $4::uuid, $5, $6, $7, 1)
-                    ON CONFLICT (asset, window_ts, timeframe) DO UPDATE
+                    VALUES ($1, $2, $3, $4, $5::uuid, $6, $7, $8, 1)
+                    ON CONFLICT (asset, window_ts, timeframe, strategy_id) DO UPDATE
                         SET claim_id = EXCLUDED.claim_id,
                             claimed_by = EXCLUDED.claimed_by,
                             claimed_at = EXCLUDED.claimed_at,
                             expires_at = EXCLUDED.expires_at,
                             attempt_n = window_claims.attempt_n + 1
-                        WHERE window_claims.expires_at < $6
+                        WHERE window_claims.expires_at < $7
                     RETURNING claim_id::text, attempt_n
                     """,
                     key.asset,
                     key.window_ts,
                     key.timeframe,
+                    strategy_id,
                     new_claim_id,
-                    claimed_by,
+                    claimed_by_str,
                     now,
                     expires,
                 )
                 if row is None:
-                    log.debug("db.acquire_lease.busy", key=str(key))
+                    log.debug(
+                        "db.acquire_lease.busy",
+                        key=str(key),
+                        strategy=strategy_id,
+                    )
                     return None
                 claim_id = row["claim_id"]
                 attempt_n = row["attempt_n"]
@@ -1024,23 +1100,34 @@ class PgWindowRepository(WindowStateRepository):
                     log.info(
                         "db.acquire_lease.steal",
                         key=str(key),
+                        strategy=strategy_id,
                         attempt_n=attempt_n,
-                        claimed_by=claimed_by,
+                        claimed_by=claimed_by_str,
                     )
                 else:
                     log.debug(
                         "db.acquire_lease",
                         key=str(key),
+                        strategy=strategy_id,
                         claim_id=claim_id[:8],
                     )
                 return claim_id
         except Exception as exc:
-            log.warning("db.acquire_lease_failed", key=str(key), error=str(exc)[:120])
+            log.warning(
+                "db.acquire_lease_failed",
+                key=str(key),
+                strategy=strategy_id,
+                error=str(exc)[:120],
+            )
             return None
 
     async def release_lease(self, key: WindowKey, claim_id: str) -> None:
         """Release a lease. Only deletes the row if claim_id matches — prevents
         a slow-failing process from accidentally releasing a successor's lease.
+
+        claim_id is globally unique (UUID), so we don't need to scope by
+        strategy_id in the WHERE — claim_id alone is sufficient. We still
+        scope on (asset, window_ts, timeframe) so the index is used.
 
         Returns command tag info via INFO log so ops can verify releases land.
         Earlier versions logged at DEBUG which masked silent no-op DELETEs in
@@ -1048,6 +1135,9 @@ class PgWindowRepository(WindowStateRepository):
         successful one).
         """
         if not self._pool:
+            return
+        if not claim_id:
+            log.warning("db.release_lease.no_claim_id", key=str(key))
             return
         try:
             async with self._pool.acquire() as conn:
@@ -1078,42 +1168,65 @@ class PgWindowRepository(WindowStateRepository):
                 "db.release_lease_failed", key=str(key), error=str(exc)[:120]
             )
 
-    # ── Legacy API shim — wraps lease semantics ─────────────────────────
-    # Callers using try_claim_trade / clear_trade_claim still work. The shim
-    # bridges to acquire_lease / release_lease and stores the claim_id in
-    # the per-instance map keyed by (asset, window_ts, timeframe). This lets
-    # us migrate use_cases/execute_trade.py incrementally without breakage.
+    # ── Public claim API (per-strategy, claim_id explicit) ──────────────
+    # Audit #320 (2026-04-26): replaces the old in-memory shim. Callers
+    # MUST thread the returned claim_id from try_claim_trade through to
+    # clear_trade_claim. No more class-level dict, no more sibling
+    # clobbering.
 
-    async def try_claim_trade(self, key: WindowKey) -> bool:
-        """Legacy shim: acquire_lease + remember claim_id for clear_trade_claim.
+    async def try_claim_trade(
+        self,
+        key: WindowKey,
+        *,
+        strategy_id: str,
+    ) -> tuple[bool, Optional[str]]:
+        """Atomically claim a window for ``strategy_id``.
 
-        New code should use ``acquire_lease`` directly and pass the returned
-        ``claim_id`` to ``release_lease``. This shim exists so existing
-        execute_trade.py callers work unchanged.
+        Returns ``(True, claim_id)`` on success, ``(False, None)`` when
+        the same strategy already holds an active lease for this window.
+
+        Sibling strategies don't conflict — each has its own row keyed
+        by (asset, window_ts, timeframe, strategy_id). The first call
+        from a given strategy on a given window always succeeds.
+
+        The caller MUST pass the returned ``claim_id`` to
+        ``clear_trade_claim`` on any failure path — without this the
+        DB row will linger for the full TTL and block subsequent eval
+        retries from the same strategy.
         """
-        claim_id = await self.acquire_lease(key, claimed_by="legacy_shim")
+        claim_id = await self.acquire_lease(
+            key,
+            strategy_id=strategy_id,
+            claimed_by=strategy_id,
+        )
         if claim_id is None:
-            return False
-        # Remember claim_id so clear_trade_claim can release the right lease.
-        self._legacy_claim_ids[(key.asset, key.window_ts, key.timeframe)] = claim_id
-        return True
+            return (False, None)
+        return (True, claim_id)
 
-    async def clear_trade_claim(self, key: WindowKey) -> None:
-        """Legacy shim: release_lease using the claim_id remembered from
-        try_claim_trade. If we don't have a claim_id (e.g. process restarted
-        between claim and clear), do nothing — the lease will expire naturally
-        within LEASE_TTL_SECONDS, and the next acquire_lease will steal it.
+    async def clear_trade_claim(
+        self,
+        key: WindowKey,
+        claim_id: Optional[str] = None,
+    ) -> None:
+        """Release a pending claim using the explicit ``claim_id`` returned
+        from ``try_claim_trade``.
+
+        ``claim_id=None`` is a no-op with a WARN log — pre-#320 callers
+        relied on an in-memory shim to memoise the claim_id, which
+        sibling strategies clobbered. Modern callers MUST pass claim_id
+        explicitly. The lease will TTL out naturally within
+        LEASE_TTL_SECONDS if the caller forgets, but every dropped
+        claim_id is a state-machine bug worth a warning.
         """
-        slot = (key.asset, key.window_ts, key.timeframe)
-        claim_id = self._legacy_claim_ids.pop(slot, None)
-        if claim_id is None:
+        if not claim_id:
             log.warning(
-                "db.clear_trade_claim.no_memory",
+                "db.clear_trade_claim.no_claim_id",
                 key=str(key),
                 hint=(
-                    "Caller invoked clear_trade_claim but no prior "
-                    "try_claim_trade is recorded. Lease will expire "
-                    "naturally within LEASE_TTL_SECONDS."
+                    "clear_trade_claim was called without a claim_id. "
+                    "Modern callers must thread the claim_id returned "
+                    "by try_claim_trade. Lease will expire naturally "
+                    "within LEASE_TTL_SECONDS."
                 ),
             )
             return

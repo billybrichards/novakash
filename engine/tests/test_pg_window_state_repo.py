@@ -107,46 +107,51 @@ class TestMarkTraded:
 
 
 class TestClaims:
-    """Legacy try_claim_trade/clear_trade_claim tests.
+    """try_claim_trade / clear_trade_claim tests.
 
-    These now delegate to acquire_lease/release_lease (audit #316/#317).
-    See test_window_claims_lease.py for the new lease-based test suite.
+    Audit #320 (2026-04-26): per-strategy lease keys, claim_id explicit.
+    See test_window_claims_lease.py for the full new lease-based test
+    suite including the 3-strategy race regression.
     """
 
-    def test_try_claim_true(self, repo, conn):
-        # New lease impl uses fetchrow against window_claims; need to add
-        # the method to MockConnection.
+    def test_try_claim_returns_tuple_on_acquire(self, repo, conn):
         async def fetchrow(q, *a):
             conn.execute_calls.append((q, a))
             return {"claim_id": "11111111-aaaa-bbbb-cccc-111111111111", "attempt_n": 1}
 
         conn.fetchrow = fetchrow
         key = make_window_key("BTC", 1234, "5m")
-        assert asyncio.run(repo.try_claim_trade(key)) is True
+        ok, claim_id = asyncio.run(
+            repo.try_claim_trade(key, strategy_id="v9_lgb_only")
+        )
+        assert ok is True
+        assert claim_id == "11111111-aaaa-bbbb-cccc-111111111111"
 
-    def test_try_claim_false(self, repo, conn):
+    def test_try_claim_returns_false_none_on_busy(self, repo, conn):
         async def fetchrow(q, *a):
             conn.execute_calls.append((q, a))
-            return None  # active lease held by other → no row returned
+            return None  # active lease for the same strategy → no row returned
 
         conn.fetchrow = fetchrow
         key = make_window_key("BTC", 1234, "5m")
-        assert asyncio.run(repo.try_claim_trade(key)) is False
-
-    def test_clear_claim(self, repo, conn):
-        # Pre-populate the shim map (would normally come from a prior
-        # try_claim_trade) — without this, clear_trade_claim is a no-op.
-        key = make_window_key("BTC", 1234, "5m")
-        repo._legacy_claim_ids[(key.asset, key.window_ts, key.timeframe)] = (
-            "deadbeef-aaaa-bbbb-cccc-deadbeef0000"
+        ok, claim_id = asyncio.run(
+            repo.try_claim_trade(key, strategy_id="v9_lgb_only")
         )
-        asyncio.run(repo.clear_trade_claim(key))
+        assert ok is False
+        assert claim_id is None
+
+    def test_clear_claim_uses_explicit_claim_id(self, repo, conn):
+        # Audit #320: claim_id is now plumbed explicitly. No more shim
+        # side-state to clobber.
+        key = make_window_key("BTC", 1234, "5m")
+        claim_id = "deadbeef-aaaa-bbbb-cccc-deadbeef0000"
+        asyncio.run(repo.clear_trade_claim(key, claim_id))
         q, a = conn.execute_calls[0]
-        # New impl deletes from window_claims, not window_states
         assert "DELETE FROM window_claims" in q
         assert a[0] == "BTC"
         assert a[1] == 1234
         assert a[2] == "5m"
+        assert a[3] == claim_id
 
 
 class TestWasResolved:
@@ -197,8 +202,16 @@ class TestLoadRecentTraded:
 class TestEnsureTable:
     def test_creates(self, repo, conn):
         asyncio.run(repo.ensure_window_states_table())
-        # 3 calls for window_states + 2 for window_claims (table + index)
-        assert len(conn.execute_calls) == 5
+        # 3 calls for window_states + 4 for window_claims:
+        #   - CREATE TABLE
+        #   - ALTER ADD COLUMN strategy_id (idempotent migration)
+        #   - DO $$ migration block (idempotent PK swap)
+        #   - CREATE INDEX
+        # Total: 7
+        assert len(conn.execute_calls) == 7
         qs = [q for q, _ in conn.execute_calls]
         assert any("CREATE TABLE IF NOT EXISTS window_states" in q for q in qs)
         assert any("CREATE TABLE IF NOT EXISTS window_claims" in q for q in qs)
+        # Audit #320 migration: must add strategy_id col + swap PK
+        assert any("ADD COLUMN IF NOT EXISTS strategy_id" in q for q in qs)
+        assert any("DROP CONSTRAINT" in q and "ADD PRIMARY KEY" in q for q in qs)

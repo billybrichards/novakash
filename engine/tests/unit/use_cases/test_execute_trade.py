@@ -138,7 +138,12 @@ def _build_use_case(
     mock_risk.get_status.return_value = risk
     mock_window_state = AsyncMock()
     mock_window_state.was_traded.return_value = was_traded
-    mock_window_state.try_claim_trade.return_value = not was_traded
+    # Audit #320 (2026-04-26): try_claim_trade returns (bool, claim_id).
+    # Caller threads claim_id explicitly to clear_trade_claim.
+    mock_window_state.try_claim_trade.return_value = (
+        (not was_traded),
+        ("test-claim-id" if not was_traded else None),
+    )
     mock_alerter = AsyncMock()
     mock_alerter.send_strategy_trade_alert = AsyncMock()
     mock_recorder = AsyncMock()

@@ -278,7 +278,7 @@ class ExecuteTradeUseCase:
         # Extract window key from market slug
         window_key = self._make_window_key(window_market)
 
-        claim_acquired = False
+        claim_id: Optional[str] = None  # threaded from try_claim_trade → clear_trade_claim
 
         # ── Step 0: Timing recheck (BEFORE claim acquisition) ──────────
         # CRITICAL ORDERING (audit #317 root-cause, 2026-04-26): the
@@ -314,9 +314,23 @@ class ExecuteTradeUseCase:
             )
 
         # ── Step 1: Dedup / atomic claim ───────────────────────────────
+        # Audit #320 (2026-04-26): try_claim_trade is now per-strategy AND
+        # returns (bool, claim_id). The claim_id MUST be threaded back to
+        # clear_trade_claim on failure paths, otherwise the DB row lingers
+        # for the full LEASE_TTL_SECONDS and blocks the same strategy's
+        # subsequent eval retries within the window.
         try:
             if hasattr(self._window_state, "try_claim_trade"):
-                claim_acquired = await self._window_state.try_claim_trade(window_key)
+                claim_result = await self._window_state.try_claim_trade(
+                    window_key, strategy_id=sid
+                )
+                # Backward-compat: pre-#320 returned plain bool. New API
+                # returns (bool, claim_id). Detect either shape.
+                if isinstance(claim_result, tuple):
+                    claim_acquired, claim_id = claim_result
+                else:
+                    claim_acquired = bool(claim_result)
+                    claim_id = None
                 if not claim_acquired:
                     log.info(
                         "execute_trade.dedup_hit",
@@ -440,9 +454,11 @@ class ExecuteTradeUseCase:
                 price_floor=PRICE_FLOOR,
             )
         except Exception as exc:
-            if claim_acquired and hasattr(self._window_state, "clear_trade_claim"):
+            if claim_id and hasattr(self._window_state, "clear_trade_claim"):
                 try:
-                    await self._window_state.clear_trade_claim(window_key)
+                    await self._window_state.clear_trade_claim(
+                        window_key, claim_id
+                    )
                 except Exception as _clr_exc:
                     log.warning(
                         "execute_trade.clear_claim_failed",
@@ -478,9 +494,11 @@ class ExecuteTradeUseCase:
         )
 
         if not result.success:
-            if claim_acquired and hasattr(self._window_state, "clear_trade_claim"):
+            if claim_id and hasattr(self._window_state, "clear_trade_claim"):
                 try:
-                    await self._window_state.clear_trade_claim(window_key)
+                    await self._window_state.clear_trade_claim(
+                        window_key, claim_id
+                    )
                 except Exception as _clr_exc:
                     log.warning(
                         "execute_trade.clear_claim_failed",
