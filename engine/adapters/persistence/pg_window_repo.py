@@ -938,6 +938,32 @@ class PgWindowRepository(WindowStateRepository):
                 )
                 await conn.execute("""CREATE INDEX IF NOT EXISTS idx_window_claims_expires_at
                     ON window_claims (expires_at)""")
+                # ── strategy_window_fills (audit #321, 2026-04-26) ──────────
+                # Per-strategy terminal fill marker. Backs has_filled() so
+                # the same strategy cannot fill the same window twice.
+                #
+                # Why a new table (not a column on window_states): the
+                # existing UNIQUE (asset, window_ts, timeframe) constraint
+                # restricts window_states to one row per window. Sibling
+                # strategies (v9_lgb_only + v10_lgb_only) BOTH legitimately
+                # fill the same window — two rows. Splitting the marker out
+                # avoids breaking the existing window_states schema and
+                # leaves the resolved_at / outcome columns alone.
+                #
+                # Smoking gun this fixes: 2026-04-26 v10_lgb_only filled 3x
+                # on window 1777234800 (20:21:12, 20:21:40, 20:22:11). The
+                # lease (#320) released on each fill, letting the same
+                # strategy re-acquire and re-fill seconds later.
+                await conn.execute("""CREATE TABLE IF NOT EXISTS strategy_window_fills (
+                    asset VARCHAR(10) NOT NULL,
+                    window_ts BIGINT NOT NULL,
+                    timeframe VARCHAR(10) NOT NULL DEFAULT '5m',
+                    strategy_id TEXT NOT NULL,
+                    order_id TEXT,
+                    filled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (asset, window_ts, timeframe, strategy_id))""")
+                await conn.execute("""CREATE INDEX IF NOT EXISTS idx_strategy_window_fills_filled_at
+                    ON strategy_window_fills (filled_at)""")
             log.info("db.window_states_table_ensured")
         except Exception as exc:
             log.error("db.ensure_window_states_table_failed", error=str(exc)[:200])
@@ -958,11 +984,30 @@ class PgWindowRepository(WindowStateRepository):
             log.warning("db.was_traded_failed", key=str(key), error=str(exc)[:120])
             return False
 
-    async def mark_traded(self, key: WindowKey, order_id: str) -> None:
+    async def mark_traded(
+        self,
+        key: WindowKey,
+        order_id: str,
+        strategy_id: Optional[str] = None,
+    ) -> None:
+        """Record a fill on the given window.
+
+        Audit #321 (2026-04-26): when ``strategy_id`` is provided we ALSO
+        write to ``strategy_window_fills`` so :meth:`has_filled` can
+        return True for subsequent attempts. Without this row, a sibling
+        strategy filling the same window could not be distinguished
+        from a same-strategy double-fill.
+
+        ``strategy_id=None`` is supported for backfill compatibility —
+        the legacy ``window_states`` row is still written, but no
+        strategy-fill marker. New callsites SHOULD always pass
+        ``strategy_id``.
+        """
         if not self._pool:
             return
         try:
             async with self._pool.acquire() as conn:
+                now = datetime.now(timezone.utc)
                 await conn.execute(
                     """
                     INSERT INTO window_states (asset, window_ts, timeframe, traded_at, order_id)
@@ -975,16 +1020,70 @@ class PgWindowRepository(WindowStateRepository):
                     key.asset,
                     key.window_ts,
                     key.timeframe,
-                    datetime.now(timezone.utc),
+                    now,
                     order_id,
                 )
+                if strategy_id:
+                    await conn.execute(
+                        """
+                        INSERT INTO strategy_window_fills
+                            (asset, window_ts, timeframe, strategy_id, order_id, filled_at)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        ON CONFLICT (asset, window_ts, timeframe, strategy_id) DO NOTHING
+                        """,
+                        key.asset,
+                        key.window_ts,
+                        key.timeframe,
+                        strategy_id,
+                        order_id,
+                        now,
+                    )
             log.debug(
                 "db.mark_traded",
                 key=str(key),
                 order_id=order_id[:20] if order_id else None,
+                strategy=strategy_id,
             )
         except Exception as exc:
             log.warning("db.mark_traded_failed", key=str(key), error=str(exc)[:120])
+
+    async def has_filled(self, key: WindowKey, strategy_id: str) -> bool:
+        """Return True if ``strategy_id`` already filled this window.
+
+        Audit #321 (2026-04-26): primary "once-per-window-per-strategy"
+        invariant. Queried BEFORE lease acquisition in execute_trade so
+        repeat attempts on the same (window, strategy) short-circuit
+        without ever touching window_claims.
+
+        Returns False on any DB error or pool absence — fail-open keeps
+        the engine running when the marker table is unreachable; the
+        lease still provides 15s in-flight protection as a backstop.
+        """
+        if not self._pool:
+            return False
+        if not strategy_id:
+            return False
+        try:
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchval(
+                    """SELECT EXISTS(
+                        SELECT 1 FROM strategy_window_fills
+                         WHERE asset = $1 AND window_ts = $2
+                           AND timeframe = $3 AND strategy_id = $4)""",
+                    key.asset,
+                    key.window_ts,
+                    key.timeframe,
+                    strategy_id,
+                )
+                return bool(row)
+        except Exception as exc:
+            log.warning(
+                "db.has_filled_failed",
+                key=str(key),
+                strategy=strategy_id,
+                error=str(exc)[:120],
+            )
+            return False
 
     # ── Lease-based dedup (audit #316, #317, #320) ──────────────────────
     #

@@ -302,8 +302,38 @@ class WindowStateRepository(abc.ABC):
         self,
         key: WindowKey,
         order_id: str,
+        strategy_id: Optional[str] = None,
     ) -> None:
-        """Record that a trade was placed for the given window."""
+        """Record that a trade was placed for the given window.
+
+        Audit #321 (2026-04-26): ``strategy_id`` records WHICH strategy
+        filled — used by :meth:`has_filled` to enforce
+        one-fill-per-strategy-per-window. Older callers passing only
+        ``order_id`` still work (the column is nullable for backfill
+        compatibility).
+        """
+        ...
+
+    @abc.abstractmethod
+    async def has_filled(
+        self,
+        key: WindowKey,
+        strategy_id: str,
+    ) -> bool:
+        """Return ``True`` if ``strategy_id`` already has a recorded fill
+        for this window.
+
+        Audit #321 (2026-04-26): the missing primary invariant. After
+        per-strategy lease keys (#320) the lease alone is in-flight
+        protection — once a lease releases on fill, nothing prevented
+        the SAME strategy from re-acquiring and filling again on a
+        later eval tick within the same window. This method backs the
+        terminal "already filled this window" check that runs BEFORE
+        lease acquisition.
+
+        Sibling strategies (different ``strategy_id``) are independent —
+        v9_lgb_only filling does NOT block v10_lgb_only.
+        """
         ...
 
     @abc.abstractmethod
