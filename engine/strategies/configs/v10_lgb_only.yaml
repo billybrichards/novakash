@@ -14,8 +14,11 @@ version: "10.0.0-lgb"
 # on the surface before delegating to v9_ensemble's gate stack, then restores
 # the original value.
 #
-# LIVE — data-driven thresholds from 23,617 test evals.
-mode: LIVE
+# GHOSTED 2026-04-27: 58% WR over 09:00-14:30 UTC (vs v9 81%). Below
+# break-even (~70% needed for asymmetric P/L). Heavy UP-bias (15/17 today)
+# may be statistical artifact — DOWN model accuracy higher per training
+# data. Investigate before re-enabling.
+mode: GHOST
 asset: BTC
 timescale: 5m
 
@@ -116,8 +119,9 @@ gate_params:
   min_consecutive_pass_ticks: 3
 
   # ── Post-fill exit monitoring ──────────────────────────────────────
-  exit_monitor_enabled: true
-  exit_shadow_mode: true            # shadow until validated in A/B
+  # DISABLED 2026-04-27 — see v9 yaml for rationale (FAK-stub leak).
+  exit_monitor_enabled: false
+  exit_shadow_mode: true
   exit_eval_start_offset: 48
   exit_eval_end_offset: 30
   exit_max_retries: 1

@@ -98,7 +98,12 @@ gate_params:
   min_consecutive_pass_ticks: 3
 
   # ── Post-fill exit monitoring ───────────────────────────────────────
-  exit_monitor_enabled: true
+  # DISABLED 2026-04-27: backtest (PR #404) + 6h live data showed FAK-sell
+  # at $0.01 stub costs ~$50/6h. Polymarket bid side has no real depth
+  # above $0.01, so any exit forfeits ~$12 on winners while saving only
+  # ~$0.13 on losers. Net negative at any precision <99%. Replace with
+  # CTF mergePositions exit (next design).
+  exit_monitor_enabled: false
   exit_shadow_mode: false
   exit_eval_start_offset: 48
   exit_eval_end_offset: 30
