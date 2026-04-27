@@ -137,6 +137,25 @@ gate_params:
   exit_oracle_flip_enabled: false
   exit_consecutive_flip_ticks: 5
 
+  # ── Hedge exit (PR #X, 2026-04-27) ──────────────────────────────────
+  # Buy-opposite-and-hold pattern. Replaces FAK-sell-at-stub which loses
+  # ~$13/trade because Polymarket bids are $0.01 stub. Multi-signal gate
+  # (LGB + chainlink + tiingo all agree opposite) for high precision.
+  # Default OFF — flip on per-strategy after shadow validation.
+  hedge_exit_enabled: false
+  hedge_lgb_p_opposite_min: 0.85
+  hedge_lgb_dist_min: 0.20
+  hedge_chainlink_delta_opposite: true
+  hedge_tiingo_delta_opposite: true
+  hedge_consensus_consecutive_ticks: 5
+  hedge_active_offset_min: 90
+  hedge_active_offset_max: 200
+  hedge_max_opposite_ask: 0.45
+  hedge_min_guaranteed_profit_usd: 0.50
+  hedge_shadow_mode: true              # log decision but don't actually buy
+  hedge_max_retries: 1
+  hedge_buy_timeout_seconds: 5
+
   # ── Primary signal source ───────────────────────────────────────────
   primary_signal_source: lgb
   fallback_to_lgb_on_pc_null: true

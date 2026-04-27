@@ -85,6 +85,16 @@ class MonitoredPosition:
     mark_loss_tick_count: int = 0
     current_tier_name: str = ""  # active tier name; resets count on transition
     flip_consecutive_count: int = 0  # signal-flip detector (LGB head opposite)
+    # ── Hedge-exit state (PR #X, 2026-04-27) ───────────────────────────
+    # Buy-opposite-and-hold pattern. ``hedged`` flips to True after a
+    # successful opposite-side BUY (or shadow-mode decision) so we don't
+    # fire repeatedly on the same position. ``hedge_consensus_count`` is
+    # the consecutive-tick counter for the multi-signal gate.
+    # ``hedge_token_id_opposite`` carries the OPPOSITE-side CLOB token ID
+    # populated at fill-time (registry passes it via on_fill).
+    hedge_consensus_count: int = 0
+    hedged: bool = False
+    hedge_token_id_opposite: str = ""
 
 
 class PositionMonitor:
@@ -123,6 +133,7 @@ class PositionMonitor:
         order_id: str,
         token_id: str = "",
         confirmed_size: float = 0.0,
+        opposite_token_id: str = "",
     ) -> None:
         """Register a new fill for exit monitoring.
 
@@ -132,6 +143,9 @@ class PositionMonitor:
             confirmed_size: CLOB-confirmed fill size from SOT reconciler.
                 If 0.0 (unavailable), sell path falls back to
                 fill_size * 0.95 (5% haircut safety margin).
+            opposite_token_id: CLOB token ID of the opposite outcome.
+                Required for hedge-exit (buy-opposite-and-hold) pattern.
+                Empty string disables hedge for this position.
         """
         key = f"{strategy_id}:{window_ts}"
         self._positions[key] = MonitoredPosition(
@@ -144,6 +158,7 @@ class PositionMonitor:
             token_id=token_id,
             filled_at_epoch=time.time(),
             confirmed_size=confirmed_size,
+            hedge_token_id_opposite=opposite_token_id,
         )
         self._log.info(
             "position_monitor.registered",
@@ -646,6 +661,488 @@ class PositionMonitor:
         except Exception as exc:
             self._log.warning(
                 "position_monitor.alert_error",
+                error=str(exc)[:200],
+            )
+
+    # ------------------------------------------------------------------
+    # Hedge exit (buy-opposite-and-hold) — PR #X, 2026-04-27
+    # ------------------------------------------------------------------
+    #
+    # Mathematically equivalent to ``mergePositions`` on the CTF, but
+    # simpler — no smart-contract calldata, just an FAK BUY for the
+    # OPPOSITE token at the ask. Both sides held to settlement; the
+    # winning side is auto-redeemed by the existing redeemer flow.
+    #
+    # Net P&L per share (when fired):
+    #   1.0  -  our_fill  -  opposite_ask   (guaranteed if both fill)
+    #
+    # Why this works: Polymarket's bid side is a $0.01 stub on losing
+    # outcomes (no real depth above the floor), so FAK-sell exits leak
+    # ~$13/trade. Asks on the opposite side ARE real (traders quoting
+    # to win), so a BUY there pays the real price. The arithmetic
+    # below picks only positions where the BUY price plus our entry
+    # leaves a meaningful guaranteed profit floor.
+
+    def evaluate_hedge_exit(
+        self,
+        strategy_id: str,
+        window_ts: int,
+        surface: "FullDataSurface",
+        *,
+        hedge_exit_enabled: bool = False,
+        hedge_lgb_p_opposite_min: float = 0.85,
+        hedge_lgb_dist_min: float = 0.20,
+        hedge_chainlink_delta_opposite: bool = True,
+        hedge_tiingo_delta_opposite: bool = True,
+        hedge_consensus_consecutive_ticks: int = 5,
+        hedge_active_offset_min: int = 90,
+        hedge_active_offset_max: int = 200,
+        hedge_max_opposite_ask: float = 0.45,
+        hedge_min_guaranteed_profit_usd: float = 0.50,
+        stale_mark_max_age_seconds: float = 5.0,
+    ) -> Optional[dict]:
+        """Check whether the multi-signal hedge gate has fired.
+
+        Returns a hedge-instruction dict (with opposite_token_id, size,
+        max_buy_price, expected_guaranteed_profit) when ALL of:
+
+          1. ``hedge_exit_enabled`` is True
+          2. position is found, not already hedged, and has an
+             opposite-side token id
+          3. eval_offset ∈ [min, max] (the real-liquidity zone)
+          4. CLOB feed is fresh (< ``stale_mark_max_age_seconds`` old)
+          5. multi-signal consensus (LGB direction-head AND Chainlink
+             delta AND Tiingo delta all point AGAINST our position) holds
+             for ``hedge_consensus_consecutive_ticks`` consecutive ticks
+          6. economic gate: opposite_ask ≤ ``hedge_max_opposite_ask`` AND
+             guaranteed_profit_total ≥ ``hedge_min_guaranteed_profit_usd``
+
+        Returns None otherwise. Fail-open behaviour: any missing field
+        on the surface (LGB heads, deltas, opposite ask) returns None
+        — never fires on partial data.
+        """
+        if not hedge_exit_enabled:
+            return None
+
+        key = f"{strategy_id}:{window_ts}"
+        pos = self._positions.get(key)
+        if pos is None:
+            return None
+        if pos.hedged:
+            return None
+        if not pos.hedge_token_id_opposite:
+            # Without an opposite token id we cannot place the BUY. Log
+            # once-per-position would be ideal but we re-evaluate every
+            # tick; a debug log keeps noise down.
+            self._log.debug(
+                "position_monitor.hedge_skip_no_opposite_token",
+                key=key,
+            )
+            return None
+
+        # ── Window match guard ────────────────────────────────────────
+        surface_window_ts = getattr(surface, "window_ts", None)
+        if surface_window_ts is not None and surface_window_ts != pos.window_ts:
+            return None
+
+        # ── Active offset window ──────────────────────────────────────
+        eval_offset = getattr(surface, "eval_offset", None)
+        if eval_offset is None:
+            return None
+        try:
+            offset_f = float(eval_offset)
+        except (TypeError, ValueError):
+            return None
+        if not (hedge_active_offset_min <= offset_f <= hedge_active_offset_max):
+            # Outside hedge window — preserve count for next tick (don't
+            # zero it: a flicker outside the window shouldn't reset a
+            # nearly-fired gate).
+            return None
+
+        # ── Stale CLOB guard ──────────────────────────────────────────
+        now = time.time()
+        last_clob = getattr(surface, "last_clob_update_ts", None)
+        if last_clob is not None:
+            try:
+                if (now - float(last_clob)) > stale_mark_max_age_seconds:
+                    return None
+            except (TypeError, ValueError):
+                pass
+
+        # Direction normalization. Positions store "UP"/"DOWN".
+        our_dir = (pos.direction or "").upper()
+        if our_dir not in ("UP", "DOWN"):
+            return None
+        opposite = "DOWN" if our_dir == "UP" else "UP"
+
+        # ── LGB consensus (model says opposite is strongly favored) ───
+        # Pick the right LGB field for the strategy. v9_lgb_only reads
+        # ``lgb_p_up`` (alias of probability_lgb on the surface for tests
+        # / shadow logging); v10 strategies read ``lgb_p_up_v10``. Try
+        # both, prefer the v10-suffixed one when the strategy id contains
+        # "v10" so the right field wins.
+        lgb_p_up_v10 = getattr(surface, "lgb_p_up_v10", None)
+        lgb_p_up = getattr(surface, "lgb_p_up", None)
+        # Fallback to the canonical surface fields when the *_p_up
+        # aliases aren't populated (shadow tests use them; live surface
+        # exposes probability_lgb / probability_lgb_v10).
+        if lgb_p_up is None:
+            lgb_p_up = getattr(surface, "probability_lgb", None)
+        if lgb_p_up_v10 is None:
+            lgb_p_up_v10 = getattr(surface, "probability_lgb_v10", None)
+        if "v10" in (strategy_id or "").lower():
+            chosen_p_up = lgb_p_up_v10 if lgb_p_up_v10 is not None else lgb_p_up
+        else:
+            chosen_p_up = lgb_p_up if lgb_p_up is not None else lgb_p_up_v10
+        lgb_dist = getattr(surface, "lgb_dist", None)
+        if chosen_p_up is None or lgb_dist is None:
+            # Surface incomplete — fail closed.
+            pos.hedge_consensus_count = 0
+            return None
+        try:
+            p_up_f = float(chosen_p_up)
+            dist_f = float(lgb_dist)
+        except (TypeError, ValueError):
+            pos.hedge_consensus_count = 0
+            return None
+        p_opp = (1.0 - p_up_f) if opposite == "DOWN" else p_up_f
+        lgb_pass = (
+            p_opp >= hedge_lgb_p_opposite_min and dist_f >= hedge_lgb_dist_min
+        )
+
+        # ── Oracle-delta consensus ────────────────────────────────────
+        # Sign opposite our direction = "delta points against us".
+        # For UP positions we want a NEGATIVE delta to count against us.
+        chainlink_delta = getattr(surface, "chainlink_delta", None)
+        if chainlink_delta is None:
+            chainlink_delta = getattr(surface, "delta_chainlink", None)
+        tiingo_delta = getattr(surface, "tiingo_delta", None)
+        if tiingo_delta is None:
+            tiingo_delta = getattr(surface, "delta_tiingo", None)
+
+        def _delta_against(d: Any) -> Optional[bool]:
+            if d is None:
+                return None
+            try:
+                df = float(d)
+            except (TypeError, ValueError):
+                return None
+            if our_dir == "UP":
+                return df < 0.0
+            return df > 0.0
+
+        chainlink_against = _delta_against(chainlink_delta)
+        tiingo_against = _delta_against(tiingo_delta)
+
+        chainlink_pass = (not hedge_chainlink_delta_opposite) or (
+            chainlink_against is True
+        )
+        tiingo_pass = (not hedge_tiingo_delta_opposite) or (
+            tiingo_against is True
+        )
+
+        # If a required delta source is missing, treat as fail (no consensus).
+        if hedge_chainlink_delta_opposite and chainlink_against is None:
+            pos.hedge_consensus_count = 0
+            return None
+        if hedge_tiingo_delta_opposite and tiingo_against is None:
+            pos.hedge_consensus_count = 0
+            return None
+
+        consensus = lgb_pass and chainlink_pass and tiingo_pass
+
+        if consensus:
+            pos.hedge_consensus_count += 1
+        else:
+            pos.hedge_consensus_count = 0
+
+        if pos.hedge_consensus_count < hedge_consensus_consecutive_ticks:
+            return None
+
+        # ── Economic gate ─────────────────────────────────────────────
+        # Opposite ask is what we'd pay per share. UP position →
+        # opposite is DOWN, so look at clob_down_ask. And vice versa.
+        if our_dir == "UP":
+            opposite_ask = getattr(surface, "clob_down_ask", None)
+        else:
+            opposite_ask = getattr(surface, "clob_up_ask", None)
+        if opposite_ask is None:
+            return None
+        try:
+            opp_ask_f = float(opposite_ask)
+        except (TypeError, ValueError):
+            return None
+        if opp_ask_f <= 0.0:
+            return None
+        if opp_ask_f > hedge_max_opposite_ask:
+            self._log.info(
+                "position_monitor.hedge_economic_skip_high_ask",
+                key=key,
+                opposite_ask=f"${opp_ask_f:.4f}",
+                cap=f"${hedge_max_opposite_ask:.4f}",
+            )
+            return None
+
+        size = pos.confirmed_size if pos.confirmed_size > 0 else pos.fill_size
+        if size <= 0:
+            return None
+
+        guaranteed_per_share = 1.0 - pos.fill_price - opp_ask_f
+        guaranteed_total = guaranteed_per_share * size
+        if guaranteed_total < hedge_min_guaranteed_profit_usd:
+            self._log.info(
+                "position_monitor.hedge_economic_skip_low_profit",
+                key=key,
+                guaranteed_total=f"${guaranteed_total:.3f}",
+                min_floor=f"${hedge_min_guaranteed_profit_usd:.3f}",
+            )
+            return None
+
+        # Slip buffer: we want to actually fill, so allow paying up to
+        # (current_ask + 0.02) but never above the configured cap. This
+        # lets us cross a thin book without overpaying.
+        max_buy_price = min(opp_ask_f + 0.02, float(hedge_max_opposite_ask))
+
+        return {
+            "opposite_token_id": pos.hedge_token_id_opposite,
+            "size_to_buy": float(size),
+            "max_buy_price": float(max_buy_price),
+            "expected_guaranteed_profit": float(guaranteed_total),
+            "opposite_ask": float(opp_ask_f),
+            "fill_price": float(pos.fill_price),
+            "consensus_ticks": int(pos.hedge_consensus_count),
+            "eval_offset": int(offset_f),
+            "direction_we_held": our_dir,
+            "opposite_direction": opposite,
+        }
+
+    async def execute_hedge_exit(
+        self,
+        strategy_id: str,
+        window_ts: int,
+        instruction: dict,
+        *,
+        hedge_shadow_mode: bool = True,
+        hedge_max_retries: int = 1,
+        hedge_buy_timeout_seconds: int = 5,
+    ) -> bool:
+        """Place an FAK BUY for the OPPOSITE token to hedge the position.
+
+        Critical: we DO NOT pop ``pos`` from ``_positions`` after a
+        successful buy. The position stays "hedged"; both sides are held
+        to settlement and the winning side is auto-redeemed by the
+        existing redeemer. We only set ``pos.hedged=True`` so the gate
+        won't refire.
+
+        Shadow mode logs the decision + counterfactual and flips
+        ``pos.hedged=True`` so we don't churn alerts. Real mode places
+        the buy via ``poly_client.place_market_order`` (FAK). On a
+        single-attempt failure we retry up to ``hedge_max_retries`` times
+        before alerting ops; ``pos.hedged`` stays False so the gate is
+        free to refire on the next tick if conditions still hold.
+        """
+        key = f"{strategy_id}:{window_ts}"
+        pos = self._positions.get(key)
+        if pos is None:
+            return False
+
+        opposite_token_id = instruction.get("opposite_token_id") or pos.hedge_token_id_opposite
+        size_to_buy = float(instruction.get("size_to_buy", pos.fill_size))
+        max_buy_price = float(instruction.get("max_buy_price", 0.0))
+        guaranteed_total = float(instruction.get("expected_guaranteed_profit", 0.0))
+
+        if hedge_shadow_mode:
+            self._log.info(
+                "position_monitor.hedge.shadow_decision",
+                strategy_id=strategy_id,
+                window_ts=window_ts,
+                direction=pos.direction,
+                fill_price=f"${pos.fill_price:.4f}",
+                opposite_ask=f"${instruction.get('opposite_ask', 0.0):.4f}",
+                size=f"{size_to_buy:.3f}",
+                max_buy_price=f"${max_buy_price:.4f}",
+                guaranteed_total=f"${guaranteed_total:.3f}",
+                consensus_ticks=instruction.get("consensus_ticks"),
+                eval_offset=instruction.get("eval_offset"),
+            )
+            pos.hedged = True
+            await self._record_hedge_decision(
+                pos, instruction, executed=False, shadow=True
+            )
+            await self._send_hedge_alert(
+                pos, instruction, executed=False, shadow=True
+            )
+            return True
+
+        if self._poly_client is None:
+            self._log.warning(
+                "position_monitor.hedge.no_poly_client",
+                strategy_id=strategy_id,
+                window_ts=window_ts,
+            )
+            return False
+        if not opposite_token_id:
+            self._log.warning(
+                "position_monitor.hedge.no_opposite_token",
+                strategy_id=strategy_id,
+                window_ts=window_ts,
+            )
+            return False
+
+        # Real mode: FAK BUY of opposite token at the limit price.
+        buy_success = False
+        size_matched = 0.0
+        order_id: Optional[str] = None
+        for attempt in range(1, max(1, int(hedge_max_retries)) + 1):
+            try:
+                # Reuse existing buy primitive (FAK). place_market_order
+                # is the canonical BUY path used by the entry ladder; we
+                # call it directly with order_type=FAK to mirror the
+                # exit-side place_sell_fak behaviour.
+                result = await asyncio.wait_for(
+                    self._poly_client.place_market_order(
+                        token_id=opposite_token_id,
+                        price=float(max_buy_price),
+                        size=float(size_to_buy),
+                        order_type="FAK",
+                    ),
+                    timeout=float(hedge_buy_timeout_seconds),
+                )
+                buy_success = bool(result.get("filled", False))
+                size_matched = float(result.get("size_matched", 0.0) or 0.0)
+                order_id = result.get("order_id")
+                if buy_success:
+                    break
+            except asyncio.TimeoutError:
+                self._log.warning(
+                    "position_monitor.hedge.buy_timeout",
+                    attempt=attempt,
+                    timeout=hedge_buy_timeout_seconds,
+                )
+            except Exception as exc:
+                self._log.warning(
+                    "position_monitor.hedge.buy_attempt_failed",
+                    attempt=attempt,
+                    max_retries=hedge_max_retries,
+                    error=str(exc)[:200],
+                )
+
+        if buy_success:
+            pos.hedged = True
+
+        # Augment instruction with execution result for downstream record.
+        result_instruction = dict(instruction)
+        result_instruction["size_matched"] = size_matched
+        result_instruction["order_id"] = order_id
+
+        await self._record_hedge_decision(
+            pos, result_instruction, executed=buy_success, shadow=False
+        )
+        await self._send_hedge_alert(
+            pos, result_instruction, executed=buy_success, shadow=False
+        )
+        return buy_success
+
+    async def _record_hedge_decision(
+        self,
+        pos: MonitoredPosition,
+        instruction: dict,
+        executed: bool,
+        shadow: bool,
+    ) -> None:
+        """Write HEDGE_EXIT decision to strategy_decisions table."""
+        if self._decision_repo is None:
+            return
+        try:
+            import json
+
+            from domain.value_objects import StrategyDecisionRecord
+
+            metadata = {
+                "hedge_executed": executed,
+                "hedge_shadow": shadow,
+                "fill_price": pos.fill_price,
+                "fill_size": pos.fill_size,
+                "confirmed_size": pos.confirmed_size,
+                "opposite_token_id": instruction.get("opposite_token_id"),
+                "opposite_ask": instruction.get("opposite_ask"),
+                "max_buy_price": instruction.get("max_buy_price"),
+                "size_to_buy": instruction.get("size_to_buy"),
+                "expected_guaranteed_profit": instruction.get(
+                    "expected_guaranteed_profit"
+                ),
+                "size_matched": instruction.get("size_matched"),
+                "order_id": instruction.get("order_id"),
+                "consensus_ticks": instruction.get("consensus_ticks"),
+                "eval_offset": instruction.get("eval_offset"),
+                "held_seconds": time.time() - pos.filled_at_epoch,
+            }
+
+            record = StrategyDecisionRecord(
+                strategy_id=pos.strategy_id,
+                strategy_version="hedge-exit-1.0",
+                asset="BTC",
+                window_ts=pos.window_ts,
+                timeframe="5m",
+                eval_offset=instruction.get("eval_offset") or 0,
+                mode="SHADOW" if shadow else "LIVE",
+                action="HEDGE_EXIT",
+                direction=pos.direction,
+                confidence=None,
+                confidence_score=None,
+                entry_cap=None,
+                collateral_pct=None,
+                entry_reason="",
+                skip_reason=None,
+                metadata_json=json.dumps(metadata),
+                evaluated_at=time.time(),
+            )
+
+            await self._decision_repo.write_decision(record)
+        except Exception as exc:
+            self._log.warning(
+                "position_monitor.hedge_record_error",
+                error=str(exc)[:200],
+            )
+
+    async def _send_hedge_alert(
+        self,
+        pos: MonitoredPosition,
+        instruction: dict,
+        executed: bool,
+        shadow: bool,
+    ) -> None:
+        """Send Telegram alert for hedge event."""
+        if self._alerter is None:
+            return
+
+        held_secs = time.time() - pos.filled_at_epoch
+        mode = "SHADOW" if shadow else ("EXECUTED" if executed else "FAILED")
+        emoji = {
+            "SHADOW": "\U0001f441️",
+            "EXECUTED": "\U0001f6e1️",
+            "FAILED": "❌",
+        }.get(mode, "❓")
+
+        msg = (
+            f"{emoji} *HEDGE {mode}* — {pos.strategy_id}\n"
+            f"held: `{pos.direction}` window: `{pos.window_ts}`\n"
+            f"fill: `${pos.fill_price:.4f}` size: `{pos.fill_size:.2f}`\n"
+            f"opposite_ask: `${instruction.get('opposite_ask', 0.0):.4f}` "
+            f"max_buy: `${instruction.get('max_buy_price', 0.0):.4f}`\n"
+            f"guaranteed: `${instruction.get('expected_guaranteed_profit', 0.0):.3f}` "
+            f"held_for: `{held_secs:.0f}s`"
+        )
+
+        try:
+            send = getattr(self._alerter, "send_raw_message", None)
+            if send is not None:
+                await send(msg)
+            elif hasattr(self._alerter, "send_system_alert"):
+                await self._alerter.send_system_alert(msg)
+        except Exception as exc:
+            self._log.warning(
+                "position_monitor.hedge_alert_error",
                 error=str(exc)[:200],
             )
 
