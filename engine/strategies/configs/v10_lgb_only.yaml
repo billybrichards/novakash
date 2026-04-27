@@ -14,11 +14,15 @@ version: "10.0.0-lgb"
 # on the surface before delegating to v9_ensemble's gate stack, then restores
 # the original value.
 #
-# GHOSTED 2026-04-27: 58% WR over 09:00-14:30 UTC (vs v9 81%). Below
-# break-even (~70% needed for asymmetric P/L). Heavy UP-bias (15/17 today)
-# may be statistical artifact — DOWN model accuracy higher per training
-# data. Investigate before re-enabling.
-mode: GHOST
+# RE-LIVE 2026-04-27 with CONSERVATIVE preset (data-driven from 40 live
+# trades + 348k training rows):
+#   - lgb_dist_min_up=0.15 (was 0.13) — covers conviction_floor_up=0.65
+#   - lgb_dist_min_down=0.15 (was 0.10) — symmetric, kills inverted-zone
+#   - eval window narrowed to T-139..T-85 (was T-240..T-45) — sweet spot
+#   - half stake via max_position_usd=$3.75 — bankroll protection
+#   - hedge-exit shadow on (PR #406)
+# Promote to AGGRESSIVE / full stake only after 50-window validation.
+mode: LIVE
 asset: BTC
 timescale: 5m
 
@@ -32,8 +36,9 @@ gate_params:
   # ``eval_offset_past_close`` mid-execution because window closed
   # before the FAK could fill. 45s gives execution headroom while still
   # allowing entries up to T-240.
-  min_offset_sec: 45
-  max_offset_sec: 240
+  # CONSERVATIVE 2026-04-27: narrowed to sweet spot T-139..T-85
+  min_offset_sec: 85
+  max_offset_sec: 139
 
   # ── Regime allowlist ────────────────────────────────────────────────
   tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
@@ -66,8 +71,12 @@ gate_params:
   #   dist>=0.10: 81.0% acc, 79% of evals — UP needs higher bar (77.3% at 0.05)
   #   dist>=0.12: UP 80.1%, DOWN 84.5% — DOWN more accurate at every threshold
   #   LOW tier (0.05-0.12) is only 60.9% acc — must not trade
-  lgb_dist_min_up: 0.13                # UP acc=80.1% at 0.12, want >80% → 0.13
-  lgb_dist_min_down: 0.10              # DOWN acc=82.9% at 0.10, already strong
+  # CONSERVATIVE 2026-04-27: symmetric 0.15 (was 0.13/0.10).
+  # 0.15 dist = p_up>=0.65 (covers conviction_floor_up=0.65) and
+  #             p_up<=0.35 (covers conviction_floor_down=0.40).
+  # Skips inverted zone p in [0.35,0.65] = WIDER than [0.50,0.60].
+  lgb_dist_min_up: 0.15
+  lgb_dist_min_down: 0.15
   lgb_dist_min_up_with_hc_agree: 0.08  # relaxed when HC agrees (since no classifier, rarely used)
   lgb_dist_min_down_with_hc_agree: 0.08
 
@@ -160,7 +169,7 @@ gate_params:
   # ~$13/trade because Polymarket bids are $0.01 stub. Multi-signal gate
   # (LGB + chainlink + tiingo all agree opposite) for high precision.
   # Default OFF — flip on per-strategy after shadow validation.
-  hedge_exit_enabled: false
+  hedge_exit_enabled: true
   hedge_lgb_p_opposite_min: 0.85
   hedge_lgb_dist_min: 0.20
   hedge_chainlink_delta_opposite: true
@@ -182,16 +191,18 @@ sizing:
   type: custom
   custom_hook: clob_sizing
   fraction: 0.025
-  max_collateral_pct: 0.058
+  max_collateral_pct: 0.029              # CONSERVATIVE: half of 0.058
+  max_position_usd: 3.75                 # CONSERVATIVE: hard cap = half stake
+  absolute_max_bet: 3.75                 # alias for max_position_usd (memory: reference_config_layering)
   # Sizing maps confidence_score (min(dist*2, 1)) to Kelly modifier.
-  # v10 dist distribution: mean=0.22, p50=0.23, p75=0.30, p90=0.41
-  # confidence_score = dist * 2, so: mean=0.44, p50=0.46, p75=0.61, p90=0.82
+  # Modifiers HALVED 2026-04-27 for conservative validation period.
+  # Promote back to original (2.5/2.0/1.2/1.0) after 50-window clean run.
   schedule:
-    - { threshold: 0.50, modifier: 2.5, label: "vhc" }        # dist>=0.25: 90.8% acc
-    - { threshold: 0.40, modifier: 2.0, label: "high" }       # dist>=0.20: 86.5% acc
-    - { threshold: 0.30, modifier: 1.2, label: "medium" }     # dist>=0.15: 83.5% acc
-    - { threshold: 0.20, modifier: 1.0, label: "low" }        # dist>=0.10: 81.0% acc
-    - { threshold: 0.0,  modifier: 0.0, label: "skip" }
+    - { threshold: 0.50, modifier: 1.25, label: "vhc" }       # was 2.5
+    - { threshold: 0.40, modifier: 1.0,  label: "high" }      # was 2.0
+    - { threshold: 0.30, modifier: 0.6,  label: "medium" }    # was 1.2
+    - { threshold: 0.20, modifier: 0.5,  label: "low" }       # was 1.0
+    - { threshold: 0.0,  modifier: 0.0,  label: "skip" }
 
 hooks_file: v10_lgb_only.py
 pre_gate_hook: evaluate_v10_lgb_only
