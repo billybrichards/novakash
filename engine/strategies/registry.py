@@ -679,17 +679,21 @@ class StrategyRegistry:
                             # monitoring (2026-04-24). Only LIVE fills with
                             # exit_monitor_enabled in metadata.
                             if self._position_monitor is not None:
-                                _exit_enabled = (
-                                    decision.metadata or {}
-                                ).get("exit_monitor_enabled", False)
-                                if _exit_enabled and result.fill_price:
-                                    # Use CLOB-confirmed size if available
-                                    # from the execution result (size_matched).
-                                    # Falls back to 0.0 (on_fill will use
-                                    # fill_size * 0.95 haircut for sell).
-                                    _confirmed = getattr(
-                                        result, "size_matched", 0.0
-                                    ) or 0.0
+                                _exit_enabled = (decision.metadata or {}).get(
+                                    "exit_monitor_enabled", False
+                                )
+                                _hedge_enabled = (config.gate_params or {}).get(
+                                    "hedge_exit_enabled", False
+                                )
+                                if (_exit_enabled or _hedge_enabled) and result.fill_price:
+                                    _confirmed = getattr(result, "size_matched", 0.0) or 0.0
+                                    _dir = (decision.direction or "UP").upper()
+                                    _opp = (
+                                        getattr(window_market, "down_token_id", "") or ""
+                                    ) if (_dir == "UP" and window_market is not None) else (
+                                        (getattr(window_market, "up_token_id", "") or "")
+                                        if window_market is not None else ""
+                                    )
                                     self._position_monitor.on_fill(
                                         strategy_id=name,
                                         window_ts=window_ts,
@@ -699,6 +703,7 @@ class StrategyRegistry:
                                         order_id=result.order_id or "",
                                         token_id=result.token_id or "",
                                         confirmed_size=_confirmed,
+                                        opposite_token_id=_opp,
                                     )
                         log.info(
                             "registry.executed",
@@ -830,6 +835,70 @@ class StrategyRegistry:
                                 exit_shadow_mode=_shadow,
                                 exit_max_retries=_max_retries,
                                 exit_retry_timeout_seconds=_retry_timeout,
+                            )
+                        )
+
+                    # ── Hedge-exit eval (PR #X, 2026-04-27) ───────────
+                    # Independent of mark-to-market exit. Buy-opposite-and-
+                    # hold pattern. Off by default; user opts in per
+                    # strategy via hedge_exit_enabled.
+                    _hedge_params = {
+                        "hedge_exit_enabled": _gp.get(
+                            "hedge_exit_enabled", False
+                        ),
+                        "hedge_lgb_p_opposite_min": _gp.get(
+                            "hedge_lgb_p_opposite_min", 0.85
+                        ),
+                        "hedge_lgb_dist_min": _gp.get(
+                            "hedge_lgb_dist_min", 0.20
+                        ),
+                        "hedge_chainlink_delta_opposite": _gp.get(
+                            "hedge_chainlink_delta_opposite", True
+                        ),
+                        "hedge_tiingo_delta_opposite": _gp.get(
+                            "hedge_tiingo_delta_opposite", True
+                        ),
+                        "hedge_consensus_consecutive_ticks": _gp.get(
+                            "hedge_consensus_consecutive_ticks", 5
+                        ),
+                        "hedge_active_offset_min": _gp.get(
+                            "hedge_active_offset_min", 90
+                        ),
+                        "hedge_active_offset_max": _gp.get(
+                            "hedge_active_offset_max", 200
+                        ),
+                        "hedge_max_opposite_ask": _gp.get(
+                            "hedge_max_opposite_ask", 0.45
+                        ),
+                        "hedge_min_guaranteed_profit_usd": _gp.get(
+                            "hedge_min_guaranteed_profit_usd", 0.50
+                        ),
+                        "stale_mark_max_age_seconds": _gp.get(
+                            "stale_mark_max_age_seconds", 5.0
+                        ),
+                    }
+                    hedge_instruction = self._position_monitor.evaluate_hedge_exit(
+                        strategy_id=pos.strategy_id,
+                        window_ts=pos.window_ts,
+                        surface=surface,
+                        **_hedge_params,
+                    )
+                    if hedge_instruction:
+                        _h_shadow = _gp.get("hedge_shadow_mode", True)
+                        _h_max_retries = _gp.get("hedge_max_retries", 1)
+                        _h_buy_timeout = _gp.get(
+                            "hedge_buy_timeout_seconds", 5
+                        )
+                        import asyncio as _aio2
+
+                        _aio2.create_task(
+                            self._position_monitor.execute_hedge_exit(
+                                strategy_id=pos.strategy_id,
+                                window_ts=pos.window_ts,
+                                instruction=hedge_instruction,
+                                hedge_shadow_mode=_h_shadow,
+                                hedge_max_retries=_h_max_retries,
+                                hedge_buy_timeout_seconds=_h_buy_timeout,
                             )
                         )
                 except Exception as _exc:
