@@ -52,6 +52,23 @@ log = structlog.get_logger(__name__)
 
 
 @dataclass
+class ExitTier:
+    """One tier of the multi-tier exit ladder.
+
+    eval_offset is seconds-before-close. A tier is active when
+    ``end_offset <= eval_offset <= start_offset`` (i.e. start_offset is
+    the *earlier* edge in wall-clock terms, end_offset is the *later*
+    edge — naming follows surface.eval_offset convention).
+    """
+
+    name: str
+    start_offset: int
+    end_offset: int
+    mark_pct: float  # exit if mark/fill < this for mark_ticks consecutive ticks
+    mark_ticks: int
+
+
+@dataclass
 class MonitoredPosition:
     """Tracks a single open position awaiting exit evaluation."""
 
@@ -66,6 +83,8 @@ class MonitoredPosition:
     confirmed_size: float = 0.0  # CLOB-confirmed fill size (from SOT reconciler)
     consecutive_flip_count: int = 0  # legacy, kept for compat
     mark_loss_tick_count: int = 0
+    current_tier_name: str = ""  # active tier name; resets count on transition
+    flip_consecutive_count: int = 0  # signal-flip detector (LGB head opposite)
 
 
 class PositionMonitor:
@@ -149,6 +168,21 @@ class PositionMonitor:
         exit_eval_end_offset: int = 30,
         exit_mark_min_pct: float = 0.45,
         exit_mark_ticks: int = 10,
+        # Multi-tier ladder (PR #402, 2026-04-27). When provided, replaces
+        # the single-tier legacy gate above. Each tier:
+        #   { name, start_offset, end_offset, mark_pct, mark_ticks }
+        exit_tiers: Optional[list] = None,
+        # Signal-flip detector (PR #402). LGB head opposite-direction strong
+        # signal for N consecutive ticks → exit. v1 is exit-only; reversal
+        # re-entry deferred (requires schema change).
+        flip_enabled: bool = False,
+        flip_p_threshold: float = 0.85,
+        flip_dist_threshold: float = 0.20,
+        flip_consecutive_ticks: int = 3,
+        flip_min_offset: int = 60,
+        flip_max_offset: int = 240,
+        # Stale mark guard
+        stale_mark_max_age_seconds: float = 5.0,
         # Legacy params (ignored, kept for call-site compat during rollout)
         exit_min_hold_seconds: int = 45,
         exit_no_exit_last_seconds: int = 30,
@@ -210,16 +244,38 @@ class PositionMonitor:
         if surface_window_ts is not None and surface_window_ts != pos.window_ts:
             return None
 
-        # ── Timing gate (PR #365) ──────────────────────────────────────
-        # eval_offset is seconds-before-close. Only evaluate exits when
-        # the surface offset falls within the configured window:
-        #   exit_eval_end_offset <= eval_offset <= exit_eval_start_offset
+        # ── Resolve tier ladder ────────────────────────────────────────
+        # If exit_tiers provided, use ladder. Else synthesize legacy single
+        # tier from exit_eval_*/exit_mark_* params (backwards-compat).
+        tiers = self._resolve_tiers(
+            exit_tiers,
+            exit_eval_start_offset,
+            exit_eval_end_offset,
+            exit_mark_min_pct,
+            exit_mark_ticks,
+        )
+
         eval_offset = getattr(surface, "eval_offset", None)
-        if eval_offset is not None:
-            if eval_offset > exit_eval_start_offset:
-                return None  # too early — haven't reached start offset yet
-            if eval_offset < exit_eval_end_offset:
-                return None  # too late — book gets thin
+        if eval_offset is None:
+            return None
+
+        current_tier = self._find_current_tier(tiers, eval_offset)
+
+        # ── Stale mark guard ───────────────────────────────────────────
+        # If CLOB feed is stale, don't increment loss counter — a feed
+        # outage could otherwise fake-trigger every tier sequentially.
+        last_clob = getattr(surface, "last_clob_update_ts", None)
+        if last_clob is not None:
+            try:
+                if (now - float(last_clob)) > stale_mark_max_age_seconds:
+                    self._log.debug(
+                        "position_monitor.stale_mark_skip",
+                        key=key,
+                        age=f"{now - float(last_clob):.1f}s",
+                    )
+                    return None
+            except (TypeError, ValueError):
+                pass
 
         # Mark-to-market: get current bid for our token
         if pos.direction == "UP":
@@ -243,19 +299,119 @@ class PositionMonitor:
 
         mark_pct = mark / pos.fill_price if pos.fill_price > 0 else 1.0
 
-        # Stop-loss check
-        if mark_pct < exit_mark_min_pct:
-            pos.mark_loss_tick_count += 1
+        # ── Tier-based stop-loss ───────────────────────────────────────
+        if current_tier is not None:
+            # Reset counter on tier transition (each tier has its own
+            # threshold — counts aren't comparable across tiers).
+            if pos.current_tier_name != current_tier.name:
+                pos.mark_loss_tick_count = 0
+                pos.current_tier_name = current_tier.name
+
+            if mark_pct < current_tier.mark_pct:
+                pos.mark_loss_tick_count += 1
+            else:
+                pos.mark_loss_tick_count = 0
+
+            if pos.mark_loss_tick_count >= current_tier.mark_ticks:
+                return (
+                    f"{current_tier.name}_mark_stop_loss: "
+                    f"mark={mark:.3f} ({mark_pct:.0%} of fill) "
+                    f"for {pos.mark_loss_tick_count} ticks "
+                    f"@ T-{int(eval_offset)}"
+                )
         else:
-            pos.mark_loss_tick_count = 0  # reset on recovery
+            # Outside any tier — don't drop the count (preserve state for
+            # next active-tier window).
+            pass
 
-        if pos.mark_loss_tick_count >= exit_mark_ticks:
-            return (
-                f"mark_stop_loss: mark={mark:.3f} "
-                f"({mark_pct:.0%} of fill) for "
-                f"{pos.mark_loss_tick_count} ticks"
+        # ── Signal-flip detector ───────────────────────────────────────
+        if (
+            flip_enabled
+            and flip_min_offset <= eval_offset <= flip_max_offset
+        ):
+            opposite = "DOWN" if pos.direction == "UP" else "UP"
+            lgb_p_up = getattr(surface, "lgb_p_up", None)
+            lgb_dist = getattr(surface, "lgb_dist", None)
+            if lgb_p_up is not None and lgb_dist is not None:
+                try:
+                    p_up_f = float(lgb_p_up)
+                    dist_f = float(lgb_dist)
+                    p_opp = (1.0 - p_up_f) if opposite == "DOWN" else p_up_f
+                    if (
+                        p_opp >= flip_p_threshold
+                        and dist_f >= flip_dist_threshold
+                    ):
+                        pos.flip_consecutive_count += 1
+                    else:
+                        pos.flip_consecutive_count = 0
+
+                    if pos.flip_consecutive_count >= flip_consecutive_ticks:
+                        return (
+                            f"signal_flip: lgb_p_{opposite.lower()}={p_opp:.2f} "
+                            f"dist={dist_f:.2f} for "
+                            f"{pos.flip_consecutive_count} ticks "
+                            f"@ T-{int(eval_offset)}"
+                        )
+                except (TypeError, ValueError):
+                    pass
+
+        return None
+
+    @staticmethod
+    def _resolve_tiers(
+        exit_tiers: Optional[list],
+        legacy_start: int,
+        legacy_end: int,
+        legacy_pct: float,
+        legacy_ticks: int,
+    ) -> list[ExitTier]:
+        """Parse YAML tier dicts to ExitTier list, or synth legacy tier.
+
+        Backwards-compat: if no exit_tiers provided, synthesize a single
+        tier from the legacy exit_eval_*/exit_mark_* gate_params. This
+        keeps unmigrated strategies behaving identically.
+        """
+        if exit_tiers:
+            out: list[ExitTier] = []
+            for t in exit_tiers:
+                try:
+                    out.append(
+                        ExitTier(
+                            name=str(t.get("name", "tier")),
+                            start_offset=int(t["start_offset"]),
+                            end_offset=int(t["end_offset"]),
+                            mark_pct=float(t["mark_pct"]),
+                            mark_ticks=int(t["mark_ticks"]),
+                        )
+                    )
+                except (KeyError, TypeError, ValueError):
+                    # Skip malformed tier rather than fail open
+                    continue
+            if out:
+                return out
+        # Legacy fallback
+        return [
+            ExitTier(
+                name="legacy",
+                start_offset=int(legacy_start),
+                end_offset=int(legacy_end),
+                mark_pct=float(legacy_pct),
+                mark_ticks=int(legacy_ticks),
             )
+        ]
 
+    @staticmethod
+    def _find_current_tier(
+        tiers: list[ExitTier], eval_offset: float
+    ) -> Optional[ExitTier]:
+        """Return the active tier for eval_offset, or None if in a gap."""
+        try:
+            offset = float(eval_offset)
+        except (TypeError, ValueError):
+            return None
+        for t in tiers:
+            if t.end_offset <= offset <= t.start_offset:
+                return t
         return None
 
     # ------------------------------------------------------------------

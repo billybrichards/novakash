@@ -120,16 +120,35 @@ gate_params:
 
   # ── Post-fill exit monitoring ──────────────────────────────────────
   # DISABLED 2026-04-27 — see v9 yaml for rationale (FAK-stub leak).
+  # Multi-tier ladder + flip detector below remain in config but are
+  # inert while exit_monitor_enabled=false. Kept for quick re-enable
+  # once mergePositions-based exit replaces FAK-stub sell.
   exit_monitor_enabled: false
   exit_shadow_mode: true
-  exit_eval_start_offset: 48
+  exit_eval_start_offset: 200
   exit_eval_end_offset: 30
   exit_max_retries: 1
   exit_retry_timeout_seconds: 5
-
-  # Mark-to-market stop-loss
   exit_mark_min_pct: 0.70
   exit_mark_ticks: 3
+
+  # ── Multi-tier exit ladder (PR #402, 2026-04-27) ───────────────────
+  # Three contiguous tiers covering T-200..T-30. See v9 yaml for full
+  # rationale. Same numbers as v9 — start with one set across both
+  # strategies, tune per-strategy from shadow data later.
+  exit_tiers:
+    - { name: tier1_early,      start_offset: 200, end_offset: 120, mark_pct: 0.50, mark_ticks: 5 }
+    - { name: tier2_mid,        start_offset: 120, end_offset: 60,  mark_pct: 0.55, mark_ticks: 4 }
+    - { name: tier3_aggressive, start_offset: 60,  end_offset: 30,  mark_pct: 0.70, mark_ticks: 3 }
+
+  # ── Signal-flip detector (exit-only; reverse re-entry deferred v2) ─
+  flip_enabled: true
+  flip_p_threshold: 0.85
+  flip_dist_threshold: 0.20
+  flip_consecutive_ticks: 3
+  flip_min_offset: 60
+  flip_max_offset: 240
+  stale_mark_max_age_seconds: 5.0
 
   # Legacy (disabled)
   exit_lgb_flip_enabled: false

@@ -786,6 +786,27 @@ class StrategyRegistry:
                         "exit_mark_ticks": _gp.get(
                             "exit_mark_ticks", 6
                         ),
+                        # PR #402: multi-tier ladder + signal-flip detector
+                        "exit_tiers": _gp.get("exit_tiers"),
+                        "flip_enabled": _gp.get("flip_enabled", False),
+                        "flip_p_threshold": _gp.get(
+                            "flip_p_threshold", 0.85
+                        ),
+                        "flip_dist_threshold": _gp.get(
+                            "flip_dist_threshold", 0.20
+                        ),
+                        "flip_consecutive_ticks": _gp.get(
+                            "flip_consecutive_ticks", 3
+                        ),
+                        "flip_min_offset": _gp.get(
+                            "flip_min_offset", 60
+                        ),
+                        "flip_max_offset": _gp.get(
+                            "flip_max_offset", 240
+                        ),
+                        "stale_mark_max_age_seconds": _gp.get(
+                            "stale_mark_max_age_seconds", 5.0
+                        ),
                     }
                     exit_reason = self._position_monitor.evaluate_exit(
                         strategy_id=pos.strategy_id,
