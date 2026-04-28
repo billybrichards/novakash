@@ -79,23 +79,35 @@ def _save_state(state_file: Path, ts: datetime) -> None:
     print(f"[state] Saved last_rewrap_at = {ts.isoformat()}")
 
 
-async def _query_stake_sum(dsn: str, since: datetime) -> float:
-    """Sum of stake_usd from winning trades resolved after `since`."""
+async def _query_wrap_amount(dsn: str, since: datetime, profit_reinvest_pct: float = 0.5) -> float:
+    """Calculate wrap amount: full stakes + fraction of profit from wins.
+
+    Returns stake_sum + (profit_reinvest_pct × profit_sum).
+    Default 50% profit reinvested → bankroll compounds while USDC accumulates.
+    """
     import asyncpg  # type: ignore
 
     conn = await asyncpg.connect(dsn)
     try:
         row = await conn.fetchrow(
             """
-            SELECT COALESCE(SUM(stake_usd), 0) AS total_stake
+            SELECT
+              COALESCE(SUM(stake_usd), 0) AS total_stake,
+              COALESCE(SUM(pnl_usd), 0) AS total_profit
             FROM trades
             WHERE status = 'RESOLVED_WIN'
               AND resolved_at > $1
             """,
             since,
         )
-        total = float(row["total_stake"]) if row else 0.0
-        print(f"[db] Winning stakes since {since.isoformat()}: ${total:.2f}")
+        stake = float(row["total_stake"]) if row else 0.0
+        profit = float(row["total_profit"]) if row else 0.0
+        reinvest = round(profit * profit_reinvest_pct, 2)
+        total = round(stake + reinvest, 2)
+        print(f"[db] Since {since.isoformat()}:")
+        print(f"     Stakes: ${stake:.2f}  Profit: ${profit:.2f}")
+        print(f"     Reinvest {profit_reinvest_pct:.0%} of profit: ${reinvest:.2f}")
+        print(f"     Wrap total: ${total:.2f}")
         return total
     finally:
         await conn.close()
@@ -208,16 +220,16 @@ async def async_main() -> int:
     # ---- Load state ----
     last_rewrap = _load_state(state_file)
 
-    # ---- Query winning stakes ----
+    # ---- Query winning stakes + profit ----
     try:
-        stake_sum = await _query_stake_sum(dsn, last_rewrap)
+        wrap_amount = await _query_wrap_amount(dsn, last_rewrap, profit_reinvest_pct=0.5)
     except Exception as exc:
         print(f"ERROR: DB query failed: {exc}")
         return 1
 
     # ---- Check threshold ----
-    if stake_sum < MIN_WRAP_USD:
-        print(f"\n[skip] Winning stakes ${stake_sum:.2f} < minimum ${MIN_WRAP_USD:.2f}. Nothing to wrap.")
+    if wrap_amount < MIN_WRAP_USD:
+        print(f"\n[skip] Wrap amount ${wrap_amount:.2f} < minimum ${MIN_WRAP_USD:.2f}. Nothing to wrap.")
         return 0
 
     # ---- Check USDC balance ----
@@ -227,20 +239,21 @@ async def async_main() -> int:
         print(f"ERROR: USDC balance check failed: {exc}")
         return 1
 
-    required = stake_sum + RESERVE_USD
+    required = wrap_amount + RESERVE_USD
     if usdc_balance < required:
         print(
             f"\n[skip] USDC balance ${usdc_balance:.4f} < required "
-            f"${stake_sum:.2f} (stakes) + ${RESERVE_USD:.2f} (reserve) = ${required:.2f}. "
+            f"${wrap_amount:.2f} (stakes+reinvest) + ${RESERVE_USD:.2f} (reserve) = ${required:.2f}. "
             f"Cannot wrap without dipping into reserve."
         )
         return 0
 
     # ---- Wrap ----
-    print(f"\n[plan] Wrapping ${stake_sum:.2f} USDC -> pUSD (stakes only; "
-          f"keeping ${usdc_balance - stake_sum:.2f} USDC including profits)")
+    kept = usdc_balance - wrap_amount
+    print(f"\n[plan] Wrapping ${wrap_amount:.2f} USDC -> pUSD (stakes + 50% profit)")
+    print(f"       Keeping ${kept:.2f} USDC (50% profit accumulating)")
 
-    rc = _do_wrap(stake_sum, args.execute)
+    rc = _do_wrap(wrap_amount, args.execute)
 
     if rc != 0:
         print(f"\n[error] wrap_usdc_pusd.py exited with code {rc}")
