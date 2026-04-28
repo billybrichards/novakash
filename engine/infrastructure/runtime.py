@@ -3960,7 +3960,9 @@ class EngineRuntime:
                     rows = await conn.fetch(
                         """
                         SELECT strategy_id, direction, fill_price,
-                               stake_usd, created_at
+                               stake_usd, created_at,
+                               metadata::jsonb->>'market_slug' AS market_slug,
+                               metadata::jsonb->>'condition_id' AS condition_id
                         FROM trades
                         WHERE status = 'OPEN'
                         ORDER BY created_at DESC
@@ -3973,6 +3975,8 @@ class EngineRuntime:
                             "direction": r["direction"] or "?",
                             "fill_price": float(r["fill_price"] or 0),
                             "stake_usd": float(r["stake_usd"] or 0),
+                            "market_slug": r["market_slug"] or "",
+                            "condition_id": r["condition_id"] or "",
                         }
                         for r in rows
                     ]

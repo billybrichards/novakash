@@ -101,6 +101,26 @@ def build_snapshot(
     }
 
 
+def _short_slug(p: dict) -> str:
+    """Extract compact label from market_slug or condition_id.
+
+    btc-updown-5m-1777404600 → ``5m-1777404600``
+    Falls back to first 10 chars of condition_id, then ``?``.
+    """
+    slug = p.get("market_slug") or ""
+    if slug:
+        parts = slug.split("-")
+        if len(parts) >= 2:
+            return "-".join(parts[-2:])
+        return slug[-16:]
+    cid = p.get("condition_id") or ""
+    if cid:
+        short = cid[:10] + "…" if len(cid) > 12 else cid
+        return short
+    return "?"
+
+
+
 def _fmt_age(seconds: int) -> str:
     if seconds < 60:
         return f"{seconds}s"
@@ -197,7 +217,8 @@ def render_snapshot_text(snap: dict) -> str:
             d = p.get("direction", "?")
             price = float(p.get("fill_price", 0))
             stake = float(p.get("stake_usd", 0))
-            lines.append(f"  {sid}: {d} `${price:.2f}` entry, `${stake:.2f}` stake")
+            slug = _short_slug(p)
+            lines.append(f"  {sid}: {d} `${price:.2f}` `{slug}` ${stake:.2f}")
         if opc > 5:
             lines.append(f"  …+{opc - 5} more")
 
