@@ -631,7 +631,8 @@ class CLOBReconciler:
                               metadata->>'clob_status' as clob_status,
                               metadata->>'shares_filled' as shares_filled,
                               metadata->>'entry_reason' as entry_reason,
-                              stake_usd
+                              stake_usd,
+                              fill_size
                        FROM trades
                        WHERE status IN ('EXPIRED', 'OPEN', 'FILLED')
                          AND (metadata->>'clob_status' IN ('MATCHED', 'RESTING')
@@ -776,10 +777,14 @@ class CLOBReconciler:
                     note="no fill_price or position avg_price available; using legacy $0.68 cap",
                 )
 
-            # Shares the trade actually holds: stake / entry. Only valid
-            # when both are positive; otherwise we fall back to display_shares
-            # and skip the PnL computation to avoid a divide-by-zero.
-            if trade_stake > 0 and effective_entry > 0:
+            # Prefer actual fill_size (CLOB shares received) from the
+            # trades table column. The derived stake/entry formula overcounts
+            # shares when stake_usd diverges from fill_size * fill_price
+            # (price improvement, partial fills, rounding).
+            db_fill_size = orphan.get("fill_size")
+            if db_fill_size is not None and float(db_fill_size) > 0:
+                trade_shares = float(db_fill_size)
+            elif trade_stake > 0 and effective_entry > 0:
                 trade_shares = trade_stake / effective_entry
             else:
                 trade_shares = display_shares

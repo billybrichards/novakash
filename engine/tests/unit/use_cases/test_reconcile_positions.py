@@ -29,6 +29,7 @@ def _match(
     polymarket_tx_hash="0x9999" * 8,
     outcome=None,
     resolved_at=None,
+    fill_size=None,
 ):
     """Default fixture represents a REAL trade: non-synthetic order_id +
     on-chain tx_hash. Tests that exercise the phantom-trade guard can
@@ -41,6 +42,7 @@ def _match(
     return {
         "id": trade_id, "token_id": token_id, "stake_usd": stake_usd,
         "entry_price": entry_price, "entry_reason": entry_reason,
+        "fill_size": fill_size,
         "asset": asset, "window_ts": window_ts,
         "polymarket_order_id": polymarket_order_id,
         "polymarket_tx_hash": polymarket_tx_hash,
@@ -900,3 +902,105 @@ async def test_execute_first_pass_is_backfill_subsequent_are_not():
     # Second pass — should emit now that _first_pass_completed is True.
     await uc.execute([_pos(condition_id="c-2", token_id="tok-different")])
     assert p.alerts.emit_per_trade_resolved_v2.call_count == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# fill_size-based PnL (fix/pnl-calculation, 2026-04-28)
+#
+# The reconciler must prefer fill_size (actual CLOB shares received)
+# over the derived stake_usd / entry_price formula. The derived
+# formula overcounts shares when stake_usd diverges from
+# fill_size * fill_price (price improvement, partial fills, rounding).
+# ══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_pnl_uses_fill_size_when_available_live():
+    """Live path: fill_size overrides stake/entry derived shares."""
+    p = Ports()
+    # fill_size=27.07, stake=8.15, entry=0.30
+    # Derived shares = 8.15/0.30 = 27.17 (WRONG — overcounts)
+    # Correct: use fill_size = 27.07
+    # pnl = 27.07 - 8.15 = 18.92
+    p.trade_repo.find_by_token_id.return_value = _match(
+        stake_usd=8.15, entry_price=0.30, fill_size=27.07,
+    )
+    result = await p.uc().resolve_one(_pos(outcome="WIN"))
+
+    assert result is not None
+    assert result.pnl_usd == round(27.07 - 8.15, 4)  # 18.92
+
+
+@pytest.mark.asyncio
+async def test_pnl_falls_back_to_derived_when_no_fill_size_live():
+    """Live path: without fill_size, fall back to stake/entry."""
+    p = Ports()
+    # No fill_size — fall back to derived: 5.0/0.50 = 10, pnl = 10 - 5 = 5
+    p.trade_repo.find_by_token_id.return_value = _match(
+        stake_usd=5.0, entry_price=0.50, fill_size=None,
+    )
+    result = await p.uc().resolve_one(_pos(outcome="WIN"))
+
+    assert result is not None
+    assert result.pnl_usd == 5.0
+
+
+@pytest.mark.asyncio
+async def test_pnl_loss_unchanged_with_fill_size_live():
+    """LOSS pnl is always -stake regardless of fill_size."""
+    p = Ports()
+    p.trade_repo.find_by_token_id.return_value = _match(
+        stake_usd=8.15, entry_price=0.30, fill_size=27.07,
+    )
+    result = await p.uc().resolve_one(_pos(outcome="LOSS"))
+
+    assert result is not None
+    assert result.pnl_usd == -8.15
+
+
+class TestPaperBatchFillSize:
+    """Paper batch resolution prefers fill_size when present."""
+
+    def _make_uc(self, paper_trades, actual_direction="UP"):
+        from use_cases.reconcile_positions import ReconcilePositionsUseCase
+        trade_repo = _make_trade_repo(paper_trades=paper_trades)
+        window_repo = _make_window_repo(actual_direction=actual_direction)
+        return (
+            ReconcilePositionsUseCase(
+                trade_repo=trade_repo,
+                window_state=window_repo,
+                alerts=_make_alerts(),
+                clock=_make_clock(),
+            ),
+            trade_repo,
+        )
+
+    def test_paper_win_uses_fill_size(self):
+        """Paper WIN: fill_size=20 shares, stake=10 -> pnl=10."""
+        trade = {
+            "id": "t001", "order_id": "paper-x", "direction": "UP",
+            "stake_usd": 10.0, "entry_price": 0.65, "fill_size": 20.0,
+            "execution_mode": "paper",
+            "metadata": '{"window_ts": "1776109200"}',
+            "asset": "BTC", "window_ts": "1776109200", "created_at": None,
+        }
+        uc, trade_repo = self._make_uc([trade], actual_direction="UP")
+        asyncio.run(uc._resolve_paper_batch())
+        call_kwargs = trade_repo.resolve_trade.call_args.kwargs
+        # fill_size=20 wins over derived 10/0.65=15.38
+        assert call_kwargs["pnl_usd"] == round(20.0 - 10.0, 4)
+
+    def test_paper_win_falls_back_without_fill_size(self):
+        """Paper WIN: no fill_size -> derived stake/entry."""
+        trade = {
+            "id": "t001", "order_id": "paper-x", "direction": "UP",
+            "stake_usd": 10.0, "entry_price": 0.5,
+            "execution_mode": "paper",
+            "metadata": '{"window_ts": "1776109200"}',
+            "asset": "BTC", "window_ts": "1776109200", "created_at": None,
+        }
+        uc, trade_repo = self._make_uc([trade], actual_direction="UP")
+        asyncio.run(uc._resolve_paper_batch())
+        call_kwargs = trade_repo.resolve_trade.call_args.kwargs
+        # derived: 10/0.5 = 20, pnl = 20 - 10 = 10
+        assert call_kwargs["pnl_usd"] == round(10.0, 4)
