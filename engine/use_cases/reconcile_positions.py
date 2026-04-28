@@ -205,7 +205,16 @@ class ReconcilePositionsUseCase:
 
                 stake = float(trade.get("stake_usd") or 0)
                 entry = float(trade.get("entry_price") or 0)
-                shares = stake / entry if entry > 0 else 0.0
+                # Prefer actual fill_size (CLOB shares received) over
+                # the derived stake/entry formula. The derived formula
+                # overcounts shares when stake_usd diverges from
+                # fill_size * fill_price (price improvement, partial
+                # fills, rounding). fill_size is authoritative.
+                raw_fill_size = trade.get("fill_size")
+                if raw_fill_size is not None and float(raw_fill_size) > 0:
+                    shares = float(raw_fill_size)
+                else:
+                    shares = stake / entry if entry > 0 else 0.0
                 pnl = round(shares - stake, 4) if outcome == "WIN" else round(-stake, 4)
 
                 trade_id = trade["id"]
@@ -294,9 +303,17 @@ class ReconcilePositionsUseCase:
         trade_id = match["id"]
         trade_stake = float(match.get("stake_usd") or position.cost)
         trade_entry = float(match.get("entry_price") or position.avg_price)
-        trade_shares = (
-            trade_stake / trade_entry if trade_entry > 0 else position.size
-        )
+        # Prefer actual fill_size (CLOB shares received) over the derived
+        # stake/entry formula. The derived formula overcounts shares when
+        # stake_usd diverges from fill_size * fill_price (price
+        # improvement, partial fills, rounding). fill_size is authoritative.
+        raw_fill_size = match.get("fill_size")
+        if raw_fill_size is not None and float(raw_fill_size) > 0:
+            trade_shares = float(raw_fill_size)
+        else:
+            trade_shares = (
+                trade_stake / trade_entry if trade_entry > 0 else position.size
+            )
 
         if outcome == "WIN":
             trade_pnl = round(trade_shares - trade_stake, 4)

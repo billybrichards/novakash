@@ -237,7 +237,7 @@ class PgTradeRepository:
             async with self._pool.acquire() as conn:
                 rows = await conn.fetch(
                     """SELECT id, order_id, direction, stake_usd, entry_price,
-                              execution_mode, metadata, strategy,
+                              fill_size, execution_mode, metadata, strategy,
                               COALESCE(metadata->>'asset', 'BTC') AS asset,
                               COALESCE(metadata->>'window_ts',
                                 SUBSTRING(market_slug FROM '[0-9]+$')) AS window_ts,
@@ -449,6 +449,7 @@ class PgTradeRepository:
                            direction,
                            stake_usd,
                            entry_price,
+                           fill_size,
                            metadata,
                            created_at,
                            outcome,
@@ -487,6 +488,7 @@ class PgTradeRepository:
                            direction,
                            stake_usd,
                            entry_price,
+                           fill_size,
                            metadata,
                            created_at,
                            outcome,
@@ -530,6 +532,7 @@ class PgTradeRepository:
                            direction,
                            stake_usd,
                            entry_price,
+                           fill_size,
                            metadata,
                            created_at,
                            outcome,
