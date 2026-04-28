@@ -404,6 +404,34 @@ class StrategyRegistry:
         """Return all registered strategy names."""
         return list(self._configs.keys())
 
+    def _effective_configs(self) -> dict[str, "StrategyConfig"]:
+        """Return ``strategy_id -> StrategyConfig`` with runtime overrides
+        applied (mode + gate_params).
+
+        The raw ``self._configs`` reflects YAML-on-disk only. At runtime the
+        DB ``strategy_runtime_overrides`` table can flip a strategy's mode
+        (e.g. v10 GHOST→LIVE without restart, audit #291). Anything that
+        cares about *effective* state — TG window summary, per-strategy skip
+        cards, position-monitor gating — must apply the override or it will
+        silently miss strategies that were promoted/demoted at runtime.
+
+        Specifically: bug surfaced 2026-04-27 where v10_lgb_only was set
+        LIVE via override but its rows never appeared in the window summary
+        TG card because the build use case only saw the YAML mode (GHOST).
+        """
+        effective: dict[str, StrategyConfig] = {}
+        for name, cfg in self._configs.items():
+            eff_mode, eff_params = apply_runtime_overrides(
+                name, cfg.mode, cfg.gate_params
+            )
+            if eff_mode != cfg.mode or eff_params != cfg.gate_params:
+                effective[name] = _dc_replace(
+                    cfg, mode=eff_mode, gate_params=eff_params
+                )
+            else:
+                effective[name] = cfg
+        return effective
+
     @property
     def configs(self) -> dict[str, StrategyConfig]:
         """Return all strategy configs."""
@@ -939,8 +967,14 @@ class StrategyRegistry:
             # FILLED / FAILED_EXECUTION path above handles trade attempts;
             # here we emit SKIPPED_* cards so the operator sees why each
             # LIVE strategy passed on this window.
+            #
+            # NOTE: must read EFFECTIVE mode (post runtime override), not
+            # raw YAML mode — a strategy promoted GHOST→LIVE at runtime
+            # otherwise silently never emits skip cards. Bug 2026-04-27
+            # missed v10 entirely after re-LIVE flip.
+            _eff_configs_skip = self._effective_configs()
             for dec in decisions:
-                config = self._configs.get(dec.strategy_id)
+                config = _eff_configs_skip.get(dec.strategy_id)
                 if config is None or config.mode != "LIVE":
                     continue
                 if dec.action == "TRADE":
@@ -1035,7 +1069,13 @@ class StrategyRegistry:
             else:
                 failure_reason = getattr(execution_result, "failure_reason", "") or ""
                 if failure_reason == "already_traded":
-                    outcome = "SKIPPED_COOLDOWN"
+                    # Sibling strategy claimed the window first (try_claim_trade
+                    # lost the race). NOT a real cooldown — bucketing this as
+                    # SKIPPED_COOLDOWN previously made TG cards say "cooldown"
+                    # for v9 even when post_loss_cooldown_min=0, confusing the
+                    # operator. SKIPPED_DEDUP renders as "sibling already
+                    # traded" — true and actionable.
+                    outcome = "SKIPPED_DEDUP"
                 else:
                     outcome = "FAILED_EXECUTION"
         elif exec_error is not None:
@@ -1412,6 +1452,11 @@ class StrategyRegistry:
                 if decisions and decisions[0].strategy_id.startswith("v15m")
                 else "5m"
             )
+            # Pass *effective* configs so a strategy promoted GHOST→LIVE
+            # via the DB override (v10_lgb_only after 2026-04-27 re-LIVE)
+            # is bucketed correctly in the summary instead of being hidden
+            # under the GHOST collapse rule. The raw YAML configs would
+            # erase v10's lines from the card.
             summary_ctx = self._build_summary_uc.execute(
                 window_ts=window_ts,
                 eval_offset=eval_offset,
@@ -1420,7 +1465,7 @@ class StrategyRegistry:
                 current_price=getattr(surface, "current_price", None),
                 sources_agree=sources_agree,
                 decisions=decisions,
-                configs=self._configs,
+                configs=self._effective_configs(),
                 prior_decisions=prior,
             )
 

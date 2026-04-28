@@ -136,11 +136,14 @@ def test_ensemble_disagreement_skip_reason_shows_directions(registry_with_alerte
     assert "|Δ|=0.350" in reason, reason
 
 
-# ─── Fix 2: already_traded classifies as SKIPPED_COOLDOWN ───────────────
+# ─── Fix 2 (revised 2026-04-27): already_traded classifies as SKIPPED_DEDUP
+# (not SKIPPED_COOLDOWN). Sibling-strategy dedup is NOT a real cooldown,
+# and labelling it as one made TG cards say "cooldown" for v9 even when
+# post_loss_cooldown_min=0, confusing the operator.
 
 
 @pytest.mark.asyncio
-async def test_already_traded_classifies_as_skipped_cooldown(registry_with_alerter):
+async def test_already_traded_classifies_as_skipped_dedup(registry_with_alerter):
     reg, alerter = registry_with_alerter
     # Build a TRADE decision — doesn't matter which strategy for this unit.
     from domain.value_objects import StrategyDecision
@@ -162,7 +165,10 @@ async def test_already_traded_classifies_as_skipped_cooldown(registry_with_alert
         timeframe="5m",
     )
     assert len(alerter.calls) == 1
-    assert alerter.calls[0]["outcome"] == "SKIPPED_COOLDOWN"
+    assert alerter.calls[0]["outcome"] == "SKIPPED_DEDUP", (
+        "already_traded must NOT bucket as SKIPPED_COOLDOWN — sibling-dedup "
+        "is a separate concept; operator confusion bug 2026-04-27."
+    )
 
 
 @pytest.mark.asyncio
