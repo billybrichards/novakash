@@ -1077,7 +1077,8 @@ class PgWindowRepository(WindowStateRepository):
         saturation can elapse without the DELETE actually committing.
         ``slot_released`` stays False, the finally backstop's redundant
         retry hits the same saturated pool, and the placeholder lives on.
-        try_claim_fill_slot's stale-takeover (60s TTL) self-heals on the
+        try_claim_fill_slot's stale-takeover (TTL — see
+        STALE_PLACEHOLDER_TTL_SECONDS) self-heals on the
         NEXT attempt — but only if execute_trade reaches that step.
         Today's failure was that has_filled SHORT-CIRCUITS earlier with
         a True for the leaked 'pending' row, and the strategy never
@@ -1174,15 +1175,25 @@ class PgWindowRepository(WindowStateRepository):
     # left a 'pending' row with no matching trade row, and 12 retries
     # all observed has_filled=True. Manual DELETE was the only recovery.
     #
-    # 60s window matches:
-    #   * The longest plausible FAK ladder lifetime (FAK_LADDER_MAX_ELAPSED_S
-    #     defaults to 75s but is bounded at 60s for 5m windows by the
-    #     wall-clock past-close guard in execute_trade.Step 0).
-    #   * Comfortably outlives a healthy try_claim → mark_traded round-
-    #     trip (typically <5s including FAK fill).
-    # If a placeholder is older than this, the owning attempt is
-    # definitively dead — steal it.
-    STALE_PLACEHOLDER_TTL_SECONDS = 60
+    # 25s window: tight enough to make stale-pending self-heal feel
+    # near-instant, but ≥ FAK ladder hard cap so we never steal an
+    # in-flight attempt:
+    #   * FAK_LADDER_MAX_ELAPSED_S default = 20s (engine/adapters/
+    #     execution/fak_ladder_executor.py). 5s buffer absorbs the
+    #     surrounding bookkeeping (DB INSERT, CLOB submit, log flush).
+    #   * Healthy try_claim → mark_traded round-trip is <5s including
+    #     FAK fill, so a real fill comfortably commits before TTL.
+    # Audit 2026-04-27 (PR fix/clob-wallet-and-fak-retry): lowered from
+    # 60s → 25s. The old 60s value was sized off the legacy 75s ladder
+    # default + safety, but the ladder has been bounded at 20s since
+    # 2026-04-26. With execute_trade's failure path already calling
+    # release_fill_slot synchronously on success=False, the TTL only
+    # matters when the DELETE itself failed (DB pool saturation,
+    # SIGKILL between try_claim and finally). Shrinking the safety
+    # net from 60s → 25s means a leaked placeholder unblocks the
+    # strategy ~35s sooner — which on a 5m window is the difference
+    # between "missed entry" and "still in offset band".
+    STALE_PLACEHOLDER_TTL_SECONDS = 25
 
     async def try_claim_fill_slot(
         self,

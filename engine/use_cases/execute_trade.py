@@ -827,7 +827,8 @@ class ExecuteTradeUseCase:
                 # while the DB pool was saturated. Bounding at
                 # DB_AWAIT_TIMEOUT_S means the strategy unblocks fast;
                 # a stale 'pending' row will be cleaned up by either the
-                # next try_claim_fill_slot's stale-takeover (60s TTL)
+                # next try_claim_fill_slot's stale-takeover (see
+                # STALE_PLACEHOLDER_TTL_SECONDS in pg_window_repo.py)
                 # or the finally backstop on the next attempt.
                 await asyncio.wait_for(
                     self._window_state.release_fill_slot(
@@ -844,18 +845,64 @@ class ExecuteTradeUseCase:
                 )
                 return True
             except asyncio.TimeoutError:
+                # Audit 2026-04-27 (PR fix/clob-wallet-and-fak-retry):
+                # retry the DELETE once before falling back to the TTL
+                # safety net. The user-visible symptom of "FAK fails →
+                # ~minute wait before retry" is precisely this path:
+                # when the DB pool is saturated the first DELETE times
+                # out, ``slot_released`` stays False, and the next eval
+                # tick observes the leaked 'pending' row via has_filled
+                # → blocked until STALE_PLACEHOLDER_TTL_SECONDS elapses.
+                # A single retry handles transient pool blips (the
+                # common case); a true outage still falls through to
+                # the (now 25s) TTL — much faster than the prior 60s.
                 log.warning(
                     "execute_trade.release_fill_slot_timeout",
                     strategy=sid,
                     window=str(window_key),
                     phase=phase,
                     timeout_s=DB_AWAIT_TIMEOUT_S,
+                    will_retry=True,
                 )
-                # Don't set slot_released — the DELETE may still complete
-                # in the background pool; mark it as "tried but unsure".
-                # Stale-takeover on the next try_claim_fill_slot covers
-                # the worst case.
-                return False
+                try:
+                    await asyncio.wait_for(
+                        self._window_state.release_fill_slot(
+                            window_key, sid
+                        ),
+                        timeout=DB_AWAIT_TIMEOUT_S,
+                    )
+                    slot_released = True
+                    log.info(
+                        "execute_trade.release_fill_slot_retry_succeeded",
+                        strategy=sid,
+                        window=str(window_key),
+                        phase=phase,
+                    )
+                    return True
+                except asyncio.TimeoutError:
+                    log.warning(
+                        "execute_trade.release_fill_slot_retry_timeout",
+                        strategy=sid,
+                        window=str(window_key),
+                        phase=phase,
+                        timeout_s=DB_AWAIT_TIMEOUT_S,
+                    )
+                    # Fall through to TTL safety net. ``slot_released``
+                    # stays False — the DELETE may still complete in
+                    # the background pool; the next eval tick waits
+                    # at most STALE_PLACEHOLDER_TTL_SECONDS before
+                    # try_claim_fill_slot's stale-takeover reclaims
+                    # the row.
+                    return False
+                except Exception as _retry_exc:
+                    log.warning(
+                        "execute_trade.release_fill_slot_retry_failed",
+                        strategy=sid,
+                        window=str(window_key),
+                        phase=phase,
+                        error=str(_retry_exc)[:200],
+                    )
+                    return False
             except Exception as _rel_exc:
                 log.warning(
                     "execute_trade.release_fill_slot_failed",

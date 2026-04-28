@@ -191,12 +191,15 @@ def test_has_filled_ignores_stale_pending(monkeypatch):
     # Active placeholder block via NOW() - interval — must mention both.
     assert "NOW()" in sql
     assert "interval" in sql.lower()
-    # The TTL value (60s) is bound as a parameter, not inlined.
+    # The TTL value is bound as a parameter, not inlined. Reads the
+    # constant rather than hardcoding so future tweaks to
+    # STALE_PLACEHOLDER_TTL_SECONDS only need to update the constant.
+    from adapters.persistence.pg_window_repo import PgWindowRepository
     args = conn.execute_calls[0][1]
     # asset, window_ts, timeframe, strategy_id, placeholder, ttl_s
     assert len(args) == 6
     assert args[4] == "pending"
-    assert args[5] == "60"
+    assert args[5] == str(int(PgWindowRepository.STALE_PLACEHOLDER_TTL_SECONDS))
 
 
 def test_has_filled_blocks_when_real_fill_present():
