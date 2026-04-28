@@ -377,19 +377,30 @@ class FOKLadder:
 
     @staticmethod
     def _calc_size(price: float, stake_usd: float) -> float:
-        """Calculate CLOB-compliant size (3dp size, 2dp price, clean maker_amount ≤2dp).
+        """Calculate CLOB-compliant size (2dp size, 2dp price, clean maker_amount ≤2dp).
+
+        Polymarket V2 (post 2026-04-28 migration) rejects size with >2 decimal
+        places as ``invalid amounts``. V1 was lenient and accepted 3dp sizes;
+        the matcher tightened on cutover. This used to round size to 3dp and
+        rely on the price-ladder catch-block to log ``precision_error`` on
+        every other attempt — now we floor to 2dp up front so every order
+        passes V2's validator.
 
         Enforces Polymarket minimum of 5 shares. If calculated size < 5,
         bumps up to 5 (the stake will be slightly higher than requested).
         """
+        import math
+
         _price = round(price, 2)  # CLOB enforces 2dp on FAK/FOK prices
-        size = round(stake_usd / _price, 3)  # 3dp to match CLOB precision
+        # Floor to 2dp so maker_amount (= price * size) inherits ≤4dp before
+        # the inner adjust loop snaps it to 2dp.
+        size = math.floor((stake_usd / _price) * 100) / 100
         # Ensure maker_amount (price × size) is clean to 2dp
-        for _ in range(1000):
+        for _ in range(100):
             _maker = round(_price * size, 6)
             if abs(_maker - round(_maker, 2)) < 1e-9:
                 break
-            size = round(size - 0.001, 3)
+            size = round(size - 0.01, 2)
         # Enforce Polymarket minimum order size
         size = max(size, FOKLadder.POLY_MIN_SHARES)
         return size

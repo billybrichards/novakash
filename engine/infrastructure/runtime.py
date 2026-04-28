@@ -3863,10 +3863,20 @@ class EngineRuntime:
         # rendered with the prior CLOB value as a last resort — the goal is
         # "never show a wrong number", not "never show a number".
         wallet_usdc: Optional[float] = None
+        wallet_pusd: float = 0.0
         try:
             wallet_usdc = await self._wallet_rpc_reader.get_balance()
         except Exception as exc:  # noqa: BLE001 — never crash snapshot loop
             log.warning("snapshot.wallet_rpc_failed", error=str(exc)[:120])
+
+        # Polymarket V2 collateral (cutover 2026-04-28). Read alongside USDC
+        # so the snapshot card sums effective margin across both legs.
+        try:
+            pusd = await self._wallet_rpc_reader.get_pusd_balance()
+            if pusd is not None:
+                wallet_pusd = float(pusd)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("snapshot.pusd_rpc_failed", error=str(exc)[:120])
 
         if wallet_usdc is None and self._poly_client and hasattr(
             self._poly_client, "get_balance"
@@ -3908,6 +3918,67 @@ class EngineRuntime:
             except Exception as exc:
                 log.warning("snapshot.open_orders_failed", error=str(exc)[:120])
 
+        # Today's realized PnL — best-effort fetch from trades table so
+        # the card mirrors the narrative summary (same shape the
+        # reconciler renders). Falls through to None on any failure.
+        today_summary: Optional[dict] = None
+        _pool = getattr(getattr(self, "_db", None), "_pool", None)
+        if _pool is not None:
+            try:
+                day_start = datetime.now(timezone.utc).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+                async with _pool.acquire() as conn:
+                    row = await conn.fetchrow(
+                        """
+                        SELECT
+                          COUNT(*) FILTER (WHERE status = 'RESOLVED_WIN')  AS wins,
+                          COUNT(*) FILTER (WHERE status = 'RESOLVED_LOSS') AS losses,
+                          COALESCE(SUM(pnl_usd) FILTER (WHERE status IN ('RESOLVED_WIN','RESOLVED_LOSS')), 0) AS net_pnl
+                        FROM trades
+                        WHERE created_at >= $1
+                          AND status IN ('RESOLVED_WIN','RESOLVED_LOSS')
+                        """,
+                        day_start,
+                    )
+                if row is not None:
+                    today_summary = {
+                        "wins": int(row["wins"] or 0),
+                        "losses": int(row["losses"] or 0),
+                        "net_pnl": float(row["net_pnl"] or 0.0),
+                    }
+            except Exception as exc:  # noqa: BLE001
+                log.debug("snapshot.today_summary_failed", error=str(exc)[:160])
+
+        # Open positions at risk (filled but not yet resolved). Best-effort
+        # fetch from trades table so the card shows "2 positions ($29 at
+        # risk)" — gives the operator the full picture without checking CLOB.
+        open_positions: list[dict] = []
+        if _pool is not None:
+            try:
+                async with _pool.acquire() as conn:
+                    rows = await conn.fetch(
+                        """
+                        SELECT strategy_id, direction, fill_price,
+                               stake_usd, created_at
+                        FROM trades
+                        WHERE status = 'OPEN'
+                        ORDER BY created_at DESC
+                        LIMIT 10
+                        """
+                    )
+                    open_positions = [
+                        {
+                            "strategy_id": r["strategy_id"] or "?",
+                            "direction": r["direction"] or "?",
+                            "fill_price": float(r["fill_price"] or 0),
+                            "stake_usd": float(r["stake_usd"] or 0),
+                        }
+                        for r in rows
+                    ]
+            except Exception as exc:  # noqa: BLE001
+                log.debug("snapshot.open_positions_failed", error=str(exc)[:160])
+
         snap = build_snapshot(
             wallet_usdc=wallet_usdc,
             pending_wins=pending,
@@ -3916,6 +3987,9 @@ class EngineRuntime:
             daily_quota_limit=self._redeemer.daily_quota_limit,
             quota_used_today=quota_used,
             now_utc=datetime.now(timezone.utc).isoformat(),
+            wallet_pusd=wallet_pusd,
+            today_summary=today_summary,
+            open_positions=open_positions,
         )
 
         # Persist snapshot state to DB for Hub /api/positions/snapshot endpoint.
