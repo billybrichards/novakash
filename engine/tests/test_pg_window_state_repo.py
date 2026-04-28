@@ -241,6 +241,10 @@ class TestHasFilled:
         assert a[1] == 1_777_234_800
         assert a[2] == "5m"
         assert a[3] == "v10_lgb_only"
+        # Audit #401 (2026-04-28): query now also binds the placeholder
+        # sentinel + TTL seconds to exclude stale 'pending' rows.
+        assert a[4] == "pending"
+        assert a[5] == "60"
 
     def test_returns_false_when_no_marker(self, repo, conn):
         conn.fetchval_result = False
