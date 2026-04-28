@@ -33,8 +33,12 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-# Polygon mainnet USDC (PoS, native — same as wallet_truth.py).
+# Polygon mainnet stablecoin contracts.
 USDC_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+# Polymarket V2 collateral (pUSD) — added 2026-04-28 after the V1->V2
+# matcher migration. Same 6-decimal scale as USDC; balance is reported
+# alongside USDC so the position card sums effective collateral.
+PUSD_CONTRACT = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
 
 # Selector for ERC-20 ``balanceOf(address)``.
 BALANCE_OF_SELECTOR = "0x70a08231"
@@ -88,7 +92,7 @@ class WalletRPCReader:
     def last_known_good(self) -> Optional[float]:
         return self._last_known_good
 
-    def _build_payload(self) -> bytes:
+    def _build_payload(self, token_contract: str = USDC_CONTRACT) -> bytes:
         assert self._wallet is not None  # checked by .configured
         data = BALANCE_OF_SELECTOR + self._wallet[2:].lower().rjust(64, "0")
         return json.dumps(
@@ -96,7 +100,7 @@ class WalletRPCReader:
                 "jsonrpc": "2.0",
                 "method": "eth_call",
                 "params": [
-                    {"to": USDC_CONTRACT, "data": data},
+                    {"to": token_contract, "data": data},
                     "latest",
                 ],
                 "id": 1,
@@ -128,15 +132,17 @@ class WalletRPCReader:
                 return v
         return None
 
-    async def _fetch_one(self, url: str) -> Optional[float]:
-        """Single RPC call. Returns USDC float or None on any failure."""
+    async def _fetch_one(
+        self, url: str, token_contract: str = USDC_CONTRACT
+    ) -> Optional[float]:
+        """Single RPC call. Returns balance float or None on any failure."""
         # We use urllib in a thread because adding aiohttp / httpx purely for
         # this would bloat the engine container. wallet_truth.py uses the
         # same pattern (urllib + threadpool when async).
         import urllib.error
         import urllib.request
 
-        payload = self._build_payload()
+        payload = self._build_payload(token_contract)
 
         def _blocking() -> Optional[float]:
             req = urllib.request.Request(
@@ -173,6 +179,31 @@ class WalletRPCReader:
             log.debug("wallet_rpc.thread_error", url=url, error=str(exc)[:120])
             return None
 
+    async def get_pusd_balance(self) -> Optional[float]:
+        """Return on-chain pUSD balance via the same 2-of-3 consensus path.
+
+        Polymarket V2 (cutover 2026-04-28) settles in pUSD; the engine
+        wraps USDC -> pUSD once via ``scripts/ops/wrap_usdc_pusd.py``. This
+        helper lets the reconciler / position card surface that balance
+        independently of USDC. No LKG cache: pUSD is read alongside USDC
+        on the same poll, so a single transient miss just means the next
+        report has slightly less detail rather than wrong data.
+        """
+        if not self.configured:
+            return None
+
+        endpoints: list[str] = []
+        if self._primary_rpc:
+            endpoints.append(self._primary_rpc)
+        endpoints.extend(self._fallback_rpcs)
+
+        results = await asyncio.gather(
+            *(self._fetch_one(u, PUSD_CONTRACT) for u in endpoints),
+            return_exceptions=False,
+        )
+        successful = [r for r in results if r is not None]
+        return self._consensus(successful)
+
     async def get_balance(self) -> Optional[float]:
         """Return on-chain USDC balance, or None if every source failed and
         no last-known-good is cached.
@@ -199,7 +230,7 @@ class WalletRPCReader:
 
         # Run all in parallel — the slowest is _RPC_TIMEOUT_SECONDS.
         results = await asyncio.gather(
-            *(self._fetch_one(u) for u in endpoints),
+            *(self._fetch_one(u, USDC_CONTRACT) for u in endpoints),
             return_exceptions=False,
         )
         successful = [r for r in results if r is not None]

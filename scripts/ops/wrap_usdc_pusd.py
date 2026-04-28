@@ -109,36 +109,22 @@ def encode_proxy_calls(calls: list[tuple[int, str, int, bytes]]) -> bytes:
     """factory.proxy((uint8 op, address to, uint256 value, bytes data)[]).
 
     Each tuple is one operation the proxy will execute. ``op`` = 1 = CALL.
-    Uses standard ABI encoding for a dynamic array of struct.
+
+    Defers to ``eth_abi.encode`` because the array element is a *dynamic*
+    tuple (it contains the dynamic ``bytes data`` field), so Solidity's
+    layout requires an offset-per-element header before the structs
+    themselves -- not the head/tail-inline layout used for arrays of
+    static-only tuples. Hand-rolling the offset table is fiddly and we
+    already depend on web3.py.
     """
+    from eth_abi import encode as abi_encode
+
     sel = _selector("proxy((uint8,address,uint256,bytes)[])")
-
-    # Dynamic-array offset (1 word == 32) since we have a single dynamic param
-    head = _u256(32)
-
-    n = len(calls)
-    arr_len = _u256(n)
-
-    # For each call: head is op + to + value + offset_to_data
-    # tails contain the dynamic `bytes data` (length-prefixed, padded)
-    static_size_per_call = 4 * 32  # op, to, value, data_offset
-    inner_head = bytearray()
-    inner_tail = bytearray()
-    tail_cursor = static_size_per_call * n
-
-    for op, to, value, data in calls:
-        inner_head += _u256(op)
-        inner_head += _addr_word(to)
-        inner_head += _u256(value)
-        inner_head += _u256(tail_cursor)
-        # tail = length + padded data
-        data_len = len(data)
-        inner_tail += _u256(data_len)
-        padded = data + b"\x00" * ((32 - data_len % 32) % 32)
-        inner_tail += padded
-        tail_cursor += 32 + len(padded)
-
-    return sel + head + arr_len + bytes(inner_head) + bytes(inner_tail)
+    encoded = abi_encode(
+        ["(uint8,address,uint256,bytes)[]"],
+        [[(op, Web3.to_checksum_address(to), value, data) for op, to, value, data in calls]],
+    )
+    return sel + encoded
 
 
 # --- ERC20 read helpers --------------------------------------------------

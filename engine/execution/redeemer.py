@@ -406,7 +406,7 @@ class PositionRedeemer:
             it as ``None`` so the caller can decide how to render
             "unknown overdue".
         """
-        rows = await self.fetch_redeemable_positions(outcomes={"WIN"})
+        rows = await self.fetch_redeemable_positions(outcomes={"WIN"}, read_only=True)
         out: list[dict] = []
         for r in rows:
             resolved_at: Optional[datetime] = None
@@ -790,6 +790,7 @@ class PositionRedeemer:
         self,
         outcomes: Optional[set[str]] = None,
         limit: Optional[int] = None,
+        read_only: bool = False,
     ) -> list[dict]:
         """
         Fetch positions from Polymarket data API and filter for redeemable ones.
@@ -798,13 +799,18 @@ class PositionRedeemer:
         Both wins and losses are redeemed — losses clear the accounting books.
 
         Returns list of dicts with: conditionId, tokenId, size, outcome, pnl, curPrice
-        Returns empty list if we're currently in a rate-limit cooldown — the
-        position scan itself doesn't hit the relayer, but there's no point
-        staging a sweep we can't execute.
+
+        When ``read_only=False`` (default, used by the actual sweep), returns
+        empty during relayer cooldown — no point staging work we can't execute.
+
+        When ``read_only=True`` (used by ``pending_wins_summary`` for the TG
+        card), the cooldown gate is SKIPPED — the scan is a data-api GET
+        that never touches the relayer, and blocking it hides unredeemed wins
+        from the operator during cooldown windows.
         """
         if self._paper_mode:
             return []
-        if self._in_cooldown():
+        if not read_only and self._in_cooldown():
             self._log_cooldown_active()
             return []
 

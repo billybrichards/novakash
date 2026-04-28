@@ -1075,28 +1075,48 @@ class ExecuteTradeUseCase:
             # WHERE clause being correct forever).
             try:
                 try:
+                    # Audit 2026-04-28: ``asyncio.shield`` is load-bearing.
+                    # ``window_signal_dropped_oldest`` cancels in-flight
+                    # execute_trade tasks ~1.9s after a real CLOB fill when
+                    # the inflight queue (cap=4) overflows. Without shield,
+                    # CancelledError (BaseException) propagates straight up,
+                    # the ``await asyncio.wait_for(...)`` never enters the
+                    # mark_traded coroutine, ``strategy_window_fills`` row
+                    # stays at ``order_id='pending'`` forever, and the TG
+                    # reconciler reports the position as never-filled.
+                    # Audit #321's ``committed=True`` already prevents the
+                    # finally backstop from DELETing the placeholder on
+                    # cancel; this shield closes the matching gap on the
+                    # UPDATE side. The DB write is idempotent so a second
+                    # invocation from a future eval tick (via has_filled
+                    # short-circuit) is safe.
+                    #
                     # Audit 2026-04-26: timeout wrapper. mark_traded is
                     # the UPSERT that flips placeholder → real order_id.
                     # If it stalls under pool saturation we still want
                     # ``committed=True`` to fire so the finally backstop
                     # doesn't roll back the slot (the fill is real on
                     # CLOB regardless of our DB state).
-                    await asyncio.wait_for(
-                        self._window_state.mark_traded(
-                            window_key,
-                            result.order_id or "unknown",
-                            strategy_id=sid,
-                        ),
-                        timeout=DB_AWAIT_TIMEOUT_S,
+                    await asyncio.shield(
+                        asyncio.wait_for(
+                            self._window_state.mark_traded(
+                                window_key,
+                                result.order_id or "unknown",
+                                strategy_id=sid,
+                            ),
+                            timeout=DB_AWAIT_TIMEOUT_S,
+                        )
                     )
                 except TypeError:
                     # Legacy port impl without strategy_id kwarg.
-                    await asyncio.wait_for(
-                        self._window_state.mark_traded(
-                            window_key,
-                            result.order_id or "unknown",
-                        ),
-                        timeout=DB_AWAIT_TIMEOUT_S,
+                    await asyncio.shield(
+                        asyncio.wait_for(
+                            self._window_state.mark_traded(
+                                window_key,
+                                result.order_id or "unknown",
+                            ),
+                            timeout=DB_AWAIT_TIMEOUT_S,
+                        )
                     )
                 _log_step("mark_traded")
             except asyncio.TimeoutError:
@@ -1106,6 +1126,16 @@ class ExecuteTradeUseCase:
                     window=str(window_key),
                     timeout_s=DB_AWAIT_TIMEOUT_S,
                 )
+            except asyncio.CancelledError:
+                # Outer task cancelled after the shielded mark_traded
+                # already completed; just re-raise so the cancellation
+                # semantics propagate properly.
+                log.warning(
+                    "execute_trade.mark_traded_outer_cancelled_after_commit",
+                    strategy=sid,
+                    window=str(window_key),
+                )
+                raise
             except Exception as exc:
                 log.warning(
                     "execute_trade.mark_traded_error",

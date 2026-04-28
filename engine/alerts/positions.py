@@ -11,7 +11,7 @@ fetch wallet USDC, redeemer state, and pending-wins from poly_fills + trades.
 """
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Optional, TypedDict
 
 
 OVERDUE_THRESHOLD_SECONDS = 5 * 60  # NegRisk auto-redeem typical SLA = 1–5 min
@@ -49,18 +49,37 @@ def build_snapshot(
     daily_quota_limit: int,
     quota_used_today: int,
     now_utc: str,
+    *,
+    wallet_pusd: float = 0.0,
+    today_summary: Optional[dict] = None,
+    open_positions: Optional[list[dict]] = None,
 ) -> dict:
+    """Build the position-snapshot payload consumed by TG + the Hub UI.
+
+    ``wallet_pusd`` was added 2026-04-28 with the Polymarket V1->V2
+    cutover: V2 settles in pUSD, USDC is now only the leftover + win
+    payouts leg. The card sums both into ``effective_balance`` so the
+    operator sees the real margin available to the matcher.
+
+    ``today_summary`` (optional) lets the caller inject a
+    ``{wins, losses, net_pnl}`` dict so the card can show session
+    performance without having to query the trades DB itself (positions
+    builder stays IO-free per module docstring).
+    """
     # Sum at full float precision and round ONCE at the end, so that
     # round(round(a, 2) + round(b, 2), 2) drift on cent-precision floats
     # never creeps into the user-visible effective balance.
     pending_total_raw = sum(float(w["value"]) for w in pending_wins)
     pending_total = round(pending_total_raw, 2)
-    effective = round(wallet_usdc + pending_total_raw, 2)  # sum raw, round once
+    wallet_total_raw = float(wallet_usdc) + float(wallet_pusd)
+    effective = round(wallet_total_raw + pending_total_raw, 2)
     overdue_count = sum(1 for w in pending_wins if _is_overdue(w))
     quota_remaining = max(0, int(daily_quota_limit) - int(quota_used_today))
     return {
         "now_utc": now_utc,
         "wallet_usdc": round(wallet_usdc, 2),
+        "wallet_pusd": round(float(wallet_pusd), 2),
+        "wallet_total": round(wallet_total_raw, 2),
         "pending_wins": pending_wins,
         "pending_count": len(pending_wins),
         "pending_total_usd": pending_total,
@@ -72,6 +91,13 @@ def build_snapshot(
         "daily_quota_limit": daily_quota_limit,
         "quota_used_today": quota_used_today,
         "quota_remaining": quota_remaining,
+        "today_summary": today_summary,
+        "open_positions": open_positions or [],
+        "open_positions_count": len(open_positions or []),
+        "open_positions_at_risk": round(
+            sum(float(p.get("stake_usd", 0)) for p in (open_positions or [])),
+            2,
+        ),
     }
 
 
@@ -92,11 +118,40 @@ def render_snapshot_text(snap: dict) -> str:
     lines: list[str] = []
     lines.append(f"📊 *POSITION SNAPSHOT* | {snap['now_utc'][:16]}Z")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append(
-        f"Wallet: `${snap['wallet_usdc']:.2f}` "
-        f"| Pending: `${snap['pending_total_usd']:.2f}` ({snap['pending_count']} pending) "
-        f"| *Effective: `${snap['effective_balance']:.2f}`*"
-    )
+
+    # Wallet line. Post-V2 (2026-04-28) callers populate ``wallet_pusd``
+    # too — show both legs when they're material so the operator can tell
+    # at a glance whether on-ramp is needed.
+    pusd = float(snap.get("wallet_pusd", 0.0) or 0.0)
+    usdc = float(snap.get("wallet_usdc", 0.0) or 0.0)
+    if pusd > 0.005:
+        lines.append(
+            f"Wallet: pUSD `${pusd:.2f}` + USDC `${usdc:.2f}` "
+            f"| Pending: `${snap['pending_total_usd']:.2f}` "
+            f"({snap['pending_count']} pending) "
+            f"| *Effective: `${snap['effective_balance']:.2f}`*"
+        )
+    else:
+        lines.append(
+            f"Wallet: `${usdc:.2f}` "
+            f"| Pending: `${snap['pending_total_usd']:.2f}` "
+            f"({snap['pending_count']} pending) "
+            f"| *Effective: `${snap['effective_balance']:.2f}`*"
+        )
+
+    today = snap.get("today_summary")
+    if today and (today.get("wins", 0) or today.get("losses", 0)):
+        wins = int(today["wins"])
+        losses = int(today["losses"])
+        net = float(today.get("net_pnl", 0.0))
+        resolved = wins + losses
+        wr = f"{wins / resolved * 100:.0f}%" if resolved > 0 else "-"
+        emoji = "🟢" if net > 0.005 else ("🔴" if net < -0.005 else "⚪")
+        sign = "+" if net >= 0 else "-"
+        lines.append(
+            f"Today: {emoji} `{wins}W/{losses}L` "
+            f"({wr}, {sign}${abs(net):.2f})"
+        )
 
     if snap["pending_wins"]:
         lines.append("")
@@ -130,8 +185,24 @@ def render_snapshot_text(snap: dict) -> str:
             f"🟢 Relayer OK | `{snap['quota_remaining']}/{snap['daily_quota_limit']} quota left`"
         )
 
+    # Open positions at risk (filled but not yet resolved)
+    opc = snap.get("open_positions_count", 0)
+    opr = snap.get("open_positions_at_risk", 0.0)
+    if opc > 0:
+        lines.append(
+            f"📍 Open positions: `{opc}` (`${opr:.2f}` at risk)"
+        )
+        for p in snap.get("open_positions", [])[:5]:
+            sid = p.get("strategy_id", "?")
+            d = p.get("direction", "?")
+            price = float(p.get("fill_price", 0))
+            stake = float(p.get("stake_usd", 0))
+            lines.append(f"  {sid}: {d} `${price:.2f}` entry, `${stake:.2f}` stake")
+        if opc > 5:
+            lines.append(f"  …+{opc - 5} more")
+
     if snap["open_orders_count"]:
-        lines.append(f"📋 Open orders: `{snap['open_orders_count']}`")
+        lines.append(f"📋 Resting orders: `{snap['open_orders_count']}`")
 
     # 30-min activity digest (optional — only render when caller passed
     # it in via the "activity_digest" key). Keeps positions.py free of

@@ -186,6 +186,84 @@ class CLOBReconciler:
         # already wrap this in try/except to keep the loop alive.
         return await self._poly.get_balance()
 
+    async def _compose_today_summary(
+        self, now: datetime
+    ) -> Optional[str]:
+        """Render a one-line ``Today:`` summary of realized W/L from trades.
+
+        Mirrors the narrative-card "today: 3W/3L (50%, -$10.68)" shape so
+        the reconciliation card is self-contained — operator doesn't have
+        to cross-reference the trade-result cards. Best-effort: returns
+        None if the DB pool is unavailable or the query fails.
+        """
+        if not self._pool:
+            return None
+        try:
+            day_start = datetime(
+                now.year, now.month, now.day, tzinfo=timezone.utc
+            )
+            async with self._pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    SELECT
+                      COUNT(*) FILTER (WHERE status = 'RESOLVED_WIN')   AS wins,
+                      COUNT(*) FILTER (WHERE status = 'RESOLVED_LOSS')  AS losses,
+                      COALESCE(SUM(pnl_usd) FILTER (WHERE status IN ('RESOLVED_WIN','RESOLVED_LOSS')), 0) AS net_pnl,
+                      COUNT(*) FILTER (WHERE status = 'OPEN')           AS open_count
+                    FROM trades
+                    WHERE created_at >= $1
+                      AND status IN ('RESOLVED_WIN','RESOLVED_LOSS','OPEN')
+                    """,
+                    day_start,
+                )
+        except Exception as exc:
+            self._log.debug(
+                "reconciler.today_summary_failed", error=str(exc)[:160]
+            )
+            return None
+
+        if not row:
+            return None
+        wins = int(row["wins"] or 0)
+        losses = int(row["losses"] or 0)
+        net = float(row["net_pnl"] or 0.0)
+        open_count = int(row["open_count"] or 0)
+        if wins == 0 and losses == 0 and open_count == 0:
+            return None
+
+        resolved = wins + losses
+        if resolved > 0:
+            wr_pct = wins / resolved * 100
+            wr_str = f"{wr_pct:.0f}%"
+        else:
+            wr_str = "-"
+        sign = "+" if net >= 0 else "-"
+        amt = abs(net)
+        emoji = "🟢" if net > 0.005 else ("🔴" if net < -0.005 else "⚪")
+        open_suffix = f" · `{open_count}` OPEN" if open_count > 0 else ""
+        return (
+            f"Today: {emoji} `{wins}W/{losses}L` "
+            f"({wr_str}, {sign}${amt:.2f}){open_suffix}"
+        )
+
+    async def _read_pusd_balance(self) -> float:
+        """Return on-chain pUSD balance, or 0.0 if reader unavailable.
+
+        Polymarket V2 (cutover 2026-04-28) settles in pUSD. CLOB does not
+        expose a pUSD balance endpoint — chain is the only source — so a
+        clean None from the reader means "treat as zero" for reporting.
+        """
+        if self._wallet_rpc_reader is None:
+            return 0.0
+        try:
+            value = await self._wallet_rpc_reader.get_pusd_balance()
+            return float(value) if value is not None else 0.0
+        except Exception as exc:
+            self._log.warning(
+                "reconciler.pusd_rpc_failed", error=str(exc)[:200]
+            )
+            return 0.0
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -429,11 +507,17 @@ class CLOBReconciler:
             self._last_balance_refresh = now_ts
 
         # 1. Wallet balance — prefer on-chain RPC over CLOB cache.
-        # See _read_wallet_balance() for rationale.
+        # Also fetch pUSD (Polymarket V2 collateral, cutover 2026-04-28).
+        # See _read_wallet_balance() for the on-chain-first rationale.
         try:
-            balance = await self._read_wallet_balance()
+            balance, pusd_balance = await asyncio.gather(
+                self._read_wallet_balance(),
+                self._read_pusd_balance(),
+            )
             self._state.wallet = WalletSnapshot(
-                balance_usdc=balance, fetched_at=now
+                balance_usdc=balance,
+                balance_pusd=pusd_balance,
+                fetched_at=now,
             )
 
             # Persist wallet snapshot (sample: every 30th poll ~ 1/min)
@@ -1091,14 +1175,39 @@ class CLOBReconciler:
                 )
 
     async def _send_report(self) -> None:
-        """Compose and send the 5-minute reconciliation report."""
+        """Compose and send the 5-minute reconciliation report.
+
+        Post-V2-migration shape (2026-04-28):
+          - Wallet line shows USDC + pUSD legs separately + their sum.
+            pUSD is the V2 collateral; USDC is leftover + win payouts.
+          - Today line summarises realized W/L from the trades table so
+            the operator sees session PnL without flipping to the dash.
+          - Last-5-min block keeps its existing W/L counter, but also
+            lists the most recent winning entry for context (when there
+            is one) — useful for spot-checking which strategy is
+            performing.
+        """
         now = datetime.now(timezone.utc)
         now_str = now.strftime("%H:%M UTC")
 
-        # Wallet line
+        # Wallet line — both USDC and pUSD when available.
         wallet_line = "Wallet: _unavailable_"
         if self._state.wallet:
-            wallet_line = f"Wallet: `${self._state.wallet.balance_usdc:.2f}` USDC (CLOB verified)"
+            usdc = self._state.wallet.balance_usdc
+            pusd = self._state.wallet.balance_pusd
+            total = usdc + pusd
+            if pusd > 0.005 or total != usdc:
+                wallet_line = (
+                    f"Collateral: `${total:.2f}` "
+                    f"(pUSD `${pusd:.2f}` + USDC `${usdc:.2f}`)"
+                )
+            else:
+                wallet_line = (
+                    f"Wallet: `${usdc:.2f}` USDC (CLOB verified)"
+                )
+
+        # Today's realized PnL summary — pulled from trades table.
+        today_line = await self._compose_today_summary(now)
 
         # Last 5 min activity
         activity_lines = []
@@ -1129,17 +1238,24 @@ class CLOBReconciler:
         resting_count = len(self._state.resting_orders)
         resting_line = f"Resting GTC: `{resting_count}` orders on book"
 
-        msg = (
-            f"*CLOB RECONCILIATION* -- {now_str}\n"
-            f"----\n"
-            f"{wallet_line}\n"
-            f"\n"
-            f"*Last 5 min:*\n"
-            f"{activity_block}\n"
-            f"\n"
-            f"{open_line}\n"
-            f"{resting_line}"
+        msg_parts = [
+            f"*CLOB RECONCILIATION* -- {now_str}",
+            "----",
+            wallet_line,
+        ]
+        if today_line:
+            msg_parts.append(today_line)
+        msg_parts.extend(
+            [
+                "",
+                "*Last 5 min:*",
+                activity_block,
+                "",
+                open_line,
+                resting_line,
+            ]
         )
+        msg = "\n".join(msg_parts)
 
         await self._alerter.send_raw_message(msg)
         self._state.last_report_at = now
