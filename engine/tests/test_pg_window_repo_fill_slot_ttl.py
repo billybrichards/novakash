@@ -158,6 +158,93 @@ def test_try_claim_fill_slot_db_error_fails_closed():
     assert won is False
 
 
+def test_has_filled_ignores_stale_pending(monkeypatch):
+    """Audit #401 (2026-04-28) — has_filled MUST exclude stale 'pending'
+    placeholder rows. SQL must reference both:
+      * order_id <> 'pending' (real fills always block), AND
+      * filled_at >= NOW() - INTERVAL (active placeholders block).
+
+    A stale 'pending' row (filled_at older than TTL) must NOT block —
+    otherwise a leaked placeholder locks the strategy out forever, the
+    bug we shipped today (52 stale rows blocking v9_lgb_only +
+    v10_lgb_only). The next try_claim_fill_slot's stale-takeover then
+    reclaims the row on the same eval tick.
+    """
+    repo, conn = _make_repo()
+    # DB returns False — there's no row that satisfies the new WHERE
+    # predicate (the only row is a stale 'pending'). has_filled must
+    # propagate that as False so execute_trade falls through to
+    # try_claim_fill_slot.
+    conn.fetchval_result = False
+    key = _make_key()
+
+    blocked = asyncio.run(repo.has_filled(key, "v9_lgb_only"))
+    assert blocked is False
+
+    # Verify the SQL emitted carries the stale-exclusion clause. We
+    # don't parse SQL — substring assertions guard against a refactor
+    # that accidentally restores the "any row blocks" behaviour.
+    sql = conn.execute_calls[0][0]
+    assert "strategy_window_fills" in sql
+    # Real fills (order_id <> 'pending') always block.
+    assert "order_id <>" in sql
+    # Active placeholder block via NOW() - interval — must mention both.
+    assert "NOW()" in sql
+    assert "interval" in sql.lower()
+    # The TTL value (60s) is bound as a parameter, not inlined.
+    args = conn.execute_calls[0][1]
+    # asset, window_ts, timeframe, strategy_id, placeholder, ttl_s
+    assert len(args) == 6
+    assert args[4] == "pending"
+    assert args[5] == "60"
+
+
+def test_has_filled_blocks_when_real_fill_present():
+    """A real fill marker (order_id != 'pending') ALWAYS blocks
+    has_filled regardless of age. The DB returns EXISTS=True; the
+    adapter just propagates it. This test pins the contract: real
+    fills are terminal forever.
+    """
+    repo, conn = _make_repo()
+    conn.fetchval_result = True
+    key = _make_key()
+
+    blocked = asyncio.run(repo.has_filled(key, "v9_lgb_only"))
+    assert blocked is True
+
+
+def test_has_filled_blocks_active_pending_placeholder():
+    """An ACTIVE 'pending' placeholder (filled_at within the TTL
+    window) must still block — it represents an in-flight FAK we
+    must NOT race. The SQL's WHERE clause includes
+    ``filled_at >= NOW() - interval`` for exactly this case; the
+    adapter trusts the DB's EXISTS result.
+    """
+    repo, conn = _make_repo()
+    conn.fetchval_result = True  # active placeholder satisfies predicate
+    key = _make_key()
+
+    blocked = asyncio.run(repo.has_filled(key, "v9_lgb_only"))
+    assert blocked is True
+
+
+def test_has_filled_db_error_failopen():
+    """has_filled fails OPEN on DB error: returns False so execute_trade
+    falls through to lease + try_claim_fill_slot rather than freezing
+    the strategy on a transient blip.
+    """
+    repo, conn = _make_repo()
+
+    async def _raise(*_a, **_kw):
+        raise RuntimeError("DB unreachable")
+
+    conn.fetchval = _raise  # type: ignore[assignment]
+
+    key = _make_key()
+    blocked = asyncio.run(repo.has_filled(key, "v9_lgb_only"))
+    assert blocked is False
+
+
 def test_release_fill_slot_logs_rows_deleted():
     """release_fill_slot returns asyncpg DELETE tag like 'DELETE 1'.
     Verifies the parser extracts the row count without raising; INFO

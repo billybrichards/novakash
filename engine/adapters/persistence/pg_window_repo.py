@@ -1068,6 +1068,29 @@ class PgWindowRepository(WindowStateRepository):
         Returns False on any DB error or pool absence — fail-open keeps
         the engine running when the marker table is unreachable; the
         lease still provides 15s in-flight protection as a backstop.
+
+        Audit #401 (2026-04-28): stale-pending self-recovery. SMOKING
+        GUN today: 52 rows with order_id='pending' lingered in
+        strategy_window_fills, blocking v9_lgb_only and v10_lgb_only
+        entries forever until manual DELETE. Root cause: every release
+        path was bounded by DB_AWAIT_TIMEOUT_S, which under DB-pool
+        saturation can elapse without the DELETE actually committing.
+        ``slot_released`` stays False, the finally backstop's redundant
+        retry hits the same saturated pool, and the placeholder lives on.
+        try_claim_fill_slot's stale-takeover (60s TTL) self-heals on the
+        NEXT attempt — but only if execute_trade reaches that step.
+        Today's failure was that has_filled SHORT-CIRCUITS earlier with
+        a True for the leaked 'pending' row, and the strategy never
+        gets to try_claim_fill_slot's takeover.
+
+        Defence: ignore 'pending' placeholders older than the same
+        ``STALE_PLACEHOLDER_TTL_SECONDS`` window. Real fills (order_id
+        != 'pending') still block as terminal markers regardless of
+        age. This makes the per-window dedup self-recovering without
+        any cleanup cron — a leaked 'pending' row blocks for at most
+        TTL seconds, then the next eval tick passes has_filled,
+        try_claim_fill_slot's stale-takeover steals the row, and the
+        strategy resumes normal operation.
         """
         if not self._pool:
             return False
@@ -1075,15 +1098,31 @@ class PgWindowRepository(WindowStateRepository):
             return False
         try:
             async with self._pool.acquire() as conn:
+                # EXISTS query short-circuits at the row level. The
+                # WHERE predicate matches:
+                #   * Any real fill marker (order_id != 'pending'), OR
+                #   * An ACTIVE 'pending' placeholder (filled_at within
+                #     the TTL window — another in-flight attempt holds
+                #     the slot, we should NOT race it).
+                # Stale 'pending' rows (older than TTL) are excluded —
+                # the owning attempt is dead, has_filled returns False,
+                # and the next try_claim_fill_slot's stale-takeover
+                # will reclaim the row.
                 row = await conn.fetchval(
                     """SELECT EXISTS(
                         SELECT 1 FROM strategy_window_fills
                          WHERE asset = $1 AND window_ts = $2
-                           AND timeframe = $3 AND strategy_id = $4)""",
+                           AND timeframe = $3 AND strategy_id = $4
+                           AND (
+                                order_id <> $5
+                                OR filled_at >= NOW() - ($6 || ' seconds')::interval
+                           ))""",
                     key.asset,
                     key.window_ts,
                     key.timeframe,
                     strategy_id,
+                    self.PLACEHOLDER_ORDER_ID,
+                    str(int(self.STALE_PLACEHOLDER_TTL_SECONDS)),
                 )
                 return bool(row)
         except Exception as exc:
