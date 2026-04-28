@@ -82,8 +82,8 @@ class LivePolymarketClient(PolymarketClientPort):
 
     async def connect(self) -> None:
         """Construct and authenticate the py-clob-client."""
-        from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import ApiCreds
+        from py_clob_client_v2.client import ClobClient
+        from py_clob_client_v2.clob_types import ApiCreds
 
         # Build base client args
         client_kwargs = dict(
@@ -175,8 +175,8 @@ class LivePolymarketClient(PolymarketClientPort):
                 token_id=token_id[:20] + "..." if len(token_id) > 20 else token_id,
             )
 
-        from py_clob_client.clob_types import OrderArgs, OrderType
-        from py_clob_client.order_builder.constants import BUY
+        from py_clob_client_v2.clob_types import OrderArgs, OrderType
+        from py_clob_client_v2.order_builder.constants import BUY
 
         # Calculate size (number of shares = stake / price)
         client = self._clob_client
@@ -391,8 +391,8 @@ class LivePolymarketClient(PolymarketClientPort):
                 size=f"{size:.2f}",
             )
 
-        from py_clob_client.clob_types import OrderArgs, OrderType
-        from py_clob_client.order_builder.constants import BUY
+        from py_clob_client_v2.clob_types import OrderArgs, OrderType
+        from py_clob_client_v2.order_builder.constants import BUY
 
         client = self._clob_client
 
@@ -503,8 +503,8 @@ class LivePolymarketClient(PolymarketClientPort):
         if stake_usd > LIVE_MAX_TRADE_USD:
             raise ValueError(f"Trade stake ${stake_usd:.2f} exceeds cap ${LIVE_MAX_TRADE_USD:.2f}")
 
-        from py_clob_client.clob_types import OrderArgs, OrderType
-        from py_clob_client.order_builder.constants import BUY
+        from py_clob_client_v2.clob_types import OrderArgs, OrderType
+        from py_clob_client_v2.order_builder.constants import BUY
 
         client = self._clob_client
 
@@ -659,8 +659,8 @@ class LivePolymarketClient(PolymarketClientPort):
             self._log.error("rfq.no_clob_client")
             return (None, None)
         try:
-            from py_clob_client.rfq import RfqUserRequest
-            from py_clob_client.order_builder.constants import BUY
+            from py_clob_client_v2.rfq import RfqUserRequest
+            from py_clob_client_v2.order_builder.constants import BUY
             
             side = BUY  # We always BUY tokens
             
@@ -697,7 +697,7 @@ class LivePolymarketClient(PolymarketClientPort):
             await asyncio.sleep(2)
             
             # Get best quote
-            from py_clob_client.rfq import GetRfqBestQuoteParams
+            from py_clob_client_v2.rfq import GetRfqBestQuoteParams
             best_quote = await asyncio.to_thread(
                 self._clob_client.rfq.get_rfq_best_quote,
                 request_id,
@@ -707,7 +707,7 @@ class LivePolymarketClient(PolymarketClientPort):
                 self._log.info("rfq.no_quotes", request_id=str(request_id)[:20])
                 # Cancel the request
                 try:
-                    from py_clob_client.rfq import CancelRfqRequestParams
+                    from py_clob_client_v2.rfq import CancelRfqRequestParams
                     await asyncio.to_thread(
                         self._clob_client.rfq.cancel_rfq_request,
                         request_id,
@@ -833,7 +833,7 @@ class LivePolymarketClient(PolymarketClientPort):
     async def get_balance(self) -> float:
         """Return current USDC balance from the CLOB."""
         client = self._ensure_client()
-        from py_clob_client.clob_types import BalanceAllowanceParams
+        from py_clob_client_v2.clob_types import BalanceAllowanceParams
         sig_type = int(os.environ.get("POLY_SIGNATURE_TYPE", "2"))
 
         def _fetch():

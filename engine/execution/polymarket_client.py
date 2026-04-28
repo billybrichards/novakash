@@ -245,8 +245,8 @@ class PolymarketClient:
         Paper mode just logs the startup.
         Live mode constructs and authenticates the py-clob-client.
         """
-        from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import ApiCreds
+        from py_clob_client_v2.client import ClobClient
+        from py_clob_client_v2.clob_types import ApiCreds
 
         if self.paper_mode:
             # Paper mode: init read-only CLOB client for real market data.
@@ -430,8 +430,8 @@ class PolymarketClient:
                 token_id=token_id[:20] + "..." if len(token_id) > 20 else token_id,
             )
 
-        from py_clob_client.clob_types import OrderArgs, OrderType
-        from py_clob_client.order_builder.constants import BUY
+        from py_clob_client_v2.clob_types import OrderArgs, OrderType
+        from py_clob_client_v2.order_builder.constants import BUY
 
         # Calculate size (number of shares = stake / price)
         client = self._clob_client
@@ -734,8 +734,8 @@ class PolymarketClient:
                 size=f"{size:.2f}",
             )
 
-        from py_clob_client.clob_types import OrderArgs, OrderType
-        from py_clob_client.order_builder.constants import BUY
+        from py_clob_client_v2.clob_types import OrderArgs, OrderType
+        from py_clob_client_v2.order_builder.constants import BUY
 
         client = self._clob_client
 
@@ -897,8 +897,8 @@ class PolymarketClient:
                 f"Trade stake ${stake_usd:.2f} exceeds cap ${LIVE_MAX_TRADE_USD:.2f}"
             )
 
-        from py_clob_client.clob_types import OrderArgs, OrderType
-        from py_clob_client.order_builder.constants import BUY
+        from py_clob_client_v2.clob_types import OrderArgs, OrderType
+        from py_clob_client_v2.order_builder.constants import BUY
 
         client = self._clob_client
 
@@ -1099,8 +1099,8 @@ class PolymarketClient:
             return (None, None)
 
         try:
-            from py_clob_client.rfq import RfqUserRequest
-            from py_clob_client.order_builder.constants import BUY
+            from py_clob_client_v2.rfq import RfqUserRequest
+            from py_clob_client_v2.order_builder.constants import BUY
 
             side = BUY  # We always BUY tokens
 
@@ -1141,7 +1141,7 @@ class PolymarketClient:
             await asyncio.sleep(2)
 
             # Get best quote
-            from py_clob_client.rfq import GetRfqBestQuoteParams
+            from py_clob_client_v2.rfq import GetRfqBestQuoteParams
 
             best_quote = await asyncio.to_thread(
                 self._clob_client.rfq.get_rfq_best_quote,
@@ -1152,7 +1152,7 @@ class PolymarketClient:
                 self._log.info("rfq.no_quotes", request_id=str(request_id)[:20])
                 # Cancel the request
                 try:
-                    from py_clob_client.rfq import CancelRfqRequestParams
+                    from py_clob_client_v2.rfq import CancelRfqRequestParams
 
                     await asyncio.to_thread(
                         self._clob_client.rfq.cancel_rfq_request,
@@ -1262,8 +1262,8 @@ class PolymarketClient:
                 "sell order against a read-only (paper-mode) client."
             )
 
-        from py_clob_client.clob_types import OrderArgs, OrderType
-        from py_clob_client.order_builder.constants import SELL
+        from py_clob_client_v2.clob_types import OrderArgs, OrderType
+        from py_clob_client_v2.order_builder.constants import SELL
 
         client = self._clob_client
 
@@ -1464,7 +1464,7 @@ class PolymarketClient:
         if not self._clob_client:
             raise RuntimeError("CLOB client not connected — call connect() first")
 
-        from py_clob_client.clob_types import BalanceAllowanceParams
+        from py_clob_client_v2.clob_types import BalanceAllowanceParams
 
         sig_type = int(os.environ.get("POLY_SIGNATURE_TYPE", "2"))
 
@@ -1494,7 +1494,7 @@ class PolymarketClient:
         """
         if self.paper_mode or not self._clob_client:
             return
-        from py_clob_client.clob_types import BalanceAllowanceParams
+        from py_clob_client_v2.clob_types import BalanceAllowanceParams
 
         sig_type = int(os.environ.get("POLY_SIGNATURE_TYPE", "2"))
 
