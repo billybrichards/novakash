@@ -84,6 +84,7 @@ class CLOBReconciler:
         poll_interval: float = 2.0,
         report_interval: float = 300.0,
         sot_price_tolerance_pct: float = 0.5,
+        wallet_rpc_reader: Optional[object] = None,
     ) -> None:
         self._poly = poly_client
         self._pool = db_pool
@@ -91,6 +92,15 @@ class CLOBReconciler:
         self._shutdown = shutdown_event
         self._poll_interval = poll_interval
         self._report_interval = report_interval
+        # Audit 2026-04-27 (PR fix/clob-wallet-and-fak-retry): on-chain
+        # USDC reader. The CLOB ``get_balance_allowance`` API caches and
+        # lags by 10-20m AND has been observed to return $0 outright
+        # (smoking gun: CLOB reported $0, USDC.balanceOf(proxy) returned
+        # $295). The reconciler is now dual-source: prefer on-chain RPC
+        # (cross-RPC consensus, never goes stale), fall back to CLOB
+        # only when the reader has no LKG yet. ``None`` is accepted for
+        # back-compat with tests / non-production callers.
+        self._wallet_rpc_reader = wallet_rpc_reader
         # POLY-SOT: 0.5% default tolerance on price match. Anything outside
         # this band marks the row `diverged`.
         self._sot_price_tolerance_pct = float(sot_price_tolerance_pct)
@@ -131,6 +141,50 @@ class CLOBReconciler:
         self._sot_alerted_trade_ids: set[str] = set()
 
         self._log = log.bind(component="clob_reconciler")
+
+    # ------------------------------------------------------------------
+    # Wallet balance (on-chain-first, CLOB fallback)
+    # ------------------------------------------------------------------
+
+    async def _read_wallet_balance(self) -> float:
+        """Return USDC balance, preferring on-chain RPC over CLOB cache.
+
+        Audit 2026-04-27 (PR fix/clob-wallet-and-fak-retry): the CLOB
+        ``get_balance_allowance`` cache has been observed to:
+          * Lag on-chain state by 10-20 minutes after a NegRisk
+            auto-settlement, and
+          * Return $0 outright when the indexer is wedged — proven on
+            2026-04-27 by USDC.balanceOf(proxy) returning $295 while
+            CLOB reported $0.
+
+        The on-chain reader uses 2-of-3 cross-RPC consensus and caches
+        the last known good value, so transient single-node failures
+        never produce a $0 reading. CLOB is only used as a fallback
+        when the reader has not yet built up an LKG (cold start).
+        Errors fall through to the legacy CLOB call rather than
+        raising — the reconciler treats a stale balance as preferable
+        to crashing the poll loop.
+        """
+        # Try on-chain first. ``None`` means "every RPC failed AND no
+        # LKG yet" — different from "0.00", which is a real (and rare)
+        # reading and must be preserved.
+        if self._wallet_rpc_reader is not None:
+            try:
+                onchain = await self._wallet_rpc_reader.get_balance()
+                if onchain is not None:
+                    return float(onchain)
+            except Exception as exc:
+                self._log.warning(
+                    "reconciler.wallet_rpc_failed",
+                    error=str(exc)[:200],
+                )
+
+        # Fallback: CLOB ``get_balance_allowance``. Documented as
+        # caching by 10-20m and occasionally returning $0 outright.
+        # Used only when the on-chain reader is unavailable or has no
+        # LKG yet. Failures here propagate — the existing call sites
+        # already wrap this in try/except to keep the loop alive.
+        return await self._poly.get_balance()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -292,7 +346,7 @@ class CLOBReconciler:
 
             # Send startup report
             try:
-                wallet = await self._poly.get_balance()
+                wallet = await self._read_wallet_balance()
                 open_count = sum(
                     1 for d in outcomes.values() if d["outcome"] == "OPEN"
                 )
@@ -374,9 +428,10 @@ class CLOBReconciler:
                 pass  # fire-and-forget; transient failures are non-fatal
             self._last_balance_refresh = now_ts
 
-        # 1. Wallet balance
+        # 1. Wallet balance — prefer on-chain RPC over CLOB cache.
+        # See _read_wallet_balance() for rationale.
         try:
-            balance = await self._poly.get_balance()
+            balance = await self._read_wallet_balance()
             self._state.wallet = WalletSnapshot(
                 balance_usdc=balance, fetched_at=now
             )

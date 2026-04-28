@@ -913,6 +913,11 @@ class EngineRuntime:
                         db_pool=self._db._pool,
                         alerter=self._alerter,
                         shutdown_event=self._shutdown_event,
+                        # Pass on-chain reader so reconciler reports
+                        # real USDC balance instead of CLOB cache. Same
+                        # instance shared with the snapshot loop so LKG
+                        # is unified.
+                        wallet_rpc_reader=self._wallet_rpc_reader,
                     )
                     await self._reconciler.start()
                     log.info(
@@ -2471,9 +2476,25 @@ class EngineRuntime:
                                     _clob_connected = False
                                 if _clob_connected:
                                     try:
-                                        _live_wallet = await self._poly_client.get_balance()
+                                        # Prefer on-chain RPC over CLOB cache.
+                                        # CLOB has been observed returning $0
+                                        # while USDC.balanceOf(proxy) reports
+                                        # the real balance — rebaselining on
+                                        # $0 would zero the bankroll and gate
+                                        # every subsequent stake. See
+                                        # CLOBReconciler._read_wallet_balance.
+                                        _live_wallet = None
+                                        try:
+                                            _live_wallet = await self._wallet_rpc_reader.get_balance()
+                                        except Exception as _rpc_exc:
+                                            log.warning(
+                                                "mode_switch.wallet_rpc_failed",
+                                                error=str(_rpc_exc)[:200],
+                                            )
+                                        if _live_wallet is None:
+                                            _live_wallet = await self._poly_client.get_balance()
                                         await self._risk_manager.rebaseline_live_bankroll(
-                                            _live_wallet
+                                            float(_live_wallet)
                                         )
                                     except Exception as exc:
                                         log.error(
@@ -2632,6 +2653,8 @@ class EngineRuntime:
                                             db_pool=self._db._pool,
                                             alerter=self._alerter,
                                             shutdown_event=self._shutdown_event,
+                                            # See first-boot site for rationale.
+                                            wallet_rpc_reader=self._wallet_rpc_reader,
                                         )
                                         await self._reconciler.start()
                                         log.info(
