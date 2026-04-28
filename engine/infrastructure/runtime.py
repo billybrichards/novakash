@@ -61,6 +61,7 @@ from signals.twap_delta import TWAPTracker  # noqa: F401
 from signals.timesfm_client import TimesFMClient
 
 from infrastructure.composition import CompositionRoot
+from infrastructure.wallet_rpc import WalletRPCReader
 
 log = structlog.get_logger(__name__)
 
@@ -139,6 +140,14 @@ class EngineRuntime:
         # The alert fires at most once per hour to avoid spamming when NegRisk
         # auto-redeem is stuck — see _send_position_snapshot().
         self._last_pending_overdue_alert_at: Optional[datetime] = None
+
+        # On-chain wallet reader for TG snapshots. Bypasses CLOB
+        # ``get_balance_allowance`` which has 10-20m cache lag and produced
+        # false "Wallet: $0.00" / WALLET DRIFT cards when transient. Uses
+        # POLYGON_RPC_URL primary + 2 public fallbacks with 2-of-3 consensus
+        # (per ``feedback_cross_rpc_required.md``). Wired here so a single
+        # instance survives across the snapshot loop and caches LKG.
+        self._wallet_rpc_reader: WalletRPCReader = WalletRPCReader()
 
         # ── Patch callbacks CompositionRoot left as None ─────────────────────
         # These reference EngineRuntime methods, so they can only be wired
@@ -3816,12 +3825,48 @@ class EngineRuntime:
         from alerts.positions import build_snapshot
         from datetime import datetime, timezone
 
-        wallet_usdc = 0.0
-        if self._poly_client and hasattr(self._poly_client, "get_balance"):
+        # Wallet balance: prefer direct on-chain RPC over CLOB cache.
+        #
+        # The CLOB ``get_balance_allowance`` (used by PolymarketClient.get_balance)
+        # caches and lags real on-chain state by 10-20m, and in paper mode it
+        # returns the literal $10,000 sim balance — both leak into the TG card
+        # as a deceptive "Wallet:" line.
+        #
+        # WalletRPCReader hits USDC ``balanceOf(proxy)`` on Polygon directly with
+        # 2-of-3 cross-RPC consensus and remembers the last known good value, so
+        # transient RPC failure never falls back to $0.00 (which is what was
+        # firing the WALLET DRIFT false alarm). When every source fails and we
+        # have no LKG yet, ``wallet_usdc`` stays None and the snapshot card is
+        # rendered with the prior CLOB value as a last resort — the goal is
+        # "never show a wrong number", not "never show a number".
+        wallet_usdc: Optional[float] = None
+        try:
+            wallet_usdc = await self._wallet_rpc_reader.get_balance()
+        except Exception as exc:  # noqa: BLE001 — never crash snapshot loop
+            log.warning("snapshot.wallet_rpc_failed", error=str(exc)[:120])
+
+        if wallet_usdc is None and self._poly_client and hasattr(
+            self._poly_client, "get_balance"
+        ):
+            # Fallback: only used when RPC reader has no LKG and no fresh
+            # consensus. Even here we tolerate a None return — never coerce
+            # to 0 (the bug we're fixing).
             try:
-                wallet_usdc = float(await self._poly_client.get_balance() or 0)
+                clob_balance = await self._poly_client.get_balance()
+                if clob_balance is not None:
+                    wallet_usdc = float(clob_balance)
             except Exception as exc:
                 log.warning("snapshot.wallet_balance_failed", error=str(exc)[:120])
+
+        # If we still have nothing, suppress the snapshot rather than ship a
+        # zero. The next loop iteration will retry — better one missed card
+        # than a false WALLET DRIFT alert.
+        if wallet_usdc is None:
+            log.warning(
+                "snapshot.skipping_no_wallet_balance",
+                reason="all RPC + CLOB sources failed and no LKG cached",
+            )
+            return
 
         # Audit #204: pending_wins_summary now returns (list, scan_successful).
         # Preserve scan_successful through to the DB layer so transient

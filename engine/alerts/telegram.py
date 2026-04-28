@@ -3667,6 +3667,7 @@ class TelegramAlerter:
         "SKIPPED_PRICE_BAND": "🚫",
         "SKIPPED_RISK_GATED": "🛑",
         "SKIPPED_COOLDOWN": "🧊",
+        "SKIPPED_DEDUP": "🪞",
         "SKIPPED_CONSENSUS": "⚖️",
         "SKIPPED_DIRECTION": "↕️",
         "SKIPPED_TIMING": "⏰",
@@ -3680,6 +3681,11 @@ class TelegramAlerter:
         "SKIPPED_PRICE_BAND": "price outside band",
         "SKIPPED_RISK_GATED": "risk gate",
         "SKIPPED_COOLDOWN": "cooldown",
+        # SKIPPED_DEDUP = sibling strategy already claimed the window via
+        # try_claim_trade. NOT a real cooldown — keep distinct so the
+        # operator can tell "v9 didn't fire because it lost a race" vs
+        # "v9 didn't fire because it's serving a post_loss_cooldown".
+        "SKIPPED_DEDUP": "sibling already traded",
         "SKIPPED_CONSENSUS": "consensus",
         "SKIPPED_DIRECTION": "wrong direction",
         "SKIPPED_TIMING": "outside window",

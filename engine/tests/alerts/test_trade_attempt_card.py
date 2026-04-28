@@ -30,6 +30,7 @@ def _alerter() -> TelegramAlerter:
         ("SKIPPED_PRICE_BAND", "🚫", "price outside band"),
         ("SKIPPED_RISK_GATED", "🛑", "risk gate"),
         ("SKIPPED_COOLDOWN", "🧊", "cooldown"),
+        ("SKIPPED_DEDUP", "🪞", "sibling already traded"),
         ("SKIPPED_CONSENSUS", "⚖️", "consensus"),
         ("FAILED_EXECUTION", "❌", "execution failed"),
     ],
