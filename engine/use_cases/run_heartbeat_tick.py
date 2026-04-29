@@ -37,6 +37,7 @@ class RunHeartbeatTickUseCase:
         order_manager: Optional[Any],
         poly_client: Optional[Any],
         settings: Any,
+        wallet_rpc_reader: Optional[Any] = None,
     ) -> None:
         self._publish_uc = publish_heartbeat_uc
         self._engine_state_reader = engine_state_reader
@@ -45,6 +46,7 @@ class RunHeartbeatTickUseCase:
         self._order_manager = order_manager
         self._poly_client = poly_client
         self._settings = settings
+        self._wallet_rpc_reader = wallet_rpc_reader
 
         self._wallet_counter: int = 0
         self._cached_wallet_balance: Optional[float] = None
@@ -74,12 +76,8 @@ class RunHeartbeatTickUseCase:
         self._wallet_counter += 1
         if self._wallet_counter >= 6:
             self._wallet_counter = 0
-            if self._poly_client and not self._settings.paper_mode:
-                try:
-                    self._cached_wallet_balance = await self._poly_client.get_balance()
-                    await self._risk_manager.sync_bankroll(self._cached_wallet_balance)
-                except Exception as exc:
-                    log.debug("heartbeat_tick.wallet_balance_error", error=str(exc))
+            if not self._settings.paper_mode:
+                await self._refresh_live_wallet_balance()
             else:
                 try:
                     risk_status = self._risk_manager.get_status()
@@ -99,3 +97,49 @@ class RunHeartbeatTickUseCase:
             await self._publish_uc.tick()
         except Exception as exc:
             log.error("heartbeat_tick.publish_error", error=str(exc)[:200])
+
+    async def _refresh_live_wallet_balance(self) -> None:
+        """Read USDC + pUSD balances and sync into the risk manager.
+
+        Uses WalletRPCReader (direct on-chain) when available, falls back
+        to the CLOB poly_client for USDC-only.  pUSD balance failure is
+        non-fatal — we fall back to USDC-only so a bad RPC never blocks
+        trading (graceful degradation).
+        """
+        usdc_balance: Optional[float] = None
+        pusd_balance: float = 0.0
+
+        # ── Prefer on-chain RPC reader (2-of-3 consensus) ──
+        if self._wallet_rpc_reader is not None:
+            try:
+                usdc_balance = await self._wallet_rpc_reader.get_balance()
+            except Exception as exc:
+                log.debug("heartbeat_tick.usdc_rpc_error", error=str(exc)[:120])
+
+            # pUSD — graceful degradation: failure → 0 (USDC-only)
+            try:
+                pusd_raw = await self._wallet_rpc_reader.get_pusd_balance()
+                if pusd_raw is not None:
+                    pusd_balance = float(pusd_raw)
+            except Exception as exc:
+                log.debug("heartbeat_tick.pusd_rpc_error", error=str(exc)[:120])
+
+        # ── Fallback: CLOB API for USDC (no pUSD available here) ──
+        if usdc_balance is None and self._poly_client:
+            try:
+                usdc_balance = await self._poly_client.get_balance()
+            except Exception as exc:
+                log.debug("heartbeat_tick.wallet_balance_error", error=str(exc)[:120])
+
+        if usdc_balance is None:
+            return  # No balance data at all — skip this cycle
+
+        effective_balance = usdc_balance + pusd_balance
+        self._cached_wallet_balance = effective_balance
+
+        try:
+            await self._risk_manager.sync_bankroll(
+                effective_balance, usdc=usdc_balance, pusd=pusd_balance,
+            )
+        except Exception as exc:
+            log.debug("heartbeat_tick.sync_bankroll_error", error=str(exc)[:120])

@@ -169,12 +169,18 @@ class RiskManager:
 
     # ─── Kill Switch ──────────────────────────────────────────────────────────
 
-    async def sync_bankroll(self, wallet_balance: float) -> None:
-        """Sync internal bankroll from the real Polymarket wallet balance.
+    async def sync_bankroll(
+        self,
+        wallet_balance: float,
+        *,
+        usdc: Optional[float] = None,
+        pusd: Optional[float] = None,
+    ) -> None:
+        """Sync internal bankroll from the real wallet balance.
 
-        Called periodically from the orchestrator heartbeat. This ensures
-        the risk manager's bankroll matches reality (including redeems,
-        deposits, and withdrawals the engine didn't track).
+        Called periodically from the orchestrator heartbeat. ``wallet_balance``
+        should be the *total effective balance* (USDC + pUSD) so that money
+        moving between collateral tokens doesn't trigger false drawdown kills.
 
         In paper mode, wallet_balance will be $0, so we skip sync to preserve
         the paper bankroll tracking. In live mode, we sync from the wallet.
@@ -197,6 +203,8 @@ class RiskManager:
                 old=f"${old:.2f}",
                 new=f"${wallet_balance:.2f}",
                 peak=f"${self._peak_bankroll:.2f}",
+                usdc=f"${usdc:.2f}" if usdc is not None else None,
+                pusd=f"${pusd:.2f}" if pusd is not None else None,
             )
 
     async def rebaseline_live_bankroll(self, wallet_balance: float) -> None:
