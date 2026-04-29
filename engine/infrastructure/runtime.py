@@ -871,6 +871,48 @@ class EngineRuntime:
                     "orchestrator.ensure_strategy_executions_failed",
                     error=str(exc)[:200],
                 )
+
+            # 6d5. Exit shadow log table — shadow monitoring for exit detectors.
+            try:
+                await self._db._pool.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS exit_shadow_log (
+                        id SERIAL PRIMARY KEY,
+                        strategy_id VARCHAR(64) NOT NULL,
+                        window_ts BIGINT NOT NULL,
+                        direction VARCHAR(8),
+                        detector_type VARCHAR(32) NOT NULL,
+                        entry_dist NUMERIC(8,4),
+                        entry_price NUMERIC(8,4),
+                        stake_usd NUMERIC(12,4),
+                        current_dist NUMERIC(8,4),
+                        current_p_up NUMERIC(8,4),
+                        fade_pct NUMERIC(8,4),
+                        eval_offset INTEGER,
+                        consecutive_ticks INTEGER,
+                        triggered BOOLEAN NOT NULL DEFAULT FALSE,
+                        shadow_mode BOOLEAN NOT NULL DEFAULT TRUE,
+                        reason TEXT,
+                        evaluated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        window_outcome VARCHAR(16),
+                        pnl_usd NUMERIC(12,4)
+                    )
+                    """
+                )
+                await self._db._pool.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_exit_shadow_log_strategy_window "
+                    "ON exit_shadow_log(strategy_id, window_ts)"
+                )
+                await self._db._pool.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_exit_shadow_log_triggered "
+                    "ON exit_shadow_log(triggered) WHERE triggered = TRUE"
+                )
+            except Exception as exc:
+                log.warning(
+                    "orchestrator.ensure_exit_shadow_log_failed",
+                    error=str(exc)[:200],
+                )
+
             log.info(
                 "orchestrator.ddl_migrations_done",
                 total_elapsed_ms=int((time.monotonic() - t0) * 1000),

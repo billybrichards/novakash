@@ -614,6 +614,7 @@ class CompositionRoot:
                 _position_monitor = PositionMonitor(
                     alerter=self._alerter,
                     poly_client=getattr(self, '_poly_client', None),
+                    db_pool=getattr(self._db, '_pool', None),
                 )
 
                 self._strategy_registry = StrategyRegistry(

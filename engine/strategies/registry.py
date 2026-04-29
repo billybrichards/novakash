@@ -24,6 +24,7 @@ from domain.value_objects import GateCheckTrace, StrategyDecision, WindowEvaluat
 from strategies import gate_params as _gate_params
 from strategies.data_surface import DataSurfaceManager, FullDataSurface
 from strategies.gates.base import Gate, GateResult
+from strategies.exit.conviction_fade import ConvictionFadeDetector, FadeInstruction
 from strategies.runtime_override import apply_runtime_overrides
 
 log = structlog.get_logger(__name__)
@@ -152,6 +153,11 @@ class StrategyRegistry:
         # open positions and triggers exits when signals flip. Stays None
         # when not wired (tests, legacy composition paths).
         self._position_monitor = position_monitor
+        # Conviction fade detector (2026-04-29). Tracks LGB dist decay
+        # from entry and flags positions where model confidence is fading.
+        # Always created (lightweight); activation controlled by per-strategy
+        # gate_param ``conviction_fade_enabled``.
+        self._conviction_fade_detector = ConvictionFadeDetector()
         # Engine paper_mode flag — when True, TRADE decisions are logged
         # but never sent to execute_trade_uc. Prevents paper-mode executions
         # from inserting window_states rows that block LIVE trades after
@@ -733,6 +739,23 @@ class StrategyRegistry:
                                         confirmed_size=_confirmed,
                                         opposite_token_id=_opp,
                                     )
+                                    # Register conviction fade tracking (2026-04-29).
+                                    # Capture LGB dist at entry time for fade detection.
+                                    _fade_enabled = (config.gate_params or {}).get(
+                                        "conviction_fade_enabled", False
+                                    )
+                                    if _fade_enabled and surface is not None:
+                                        _lgb_p = getattr(surface, "probability_lgb", None)
+                                        if _lgb_p is not None:
+                                            try:
+                                                _entry_dist = abs(float(_lgb_p) - 0.5)
+                                            except (TypeError, ValueError):
+                                                _entry_dist = 0.0
+                                            self._conviction_fade_detector.register(
+                                                strategy_id=name,
+                                                window_ts=window_ts,
+                                                entry_dist=_entry_dist,
+                                            )
                         log.info(
                             "registry.executed",
                             strategy=name,
@@ -929,6 +952,98 @@ class StrategyRegistry:
                                 hedge_buy_timeout_seconds=_h_buy_timeout,
                             )
                         )
+
+                    # ── Conviction fade eval (2026-04-29) ─────────────
+                    # Independent of mark-to-market and hedge exits. Detects
+                    # model confidence decay (LGB dist shrinks from entry).
+                    # Default shadow_mode=True — log only, don't execute.
+                    _fade_params = {
+                        "conviction_fade_enabled": _gp.get(
+                            "conviction_fade_enabled", False
+                        ),
+                        "conviction_fade_threshold_pct": _gp.get(
+                            "conviction_fade_threshold_pct", 0.40
+                        ),
+                        "conviction_fade_absolute_floor": _gp.get(
+                            "conviction_fade_absolute_floor", 0.08
+                        ),
+                        "conviction_fade_min_ticks": _gp.get(
+                            "conviction_fade_min_ticks", 3
+                        ),
+                        "conviction_fade_active_offset_min": _gp.get(
+                            "conviction_fade_active_offset_min", 60
+                        ),
+                        "conviction_fade_active_offset_max": _gp.get(
+                            "conviction_fade_active_offset_max", 200
+                        ),
+                        "stale_mark_max_age_seconds": _gp.get(
+                            "stale_mark_max_age_seconds", 5.0
+                        ),
+                    }
+                    fade_instruction = self._conviction_fade_detector.evaluate(
+                        strategy_id=pos.strategy_id,
+                        window_ts=pos.window_ts,
+                        surface=surface,
+                        **_fade_params,
+                    )
+                    if fade_instruction:
+                        _f_shadow = _gp.get("conviction_fade_shadow_mode", True)
+                        if _f_shadow:
+                            log.info(
+                                "conviction_fade.shadow_exit",
+                                strategy=fade_instruction.strategy_id,
+                                window_ts=fade_instruction.window_ts,
+                                entry_dist=f"{fade_instruction.entry_dist:.4f}",
+                                current_dist=f"{fade_instruction.current_dist:.4f}",
+                                fade_pct=f"{fade_instruction.fade_pct:.4f}",
+                                trigger_reason=fade_instruction.trigger_reason,
+                                consecutive_ticks=fade_instruction.consecutive_ticks,
+                                action="shadow_exit",
+                            )
+                            # Write to exit_shadow_log (conviction fade shadow)
+                            import asyncio as _aio_fade
+
+                            _aio_fade.create_task(
+                                self._position_monitor._write_exit_shadow_log(
+                                    strategy_id=fade_instruction.strategy_id,
+                                    window_ts=fade_instruction.window_ts,
+                                    direction=pos.direction,
+                                    detector_type="fade",
+                                    entry_dist=fade_instruction.entry_dist,
+                                    current_dist=fade_instruction.current_dist,
+                                    fade_pct=fade_instruction.fade_pct,
+                                    consecutive_ticks=fade_instruction.consecutive_ticks,
+                                    triggered=True,
+                                    shadow_mode=True,
+                                    reason=f"conviction_fade: {fade_instruction.trigger_reason}",
+                                )
+                            )
+                        else:
+                            # Real exit — use the same execute_exit path as
+                            # mark-to-market. Reason string carries fade context.
+                            _f_max_retries = _gp.get("exit_max_retries", 1)
+                            _f_retry_timeout = _gp.get(
+                                "exit_retry_timeout_seconds", 5
+                            )
+                            _exit_reason = (
+                                f"conviction_fade: entry_dist={fade_instruction.entry_dist:.4f} "
+                                f"current_dist={fade_instruction.current_dist:.4f} "
+                                f"fade_pct={fade_instruction.fade_pct:.4f} "
+                                f"trigger={fade_instruction.trigger_reason}"
+                            )
+                            import asyncio as _aio3
+
+                            _aio3.create_task(
+                                self._position_monitor.execute_exit(
+                                    strategy_id=pos.strategy_id,
+                                    window_ts=pos.window_ts,
+                                    reason=_exit_reason,
+                                    exit_shadow_mode=False,
+                                    exit_max_retries=_f_max_retries,
+                                    exit_retry_timeout_seconds=_f_retry_timeout,
+                                )
+                            )
+
                 except Exception as _exc:
                     log.warning(
                         "registry.exit_eval_error",
