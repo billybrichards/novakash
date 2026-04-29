@@ -823,8 +823,20 @@ class StrategyRegistry:
                     _p_cfg = self._configs.get(pos.strategy_id)
                     if _p_cfg is None:
                         continue
+                    # Apply DB runtime overrides (same as per-strategy eval
+                    # loop at L478). Without this, gate_params set via the
+                    # strategy_runtime_overrides table (e.g.
+                    # exit_monitor_enabled, hedge_exit_enabled) are invisible
+                    # to the post-fill exit evaluators.
+                    _eff_mode_exit, _eff_params_exit = apply_runtime_overrides(
+                        pos.strategy_id, _p_cfg.mode, _p_cfg.gate_params
+                    )
+                    if _eff_params_exit != _p_cfg.gate_params:
+                        _p_cfg = _dc_replace(
+                            _p_cfg, gate_params=_eff_params_exit
+                        )
                     _exit_params = {}
-                    # Read exit params from the strategy's gate_params YAML
+                    # Read exit params from the strategy's gate_params
                     _gp = _p_cfg.gate_params
                     _exit_params = {
                         "exit_monitor_enabled": _gp.get(
