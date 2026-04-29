@@ -1000,6 +1000,24 @@ class StrategyRegistry:
                                 consecutive_ticks=fade_instruction.consecutive_ticks,
                                 action="shadow_exit",
                             )
+                            # Write to exit_shadow_log (conviction fade shadow)
+                            import asyncio as _aio_fade
+
+                            _aio_fade.create_task(
+                                self._position_monitor._write_exit_shadow_log(
+                                    strategy_id=fade_instruction.strategy_id,
+                                    window_ts=fade_instruction.window_ts,
+                                    direction=pos.direction,
+                                    detector_type="fade",
+                                    entry_dist=fade_instruction.entry_dist,
+                                    current_dist=fade_instruction.current_dist,
+                                    fade_pct=fade_instruction.fade_pct,
+                                    consecutive_ticks=fade_instruction.consecutive_ticks,
+                                    triggered=True,
+                                    shadow_mode=True,
+                                    reason=f"conviction_fade: {fade_instruction.trigger_reason}",
+                                )
+                            )
                         else:
                             # Real exit — use the same execute_exit path as
                             # mark-to-market. Reason string carries fade context.

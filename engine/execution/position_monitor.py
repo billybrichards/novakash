@@ -112,11 +112,13 @@ class PositionMonitor:
         poly_client: Any = None,
         alerter: Any = None,
         decision_repo: Any = None,
+        db_pool: Any = None,
     ) -> None:
         self._positions: dict[str, MonitoredPosition] = {}
         self._poly_client = poly_client
         self._alerter = alerter
         self._decision_repo = decision_repo
+        self._db_pool = db_pool  # asyncpg pool for exit_shadow_log writes
         self._log = log.bind(component="position_monitor")
 
     # ------------------------------------------------------------------
@@ -345,8 +347,8 @@ class PositionMonitor:
             and flip_min_offset <= eval_offset <= flip_max_offset
         ):
             opposite = "DOWN" if pos.direction == "UP" else "UP"
-            lgb_p_up = getattr(surface, "lgb_p_up", None)
-            lgb_dist = getattr(surface, "lgb_dist", None)
+            lgb_p_up = getattr(surface, "lgb_p_up", None) or getattr(surface, "probability_lgb", None)
+            lgb_dist = getattr(surface, "lgb_dist", None) or getattr(surface, "poly_confidence_distance", None)
             if lgb_p_up is not None and lgb_dist is not None:
                 try:
                     p_up_f = float(lgb_p_up)
@@ -482,6 +484,24 @@ class PositionMonitor:
             await self._record_exit_decision(
                 pos, reason, executed=False, shadow=True
             )
+            # Write to exit_shadow_log (fire-and-forget)
+            _det = "flip" if "signal_flip" in reason else (
+                "mark_stop" if "mark_stop" in reason else (
+                    "fade" if "conviction_fade" in reason else "tier"
+                )
+            )
+            await self._write_exit_shadow_log(
+                strategy_id=strategy_id,
+                window_ts=window_ts,
+                direction=pos.direction,
+                detector_type=_det,
+                entry_price=pos.fill_price,
+                stake_usd=pos.fill_price * pos.fill_size,
+                consecutive_ticks=pos.mark_loss_tick_count if "mark_stop" in reason else pos.flip_consecutive_count,
+                triggered=True,
+                shadow_mode=True,
+                reason=reason,
+            )
             # Send TG alert for shadow exit
             await self._send_exit_alert(
                 pos, reason, executed=False, shadow=True
@@ -508,6 +528,23 @@ class PositionMonitor:
         # Record and alert
         await self._record_exit_decision(
             pos, reason, executed=sell_success, shadow=False
+        )
+        # Write to exit_shadow_log (live exit)
+        _det_live = "flip" if "signal_flip" in reason else (
+            "mark_stop" if "mark_stop" in reason else (
+                "fade" if "conviction_fade" in reason else "tier"
+            )
+        )
+        await self._write_exit_shadow_log(
+            strategy_id=strategy_id,
+            window_ts=window_ts,
+            direction=pos.direction,
+            detector_type=_det_live,
+            entry_price=pos.fill_price,
+            stake_usd=pos.fill_price * pos.fill_size,
+            triggered=True,
+            shadow_mode=False,
+            reason=reason,
         )
         await self._send_exit_alert(
             pos, reason, executed=sell_success, shadow=False
@@ -544,7 +581,7 @@ class PositionMonitor:
             # For binary tokens: sell YES at any price above 0.01
             # The py_clob_client supports SELL side via the same OrderArgs
             sell_price = 0.01  # aggressive: take any bid, we want OUT fast
-            sell_size = pos.fill_size
+            sell_size = pos.confirmed_size if pos.confirmed_size > 0 else round(pos.fill_size * 0.95, 3)
 
             # Round size to 3dp to match CLOB precision
             sell_size = round(sell_size, 3)
@@ -577,6 +614,70 @@ class PositionMonitor:
                 error=str(exc)[:200],
             )
             return False
+
+    async def _write_exit_shadow_log(
+        self,
+        *,
+        strategy_id: str,
+        window_ts: int,
+        direction: str,
+        detector_type: str,
+        entry_dist: Optional[float] = None,
+        entry_price: Optional[float] = None,
+        stake_usd: Optional[float] = None,
+        current_dist: Optional[float] = None,
+        current_p_up: Optional[float] = None,
+        fade_pct: Optional[float] = None,
+        eval_offset: Optional[int] = None,
+        consecutive_ticks: Optional[int] = None,
+        triggered: bool = False,
+        shadow_mode: bool = True,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Fire-and-forget INSERT into exit_shadow_log.
+
+        Swallows all errors — never crashes the monitor on DB failure.
+        Falls back to log-only when no DB pool is available.
+        """
+        if self._db_pool is None:
+            self._log.debug(
+                "exit_shadow_log.no_pool",
+                strategy_id=strategy_id,
+                detector_type=detector_type,
+            )
+            return
+        try:
+            await self._db_pool.execute(
+                """
+                INSERT INTO exit_shadow_log (
+                    strategy_id, window_ts, direction, detector_type,
+                    entry_dist, entry_price, stake_usd,
+                    current_dist, current_p_up, fade_pct,
+                    eval_offset, consecutive_ticks,
+                    triggered, shadow_mode, reason
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                """,
+                strategy_id,
+                window_ts,
+                direction,
+                detector_type,
+                entry_dist,
+                entry_price,
+                stake_usd,
+                current_dist,
+                current_p_up,
+                fade_pct,
+                eval_offset,
+                consecutive_ticks,
+                triggered,
+                shadow_mode,
+                reason,
+            )
+        except Exception as exc:
+            self._log.debug(
+                "exit_shadow_log.write_error",
+                error=str(exc)[:200],
+            )
 
     async def _record_exit_decision(
         self,
@@ -794,7 +895,7 @@ class PositionMonitor:
             chosen_p_up = lgb_p_up_v10 if lgb_p_up_v10 is not None else lgb_p_up
         else:
             chosen_p_up = lgb_p_up if lgb_p_up is not None else lgb_p_up_v10
-        lgb_dist = getattr(surface, "lgb_dist", None)
+        lgb_dist = getattr(surface, "lgb_dist", None) or getattr(surface, "poly_confidence_distance", None)
         if chosen_p_up is None or lgb_dist is None:
             # Surface incomplete — fail closed.
             pos.hedge_consensus_count = 0
@@ -969,6 +1070,20 @@ class PositionMonitor:
             await self._record_hedge_decision(
                 pos, instruction, executed=False, shadow=True
             )
+            # Write to exit_shadow_log (hedge shadow)
+            await self._write_exit_shadow_log(
+                strategy_id=strategy_id,
+                window_ts=window_ts,
+                direction=pos.direction,
+                detector_type="hedge",
+                entry_price=pos.fill_price,
+                stake_usd=pos.fill_price * pos.fill_size,
+                eval_offset=instruction.get("eval_offset"),
+                consecutive_ticks=instruction.get("consensus_ticks"),
+                triggered=True,
+                shadow_mode=True,
+                reason=f"hedge: guaranteed=${guaranteed_total:.3f} opp_ask=${instruction.get('opposite_ask', 0.0):.4f}",
+            )
             await self._send_hedge_alert(
                 pos, instruction, executed=False, shadow=True
             )
@@ -1037,6 +1152,20 @@ class PositionMonitor:
 
         await self._record_hedge_decision(
             pos, result_instruction, executed=buy_success, shadow=False
+        )
+        # Write to exit_shadow_log (hedge live)
+        await self._write_exit_shadow_log(
+            strategy_id=strategy_id,
+            window_ts=window_ts,
+            direction=pos.direction,
+            detector_type="hedge",
+            entry_price=pos.fill_price,
+            stake_usd=pos.fill_price * pos.fill_size,
+            eval_offset=instruction.get("eval_offset"),
+            consecutive_ticks=instruction.get("consensus_ticks"),
+            triggered=True,
+            shadow_mode=False,
+            reason=f"hedge: guaranteed=${guaranteed_total:.3f} executed={buy_success}",
         )
         await self._send_hedge_alert(
             pos, result_instruction, executed=buy_success, shadow=False
