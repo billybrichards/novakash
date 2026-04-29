@@ -140,6 +140,13 @@ class CLOBReconciler:
         # automatic trades #42, hiding a real divergence.
         self._sot_alerted_trade_ids: set[str] = set()
 
+        # Periodic janitor: clean stale 'pending' rows from
+        # strategy_window_fills every ~120s (every 60th poll at 2s interval).
+        # Dead windows never get re-queried so the 25s TTL in has_filled()
+        # never fires for them; this is the backstop.
+        self._janitor_counter: int = 0
+        self._janitor_every_n_polls: int = 60  # ~120s at 2s poll interval
+
         self._log = log.bind(component="clob_reconciler")
 
     # ------------------------------------------------------------------
@@ -607,6 +614,29 @@ class CLOBReconciler:
                 self._log.warning(
                     "reconciler.bible_sync_error", error=str(exc)[:200]
                 )
+
+        # 6. Pending-row janitor: delete stale 'pending' placeholders from
+        #    strategy_window_fills every ~120s. These accumulate when FAK
+        #    fails + window closes, engine restarts orphan old sessions, or
+        #    mark_traded gets cancelled. The 25s TTL in has_filled() only
+        #    fires when someone re-queries that window — dead windows never
+        #    get re-queried, so rows rot forever without this backstop.
+        self._janitor_counter += 1
+        if self._pool and self._janitor_counter % self._janitor_every_n_polls == 0:
+            try:
+                async with self._pool.acquire() as conn:
+                    deleted = await conn.execute(
+                        "DELETE FROM strategy_window_fills "
+                        "WHERE order_id = 'pending' "
+                        "AND filled_at < NOW() - INTERVAL '60 seconds'"
+                    )
+                    count = int(deleted.split()[-1]) if deleted else 0
+                    if count > 0:
+                        self._log.info(
+                            "janitor.cleaned_stale_pending", count=count
+                        )
+            except Exception:
+                pass  # fire-and-forget — don't crash poll loop
 
     # ------------------------------------------------------------------
     # Orphan GTC fill resolution

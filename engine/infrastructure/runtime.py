@@ -359,6 +359,30 @@ class EngineRuntime:
         except Exception as exc:
             log.warning("orchestrator.stale_claims_clear_failed", error=str(exc)[:200])
 
+        # Clear stale 'pending' rows from strategy_window_fills left by
+        # FAK failures, engine restarts, or cancelled mark_traded calls.
+        # The 25s TTL in has_filled() only fires when someone re-queries
+        # that window; dead windows never get re-queried so rows rot forever.
+        try:
+            if self._db and self._db._pool:
+                async with self._db._pool.acquire() as conn:
+                    deleted = await conn.execute(
+                        "DELETE FROM strategy_window_fills "
+                        "WHERE order_id = 'pending' "
+                        "AND filled_at < NOW() - INTERVAL '60 seconds'"
+                    )
+                    count = int(deleted.split()[-1]) if deleted else 0
+                    if count > 0:
+                        log.info(
+                            "orchestrator.stale_pending_fills_cleared",
+                            count=count,
+                        )
+        except Exception as exc:
+            log.warning(
+                "orchestrator.stale_pending_fills_clear_failed",
+                error=str(exc)[:200],
+            )
+
         # Audit #291: start the runtime-override manager so GHOST↔LIVE flips
         # and gate_param tweaks land without an engine restart. Populates the
         # cache synchronously on first call then refreshes every 30s.
