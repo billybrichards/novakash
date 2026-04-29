@@ -410,3 +410,84 @@ async def test_kill_switch_checked_before_other_gates():
     approved, reason = await rm.approve(0.01)  # Tiny stake
     assert approved is False
     assert "kill_switch" in reason
+
+
+# ─── sync_bankroll ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_sync_bankroll_updates_current_and_peak():
+    """sync_bankroll should update current_bankroll and raise peak if higher."""
+    rm = await _live_rm_ready(starting_bankroll=400.0)
+
+    await rm.sync_bankroll(486.0, usdc=202.0, pusd=284.0)
+
+    status = rm.get_status()
+    assert status["current_bankroll"] == 486.0
+    assert status["peak_bankroll"] == 486.0  # higher than starting 400
+
+
+@pytest.mark.asyncio
+async def test_sync_bankroll_combined_balance_prevents_false_drawdown():
+    """The real-world scenario: USDC=$202 alone → 47% drawdown (kill).
+    With pUSD=$284, effective=$486 → only ~3% drawdown (safe).
+    """
+    rm = await _live_rm_ready(starting_bankroll=500.0)
+
+    # Set peak to $500 (realistic scenario)
+    rm._peak_bankroll = 500.0
+
+    # Sync with combined balance: $202 USDC + $284 pUSD = $486
+    await rm.sync_bankroll(486.0, usdc=202.0, pusd=284.0)
+
+    status = rm.get_status()
+    assert status["current_bankroll"] == 486.0
+    assert status["drawdown_pct"] < 0.05  # ~2.8%, well below 45%
+    assert status["is_killed"] is False
+
+
+@pytest.mark.asyncio
+async def test_sync_bankroll_usdc_only_would_have_triggered_kill():
+    """Verify that USDC-only sync WOULD trigger the false drawdown kill."""
+    rm = await _live_rm_ready(starting_bankroll=443.0)
+    rm._peak_bankroll = 443.0
+
+    # Sync with USDC-only (the bug we're fixing)
+    await rm.sync_bankroll(202.0)
+
+    status = rm.get_status()
+    # $202 / $443 = 54.4% drawdown → kill switch should be active
+    assert status["drawdown_pct"] > 0.45
+    assert status["is_killed"] is True
+
+
+@pytest.mark.asyncio
+async def test_sync_bankroll_peak_watermark_updates_with_combined():
+    """Peak watermark should update when combined balance exceeds previous peak."""
+    rm = await _live_rm_ready(starting_bankroll=400.0)
+    rm._peak_bankroll = 443.0
+
+    # Combined balance exceeds peak
+    await rm.sync_bankroll(500.0, usdc=300.0, pusd=200.0)
+
+    assert rm._peak_bankroll == 500.0
+
+
+@pytest.mark.asyncio
+async def test_sync_bankroll_skips_in_paper_mode():
+    """sync_bankroll should be a no-op in paper mode."""
+    rm = await _paper_rm_ready(starting_bankroll=500.0)
+
+    await rm.sync_bankroll(100.0, usdc=50.0, pusd=50.0)
+
+    # Bankroll should be unchanged
+    assert rm.get_status()["current_bankroll"] == 500.0
+
+
+@pytest.mark.asyncio
+async def test_sync_bankroll_backward_compat_without_kwargs():
+    """sync_bankroll still works when called without usdc/pusd kwargs."""
+    rm = await _live_rm_ready(starting_bankroll=400.0)
+
+    await rm.sync_bankroll(450.0)
+
+    assert rm.get_status()["current_bankroll"] == 450.0

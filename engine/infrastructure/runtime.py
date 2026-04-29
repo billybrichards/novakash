@@ -149,6 +149,12 @@ class EngineRuntime:
         # instance survives across the snapshot loop and caches LKG.
         self._wallet_rpc_reader: WalletRPCReader = WalletRPCReader()
 
+        # Inject the on-chain reader into the heartbeat tick use case so
+        # sync_bankroll receives total effective balance (USDC + pUSD),
+        # preventing false drawdown kills when USDC moves into pUSD
+        # collateral for Polymarket V2 bets.
+        self._run_heartbeat_tick_uc._wallet_rpc_reader = self._wallet_rpc_reader
+
         # ── Patch callbacks CompositionRoot left as None ─────────────────────
         # These reference EngineRuntime methods, so they can only be wired
         # after EngineRuntime.__init__ exists.
@@ -2508,6 +2514,7 @@ class EngineRuntime:
                                         # every subsequent stake. See
                                         # CLOBReconciler._read_wallet_balance.
                                         _live_wallet = None
+                                        _live_pusd: float = 0.0
                                         try:
                                             _live_wallet = await self._wallet_rpc_reader.get_balance()
                                         except Exception as _rpc_exc:
@@ -2515,10 +2522,16 @@ class EngineRuntime:
                                                 "mode_switch.wallet_rpc_failed",
                                                 error=str(_rpc_exc)[:200],
                                             )
+                                        try:
+                                            _pusd_raw = await self._wallet_rpc_reader.get_pusd_balance()
+                                            if _pusd_raw is not None:
+                                                _live_pusd = float(_pusd_raw)
+                                        except Exception:
+                                            pass  # pUSD read failure is non-fatal
                                         if _live_wallet is None:
                                             _live_wallet = await self._poly_client.get_balance()
                                         await self._risk_manager.rebaseline_live_bankroll(
-                                            float(_live_wallet)
+                                            float(_live_wallet) + _live_pusd
                                         )
                                     except Exception as exc:
                                         log.error(
