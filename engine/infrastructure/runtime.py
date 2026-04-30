@@ -4830,10 +4830,13 @@ class EngineRuntime:
                             if self._db._pool:
                                 async with self._db._pool.acquire() as _conn:
                                     # Primary: match by token_id in metadata (exact match)
+                                    # Pull stake_usd + fill_size so per-row pnl can
+                                    # be computed below (do NOT use position-aggregate cost).
                                     _match = await _conn.fetchrow(
                                         """SELECT id, metadata->>'entry_reason' as reason,
                                            metadata->>'v81_entry_cap' as cap,
-                                           metadata->>'token_id' as token_id
+                                           metadata->>'token_id' as token_id,
+                                           stake_usd, fill_size, fill_price
                                         FROM trades
                                         WHERE status IN ('OPEN', 'FILLED', 'EXPIRED')
                                           AND is_live = true
@@ -4845,7 +4848,8 @@ class EngineRuntime:
                                         _match = await _conn.fetchrow(
                                             """SELECT id, metadata->>'entry_reason' as reason,
                                                metadata->>'v81_entry_cap' as cap,
-                                               metadata->>'token_id' as token_id
+                                               metadata->>'token_id' as token_id,
+                                               stake_usd, fill_size, fill_price
                                             FROM trades
                                             WHERE status IN ('OPEN', 'FILLED', 'EXPIRED')
                                               AND is_live = true
@@ -4857,7 +4861,25 @@ class EngineRuntime:
                                         _matched_trade_id = _match["id"]
                                         _matched_reason = _match["reason"]
                                         _matched_token_id = _match["token_id"]
-                                        # Update trade with resolution
+                                        # Per-trade pnl, NOT position-aggregate. Polymarket
+                                        # `cost`/`pnl` are sums across ALL trades for the
+                                        # same token_id (e.g. v9 + v10 on same YES). Writing
+                                        # the aggregate to a single matched row inflates
+                                        # that row's pnl_usd by other strategies' stakes.
+                                        # Use this row's own stake_usd / fill_size.
+                                        _trade_stake = float(_match["stake_usd"] or 0)
+                                        _trade_fill = float(_match["fill_size"] or 0)
+                                        _trade_price = float(_match["fill_price"] or 0)
+                                        if outcome == "WIN":
+                                            # Each share pays $1 on win → payout = fill_size.
+                                            # Fall back to derived shares if fill_size missing.
+                                            _shares = (
+                                                _trade_fill if _trade_fill > 0
+                                                else (_trade_stake / _trade_price if _trade_price > 0 else 0)
+                                            )
+                                            _row_pnl = round(_shares - _trade_stake, 4)
+                                        else:
+                                            _row_pnl = round(-_trade_stake, 4)
                                         _status = (
                                             "RESOLVED_WIN"
                                             if outcome == "WIN"
@@ -4868,7 +4890,7 @@ class EngineRuntime:
                                                resolved_at = NOW(), status = $3
                                             WHERE id = $4 AND outcome IS NULL""",
                                             outcome,
-                                            pnl if outcome == "WIN" else -cost,
+                                            _row_pnl,
                                             _status,
                                             _matched_trade_id,
                                         )
