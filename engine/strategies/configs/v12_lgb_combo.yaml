@@ -124,6 +124,15 @@ gate_params:
   combo_min_dist: 0.10
   combo_require_direction_agreement: true
 
+  # ── Option C: disagreement-contrarian trading (per hub note #299) ──
+  # When v9 + v12 disagree direction, trust v12's call at 0.5x kelly.
+  # Per 3-day replay (Apr 28-30): v12 right 51.5% on disagreements with
+  # +$398 net edge from asymmetry (v12-fix avg|pnl|=$12 vs v12-break $6.7).
+  # 0.5x kelly bounds blast radius if contrarian edge fades.
+  v12_contrarian_enabled: true     # set false to canary-disable Option C while keeping A
+  v12_contrarian_min_dist: 0.10    # v12 must have >=0.10 dist for contrarian trade
+  v12_contrarian_kelly_modifier: 0.5  # half-stake when v12 disagrees with v9
+
 sizing:
   type: custom
   custom_hook: clob_sizing

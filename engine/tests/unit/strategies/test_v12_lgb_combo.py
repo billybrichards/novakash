@@ -98,7 +98,13 @@ class TestV12LgbCombo:
         assert decision.metadata["probability_lgb_v12"] == 0.65
 
     def test_skip_when_directions_disagree(self):
-        """SKIP when v9 says UP but v12 says DOWN (or vice versa)."""
+        """With v12_contrarian_enabled=False (canary-disable Option C),
+        v9/v12 directional disagreement still SKIPs (Option A only).
+
+        With the flag ON (default), Option C trades the disagreement —
+        see test_disagreement_trades_v12_at_half_kelly below.
+        """
+        from strategies import gate_params as _gp
         from strategies.configs.v12_lgb_combo import evaluate_v12_lgb_combo
 
         # v9 says UP (0.75), v12 says DOWN (0.30)
@@ -106,10 +112,16 @@ class TestV12LgbCombo:
             probability_lgb=0.75,
             probability_lgb_v12=0.30,
         )
-        decision = evaluate_v12_lgb_combo(surface)
+        token = _gp.set_active({"v12_contrarian_enabled": False})
+        try:
+            decision = evaluate_v12_lgb_combo(surface)
+        finally:
+            _gp.reset_active(token)
 
         assert decision.action == "SKIP"
-        assert decision.skip_reason == "v9_v12_direction_disagreement"
+        assert decision.skip_reason == (
+            "v9_v12_direction_disagreement_contrarian_disabled"
+        )
         assert decision.metadata["dir_v9"] == "UP"
         assert decision.metadata["dir_v12"] == "DOWN"
         assert decision.metadata["direction_agree"] is False
@@ -215,3 +227,92 @@ class TestV12LgbCombo:
         # Surface should be restored to original values
         assert surface.probability_lgb == original_lgb
         assert surface.probability_classifier is None  # was None in _make_surface
+
+    # ── Option C: disagreement-as-v12-contrarian-signal (hub note #299) ─────
+
+    def test_disagreement_trades_v12_at_half_kelly(self):
+        """v9 strong UP, v12 strong DOWN. With Option C enabled (default),
+        should TRADE in v12's direction (DOWN) and have collateral_pct
+        halved versus the same-conviction agreement trade.
+        """
+        from strategies.configs.v12_lgb_combo import evaluate_v12_lgb_combo
+
+        # Build a "v9_ensemble can pass gates" surface, but flip v9 to UP
+        # so v9+v12 disagree. v12 wants DOWN with dist=0.20.
+        surface = _make_surface(
+            probability_lgb=0.80,        # v9 → UP, dist 0.30
+            probability_lgb_v12=0.30,    # v12 → DOWN, dist 0.20
+            poly_direction="DOWN",
+            poly_trade_advised=True,
+            poly_confidence_distance=0.12,
+            poly_timing="optimal",
+            delta_chainlink=-0.005,
+            delta_tiingo=-0.004,
+        )
+        decision = evaluate_v12_lgb_combo(surface)
+
+        # Strategy identity preserved; contrarian-mode flag set.
+        assert decision.strategy_id == "v12_lgb_combo"
+        assert decision.metadata["v12_contrarian_mode"] is True
+        assert decision.metadata["direction_agree"] is False
+        assert decision.metadata["dir_v9"] == "UP"
+        assert decision.metadata["dir_v12"] == "DOWN"
+        assert decision.metadata.get("kelly_half_modifier") == 0.5
+
+        # If v9_ensemble's gate stack lets the trade through, direction
+        # must be v12's (DOWN) and collateral_pct must be halved versus
+        # the pre-halving value the delegate returned.
+        if decision.action == "TRADE":
+            assert decision.direction == "DOWN"
+            pre = decision.metadata.get("collateral_pct_pre_halving")
+            post = decision.collateral_pct
+            if pre is not None and post is not None:
+                assert abs(post - pre * 0.5) < 1e-9, (
+                    f"collateral_pct should be halved: pre={pre} post={post}"
+                )
+        # If the gate stack SKIPs for unrelated reasons (CLOB / VPIN /
+        # delta gate etc) we still asserted the contrarian-mode flags
+        # above — the half-kelly contract holds when the trade fires.
+
+    def test_disagreement_skips_when_v12_weak(self):
+        """v9 + v12 disagree but v12 dist=0.05 (< 0.10 floor) → SKIP."""
+        from strategies.configs.v12_lgb_combo import evaluate_v12_lgb_combo
+
+        surface = _make_surface(
+            probability_lgb=0.80,        # v9 → UP, dist 0.30
+            probability_lgb_v12=0.45,    # v12 → DOWN, dist 0.05
+        )
+        decision = evaluate_v12_lgb_combo(surface)
+
+        assert decision.action == "SKIP"
+        assert decision.skip_reason == "disagreement_v12_weak"
+        assert decision.metadata["direction_agree"] is False
+        assert decision.metadata["dir_v9"] == "UP"
+        assert decision.metadata["dir_v12"] == "DOWN"
+        assert decision.metadata["v12_contrarian_mode"] is False
+        assert decision.metadata["v12_contrarian_min_dist"] == 0.10
+
+    def test_v12_contrarian_disabled_via_flag(self):
+        """When v12_contrarian_enabled=False in gate_params (canary-disable
+        Option C), v9/v12 disagreement → SKIP — Option A only.
+        """
+        from strategies import gate_params as _gp
+        from strategies.configs.v12_lgb_combo import evaluate_v12_lgb_combo
+
+        surface = _make_surface(
+            probability_lgb=0.80,
+            probability_lgb_v12=0.30,
+        )
+        token = _gp.set_active({"v12_contrarian_enabled": False})
+        try:
+            decision = evaluate_v12_lgb_combo(surface)
+        finally:
+            _gp.reset_active(token)
+
+        assert decision.action == "SKIP"
+        skip = decision.skip_reason or ""
+        assert (
+            "contrarian_disabled" in skip or "direction_disagreement" in skip
+        ), f"unexpected skip_reason: {skip}"
+        assert decision.metadata["v12_contrarian_mode"] is False
+        assert decision.metadata["direction_agree"] is False
