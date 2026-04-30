@@ -1,7 +1,8 @@
 // /desk — last 20 windows table.
 //
-// Columns: window · You · v6_sniper · v4_fusion · v5_ensemble · v5_fresh ·
-// Consensus · actual · Δ final
+// Strategy columns are driven by DESK_TRACKED_STRATEGY_IDS (LIVE first,
+// then GHOST shadows). Header text uses each strategy's `shortLabel`
+// from the central registry so future flips touch one constant.
 //
 // Data:
 //  - `picks`           : GET /api/desk/picks (operator's choices — picks
@@ -24,12 +25,16 @@ import React, { useMemo } from 'react';
 import { T, wrColor } from '../../../theme/tokens.js';
 import { computeWr } from '../../../lib/wr.js';
 import {
+  DESK_TRACKED_STRATEGY_IDS,
+  getStrategyMeta,
+} from '../../../constants/strategies.js';
+import {
   indexByWindowEpoch,
   deriveActualDirection,
   isAccountingOnlyLoss,
 } from '../hooks/useResolvedDecisions.js';
 
-const TRACKED = ['v6_sniper', 'v4_fusion', 'v5_ensemble', 'v5_fresh'];
+const TRACKED = DESK_TRACKED_STRATEGY_IDS;
 
 export default function LastWindowsTable({ picks, resolvedByStrategy }) {
   // Index each strategy's resolved rows by window_epoch.
@@ -99,13 +104,13 @@ export default function LastWindowsTable({ picks, resolvedByStrategy }) {
     .filter(Boolean);
 
   const wrs = {
-    You:          computeWr(columnRows(r => r.pick?.pick && r.pick.pick !== 'SKIP' ? r.pick.pick : null)),
-    v6_sniper:    computeWr(columnRows(r => r.perStrategy.v6_sniper?.direction)),
-    v4_fusion:    computeWr(columnRows(r => r.perStrategy.v4_fusion?.direction)),
-    v5_ensemble:  computeWr(columnRows(r => r.perStrategy.v5_ensemble?.direction)),
-    v5_fresh:     computeWr(columnRows(r => r.perStrategy.v5_fresh?.direction)),
-    Consensus:    computeWr(columnRows(r => r.consensus)),
+    You: computeWr(columnRows(r => r.pick?.pick && r.pick.pick !== 'SKIP' ? r.pick.pick : null)),
+    Consensus: computeWr(columnRows(r => r.consensus)),
   };
+  for (const sid of TRACKED) {
+    wrs[sid] = computeWr(columnRows(r => r.perStrategy[sid]?.direction));
+  }
+  const wrColumnKeys = ['You', ...TRACKED, 'Consensus'];
 
   return (
     <div style={{
@@ -123,10 +128,11 @@ export default function LastWindowsTable({ picks, resolvedByStrategy }) {
             <tr style={{ color: T.label, textAlign: 'left' }}>
               <th style={thStyle}>Window</th>
               <th style={thStyle}>You</th>
-              <th style={thStyle}>v6_sniper</th>
-              <th style={thStyle}>v4_fusion</th>
-              <th style={thStyle}>v5_ensemble</th>
-              <th style={thStyle}>v5_fresh</th>
+              {TRACKED.map((sid, i) => (
+                <th key={sid} style={thStyle} title={sid}>
+                  {getStrategyMeta(sid, i).shortLabel || sid}
+                </th>
+              ))}
               <th style={thStyle}>Consensus</th>
               <th style={thStyle}>Actual</th>
               <th style={thStyle}>Δ final</th>
@@ -171,7 +177,7 @@ export default function LastWindowsTable({ picks, resolvedByStrategy }) {
             ))}
             {rows.length === 0 ? (
               <tr>
-                <td style={tdStyle} colSpan={9}>
+                <td style={tdStyle} colSpan={5 + TRACKED.length}>
                   <span style={{ color: T.label }}>No windows yet — make a pick above.</span>
                 </td>
               </tr>
@@ -180,7 +186,7 @@ export default function LastWindowsTable({ picks, resolvedByStrategy }) {
           <tfoot>
             <tr style={{ borderTop: `1px solid ${T.borderStrong}` }}>
               <td style={{ ...tdStyle, color: T.label2 }}>WR</td>
-              {['You','v6_sniper','v4_fusion','v5_ensemble','v5_fresh','Consensus'].map(k => (
+              {wrColumnKeys.map(k => (
                 <td key={k} style={{ ...tdStyle, color: wrColor(wrs[k].wr) }}>
                   {wrs[k].n === 0 ? '—' : `${Math.round(wrs[k].wr * 100)}% (${wrs[k].n})`}
                 </td>
