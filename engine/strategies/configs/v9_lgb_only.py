@@ -60,6 +60,7 @@ def evaluate_v9_lgb_only(surface: "FullDataSurface") -> StrategyDecision:
     meta = dict(decision.metadata or {})
     meta["probability_classifier"] = None
     meta["lgb_only_forced"] = True
+    meta["probability_lgb_prod"] = surface.probability_lgb  # mirror v9 conviction for audit/filter parity with v10_lgb_only
 
     return StrategyDecision(
         action=decision.action,
