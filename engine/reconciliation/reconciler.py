@@ -355,12 +355,20 @@ class CLOBReconciler:
 
                 try:
                     async with self._pool.acquire() as conn:
-                        # PnL: for WIN use Polymarket's computed pnl; for LOSS
-                        # use negative cost (full stake lost). Both come from
-                        # the position aggregate — not per-trade — but that's
-                        # acceptable for backfill (we're resolving stale state,
-                        # not making decisions).
-                        pnl = data["pnl"] if outcome == "WIN" else -data["cost"]
+                        # PnL is computed per-row, NOT from the position
+                        # aggregate. Polymarket's `data["cost"]` is the SUM
+                        # of stakes across ALL trades for the same token_id
+                        # (e.g. v9 + v10 both bought YES on same condition).
+                        # Writing -data["cost"] to a single trade row would
+                        # inflate that row's pnl_usd by the OTHER strategies'
+                        # contributions. Bug observed live 2026-04-30:
+                        # tid=6326 stake $14.61, DB pnl wrote -$29.20 (2x).
+                        #
+                        # Fix: compute pnl from each row's own stake_usd:
+                        #   LOSS: pnl = -stake_usd (full per-trade stake)
+                        #   WIN:  pnl = fill_size - stake_usd (fill_size is
+                        #         the actual shares, each pays $1 on win;
+                        #         falls back to derived if fill_size missing)
                         status = (
                             "RESOLVED_WIN" if outcome == "WIN" else "RESOLVED_LOSS"
                         )
@@ -368,17 +376,26 @@ class CLOBReconciler:
                         # or extended token IDs (the CLOB API sometimes
                         # returns padded values).
                         updated = await conn.execute(
-                            """UPDATE trades SET outcome = $1, pnl_usd = $2,
-                                      resolved_at = NOW(), status = $3
+                            """UPDATE trades
+                               SET outcome = $1,
+                                   pnl_usd = CASE
+                                     WHEN $1 = 'WIN' THEN
+                                       COALESCE(
+                                         CAST(fill_size AS numeric),
+                                         CAST(stake_usd AS numeric) / NULLIF(CAST(fill_price AS numeric), 0)
+                                       ) - CAST(stake_usd AS numeric)
+                                     ELSE -CAST(stake_usd AS numeric)
+                                   END,
+                                   resolved_at = NOW(),
+                                   status = $2
                                WHERE outcome IS NULL
                                  AND is_live = true
                                  AND metadata->>'token_id' IS NOT NULL
                                  AND (
-                                     metadata->>'token_id' LIKE $4 || '%'
-                                     OR $4 LIKE metadata->>'token_id' || '%'
+                                     metadata->>'token_id' LIKE $3 || '%'
+                                     OR $3 LIKE metadata->>'token_id' || '%'
                                  )""",
                             outcome,
-                            pnl,
                             status,
                             pos_token_id,
                         )
