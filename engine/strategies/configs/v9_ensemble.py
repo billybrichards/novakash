@@ -109,6 +109,28 @@ def _pc_weight_t_200() -> float:
     return _gp.get_float("pc_weight_t_200", "V9_PC_WEIGHT_T_200", 0.35)
 
 
+# ── Per-direction fill CEILINGS (2026-04-29) ───────────────────────────────
+# Block trades whose entry price is too high → math says we'd need
+# >breakeven_WR to profit (e.g. $0.79 entry needs 79% WR; LGB strong-band
+# only delivers ~65-68%). Default 1.0 = no cap, gate is a no-op.
+# Activated per-strategy via runtime override:
+#     UPDATE strategy_runtime_overrides
+#     SET params = params || '{"up_max_fill_price": 0.75}'::jsonb
+#     WHERE strategy_id = 'v9_lgb_only';
+#
+# Data justifying default-off + opt-in (v9_lgb_only, 4 days, n=251):
+#   YES @ 0.75-0.85: 28 trades, 68% WR, breakeven 80%, net -$50.
+#   NO  @ 0.65-0.75: 41 trades, 73% WR, breakeven 70%, net -$17.
+def _up_max_fill_price() -> float:
+    """Block UP entries where fill price >= ceiling. Default 1.0 = disabled."""
+    return _gp.get_float("up_max_fill_price", "V9_UP_MAX_FILL_PRICE", 1.0)
+
+
+def _down_max_fill_price() -> float:
+    """Block DOWN entries where fill price >= ceiling. Default 1.0 = disabled."""
+    return _gp.get_float("down_max_fill_price", "V9_DOWN_MAX_FILL_PRICE", 1.0)
+
+
 def _vhc_threshold() -> float:
     return _gp.get_float("vhc_threshold", "V9_VHC_THRESHOLD", 0.25)
 
@@ -1121,6 +1143,33 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
             )
         )
 
+        # ── 14a-bis. UP fill CEILING (NOT VHC-bypassable) ──────────────────
+        # Default 1.0 = disabled. Activated per-strategy via runtime override
+        # (e.g. v9_lgb_only sets 0.75 to block the YES > 0.75 bleed band).
+        ceiling = _up_max_fill_price()
+        if ceiling < 1.0 and fill_price >= ceiling:
+            gates.append(
+                _gate(
+                    "up_fill_ceiling",
+                    False,
+                    f"UP fill={fill_price:.3f} >= {ceiling:.2f}",
+                )
+            )
+            reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
+            return _skip_v9(
+                f"up_fill_ceiling: fill={fill_price:.3f} >= {ceiling:.2f}",
+                gates,
+                direction=direction,
+            )
+        if ceiling < 1.0:
+            gates.append(
+                _gate(
+                    "up_fill_ceiling",
+                    True,
+                    f"UP fill={fill_price:.3f} < {ceiling:.2f}",
+                )
+            )
+
     # ── 14b. DOWN fill floor (NOT VHC-bypassable) ──────────────────────────
     if direction == "DOWN":
         floor = _down_min_fill_price()
@@ -1145,6 +1194,32 @@ def evaluate_v9_ensemble(surface: "FullDataSurface") -> StrategyDecision:
                 f"DOWN fill={fill_price:.3f} >= {floor:.2f}",
             )
         )
+
+        # ── 14b-bis. DOWN fill CEILING (NOT VHC-bypassable) ────────────────
+        # Default 1.0 = disabled. Symmetric with up_fill_ceiling.
+        ceiling = _down_max_fill_price()
+        if ceiling < 1.0 and fill_price >= ceiling:
+            gates.append(
+                _gate(
+                    "down_fill_ceiling",
+                    False,
+                    f"DOWN fill={fill_price:.3f} >= {ceiling:.2f}",
+                )
+            )
+            reset_confirmation_v9(_STRATEGY_ID, getattr(surface, "window_ts", 0))
+            return _skip_v9(
+                f"down_fill_ceiling: fill={fill_price:.3f} >= {ceiling:.2f}",
+                gates,
+                direction=direction,
+            )
+        if ceiling < 1.0:
+            gates.append(
+                _gate(
+                    "down_fill_ceiling",
+                    True,
+                    f"DOWN fill={fill_price:.3f} < {ceiling:.2f}",
+                )
+            )
 
     # ── 15. Post-loss cooldown (NOT VHC-bypassable) ────────────────────────
     in_cd, remaining = _in_cooldown(now)

@@ -1069,3 +1069,234 @@ class TestPlVhcBypass:
         assert d.action == "TRADE", d.skip_reason
         assert "transition_regime" in d.metadata["vhc_bypasses"]
         assert d.metadata["is_pl_vhc"] is True
+
+
+# ── Per-direction fill ceiling (added 2026-04-29) ──────────────────────────
+# These gates are OPT-IN: default `up_max_fill_price`/`down_max_fill_price`
+# = 1.0 (no cap). Each strategy can opt in via runtime override to block the
+# math-bleed band (entries where R/R requires unrealistic WR to break even).
+class TestFillCeiling:
+    """Tests for `up_fill_ceiling` and `down_fill_ceiling` opt-in gates."""
+
+    def test_up_ceiling_disabled_by_default(self):
+        """Default ceiling=1.0 → high UP fill should still trade."""
+        # _up_surface has clob_up_ask=0.60. Push to 0.79 to test no cap.
+        s = _up_surface(clob_up_ask=0.79, poly_max_entry_price=0.79)
+        d = evaluate_v9_ensemble(s)
+        # No ceiling gate fired → not in skip_reason
+        assert "up_fill_ceiling" not in (d.skip_reason or "")
+        # Either TRADE or skip for an unrelated reason
+        if d.action == "SKIP":
+            # Make sure the skip wasn't from our new gate
+            assert "up_fill_ceiling" not in d.skip_reason
+
+    def test_up_ceiling_blocks_when_set(self):
+        """When `up_max_fill_price=0.75`, UP fill of 0.79 should SKIP."""
+        params = {
+            "min_offset_sec": 30, "max_offset_sec": 200,
+            "tradeable_v4_regimes": ["volatile_trend", "chop", "risk_off", "calm_trend"],
+            "block_down_vpin_regimes": ["TRANSITION"],
+            "block_up_vpin_regimes": ["TRANSITION"],
+            "lgb_dist_min_down": 0.10, "lgb_dist_min_up": 0.15,
+            "lgb_dist_min_up_with_hc_agree": 0.05,
+            "lgb_dist_min_down_with_hc_agree": 0.05,
+            "fill_band_min": 0.00, "fill_band_max": 0.82,
+            "up_min_fill_price": 0.20, "down_min_fill_price": 0.15,
+            "blocked_utc_hours": [0, 1, 2, 3, 4, 5],
+            "source_agreement_require_chainlink": True,
+            "source_agreement_require_tiingo": True,
+            "skip_on_oracle_disagree": True,
+            "vpin_min": 0.40, "vpin_max": 1.0,
+            "post_loss_cooldown_min": 20,
+            "ensemble_disagreement_threshold": 0.25,
+            "require_direction_agreement": True,
+            "pc_weight_t_60": 0.55, "pc_weight_t_120": 0.50,
+            "pc_weight_t_180": 0.45, "pc_weight_t_200": 0.35,
+            "vhc_threshold": 0.25,
+            "vhc_bypass_transition": True,
+            "vhc_bypass_up_dist": True,
+            "vhc_bypass_disagreement": True,
+            "vhc_bypass_lgb_safety_floor": True,
+            "vhc_bypass_oracle_direction": True,
+            "vhc_kelly_multiplier": 2.0,
+            "conviction_high_dist": 0.20, "conviction_medium_dist": 0.12,
+            "conviction_low_dist": 0.05,
+            "fallback_to_lgb_on_pc_null": True,
+            "transition_strong_bypass_enabled": True,
+            "transition_bypass_min_avg_pct_delta": 0.05,
+            "transition_bypass_min_lgb_dist": 0.20,
+            "delta_gate_enabled": False,
+            "min_consecutive_pass_ticks": 0,
+            "pl_vhc_bypass_enabled": True,
+            "pl_vhc_threshold": 0.25,
+            "pl_vhc_require_pc_agreement": True,
+            # NEW: cap UP entries at $0.75
+            "up_max_fill_price": 0.75,
+        }
+        token = _gp.set_active(params)
+        try:
+            s = _up_surface(clob_up_ask=0.79, poly_max_entry_price=0.79)
+            d = evaluate_v9_ensemble(s)
+            assert d.action == "SKIP"
+            assert "up_fill_ceiling" in d.skip_reason
+            assert "0.79" in d.skip_reason  # fill price echoed
+            assert "0.75" in d.skip_reason  # ceiling echoed
+        finally:
+            _gp.reset_active(token)
+
+    def test_up_ceiling_passes_when_below(self):
+        """When `up_max_fill_price=0.75`, UP fill of 0.70 should TRADE."""
+        params = {
+            "min_offset_sec": 30, "max_offset_sec": 200,
+            "tradeable_v4_regimes": ["volatile_trend", "chop", "risk_off", "calm_trend"],
+            "block_down_vpin_regimes": ["TRANSITION"],
+            "block_up_vpin_regimes": ["TRANSITION"],
+            "lgb_dist_min_down": 0.10, "lgb_dist_min_up": 0.15,
+            "lgb_dist_min_up_with_hc_agree": 0.05,
+            "lgb_dist_min_down_with_hc_agree": 0.05,
+            "fill_band_min": 0.00, "fill_band_max": 0.82,
+            "up_min_fill_price": 0.20, "down_min_fill_price": 0.15,
+            "blocked_utc_hours": [0, 1, 2, 3, 4, 5],
+            "source_agreement_require_chainlink": True,
+            "source_agreement_require_tiingo": True,
+            "skip_on_oracle_disagree": True,
+            "vpin_min": 0.40, "vpin_max": 1.0,
+            "post_loss_cooldown_min": 20,
+            "ensemble_disagreement_threshold": 0.25,
+            "require_direction_agreement": True,
+            "pc_weight_t_60": 0.55, "pc_weight_t_120": 0.50,
+            "pc_weight_t_180": 0.45, "pc_weight_t_200": 0.35,
+            "vhc_threshold": 0.25,
+            "vhc_bypass_transition": True,
+            "vhc_bypass_up_dist": True,
+            "vhc_bypass_disagreement": True,
+            "vhc_bypass_lgb_safety_floor": True,
+            "vhc_bypass_oracle_direction": True,
+            "vhc_kelly_multiplier": 2.0,
+            "conviction_high_dist": 0.20, "conviction_medium_dist": 0.12,
+            "conviction_low_dist": 0.05,
+            "fallback_to_lgb_on_pc_null": True,
+            "transition_strong_bypass_enabled": True,
+            "transition_bypass_min_avg_pct_delta": 0.05,
+            "transition_bypass_min_lgb_dist": 0.20,
+            "delta_gate_enabled": False,
+            "min_consecutive_pass_ticks": 0,
+            "pl_vhc_bypass_enabled": True,
+            "pl_vhc_threshold": 0.25,
+            "pl_vhc_require_pc_agreement": True,
+            "up_max_fill_price": 0.75,
+        }
+        token = _gp.set_active(params)
+        try:
+            s = _up_surface(clob_up_ask=0.70, poly_max_entry_price=0.70)
+            d = evaluate_v9_ensemble(s)
+            # Either trades, or skips for an unrelated reason
+            if d.action == "SKIP":
+                assert "up_fill_ceiling" not in d.skip_reason
+        finally:
+            _gp.reset_active(token)
+
+    def test_up_ceiling_does_not_block_down(self):
+        """`up_max_fill_price` should NOT affect DOWN trades."""
+        params = {
+            "min_offset_sec": 30, "max_offset_sec": 200,
+            "tradeable_v4_regimes": ["volatile_trend", "chop", "risk_off", "calm_trend"],
+            "block_down_vpin_regimes": ["TRANSITION"],
+            "block_up_vpin_regimes": ["TRANSITION"],
+            "lgb_dist_min_down": 0.10, "lgb_dist_min_up": 0.15,
+            "lgb_dist_min_up_with_hc_agree": 0.05,
+            "lgb_dist_min_down_with_hc_agree": 0.05,
+            "fill_band_min": 0.00, "fill_band_max": 0.82,
+            "up_min_fill_price": 0.20, "down_min_fill_price": 0.15,
+            "blocked_utc_hours": [0, 1, 2, 3, 4, 5],
+            "source_agreement_require_chainlink": True,
+            "source_agreement_require_tiingo": True,
+            "skip_on_oracle_disagree": True,
+            "vpin_min": 0.40, "vpin_max": 1.0,
+            "post_loss_cooldown_min": 20,
+            "ensemble_disagreement_threshold": 0.25,
+            "require_direction_agreement": True,
+            "pc_weight_t_60": 0.55, "pc_weight_t_120": 0.50,
+            "pc_weight_t_180": 0.45, "pc_weight_t_200": 0.35,
+            "vhc_threshold": 0.25,
+            "vhc_bypass_transition": True,
+            "vhc_bypass_up_dist": True,
+            "vhc_bypass_disagreement": True,
+            "vhc_bypass_lgb_safety_floor": True,
+            "vhc_bypass_oracle_direction": True,
+            "vhc_kelly_multiplier": 2.0,
+            "conviction_high_dist": 0.20, "conviction_medium_dist": 0.12,
+            "conviction_low_dist": 0.05,
+            "fallback_to_lgb_on_pc_null": True,
+            "transition_strong_bypass_enabled": True,
+            "transition_bypass_min_avg_pct_delta": 0.05,
+            "transition_bypass_min_lgb_dist": 0.20,
+            "delta_gate_enabled": False,
+            "min_consecutive_pass_ticks": 0,
+            "pl_vhc_bypass_enabled": True,
+            "pl_vhc_threshold": 0.25,
+            "pl_vhc_require_pc_agreement": True,
+            "up_max_fill_price": 0.75,  # cap UP only
+        }
+        token = _gp.set_active(params)
+        try:
+            # DOWN surface with high DOWN ask (which is fine for DOWN direction)
+            s = _make_surface(clob_down_ask=0.79, poly_max_entry_price=0.79)
+            d = evaluate_v9_ensemble(s)
+            # ceiling gate should NOT fire on DOWN
+            assert "up_fill_ceiling" not in (d.skip_reason or "")
+            assert "down_fill_ceiling" not in (d.skip_reason or "")
+        finally:
+            _gp.reset_active(token)
+
+    def test_down_ceiling_blocks_when_set(self):
+        """When `down_max_fill_price=0.65`, DOWN fill of 0.79 should SKIP."""
+        params = {
+            "min_offset_sec": 30, "max_offset_sec": 200,
+            "tradeable_v4_regimes": ["volatile_trend", "chop", "risk_off", "calm_trend"],
+            "block_down_vpin_regimes": ["TRANSITION"],
+            "block_up_vpin_regimes": ["TRANSITION"],
+            "lgb_dist_min_down": 0.10, "lgb_dist_min_up": 0.15,
+            "lgb_dist_min_up_with_hc_agree": 0.05,
+            "lgb_dist_min_down_with_hc_agree": 0.05,
+            "fill_band_min": 0.00, "fill_band_max": 0.82,
+            "up_min_fill_price": 0.20, "down_min_fill_price": 0.15,
+            "blocked_utc_hours": [0, 1, 2, 3, 4, 5],
+            "source_agreement_require_chainlink": True,
+            "source_agreement_require_tiingo": True,
+            "skip_on_oracle_disagree": True,
+            "vpin_min": 0.40, "vpin_max": 1.0,
+            "post_loss_cooldown_min": 20,
+            "ensemble_disagreement_threshold": 0.25,
+            "require_direction_agreement": True,
+            "pc_weight_t_60": 0.55, "pc_weight_t_120": 0.50,
+            "pc_weight_t_180": 0.45, "pc_weight_t_200": 0.35,
+            "vhc_threshold": 0.25,
+            "vhc_bypass_transition": True,
+            "vhc_bypass_up_dist": True,
+            "vhc_bypass_disagreement": True,
+            "vhc_bypass_lgb_safety_floor": True,
+            "vhc_bypass_oracle_direction": True,
+            "vhc_kelly_multiplier": 2.0,
+            "conviction_high_dist": 0.20, "conviction_medium_dist": 0.12,
+            "conviction_low_dist": 0.05,
+            "fallback_to_lgb_on_pc_null": True,
+            "transition_strong_bypass_enabled": True,
+            "transition_bypass_min_avg_pct_delta": 0.05,
+            "transition_bypass_min_lgb_dist": 0.20,
+            "delta_gate_enabled": False,
+            "min_consecutive_pass_ticks": 0,
+            "pl_vhc_bypass_enabled": True,
+            "pl_vhc_threshold": 0.25,
+            "pl_vhc_require_pc_agreement": True,
+            "down_max_fill_price": 0.65,
+        }
+        token = _gp.set_active(params)
+        try:
+            # DOWN trade with fill 0.79 (above 0.65 cap)
+            s = _make_surface(clob_down_ask=0.79, poly_max_entry_price=0.79)
+            d = evaluate_v9_ensemble(s)
+            assert d.action == "SKIP"
+            assert "down_fill_ceiling" in d.skip_reason
+        finally:
+            _gp.reset_active(token)
