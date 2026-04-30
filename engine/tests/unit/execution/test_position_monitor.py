@@ -16,6 +16,7 @@ import asyncio
 import sys
 import time
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -582,6 +583,190 @@ async def test_sell_uses_confirmed_size_when_available():
     # Should sell 14.69 (confirmed), not 15.24 (engine) or 14.478 (95%)
     call_args = mock_poly.place_sell_fak.call_args
     assert call_args.kwargs["size"] == 14.69
+
+
+# ── Shadow log writes for hedge_exit and mark_to_market detectors ────────
+
+
+class _FakeConn:
+    """Captures the rows that would have been INSERTed."""
+
+    def __init__(self, rows: list) -> None:
+        self._rows = rows
+
+    async def execute(self, _sql: str, *args: Any) -> None:  # type: ignore[name-defined]
+        # Schema: strategy_id, window_ts, direction, detector_type,
+        #         entry_dist, entry_price, stake_usd,
+        #         current_dist, current_p_up, fade_pct,
+        #         eval_offset, consecutive_ticks,
+        #         triggered, shadow_mode, reason
+        self._rows.append({
+            "strategy_id": args[0],
+            "window_ts": args[1],
+            "direction": args[2],
+            "detector_type": args[3],
+            "entry_dist": args[4],
+            "entry_price": args[5],
+            "stake_usd": args[6],
+            "current_dist": args[7],
+            "current_p_up": args[8],
+            "fade_pct": args[9],
+            "eval_offset": args[10],
+            "consecutive_ticks": args[11],
+            "triggered": args[12],
+            "shadow_mode": args[13],
+            "reason": args[14],
+        })
+
+
+class _FakeAcquireCtx:
+    def __init__(self, conn: _FakeConn) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> _FakeConn:
+        return self._conn
+
+    async def __aexit__(self, *_a: Any) -> None:  # type: ignore[name-defined]
+        return None
+
+
+class _FakePool:
+    def __init__(self) -> None:
+        self.rows: list = []
+        self._conn = _FakeConn(self.rows)
+
+    def acquire(self) -> _FakeAcquireCtx:
+        return _FakeAcquireCtx(self._conn)
+
+
+@pytest.mark.asyncio
+async def test_mark_to_market_shadow_writes_row():
+    """Mark-to-market shadow exit should write a row with detector_type='mark_to_market'."""
+    pool = _FakePool()
+    monitor = PositionMonitor(db_pool=pool)
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1", "token-abc")
+    pos = monitor._positions["strat:100"]
+    pos.mark_loss_tick_count = 6
+
+    result = await monitor.execute_exit(
+        "strat", 100,
+        "mark_stop_loss: mark=0.200 (36% of fill) for 6 ticks @ T-40",
+        exit_shadow_mode=True,
+    )
+    assert result is True
+    assert len(pool.rows) == 1
+    row = pool.rows[0]
+    assert row["detector_type"] == "mark_to_market"
+    assert row["strategy_id"] == "strat"
+    assert row["window_ts"] == 100
+    assert row["direction"] == "DOWN"
+    assert row["entry_price"] == 0.55
+    assert row["stake_usd"] == pytest.approx(0.55 * 10.0)
+    assert row["consecutive_ticks"] == 6
+    assert row["triggered"] is True
+    assert row["shadow_mode"] is True
+    assert "mark_to_market:" in row["reason"]
+
+
+@pytest.mark.asyncio
+async def test_signal_flip_shadow_classified_as_mark_to_market():
+    """signal_flip exit also lands under detector_type='mark_to_market'."""
+    pool = _FakePool()
+    monitor = PositionMonitor(db_pool=pool)
+    monitor.on_fill("strat", 100, "UP", 0.42, 12.0, "order1", "token-up")
+    pos = monitor._positions["strat:100"]
+    pos.flip_consecutive_count = 3
+
+    await monitor.execute_exit(
+        "strat", 100,
+        "signal_flip: lgb_p_down=0.92 dist=0.25 for 3 ticks @ T-150",
+        exit_shadow_mode=True,
+    )
+    assert len(pool.rows) == 1
+    row = pool.rows[0]
+    assert row["detector_type"] == "mark_to_market"
+    assert row["consecutive_ticks"] == 3
+    assert row["shadow_mode"] is True
+
+
+@pytest.mark.asyncio
+async def test_hedge_shadow_writes_row():
+    """Hedge shadow exit should write a row with detector_type='hedge'."""
+    pool = _FakePool()
+    monitor = PositionMonitor(db_pool=pool)
+    monitor.on_fill(
+        "strat", 100, "UP", 0.45, 10.0, "order1",
+        token_id="token-up", opposite_token_id="token-down",
+    )
+
+    instruction = {
+        "opposite_token_id": "token-down",
+        "size_to_buy": 10.0,
+        "max_buy_price": 0.40,
+        "expected_guaranteed_profit": 1.5,
+        "opposite_ask": 0.38,
+        "fill_price": 0.45,
+        "consensus_ticks": 5,
+        "eval_offset": 120,
+        "direction_we_held": "UP",
+        "opposite_direction": "DOWN",
+    }
+    result = await monitor.execute_hedge_exit(
+        "strat", 100, instruction, hedge_shadow_mode=True,
+    )
+    assert result is True
+    assert len(pool.rows) == 1
+    row = pool.rows[0]
+    assert row["detector_type"] == "hedge"
+    assert row["strategy_id"] == "strat"
+    assert row["window_ts"] == 100
+    assert row["direction"] == "UP"
+    assert row["entry_price"] == 0.45
+    assert row["stake_usd"] == pytest.approx(0.45 * 10.0)
+    assert row["eval_offset"] == 120
+    assert row["consecutive_ticks"] == 5
+    assert row["triggered"] is True
+    assert row["shadow_mode"] is True
+    assert "hedge:" in row["reason"]
+
+
+@pytest.mark.asyncio
+async def test_live_mark_to_market_writes_row_with_shadow_mode_false():
+    """Live mark-to-market exit should still write a row with shadow_mode=False."""
+    pool = _FakePool()
+    mock_poly = MagicMock()
+    mock_poly.place_sell_fak = AsyncMock(return_value={
+        "filled": True,
+        "size_matched": 10.0,
+        "order_id": "sell-1",
+    })
+    monitor = PositionMonitor(poly_client=mock_poly, db_pool=pool)
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1", "token-abc")
+    pos = monitor._positions["strat:100"]
+    pos.mark_loss_tick_count = 6
+
+    await monitor.execute_exit(
+        "strat", 100,
+        "mark_stop_loss: mark=0.200 (36% of fill) for 6 ticks @ T-40",
+        exit_shadow_mode=False,
+    )
+    assert len(pool.rows) == 1
+    row = pool.rows[0]
+    assert row["detector_type"] == "mark_to_market"
+    assert row["shadow_mode"] is False
+    assert row["triggered"] is True
+
+
+@pytest.mark.asyncio
+async def test_no_db_pool_does_not_crash_or_write():
+    """When db_pool is None, execute_exit succeeds but writes nothing."""
+    monitor = PositionMonitor(db_pool=None)
+    monitor.on_fill("strat", 100, "DOWN", 0.55, 10.0, "order1", "token-abc")
+    result = await monitor.execute_exit(
+        "strat", 100, "mark_stop_loss: ...",
+        exit_shadow_mode=True,
+    )
+    assert result is True  # shadow path always returns True
 
 
 @pytest.mark.asyncio

@@ -488,6 +488,25 @@ class PositionMonitor:
 
         held_seconds = time.time() - pos.filled_at_epoch
 
+        # Detector classification:
+        #   conviction_fade reason → "fade" (matches the direct write from
+        #   registry.py's shadow path so live + shadow rows share the type)
+        #   everything else (mark-stop tiers, signal-flip) → "mark_to_market"
+        #   so operators can query a single category for the entire exit
+        #   monitor's behaviour.
+        _det = "fade" if "conviction_fade" in reason else "mark_to_market"
+        # Reason prefix: when classifying as mark_to_market, prefix the
+        # reason string so log consumers can distinguish at a glance.
+        _logged_reason = reason
+        if _det == "mark_to_market" and not reason.startswith("mark_to_market"):
+            _logged_reason = f"mark_to_market: {reason}"
+        # Tick count: use mark_loss when present, fall back to flip count.
+        _ticks = (
+            pos.mark_loss_tick_count
+            if pos.mark_loss_tick_count > 0
+            else pos.flip_consecutive_count
+        )
+
         if exit_shadow_mode:
             self._log.info(
                 "position_monitor.exit_shadow",
@@ -504,11 +523,6 @@ class PositionMonitor:
                 pos, reason, executed=False, shadow=True
             )
             # Write to exit_shadow_log (fire-and-forget)
-            _det = "flip" if "signal_flip" in reason else (
-                "mark_stop" if "mark_stop" in reason else (
-                    "fade" if "conviction_fade" in reason else "tier"
-                )
-            )
             await self._write_exit_shadow_log(
                 strategy_id=strategy_id,
                 window_ts=window_ts,
@@ -516,10 +530,10 @@ class PositionMonitor:
                 detector_type=_det,
                 entry_price=pos.fill_price,
                 stake_usd=pos.fill_price * pos.fill_size,
-                consecutive_ticks=pos.mark_loss_tick_count if "mark_stop" in reason else pos.flip_consecutive_count,
+                consecutive_ticks=_ticks,
                 triggered=True,
                 shadow_mode=True,
-                reason=reason,
+                reason=_logged_reason,
             )
             # Send TG alert for shadow exit
             await self._send_exit_alert(
@@ -549,21 +563,17 @@ class PositionMonitor:
             pos, reason, executed=sell_success, shadow=False
         )
         # Write to exit_shadow_log (live exit)
-        _det_live = "flip" if "signal_flip" in reason else (
-            "mark_stop" if "mark_stop" in reason else (
-                "fade" if "conviction_fade" in reason else "tier"
-            )
-        )
         await self._write_exit_shadow_log(
             strategy_id=strategy_id,
             window_ts=window_ts,
             direction=pos.direction,
-            detector_type=_det_live,
+            detector_type=_det,
             entry_price=pos.fill_price,
             stake_usd=pos.fill_price * pos.fill_size,
+            consecutive_ticks=_ticks,
             triggered=True,
             shadow_mode=False,
-            reason=reason,
+            reason=_logged_reason,
         )
         await self._send_exit_alert(
             pos, reason, executed=sell_success, shadow=False
