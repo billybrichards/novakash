@@ -7,6 +7,10 @@
 //   NORMAL    → gray   (#94a3b8)
 //   HIGH_VOL  → amber  (T.warn)
 //   TRENDING  → green  (T.profit)
+//
+// Phase 3 (#365): when the countdown is inside the v9 exit-window
+// (T-48s → T-30s) we colour the WINDOW block to make the engine's
+// active sell-decision range visible to the operator.
 
 import React from 'react';
 import { T } from '../../../theme/tokens.js';
@@ -19,6 +23,10 @@ const REGIME_COLOURS = {
   TRENDING:  '#4ade80',
   CASCADE:   '#f87171',
 };
+
+// v9 exit window from #365 — engine evaluates sell between these offsets.
+const EXIT_WINDOW_OPEN_S = 48;
+const EXIT_WINDOW_CLOSE_S = 30;
 
 export default function Header({
   price,
@@ -57,9 +65,20 @@ export default function Header({
         </div>
       </Block>
 
-      <Block label="WINDOW">
-        <span style={{ fontSize: 18, fontWeight: 500, letterSpacing: '0.05em' }}>
+      <Block label={inExitWindow(secondsRemaining) ? 'WINDOW · EXIT' : 'WINDOW'}>
+        <span style={{
+          fontSize: 18,
+          fontWeight: 500,
+          letterSpacing: '0.05em',
+          color: inExitWindow(secondsRemaining) ? T.warn : undefined,
+        }}>
           {fmtTRemaining(secondsRemaining)}
+          {inExitWindow(secondsRemaining) ? (
+            <span title="Engine sell window — T-48 to T-30 (#365). If a position is open it may be filled in this range."
+                  style={{ marginLeft: 6, fontSize: 10, color: T.warn, letterSpacing: '0.1em' }}>
+              ◆ SELL
+            </span>
+          ) : null}
         </span>
       </Block>
 
@@ -137,6 +156,11 @@ function StatusChip({ mode }) {
       borderRadius: 2,
     }}>{m.label}</span>
   );
+}
+
+function inExitWindow(secondsRemaining) {
+  if (secondsRemaining == null) return false;
+  return secondsRemaining <= EXIT_WINDOW_OPEN_S && secondsRemaining >= EXIT_WINDOW_CLOSE_S;
 }
 
 function fmtUsd(n) {

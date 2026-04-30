@@ -238,6 +238,21 @@ export const LEGACY_LINEUP_IDS = [
   'v10_gate',
 ];
 
+// Currently LIVE strategy. Hot-flips happen via strategy_runtime_overrides
+// (#350) but this is the static FE default — update on any FE-visible flip.
+// Components that need the runtime-current id should still call
+// /api/strategies; this is a reasonable fallback when that fetch hasn't
+// landed yet.
+export const LIVE_STRATEGY_ID = 'v9_ensemble';
+
+// Strategies the /desk play-along HUD tracks side-by-side. LIVE first, then
+// the most relevant GHOST shadow for comparison. Pre-v8 ids dropped — the
+// hub returns nothing for them and they made the panel look broken.
+export const DESK_TRACKED_STRATEGY_IDS = [
+  'v9_ensemble',
+  'v8_champion_lgb_only',
+];
+
 /** Look up strategy metadata by id. Falls back to a generated entry for unknown ids. */
 export function getStrategyMeta(id, index) {
   if (STRATEGIES[id]) return STRATEGIES[id];

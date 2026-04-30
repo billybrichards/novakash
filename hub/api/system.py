@@ -30,6 +30,35 @@ class RedeemRequest(BaseModel):
     redeem_type: str = "all"
 
 
+def _derive_mode(state_row: SystemState | None) -> str:
+    """
+    Collapse the per-engine state jsonb + columns into a single
+    operator-facing mode string the FE can render directly.
+
+    Precedence (highest first):
+      KILLED    — kill switch tripped (manual or auto-drawdown)
+      PAPER     — explicit paper-mode flag set
+      LIVE      — engine reports active and not in paper
+      UNKNOWN   — anything else (no row, stale heartbeat, etc.)
+    """
+    if state_row is None:
+        return "UNKNOWN"
+    state = state_row.state or {}
+    if state.get("kill_switch_manual") or state.get("kill_switch_auto"):
+        return "KILLED"
+    paper_flag = state.get("paper_mode")
+    if paper_flag is None:
+        # Fall back to the dedicated columns when the jsonb hasn't been
+        # filled in yet (older engine builds).
+        paper_flag = bool(getattr(state_row, "paper_enabled", False))
+    if paper_flag:
+        return "PAPER"
+    inner = state.get("status")
+    if isinstance(inner, str) and inner.lower() == "active":
+        return "LIVE"
+    return "UNKNOWN"
+
+
 @router.get("/system/status")
 async def get_system_status(
     session: AsyncSession = Depends(get_session),
@@ -43,15 +72,23 @@ async def get_system_status(
       - Venue connectivity (Polymarket, Opinion)
       - Current bankroll and drawdown
       - Last heartbeat timestamp
+
+    `mode` is a derived string the FE renders as a single chip — one of
+    LIVE / PAPER / KILLED / UNKNOWN. See `_derive_mode` for precedence.
     """
     result = await session.execute(select(SystemState).where(SystemState.id == 1))
     state = result.scalar_one_or_none()
 
     if state is None:
-        return {"status": "offline", "detail": "Engine has not reported state yet"}
+        return {
+            "status": "offline",
+            "mode": "UNKNOWN",
+            "detail": "Engine has not reported state yet",
+        }
 
     return {
         "status": "online",
+        "mode": _derive_mode(state),
         "data": state.state,
         "updated_at": state.updated_at.isoformat() if state.updated_at else None,
     }
