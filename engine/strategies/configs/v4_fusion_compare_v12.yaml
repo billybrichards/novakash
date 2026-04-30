@@ -1,0 +1,26 @@
+name: v4_fusion_compare_v12
+version: "1.0.0-shadow"
+# Comparison shadow strategy — uses probability_lgb_v12 (v12 LGB combo model) as signal.
+# Pairs with comparison_shadow.py hook. Mode=GHOST, no live trades EVER.
+# Until PR #431 ships + DB migration runs + V12_ENABLED=true on the ML box,
+# probability_lgb_v12 is None on every surface, so this variant emits SKIP
+# (signal_source_unavailable:probability_lgb_v12) — by design.
+# See hub note #285 for the comparison framework, comparison_shadow.md for design.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+gates: []
+
+gate_params:
+  signal_source: probability_lgb_v12
+  shadow_strategy_id: v4_fusion_compare_v12
+  shadow_conviction_floor: 0.10
+
+sizing:
+  type: fixed
+  fraction: 0.0
+  max_collateral_pct: 0.0
+
+hooks_file: comparison_shadow.py
+pre_gate_hook: evaluate_comparison_shadow

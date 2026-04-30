@@ -1,0 +1,26 @@
+name: v4_fusion_compare_blend
+version: "1.0.0-shadow"
+# Comparison shadow strategy — uses probability_up = (lgb + classifier) / 2
+# (the historical poly_confidence blend semantics) as signal. When the
+# classifier is unavailable, falls back to plain probability_lgb so the
+# variant still scores windows.
+# Pairs with comparison_shadow.py hook. Mode=GHOST, no live trades EVER.
+# See hub note #285 for the comparison framework, comparison_shadow.md for design.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+gates: []
+
+gate_params:
+  signal_source: probability_up
+  shadow_strategy_id: v4_fusion_compare_blend
+  shadow_conviction_floor: 0.10
+
+sizing:
+  type: fixed
+  fraction: 0.0
+  max_collateral_pct: 0.0
+
+hooks_file: comparison_shadow.py
+pre_gate_hook: evaluate_comparison_shadow
