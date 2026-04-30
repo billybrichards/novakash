@@ -371,3 +371,74 @@ def test_graceful_degradation_on_db_error():
     assert body["decisions"] == []
     assert "error" in body
     assert "view does not exist" in body["error"]
+
+
+# ─── Server-side time-bound (post-RDS-migration regression fix) ─────────────
+
+
+def test_default_request_includes_evaluated_at_bound():
+    """The endpoint MUST always include an ``evaluated_at`` lower bound
+    in the WHERE clause so the DISTINCT ON sort doesn't scan the full
+    ~5M-row view. Post-RDS-migration regression (2026-04-30): without
+    this the endpoint hangs indefinitely on the production view.
+
+    Default ``since_minutes=240`` is the contract — anything else
+    breaks the FE explorer's freshness expectation.
+    """
+    session = _make_session([])
+    client = TestClient(_build_app(session))
+    client.get("/api/v58/strategy-decisions")
+    sql = session._last_stmt["stmt"]
+    params = session._last_stmt["params"]
+    assert "evaluated_at >" in sql
+    # Bound is parametrized so it composes with the existing WHERE clauses.
+    assert "since_min" in params
+    assert params["since_min"] == "240"
+
+
+def test_explicit_since_minutes_routes_into_query():
+    """Operator can override the default with ``?since_minutes=60``."""
+    session = _make_session([])
+    client = TestClient(_build_app(session))
+    client.get("/api/v58/strategy-decisions?since_minutes=60")
+    params = session._last_stmt["params"]
+    assert params["since_min"] == "60"
+
+
+def test_since_minutes_composes_with_other_filters():
+    """``evaluated_at`` bound must AND with ``strategy_id`` /
+    ``timeframe`` / ``resolved`` filters."""
+    session = _make_session([])
+    client = TestClient(_build_app(session))
+    client.get(
+        "/api/v58/strategy-decisions?strategy_id=v9_lgb_only"
+        "&timeframe=5m&resolved=true&since_minutes=120"
+    )
+    sql = session._last_stmt["stmt"]
+    params = session._last_stmt["params"]
+    assert "evaluated_at >" in sql
+    assert "strategy_id = :sid" in sql
+    assert "timeframe = :tf" in sql
+    assert "outcome IS NOT NULL" in sql
+    assert params["since_min"] == "120"
+    assert params["sid"] == "v9_lgb_only"
+    assert params["tf"] == "5m"
+
+
+def test_since_minutes_validation_rejects_zero():
+    """``since_minutes=0`` would re-introduce the unbounded-scan
+    regression. FastAPI ``Query(ge=1)`` must reject it with a 422."""
+    session = _make_session([])
+    client = TestClient(_build_app(session))
+    res = client.get("/api/v58/strategy-decisions?since_minutes=0")
+    assert res.status_code == 422
+
+
+def test_since_minutes_validation_caps_at_one_week():
+    """``since_minutes`` is capped at 10080 (7 days). Larger values
+    return 422 — without strategy_id even 7 days is on the edge of
+    timeout, longer ranges should use the offline analysis tooling."""
+    session = _make_session([])
+    client = TestClient(_build_app(session))
+    res = client.get("/api/v58/strategy-decisions?since_minutes=99999")
+    assert res.status_code == 422
