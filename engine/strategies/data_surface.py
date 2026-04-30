@@ -213,6 +213,10 @@ class FullDataSurface:
     # on /v4/snapshot. The engine's v10_lgb_only strategy reads this field.
     probability_lgb_v10: Optional[float] = None
 
+    # v12 LGB combo model — served alongside prod v5 via probability_lgb_v12
+    # on /v4/snapshot. The engine's v12_lgb_combo strategy reads this field.
+    probability_lgb_v12: Optional[float] = None
+
 
 class DataSurfaceManager:
     """Keeps FullDataSurface fresh in memory. No blocking I/O at decision time.
@@ -1212,6 +1216,11 @@ class DataSurfaceManager:
             probability_lgb_v10=(
                 float(ts_data["probability_lgb_v10"])
                 if ts_data.get("probability_lgb_v10") is not None
+                else None
+            ),
+            probability_lgb_v12=(
+                float(ts_data["probability_lgb_v12"])
+                if ts_data.get("probability_lgb_v12") is not None
                 else None
             ),
             probability_classifier=(
