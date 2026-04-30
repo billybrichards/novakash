@@ -10,22 +10,20 @@
 
 import React from 'react';
 import { T } from '../../../theme/tokens.js';
+import { tierForScore, TIER_BREAKS } from '../lib/convictionScore.js';
 
-const TIER_BREAKS = [
-  { min: 0.0,  label: 'NONE',       color: T.label },
-  { min: 0.25, label: 'LOW',        color: T.label2 },
-  { min: 0.50, label: 'MEDIUM',     color: '#60a5fa' },
-  { min: 0.70, label: 'HIGH',       color: T.warn },
-  { min: 0.85, label: 'VERY HIGH',  color: T.profit },
-];
+// Colour mapping per tier label — T.* tokens are runtime so we map here.
+const TIER_COLOURS = {
+  'NONE':      T.label,
+  'LOW':       T.label2,
+  'MEDIUM':    '#60a5fa',
+  'HIGH':      T.warn,
+  'VERY HIGH': T.profit,
+};
 
 function tierFor(score) {
-  if (score == null || !Number.isFinite(score)) return TIER_BREAKS[0];
-  let pick = TIER_BREAKS[0];
-  for (const t of TIER_BREAKS) {
-    if (score >= t.min) pick = t;
-  }
-  return pick;
+  const t = tierForScore(score);
+  return { ...t, color: TIER_COLOURS[t.label] || T.label };
 }
 
 export default function ConvictionStrip({ fiveMin }) {

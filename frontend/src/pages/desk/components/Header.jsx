@@ -15,6 +15,7 @@
 import React from 'react';
 import { T } from '../../../theme/tokens.js';
 import { fmtTRemaining } from '../hooks/useWindow.js';
+import { inExitWindow } from '../lib/exitWindow.js';
 
 const REGIME_COLOURS = {
   LOW_VOL:   '#60a5fa',
@@ -23,10 +24,6 @@ const REGIME_COLOURS = {
   TRENDING:  '#4ade80',
   CASCADE:   '#f87171',
 };
-
-// v9 exit window from #365 — engine evaluates sell between these offsets.
-const EXIT_WINDOW_OPEN_S = 48;
-const EXIT_WINDOW_CLOSE_S = 30;
 
 export default function Header({
   price,
@@ -156,11 +153,6 @@ function StatusChip({ mode }) {
       borderRadius: 2,
     }}>{m.label}</span>
   );
-}
-
-function inExitWindow(secondsRemaining) {
-  if (secondsRemaining == null) return false;
-  return secondsRemaining <= EXIT_WINDOW_OPEN_S && secondsRemaining >= EXIT_WINDOW_CLOSE_S;
 }
 
 function fmtUsd(n) {

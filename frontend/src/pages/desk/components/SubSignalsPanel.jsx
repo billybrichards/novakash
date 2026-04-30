@@ -2,8 +2,12 @@
 //
 // Reads `sub_signals` from the 5m timescale block (engine maps it to
 // composite_v3 components: elm, cascade, taker, oi, funding, vpin,
-// momentum). Each is a signed score; convention used elsewhere in the
-// engine treats >0 as bullish, <0 as bearish, magnitude as conviction.
+// momentum). Sign semantics vary per signal — the producing model
+// (external V4 service) defines them. VPIN in particular is a
+// magnitude in [0, 1] and never negative. We render all values on a
+// bipolar bar for visual comparison, but the sign should not be read
+// as universally meaning bullish/bearish without checking the upstream
+// model spec for each signal.
 //
 // Audit #291 finding: vpin + taker were already wired into SignalStack
 // but elm/cascade/oi/funding/momentum were not surfaced anywhere on

@@ -144,13 +144,25 @@ class SystemState(Base):
     """
     Single-row engine heartbeat, health metrics, and runtime config.
 
-    id is always 1. Upserted by the engine on each heartbeat.
+    id is always 1. Two writers:
+      - hub /api/system/* mutates the `state` jsonb (kill_switch_manual,
+        paper_mode toggles).
+      - engine `db_client.update_system_state` writes engine_status
+        column + `config` jsonb (kill_switch_active, paper_mode,
+        runtime_config) on every heartbeat.
+
+    `_derive_mode` in api/system.py reads both blobs to collapse this
+    into a single LIVE/PAPER/KILLED/UNKNOWN string for the FE.
     """
 
     __tablename__ = "system_state"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)  # Always 1
     state: Mapped[Optional[dict]] = mapped_column(JSON)
+    engine_status: Mapped[Optional[str]] = mapped_column(String(32))
+    config: Mapped[Optional[dict]] = mapped_column(JSON)
+    paper_enabled: Mapped[Optional[bool]] = mapped_column(Boolean)
+    live_enabled: Mapped[Optional[bool]] = mapped_column(Boolean)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

@@ -88,7 +88,9 @@ export default function Desk() {
           : (typeof inner === 'string' && inner) ? inner
           : null;
         setSystemStatus(pick ? pick.toUpperCase() : '?');
-      } catch {
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[desk] system status fetch failed:', e?.message || e);
         if (!cancelled) setSystemStatus('?');
       }
     };

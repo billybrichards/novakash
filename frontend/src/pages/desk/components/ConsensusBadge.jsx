@@ -21,7 +21,26 @@ function num(v) {
 
 export default function ConsensusBadge({ snapshot }) {
   const c = snapshot?.consensus;
-  if (!c) return null;
+  if (!c) {
+    // Fail-closed: consensus block missing → show a muted ? chip so the
+    // operator knows the gate isn't reporting, rather than silently hiding.
+    return (
+      <div style={{
+        border: `1px solid ${T.border}`,
+        background: T.card,
+        padding: '6px 10px',
+        marginBottom: 10,
+        fontFamily: T.font,
+        fontSize: 11,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14,
+      }}>
+        <span style={{ color: T.label, fontSize: 9, letterSpacing: '0.12em' }}>CONSENSUS</span>
+        <Chip label="?" color={T.label} title="Consensus block absent on snapshot — gate status unknown." />
+      </div>
+    );
+  }
 
   const safe = c.safe_to_trade;
   const safeReason = c.safe_to_trade_reason || c.reason || null;
@@ -78,7 +97,8 @@ export default function ConsensusBadge({ snapshot }) {
           color={availableCount === sourceCount ? T.profit : T.warn}
           title={srcNames.map(n => {
             const s = sources[n];
-            return `${n}: ${s?.available ? `$${s.price?.toLocaleString?.() ?? '—'} (${s.age_ms}ms)` : 'DOWN'}`;
+            const p = num(s?.price);
+            return `${n}: ${s?.available ? `$${p != null ? p.toLocaleString() : '—'} (${s.age_ms}ms)` : 'DOWN'}`;
           }).join('\n')}
         />
       ) : null}
