@@ -1,20 +1,34 @@
 """
-Periodic rewrap: USDC -> pUSD for ONLY the original stake amounts from resolved wins.
+Periodic rewrap: USDC -> pUSD for resolved trade stakes (wins + losses) +
+50% of win profits.
 
 Background
 ==========
-Polymarket V2 settles in pUSD. Wins pay out in USDC. The engine needs pUSD
-to place new bets. This script wraps back *only* the stake capital from
-winning trades, leaving the profit portion in USDC.
+Polymarket V2 settles in pUSD. Wins pay out in USDC. The engine bets out
+of pUSD. We need to top pUSD back up after every cycle so the engine
+never runs out of collateral.
 
-Unlike the full-balance cron (which wraps ALL USDC above $3), this script
-preserves profits by computing:
+Wrap formula (since last run):
 
-    wrap_amount = SUM(stake_usd) from wins resolved since last run
+    wrap = win_stake + loss_stake + (50% × win_profit)
 
-A state file tracks the last-run timestamp so the same wins are never
+  - win_stake: capital recycled from winning trades
+  - loss_stake: capital reimbursed from losing trades (pUSD was burned;
+    USDC wallet is unaffected because the engine bet from pUSD)
+  - 50% of win profit: reinvested → bankroll compounds. Other 50%
+    accumulates in USDC as cash reserve.
+
+Without reimbursing loss stakes, pUSD slowly drains during losing
+streaks even though the wallet's effective balance is fine. This was
+observed live on 2026-04-30: pUSD dropped from $264 to $37 over a few
+hours of bad sessions while USDC stayed at ~$200.
+
+Unlike the full-balance cron (which would wrap ALL USDC above $3), this
+script preserves the profit reserve while keeping pUSD topped up.
+
+A state file tracks the last-run timestamp so the same trades are never
 counted twice. Running twice in a row is safe (second run finds no new
-wins -> skip).
+trades -> skip).
 
 Usage
 =====
@@ -80,10 +94,23 @@ def _save_state(state_file: Path, ts: datetime) -> None:
 
 
 async def _query_wrap_amount(dsn: str, since: datetime, profit_reinvest_pct: float = 0.5) -> float:
-    """Calculate wrap amount: full stakes + fraction of profit from wins.
+    """Calculate wrap amount: full stakes (wins + losses) + fraction of profit.
 
-    Returns stake_sum + (profit_reinvest_pct × profit_sum).
-    Default 50% profit reinvested → bankroll compounds while USDC accumulates.
+    Wrap formula:
+        wrap = win_stake + loss_stake + (profit_reinvest_pct × win_profit)
+
+    Why losses too? Lost stakes are gone from pUSD (V2 collateral), but the
+    USDC wallet is unchanged — winning trades elsewhere paid out into USDC.
+    Without reimbursing loss stakes from USDC → pUSD, pUSD slowly drains
+    every time we have a losing streak even though the WALLET is fine.
+
+    Stake-source-of-truth: stake_usd (correct on losses).
+    Profit-source-of-truth: pnl_usd on WINS only (loss pnl_usd may be
+    inflated 2× by the legacy reconciler position-aggregate bug; we don't
+    touch loss pnl_usd, only loss stake).
+
+    Default 50% win profit reinvested → bankroll compounds while the other
+    50% accumulates in USDC as cash reserve.
     """
     import asyncpg  # type: ignore
 
@@ -92,22 +119,29 @@ async def _query_wrap_amount(dsn: str, since: datetime, profit_reinvest_pct: flo
         row = await conn.fetchrow(
             """
             SELECT
-              COALESCE(SUM(stake_usd), 0) AS total_stake,
-              COALESCE(SUM(pnl_usd), 0) AS total_profit
+              COALESCE(SUM(stake_usd) FILTER (WHERE status='RESOLVED_WIN'),  0) AS win_stake,
+              COALESCE(SUM(pnl_usd)   FILTER (WHERE status='RESOLVED_WIN'),  0) AS win_profit,
+              COALESCE(SUM(stake_usd) FILTER (WHERE status='RESOLVED_LOSS'), 0) AS loss_stake,
+              COUNT(*)               FILTER (WHERE status='RESOLVED_WIN')      AS win_n,
+              COUNT(*)               FILTER (WHERE status='RESOLVED_LOSS')     AS loss_n
             FROM trades
-            WHERE status = 'RESOLVED_WIN'
+            WHERE status IN ('RESOLVED_WIN','RESOLVED_LOSS')
               AND resolved_at > $1
             """,
             since,
         )
-        stake = float(row["total_stake"]) if row else 0.0
-        profit = float(row["total_profit"]) if row else 0.0
-        reinvest = round(profit * profit_reinvest_pct, 2)
-        total = round(stake + reinvest, 2)
+        win_stake  = float(row["win_stake"])  if row else 0.0
+        win_profit = float(row["win_profit"]) if row else 0.0
+        loss_stake = float(row["loss_stake"]) if row else 0.0
+        win_n      = int(row["win_n"])         if row else 0
+        loss_n     = int(row["loss_n"])        if row else 0
+        reinvest = round(win_profit * profit_reinvest_pct, 2)
+        total = round(win_stake + loss_stake + reinvest, 2)
         print(f"[db] Since {since.isoformat()}:")
-        print(f"     Stakes: ${stake:.2f}  Profit: ${profit:.2f}")
-        print(f"     Reinvest {profit_reinvest_pct:.0%} of profit: ${reinvest:.2f}")
-        print(f"     Wrap total: ${total:.2f}")
+        print(f"     Wins   : n={win_n} stake=${win_stake:.2f} profit=${win_profit:.2f}")
+        print(f"     Losses : n={loss_n} stake=${loss_stake:.2f} (reimbursed in full)")
+        print(f"     Reinvest {profit_reinvest_pct:.0%} of win profit: ${reinvest:.2f}")
+        print(f"     Wrap total: ${total:.2f}  (= win_stake + loss_stake + reinvest)")
         return total
     finally:
         await conn.close()
@@ -264,7 +298,7 @@ async def async_main() -> int:
         _save_state(state_file, _now_utc())
         print("\n[done] Wrap submitted and state updated.")
     else:
-        print(f"\n[dry-run] Would wrap ${stake_sum:.2f}. Re-run with --execute to submit.")
+        print(f"\n[dry-run] Would wrap ${wrap_amount:.2f}. Re-run with --execute to submit.")
 
     return 0
 
