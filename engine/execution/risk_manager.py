@@ -46,6 +46,12 @@ class RiskManager:
         self._peak_bankroll = starting_bankroll
         self._paper_mode = paper_mode
 
+        # Track whether `sync_bankroll` has run at least once. The first
+        # sync rebaselines peak to the live wallet balance to prevent a
+        # stale `STARTING_BANKROLL` env value from triggering false-drawdown
+        # kills after withdrawals. See `sync_bankroll` for details.
+        self._first_live_sync_done: bool = False
+
         # Daily tracking
         self._day_start_bankroll = starting_bankroll
         self._daily_pnl: float = 0.0
@@ -184,6 +190,28 @@ class RiskManager:
 
         In paper mode, wallet_balance will be $0, so we skip sync to preserve
         the paper bankroll tracking. In live mode, we sync from the wallet.
+
+        Withdrawal-aware peak (PR #427)
+        ===============================
+        On the FIRST live sync after engine boot, we rebaseline the peak
+        to the actual wallet balance instead of `max(starting_bankroll,
+        wallet_balance)`. This prevents a stale `STARTING_BANKROLL` env
+        value (often a high-water mark from a previous session) from
+        triggering false drawdown-kill alerts after USDC withdrawals.
+
+        Example failure mode this fixes:
+        - Wallet was once $235 (STARTING_BANKROLL=235 set in env)
+        - User withdraws $120 to MetaMask → wallet drops to $115
+        - Engine restarts: `_peak_bankroll = $235` (from env constructor)
+        - sync_bankroll runs: max($235, $115) = $235 → drawdown shows 51%
+        - Kill switch fires "drawdown 51% > 45%" — false signal, no real
+          trading drawdown happened, just a wallet movement.
+
+        After first sync rebaseline, subsequent syncs use the standard
+        ratchet-up max(...) pattern to track genuine trading drawdowns.
+
+        For mid-session withdrawals (without a restart), call
+        `record_withdrawal(amount)` to decrement peak explicitly.
         """
         # Skip sync in paper mode - wallet is $0, we track paper bankroll internally
         if self._paper_mode:
@@ -195,7 +223,24 @@ class RiskManager:
 
         old = self._current_bankroll
         self._current_bankroll = wallet_balance
-        self._peak_bankroll = max(self._peak_bankroll, wallet_balance)
+
+        if not self._first_live_sync_done:
+            # First post-boot live sync: rebaseline peak to the actual
+            # wallet so a stale STARTING_BANKROLL env doesn't drive a
+            # false drawdown kill on a withdrawal-reduced wallet.
+            old_peak = self._peak_bankroll
+            self._peak_bankroll = wallet_balance
+            self._first_live_sync_done = True
+            log.info(
+                "risk.peak_rebaselined_first_sync",
+                env_starting_bankroll=f"${self._starting_bankroll:.2f}",
+                old_peak=f"${old_peak:.2f}",
+                new_peak=f"${self._peak_bankroll:.2f}",
+                wallet=f"${wallet_balance:.2f}",
+            )
+        else:
+            # Subsequent syncs: standard ratchet-up to track genuine drawdowns
+            self._peak_bankroll = max(self._peak_bankroll, wallet_balance)
 
         if abs(old - wallet_balance) > 1.0:
             log.info(
@@ -205,6 +250,36 @@ class RiskManager:
                 peak=f"${self._peak_bankroll:.2f}",
                 usdc=f"${usdc:.2f}" if usdc is not None else None,
                 pusd=f"${pusd:.2f}" if pusd is not None else None,
+            )
+
+    async def record_withdrawal(self, amount: float) -> None:
+        """Decrement peak_bankroll by the withdrawn USDC amount.
+
+        Use after an externally-driven withdrawal (e.g. USDC -> MetaMask)
+        to keep `peak_bankroll` honest mid-session. Without this hook the
+        peak stays at its pre-withdrawal high and the engine sees a phantom
+        drawdown equal to the withdrawal amount (PR #427).
+
+        Floors peak at current_bankroll to avoid negative drawdowns. Caller
+        is responsible for actually moving the funds; this only updates
+        the in-memory bookkeeping.
+
+        Restart-only callers can rely on the first-sync rebaseline in
+        `sync_bankroll` instead — this method is for mid-session use.
+        """
+        if amount <= 0:
+            return
+        async with self._lock:
+            old_peak = self._peak_bankroll
+            self._peak_bankroll = max(
+                self._peak_bankroll - amount, self._current_bankroll
+            )
+            log.warning(
+                "risk.withdrawal_recorded",
+                amount=f"${amount:.2f}",
+                old_peak=f"${old_peak:.2f}",
+                new_peak=f"${self._peak_bankroll:.2f}",
+                current=f"${self._current_bankroll:.2f}",
             )
 
     async def rebaseline_live_bankroll(self, wallet_balance: float) -> None:
@@ -224,6 +299,10 @@ class RiskManager:
         self._cooldown_until = None
         self._kill_switch_active = False
         self._kill_switch_triggered_at = None
+        # Treat explicit rebaseline as the first live sync — prevents the
+        # next sync_bankroll call from rebaselining away from the rebase
+        # value (PR #427).
+        self._first_live_sync_done = True
 
         log.warning(
             "risk.live_bankroll_rebased",

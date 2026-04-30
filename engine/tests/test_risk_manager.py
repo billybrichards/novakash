@@ -433,8 +433,9 @@ async def test_sync_bankroll_combined_balance_prevents_false_drawdown():
     """
     rm = await _live_rm_ready(starting_bankroll=500.0)
 
-    # Set peak to $500 (realistic scenario)
+    # Set peak to $500 (realistic scenario, post-first-sync state)
     rm._peak_bankroll = 500.0
+    rm._first_live_sync_done = True  # PR #427: skip first-sync rebaseline
 
     # Sync with combined balance: $202 USDC + $284 pUSD = $486
     await rm.sync_bankroll(486.0, usdc=202.0, pusd=284.0)
@@ -447,11 +448,19 @@ async def test_sync_bankroll_combined_balance_prevents_false_drawdown():
 
 @pytest.mark.asyncio
 async def test_sync_bankroll_usdc_only_would_have_triggered_kill():
-    """Verify that USDC-only sync WOULD trigger the false drawdown kill."""
+    """Verify that USDC-only sync (post-first-sync) triggers drawdown kill.
+
+    This documents the original false-drawdown bug: when only USDC is
+    reported (pUSD ignored), a wallet with significant pUSD reserves
+    appears collapsed. After the first-sync rebaseline (PR #427), this
+    only fires for genuine post-rebaseline drops — set the flag manually
+    to exercise the post-first-sync code path.
+    """
     rm = await _live_rm_ready(starting_bankroll=443.0)
     rm._peak_bankroll = 443.0
+    rm._first_live_sync_done = True  # PR #427: skip first-sync rebaseline
 
-    # Sync with USDC-only (the bug we're fixing)
+    # Sync with USDC-only (the original bug we're documenting)
     await rm.sync_bankroll(202.0)
 
     status = rm.get_status()
@@ -465,11 +474,115 @@ async def test_sync_bankroll_peak_watermark_updates_with_combined():
     """Peak watermark should update when combined balance exceeds previous peak."""
     rm = await _live_rm_ready(starting_bankroll=400.0)
     rm._peak_bankroll = 443.0
+    rm._first_live_sync_done = True  # PR #427: skip first-sync rebaseline
 
     # Combined balance exceeds peak
     await rm.sync_bankroll(500.0, usdc=300.0, pusd=200.0)
 
     assert rm._peak_bankroll == 500.0
+
+
+# ─── PR #427: withdrawal-aware drawdown ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_first_live_sync_rebaselines_peak_to_current_wallet():
+    """PR #427: first sync_bankroll after boot rebaselines peak to wallet,
+    NOT max(starting_bankroll, wallet). Prevents stale STARTING_BANKROLL
+    env from triggering false drawdown alerts after a USDC withdrawal.
+    """
+    # Engine boots with starting_bankroll=235 (e.g. STARTING_BANKROLL=235 env)
+    rm = await _live_rm_ready(starting_bankroll=235.0)
+    assert rm._peak_bankroll == 235.0  # constructor sets to starting
+    assert rm._first_live_sync_done is False
+
+    # User had withdrawn $120 to MetaMask before restart → wallet=$115.
+    # First sync rebaselines peak DOWN to wallet rather than ratcheting.
+    await rm.sync_bankroll(115.0)
+
+    status = rm.get_status()
+    assert status["peak_bankroll"] == 115.0
+    assert status["drawdown_pct"] == 0.0  # no phantom drawdown
+    assert status["is_killed"] is False
+    assert rm._first_live_sync_done is True
+
+
+@pytest.mark.asyncio
+async def test_subsequent_syncs_after_rebaseline_ratchet_normally():
+    """After the first-sync rebaseline, subsequent syncs use ratchet-up max(...)
+    so genuine trading drawdowns are still detected.
+    """
+    rm = await _live_rm_ready(starting_bankroll=235.0)
+
+    # First sync: rebaseline to wallet
+    await rm.sync_bankroll(115.0)
+    assert rm._peak_bankroll == 115.0
+
+    # Second sync: wallet recovers
+    await rm.sync_bankroll(160.0)
+    assert rm._peak_bankroll == 160.0  # ratcheted up
+
+    # Third sync: wallet drops (genuine drawdown)
+    await rm.sync_bankroll(120.0)
+    assert rm._peak_bankroll == 160.0  # peak preserved
+    assert rm.get_status()["drawdown_pct"] > 0.0  # real drawdown
+
+
+@pytest.mark.asyncio
+async def test_record_withdrawal_decrements_peak():
+    """PR #427: record_withdrawal explicitly drops peak by withdrawn amount.
+
+    Scenario: peak=$235 historical high, current=$155 after some trading
+    losses. User withdraws $50 → peak should drop to $235-$50 = $185
+    (still above current $155, so floor doesn't kick in).
+    """
+    rm = await _live_rm_ready(starting_bankroll=235.0)
+    rm._peak_bankroll = 235.0
+    rm._current_bankroll = 155.0
+    rm._first_live_sync_done = True
+
+    await rm.record_withdrawal(50.0)
+    assert rm._peak_bankroll == 185.0  # 235 - 50, still above current 155
+
+
+@pytest.mark.asyncio
+async def test_record_withdrawal_floors_at_current_bankroll():
+    """record_withdrawal must not push peak below current_bankroll
+    (would create negative drawdown)."""
+    rm = await _live_rm_ready(starting_bankroll=200.0)
+    await rm.sync_bankroll(200.0)  # peak=200, current=200
+
+    # Withdrawing more than the wallet floors peak at current_bankroll
+    await rm.record_withdrawal(500.0)
+    assert rm._peak_bankroll == rm._current_bankroll == 200.0
+    assert rm.get_status()["drawdown_pct"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_record_withdrawal_zero_or_negative_is_noop():
+    """record_withdrawal(0) or (-x) should be a safe no-op."""
+    rm = await _live_rm_ready(starting_bankroll=200.0)
+    await rm.sync_bankroll(200.0)
+    peak_before = rm._peak_bankroll
+
+    await rm.record_withdrawal(0.0)
+    await rm.record_withdrawal(-50.0)
+
+    assert rm._peak_bankroll == peak_before
+
+
+@pytest.mark.asyncio
+async def test_rebaseline_live_bankroll_marks_first_sync_done():
+    """rebaseline_live_bankroll should mark _first_live_sync_done so the
+    next sync_bankroll doesn't re-rebaseline away from the rebase value.
+    """
+    rm = await _live_rm_ready(starting_bankroll=500.0)
+
+    await rm.rebaseline_live_bankroll(300.0)
+    assert rm._first_live_sync_done is True
+
+    # Subsequent sync should ratchet, not rebaseline
+    await rm.sync_bankroll(280.0)  # genuine drop
+    assert rm._peak_bankroll == 300.0  # preserved (no rebaseline)
 
 
 @pytest.mark.asyncio
