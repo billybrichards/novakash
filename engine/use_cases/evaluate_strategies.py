@@ -73,6 +73,20 @@ class EvaluateStrategiesUseCase:
             "V4_FUSION_ENABLED", "false"
         ).lower() == "true"
 
+        # Keepalive: re-write last signal_evaluations row every few seconds
+        # during inter-window dead zones so the ML box (v5 feature loader)
+        # doesn't hit cold_start. Without this, gaps of 60-120s between
+        # CLOSING windows cause probability_lgb_v10 to go None.
+        self._last_signal_eval_args: tuple | None = None
+        self._keepalive_task: asyncio.Task | None = None
+        _keepalive_interval = int(os.environ.get(
+            "SIGNAL_EVAL_KEEPALIVE_SEC", "2"
+        ))
+        if _keepalive_interval > 0:
+            self._keepalive_task = asyncio.ensure_future(
+                self._signal_eval_keepalive(_keepalive_interval)
+            )
+
     async def execute(
         self,
         window: Any,
@@ -337,6 +351,9 @@ class EvaluateStrategiesUseCase:
         price sources, VPIN, regime, V4 surface (probability, conviction,
         regime, sub-signals, consensus, macro, polymarket outcome).
         """
+        # Cache args for keepalive re-writes during inter-window gaps
+        self._last_signal_eval_args = (ctx, decision, asset, window_ts, eval_offset, timeframe)
+
         try:
             v4 = ctx.v4_snapshot
             poly = v4.polymarket_outcome if v4 else None
@@ -407,6 +424,33 @@ class EvaluateStrategiesUseCase:
             })
         except Exception as exc:
             log.warning("strategy.signal_eval_write_error", error=str(exc)[:200])
+
+    async def _signal_eval_keepalive(self, interval: int) -> None:
+        """Re-write last signal_evaluations row every `interval` seconds.
+
+        During inter-window dead zones the orchestrator doesn't call
+        evaluate_strategies, so no signal_evaluations rows are written.
+        The ML box (v5 feature loader) checks for fresh rows within a
+        staleness window — if none exist it returns 503 cold_start and
+        probability_lgb_v10 goes None.
+
+        This task re-inserts the last-known evaluation context with an
+        updated timestamp, keeping the ML pipeline warm. Best-effort:
+        if the DB write fails, it silently retries next interval.
+        """
+        await asyncio.sleep(interval)  # let first real eval populate the cache
+        while True:
+            try:
+                if self._last_signal_eval_args and self._db:
+                    ctx, decision, asset, window_ts, eval_offset, timeframe = (
+                        self._last_signal_eval_args
+                    )
+                    await self._write_signal_evaluation(
+                        ctx, decision, asset, window_ts, eval_offset, timeframe,
+                    )
+            except Exception:
+                pass  # best-effort keepalive; real writes handle errors
+            await asyncio.sleep(interval)
 
     async def _build_context(self, window: Any, state: Any) -> StrategyContext:
         """Build a StrategyContext from window + market state + feeds."""
