@@ -273,19 +273,40 @@ async def async_main() -> int:
         print(f"ERROR: USDC balance check failed: {exc}")
         return 1
 
-    required = wrap_amount + RESERVE_USD
-    if usdc_balance < required:
+    # Cap the wrap at what's actually available (minus reserve). If we
+    # don't have enough USDC for the full wrap_amount, do a PARTIAL wrap
+    # of whatever's available — better than skipping.
+    #
+    # Why partial > skip:
+    #   - Skip = state file NOT updated, so the next cron tries to wrap
+    #     ALL stakes since the last success → demand keeps GROWING.
+    #     Several skips in a row can pile up to a number larger than the
+    #     total wallet, deadlocking the cron permanently.
+    #   - Partial = wrap as much as we can now, refresh state, next cron
+    #     sees zero new stakes → catches up over a few cycles.
+    #
+    # Observed live 2026-04-30: cron skipped 2 cycles in a row, demand
+    # grew from $89 -> $190 while USDC pool was insufficient for either.
+    # Partial wrapping resolves this self-correcting state machine.
+    available_to_wrap = max(0.0, usdc_balance - RESERVE_USD)
+    if available_to_wrap < MIN_WRAP_USD:
         print(
-            f"\n[skip] USDC balance ${usdc_balance:.4f} < required "
-            f"${wrap_amount:.2f} (stakes+reinvest) + ${RESERVE_USD:.2f} (reserve) = ${required:.2f}. "
-            f"Cannot wrap without dipping into reserve."
+            f"\n[skip] USDC balance ${usdc_balance:.4f} - reserve ${RESERVE_USD:.2f} "
+            f"= ${available_to_wrap:.2f} < min ${MIN_WRAP_USD:.2f}. Nothing to wrap."
         )
         return 0
+    if wrap_amount > available_to_wrap:
+        print(
+            f"\n[partial] Want to wrap ${wrap_amount:.2f} but only ${available_to_wrap:.2f} "
+            f"available (USDC ${usdc_balance:.4f} - reserve ${RESERVE_USD:.2f}). "
+            f"Wrapping ${available_to_wrap:.2f}; remainder catches up next cycle."
+        )
+        wrap_amount = round(available_to_wrap, 2)
 
     # ---- Wrap ----
     kept = usdc_balance - wrap_amount
     print(f"\n[plan] Wrapping ${wrap_amount:.2f} USDC -> pUSD (stakes + 50% profit)")
-    print(f"       Keeping ${kept:.2f} USDC (50% profit accumulating)")
+    print(f"       Keeping ${kept:.2f} USDC")
 
     rc = _do_wrap(wrap_amount, args.execute)
 
