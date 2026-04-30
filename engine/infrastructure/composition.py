@@ -614,7 +614,11 @@ class CompositionRoot:
                 _position_monitor = PositionMonitor(
                     alerter=self._alerter,
                     poly_client=getattr(self, '_poly_client', None),
+                    # NOTE: at composition time _pool is None (db.connect()
+                    # runs later in start()). Pass the db client so the
+                    # monitor can resolve the live pool lazily at write time.
                     db_pool=getattr(self._db, '_pool', None),
+                    db_client=self._db,
                 )
 
                 self._strategy_registry = StrategyRegistry(

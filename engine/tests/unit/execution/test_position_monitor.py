@@ -606,3 +606,142 @@ async def test_sell_uses_haircut_when_no_confirmed_size():
     # Should sell round(10.0 * 0.95, 3) = 9.5
     call_args = mock_poly.place_sell_fak.call_args
     assert call_args.kwargs["size"] == 9.5
+
+
+# ── exit_shadow_log write tests ────────────────────────────────────────────
+
+
+def _make_mock_pool():
+    """Build a mock asyncpg.Pool whose acquire() yields a connection.
+
+    Returns (pool_mock, conn_mock) so callers can assert on the SQL/args.
+    """
+    mock_conn = MagicMock()
+    mock_conn.execute = AsyncMock(return_value="INSERT 0 1")
+
+    class _AcquireCtx:
+        async def __aenter__(self_inner):
+            return mock_conn
+
+        async def __aexit__(self_inner, exc_type, exc, tb):
+            return False
+
+    mock_pool = MagicMock()
+    mock_pool.acquire = MagicMock(return_value=_AcquireCtx())
+    return mock_pool, mock_conn
+
+
+@pytest.mark.asyncio
+async def test_write_exit_shadow_log_inserts_with_correct_args():
+    """_write_exit_shadow_log should acquire a connection and INSERT."""
+    pool, conn = _make_mock_pool()
+    monitor = PositionMonitor(db_pool=pool)
+
+    await monitor._write_exit_shadow_log(
+        strategy_id="v10_fade",
+        window_ts=1713010800,
+        direction="UP",
+        detector_type="fade",
+        entry_dist=0.12,
+        entry_price=0.55,
+        stake_usd=2.5,
+        current_dist=0.06,
+        current_p_up=0.48,
+        fade_pct=0.5,
+        eval_offset=60,
+        consecutive_ticks=3,
+        triggered=True,
+        shadow_mode=True,
+        reason="conviction_fade: dist_collapse",
+    )
+
+    # Pool acquired exactly once, conn.execute called with INSERT + 15 args
+    assert pool.acquire.call_count == 1
+    assert conn.execute.await_count == 1
+    sql, *args = conn.execute.call_args.args
+    assert "INSERT INTO exit_shadow_log" in sql
+    # 15 positional params after the SQL string
+    assert len(args) == 15
+    assert args[0] == "v10_fade"
+    assert args[1] == 1713010800
+    assert args[2] == "UP"
+    assert args[3] == "fade"
+    assert args[12] is True   # triggered
+    assert args[13] is True   # shadow_mode
+    assert args[14] == "conviction_fade: dist_collapse"
+
+
+@pytest.mark.asyncio
+async def test_write_exit_shadow_log_no_pool_returns_gracefully():
+    """When db_pool is None and no db_client, should be a no-op (no raise)."""
+    monitor = PositionMonitor(db_pool=None, db_client=None)
+
+    # Should not raise
+    await monitor._write_exit_shadow_log(
+        strategy_id="v10_fade",
+        window_ts=100,
+        direction="UP",
+        detector_type="fade",
+    )
+
+
+@pytest.mark.asyncio
+async def test_write_exit_shadow_log_resolves_pool_lazily_via_db_client():
+    """If db_pool is None at init, should fall back to db_client._pool at write time."""
+    pool, conn = _make_mock_pool()
+
+    class _Shim:
+        def __init__(self):
+            self._pool = None  # not connected yet
+
+    shim = _Shim()
+    monitor = PositionMonitor(db_pool=None, db_client=shim)
+
+    # Simulate connect() landing later — pool now resolvable.
+    shim._pool = pool
+
+    await monitor._write_exit_shadow_log(
+        strategy_id="v10_fade",
+        window_ts=100,
+        direction="UP",
+        detector_type="fade",
+    )
+    assert conn.execute.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_write_exit_shadow_log_logs_warning_on_failure():
+    """An exception inside the INSERT should be logged, not propagated."""
+    mock_pool = MagicMock()
+
+    class _BoomCtx:
+        async def __aenter__(self_inner):
+            raise RuntimeError("boom: connection acquire failed")
+
+        async def __aexit__(self_inner, exc_type, exc, tb):
+            return False
+
+    mock_pool.acquire = MagicMock(return_value=_BoomCtx())
+
+    monitor = PositionMonitor(db_pool=mock_pool)
+    monitor._log = MagicMock()
+    # Bind passes kwargs through; mirror the real bound logger surface.
+    monitor._log.warning = MagicMock()
+    monitor._log.debug = MagicMock()
+
+    # Should not raise even though acquire fails
+    await monitor._write_exit_shadow_log(
+        strategy_id="v10_fade",
+        window_ts=100,
+        direction="UP",
+        detector_type="fade",
+    )
+
+    # Warning should have been emitted with structured fields
+    assert monitor._log.warning.call_count == 1
+    event_name = monitor._log.warning.call_args.args[0]
+    kwargs = monitor._log.warning.call_args.kwargs
+    assert event_name == "exit_shadow_log.write_failed"
+    assert "boom" in kwargs.get("error", "")
+    assert kwargs.get("strategy_id") == "v10_fade"
+    assert kwargs.get("detector_type") == "fade"

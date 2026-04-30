@@ -113,13 +113,32 @@ class PositionMonitor:
         alerter: Any = None,
         decision_repo: Any = None,
         db_pool: Any = None,
+        db_client: Any = None,
     ) -> None:
         self._positions: dict[str, MonitoredPosition] = {}
         self._poly_client = poly_client
         self._alerter = alerter
         self._decision_repo = decision_repo
-        self._db_pool = db_pool  # asyncpg pool for exit_shadow_log writes
+        # asyncpg pool for exit_shadow_log writes. May be None at construction
+        # time if the DB hasn't connected yet — in that case ``db_client`` is
+        # used to resolve the pool lazily at write time. See ``_resolve_pool``.
+        self._db_pool = db_pool
+        self._db_client = db_client
         self._log = log.bind(component="position_monitor")
+
+    def _resolve_pool(self) -> Any:
+        """Return the current asyncpg pool, resolving lazily via db_client.
+
+        Composition wires PositionMonitor before ``db.connect()`` runs, so a
+        pool captured at __init__ time is ``None``. Falling back to the live
+        ``_pool`` attribute on the DB client lets writes succeed once the
+        pool is available.
+        """
+        if self._db_pool is not None:
+            return self._db_pool
+        if self._db_client is not None:
+            return getattr(self._db_client, "_pool", None)
+        return None
 
     # ------------------------------------------------------------------
     # Fill registration
@@ -639,7 +658,8 @@ class PositionMonitor:
         Swallows all errors — never crashes the monitor on DB failure.
         Falls back to log-only when no DB pool is available.
         """
-        if self._db_pool is None:
+        pool = self._resolve_pool()
+        if pool is None:
             self._log.debug(
                 "exit_shadow_log.no_pool",
                 strategy_id=strategy_id,
@@ -647,35 +667,41 @@ class PositionMonitor:
             )
             return
         try:
-            await self._db_pool.execute(
-                """
-                INSERT INTO exit_shadow_log (
-                    strategy_id, window_ts, direction, detector_type,
-                    entry_dist, entry_price, stake_usd,
-                    current_dist, current_p_up, fade_pct,
-                    eval_offset, consecutive_ticks,
-                    triggered, shadow_mode, reason
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-                """,
-                strategy_id,
-                window_ts,
-                direction,
-                detector_type,
-                entry_dist,
-                entry_price,
-                stake_usd,
-                current_dist,
-                current_p_up,
-                fade_pct,
-                eval_offset,
-                consecutive_ticks,
-                triggered,
-                shadow_mode,
-                reason,
-            )
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO exit_shadow_log (
+                        strategy_id, window_ts, direction, detector_type,
+                        entry_dist, entry_price, stake_usd,
+                        current_dist, current_p_up, fade_pct,
+                        eval_offset, consecutive_ticks,
+                        triggered, shadow_mode, reason
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                    """,
+                    strategy_id,
+                    window_ts,
+                    direction,
+                    detector_type,
+                    entry_dist,
+                    entry_price,
+                    stake_usd,
+                    current_dist,
+                    current_p_up,
+                    fade_pct,
+                    eval_offset,
+                    consecutive_ticks,
+                    triggered,
+                    shadow_mode,
+                    reason,
+                )
         except Exception as exc:
-            self._log.debug(
-                "exit_shadow_log.write_error",
+            # Promote to warning so silent write failures (e.g. schema drift,
+            # pool not yet connected, type-coercion errors) are visible in
+            # logs instead of disappearing into asyncio.create_task.
+            self._log.warning(
+                "exit_shadow_log.write_failed",
+                strategy_id=strategy_id,
+                detector_type=detector_type,
                 error=str(exc)[:200],
             )
 
