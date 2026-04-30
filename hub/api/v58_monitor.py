@@ -3797,12 +3797,18 @@ async def strategy_decisions(
         ),
     ),
     limit: int = Query(default=100, ge=1, le=1000),
-    resolved: Optional[bool] = Query(
-        default=None,
+    since_minutes: int = Query(
+        default=240,
+        ge=1,
+        le=10080,
         description=(
-            "Filter by resolution status: true=only decisions whose order "
-            "has resolved (outcome IS NOT NULL), false=only unresolved. "
-            "Omit for all rows. Used by FE WR matrix (task #222)."
+            "Only scan decisions evaluated in the last N minutes. Default "
+            "240 (4h). Required server-side bound — without it the "
+            "DISTINCT ON sort scans the full ~5M-row view and times out "
+            "(post-RDS-migration regression observed 2026-04-30: hub "
+            "endpoint hung indefinitely). Bumping past 1440 (24h) "
+            "should be paired with strategy_id to keep the input set "
+            "tractable."
         ),
     ),
     db: AsyncSession = Depends(get_session),
@@ -3841,8 +3847,12 @@ async def strategy_decisions(
     identical, so no FE change is required.
     """
     try:
-        where_clauses = []
-        params: dict = {"lim": limit}
+        # Always bound by evaluated_at — this is the index-friendly
+        # partition predicate that keeps the DISTINCT ON sort tractable.
+        # Post-RDS-migration regression (2026-04-30): without this the
+        # query scanned the full ~5M-row view and timed out the endpoint.
+        where_clauses = ["evaluated_at > NOW() - (:since_min || ' minutes')::interval"]
+        params: dict = {"lim": limit, "since_min": str(since_minutes)}
         if strategy_id:
             where_clauses.append("strategy_id = :sid")
             params["sid"] = strategy_id
@@ -3853,7 +3863,7 @@ async def strategy_decisions(
             where_clauses.append("outcome IS NOT NULL")
         elif resolved is False:
             where_clauses.append("outcome IS NULL")
-        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+        where_sql = "WHERE " + " AND ".join(where_clauses)
         # Dedup: engine re-evaluates the same (strategy, asset, window, timeframe)
         # tuple every ~20ms while a window is open, producing hundreds of rows
         # per window in the view. Without DISTINCT ON the raw ORDER BY
