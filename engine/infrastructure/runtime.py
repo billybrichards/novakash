@@ -4823,83 +4823,143 @@ class EngineRuntime:
 
                         # v9.0: Link resolution back to trades table
                         # v10.1: Match by token_id in metadata (precise) instead of fuzzy stake matching
+                        # v10.2 (audit 2026-04-30): match ALL unresolved rows under
+                        # the resolved position's token_id and split the on-chain
+                        # payout proportionally by stake. Previously only the most
+                        # recently created row was updated, AND the SELECT had no
+                        # token_id filter at all so it picked an arbitrary trade.
                         _matched_trade_id = None
                         _matched_reason = None
                         _matched_token_id = None
                         try:
                             if self._db._pool:
+                                # Read the position's token_id (Polymarket calls it
+                                # "asset" but also sometimes "tokenId"). Without it
+                                # we can't deterministically link to a trade row.
+                                _pos_token_id = str(
+                                    data.get("asset", "") or data.get("tokenId", "")
+                                )
                                 async with self._db._pool.acquire() as _conn:
-                                    # Primary: match by token_id in metadata (exact match)
-                                    # Pull stake_usd + fill_size so per-row pnl can
-                                    # be computed below (do NOT use position-aggregate cost).
-                                    _match = await _conn.fetchrow(
-                                        """SELECT id, metadata->>'entry_reason' as reason,
-                                           metadata->>'v81_entry_cap' as cap,
-                                           metadata->>'token_id' as token_id,
-                                           stake_usd, fill_size, fill_price
-                                        FROM trades
-                                        WHERE status IN ('OPEN', 'FILLED', 'EXPIRED')
-                                          AND is_live = true
-                                          AND metadata->>'token_id' IS NOT NULL
-                                        ORDER BY created_at DESC LIMIT 5""",
-                                    )
-                                    # If no token_id match found, fall back to cost-based matching
-                                    if not _match:
-                                        _match = await _conn.fetchrow(
-                                            """SELECT id, metadata->>'entry_reason' as reason,
-                                               metadata->>'v81_entry_cap' as cap,
-                                               metadata->>'token_id' as token_id,
-                                               stake_usd, fill_size, fill_price
-                                            FROM trades
-                                            WHERE status IN ('OPEN', 'FILLED', 'EXPIRED')
-                                              AND is_live = true
-                                              AND ABS(CAST(stake_usd AS numeric) - $1) < 0.5
-                                            ORDER BY created_at DESC LIMIT 1""",
+                                    if _pos_token_id:
+                                        # Match by token_id (prefix in both directions
+                                        # to handle CLOB/wire-format truncation).
+                                        _matches = await _conn.fetch(
+                                            """SELECT id,
+                                                      metadata->>'entry_reason' AS reason,
+                                                      metadata->>'token_id'     AS token_id,
+                                                      stake_usd::float          AS stake_usd,
+                                                      fill_size::float          AS fill_size,
+                                                      fill_price::float         AS fill_price
+                                               FROM trades
+                                               WHERE status IN ('OPEN', 'FILLED', 'EXPIRED')
+                                                 AND is_live = true
+                                                 AND metadata->>'token_id' IS NOT NULL
+                                                 AND (
+                                                     metadata->>'token_id' LIKE $1 || '%'
+                                                     OR $1 LIKE metadata->>'token_id' || '%'
+                                                 )
+                                               ORDER BY created_at DESC""",
+                                            _pos_token_id,
+                                        )
+                                    else:
+                                        _matches = []
+
+                                    # Fallback: cost-based fuzzy match — only when
+                                    # we have NO token_id at all. Use sparingly;
+                                    # this can mis-link if two windows have the
+                                    # same stake.
+                                    if not _matches:
+                                        _fb = await _conn.fetchrow(
+                                            """SELECT id,
+                                                      metadata->>'entry_reason' AS reason,
+                                                      metadata->>'token_id'     AS token_id,
+                                                      stake_usd::float          AS stake_usd,
+                                                      fill_size::float          AS fill_size,
+                                                      fill_price::float         AS fill_price
+                                               FROM trades
+                                               WHERE status IN ('OPEN', 'FILLED', 'EXPIRED')
+                                                 AND is_live = true
+                                                 AND ABS(CAST(stake_usd AS numeric) - $1) < 0.5
+                                               ORDER BY created_at DESC LIMIT 1""",
                                             cost,
                                         )
-                                    if _match:
-                                        _matched_trade_id = _match["id"]
-                                        _matched_reason = _match["reason"]
-                                        _matched_token_id = _match["token_id"]
-                                        # Per-trade pnl, NOT position-aggregate. Polymarket
-                                        # `cost`/`pnl` are sums across ALL trades for the
-                                        # same token_id (e.g. v9 + v10 on same YES). Writing
-                                        # the aggregate to a single matched row inflates
-                                        # that row's pnl_usd by other strategies' stakes.
-                                        # Use this row's own stake_usd / fill_size.
-                                        _trade_stake = float(_match["stake_usd"] or 0)
-                                        _trade_fill = float(_match["fill_size"] or 0)
-                                        _trade_price = float(_match["fill_price"] or 0)
-                                        if outcome == "WIN":
-                                            # Each share pays $1 on win → payout = fill_size.
-                                            # Fall back to derived shares if fill_size missing.
-                                            _shares = (
-                                                _trade_fill if _trade_fill > 0
-                                                else (_trade_stake / _trade_price if _trade_price > 0 else 0)
-                                            )
-                                            _row_pnl = round(_shares - _trade_stake, 4)
-                                        else:
-                                            _row_pnl = round(-_trade_stake, 4)
+                                        _matches = [_fb] if _fb else []
+
+                                    if _matches:
+                                        # Position-aggregate payout from the
+                                        # Polymarket /positions endpoint. When
+                                        # multiple rows share this token_id we
+                                        # split it proportionally by stake.
+                                        _position_payout = float(value or 0)
+                                        _sum_stake = sum(
+                                            float(m["stake_usd"] or 0) for m in _matches
+                                        )
+
+                                        # First match becomes the "anchor" used
+                                        # downstream for telegram/dedup logic.
+                                        _matched_trade_id = _matches[0]["id"]
+                                        _matched_reason = _matches[0]["reason"]
+                                        _matched_token_id = _matches[0]["token_id"]
                                         _status = (
                                             "RESOLVED_WIN"
                                             if outcome == "WIN"
                                             else "RESOLVED_LOSS"
                                         )
-                                        await _conn.execute(
-                                            """UPDATE trades SET outcome = $1, pnl_usd = $2,
-                                               resolved_at = NOW(), status = $3
-                                            WHERE id = $4 AND outcome IS NULL""",
-                                            outcome,
-                                            _row_pnl,
-                                            _status,
-                                            _matched_trade_id,
-                                        )
+
+                                        for _m in _matches:
+                                            _trade_stake = float(_m["stake_usd"] or 0)
+                                            _trade_fill = float(_m["fill_size"] or 0)
+                                            _trade_price = float(_m["fill_price"] or 0)
+                                            if outcome == "WIN":
+                                                if (
+                                                    len(_matches) >= 2
+                                                    and _position_payout > 0
+                                                    and _sum_stake > 0
+                                                ):
+                                                    # Proportional split: prevents the
+                                                    # dual-strategy phantom-win
+                                                    # inflation observed 2026-04-30.
+                                                    _share = _trade_stake / _sum_stake
+                                                    _row_pnl = round(
+                                                        _position_payout * _share - _trade_stake,
+                                                        4,
+                                                    )
+                                                else:
+                                                    # Single-row case OR position
+                                                    # payout missing — fall back to
+                                                    # per-row fill_size (each share
+                                                    # pays $1 on win).
+                                                    _shares = (
+                                                        _trade_fill if _trade_fill > 0
+                                                        else (
+                                                            _trade_stake / _trade_price
+                                                            if _trade_price > 0 else 0
+                                                        )
+                                                    )
+                                                    _row_pnl = round(_shares - _trade_stake, 4)
+                                            else:
+                                                _row_pnl = round(-_trade_stake, 4)
+
+                                            # Sanity floor: WIN must not be negative.
+                                            if outcome == "WIN" and _row_pnl < 0:
+                                                _row_pnl = 0.0
+
+                                            await _conn.execute(
+                                                """UPDATE trades SET outcome = $1, pnl_usd = $2,
+                                                   resolved_at = NOW(), status = $3
+                                                WHERE id = $4 AND outcome IS NULL""",
+                                                outcome,
+                                                _row_pnl,
+                                                _status,
+                                                _m["id"],
+                                            )
                                         log.info(
                                             "position_monitor.trade_linked",
                                             trade_id=_matched_trade_id,
                                             reason=_matched_reason,
                                             token_id=(_matched_token_id or "?")[:20],
                                             outcome=outcome,
+                                            n_rows=len(_matches),
                                         )
                         except Exception as _link_exc:
                             log.debug(
