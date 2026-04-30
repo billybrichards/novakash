@@ -109,6 +109,15 @@ class EngineRuntime:
         self._strategy_registry = root._strategy_registry
         self._use_strategy_registry = getattr(root, "_use_strategy_registry", False)
         self._data_surface_mgr = getattr(root, "_data_surface_mgr", None)
+        # Audit #255 F5 — propagate the strategy_decision repo so the
+        # ExecuteTradeUseCase wiring below can pass it into DBTradeRecorder
+        # and TradeRecorder.mark_executed() actually flips strategy_decisions
+        # rows to executed=true post-fill. Previously only set on
+        # CompositionRoot; the runtime-level getattr returned None on every
+        # boot so 100 % of TRADE decisions stayed executed=NULL in the DB.
+        self._strategy_decision_repo = getattr(
+            root, "_strategy_decision_repo", None
+        )
         self._twap_tracker = root._twap_tracker
         self._binance_feed = root._binance_feed
         self._binance_spot_feed = root._binance_spot_feed
