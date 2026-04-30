@@ -364,47 +364,94 @@ class CLOBReconciler:
                         # contributions. Bug observed live 2026-04-30:
                         # tid=6326 stake $14.61, DB pnl wrote -$29.20 (2x).
                         #
-                        # Fix: compute pnl from each row's own stake_usd:
+                        # Per-row formula:
                         #   LOSS: pnl = -stake_usd (full per-trade stake)
-                        #   WIN:  pnl = fill_size - stake_usd (fill_size is
-                        #         the actual shares, each pays $1 on win;
-                        #         falls back to derived if fill_size missing)
+                        #   WIN:  pnl = proportional_payout - stake_usd
+                        #
+                        # WIN-side proportional split (audit 2026-04-30):
+                        # The audit found 16 dual-strategy WIN groups where
+                        # v9_lgb_only + v10_lgb_only shared a token_id and
+                        # one row's pnl was set to (aggregate_payout -
+                        # this_row_stake) — claiming the full payout for
+                        # only its slice of the stake. The fix is to first
+                        # SELECT all unresolved rows under this token_id,
+                        # then UPDATE each with its proportional share of
+                        # the on-chain redemption value (Polymarket
+                        # `data["value"]` = total payout for the position).
                         status = (
                             "RESOLVED_WIN" if outcome == "WIN" else "RESOLVED_LOSS"
                         )
-                        # Prefix-match in both directions to handle truncated
-                        # or extended token IDs (the CLOB API sometimes
-                        # returns padded values).
-                        updated = await conn.execute(
-                            """UPDATE trades
-                               SET outcome = $1,
-                                   pnl_usd = CASE
-                                     WHEN $1 = 'WIN' THEN
-                                       COALESCE(
-                                         CAST(fill_size AS numeric),
-                                         CAST(stake_usd AS numeric) / NULLIF(CAST(fill_price AS numeric), 0)
-                                       ) - CAST(stake_usd AS numeric)
-                                     ELSE -CAST(stake_usd AS numeric)
-                                   END,
-                                   resolved_at = NOW(),
-                                   status = $2
+
+                        # Step 1: find all unresolved rows under this token_id.
+                        unresolved = await conn.fetch(
+                            """SELECT id,
+                                      stake_usd::float AS stake_usd,
+                                      fill_size::float AS fill_size,
+                                      fill_price::float AS fill_price
+                               FROM trades
                                WHERE outcome IS NULL
                                  AND is_live = true
                                  AND metadata->>'token_id' IS NOT NULL
                                  AND (
-                                     metadata->>'token_id' LIKE $3 || '%'
-                                     OR $3 LIKE metadata->>'token_id' || '%'
+                                     metadata->>'token_id' LIKE $1 || '%'
+                                     OR $1 LIKE metadata->>'token_id' || '%'
                                  )""",
-                            outcome,
-                            status,
                             pos_token_id,
                         )
-                        # Parse "UPDATE N" suffix to get row count
+
                         row_count = 0
-                        try:
-                            row_count = int(str(updated).split()[-1])
-                        except (ValueError, IndexError):
-                            pass
+                        if unresolved:
+                            position_payout = float(data.get("value", 0) or 0)
+                            sum_stake = sum(float(r["stake_usd"] or 0) for r in unresolved)
+
+                            for r in unresolved:
+                                row_stake = float(r["stake_usd"] or 0)
+                                row_fill = float(r["fill_size"] or 0)
+                                row_price = float(r["fill_price"] or 0)
+
+                                if outcome == "WIN":
+                                    if (
+                                        len(unresolved) >= 2
+                                        and position_payout > 0
+                                        and sum_stake > 0
+                                    ):
+                                        # Proportional split when multiple
+                                        # rows share the token_id. Avoids
+                                        # the dual-strategy phantom-win
+                                        # inflation seen in audit 2026-04-30.
+                                        share = row_stake / sum_stake
+                                        row_pnl = round(
+                                            position_payout * share - row_stake, 4
+                                        )
+                                    else:
+                                        # Single-row case OR position payout
+                                        # missing — fall back to per-row
+                                        # fill_size (each share pays $1 on win).
+                                        shares = (
+                                            row_fill if row_fill > 0
+                                            else (row_stake / row_price if row_price > 0 else 0)
+                                        )
+                                        row_pnl = round(shares - row_stake, 4)
+                                else:
+                                    row_pnl = round(-row_stake, 4)
+
+                                # Sanity floor: WIN must not be negative.
+                                if outcome == "WIN" and row_pnl < 0:
+                                    row_pnl = 0.0
+
+                                await conn.execute(
+                                    """UPDATE trades
+                                       SET outcome = $1,
+                                           pnl_usd = $2,
+                                           resolved_at = NOW(),
+                                           status = $3
+                                       WHERE id = $4 AND outcome IS NULL""",
+                                    outcome,
+                                    row_pnl,
+                                    status,
+                                    r["id"],
+                                )
+                                row_count += 1
                         if row_count > 0:
                             backfilled += row_count
                             # Tag the downstream trade_bible row(s) so the
