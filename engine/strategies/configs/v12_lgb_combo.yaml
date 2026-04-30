@@ -1,0 +1,142 @@
+name: v12_lgb_combo
+version: "12.0.0-combo"
+# v12_lgb_combo — 2026-04-30 — v9+v12 LGB agreement-required combo strategy.
+#
+# Trades only when BOTH v9 LGB (probability_lgb, prod v5) and v12 LGB
+# (probability_lgb_v12) agree on direction AND min(dist) >= 0.10. Combo
+# probability = (p_v9 + p_v12) / 2, delegated to v9_ensemble gate stack.
+#
+# v12 model: retrained on window_snapshots with verified Polymarket labels.
+# 3-day replay: +$398 PnL improvement over v9 alone (228 trades). v12
+# catches v9's big losses while keeping 80% of v9's wins.
+#
+# The hook (v12_lgb_combo.py) performs agreement/conviction checks, then
+# swaps probability_lgb with the averaged combo probability before
+# delegating to v9_ensemble's gate stack. Same delegation pattern as
+# v10_lgb_only.py.
+#
+# Start as GHOST for shadow comparison before LIVE flip.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+gates: []
+
+gate_params:
+  # ── Entry window (same as v10_lgb_only) ────────────────────────────
+  min_offset_sec: 24
+  max_offset_sec: 240
+
+  # ── Regime allowlist ────────────────────────────────────────────────
+  tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
+
+  # ── TRANSITION not blocked ─────────────────────────────────────────
+  block_down_vpin_regimes: []
+  block_up_vpin_regimes: []
+
+  # ── Source agreement ────────────────────────────────────────────────
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  skip_on_oracle_disagree: true
+
+  # ── VPIN guard ──────────────────────────────────────────────────────
+  vpin_min: 0.40
+  vpin_max: 1.0
+
+  # ── Fill band ───────────────────────────────────────────────────────
+  fill_band_min: 0.00
+  fill_band_max: 0.82
+  up_min_fill_price: 0.20
+  down_min_fill_price: 0.15
+
+  # ── 24/7 trading ───────────────────────────────────────────────────
+  blocked_utc_hours: []
+  post_loss_cooldown_min: 20
+
+  # ── LGB safety floor (same as v10_lgb_only) ────────────────────────
+  lgb_dist_min_up: 0.13
+  lgb_dist_min_down: 0.10
+  lgb_dist_min_up_with_hc_agree: 0.08
+  lgb_dist_min_down_with_hc_agree: 0.08
+
+  # ── v9 ensemble params (kept for delegation compatibility) ─────────
+  ensemble_disagreement_threshold: 0.35
+  require_direction_agreement: true
+
+  pc_weight_t_60: 0.70
+  pc_weight_t_120: 0.55
+  pc_weight_t_180: 0.40
+  pc_weight_t_200: 0.25
+
+  # ── VHC threshold ──────────────────────────────────────────────────
+  vhc_threshold: 0.25
+  vhc_bypass_transition: true
+  vhc_bypass_up_dist: true
+  vhc_bypass_disagreement: true
+  vhc_bypass_lgb_safety_floor: true
+  vhc_bypass_oracle_direction: true
+  vhc_kelly_multiplier: 2.0
+
+  # ── PL VHC bypass ──────────────────────────────────────────────────
+  pl_vhc_bypass_enabled: true
+  pl_vhc_threshold: 0.25
+  pl_vhc_require_pc_agreement: true
+
+  # ── TRANSITION strong-oracle bypass ────────────────────────────────
+  transition_strong_bypass_enabled: true
+  transition_bypass_min_avg_pct_delta: 0.05
+  transition_bypass_min_lgb_dist: 0.18
+
+  # ── Conviction tiers ───────────────────────────────────────────────
+  conviction_high_dist: 0.20
+  conviction_medium_dist: 0.15
+  conviction_low_dist: 0.10
+
+  # ── Delta alignment gate ───────────────────────────────────────────
+  delta_gate_enabled: true
+  min_alignment_bps: 1.0
+
+  # ── 3-tick entry confirmation ──────────────────────────────────────
+  min_consecutive_pass_ticks: 3
+
+  # ── Post-fill exit monitoring ──────────────────────────────────────
+  exit_monitor_enabled: true
+  exit_shadow_mode: true
+  exit_eval_start_offset: 48
+  exit_eval_end_offset: 30
+  exit_max_retries: 1
+  exit_retry_timeout_seconds: 5
+
+  # Mark-to-market stop-loss
+  exit_mark_min_pct: 0.70
+  exit_mark_ticks: 3
+
+  # Legacy (disabled)
+  exit_lgb_flip_enabled: false
+  exit_oracle_flip_enabled: false
+  exit_consecutive_flip_ticks: 5
+
+  # ── Primary signal source ──────────────────────────────────────────
+  primary_signal_source: lgb_v12_combo
+  fallback_to_lgb_on_pc_null: true
+
+  # ── v12 combo-specific params ──────────────────────────────────────
+  combo_min_dist: 0.10
+  combo_require_direction_agreement: true
+
+sizing:
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.025
+  max_collateral_pct: 0.058
+  # Sizing maps confidence_score (min(combo_dist*2, 1)) to Kelly modifier.
+  # confidence_score = combo_dist * 2 where combo_dist = min(dist_v9, dist_v12)
+  schedule:
+    - { threshold: 0.50, modifier: 2.5, label: "vhc" }        # combo_dist>=0.25
+    - { threshold: 0.40, modifier: 2.0, label: "high" }       # combo_dist>=0.20
+    - { threshold: 0.30, modifier: 1.2, label: "medium" }     # combo_dist>=0.15
+    - { threshold: 0.20, modifier: 1.0, label: "low" }        # combo_dist>=0.10
+    - { threshold: 0.0,  modifier: 0.0, label: "skip" }
+
+hooks_file: v12_lgb_combo.py
+pre_gate_hook: evaluate_v12_lgb_combo
