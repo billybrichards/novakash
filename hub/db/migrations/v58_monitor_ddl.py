@@ -72,6 +72,19 @@ async def ensure_manual_trades_table(session: AsyncSession) -> None:
         "CREATE INDEX IF NOT EXISTS idx_manual_trades_sot_state "
         "ON manual_trades(sot_reconciliation_state) WHERE sot_reconciliation_state IS NOT NULL"
     ))
+    # ── Track-A: operator identity columns (20260430_01) ──────────────────────
+    # Nullable so engine-issued rows (no JWT context) remain NULL.
+    # hub /desk/manual-trade endpoint stamps these from the JWT TokenData.
+    await session.execute(text(
+        "ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS operator_user_id INTEGER"
+    ))
+    await session.execute(text(
+        "ALTER TABLE manual_trades ADD COLUMN IF NOT EXISTS operator_username VARCHAR(64)"
+    ))
+    await session.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_manual_trades_operator_user_id "
+        "ON manual_trades(operator_user_id) WHERE operator_user_id IS NOT NULL"
+    ))
     await session.commit()
 
 

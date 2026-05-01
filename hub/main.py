@@ -47,6 +47,7 @@ from api.config_v2 import router as config_v2_router
 from api.agent_ops import router as agent_ops_router
 from api.strategy_decisions import router as strategy_decisions_router
 from api.desk import router as desk_router
+from api.desk_manual import router as desk_manual_router
 from api.clob import router as clob_router
 from api.ticks import router as ticks_router
 from api.strategies import router as strategies_router
@@ -877,6 +878,8 @@ app.include_router(gate_traces_router, prefix="/api", tags=["gate-traces"])
 app.include_router(strategy_comparison_router, prefix="/api", tags=["strategy-comparison"])
 # DESK: /desk Phase 1 — window clock + operator manual-pick journal (note #218)
 app.include_router(desk_router, prefix="/api", tags=["desk"])
+# DESK: Phase 3 — operator manual-trade button (Track A: DB + hub)
+app.include_router(desk_manual_router, prefix="/api", tags=["desk"])
 # DESK Phase 2 — CLOB book proxy + condition_id resolver (note #218 §3, S-tier).
 # Gated by HUB_ALLOW_CLOB_FETCH — default-off on AWS hub, on-only on deployments
 # permitted to hit clob.polymarket.com / gamma-api.polymarket.com.
