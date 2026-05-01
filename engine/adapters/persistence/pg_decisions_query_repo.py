@@ -24,11 +24,12 @@ _SQL = """
         sd.eval_offset,
         sd.direction,
         ws.regime,
-        sd.fill_price,
-        (sd.metadata_json->>'stake_usd')::numeric      AS stake_usd,
+        COALESCE(sd.fill_price, t.fill_price)          AS fill_price,
+        t.stake_usd                                    AS stake_usd,
         ws.outcome                                     AS actual_outcome,
         sd.evaluated_at
     FROM strategy_decisions sd
+    LEFT JOIN trades t ON t.order_id = sd.order_id
     LEFT JOIN LATERAL (
         SELECT outcome, regime
         FROM window_snapshots

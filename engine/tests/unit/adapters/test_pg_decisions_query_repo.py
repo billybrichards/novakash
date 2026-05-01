@@ -65,3 +65,20 @@ def test_filters_to_executed_trades():
     assert "sd.executed    = TRUE" in _SQL
     assert "sd.evaluated_at >= $1" in _SQL
     assert "sd.evaluated_at <  $2" in _SQL
+
+
+def test_stake_comes_from_trades_table_not_metadata():
+    """strategy_decisions.metadata_json never carries stake_usd
+    (verified live: 0/69 v12_lgb_combo trades have it). Stake lives
+    on the ``trades`` table joined by ``order_id``."""
+    assert "LEFT JOIN trades t ON t.order_id = sd.order_id" in _SQL
+    assert "t.stake_usd" in _SQL
+    assert "metadata_json->>'stake_usd'" not in _SQL, (
+        "metadata_json never has stake_usd — must read from trades.stake_usd"
+    )
+
+
+def test_fill_price_falls_back_to_trades():
+    """sd.fill_price is sometimes NULL on shadow paths; trades.fill_price
+    is the avg-fill source of truth (PR #447)."""
+    assert "COALESCE(sd.fill_price, t.fill_price)" in _SQL
