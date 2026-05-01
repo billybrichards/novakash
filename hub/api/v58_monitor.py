@@ -4001,6 +4001,7 @@ async def strategy_comparison(
 
         if sc_rows:
             sids = [r["strategy_id"] for r in sc_rows]
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
             mode_rows = (
                 await db.execute(
@@ -4008,15 +4009,14 @@ async def strategy_comparison(
                         SELECT DISTINCT ON (strategy_id) strategy_id, mode
                         FROM strategy_decisions
                         WHERE strategy_id = ANY(:sids)
-                          AND evaluated_at > NOW() - INTERVAL '1 day' * :days
+                          AND evaluated_at >= :cutoff
                         ORDER BY strategy_id, evaluated_at DESC
                     """),
-                    {"sids": sids, "days": days},
+                    {"sids": sids, "cutoff": cutoff},
                 )
             ).mappings().all()
             mode_by_sid = {r["strategy_id"]: (r["mode"] or "ghost").lower() for r in mode_rows}
 
-            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
             daily_rows = (
                 await db.execute(
                     text("""
