@@ -16,6 +16,7 @@ import PnL from './pages/PnL.jsx';
 import System from './pages/System.jsx';
 import Wallet from './pages/Wallet.jsx';
 import Strategies from './pages/Strategies.jsx';
+import MayStrategy from './pages/MayStrategy.jsx';
 import Monitor from './pages/Monitor.jsx';
 import Compare from './pages/compare/Compare.jsx';
 import Desk from './pages/desk/Desk.jsx';
@@ -132,6 +133,7 @@ export default function App() {
             <Route path="signals" element={<SignalExplorer />} />
             <Route path="gate-traces" element={<GateTraces />} />
             <Route path="strategies" element={<Strategies />} />
+            <Route path="may-strategy" element={<MayStrategy />} />
             <Route path="config" element={<ConfigOverrides />} />
             <Route path="audit" element={<AuditTasks />} />
             <Route path="pnl" element={<PnL />} />

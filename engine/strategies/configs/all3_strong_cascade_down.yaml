@@ -1,0 +1,166 @@
+name: all3_strong_cascade_down
+version: "1.0.0-ghost"
+# all3_strong_cascade_down — 2026-05-01 — v9+v10+v12 triple-agreement specialist
+# for CASCADE × DOWN. EXPLORATORY — n=52 only.
+#
+# Thesis (Hub note #307 — exploratory multi-signal):
+#   v9 + v10 + v12 ALL agree direction × CASCADE × DOWN × any T-band × k=1
+#   = 84.6% WR n=52 +$40.08 over 87h shadow.
+#
+# Triple-LGB consensus is sparse (firing rate ~0.2-1/day forecast) but very
+# high quality when it does fire. The "any T-band" generalises the gate
+# because — when all 3 models agree on a directional crash signal — fill-time
+# noise dominates and we want to grab whatever T-bucket is available.
+#
+# Direction lock: up_min_fill_price=1.01 (HARD DOWN-only, NOT VHC-bypassable).
+#
+# Hook (all3_strong_cascade_down.py) reads probability_lgb (v9),
+# probability_lgb_v10 and probability_lgb_v12. ALL THREE must be:
+#   1. Available (None → SKIP)
+#   2. Same direction (any disagree → SKIP)
+#   3. dist >= 0.10 each (any below → SKIP)
+#
+# On pass: averages the 3 probabilities, swaps onto surface, delegates to
+# v9_ensemble (same swap-and-restore pattern as v8_v12_strong_agree.py and
+# v12_lgb_combo.py).
+#
+# GHOST mode. n=52 is below the n>30 promotion threshold but only just — and
+# the 84.6% WR is well above 70% break-even. Wait for >=200 ghost decisions
+# to confirm survivorship.
+#
+# DO NOT promote without:
+#   1. >=14 days shadow data (sparse strategy needs longer accumulation)
+#   2. WR > 80% AND n > 100 ghost decisions
+#   3. Real-trade audit (window_snapshots + outcomes resolved)
+#   4. Billy explicit sign-off (per feedback_no_auto_model_promotion.md)
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+gates: []
+
+gate_params:
+  # ── Entry window (any T-band — same as v12_combo) ───────────────────────
+  # Triple-agreement is sparse enough that we don't narrow further. Engine
+  # eval_offset = SECONDS-TO-CLOSE.
+  min_offset_sec: 24
+  max_offset_sec: 240
+
+  # ── Regime allowlist (CASCADE happens here) ─────────────────────────────
+  tradeable_v4_regimes: [risk_off, volatile_trend, chop]
+
+  # ── VPIN-regime gate: CASCADE only for DOWN ─────────────────────────────
+  block_down_vpin_regimes: [TRANSITION, CALM, NORMAL, NORMAL_TREND, LOW_VOL]
+  block_up_vpin_regimes: []  # UP impossible via fill-floor
+
+  # ── HARD DOWN-only lock (NOT VHC-bypassable) ────────────────────────────
+  up_min_fill_price: 1.01
+  down_min_fill_price: 0.15
+
+  # ── Fill band ───────────────────────────────────────────────────────────
+  fill_band_min: 0.00
+  fill_band_max: 0.85
+
+  # ── Source agreement ────────────────────────────────────────────────────
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  skip_on_oracle_disagree: true
+
+  # ── VPIN guard ──────────────────────────────────────────────────────────
+  vpin_min: 0.40
+  vpin_max: 1.0
+
+  # ── Conviction floors (per-direction keys per feedback_override_keys.md) ─
+  # Triple-agreement gate in HOOK enforces dist>=0.10 on EACH of v9/v10/v12.
+  # Floor here is for the AVERAGED swapped prob → the gate stack's view.
+  lgb_dist_min_down: 0.10
+  lgb_dist_min_up: 1.01
+  lgb_dist_min_down_with_hc_agree: 0.10
+  lgb_dist_min_up_with_hc_agree: 1.01
+
+  # ── Tick confirmation (k=1 — match v9_cascade_fade_early) ──────────────
+  min_consecutive_pass_ticks: 1
+
+  # ── 24/7 trading ────────────────────────────────────────────────────────
+  blocked_utc_hours: []
+  post_loss_cooldown_min: 25
+
+  # ── v9 ensemble params (LGB-only — null classifier in hook) ─────────────
+  ensemble_disagreement_threshold: 0.35
+  require_direction_agreement: false  # LGB-only — handled in hook for 3 sigs
+
+  pc_weight_t_60: 0.0
+  pc_weight_t_120: 0.0
+  pc_weight_t_180: 0.0
+  pc_weight_t_200: 0.0
+
+  # ── VHC threshold — DISABLED for cascade-fade ──────────────────────────
+  vhc_threshold: 1.01
+  vhc_bypass_transition: false
+  vhc_bypass_up_dist: false
+  vhc_bypass_disagreement: false
+  vhc_bypass_lgb_safety_floor: false
+  vhc_bypass_oracle_direction: false
+  vhc_kelly_multiplier: 1.0
+
+  # ── PL VHC bypass — DISABLED ───────────────────────────────────────────
+  pl_vhc_bypass_enabled: false
+  pl_vhc_threshold: 1.01
+  pl_vhc_require_pc_agreement: true
+
+  # ── TRANSITION strong-oracle bypass — DISABLED ─────────────────────────
+  transition_strong_bypass_enabled: false
+  transition_bypass_min_avg_pct_delta: 1.0
+  transition_bypass_min_lgb_dist: 1.01
+
+  # ── Conviction tiers (informational) ────────────────────────────────────
+  conviction_high_dist: 0.20
+  conviction_medium_dist: 0.15
+  conviction_low_dist: 0.10
+
+  # ── Delta alignment gate ────────────────────────────────────────────────
+  delta_gate_enabled: true
+  min_alignment_bps: 1.0
+
+  # ── Exit monitoring ─────────────────────────────────────────────────────
+  exit_monitor_enabled: true
+  exit_shadow_mode: true
+  exit_eval_start_offset: 200
+  exit_eval_end_offset: 30
+  exit_max_retries: 1
+  exit_retry_timeout_seconds: 5
+  exit_mark_min_pct: 0.55
+  exit_mark_ticks: 4
+
+  # Legacy (disabled)
+  exit_lgb_flip_enabled: false
+  exit_oracle_flip_enabled: false
+  exit_consecutive_flip_ticks: 5
+
+  # ── Primary signal source ──────────────────────────────────────────────
+  primary_signal_source: lgb_v9_v10_v12_strong_agree
+  fallback_to_lgb_on_pc_null: true
+
+  # ── Triple-agreement gate (read by hook) ────────────────────────────────
+  combo_min_dist_v9: 0.10
+  combo_min_dist_v10: 0.10
+  combo_min_dist_v12: 0.10
+  combo_require_direction_agreement: true
+
+sizing:
+  # $5.00 cap. Kelly 0.025. Sparse-but-strong → conservative cap, full kelly
+  # on the ones that fire.
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.025
+  max_collateral_pct: 0.05
+  schedule:
+    # confidence_score = min(combo_min_dist*2, 1) where combo_min_dist =
+    # min(dist_v9, dist_v10, dist_v12).
+    - { threshold: 0.40, modifier: 1.5,  label: "high" }     # min_dist >= 0.20
+    - { threshold: 0.30, modifier: 1.2,  label: "medium" }   # min_dist >= 0.15
+    - { threshold: 0.20, modifier: 1.0,  label: "low" }      # min_dist >= 0.10
+    - { threshold: 0.0,  modifier: 0.0,  label: "skip" }
+
+hooks_file: all3_strong_cascade_down.py
+pre_gate_hook: evaluate_all3_strong_cascade_down
