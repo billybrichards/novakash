@@ -620,6 +620,79 @@ class PgSignalRepository(SignalRepository):
                 window_ts=window_ts,
             )
 
+    async def update_signal_evaluations_lgb_v12(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_lgb_v12: Optional[float],
+    ) -> int:
+        """Stamp ``probability_lgb_v12`` on signal_evaluations rows.
+
+        Mirror of update_window_ensemble_fields for the parallel writer
+        target. Audit-task #332 — column existed (migration applied) but
+        no engine code path ever wrote it. Verbatim parity with
+        DBClient.update_signal_evaluations_lgb_v12.
+
+        UPDATE-only (no INSERT) — signal_evaluations rows are owned by
+        write_signal_evaluation, called from a different code path. If
+        the row does not yet exist this is a no-op; the next eval tick
+        creates it and a subsequent stamp call fills v12.
+
+        Idempotent via COALESCE.
+        """
+        if not self._pool:
+            return 0
+        if probability_lgb_v12 is None:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                if eval_offset is None:
+                    result = await conn.execute(
+                        """
+                        UPDATE signal_evaluations
+                           SET probability_lgb_v12 = COALESCE(probability_lgb_v12, $1)
+                        WHERE window_ts = $2 AND asset = $3 AND timeframe = $4
+                        """,
+                        float(probability_lgb_v12),
+                        int(window_ts),
+                        asset,
+                        timeframe,
+                    )
+                else:
+                    result = await conn.execute(
+                        """
+                        UPDATE signal_evaluations
+                           SET probability_lgb_v12 = COALESCE(probability_lgb_v12, $1)
+                        WHERE window_ts = $2 AND asset = $3 AND timeframe = $4
+                          AND eval_offset = $5
+                        """,
+                        float(probability_lgb_v12),
+                        int(window_ts),
+                        asset,
+                        timeframe,
+                        int(eval_offset),
+                    )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "pg_signal_repo.signal_evaluations_lgb_v12_updated",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "pg_signal_repo.update_signal_evaluations_lgb_v12_failed",
+                error=str(exc)[:160],
+                asset=asset,
+                window_ts=window_ts,
+            )
+            return 0
+
     # -- Additional signal-related methods (not on port yet) ---------------
     # These are included here because they belong to the signal aggregate
     # even though the port interface uses placeholder VOs today.  Phase 1

@@ -1569,6 +1569,78 @@ class DBClient:
             )
             return 0
 
+    async def update_signal_evaluations_lgb_v12(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        eval_offset: Optional[int],
+        probability_lgb_v12: Optional[float],
+    ) -> int:
+        """Stamp ``probability_lgb_v12`` onto every signal_evaluations row
+        for a given window/eval_offset.
+
+        Mirror of update_window_ensemble_fields for the parallel writer
+        target. Column was added to signal_evaluations via
+        migrations/add_probability_lgb_v12.sql but no writer ever populated
+        it (writer regression #6, audit-task #332). signal_evaluations
+        rows are created by ``write_signal_evaluation`` from a different
+        code path; this method UPDATEs only and is a no-op if the row
+        does not yet exist (next eval tick fills it).
+
+        Idempotent: COALESCE preserves any existing value.
+        """
+        if not self._pool:
+            return 0
+        if probability_lgb_v12 is None:
+            return 0
+        try:
+            async with self._pool.acquire() as conn:
+                if eval_offset is None:
+                    result = await conn.execute(
+                        """
+                        UPDATE signal_evaluations
+                           SET probability_lgb_v12 = COALESCE(probability_lgb_v12, $1)
+                        WHERE window_ts = $2 AND asset = $3 AND timeframe = $4
+                        """,
+                        float(probability_lgb_v12),
+                        int(window_ts),
+                        asset,
+                        timeframe,
+                    )
+                else:
+                    result = await conn.execute(
+                        """
+                        UPDATE signal_evaluations
+                           SET probability_lgb_v12 = COALESCE(probability_lgb_v12, $1)
+                        WHERE window_ts = $2 AND asset = $3 AND timeframe = $4
+                          AND eval_offset = $5
+                        """,
+                        float(probability_lgb_v12),
+                        int(window_ts),
+                        asset,
+                        timeframe,
+                        int(eval_offset),
+                    )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "db.signal_evaluations_lgb_v12_updated",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                eval_offset=eval_offset,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.warning(
+                "db.update_signal_evaluations_lgb_v12_failed",
+                error=str(exc)[:160],
+                window_ts=window_ts,
+                asset=asset,
+            )
+            return 0
+
     async def update_window_prices(
         self,
         window_ts: int,
