@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TimesFM Model Genealogy + 15m Diagnostic — Map</title>
+<style>
+:root {
+  --bg: #0a0e1a;
+  --card: #131826;
+  --card2: #1a2030;
+  --border: #1f2638;
+  --text: #e1e7f0;
+  --muted: #8590a8;
+  --accent: #5fb3f5;
+  --green: #34d399;
+  --yellow: #fbbf24;
+  --red: #f87171;
+  --purple: #c084fc;
+  --orange: #fb923c;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  margin: 0;
+  padding: 0;
+  line-height: 1.6;
+}
+.container { max-width: 1300px; margin: 0 auto; padding: 32px 24px; }
+header {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 16px;
+  margin-bottom: 32px;
+}
+header h1 { margin: 0 0 8px 0; font-size: 30px; }
+header .meta { color: var(--muted); font-size: 13px; }
+header .meta span { margin-right: 16px; }
+h2 {
+  font-size: 22px;
+  margin-top: 48px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+h3 { font-size: 17px; color: var(--accent); margin-top: 28px; }
+h4 { font-size: 15px; color: var(--purple); margin-top: 18px; margin-bottom: 6px; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.card-2 { background: var(--card2); }
+.tldr {
+  background: linear-gradient(135deg, #1a2538, #131826);
+  border-left: 4px solid var(--accent);
+}
+.alert {
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin: 12px 0;
+}
+.alert.success { background: rgba(52, 211, 153, 0.1); border: 1px solid var(--green); }
+.alert.warn { background: rgba(251, 191, 36, 0.1); border: 1px solid var(--yellow); }
+.alert.danger { background: rgba(248, 113, 113, 0.1); border: 1px solid var(--red); }
+.alert.info { background: rgba(95, 179, 245, 0.1); border: 1px solid var(--accent); }
+.alert.purple { background: rgba(192, 132, 252, 0.1); border: 1px solid var(--purple); }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 13px;
+}
+th, td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+th {
+  background: var(--card);
+  font-weight: 600;
+  color: var(--accent);
+  position: sticky;
+  top: 0;
+}
+tr:hover { background: rgba(95, 179, 245, 0.05); }
+.win { color: var(--green); font-weight: 600; }
+.lose { color: var(--red); font-weight: 600; }
+.warn { color: var(--yellow); font-weight: 600; }
+.muted { color: var(--muted); }
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  margin-right: 4px;
+  text-transform: uppercase;
+}
+.tag.live { background: var(--green); color: var(--bg); }
+.tag.shadow { background: var(--accent); color: var(--bg); }
+.tag.ghost { background: var(--purple); color: var(--bg); }
+.tag.broken { background: var(--red); color: var(--bg); }
+.tag.dormant { background: var(--muted); color: var(--bg); }
+.tag.archived { background: var(--orange); color: var(--bg); }
+code {
+  background: var(--bg);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: ui-monospace, "JetBrains Mono", monospace;
+  font-size: 12px;
+  color: var(--accent);
+}
+pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  font-family: ui-monospace, monospace;
+}
+.timeline {
+  position: relative;
+  padding-left: 32px;
+  margin: 16px 0;
+}
+.timeline::before {
+  content: '';
+  position: absolute;
+  left: 12px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--border);
+}
+.event {
+  position: relative;
+  padding: 8px 0 8px 16px;
+  margin-left: -32px;
+  padding-left: 32px;
+}
+.event::before {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 14px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--card);
+  border: 2px solid var(--accent);
+}
+.event.broken::before { background: var(--red); border-color: var(--red); }
+.event.fixed::before { background: var(--green); border-color: var(--green); }
+.event.note::before { background: var(--purple); border-color: var(--purple); }
+.event.live::before { background: var(--yellow); border-color: var(--yellow); }
+.event-time { font-size: 12px; color: var(--muted); }
+.event-title { font-weight: 600; margin-top: 2px; font-size: 14px; }
+.event-detail { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.flow-diagram {
+  background: var(--bg);
+  padding: 16px;
+  border-radius: 6px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  white-space: pre;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+}
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin: 16px 0;
+}
+.kpi {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px;
+}
+.kpi .value { font-size: 22px; font-weight: 700; color: var(--green); }
+.kpi .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+.kpi.warn .value { color: var(--yellow); }
+.kpi.bad .value { color: var(--red); }
+.kpi.accent .value { color: var(--accent); }
+.kpi.purple .value { color: var(--purple); }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.toc {
+  background: var(--card2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+  margin: 16px 0;
+}
+.toc ol { margin: 6px 0; padding-left: 18px; }
+.toc li { font-size: 13px; color: var(--accent); margin: 3px 0; }
+footer {
+  margin-top: 64px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>TimesFM Model Genealogy + 15m Diagnostic — Map</h1>
+  <div class="meta">
+    <span><strong>Authored:</strong> 2026-05-01</span>
+    <span><strong>Branch:</strong> feat/15m-up-basic-live-rds-override</span>
+    <span><strong>Sister-repo:</strong> novakash-timesfm-repo</span>
+  </div>
+</header>
+
+<div class="card tldr">
+<h3 style="margin-top:0;color:var(--accent);">Headline answers</h3>
+<ul>
+<li><strong>Why are 15m predictions "dodgy"?</strong> Three stacking issues: (1) per-asset feature cache only seeds BTC, so ETH/SOL/XRP cold-start; (2) the 15m classifier head <code>15m_head_v1</code> is a v1-style architecture (input_dim=1280, no v2 close-relative features) trained 2026-04-20 — the better v2-class architecture exists but wasn't ever 15m-specific; (3) the per-timescale classifier dispatch on the GPU box returns bit-identical values for 5m and 15m, suggesting only one head is producing the outputs (audit #342).</li>
+<li><strong>Why was cls_traj_14f_iso never promoted?</strong> Per <strong>note #263 (2026-04-25):</strong> "Head trained on broken pipeline surfaces. Needs full retrain with model_id fix." The model_id fix landed in PR #131, but no retrain happened after. The current GPU-box head IS cls_traj_14f_iso, but its training-time TimesFM surfaces were wrong. <strong>It needs a clean retrain post-PR #131 before live-primary promotion.</strong></li>
+<li><strong>What's v12-XL?</strong> v12-XL = v12 architecture + 112 features (v10 schema) + <code>nested_5m_*</code> aggregations + isotonic-per-horizon calibration. It's the latest 5m LGB candidate (Today 00:03 UTC, val T-90 acc 78%). <strong>For 15m we need to clone this architecture but train on 15m labels</strong> — that's the highest-leverage retrain available (single biggest WR-ceiling lift for 15m).</li>
+</ul>
+</div>
+
+<div class="toc">
+<strong>Contents</strong>
+<ol>
+<li><a href="#flow">Live data flow + which model speaks to which strategy</a></li>
+<li><a href="#classifier">Classifier head genealogy (chronological)</a></li>
+<li><a href="#lgb">LGB model genealogy (chronological)</a></li>
+<li><a href="#15m">Why is 15m dodgy — root-cause decomposition</a></li>
+<li><a href="#cls-traj">The cls_traj_14f_iso decision — why never promoted</a></li>
+<li><a href="#long-context">Long-context journey (5m classifier → GPU box)</a></li>
+<li><a href="#dispatch">Per-timescale dispatch — the bit-identical bug</a></li>
+<li><a href="#v12xl-spec">v12-XL-15m retrain — full spec</a></li>
+<li><a href="#deploy">Current deploy state per box</a></li>
+<li><a href="#actions">Recommended next actions</a></li>
+</ol>
+</div>
+
+<h2 id="flow">1. Live data flow + which model speaks to which strategy</h2>
+
+<div class="flow-diagram">
+                     ┌───────────────────────────┐
+                     │  v15m_up_basic strategy   │  reads `probability_up`
+                     └─────────────┬─────────────┘  (the BLEND)
+                                   │
+                                   ▼
+       ┌─────────────────────────────────────────────────────┐
+       │  /v4/snapshot.timescales.15m.probability_up         │
+       │  = blend(probability_lgb, probability_classifier)   │
+       └─────────────┬───────────────────────┬───────────────┘
+                     │                       │
+                     ▼                       ▼
+       ┌─────────────────────┐   ┌──────────────────────────┐
+       │  probability_lgb    │   │  probability_classifier  │
+       │  (LightGBM)         │   │  (MLP head over TimesFM  │
+       │                     │   │   quantile surface)      │
+       │  Loaded:            │   │                          │
+       │  lgb_btc_15m_       │   │  Loaded on:              │
+       │   _a547c3d_         │   │  - LIVE primary:         │
+       │   _2026-04-16T04-29 │   │     path1_classifier/    │
+       │                     │   │     2026-04-18/          │
+       │  6 horizons:        │   │     unified_head/        │
+       │   T-60, T-120,      │   │  - GPU box (idle):       │
+       │   T-180, T-300,     │   │     cls_traj_14f_iso (5m)│
+       │   T-480, T-720      │   │     15m_head_v1 (15m,    │
+       │                     │   │       v1-style, trained  │
+       │  + isotonic per     │   │       on broken pipeline)│
+       │    horizon          │   │                          │
+       └─────────────────────┘   └──────────────────────────┘
+</div>
+
+<div class="alert info">
+<strong>For BTC 15m today the LGB dominates:</strong> live snapshot earlier showed <code>probability_lgb=0.243</code> (DOWN-leaning, dist 0.257), <code>probability_classifier=0.443</code> (slight DOWN, dist 0.057), <code>probability_up=0.343</code>. The blend mostly tracks LGB.
+</div>
+
+<h2 id="classifier">2. Classifier head genealogy (chronological)</h2>
+
+<table>
+<thead>
+<tr><th>Date</th><th>Model</th><th>Arch</th><th>Context</th><th>Val dir_acc / HC</th><th>ECE</th><th>S3 path</th><th>Deploy</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td>2026-04-18</td>
+  <td><strong>unified_head</strong></td>
+  <td>v1 unified, 601-dim (600 forecast + 1 eval_offset), hidden [256,64]</td>
+  <td>512×1Hz</td>
+  <td>70.0% / 77.6% @ Δ30; 60.9% @ Δ240</td>
+  <td>n/a (no isotonic)</td>
+  <td><code>path1_classifier/2026-04-18/unified_head/</code></td>
+  <td><span class="tag live">LIVE PRIMARY</span> on <code>16.52.14.182</code></td>
+</tr>
+<tr>
+  <td>2026-04-18</td>
+  <td>t60 specialist</td>
+  <td>v1 specialist 600-dim</td>
+  <td>512×1Hz</td>
+  <td>+1.81pp @ Δ60</td>
+  <td>—</td>
+  <td><code>path1_classifier/2026-04-18/6delta_tournament/t60/</code></td>
+  <td><span class="tag archived">SUPERSEDED</span> by unified</td>
+</tr>
+<tr>
+  <td>2026-04-20 19:05</td>
+  <td><strong>15m_head_v1</strong> ⚡</td>
+  <td>v1 specialist, input_dim=1280, hidden [256,64], dropout 0.2, clip 5.0</td>
+  <td>512 (default)</td>
+  <td>75.37% best (epoch 8)</td>
+  <td>—</td>
+  <td><code>timesfm_finetune/15m_head_v1/</code></td>
+  <td><span class="tag shadow">GPU box (idle)</span> — <span class="tag broken">DISPATCH BUG</span></td>
+</tr>
+<tr>
+  <td>2026-04-20 18:53</td>
+  <td>15m LoRA adapter</td>
+  <td>TimesFM 2.5 fine-tune at 15m horizon</td>
+  <td>—</td>
+  <td>—</td>
+  <td>—</td>
+  <td><code>timesfm_finetune/15m_v1/15m_v1/</code></td>
+  <td><span class="tag dormant">never enabled</span></td>
+</tr>
+<tr>
+  <td>2026-04-22</td>
+  <td>5m_head_v2 (intermediate)</td>
+  <td>v2 close-relative</td>
+  <td>512×2s = 17min</td>
+  <td>?</td>
+  <td>?</td>
+  <td><code>path1_classifier/2026-04-22/5m_head_v2/</code></td>
+  <td><span class="tag archived">SUPERSEDED</span></td>
+</tr>
+<tr>
+  <td>2026-04-24 18:43</td>
+  <td>v2 regime-fix (8f)</td>
+  <td>v2 close-relative, 8 ctx feats</td>
+  <td>512×2s</td>
+  <td>78.6% HC dir_acc, HC 31% live</td>
+  <td>?</td>
+  <td><code>path1_classifier/2026-04-24T18-43/</code></td>
+  <td><span class="tag shadow">shadow box</span></td>
+</tr>
+<tr>
+  <td>2026-04-24 22:09</td>
+  <td>cls_tiingo_2h</td>
+  <td>v2 close-relative, 8f</td>
+  <td>3600 (~2h)</td>
+  <td>71.9%</td>
+  <td>?</td>
+  <td><code>path1_classifier/2026-04-24T22-09/cls_tiingo_2h/</code></td>
+  <td><span class="tag dormant">never deployed</span></td>
+</tr>
+<tr>
+  <td>2026-04-24 22:09</td>
+  <td>cls_tiingo_9h</td>
+  <td>v2 close-relative, 8f</td>
+  <td>16200 (~9h)</td>
+  <td>71.3%, HC 49.5%</td>
+  <td>?</td>
+  <td><code>path1_classifier/2026-04-24T22-09/cls_tiingo_9h/</code></td>
+  <td><span class="tag dormant">never deployed</span></td>
+</tr>
+<tr>
+  <td>2026-04-24 22:35</td>
+  <td>cls_traj_14f (base)</td>
+  <td>v2 close-relative, <strong>14 ctx feats (trajectory)</strong></td>
+  <td>512×2s</td>
+  <td>72.7% / 79.5% HC, HC cov 64%</td>
+  <td>?</td>
+  <td><code>path1_classifier/2026-04-24T22-35/</code></td>
+  <td><span class="tag dormant">never deployed</span></td>
+</tr>
+<tr>
+  <td>2026-04-25 05:27</td>
+  <td>cls_traj_14f_2h</td>
+  <td>v2 close-relative, 14 ctx feats</td>
+  <td>3600 (~2h)</td>
+  <td>72.7% / 80.3% HC</td>
+  <td>?</td>
+  <td><code>path1_classifier/2026-04-25T05-27/cls_traj_14f_2h/</code></td>
+  <td><span class="tag dormant">never deployed</span></td>
+</tr>
+<tr style="background:rgba(192,132,252,0.06)">
+  <td><strong>2026-04-25 16:34</strong></td>
+  <td><strong>cls_traj_14f_iso</strong> 🥇</td>
+  <td>v2 close-relative, 14 ctx feats, hidden [512,128], dropout 0.2, label_smoothing 0.05, <strong>isotonic 88 knots</strong></td>
+  <td>512×2s, subsample 2x</td>
+  <td><strong>72.86% / 79.85% HC</strong>, HC cov 65.2%</td>
+  <td><strong>5e-9 post-iso</strong></td>
+  <td><code>path1_classifier/2026-04-25T15-34/cls_traj_14f_iso/</code></td>
+  <td><span class="tag shadow">GPU box only</span> — <strong class="warn">trained on broken pipeline</strong>, needs retrain</td>
+</tr>
+</tbody>
+</table>
+
+<div class="alert warn">
+<strong>Note:</strong> Of the 11 classifier heads listed, only TWO are actually serving live: <code>unified_head/</code> on the live primary box (LGB-blend partner for 5m) and <code>15m_head_v1/</code> on the GPU box (15m). All the v2 close-relative + trajectory work (Apr 24-25) sits in S3, not on the live primary.
+</div>
+
+<h2 id="lgb">3. LGB model genealogy (chronological)</h2>
+
+<table>
+<thead>
+<tr><th>Date</th><th>Version</th><th>Features</th><th>Horizons</th><th>Holdout acc / ECE</th><th>S3 path</th><th>Status</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td>2026-04-15</td>
+  <td>v2 base + binance variant</td>
+  <td>~78</td>
+  <td>060/120/180/300/480/720</td>
+  <td>—</td>
+  <td><code>v2/btc/btc_15m_binance/61cbd6e/</code></td>
+  <td><span class="tag live">15m binance LIVE</span></td>
+</tr>
+<tr style="background:rgba(95,179,245,0.05)">
+  <td><strong>2026-04-16</strong></td>
+  <td><strong>a547c3d (BTC 15m polymarket)</strong></td>
+  <td>78</td>
+  <td>060/120/180/300/480/720</td>
+  <td>~70-75%</td>
+  <td><code>v2/btc/btc_15m/a547c3d/2026-04-16T04-29-55Z/</code></td>
+  <td><span class="tag live">LIVE</span> — what v15m_up_basic uses</td>
+</tr>
+<tr>
+  <td>2026-04-22</td>
+  <td>candidate_ab83564</td>
+  <td>78 (Sequoia v5)</td>
+  <td>060/120</td>
+  <td>75.8% overall, 84.7% T-60/120 on Apr 13-16 window</td>
+  <td><code>v2/btc/btc_5m/candidate_ab83564/</code></td>
+  <td><span class="tag live">5m LIVE</span></td>
+</tr>
+<tr>
+  <td>2026-04-25</td>
+  <td>candidate_33f10108</td>
+  <td>78 (Sequoia v5)</td>
+  <td>060/120/etc</td>
+  <td>70.5% overall — 5.3pp below prod</td>
+  <td><code>v2/btc/btc_5m/candidate_33f10108/</code></td>
+  <td><span class="tag broken">DO NOT PROMOTE</span> (note #262)</td>
+</tr>
+<tr>
+  <td>2026-04-26</td>
+  <td>v9 (TRADE-only, 106 feat)</td>
+  <td>106 (Sequoia v6 + CoinGlass + delta_change_5m + prior_6w_up_rate)</td>
+  <td>030/060/090/120/180/240</td>
+  <td>73.5% overall, 78.5% T-60/120</td>
+  <td>(integrated into v4 service)</td>
+  <td><span class="tag live">v9 was the 5m prod brain</span></td>
+</tr>
+<tr>
+  <td>2026-04-26</td>
+  <td>v10 (Optuna 112 feat)</td>
+  <td>112 (v9 + tfm_quantiles + Optuna sweep)</td>
+  <td>060/120/180/240</td>
+  <td>76.0% on Apr 24-25 holdout, but 50.8% live HC (calibration drift, note #276)</td>
+  <td><code>v2/btc/btc_5m/.../v10_*</code></td>
+  <td><span class="tag warn">GHOSTED today</span> — overfit / calibration drift</td>
+</tr>
+<tr>
+  <td>2026-04-30 15:24</td>
+  <td>v11</td>
+  <td>57 (class-balanced + regime-stratified)</td>
+  <td>030/060/090/120/180/240</td>
+  <td>WFCV: T-30 79.5%, T-60 76.7%, T-90 75.5%</td>
+  <td><code>v11_training/20260430_151825/</code></td>
+  <td><span class="tag shadow">candidate</span></td>
+</tr>
+<tr>
+  <td>2026-04-30 18:16</td>
+  <td>v12 (corrected_outcome_label)</td>
+  <td>v9 + v12_new (78+ features)</td>
+  <td>090/120/180/240</td>
+  <td>—</td>
+  <td><code>v12_training/20260430_171615_corrected_outcome_label/</code></td>
+  <td><span class="tag shadow">candidate</span></td>
+</tr>
+<tr style="background:rgba(192,132,252,0.06)">
+  <td><strong>2026-05-01 00:03</strong></td>
+  <td><strong>v12-XL</strong> 🆕</td>
+  <td><strong>112 (v10 spec) + nested_5m_*</strong> (rolling aggregates) + session_bucket + vpin_t* + delta_tiingo_ewma*</td>
+  <td>090/120/180/240</td>
+  <td>T-90: 78.0% post-iso (verdict <code>ship_heldout_iso</code>), T-120: 68.6% (verdict <code>ship_raw_booster</code>)</td>
+  <td><code>v12xl_training/boosters_20260501_000300/</code></td>
+  <td><span class="tag live">5m LIVE TODAY</span> via <code>v12_lgb_combo</code></td>
+</tr>
+</tbody>
+</table>
+
+<h4>v12-XL feature spec (the 112-feature v10 schema + extras)</h4>
+<pre>Core (v10 / Sequoia v6):
+  eval_offset, vpin, delta_pct, twap_delta
+  clob_spread, clob_mid, clob_up_bid/ask, clob_down_bid/ask, clob_imbalance
+  binance_price, chainlink_price, tiingo_close
+  delta_binance, delta_chainlink, delta_tiingo
+  gate_vpin_passed, gate_delta_passed, gate_cg_passed, gate_twap_passed,
+  gate_timesfm_passed, gate_passed
+  regime_num, delta_source_num
+  tfm_tail_risk, tfm_skew, tfm_spread_norm, tfm_quantile_ratio (TimesFM features)
+  v3_composite, v3_elm, v3_cascade, v3_taker, v3_oi, v3_funding, v3_vpin, v3_momentum,
+  v3_cascade_strength, v3_cascade_tau1, v3_cascade_exhaustion
+  cg_funding_rate, cg_taker_buy_usd, cg_taker_sell_usd, cg_net_taker, cg_liq_*
+
+NEW in v12-XL — nested aggregates:
+  nested_5m_avg_prob_up, nested_5m_prob_trend, nested_5m_gate_pass_rate,
+  nested_5m_regime_consistent, nested_5m_vpin_peak, nested_5m_oi_delta_cumulative
+
+NEW polymarket / session features:
+  gamma_up_price, gamma_down_price, gamma_implied_up, gamma_market_vig
+  session_bucket
+  vpin_mean_60s, vpin_std_60s, vpin_min_60s, vpin_max_60s, vpin_range_60s
+  source_delta_divergence
+  delta_tiingo_ewma12, delta_tiingo_ewma60</pre>
+
+<h2 id="15m">4. Why is 15m dodgy — root-cause decomposition</h2>
+
+<table>
+<thead>
+<tr><th>Asset</th><th>p_lgb</th><th>p_classifier</th><th>p_up</th><th>Why dodgy</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><strong>BTC 15m</strong></td>
+  <td>✅ Real (a547c3d, 6 horizons)</td>
+  <td>⚠️ Returns same value as 5m (dispatch bug audit #342)</td>
+  <td>✅ Real, LGB-driven</td>
+  <td>The blend works because LGB is correct. Classifier component is degenerate but contributes only marginally to the blend. <strong>Net result: usable</strong> (73% deduped ghost WR on v15m_up_basic).</td>
+</tr>
+<tr>
+  <td><strong>ETH 15m</strong></td>
+  <td>❌ NoSuchKey on <code>v2/eth/current_15m_binance.json</code></td>
+  <td>⚠️ Returns frozen 0.4358 constant across snapshots (no per-asset feature cache → classifier-only fallback per PR #118)</td>
+  <td>❌ <code>cold_start</code></td>
+  <td>The classifier-only fallback (PR #118 / commit ab83564) was supposed to surface the classifier when LGB is missing — but the classifier itself has no real input for ETH (no v5_feature_loader, no <code>_v2_scorer.snapshot()</code> for non-BTC). It saturates: <strong>note #247 documented pc=0.000276 + pc=6.4e-8 events on ETH 15m</strong>.</td>
+</tr>
+<tr>
+  <td><strong>SOL 15m</strong></td>
+  <td>❌ NoSuchKey</td>
+  <td>⚠️ Same frozen-constant pattern</td>
+  <td>❌ cold_start</td>
+  <td>Same root cause as ETH. Ghost WR 64% — barely above random.</td>
+</tr>
+<tr>
+  <td><strong>XRP 15m</strong></td>
+  <td>❌ NoSuchKey</td>
+  <td>⚠️ Same frozen-constant pattern</td>
+  <td>❌ cold_start</td>
+  <td>Same. Ghost WR 63%.</td>
+</tr>
+</tbody>
+</table>
+
+<div class="alert danger">
+<strong>The structural issues blocking non-BTC 15m</strong>:
+<ol>
+<li><strong>Audit #267 OPEN:</strong> <code>data_surface.py /v4/snapshot</code> cache is BTC-only. <code>_v5_feature_loader</code> only seeds BTC features → ETH/SOL/XRP scorers see <code>NoneType.snapshot</code>.</li>
+<li><strong>Audit #266 OPEN:</strong> No 15m LGB models exist in S3 for ETH/SOL/XRP (<code>v2/{eth,sol,xrp}/btc_15m/</code> doesn't exist). Only 5m LGB heads.</li>
+<li><strong>Audit #342 NEW (today):</strong> Per-timescale classifier dispatch on the GPU box returns bit-identical values for 5m and 15m timescales (<code>0.38608115911483765</code> to 17 decimals). Diagnosis below.</li>
+</ol>
+</div>
+
+<h2 id="cls-traj">5. The cls_traj_14f_iso decision — why never promoted</h2>
+
+<div class="card card-2">
+<h3>What it is</h3>
+<p>Best classifier head we've ever trained:</p>
+<ul>
+<li>14-feature trajectory architecture (vs unified's pure quantile surface)</li>
+<li>Isotonic post-hoc calibration (88 knots)</li>
+<li>Val dir_acc 72.86% overall, <strong>79.85% on high-confidence band</strong> (HC coverage 65.2%)</li>
+<li><strong>ECE 5e-9 — essentially zero calibration error on holdout</strong></li>
+<li>Trained on Tiingo prices (matches Polymarket Chainlink oracle)</li>
+<li>S3: <code>path1_classifier/2026-04-25T15-34/cls_traj_14f_iso/</code></li>
+</ul>
+</div>
+
+<div class="alert warn">
+<strong>Why it's NOT live primary</strong> — direct quote from <strong>note #263 (2026-04-25)</strong>, "Known issues" section:
+
+<blockquote style="margin: 8px 0; padding: 8px 12px; border-left: 3px solid var(--yellow); font-style: italic;">
+"<strong>UP bias:</strong> pc=0.50-0.57 always. <strong>Head trained on broken pipeline surfaces. Needs full retrain with model_id fix.</strong>"
+</blockquote>
+</div>
+
+<h4>Decoded:</h4>
+<ul>
+<li>The training pipeline had <code>model_id=None</code>, meaning the training script used a default/unspecified TimesFM checkpoint that produced quantile surfaces DIFFERENT from what the production deploy uses.</li>
+<li>The classifier head learned to map THAT (incorrect) surface distribution to outcomes. When deployed against the CORRECT surfaces, its outputs are biased — pc=0.50-0.57 always (drifting near uncertainty).</li>
+<li>PR #131 (commit 481f7d4 area, Apr 25 06:51) fixed <code>model_id</code>. But <strong>cls_traj_14f_iso was trained at 16:34 the same day</strong> — AFTER the PR #131 fix.</li>
+<li>The note warns of "broken pipeline" — which suggests OTHER pipeline issues persisted past PR #131. Possible candidates: feature alignment, regime vocab, eval-offset, Tiingo backfill warmup.</li>
+<li><strong>Bottom line:</strong> It was never validated against PRODUCTION traffic. Note #190 even has a separate retrain plan ("focal loss + label smoothing + logit-L2") that's been "AWAITING post-hoc calibration results + user go/no-go" since 2026-04-19.</li>
+</ul>
+
+<div class="alert info">
+<strong>What this means for promotion:</strong> Don't promote cls_traj_14f_iso to live primary blindly. Instead:
+<ol>
+<li>Validate it against current production data (24-48h shadow A/B vs <code>unified_head/</code>) — does the UP bias persist?</li>
+<li>If bias persists: do the retrain plan from note #190 (focal loss + label smoothing + logit-L2 + clean pipeline).</li>
+<li>If bias is gone (post-PR-#131 surfaces are now stable): promote.</li>
+</ol>
+</div>
+
+<h2 id="long-context">6. Long-context journey (the 5m classifier hardening)</h2>
+
+<p class="muted" style="font-size:13px;">User remembered "loads of work on 5m classifier to get much longer context window". This is the timeline:</p>
+
+<div class="timeline">
+
+<div class="event broken">
+  <div class="event-time">2026-04-24 morning</div>
+  <div class="event-title">Classifier completely broken — HC=0%, every context feature 0</div>
+  <div class="event-detail">Training data had wrong regime vocab (chop=2 vs DB NORMAL=0). Inference used 8192×1Hz Binance vs training 512×2s. Always served T-60 delta regardless of actual eval offset. ret_since_open/vpin/regime_num/vol_range_pct all 0.0 at inference time.</div>
+</div>
+
+<div class="event fixed">
+  <div class="event-time">19:22 UTC</div>
+  <div class="event-title">Fix 1 — Regime vocab retrain (PR #129)</div>
+  <div class="event-detail">REGIME_MAP corrected to VPIN vocab. Retrained on pro6000. HC 0% → 31% live. S3: <code>2026-04-24T18-43/5m_head_v2_regime_fix/</code>.</div>
+</div>
+
+<div class="event fixed">
+  <div class="event-time">21:00 UTC</div>
+  <div class="event-title">Fix 2 — Correct inference context 512×2s</div>
+  <div class="event-detail">forecaster.py: dedicated v2 head forward pass using <code>list(prices)[-1024::2]</code>.</div>
+</div>
+
+<div class="event fixed">
+  <div class="event-time">21:54 UTC</div>
+  <div class="event-title">Fix 3 — Eval-offset-correct delta</div>
+  <div class="event-detail">Store full <code>by_delta</code> per timescale; pick nearest canonical Δ from {30,60,90,120,180,240} to seconds_to_close. Veto rate 44% → 6%.</div>
+</div>
+
+<div class="event fixed">
+  <div class="event-time">22:06 UTC</div>
+  <div class="event-title">Fix 4 — Live context injection</div>
+  <div class="event-detail">v4 assembler builds {ret_since_open, vpin, regime_num, vol_range_pct} per snapshot and re-evaluates head. Reapplies head with fresh context.</div>
+</div>
+
+<div class="event">
+  <div class="event-time">22:09 UTC</div>
+  <div class="event-title">2h Tiingo head + 9h Tiingo head trained</div>
+  <div class="event-detail">cls_tiingo_2h (3600 ctx, 71.9% val) and cls_tiingo_9h (16200 ctx, 71.3% / HC cov 49.5%). NEEDED GPU — CPU can't run 3600+ context. Trained on Tiingo prices (Chainlink oracle parity).</div>
+</div>
+
+<div class="event">
+  <div class="event-time">23:28 UTC</div>
+  <div class="event-title">14-feature trajectory architecture (cls_traj_14f base)</div>
+  <div class="event-detail">First model with 14 ctx features (8 base + 6 trajectory: vpin/dc at T-120/180/240). Val 72.7%, HC 79.5% / cov 64%.</div>
+</div>
+
+<div class="event">
+  <div class="event-time">2026-04-25 06:51 UTC</div>
+  <div class="event-title">PR #131 — model_id + isotonic fix</div>
+  <div class="event-detail">Critical fix: TimesFM model_id was None, causing OOD inference surfaces. Combined with isotonic calibrator support.</div>
+</div>
+
+<div class="event">
+  <div class="event-time">09:32 UTC</div>
+  <div class="event-title">Trajectory context features available from window start</div>
+  <div class="event-detail">Fix for cold-start where T-180/240 ctx features were null in first ticks of window.</div>
+</div>
+
+<div class="event live">
+  <div class="event-time">16:34 UTC</div>
+  <div class="event-title">cls_traj_14f_iso saved to S3 (BEST head)</div>
+  <div class="event-detail">14f trajectory + isotonic + label smoothing 0.05. Val 72.86%, HC 79.85% / cov 65.2%, ECE 5e-9. <strong>BUT trained against pipeline state with lingering issues per note #263.</strong></div>
+</div>
+
+<div class="event note">
+  <div class="event-time">2026-04-28</div>
+  <div class="event-title">Note #172 audit — "Classifier + 15m / multi-asset coverage — BTC-5m only today, infra is half-built"</div>
+  <div class="event-detail">14-feature trajectory classifiers on GPU box never got promoted to live serving.</div>
+</div>
+
+<div class="event note">
+  <div class="event-time">2026-04-30</div>
+  <div class="event-title">Note #286 — "Isotonic refit attempt — DO NOT PROMOTE"</div>
+  <div class="event-detail">Attempted to refit isotonic on live trade outcomes. Sample size (150-185 trades) too small — overfits. Need ≥500 samples per model. Re-attempt 2026-05-15.</div>
+</div>
+
+<div class="event live">
+  <div class="event-time">2026-05-01 17:13 UTC</div>
+  <div class="event-title">Today: GPU box restarted — cls_traj_14f_iso back online (still in shadow)</div>
+  <div class="event-detail">Container had been Exited (255) for 26h after Ubuntu auto-reboot. Restarted as part of the 15m winning-strategy work. Live primary box still serves the older <code>unified_head/</code>.</div>
+</div>
+
+</div>
+
+<h2 id="dispatch">7. Per-timescale dispatch — the bit-identical bug</h2>
+
+<p>Live diagnostic on the GPU box:</p>
+<pre>$ curl http://localhost:8080/v4/snapshot?asset=BTC&timescales=5m,15m | jq '.timescales | to_entries | map({(.key): .value.probability_classifier})'
+[
+  { "5m":  0.38608115911483765 },
+  { "15m": 0.38608115911483765 }    ← BIT-IDENTICAL to 17 decimals
+]</pre>
+
+<p>Both 5m and 15m heads are CONFIRMED loaded (from container startup logs):</p>
+<pre>2026-05-01T17:13:36 [INFO] Classifier head loaded for timescale=5m
+                          from /var/lib/novakash/timesfm_classifier/cls_traj_14f_iso (input_dim=1304)
+2026-05-01T17:13:36 [INFO] Classifier head loaded for timescale=15m
+                          from /var/lib/novakash/timesfm_classifier/15m_head_v1 (input_dim=1280)</pre>
+
+<h4>Code review (forecaster.py)</h4>
+<p>The architecture is correct on paper. Per-timescale heads are stored in <code>self.classifier_heads: dict[str, Module]</code>, configs in <code>self.classifier_configs: dict[str, dict]</code>. Two distinct env vars (<code>TIMESFM_CLASSIFIER_HEAD_URI</code> for 5m, <code>TIMESFM_CLASSIFIER_HEAD_URI_15M</code> for 15m). Lines 593-756 of <code>app/forecaster.py</code> loop over each loaded head and produce per-timescale outputs into <code>by_timescale: dict[str, float]</code>.</p>
+
+<div class="alert warn">
+<strong>Hypothesis for the bug</strong> (needs runtime verification):
+<ol>
+<li><strong>5m head is v2 close-relative</strong> (input_dim=1304, has <code>version: "v2_close_relative"</code>) → enters the v2 branch with dedicated forward pass using Tiingo prices + 512×2s subsample + base model (no LoRA).</li>
+<li><strong>15m head has input_dim=1280</strong>, no <code>version</code> field → does NOT enter v2 branch. Goes into v1/specialist branch.</li>
+<li>The v1/specialist branch uses the BASE forecast (line 641-647: <code>head_preds = out.full_predictions[0, :head_horizon, :]</code>) without v2's dedicated pass.</li>
+<li>For 15m's specialist case, <code>head_horizon = 1280 / 10 = 128</code> — same as 5m's v2 head's flat surface.</li>
+<li><strong>Possible cause</strong>: the v2 forward pass's output for the 5m head IS being CACHED somewhere keyed only by base inputs, and the 15m head's call inadvertently retrieves the same cached values. OR: the by_timescale dict population conflates because <code>by_timescale[ts] = by_delta.get(60, ...)</code> picks the same delta-60 value from a SHARED forecast surface for both heads.</li>
+</ol>
+Actual root-cause confirmation requires reading the forecast cache logic and instrumenting the GPU box. Tracked as <strong>audit #342</strong>.
+</div>
+
+<div class="alert info">
+<strong>Why this doesn't break v15m_up_basic in production today:</strong> v15m_up_basic reads <code>probability_up</code> (the BLEND), not <code>probability_classifier</code> directly. The BLEND is dominated by <code>probability_lgb</code> for 15m. The classifier component is buggy but its weight is small. Strategies that DO read classifier directly (v7_15m_sniper) ARE affected.
+</div>
+
+<h2 id="v12xl-spec">8. v12-XL-15m retrain — full spec</h2>
+
+<p>Highest-leverage work. The 5m system has gone v2→v5→v9→v10→v11→v12→v12-XL with each step adding features + isotonic per-horizon. The 15m system has been frozen on <code>a547c3d</code> from 2026-04-16 (16 days old). Cloning v12-XL's architecture for 15m is the single biggest WR-ceiling lift available.</p>
+
+<h3>Architecture</h3>
+<table>
+<thead>
+<tr><th>Aspect</th><th>v12-XL (5m, today)</th><th>v12-XL-15m (proposed)</th></tr>
+</thead>
+<tbody>
+<tr><td>Algorithm</td><td>LightGBM binary classification</td><td>Same</td></tr>
+<tr><td>Loss</td><td>binary_logloss</td><td>Same</td></tr>
+<tr><td>Hyperparams</td><td>num_leaves 31, max_depth 6, lr 0.005, min_data_in_leaf 100, lambda_l2 0.1, is_unbalance true, feature_frac 0.85, bagging_frac 0.85, bagging_freq 5</td><td>Same baseline; tune lr+leaves on val</td></tr>
+<tr><td>Features</td><td>112 v10-spec + nested_5m_*</td><td>112 v10-spec + nested_15m_* (recompute aggregates over 15m sub-windows of a 1h+ bigger window) + <strong>NEW: hour_utc_sin/cos, realized_vol_60min</strong></td></tr>
+<tr><td>Horizons (seconds_to_close)</td><td>090/120/180/240</td><td><strong>180/300/480/720</strong> (15m entry band T-540 to T-180 plus a 720-T-540 slot)</td></tr>
+<tr><td>Calibration</td><td>Isotonic per horizon, post-hoc on holdout</td><td>Same</td></tr>
+<tr><td>Filter</td><td><code>outcome IN (UP,DOWN) AND trade_placed=true</code></td><td>For ghost-mode 15m: drop trade_placed filter (no trades fired), use ALL resolved windows</td></tr>
+</tbody>
+</table>
+
+<h3>Training data</h3>
+<ul>
+<li><strong>Source:</strong> RDS <code>signal_evaluations</code> JOIN <code>market_data</code> for BTC 15m</li>
+<li><strong>Size:</strong> ~5,021 resolved windows × 6 evaluation offsets per window in a 14d slice ≈ 30k rows. Going back 60d = ~120k rows.</li>
+<li><strong>Caveat:</strong> Most rows are ghost decisions (no trade fired). Need to drop the <code>trade_placed=true</code> filter for 15m or it's basically empty.</li>
+<li><strong>Holdout:</strong> last 3 days strict, isotonic-only-on-holdout, model trained on prior 57 days.</li>
+</ul>
+
+<h3>Acceptance criteria</h3>
+<table>
+<thead>
+<tr><th>Metric</th><th>Threshold</th><th>Reasoning</th></tr>
+</thead>
+<tbody>
+<tr><td>Heldout dir_acc per horizon</td><td>≥ 70%</td><td>Beats current a547c3d's expected ~70%, matches v12-XL 5m T-90 of 78%</td></tr>
+<tr><td>ECE post-iso</td><td>&lt; 0.05</td><td>Matches v12-XL 5m T-90 (0.119 was disappointment) and v9 (0.097)</td></tr>
+<tr><td>HC band coverage @ \|p-0.5\|≥0.15</td><td>≥ 25%</td><td>15m windows are noisier than 5m so lower than 5m's 43% target</td></tr>
+<tr><td>Edge over BCE-baseline</td><td>≥ +5pp</td><td>Standard "model adds signal" gate</td></tr>
+</tbody>
+</table>
+
+<h3>Deploy plan</h3>
+<ol>
+<li><strong>Train</strong> on Vast.ai or g4dn — uses <code>train_v12xl_gpu.py</code> with horizons override</li>
+<li><strong>Upload</strong> to S3: <code>v2/btc/btc_15m/v12xl_<train_sha>/<timestamp>/lgb_btc_*.txt + isotonic_btc_*.json</code></li>
+<li><strong>Update</strong> <code>v2/btc/current_15m.json</code> on S3 to point at new candidate</li>
+<li><strong>Hot-reload</strong> via <code>POST /v2/admin/reload</code> on live primary box (no restart needed) — uses <code>V2_RELOAD_TOKEN</code></li>
+<li><strong>Shadow A/B</strong> for 48h (compare new vs a547c3d on same windows) before full cutover</li>
+<li><strong>Cutover</strong>: only after shadow A/B confirms ≥+3pp WR improvement on direction-correctness</li>
+</ol>
+
+<h3>Risk register</h3>
+<table>
+<thead><tr><th>Risk</th><th>Mitigation</th></tr></thead>
+<tbody>
+<tr><td>Sample size for 15m is 1/3 of 5m → overfitting risk</td><td>Wider regularization (lambda_l2 0.5), smaller leaves (16-24), aggressive early stopping</td></tr>
+<tr><td>nested_15m features need windows of larger context (1h+) — does our data support it?</td><td>Verify <code>signal_evaluations</code> has enough trailing windows; if not, drop nested features in v12-XL-15m v1 and add later</td></tr>
+<tr><td>Calibration drift like v10 (note #276)</td><td>Use isotonic on HELDOUT only (per v12-XL pattern), not in-sample. Acceptance criterion ECE &lt; 0.05 prevents promotion if drifted.</td></tr>
+<tr><td>Hour features amplify regime exposure</td><td>Validate the model isn't just "long during good hours" — check direction-balance per hour bucket</td></tr>
+</tbody>
+</table>
+
+<h2 id="deploy">9. Current deploy state per box</h2>
+
+<table>
+<thead>
+<tr><th>Box</th><th>IP</th><th>Container</th><th>Classifier</th><th>LGB</th><th>Used by engine?</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><strong>novakash-timesfm-v2</strong> (live primary)</td>
+  <td>16.52.14.182</td>
+  <td>Up 17d healthy</td>
+  <td><code>path1_classifier/2026-04-18/unified_head/</code> (v1, 4-asset, 5m only)</td>
+  <td>v9 prod (5m: candidate_ab83564), v9 derivative for 15m: a547c3d</td>
+  <td>✅ <strong>YES — TIMESFM_URL points here</strong></td>
+</tr>
+<tr>
+  <td><strong>novakash-classifier-gpu</strong></td>
+  <td>3.96.151.28</td>
+  <td>Up 1h (restarted today)</td>
+  <td><code>cls_traj_14f_iso</code> (5m) + <code>15m_head_v1</code> (15m)</td>
+  <td>Same as live primary (LGBs from S3)</td>
+  <td>❌ Engine doesn't query this</td>
+</tr>
+<tr>
+  <td>timesfm-classifier-shadow</td>
+  <td>16.54.184.137</td>
+  <td>Up 7d</td>
+  <td>regime-fix v2 head (older)</td>
+  <td>Same</td>
+  <td>❌ Shadow only</td>
+</tr>
+<tr>
+  <td>novakash-timesfm</td>
+  <td>3.98.114.0</td>
+  <td>Up</td>
+  <td>Pre-v2 stack</td>
+  <td>Older candidates</td>
+  <td>❌ Legacy</td>
+</tr>
+</tbody>
+</table>
+
+<h2 id="actions">10. Recommended next actions</h2>
+
+<div class="kpi-grid">
+<div class="kpi"><div class="value">3</div><div class="label">Tier 1 actions</div></div>
+<div class="kpi accent"><div class="value">1</div><div class="label">Tier 3 retrain (highest leverage)</div></div>
+<div class="kpi warn"><div class="value">2</div><div class="label">Open infra bugs (audit #342, #267)</div></div>
+<div class="kpi purple"><div class="value">cls_traj</div><div class="label">Validate before promoting</div></div>
+</div>
+
+<table>
+<thead>
+<tr><th>#</th><th>Action</th><th>Audit</th><th>Effort</th><th>Lift expected</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td>1</td>
+  <td><strong>Validate cls_traj_14f_iso vs unified_head in shadow A/B</strong> — 24-48h on production traffic. Confirm UP-bias is gone post-PR-#131.</td>
+  <td>—</td>
+  <td>4h script + 48h wait</td>
+  <td>If passes: replaces 5m classifier head with one that has ECE 5e-9 vs 0.04+. Lifts both 5m and 15m blends.</td>
+</tr>
+<tr>
+  <td>2</td>
+  <td><strong>Diagnose audit #342</strong> per-timescale dispatch bug. Read forecast cache logic + add debug logging on GPU box. Find why 5m and 15m return identical p_classifier.</td>
+  <td>#342</td>
+  <td>2-4h</td>
+  <td>Once fixed, the 15m_head_v1's signal flows to v15m_up_basic's blend. Currently silently broken.</td>
+</tr>
+<tr>
+  <td>3</td>
+  <td><strong>Train v12-XL-15m</strong> per spec above. 60d of BTC 15m labels exist. Holdout 3 days, isotonic per horizon, acceptance dir_acc ≥70% + ECE &lt;0.05.</td>
+  <td>#347</td>
+  <td>3-5 days (training + shadow A/B)</td>
+  <td><strong>Highest expected lift</strong>. Replaces 16-day-old a547c3d with a 112-feature ensemble. Plausibly +5-10pp WR ceiling for v15m_up_basic.</td>
+</tr>
+<tr>
+  <td>4</td>
+  <td>Close audit #267 — wire per-asset feature cache for ETH/SOL/XRP on ML box.</td>
+  <td>#267</td>
+  <td>1-2 days</td>
+  <td>Unblocks ETH/XRP 15m strategies. Currently stuck on cold_start.</td>
+</tr>
+<tr>
+  <td>5</td>
+  <td>Train ETH/XRP 15m LGBs (SOL skip — exec costs).</td>
+  <td>#266</td>
+  <td>2-3 days after #267</td>
+  <td>Multi-asset 15m trading.</td>
+</tr>
+<tr>
+  <td>6</td>
+  <td>Audit #250 path1 classifier retrain — focal loss + label smoothing + logit-L2 (per note #190 plan).</td>
+  <td>#250</td>
+  <td>5-7 days</td>
+  <td>Fixes the chronic under-confidence of unified_head live (HC 7% vs 43% val). High lift if cls_traj_14f_iso doesn't pass shadow A/B in (1).</td>
+</tr>
+</tbody>
+</table>
+
+<div class="alert success">
+<strong>The single most important thing:</strong> Train v12-XL-15m. The 5m system is healthy because it has v9/v10/v11/v12/v12-XL — 5 LGB iterations + a classifier. The 15m system has ONE 16-day-old LGB and a v1-style classifier head. Cloning the 5m architecture for 15m matches the 5m system's depth.
+</div>
+
+<footer>
+<p><strong>Generated:</strong> 2026-05-01 (agent session) · Sources: novakash-timesfm-repo git log + S3 inventory + 229 hub notes (filter on classifier/promotion/long-context/15m) + GPU box engine logs</p>
+<p><strong>Critical hub notes referenced:</strong> #172 (multi-asset coverage), #190 (path1 retrain plan), #238 (classifier session 2026-04-24), #241 (v2 classifier perf report), #246 (shadow-read deploy), #247 (production-vs-val gap), #263 (GPU box setup + DO NOT PROMOTE), #286 (isotonic refit DO NOT PROMOTE)</p>
+</footer>
+
+</div>
+</body>
+</html>
