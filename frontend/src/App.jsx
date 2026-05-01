@@ -77,6 +77,7 @@ const V4Surface           = lazy(() => import('./pages/data-surfaces/V4Surface.j
 const Assembler1          = lazy(() => import('./pages/data-surfaces/Assembler1.jsx'));
 
 import { ARCHIVED_PAGES, ARCHIVED_STRATEGY_FLOORS } from './nav/navigation.js';
+import { ToastProvider } from './components/shared/Toast.jsx';
 
 const ARCHIVE_COMPONENTS = {
   PaperDashboard, PlaywrightDashboard, ExecutionHQ, LiveTrading, FactoryFloor,
@@ -123,6 +124,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
+        <ToastProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
 
@@ -236,6 +238,7 @@ export default function App() {
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        </ToastProvider>
       </AuthProvider>
     </BrowserRouter>
   );
