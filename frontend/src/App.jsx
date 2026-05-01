@@ -19,6 +19,7 @@ import Strategies from './pages/Strategies.jsx';
 import MayStrategy from './pages/MayStrategy.jsx';
 import Monitor from './pages/Monitor.jsx';
 import Compare from './pages/compare/Compare.jsx';
+import ModelGenealogy from './pages/ModelGenealogy.jsx';
 import Desk from './pages/desk/Desk.jsx';
 
 // Archive wrapper
@@ -140,6 +141,7 @@ export default function App() {
             <Route path="system" element={<System />} />
             <Route path="monitor" element={<Monitor />} />
             <Route path="compare" element={<Compare />} />
+            <Route path="model-genealogy" element={<ModelGenealogy />} />
             <Route path="desk" element={<Desk />} />
             <Route path="factory" element={
               <Suspense fallback={<Loading label="Loading factory floor..." />}>
