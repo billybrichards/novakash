@@ -1347,6 +1347,31 @@ class StrategyRegistry:
                     )
                 )
 
+                # Audit-task #332 — also stamp probability_lgb_v12 on the
+                # parallel signal_evaluations writer target. Column was added
+                # by migration but no engine path ever wrote it (writer
+                # regression #6, parallel to PRs #438/#441). UPDATE-only:
+                # no-op when the row has not yet been written by
+                # ``_write_signal_evaluation``; the next eval tick fills it.
+                v12 = ens_fields.get("probability_lgb_v12")
+                if v12 is not None and hasattr(
+                    self._db, "update_signal_evaluations_lgb_v12"
+                ):
+                    se_task = asyncio.create_task(
+                        self._db.update_signal_evaluations_lgb_v12(
+                            window_ts=surface.window_ts,
+                            asset=surface.asset,
+                            timeframe=surface.timescale,
+                            eval_offset=surface.eval_offset,
+                            probability_lgb_v12=v12,
+                        )
+                    )
+                    se_task.add_done_callback(
+                        self._log_async_write_error(
+                            "registry.signal_eval_lgb_v12_write_error"
+                        )
+                    )
+
     def _write_gate_traces(
         self,
         *,
