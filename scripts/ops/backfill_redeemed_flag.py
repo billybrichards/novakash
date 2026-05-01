@@ -8,15 +8,34 @@ every WIN row despite real on-chain redemptions confirming. The forward
 fix lives in ``engine/execution/redeemer.py::redeem_position_onchain``.
 
 This script cleans up the historic gap. It pulls every REDEEM activity
-event from ``data-api.polymarket.com/activity`` for the funder wallet,
-matches each redeemed condition_id to its WIN trade rows on Montreal RDS,
-and runs the same UPDATE the live writer now runs:
+event from ``data-api.polymarket.com/activity`` for the funder wallet
+and matches each redeemed market to its WIN trade rows on Montreal RDS.
+
+Match key — ``market_slug``
+---------------------------
+The natural join is ``market_slug``: every BTC up/down 5-min market has a
+unique slug (``btc-updown-5m-<unix_ts>``), the activity API returns it as
+``slug``, and ``trades.market_slug`` already stores it for every row. We
+use ``market_slug`` instead of ``conditionId`` because ``trades.metadata``
+does NOT carry ``condition_id`` (verified via ``jsonb_object_keys``); the
+prior implementation joined on a key that never existed and matched zero
+rows. ``conditionId`` is still captured in the log output for audit.
+
+Why slug is safe (no over-match risk):
+  * Each market resolves with exactly ONE winning side. ``outcome='WIN'``
+    selects only that side, so even though a slug nominally has UP+DOWN
+    tokens, only the winning side has ``outcome='WIN'`` rows.
+  * Verified empirically (30d): 0 slugs have WIN rows on both directions.
+  * Multi-row matches per slug are real (split fills) and all should
+    flip together — the real REDEEM tx covers all of them at once.
+
+The UPDATE this script runs:
 
     UPDATE trades
        SET redeemed      = true,
            redeemed_at   = <activity.timestamp>,
            redemption_tx = <activity.transactionHash>
-     WHERE metadata->>'condition_id' = <activity.conditionId>
+     WHERE market_slug = <activity.slug>
        AND outcome = 'WIN'
        AND redeemed = false
        AND is_live = true
@@ -103,10 +122,11 @@ def _fetch_redeems(since_ts: int) -> list[dict]:
     addr = _funder()
     rows: list[dict] = []
     offset = 0
-    while offset < 3000:
+    # type=REDEEM cuts the page payload by ~10x vs the full activity feed.
+    while offset < 5000:
         url = (
             "https://data-api.polymarket.com/activity?user="
-            + addr + "&limit=500&offset=" + str(offset)
+            + addr + "&type=REDEEM&limit=500&offset=" + str(offset)
         )
         req = urllib.request.Request(
             url, headers={"User-Agent": "Mozilla/5.0"}
@@ -133,31 +153,31 @@ def _fetch_redeems(since_ts: int) -> list[dict]:
 
 
 def _consolidate(redeems: list[dict]) -> dict[str, dict]:
-    """Collapse multiple redeem events on the same condition_id to one row.
+    """Collapse multiple redeem events on the same market slug to one row.
 
     Keeps the LATEST timestamp (most recent redemption) and the tx_hash
-    of that latest event. The DB UPDATE is idempotent per-condition,
-    so re-running with multiple events for the same cond is harmless,
-    but we want stable output.
+    of that latest event. The DB UPDATE is idempotent per-slug, so
+    re-running with multiple events for the same slug is harmless, but
+    we want stable output. Rows missing a slug are dropped (can't match).
     """
-    by_cond: dict[str, dict] = {}
+    by_slug: dict[str, dict] = {}
     for r in redeems:
-        cid = r.get("conditionId")
-        if not cid:
+        slug = r.get("slug") or r.get("eventSlug")
+        if not slug:
             continue
-        existing = by_cond.get(cid)
+        existing = by_slug.get(slug)
         if existing is None or r["timestamp"] > existing["timestamp"]:
-            by_cond[cid] = r
-    return by_cond
+            by_slug[slug] = r
+    return by_slug
 
 
 async def _backfill(
     *,
-    redeems_by_cond: dict[str, dict],
+    redeems_by_slug: dict[str, dict],
     execute: bool,
     verbose: bool,
 ) -> dict[str, int]:
-    """Apply (or simulate) the UPDATE for each condition_id.
+    """Apply (or simulate) the UPDATE for each market slug.
 
     Returns a counters dict: scanned, matched, updated, skipped_already_set.
     """
@@ -167,7 +187,7 @@ async def _backfill(
         sys.exit("asyncpg not installed — pip install asyncpg")
 
     counters = {
-        "scanned": len(redeems_by_cond),
+        "scanned": len(redeems_by_slug),
         "matched": 0,
         "updated": 0,
         "skipped_already_set": 0,
@@ -176,32 +196,35 @@ async def _backfill(
 
     conn = await asyncpg.connect(_db_url())
     try:
-        for cid, ev in redeems_by_cond.items():
+        for slug, ev in redeems_by_slug.items():
             redeemed_at = datetime.fromtimestamp(
                 ev["timestamp"], tz=timezone.utc
             )
             tx_hash = ev.get("transactionHash") or ev.get("transaction_hash")
+            cid = ev.get("conditionId") or ""
+            cid_tag = cid[:10] + ".." if cid else "<no-cid>"
 
             # Probe matching candidate rows (read-only).
             candidates = await conn.fetch(
                 """
-                SELECT id, redeemed, redeemed_at, redemption_tx, fill_size
+                SELECT id, redeemed, redeemed_at, redemption_tx, fill_size,
+                       direction, metadata->>'token_id' AS token_id
                   FROM trades
-                 WHERE metadata->>'condition_id' = $1
+                 WHERE market_slug = $1
                    AND outcome = 'WIN'
                    AND is_live = true
                    AND fill_size IS NOT NULL
                    AND fill_size > 0
                 """,
-                cid,
+                slug,
             )
             if not candidates:
                 counters["no_matching_trade"] += 1
                 if verbose:
                     print(
-                        f"  [no-match] {cid[:14]}.. (redeemed on-chain at "
-                        f"{redeemed_at.isoformat()}, $"
-                        f"{float(ev.get('usdcSize', 0)):.2f})"
+                        f"  [no-match] {slug} cid={cid_tag} "
+                        f"(redeemed on-chain at {redeemed_at.isoformat()}, "
+                        f"${float(ev.get('usdcSize', 0)):.2f})"
                     )
                 continue
 
@@ -213,7 +236,7 @@ async def _backfill(
                 counters["skipped_already_set"] += already
                 if verbose:
                     print(
-                        f"  [already] {cid[:14]}.. {already} row(s) already "
+                        f"  [already] {slug} {already} row(s) already "
                         f"redeemed=true — no-op"
                     )
                 continue
@@ -225,7 +248,7 @@ async def _backfill(
                        SET redeemed      = true,
                            redeemed_at   = $1,
                            redemption_tx = $2
-                     WHERE metadata->>'condition_id' = $3
+                     WHERE market_slug = $3
                        AND outcome = 'WIN'
                        AND redeemed = false
                        AND is_live = true
@@ -234,7 +257,7 @@ async def _backfill(
                     """,
                     redeemed_at,
                     tx_hash,
-                    cid,
+                    slug,
                 )
                 try:
                     n = int(result.split()[-1])
@@ -242,16 +265,17 @@ async def _backfill(
                     n = 0
                 counters["updated"] += n
                 print(
-                    f"  [UPDATED] {cid[:14]}.. "
-                    f"rows={n} tx={tx_hash[:14] if tx_hash else 'null'}.. "
+                    f"  [UPDATED] {slug} cid={cid_tag} rows={n} "
+                    f"tx={tx_hash[:14] if tx_hash else 'null'}.. "
                     f"at={redeemed_at.isoformat()}"
                 )
             else:
                 # Dry-run — show what we would do.
                 ids = ",".join(str(c["id"]) for c in todo)
                 print(
-                    f"  [DRY] {cid[:14]}.. would UPDATE {len(todo)} row(s) "
-                    f"id={ids} tx={tx_hash[:14] if tx_hash else 'null'}.. "
+                    f"  [DRY] {slug} cid={cid_tag} would UPDATE "
+                    f"{len(todo)} row(s) id={ids} "
+                    f"tx={tx_hash[:14] if tx_hash else 'null'}.. "
                     f"at={redeemed_at.isoformat()}"
                 )
                 counters["updated"] += len(todo)
@@ -268,8 +292,13 @@ def main() -> None:
         help="Lookback window in hours (default 168 = 7 days).",
     )
     parser.add_argument(
+        "--slug", default=None,
+        help="Backfill a single market_slug only (debug aid).",
+    )
+    parser.add_argument(
         "--condition-id", default=None,
-        help="Backfill a single condition_id only (debug aid).",
+        help="Backfill a single conditionId only (debug aid; "
+             "filters the activity feed before slug match).",
     )
     parser.add_argument(
         "--execute", action="store_true",
@@ -291,20 +320,25 @@ def main() -> None:
     redeems = _fetch_redeems(since_ts)
     if args.condition_id:
         redeems = [r for r in redeems if r.get("conditionId") == args.condition_id]
-    redeems_by_cond = _consolidate(redeems)
+    if args.slug:
+        redeems = [
+            r for r in redeems
+            if (r.get("slug") == args.slug or r.get("eventSlug") == args.slug)
+        ]
+    redeems_by_slug = _consolidate(redeems)
     print(
         f"  {len(redeems)} REDEEM events  -> "
-        f"{len(redeems_by_cond)} unique condition_ids"
+        f"{len(redeems_by_slug)} unique market_slugs"
     )
 
-    if not redeems_by_cond:
+    if not redeems_by_slug:
         print("\nNothing to backfill.")
         return
 
     print("\nRunning UPDATEs (idempotent, only touches redeemed=false rows)...")
     counters = asyncio.run(
         _backfill(
-            redeems_by_cond=redeems_by_cond,
+            redeems_by_slug=redeems_by_slug,
             execute=args.execute,
             verbose=args.verbose,
         )
