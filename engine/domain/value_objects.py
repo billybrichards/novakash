@@ -476,10 +476,10 @@ class ManualTradeOutcome:
     paper: bool = False
     token_source: Optional[str] = None  # "recent_windows" | "market_data_db"
 
-    _VALID_STATUSES = frozenset({"open", "failed_no_token"})
+    _VALID_STATUSES = frozenset({"open", "failed_no_token", "failed_risk_gate"})
 
     def __post_init__(self) -> None:
-        # Allow "open", "failed_no_token", or anything starting with "failed:"
+        # Allow "open", "failed_no_token", "failed_risk_gate", or anything starting with "failed:"
         if self.status not in self._VALID_STATUSES and not self.status.startswith("failed:"):
             raise ValueError(f"invalid manual trade status: {self.status!r}")
 

@@ -129,6 +129,10 @@ class EngineRuntime:
         self._polymarket_feed = root._polymarket_feed
         self._tick_recorder = root._tick_recorder
 
+        # ── B1/B2/B3/B4: Manual Trade Use Case + Poller ───────────────────────
+        self._execute_manual_trade_uc = getattr(root, "_execute_manual_trade_uc", None)
+        self._manual_trade_poller_task_obj = getattr(root, "_manual_trade_poller", None)
+
         # ── Runtime-only state (was previously at top of Orchestrator.__init__) ─
         self._shutdown_event = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
@@ -1064,6 +1068,20 @@ class EngineRuntime:
         self._tasks.append(
             asyncio.create_task(self._manual_trade_poller(), name="manual_trade_poller")
         )
+
+        # 7b-uc. ManualTradePoller (Track B — use-case driven poller).
+        # Runs alongside the legacy god-class poller above so the new
+        # code path is exercised in production without removing the
+        # existing fallback. Phase 3 of the migration plan removes the
+        # legacy poller once the UC path is verified stable.
+        if self._manual_trade_poller_task_obj is not None:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._manual_trade_poller_task_obj.run(),
+                    name="manual_trade_poller_uc",
+                )
+            )
+            log.info("orchestrator.manual_trade_poller_uc_started")
 
         # 7c. POLY-SOT reconciler loop (always-on, runs in both paper and
         # live mode so paper trades exercise the same code path that live

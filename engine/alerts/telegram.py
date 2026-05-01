@@ -3825,6 +3825,43 @@ class TelegramAlerter:
         except Exception as exc:
             self._log.warning("telegram.raw_message_failed", error=str(exc)[:200])
 
+    async def send_raw_message_to(self, text: str, chat_id: str) -> None:
+        """Send a raw markdown message to an explicit chat_id.
+
+        B3 — manual-trade alerter uses this to route alerts to a dedicated
+        chat without modifying the primary chat_id on the shared alerter.
+        Falls back to the standard send path silently on error.
+        """
+        if not self._bot_token or not chat_id:
+            return
+        try:
+            session = await self._get_session()
+            payload = {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True,
+            }
+            async with session.post(
+                self._url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    self._log.warning(
+                        "telegram.send_raw_message_to_failed",
+                        chat_id=chat_id,
+                        status=resp.status,
+                        body=body[:200],
+                    )
+        except Exception as exc:
+            self._log.warning(
+                "telegram.send_raw_message_to_error",
+                chat_id=chat_id,
+                error=str(exc)[:200],
+            )
+
     async def send_redeem_alert(self, result: dict) -> None:
         try:
             redeemed = result.get("redeemed", 0)
