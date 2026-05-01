@@ -26,16 +26,16 @@ _SQL = """
         ws.regime,
         sd.fill_price,
         (sd.metadata_json->>'stake_usd')::numeric      AS stake_usd,
-        CASE
-            WHEN ws.close_price > ws.open_price THEN 'UP'
-            WHEN ws.close_price < ws.open_price THEN 'DOWN'
-            ELSE NULL
-        END                                            AS actual_outcome,
+        ws.outcome                                     AS actual_outcome,
         sd.evaluated_at
     FROM strategy_decisions sd
-    LEFT JOIN window_snapshots ws
-        ON sd.asset   = ws.asset
-        AND sd.window_ts = ws.window_ts
+    LEFT JOIN LATERAL (
+        SELECT outcome, regime
+        FROM window_snapshots
+        WHERE asset = sd.asset AND window_ts = sd.window_ts
+        ORDER BY (outcome IS NOT NULL) DESC, eval_offset DESC NULLS LAST
+        LIMIT 1
+    ) ws ON TRUE
     WHERE sd.action      = 'TRADE'
       AND sd.executed    = TRUE
       AND sd.evaluated_at >= $1
