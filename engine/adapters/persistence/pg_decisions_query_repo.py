@@ -23,7 +23,7 @@ _SQL = """
         sd.window_ts,
         sd.eval_offset,
         sd.direction,
-        sd.regime,
+        ws.regime,
         sd.fill_price,
         (sd.metadata_json->>'stake_usd')::numeric      AS stake_usd,
         CASE
