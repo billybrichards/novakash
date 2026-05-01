@@ -7,12 +7,7 @@ Responsibility
 --------------
 Drain the ``manual_trades`` table of pending rows, look up each row's
 CLOB token_id (ring buffer -> DB fallback), and place the trade (or mark
-``failed_no_token``).
-
-This use case is **not** wired into the orchestrator yet.  It exists
-alongside the god class so the orchestrator continues to run its own
-``_manual_trade_poller`` loop unchanged.  The wiring will happen in
-Phase 3 of the migration plan.
+``failed_no_token`` / ``failed_risk_gate``).
 
 Port dependencies (all from ``engine/domain/ports.py``):
   - PolymarketClientPort -- place_order, poll_pending_trades, get_window_market
@@ -20,6 +15,9 @@ Port dependencies (all from ``engine/domain/ports.py``):
   - WindowStateRepository -- token_id ring buffer equivalent
   - AlerterPort -- LT-02 failure alerts + execution confirmations
   - Clock -- deterministic time for testing
+  - risk_manager -- optional RiskManager (or duck-typed equivalent) with
+    ``approve(stake_usd, strategy)`` async method returning (bool, str).
+    When provided, all trades are gated before order placement.
 """
 
 from __future__ import annotations
@@ -63,6 +61,7 @@ class ExecuteManualTradeUseCase:
         alerts: AlerterPort,
         clock: Clock,
         *,
+        risk_manager=None,
         paper_mode: bool = True,
         price_buffer: float = 0.02,
         max_price: float = 0.65,
@@ -72,6 +71,10 @@ class ExecuteManualTradeUseCase:
         self._window_state = window_state
         self._alerts = alerts
         self._clock = clock
+        # Optional RiskManager (or duck-typed equivalent): must expose
+        # ``async approve(stake_usd: float, strategy: str) -> tuple[bool, str]``.
+        # When None, the risk gate is skipped (pre-wiring compatibility).
+        self._risk_manager = risk_manager
         self._paper_mode = paper_mode
         self._price_buffer = price_buffer
         self._max_price = max_price
@@ -129,17 +132,33 @@ class ExecuteManualTradeUseCase:
                 extra={"trade_id": trade_id, "source": token_source},
             )
 
-            # Step 3: place order
+            # Step 3: risk gate (B2 — skip when risk_manager not wired)
+            if self._risk_manager is not None:
+                approved, reason = await self._risk_manager.approve(
+                    trade.stake_usd, strategy="manual_trade"
+                )
+                if not approved:
+                    await self._manual_trade_repo.update_status(
+                        trade_id, "failed_risk_gate",
+                    )
+                    await self._alert_risk_gate_rejection(trade, direction, reason)
+                    return ManualTradeOutcome(
+                        trade_id=trade_id,
+                        status="failed_risk_gate",
+                        paper=self._paper_mode,
+                    )
+
+            # Step 4: place order
             clob_order_id = await self._place_order(
                 trade, direction, token_id,
             )
 
-            # Step 4: mark open
+            # Step 5: mark open
             await self._manual_trade_repo.update_status(
                 trade_id, "open", clob_order_id=clob_order_id,
             )
 
-            # Step 5: alert success
+            # Step 6: alert success
             await self._alert_success(trade, direction)
 
             return ManualTradeOutcome(
@@ -243,6 +262,21 @@ class ExecuteManualTradeUseCase:
             },
         )
         return clob_id
+
+    async def _alert_risk_gate_rejection(
+        self, trade: PendingTrade, direction: str, reason: str,
+    ) -> None:
+        """Send Telegram alert when the risk gate blocks a manual trade."""
+        try:
+            await self._alerts.send_system_alert(
+                f"Manual Trade Rejected — Risk Gate\n\n"
+                f"Trade ID: {trade.trade_id[:16]}\n"
+                f"Direction: {direction} ({trade.asset} {trade.timeframe})\n"
+                f"Stake: ${trade.stake_usd:.2f}\n"
+                f"Reason: {reason}",
+            )
+        except Exception:
+            pass
 
     async def _alert_token_failure(
         self, trade: PendingTrade, direction: str,
