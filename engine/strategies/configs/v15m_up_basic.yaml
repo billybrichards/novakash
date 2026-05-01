@@ -1,8 +1,20 @@
 name: v15m_up_basic
-version: "1.0.0"
+version: "1.1.0"
 mode: GHOST
 asset: BTC
 timescale: 15m
+
+# v1.1.0 — 2026-05-01 — Add session_hours blocklist for US session (16-21 UTC).
+#
+# Ghost analysis (14d, n=132 unique windows): per-window deduped WR 73%, but
+# UTC hours 16, 17, 18, 21 ranged 25-57% (US AM session = high vol / news).
+# Blocking UTC 16-21 lifts the deduped WR to 78.4% and sim PnL +42% (+$60→+$85).
+#
+# Mode stays GHOST in YAML; LIVE flip happens via DB override on
+# strategy_runtime_overrides (RDS) — see audit task #343, hub note #311,
+# docs/15m_winning_strategy/recommendation.md.
+#
+# Revert path: DELETE the override row → strategy back to YAML's GHOST mode.
 
 gates:
   - type: timing
@@ -11,6 +23,8 @@ gates:
     params: { direction: UP }
   - type: confidence
     params: { min_dist: 0.15 }
+  - type: session_hours
+    params: { block_hours_utc: [16, 17, 18, 19, 20, 21] }
 
 sizing:
   type: fixed_kelly

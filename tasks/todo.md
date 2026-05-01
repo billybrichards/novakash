@@ -1,5 +1,115 @@
 # tasks/todo.md — BTC Trader Hub
 
+## v15m_up_basic LIVE Promotion via RDS Override + Hour Filter — 2026-05-01
+
+### Goal
+Flip `v15m_up_basic` GHOST → LIVE on BTC 15m with:
+- UTC hour filter blocking 16-21 (US session, where ghost WR drops to 25-50%)
+- Low Kelly (`fraction: 0.005`, `max_collateral_pct: 0.02`) while we monitor
+- Easy revert path: DELETE override row → strategy back to GHOST
+
+### Critical infra facts (verified this session)
+1. **Engine reads from RDS**, NOT Railway. `DATABASE_URL` on Montreal = `postgres@novakash-pg-prod.cpmisy2asv71.ca-central-1.rds.amazonaws.com:5432/novakash`. Hub is on Railway. **`PATCH /api/strategies/{id}/override` via Hub goes to Railway and is INVISIBLE to the engine.** All overrides must be written directly to RDS.
+2. **Engine polls `strategy_runtime_overrides` every 30s** (`engine/strategies/runtime_override.py`). Override layering: YAML → env → DB override → final. Override mode wins when non-null.
+3. **Override only changes `mode` + `gate_params` (shallow merge)**. The `gates` LIST and `sizing` block are STRUCTURAL — cannot be added/removed via override. So the hour filter MUST be in YAML.
+4. **`v15m_up_basic` uses pure declarative gates with no hook**. Gate-level `params` are nested per-gate; there is no top-level `gate_params` for v15m_up_basic. So the override pattern of merging `{absolute_max_bet, max_position_usd, ...}` into `gate_params` (as v12_lgb_combo does) **does nothing for v15m_up_basic** — that strategy has no code reading those keys.
+5. **`SessionHoursGate` supports `block_hours_utc`** (blocklist) AND `hours_utc` (allowlist) — verified in `engine/strategies/gates/session_hours.py`.
+6. **System-wide `max_position_usd` cap** is enforced from `trading_configs` runtime sync (`engine/execution/risk_manager.py:100`). Per-strategy cap requires a hook OR YAML `sizing` block.
+7. **Per-asset classifier heads were NEVER trained**. Single shared `path1_classifier/2026-04-18/unified_head/` (multi-asset trained but single head) and shared `15m_head_v1`. Confirmed via S3 inventory.
+
+### Plan
+
+#### Phase A — Pre-flight checks (no changes)
+- [ ] Confirm engine commit + restart timestamp on Montreal box (which YAML version is currently loaded).
+- [ ] Pull current `strategy_runtime_overrides` for `v15m_up_basic` from RDS (expect: no row → strategy in YAML's GHOST mode).
+- [ ] Pull current `trading_configs` active row from RDS — confirm system-wide `bet_fraction`, `max_position_usd`.
+- [ ] Verify `v15m_up_basic` is generating decisions in last 5min (proves the strategy is loaded into the engine).
+
+#### Phase B — YAML PR (the parts that must be structural)
+- [ ] Edit `engine/strategies/configs/v15m_up_basic.yaml`:
+  - Add `session_hours` gate with `block_hours_utc: [16, 17, 18, 19, 20, 21]`
+  - Reduce `sizing.fraction: 0.025 → 0.005` (1/5x Kelly while monitoring)
+  - Reduce `sizing.max_collateral_pct: 0.05 → 0.02`
+  - Keep `mode: GHOST` (the YAML stays GHOST; LIVE flip happens via DB override)
+- [ ] Run `pytest engine/tests/unit/strategies/test_strategy_configs.py` to verify YAML parses + gates resolve.
+- [ ] Commit + push branch `feat/15m-up-basic-live-rds-override` to origin.
+
+#### Phase C — Deploy YAML to Montreal (do NOT promote LIVE yet)
+- [ ] Rsync the updated YAML to `/home/novakash/novakash/engine/strategies/configs/v15m_up_basic.yaml` on Montreal (`15.222.138.228`).
+- [ ] Restart engine via `bash /home/novakash/novakash/scripts/restart_engine.sh`.
+- [ ] Verify YAML loaded: tail engine.log for `v15m_up_basic` decision with `session_hours` skip reason during a blocked hour, OR confirm gate count = 4 (was 3).
+- [ ] Strategy still in GHOST. No money at risk yet.
+
+#### Phase D — Validate hour-filtered ghost behavior (24h soak)
+- [ ] After 24h with new YAML, query RDS: per-window deduped WR for `v15m_up_basic` since YAML deploy. Must be ≥70%, no single day <50%, sample size ≥20 windows.
+- [ ] Pull skip-reason distribution: confirm `session_hours: hour=X in blocked [16-21]` is firing during US session.
+- [ ] If WR < 70% over n>20 → STOP, do not promote LIVE. Re-plan.
+
+#### Phase E — RDS DB override → mode=LIVE (the actual money moment)
+- [ ] Direct SQL UPSERT on RDS to `strategy_runtime_overrides`:
+  ```sql
+  INSERT INTO strategy_runtime_overrides
+      (strategy_id, mode, params, updated_at, updated_by, updated_reason)
+  VALUES (
+      'v15m_up_basic',
+      'LIVE',
+      NULL,
+      NOW(),
+      'billy',
+      'Promote LIVE 2026-05-01 — 73% per-window deduped WR over 132 windows + UTC 16-21 hour filter (YAML PR). Low Kelly 0.005, max_collateral 0.02. Revert via DELETE row.'
+  )
+  ON CONFLICT (strategy_id) DO UPDATE SET
+      mode = 'LIVE',
+      params = NULL,
+      updated_at = NOW(),
+      updated_by = EXCLUDED.updated_by,
+      updated_reason = EXCLUDED.updated_reason;
+  ```
+- [ ] Wait 35-40s for engine cache refresh (30s timer + buffer).
+- [ ] Tail engine.log for first `v15m_up_basic` TRADE decision with `mode: LIVE`.
+- [ ] Confirm Telegram alert fires on first executed trade.
+
+#### Phase F — Monitor (first 48h LIVE)
+- [ ] Hourly cron: pull v15m_up_basic LIVE trades from RDS. Compute rolling WR + sim PnL.
+- [ ] Kill criteria — auto-revert to GHOST via RDS DELETE if ANY of:
+  - Rolling 50-trade WR < 65%
+  - Cumulative PnL < -$25 (5x the max single-trade stake)
+  - 3 consecutive losses
+  - Any single-trade loss > $5 (sizing bug indicator)
+- [ ] At 48h: post Hub note (#312+) + audit task #343 update with results.
+
+#### Phase G — Tier-1.3 follow-on (separate PR after 48h LIVE)
+- [ ] Create `v15m_down_basic` (mirror with `direction: DOWN` + same hour filter).
+- [ ] Same Phase B → C → D → E flow.
+
+### Decision points I'll surface back
+1. Is the `restart_engine.sh` flow on Montreal acceptable, or do you have a different deploy path I should use?
+2. Kelly fraction `0.005` (0.5% Kelly) — too low? Reasonable to start higher at `0.01`?
+3. The 24h soak in Phase D — do you want to skip and go straight to LIVE, given the existing 14d ghost data?
+4. Kill criteria thresholds — agree?
+
+### Risks
+| Risk | Mitigation |
+|---|---|
+| YAML deploy without restart = no effect | Phase C step explicitly restarts engine |
+| RDS write but engine cache stale | 30s timer is the floor; wait 35-40s after UPSERT |
+| Hour filter regresses 14d ghost data (different gate count = different sample) | Phase D 24h soak validates the new gate set before LIVE |
+| Per-strategy Kelly low-cap won't bind because system-wide cap is higher | Use `sizing.fraction: 0.005` in YAML (per-strategy), NOT just gate_params override |
+| Dual-DB confusion: Hub on Railway, engine on RDS | All override writes go to RDS via psql, NOT via Hub API |
+| Engine doesn't actually pick up YAML change | After restart, verify gate count = 4 in decision metadata |
+
+### Per-asset classifier head check (user's question)
+Confirmed via S3 inventory — **NO per-asset classifier heads were trained**. Only:
+- `path1_classifier/2026-04-18/unified_head/` — single 4-asset-trained head (BTC/ETH/SOL/XRP), 5m only
+- `path1_classifier/2026-04-25T15-34/cls_traj_14f_iso/` — single 5m head (best, never promoted live)
+- `timesfm_finetune/15m_head_v1/` — single 15m head (val 75.4%)
+- Multiple 5m LGB models per asset (`v2/{btc,eth,sol,xrp}/{asset}_5m/`)
+- **Zero 15m LGB models for ETH/SOL/XRP** — confirmed `v2/eth/current_15m_binance.json` returns NoSuchKey
+
+So the answer to "did we train per-asset v2 classifier or v1 heads": **No**. The classifier heads were always single shared multi-asset heads. This means ETH/SOL/XRP 15m issue is purely upstream (per-asset feature cache / no 15m LGB), not a missing classifier.
+
+---
+
 ## Gate Audit + Window Decision Trace Plan — 2026-04-15
 
 ### Plan
