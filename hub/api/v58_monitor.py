@@ -4000,6 +4000,71 @@ async def strategy_comparison(
         ).mappings().all()
 
         if sc_rows:
+            sids = [r["strategy_id"] for r in sc_rows]
+
+            mode_rows = (
+                await db.execute(
+                    text("""
+                        SELECT DISTINCT ON (strategy_id) strategy_id, mode
+                        FROM strategy_decisions
+                        WHERE strategy_id = ANY(:sids)
+                          AND evaluated_at > NOW() - INTERVAL '1 day' * :days
+                        ORDER BY strategy_id, evaluated_at DESC
+                    """),
+                    {"sids": sids, "days": days},
+                )
+            ).mappings().all()
+            mode_by_sid = {r["strategy_id"]: (r["mode"] or "ghost").lower() for r in mode_rows}
+
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            daily_rows = (
+                await db.execute(
+                    text("""
+                        SELECT
+                            sd.strategy_id,
+                            DATE(sd.evaluated_at) AS day,
+                            count(*) FILTER (WHERE ws.outcome IS NOT NULL
+                                             AND ws.outcome = sd.direction) AS wins,
+                            count(*) FILTER (WHERE ws.outcome IS NOT NULL
+                                             AND ws.outcome <> sd.direction) AS losses,
+                            count(*) FILTER (WHERE ws.outcome IS NULL) AS pending,
+                            sum(CASE
+                                WHEN ws.outcome = sd.direction
+                                  AND t.fill_price > 0 AND t.stake_usd > 0
+                                THEN (1 - t.fill_price) * (t.stake_usd / t.fill_price)
+                                     - 0.072 * t.stake_usd
+                                WHEN ws.outcome IS NOT NULL AND ws.outcome <> sd.direction
+                                  AND t.stake_usd > 0
+                                THEN -t.stake_usd
+                                ELSE 0
+                            END)::numeric(12,2) AS pnl
+                        FROM strategy_decisions sd
+                        LEFT JOIN trades t ON t.order_id = sd.order_id
+                        LEFT JOIN LATERAL (
+                            SELECT outcome FROM window_snapshots
+                            WHERE asset = sd.asset AND window_ts = sd.window_ts
+                            ORDER BY (outcome IS NOT NULL) DESC, eval_offset DESC NULLS LAST
+                            LIMIT 1
+                        ) ws ON TRUE
+                        WHERE sd.action = 'TRADE' AND sd.executed = TRUE
+                          AND sd.strategy_id = ANY(:sids)
+                          AND sd.evaluated_at >= :cutoff
+                        GROUP BY sd.strategy_id, DATE(sd.evaluated_at)
+                        ORDER BY sd.strategy_id, day
+                    """),
+                    {"sids": sids, "cutoff": cutoff},
+                )
+            ).mappings().all()
+            daily_by_sid: dict[str, list] = {}
+            for r in daily_rows:
+                daily_by_sid.setdefault(r["strategy_id"], []).append({
+                    "date": str(r["day"]),
+                    "wins": int(r["wins"] or 0),
+                    "losses": int(r["losses"] or 0),
+                    "pending": int(r["pending"] or 0),
+                    "pnl": float(r["pnl"] or 0.0),
+                })
+
             strategies = []
             for r in sc_rows:
                 sid = r["strategy_id"]
@@ -4016,7 +4081,7 @@ async def strategy_comparison(
                     "strategy_name": sid,
                     "id": sid,
                     "name": sid,
-                    "mode": "live",
+                    "mode": mode_by_sid.get(sid, "ghost"),
                     "total_evals": n_fires,
                     "trades": n_fires,
                     "skips": 0,
@@ -4026,7 +4091,7 @@ async def strategy_comparison(
                     "unresolved": n_pending,
                     "cum_pnl": round(float(r["real_net_pnl_usd"] or 0.0), 2),
                     "accuracy": accuracy,
-                    "daily": [],  # not available in aggregated table
+                    "daily": daily_by_sid.get(sid, []),
                 })
             log.info("v58.strategy_comparison.from_table", n=len(strategies), window_period=window_period)
             return {"strategies": strategies, "days": days}
