@@ -363,23 +363,20 @@ class DBClient:
         metadata: Optional[dict[str, Any]] = None,
         timestamp: Optional[datetime] = None,
     ) -> None:
-        """
-        Persist a signal snapshot to the `signals` table.
+        """Persist a signal snapshot to the ``signals`` table.
 
-        Schema: signals(id, signal_type, value DECIMAL, metadata JSONB, created_at)
-
-        Args:
-            signal_type: "vpin" | "cascade" | "arb" | "regime"
-            value:       Primary numeric value for the signal (e.g. VPIN score).
-            metadata:    Additional signal data as a dict (stored as JSONB).
-            timestamp:   Signal timestamp; defaults to now.
+        Schema: ``signals(id, signal_type, payload JSONB, created_at)``.
+        ``value`` is folded into the JSONB payload under the ``value``
+        key; readers in hub/api/paper.py and hub/api/v58_monitor.py
+        already unpack ``payload->>'value'`` and ``payload->>'btc_price'``.
         """
         self._assert_pool()
 
         ts = timestamp or datetime.utcnow()
+        payload = {"value": float(value), **(metadata or {})}
         query = """
-            INSERT INTO signals (signal_type, value, metadata, created_at)
-            VALUES ($1, $2, $3::jsonb, $4)
+            INSERT INTO signals (signal_type, payload, created_at)
+            VALUES ($1, $2::jsonb, $3)
         """
 
         try:
@@ -387,8 +384,7 @@ class DBClient:
                 await conn.execute(
                     query,
                     signal_type,
-                    float(value),
-                    json.dumps(metadata or {}),
+                    json.dumps(payload),
                     ts,
                 )
             log.debug("db.signal_written", type=signal_type, value=value)
