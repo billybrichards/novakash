@@ -1889,14 +1889,23 @@ class PgWindowRepository(WindowStateRepository):
             )
             return 0
 
+        # Forward-writer fix follow-up to PR #439 (hub note 297, 2026-05-01):
+        # also stamp the canonical ``outcome`` column AND bulk-fill
+        # ``signal_evaluations.outcome`` for every row tied to the window. PR
+        # #439 only patched the per-trade (order_manager) and shadow-loop
+        # paths, but on Montreal those almost never fire — this oracle poll
+        # is the only bulk path covering every closed window. Result was that
+        # ``window_snapshots.outcome`` stayed NULL on 65% of rows post-deploy.
+        signal_eval_total = 0
         try:
             async with self._pool.acquire() as conn:
                 for ts, outcome in outcomes:
                     result = await conn.execute(
                         """UPDATE window_snapshots
-                           SET oracle_outcome = $2,
+                           SET oracle_outcome        = $2,
                                poly_resolved_outcome = $2,
-                               poly_winner = $2
+                               poly_winner           = $2,
+                               outcome               = COALESCE(outcome, $2)
                            WHERE asset = 'BTC' AND timeframe = '5m'
                              AND window_ts = $1
                              AND oracle_outcome IS NULL""",
@@ -1904,6 +1913,32 @@ class PgWindowRepository(WindowStateRepository):
                         outcome,
                     )
                     total_updated += int(result.split()[-1]) if result else 0
+
+                    # Forward writer: signal_evaluations.outcome — every row
+                    # for this window. Idempotent (NULL-only). Inline to avoid
+                    # extra pool acquisitions per window.
+                    try:
+                        se_result = await conn.execute(
+                            """UPDATE signal_evaluations
+                                  SET outcome = $1
+                                WHERE window_ts = $2
+                                  AND asset     = 'BTC'
+                                  AND timeframe = '5m'
+                                  AND outcome IS NULL""",
+                            outcome,
+                            ts,
+                        )
+                        signal_eval_total += (
+                            int(se_result.split()[-1]) if se_result else 0
+                        )
+                    except Exception as se_exc:
+                        # Surface but keep the loop alive — silent failure
+                        # here is what hid the original regression.
+                        log.warning(
+                            "pg_window_repo.poll_oracle_signal_eval_failed",
+                            error=str(se_exc)[:100],
+                            window_ts=ts,
+                        )
         except Exception as exc:
             log.warning(
                 "pg_window_repo.poll_oracle_write_failed", error=str(exc)[:100]
@@ -1915,6 +1950,7 @@ class PgWindowRepository(WindowStateRepository):
             polled=len(windows),
             resolved=len(outcomes),
             rows_updated=total_updated,
+            signal_eval_rows_updated=signal_eval_total,
         )
         return total_updated
 
