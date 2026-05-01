@@ -22,6 +22,10 @@ describe('tierForScore', () => {
     expect(tierForScore(0.25).label).toBe('LOW');
   });
 
+  it('returns LOW just below MEDIUM boundary', () => {
+    expect(tierForScore(0.499).label).toBe('LOW');
+  });
+
   it('returns MEDIUM at boundary', () => {
     expect(tierForScore(0.50).label).toBe('MEDIUM');
   });
@@ -40,6 +44,10 @@ describe('tierForScore', () => {
 
   it('returns NONE for negative scores', () => {
     expect(tierForScore(-0.5).label).toBe('NONE');
+  });
+
+  it('returns NONE for Infinity', () => {
+    expect(tierForScore(Infinity).label).toBe('NONE');
   });
 
   it('TIER_BREAKS has 5 entries', () => {

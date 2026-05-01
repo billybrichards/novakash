@@ -24,7 +24,7 @@ const SIGNAL_ORDER = [
   { key: 'taker',    label: 'TAKER',    hint: 'Taker buy/sell imbalance — aggressive flow direction.' },
   { key: 'oi',       label: 'OI',       hint: 'Open-interest delta — positioning build/unwind.' },
   { key: 'funding',  label: 'FUND',     hint: 'Funding-rate skew — paid-side stress proxy.' },
-  { key: 'vpin',     label: 'VPIN',     hint: 'Volume-synchronised informed trading probability.' },
+  { key: 'vpin',     label: 'VPIN',     hint: 'Volume-synchronised informed trading probability (magnitude only — sign should be ignored).' },
   { key: 'cascade',  label: 'CASCADE',  hint: 'Liquidation-cascade pressure score.' },
 ];
 

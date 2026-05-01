@@ -46,7 +46,8 @@ export default function ConsensusBadge({ snapshot }) {
   const safeReason = c.safe_to_trade_reason || c.reason || null;
   const divergence = num(c.max_divergence_bps);
   const agreement = num(c.source_agreement_score ?? c.agreement_score);
-  const sources = c.sources || {};
+  let sources = c.sources || {};
+  if (!sources || typeof sources !== 'object' || Array.isArray(sources)) sources = {};
   const srcNames = Object.keys(sources);
   const sourceCount = srcNames.length;
   const availableCount = srcNames.filter(n => sources[n]?.available).length;

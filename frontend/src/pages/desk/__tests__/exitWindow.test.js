@@ -6,8 +6,16 @@ describe('inExitWindow', () => {
     expect(inExitWindow(null)).toBe(false);
   });
 
+  it('returns false for undefined', () => {
+    expect(inExitWindow(undefined)).toBe(false);
+  });
+
   it('returns false for NaN', () => {
     expect(inExitWindow(NaN)).toBe(false);
+  });
+
+  it('returns false for Infinity', () => {
+    expect(inExitWindow(Infinity)).toBe(false);
   });
 
   it('returns false when above exit window (T > 48)', () => {
@@ -19,6 +27,11 @@ describe('inExitWindow', () => {
   it('returns false when below exit window (T < 30)', () => {
     expect(inExitWindow(29)).toBe(false);
     expect(inExitWindow(0)).toBe(false);
+  });
+
+  it('returns false for negative numbers (defensive)', () => {
+    expect(inExitWindow(-1)).toBe(false);
+    expect(inExitWindow(-100)).toBe(false);
   });
 
   it('returns true at lower boundary (T = 30)', () => {

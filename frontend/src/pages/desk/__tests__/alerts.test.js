@@ -35,6 +35,11 @@ describe('detectVhcActive', () => {
     expect(result.edge).toBeCloseTo(0.32, 6);
   });
 
+  it('returns edge null when probability_classifier absent', () => {
+    const fm = { ensemble_config: { vhc_bypass_active: true } };
+    expect(detectVhcActive(fm).edge).toBeNull();
+  });
+
   it('fires on vhc_active alias', () => {
     const fm = { ensemble_config: { vhc_active: true } };
     expect(detectVhcActive(fm).active).toBe(true);
