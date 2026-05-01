@@ -633,6 +633,57 @@ def test_ensemble_surface_fields_none_surface():
     assert _ensemble_surface_fields(None) == {}
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 2026-04-30: probability_lgb_v12 persistence (engine PR #436 added the column,
+# timesfm PR #137 added /v4/snapshot scoring, but the writer wasn't piping the
+# field into the dict). Mirrors the ensemble_p_lgb pattern above.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_writer_persists_probability_lgb_v12():
+    """When surface.probability_lgb_v12 is populated, dict carries it through."""
+    from strategies.five_min_vpin import _ensemble_surface_fields
+
+    surface = _make_surface(
+        v2_probability_up=0.62,
+        probability_lgb=0.58,
+        probability_classifier=0.70,
+        probability_lgb_v12=0.42,
+        ensemble_config={
+            "mode": "blend",
+            "disagreement_magnitude": 0.12,
+            "model_version": "path1-classifier-v0.3.1",
+        },
+    )
+
+    fields = _ensemble_surface_fields(surface)
+
+    assert fields["probability_lgb_v12"] == 0.42
+    # ensemble_p_lgb still wired (we didn't break the v9 mapping)
+    assert fields["ensemble_p_lgb"] == 0.58
+
+
+def test_writer_handles_null_probability_lgb_v12():
+    """When surface.probability_lgb_v12 is None, dict gets None (no crash)."""
+    from strategies.five_min_vpin import _ensemble_surface_fields
+
+    surface = _make_surface(
+        v2_probability_up=0.55,
+        probability_lgb=0.55,
+        probability_classifier=None,
+        probability_lgb_v12=None,
+        ensemble_config={
+            "mode": "fallback_lgb_only",
+            "model_version": "path1-classifier-v0.3.1",
+        },
+    )
+
+    fields = _ensemble_surface_fields(surface)
+
+    assert "probability_lgb_v12" in fields
+    assert fields["probability_lgb_v12"] is None
+
+
 class TestRegistryEnsemblePersistence:
     """Registry should call db.update_window_ensemble_fields for each of the
     three snapshot shapes spec'd in the write-path design:
