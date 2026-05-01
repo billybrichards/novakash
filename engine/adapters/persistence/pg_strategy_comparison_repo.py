@@ -85,7 +85,12 @@ class PgStrategyComparisonRepo:
         return None
 
     async def save(self, snapshot: Sequence[StrategyComparison]) -> int:
-        """Bulk-insert via copy_records_to_table; ON CONFLICT DO NOTHING at PK."""
+        """Bulk-insert via executemany; ON CONFLICT DO NOTHING at PK.
+
+        copy_records_to_table has no conflict handling; the use case can
+        emit two records that collide on the PK when the snapshot rolls
+        over inside one transaction. ON CONFLICT preserves the first.
+        """
         if not snapshot:
             return 0
 
@@ -95,13 +100,16 @@ class PgStrategyComparisonRepo:
             return 0
 
         records = [_to_record(e) for e in snapshot]
+        placeholders = ", ".join(f"${i}" for i in range(1, len(_COLUMNS) + 1))
+        cols = ", ".join(_COLUMNS)
+        sql = (
+            f"INSERT INTO strategy_comparison ({cols}) VALUES ({placeholders}) "
+            "ON CONFLICT (snapshot_at, strategy_id, window_period, t_band, "
+            "direction_filter, regime_filter) DO NOTHING"
+        )
         try:
             async with pool.acquire() as conn:
-                await conn.copy_records_to_table(
-                    "strategy_comparison",
-                    records=records,
-                    columns=_COLUMNS,
-                )
+                await conn.executemany(sql, records)
             log.info(
                 "pg_strategy_comparison_repo.saved",
                 n_rows=len(records),
