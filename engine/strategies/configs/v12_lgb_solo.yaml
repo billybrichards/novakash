@@ -1,0 +1,175 @@
+name: v12_lgb_solo
+version: "12.0.0-solo"
+# v12_lgb_solo — 2026-04-30 — pure v12 LGB strategy (no v9 ensemble blend).
+#
+# Reads probability_lgb_v12 from /v4/snapshot. Same gate stack as
+# v9_lgb_only / v10_lgb_only but with the v12 model in the probability_lgb
+# slot. The hook (v12_lgb_solo.py) swaps probability_lgb with
+# probability_lgb_v12 on the surface before delegating to v9_ensemble's
+# gate stack, then restores the original value.
+#
+# Per Billy's request (hub note #286 — v12 dominance analysis): v12
+# currently only contributes via v12_lgb_combo's disagreement-contrarian
+# path (~30% weight). A pure-v12 solo strategy is needed for v12 to
+# "stand out" as the basis for future fusion / v8_champion variants.
+# This solo variant gives a clean signal: how does v12 perform alone?
+#
+# Apples-to-apples comparison vs v9_lgb_only — same gate stack, only
+# different model.
+#
+# Start as GHOST for 48h shadow validation before LIVE flip.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+gates: []
+
+gate_params:
+  # ── Entry window (restricted to v12's actual trained deltas) ────────
+  # Eval offset bounds restricted to v12's actual trained deltas (90-240).
+  # Below 75s, current_v12.json falls back to v9 prod boosters (no v12
+  # model for delta 030/060), so trading there is identical to
+  # v9_lgb_only. Per held-out validation: v12 is most dominant at delta
+  # 180-240 (+7.0pp to +7.9pp vs v9). See hub note #286 for full v12
+  # dominance analysis.
+  min_offset_sec: 75
+  max_offset_sec: 240
+
+  # ── Regime allowlist ────────────────────────────────────────────────
+  tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
+
+  # ── TRANSITION not blocked (mirror v10_lgb_only) ───────────────────
+  block_down_vpin_regimes: []
+  block_up_vpin_regimes: []
+
+  # ── Source agreement ────────────────────────────────────────────────
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  skip_on_oracle_disagree: true
+
+  # ── VPIN guard ──────────────────────────────────────────────────────
+  vpin_min: 0.40
+  vpin_max: 1.0
+
+  # ── Fill band ───────────────────────────────────────────────────────
+  fill_band_min: 0.00
+  fill_band_max: 0.82
+  up_min_fill_price: 0.20
+  down_min_fill_price: 0.15
+
+  # ── 24/7 trading (mirror v10_lgb_only) ─────────────────────────────
+  blocked_utc_hours: []
+  post_loss_cooldown_min: 20
+
+  # ── LGB safety floor (mirror v10_lgb_only) ─────────────────────────
+  lgb_dist_min_up: 0.13
+  lgb_dist_min_down: 0.10
+  lgb_dist_min_up_with_hc_agree: 0.08
+  lgb_dist_min_down_with_hc_agree: 0.08
+
+  # ── v9 ensemble params (kept for delegation compatibility) ─────────
+  ensemble_disagreement_threshold: 0.35
+  require_direction_agreement: true
+
+  pc_weight_t_60: 0.70
+  pc_weight_t_120: 0.55
+  pc_weight_t_180: 0.40
+  pc_weight_t_200: 0.25
+
+  # ── VHC threshold ──────────────────────────────────────────────────
+  vhc_threshold: 0.25
+  vhc_bypass_transition: true
+  vhc_bypass_up_dist: true
+  vhc_bypass_disagreement: true
+  vhc_bypass_lgb_safety_floor: true
+  vhc_bypass_oracle_direction: true
+  vhc_kelly_multiplier: 2.0
+
+  # ── PL VHC bypass ──────────────────────────────────────────────────
+  pl_vhc_bypass_enabled: true
+  pl_vhc_threshold: 0.25
+  pl_vhc_require_pc_agreement: true
+
+  # ── TRANSITION strong-oracle bypass ────────────────────────────────
+  transition_strong_bypass_enabled: true
+  transition_bypass_min_avg_pct_delta: 0.05
+  transition_bypass_min_lgb_dist: 0.18
+
+  # ── Conviction tiers ───────────────────────────────────────────────
+  conviction_high_dist: 0.20
+  conviction_medium_dist: 0.15
+  conviction_low_dist: 0.10
+
+  # ── Delta alignment gate ───────────────────────────────────────────
+  delta_gate_enabled: true
+  min_alignment_bps: 1.0
+
+  # ── 3-tick entry confirmation ──────────────────────────────────────
+  min_consecutive_pass_ticks: 3
+
+  # ── Post-fill exit monitoring (mirror v10_lgb_only DISABLED state) ─
+  # DISABLED — see v10_lgb_only.yaml for FAK-stub leak rationale.
+  exit_monitor_enabled: false
+  exit_shadow_mode: true
+  exit_eval_start_offset: 200
+  exit_eval_end_offset: 30
+  exit_max_retries: 1
+  exit_retry_timeout_seconds: 5
+  exit_mark_min_pct: 0.70
+  exit_mark_ticks: 3
+
+  # ── Multi-tier exit ladder (mirror v10_lgb_only) ───────────────────
+  exit_tiers:
+    - { name: tier1_early,      start_offset: 200, end_offset: 120, mark_pct: 0.50, mark_ticks: 5 }
+    - { name: tier2_mid,        start_offset: 120, end_offset: 60,  mark_pct: 0.55, mark_ticks: 4 }
+    - { name: tier3_aggressive, start_offset: 60,  end_offset: 30,  mark_pct: 0.70, mark_ticks: 3 }
+
+  # ── Signal-flip detector (mirror v10_lgb_only) ─────────────────────
+  flip_enabled: true
+  flip_p_threshold: 0.85
+  flip_dist_threshold: 0.20
+  flip_consecutive_ticks: 3
+  flip_min_offset: 60
+  flip_max_offset: 240
+  stale_mark_max_age_seconds: 5.0
+
+  # Legacy (disabled)
+  exit_lgb_flip_enabled: false
+  exit_oracle_flip_enabled: false
+  exit_consecutive_flip_ticks: 5
+
+  # ── Hedge exit (mirror v10_lgb_only) ───────────────────────────────
+  hedge_exit_enabled: false
+  hedge_lgb_p_opposite_min: 0.85
+  hedge_lgb_dist_min: 0.20
+  hedge_chainlink_delta_opposite: true
+  hedge_tiingo_delta_opposite: true
+  hedge_consensus_consecutive_ticks: 5
+  hedge_active_offset_min: 90
+  hedge_active_offset_max: 200
+  hedge_max_opposite_ask: 0.45
+  hedge_min_guaranteed_profit_usd: 0.50
+  hedge_shadow_mode: true
+  hedge_max_retries: 1
+  hedge_buy_timeout_seconds: 5
+
+  # ── Primary signal source ──────────────────────────────────────────
+  primary_signal_source: lgb_v12
+  fallback_to_lgb_on_pc_null: true
+
+sizing:
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.025
+  max_collateral_pct: 0.058
+  # Sizing maps confidence_score (min(dist*2, 1)) to Kelly modifier.
+  # Same schedule as v10_lgb_only baseline (max 2.5x kelly at vhc tier).
+  schedule:
+    - { threshold: 0.50, modifier: 2.5, label: "vhc" }        # dist>=0.25
+    - { threshold: 0.40, modifier: 2.0, label: "high" }       # dist>=0.20
+    - { threshold: 0.30, modifier: 1.2, label: "medium" }     # dist>=0.15
+    - { threshold: 0.20, modifier: 1.0, label: "low" }        # dist>=0.10
+    - { threshold: 0.0,  modifier: 0.0, label: "skip" }
+
+hooks_file: v12_lgb_solo.py
+pre_gate_hook: evaluate_v12_lgb_solo
