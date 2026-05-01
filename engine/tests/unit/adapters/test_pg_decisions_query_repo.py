@@ -1,16 +1,19 @@
 """SQL contract tests for ``PgDecisionsQueryRepo``.
 
-Pin the SQL shape so two regressions cannot recur:
+Pin the SQL shape so the audit #340 regression family cannot recur:
 
-1. Outcome must be read from ``window_snapshots.outcome`` (canonical
-   UP/DOWN/FLAT label, ~23% populated). The pre-fix query relied on
-   ``ws.close_price > ws.open_price`` but those columns are ~0.02%
-   populated on RDS, so n_wins/n_losses/wr_pct/real_net_pnl_usd were
-   100% NULL despite the scheduler running. Audit-task #340.
-2. The join must be one-row-per-(asset, window_ts), not fan out
-   across every eval_offset row in window_snapshots. Pre-fix the
-   plain LEFT JOIN multiplied each strategy_decision by ~171 (one
-   row per eval_offset), inflating n_fires by the same factor.
+1. Outcome must be read from ``signal_evaluations.outcome`` first
+   (~99.7% populated, PR #441 wired the writer + index
+   ``idx_se_v12_outcome``), with ``window_snapshots.outcome`` as a
+   fallback (~23% populated overall, but used for any pre-#441 rows).
+   The pre-#454 query relied on ``ws.close_price > ws.open_price``
+   but those columns are ~0.02% populated on RDS, so n_wins / n_losses
+   / wr_pct / real_net_pnl_usd were 100% NULL despite the scheduler
+   running. Audit-task #340.
+2. The join must be one-row-per-(asset, window_ts) on each side, not
+   fan out across every eval_offset row in either table. Pre-#454
+   the plain LEFT JOIN multiplied each strategy_decision by ~171
+   (one row per eval_offset), inflating n_fires by the same factor.
 """
 
 from __future__ import annotations
@@ -18,12 +21,38 @@ from __future__ import annotations
 from adapters.persistence.pg_decisions_query_repo import _SQL
 
 
-def test_actual_outcome_reads_from_ws_outcome():
-    assert "ws.outcome" in _SQL, "must read canonical outcome column"
-    assert "ws.close_price > ws.open_price" not in _SQL, (
-        "close_price/open_price are ~0% populated on RDS — never use them as the outcome source"
+def test_actual_outcome_prefers_signal_evaluations():
+    """signal_evaluations.outcome is 99.7% populated for trade windows
+    (canonical column wired by PR #441). window_snapshots.outcome was
+    polluted by an old WIN/LOSS writer (audit #339) and is only ~23%
+    populated overall. Prefer se, fall back to ws."""
+    assert "COALESCE(se.outcome, ws.outcome)" in _SQL, (
+        "must coalesce signal_evaluations.outcome (primary) with "
+        "window_snapshots.outcome (fallback) — see audit #340"
     )
-    assert "ws.outcome" in _SQL.split("AS actual_outcome")[0]
+    assert "FROM signal_evaluations" in _SQL
+
+
+def test_actual_outcome_does_not_use_close_open_inference():
+    """close_price / open_price are <0.1% populated on RDS — they cannot
+    be used to infer outcome. The 100%-NULL regression that triggered
+    audit #340 came from this inference path; it must never return."""
+    assert "close_price > ws.open_price" not in _SQL
+    assert "ws.close_price" not in _SQL
+    assert "ws.open_price" not in _SQL
+
+
+def test_signal_evaluations_lateral_filters_to_resolved():
+    """The se lateral must only return rows with outcome set, otherwise
+    COALESCE picks NULL and the ws fallback never fires for windows
+    where signal_evaluations has both NULL and resolved offsets."""
+    se_block = _SQL.split("FROM signal_evaluations", 1)[1].split(") se ON TRUE", 1)[0]
+    assert "outcome IS NOT NULL" in se_block, (
+        "signal_evaluations LATERAL must filter to outcome IS NOT NULL "
+        "so COALESCE falls through to window_snapshots when se has only "
+        "NULL rows for that window"
+    )
+    assert "LIMIT 1" in se_block
 
 
 def test_join_is_lateral_with_one_row_per_window():

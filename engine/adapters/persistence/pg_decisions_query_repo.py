@@ -26,10 +26,20 @@ _SQL = """
         ws.regime,
         COALESCE(sd.fill_price, t.fill_price)          AS fill_price,
         t.stake_usd                                    AS stake_usd,
-        ws.outcome                                     AS actual_outcome,
+        COALESCE(se.outcome, ws.outcome)               AS actual_outcome,
         sd.evaluated_at
     FROM strategy_decisions sd
     LEFT JOIN trades t ON t.order_id = sd.order_id
+    LEFT JOIN LATERAL (
+        SELECT outcome
+        FROM signal_evaluations
+        WHERE asset = sd.asset
+          AND window_ts = sd.window_ts
+          AND timeframe = sd.timeframe
+          AND outcome IS NOT NULL
+        ORDER BY eval_offset DESC NULLS LAST
+        LIMIT 1
+    ) se ON TRUE
     LEFT JOIN LATERAL (
         SELECT outcome, regime
         FROM window_snapshots
