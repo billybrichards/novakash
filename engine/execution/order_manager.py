@@ -227,12 +227,28 @@ class OrderManager:
                     )
                     # Proceed with registration anyway — oracle will resolve it
 
+            # Prefer the explicit ``fill_price`` column when the recovered
+            # row has one. Fall back to metadata['fill_price'] for older
+            # rows whose column was NULL but whose metadata captured the
+            # avg fill at write time. ``None`` is fine — the resolver
+            # falls back to ``float(price)`` in that case.
+            row_fill_price = row.get("fill_price")
+            if row_fill_price is None:
+                row_fill_price = meta.get("fill_price")
+            try:
+                fill_price_val: Optional[float] = (
+                    float(row_fill_price) if row_fill_price is not None else None
+                )
+            except (TypeError, ValueError):
+                fill_price_val = None
+
             order = Order(
                 order_id=order_id,
                 venue=row.get("venue") or "polymarket",
                 strategy=row.get("strategy") or "five_min_vpin",
                 direction=row.get("direction") or "YES",
                 price=str(row.get("entry_price") or "0.5"),
+                fill_price=fill_price_val,
                 stake_usd=float(row.get("stake_usd") or 0),
                 fee_usd=float(row.get("fee_usd") or 0),
                 status=OrderStatus.OPEN,
@@ -609,12 +625,24 @@ class OrderManager:
             
             if won:
                 try:
-                    fill_price = float(order.price)
+                    # Prefer the realised volume-weighted avg fill price
+                    # (``order.fill_price``) over the submission/limit price
+                    # (``order.price``). For FAK ladder strategies (v9_lgb,
+                    # v10_lgb, v15m_fusion etc.) ``order.price`` is only the
+                    # FIRST rung — using it here inflates payout by the same
+                    # ratio as fill_price/limit_price. Falls back to
+                    # ``order.price`` for paper / single-fill orders that
+                    # never recorded an explicit fill (audit-task #331).
+                    fill_price = float(
+                        order.fill_price
+                        if order.fill_price is not None
+                        else order.price
+                    )
                     shares = order.stake_usd / fill_price if fill_price > 0 else 0
                     payout = shares * 1.0
-                except (ValueError, ZeroDivisionError):
+                except (ValueError, ZeroDivisionError, TypeError):
                     payout = order.stake_usd * 1.9
-                
+
                 self._log.info(
                     "polymarket_resolution.win",
                     order_id=order.order_id[:20] + "...",
@@ -704,12 +732,18 @@ class OrderManager:
                 won = not btc_went_up  # NO = bet on DOWN
 
             if won:
-                # Binary payout: $1 per share. Shares = stake / token_price
+                # Binary payout: $1 per share. Shares = stake / token_price.
+                # Prefer realised fill_price; fall back to submission price
+                # for paper trades (audit-task #331).
                 try:
-                    fill_price = float(order.price)
+                    fill_price = float(
+                        order.fill_price
+                        if order.fill_price is not None
+                        else order.price
+                    )
                     shares = order.stake_usd / fill_price if fill_price > 0 else 0
                     payout = shares * 1.0
-                except (ValueError, ZeroDivisionError):
+                except (ValueError, ZeroDivisionError, TypeError):
                     payout = order.stake_usd * 1.9
 
                 self._log.info(
@@ -751,10 +785,15 @@ class OrderManager:
 
         if won:
             try:
-                fill_price = float(order.price)
+                # Prefer realised fill_price (audit-task #331).
+                fill_price = float(
+                    order.fill_price
+                    if order.fill_price is not None
+                    else order.price
+                )
                 shares = order.stake_usd / fill_price if fill_price > 0 else 0
                 payout = shares * 1.0
-            except (ValueError, ZeroDivisionError):
+            except (ValueError, ZeroDivisionError, TypeError):
                 payout = order.stake_usd * 1.9
             self._log.debug(
                 "paper_resolution.direction_win",

@@ -118,6 +118,11 @@ class DBTradeRecorder(TradeRecorderPort):
                     venue="polymarket",
                     direction="NO" if decision.direction == "DOWN" else "YES",
                     price=str(result.fill_price or 0),
+                    fill_price=(
+                        float(result.fill_price)
+                        if result.fill_price is not None
+                        else None
+                    ),
                     stake_usd=result.stake_usd,
                     fee_usd=result.fee_usd,
                     status=OrderStatus.OPEN,
