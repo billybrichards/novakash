@@ -296,6 +296,39 @@ class ExecuteTradeUseCase:
         self._consecutive_errors: int = 0
         self._circuit_break_until: float = 0.0
 
+        # ── In-process execution lock (audit #461, 2026-05-01) ──────────
+        # SMOKING GUN: 10 confirmed double-fills across v9_lgb_only and
+        # v10_lgb_only between 2026-04-28 and 2026-04-29, each pair
+        # 23-70 seconds apart on different eval offsets within the same
+        # 5-minute window. Each pair = two real on-chain transactions
+        # with distinct tx_hashes; only one ``strategy_window_fills``
+        # marker exists (or none) per dupe.
+        #
+        # Root cause: the DB-backed ``try_claim_fill_slot`` placeholder
+        # has a 25s STALE_PLACEHOLDER_TTL_SECONDS escape hatch (audit
+        # #401) that lets a stale 'pending' row be stolen by a fresh
+        # attempt. Required because a leaked placeholder from a SIGKILL'd
+        # engine would otherwise lock the strategy out forever. But a
+        # legitimate FAK-ladder + DB-write round-trip can exceed 25s
+        # under DB-pool contention; the next eval-offset tick (typically
+        # ~30s later) sees the placeholder as stale, takes it over, and
+        # fires its own FAK. Both eventually fill.
+        #
+        # The pessimistic claim was always meant as cross-PROCESS
+        # protection; this set is the cross-COROUTINE backstop within
+        # one process. Holding ``(strategy_id, window_ts)`` for the
+        # full lifetime of an in-flight ``execute`` (added on entry,
+        # removed in finally) means the SECOND concurrent call from
+        # the same engine returns immediately with
+        # ``already_executing_in_process`` — no DB round-trip, no
+        # 25s blind spot, no second on-chain fill.
+        #
+        # Cross-process double-fills are still defended by the DB
+        # placeholder; this set protects against the dominant failure
+        # mode (asyncio.create_task-driven concurrent eval offsets in
+        # a single Montreal engine process).
+        self._in_flight_keys: set[tuple[str, int, str]] = set()
+
     async def execute(
         self,
         decision: StrategyDecision,
@@ -320,6 +353,61 @@ class ExecuteTradeUseCase:
         # Extract window key from market slug
         window_key = self._make_window_key(window_market)
 
+        # ── Step -1: In-process concurrent-execute gate (audit #461) ──────
+        # First barrier — fires before ANY DB call. Closes the cross-
+        # coroutine race window left open by the DB placeholder's 25s
+        # stale-takeover (which exists for engine-crash recovery and is
+        # by-design permissive). When two eval-offset ticks fire the same
+        # (strategy, window) concurrently within one process, the second
+        # rejects immediately rather than waiting on the DB and risking a
+        # stale-takeover steal of the first attempt's still-in-flight
+        # placeholder.
+        #
+        # Forensics 2026-04-29: 10 confirmed double-fills on
+        # v9_lgb_only / v10_lgb_only between 2026-04-28 and 2026-04-29,
+        # gap 23-70 seconds (straddling the 25s TTL). Each pair is two
+        # real on-chain transactions — the engine paid double the
+        # intended stake. Removed phantom inflation by ensuring the
+        # second concurrent execute() never reaches the FAK executor.
+        _ifk = (sid or "?", int(getattr(window_key, "window_ts", 0) or 0), direction or "?")
+        if _ifk in self._in_flight_keys:
+            log.info(
+                "execute_trade.already_executing_in_process",
+                strategy=sid,
+                window=str(window_key),
+                direction=direction,
+            )
+            return _failed(
+                "already_executing_in_process",
+                strategy_id=sid,
+                direction=direction,
+            )
+        self._in_flight_keys.add(_ifk)
+        try:
+            return await self._execute_locked(
+                decision=decision,
+                window_market=window_market,
+                current_btc_price=current_btc_price,
+                open_price=open_price,
+                window_key=window_key,
+                sid=sid,
+                direction=direction,
+            )
+        finally:
+            self._in_flight_keys.discard(_ifk)
+
+    async def _execute_locked(
+        self,
+        decision: StrategyDecision,
+        window_market: WindowMarket,
+        current_btc_price: float,
+        open_price: float,
+        *,
+        window_key: WindowKey,
+        sid: str,
+        direction: str,
+    ) -> ExecutionResult:
+        """Body of ``execute`` — runs while the in-process key is held."""
         claim_id: Optional[str] = None  # threaded from try_claim_trade → clear_trade_claim
 
         # ── Diagnostic: log entry inputs so post-mortem can see exactly
