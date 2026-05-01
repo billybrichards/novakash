@@ -26,5 +26,19 @@ class StrategyMetrics:
 
     @classmethod
     def empty(cls) -> "StrategyMetrics":
-        """Zero-fires sentinel. NOT IMPLEMENTED."""
-        raise NotImplementedError("design skeleton — see docs/architecture/")
+        """Zero-fires sentinel — all rates undefined."""
+        return cls(
+            n_fires=0,
+            n_wins=0,
+            n_losses=0,
+            n_pending=0,
+            wr_pct=None,
+            wilson_low=None,
+            wilson_high=None,
+            avg_fill=None,
+            median_fill=None,
+            avg_stake_usd=None,
+            real_net_pnl_usd=None,
+            real_pnl_per_fire=None,
+            daily_run_rate_usd=None,
+        )
