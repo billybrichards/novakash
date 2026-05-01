@@ -1,0 +1,168 @@
+name: v10_up_late_window
+version: "1.0.0-ghost"
+# v10_up_late_window — 2026-05-01 — v10 LGB UP specialist for late mid-window.
+#
+# Thesis (Hub note #304 — real-trades 6d, session_marathon_recap_2):
+#   v10 LGB at TRANSITION × UP × T-61-120 × k=3
+#   = 75% WR n=50 +$53 over ~6 days REAL trades.
+#
+# v10 has UP-bias built into the model (76.0% test acc vs prod 70.6%, ECE=0.039
+# vs 0.088). The late-mid-window band is where TRANSITION cells stabilise —
+# early window is too noisy (regime hasn't settled), last minute is too late
+# (microstructure dominates). T-61-120 captures the sweet spot.
+#
+# 3-tick confirmation HELPS this cell (TRANSITION needs tick-stability filter).
+#
+# Direction lock: down_min_fill_price=1.01 (NOT VHC-bypassable per
+# v9_ensemble.py:1173-1196 down_fill_floor). Any DOWN fill fails immediately.
+#
+# T-band: min_offset_sec=60, max_offset_sec=120 = sec-to-close 60-120 = late
+# mid-window (180-239s after window open). See memory
+# reference_eval_offset_verified.md.
+#
+# Anti-cell BLOCKED: UP × CASCADE = -$71 anti-predictive (Hub #304). vpin
+# block_up_vpin_regimes=[CASCADE] enforces this.
+#
+# Hook: delegates to v9_ensemble using probability_lgb_v10 (v10 LGB) — same
+# swap pattern as v10_lgb_only.py.
+#
+# GHOST mode. DO NOT promote without:
+#   1. >=7 days shadow
+#   2. WR > 70% AND n > 30 real trades
+#   3. Net positive in real PnL
+#   4. Billy explicit sign-off (per feedback_no_auto_model_promotion.md)
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+gates: []
+
+gate_params:
+  # ── Entry window (late mid-window — T-61-120 sweet spot) ────────────────
+  # eval_offset = SECONDS-TO-CLOSE. T-60-120 = 180-239s after window open.
+  min_offset_sec: 60
+  max_offset_sec: 120
+
+  # ── Regime allowlist (NOT calm_trend, NOT risk_off — Hub #304) ─────────
+  # calm_trend: insufficient UP signal volatility. risk_off: regime
+  # mismatch with UP-bias. chop + volatile_trend = the proven cells.
+  tradeable_v4_regimes: [chop, volatile_trend]
+
+  # ── Anti-cell block: UP × CASCADE = -$71 (Hub #304) ────────────────────
+  # block_up_vpin_regimes IS VHC-bypassable but the down_min_fill_price=1.01
+  # below makes DOWN impossible regardless. CASCADE block here prevents the
+  # known anti-predictive cell from firing as UP.
+  block_up_vpin_regimes: [CASCADE]
+  block_down_vpin_regimes: []  # DOWN impossible via fill-floor anyway
+
+  # ── HARD UP-only lock (NOT VHC-bypassable) ──────────────────────────────
+  # See v9_ensemble.py:1173-1196 — down_fill_floor enforced after VHC.
+  down_min_fill_price: 1.01
+  up_min_fill_price: 0.20
+
+  # ── Fill band ───────────────────────────────────────────────────────────
+  fill_band_min: 0.00
+  fill_band_max: 0.82
+
+  # ── Source agreement ────────────────────────────────────────────────────
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  skip_on_oracle_disagree: true
+
+  # ── VPIN guard ──────────────────────────────────────────────────────────
+  vpin_min: 0.40
+  vpin_max: 1.0
+
+  # ── Conviction floor ────────────────────────────────────────────────────
+  # Per memory feedback_override_keys.md: must use per-direction keys.
+  # v10 UP at dist>=0.10 = 81% acc (matches v10_lgb_only data).
+  lgb_dist_min_up: 0.10
+  lgb_dist_min_down: 1.01           # belt-and-braces — no DOWN path
+
+  lgb_dist_min_up_with_hc_agree: 0.08
+  lgb_dist_min_down_with_hc_agree: 1.01
+
+  # ── 3-tick confirmation (k=3 — TRANSITION needs stability) ──────────────
+  # Per Hub note #304 + #305: k=3 helps TRANSITION cells (k=1 noisy here).
+  min_consecutive_pass_ticks: 3
+
+  # ── 24/7 trading ────────────────────────────────────────────────────────
+  blocked_utc_hours: []
+  post_loss_cooldown_min: 20
+
+  # ── v9 ensemble params (LGB-only — null classifier in hook) ─────────────
+  ensemble_disagreement_threshold: 0.35
+  require_direction_agreement: false  # LGB-only
+
+  pc_weight_t_60: 0.0
+  pc_weight_t_120: 0.0
+  pc_weight_t_180: 0.0
+  pc_weight_t_200: 0.0
+
+  # ── VHC threshold (kept conservative — UP can VHC at very-high dist) ────
+  vhc_threshold: 0.25
+  vhc_bypass_transition: true
+  vhc_bypass_up_dist: true
+  vhc_bypass_disagreement: true
+  vhc_bypass_lgb_safety_floor: false   # KEEP safety floor — UP needs >=0.10
+  vhc_bypass_oracle_direction: false
+  vhc_kelly_multiplier: 1.5
+
+  # ── PL VHC bypass ───────────────────────────────────────────────────────
+  pl_vhc_bypass_enabled: true
+  pl_vhc_threshold: 0.25
+  pl_vhc_require_pc_agreement: false  # no classifier present
+
+  # ── TRANSITION strong-oracle bypass — KEEP enabled ──────────────────────
+  # We're TRADING TRANSITION here (it's the cell). Bypass only kicks in
+  # when block_up_vpin_regimes contains TRANSITION, which it does NOT —
+  # so this path is mostly a no-op for this strategy but preserved for
+  # defensive consistency.
+  transition_strong_bypass_enabled: true
+  transition_bypass_min_avg_pct_delta: 0.05
+  transition_bypass_min_lgb_dist: 0.18
+
+  # ── Conviction tiers ────────────────────────────────────────────────────
+  conviction_high_dist: 0.20
+  conviction_medium_dist: 0.15
+  conviction_low_dist: 0.10
+
+  # ── Delta alignment gate ────────────────────────────────────────────────
+  delta_gate_enabled: true
+  min_alignment_bps: 1.0
+
+  # ── Exit monitoring ─────────────────────────────────────────────────────
+  exit_monitor_enabled: true
+  exit_shadow_mode: true
+  exit_eval_start_offset: 60
+  exit_eval_end_offset: 30
+  exit_max_retries: 1
+  exit_retry_timeout_seconds: 5
+  exit_mark_min_pct: 0.65
+  exit_mark_ticks: 4
+
+  # Legacy (disabled)
+  exit_lgb_flip_enabled: false
+  exit_oracle_flip_enabled: false
+  exit_consecutive_flip_ticks: 5
+
+  # ── Primary signal source ──────────────────────────────────────────────
+  primary_signal_source: lgb_v10_up_late
+  fallback_to_lgb_on_pc_null: true
+
+sizing:
+  # $5.00 cap (half v12_combo). Kelly 0.025 baseline.
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.025
+  max_collateral_pct: 0.05
+  schedule:
+    # confidence_score = min(dist_v10*2, 1)
+    - { threshold: 0.50, modifier: 2.0,  label: "vhc" }      # dist>=0.25
+    - { threshold: 0.40, modifier: 1.5,  label: "high" }     # dist>=0.20
+    - { threshold: 0.30, modifier: 1.2,  label: "medium" }   # dist>=0.15
+    - { threshold: 0.20, modifier: 1.0,  label: "low" }      # dist>=0.10
+    - { threshold: 0.0,  modifier: 0.0,  label: "skip" }
+
+hooks_file: v10_up_late_window.py
+pre_gate_hook: evaluate_v10_up_late_window

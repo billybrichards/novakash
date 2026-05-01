@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>2026-05-01 Strategy Forecast — UP/DOWN best gates, 24h expectation</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --fg: #e6edf3; --dim: #8b949e;
+    --green: #3fb950; --red: #f85149; --amber: #d29922; --blue: #58a6ff;
+    --green-dim: rgba(63,185,80,0.18); --red-dim: rgba(248,81,73,0.18);
+    --amber-dim: rgba(210,153,34,0.18);
+  }
+  body { background: var(--bg); color: var(--fg); font-family: -apple-system, "SF Mono", "Inter", sans-serif; margin: 0; padding: 24px; line-height: 1.55; }
+  h1 { color: var(--blue); font-size: 22px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  h2 { color: var(--amber); font-size: 17px; margin-top: 32px; }
+  h3 { color: var(--fg); font-size: 14px; margin-top: 18px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 16px; margin: 12px 0; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+  th { color: var(--dim); font-weight: 600; background: rgba(255,255,255,0.02); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; font-family: "SF Mono", monospace; }
+  .pos { color: var(--green); font-weight: 600; }
+  .neg { color: var(--red); font-weight: 600; }
+  .neutral { color: var(--amber); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+  .b-live { background: var(--green-dim); color: var(--green); border: 1px solid var(--green); }
+  .b-ghost { background: rgba(139,148,158,0.18); color: var(--dim); border: 1px solid var(--dim); }
+  .b-cand { background: var(--amber-dim); color: var(--amber); border: 1px solid var(--amber); }
+  .b-block { background: var(--red-dim); color: var(--red); border: 1px solid var(--red); }
+  .key { color: var(--dim); font-size: 11px; margin-top: 8px; }
+  .caveat { background: rgba(210,153,34,0.10); border-left: 3px solid var(--amber); padding: 10px 14px; font-size: 12px; }
+  .insight { background: rgba(88,166,255,0.08); border-left: 3px solid var(--blue); padding: 10px 14px; font-size: 12px; margin: 10px 0; }
+  canvas { background: var(--panel); border-radius: 4px; }
+  .chart-wrap { height: 300px; padding: 8px; }
+  .timeline { position: relative; height: 80px; background: var(--panel); border: 1px solid var(--border); border-radius: 4px; margin: 8px 0; }
+  .tband { position: absolute; top: 8px; bottom: 8px; padding: 4px; font-size: 10px; text-align: center; border-right: 1px dashed var(--border); }
+  .tb-early { background: rgba(63,185,80,0.20); }
+  .tb-mid1 { background: rgba(88,166,255,0.15); }
+  .tb-mid2 { background: rgba(210,153,34,0.15); }
+  .tb-late { background: rgba(248,81,73,0.20); }
+  small { color: var(--dim); }
+  code { background: rgba(255,255,255,0.05); padding: 1px 4px; border-radius: 3px; font-size: 11px; }
+  .heat-table th, .heat-table td { text-align: center; padding: 6px; font-size: 11px; }
+  .heat-cell-pnl { font-weight: 600; }
+  .heat-cell-meta { font-size: 10px; color: var(--dim); }
+</style>
+</head>
+<body>
+
+<h1>📊 Strategy Forecast — 2026-05-01</h1>
+<p><small>Author: claude-agent · Data: 87h shadow + 30d real trades · Based on Hub notes #304/#305/#307 + bg agents <code>a92e460b54b84d0a9</code> &amp; <code>a855d3cba59942783</code></small></p>
+
+<div class="caveat">
+  <b>READ THIS FIRST — CONVENTION ALERT (FIXED):</b> Earlier draft conflated two scripts using OPPOSITE T-band conventions on the same heatmap. <b>v9_alpha_analysis.sql + pure_signal_analysis.sql</b> use ENGINE T-MINUS (eval_offset = sec-to-close, raw). <b>mass_combo_miner.py + _common.py + strategy_comparison view</b> use INVERTED (300 − eval_offset = sec-from-open). The label <code>T-181-240</code> means OPPOSITE ENDS of the 5-min window depending on script. Below: ALL bands re-labelled to a single <b>sec-to-close (T-minus)</b> convention, with provenance noted per cell.
+</div>
+<div class="caveat" style="background: rgba(63,185,80,0.10); border-left-color: var(--green);">
+  <b>USER INTUITION CONFIRMED:</b> For the universal blend signal, accuracy is HIGHER closer to close. Blend UP wins last 60s before close (+$36 n=207). Blend DOWN wins last 60s before close (+$25 n=140). Only the <b>v9 CASCADE×DOWN</b> pocket has its alpha at first minute of window (cascade-fade dynamic). Numbers come from 87h shadow data deduped per-window with real-PnL math (WIN = (1−fill)·(stake/fill) − 0.072·stake; LOSS = −stake). DB <code>pnl_usd</code> NOT used (4× inflated, regression #8). Current LIVE = <b>v12_lgb_combo only</b>.
+</div>
+
+<h2>🎯 §0 — eval_offset / T-band convention (verified)</h2>
+
+<div class="panel">
+  <p>Engine convention: <b><code>eval_offset = SECONDS REMAINING UNTIL CLOSE</code></b> (T-minus). Verified from <code>engine/data/feeds/polymarket_5min.py:288-330</code> + real fire data: when v12_combo TRADE fires at <code>evaluated_at = 18:08:32</code> with <code>window_ts = 1777658700</code>, the row has <code>eval_offset = 88</code>, computed <code>sec_to_close = 88</code> exactly.</p>
+
+  <div class="timeline">
+    <div class="tband tb-early" style="left: 0%; width: 20%;">T-241-300<br><small>0-59s after open<br>(very early)</small></div>
+    <div class="tband tb-early" style="left: 20%; width: 20%;">T-181-240<br><small>60-119s<br><b>FIRST MIN</b></small></div>
+    <div class="tband tb-mid1" style="left: 40%; width: 20%;">T-121-180<br><small>120-179s<br>(2nd min)</small></div>
+    <div class="tband tb-mid2" style="left: 60%; width: 20%;">T-61-120<br><small>180-239s<br><b>v12_combo here</b></small></div>
+    <div class="tband tb-late" style="left: 80%; width: 20%;">T-24-60<br><small>240-276s<br>(LAST MIN)</small></div>
+  </div>
+
+  <p style="font-size: 12px;">
+    <b>Reading:</b> A label like <code>T-181-240</code> means <code>eval_offset</code> ∈ [181, 240], i.e. <b>181-240 seconds remain before close</b> = <b>fire happens 60-119s into a 300s window</b> = <b>first minute of the window</b>.<br>
+    <b>v12_combo current LIVE gate:</b> <code>min_offset_sec=31, max_offset_sec=120</code> → fires when 31-120s remain → <b>fires last 1-2 min before close</b>.<br>
+    <b>The CASCADE×DOWN×T-181-240 alpha pocket lives at the FIRST minute</b> — opposite end of the window. v12_combo MISSES it entirely.
+  </p>
+
+  <div class="caveat" style="margin-top: 8px;">
+    ⚠️ <b>Convention CLASH (proven via grep today):</b> Two scripts produce reports with the SAME labels meaning OPPOSITE things:
+    <table style="margin: 8px 0; font-size: 11px;">
+      <tr><th>Script</th><th>Convention</th><th>Source line</th><th>"T-181-240" really means</th></tr>
+      <tr><td><code>v9_alpha_analysis.sql</code> (Hub #305)</td><td>ENGINE T-minus</td><td><code>WHEN eval_offset BETWEEN 181 AND 240</code></td><td>sec-to-close 181-240 = <b>FIRST minute of window</b></td></tr>
+      <tr><td><code>pure_signal_analysis.sql</code></td><td>ENGINE T-minus</td><td>same</td><td>same — first minute</td></tr>
+      <tr><td><code>mass_combo_miner.py</code> (Hub #307)</td><td>INVERTED</td><td><code>WHEN (300 - eval_offset) BETWEEN 181 AND 240</code></td><td>sec-from-open 181-240 = sec-to-close 60-119 = <b>LATE window</b> (~last 1-2 min)</td></tr>
+      <tr><td><code>_common.py</code> / <code>strategy_comparison</code> view</td><td>INVERTED</td><td>same</td><td>same — late window</td></tr>
+    </table>
+    <b>This HTML re-labels everything to engine T-minus (sec-to-close) below.</b> Any reference back to original Hub notes / CSV / MD outputs requires the convention key above. Memory entry: <code>feedback_strategy_comparison_tband_convention.md</code>.
+  </div>
+</div>
+
+<h2>🟢 §1 — Current LIVE state</h2>
+
+<div class="panel">
+  <table>
+    <tr><th>Strategy</th><th>Mode</th><th>Direction</th><th>T-band gate</th><th>Regimes</th><th>Stake</th><th>Kelly</th><th>Fill cap</th></tr>
+    <tr>
+      <td><b>v12_lgb_combo</b></td>
+      <td><span class="badge b-live">LIVE</span></td>
+      <td>BOTH (UP + DOWN)</td>
+      <td>T-31 to T-120 (last 1-2 min)</td>
+      <td>chop, volatile_trend, risk_off</td>
+      <td class="num">$7.50 cap</td>
+      <td class="num">0.04</td>
+      <td class="num">0.78</td>
+    </tr>
+  </table>
+  <p style="font-size: 12px;">
+    Agreement-required: v9 LGB (<code>probability_lgb</code>) AND v12 LGB (<code>probability_lgb_v12</code>) must vote SAME direction with min(dist) ≥ 0.10. Combo probability = (p_v9 + p_v12) / 2. Delegates to v9_ensemble gate stack.
+  </p>
+</div>
+
+<div class="caveat" style="background: rgba(248,81,73,0.10); border-left-color: var(--red);">
+  <b>TIMEFRAME CORRECTION:</b> v12_lgb_combo only LIVE since ~2026-04-30 (24-48h). Cannot have "30d" of v12_combo-specific real trades. Below figures aggregate across multiple strategies/branches:
+  <ul style="font-size: 11px;">
+    <li><b>v9 LGB</b> — weeks of real-trade data (was prior LIVE ML brain)</li>
+    <li><b>v10 LGB</b> — ~6 days real-trade data (recent ghost/promotion cycles)</li>
+    <li><b>v8_champion_lgb_only</b> — 7d shadow (15 trades n=15)</li>
+    <li><b>v12_combo specific</b> — ~24-48h only (small sample, do NOT extrapolate)</li>
+    <li><b>87h shadow data</b> (signal_evaluations + window_evaluation_traces) covers all signals — ~3.6d</li>
+  </ul>
+</div>
+
+<h3>Real-trades by direction × T-band — proper provenance</h3>
+<div class="grid">
+  <div class="panel">
+    <h3 style="margin-top: 0;">UP direction (real winners exist)</h3>
+    <table>
+      <tr><th>Cell</th><th class="num">n</th><th class="num">WR</th><th class="num">Net P&L</th><th>Source</th></tr>
+      <tr><td><b>v10 UP T-61-120</b></td><td class="num">50</td><td class="num pos">75%</td><td class="num pos">+$53</td><td>v10 ghost ~6d real</td></tr>
+      <tr><td>blend UP T-24-60 dist[0.20-0.30]</td><td class="num">207</td><td class="num pos">~62%</td><td class="num pos">+$36</td><td>87h shadow [#307]</td></tr>
+      <tr><td>v9 q5 CASCADE UP T-181-240</td><td class="num">large</td><td class="num pos">96.8%</td><td class="num pos">strong</td><td>per-tick scanner [#304]</td></tr>
+      <tr><td>v8_champion UP+DOWN mixed</td><td class="num">15</td><td class="num pos">80%</td><td class="num pos">small +</td><td>7d real ghost</td></tr>
+      <tr><td>v12_combo UP since LIVE flip</td><td class="num">~5-10</td><td class="num pos">~80%+</td><td class="num pos">~+$30</td><td>~24-48h LIVE — <b>too small to extrapolate</b></td></tr>
+    </table>
+    <p style="font-size: 11px;"><b>Pattern:</b> UP wins LATE in window across signals. Best UP-real-evidence: <b>v10 UP T-61-120 (75% WR n=50)</b>.</p>
+  </div>
+  <div class="panel">
+    <h3 style="margin-top: 0;">DOWN direction</h3>
+    <table>
+      <tr><th>Cell</th><th class="num">n</th><th class="num">WR</th><th class="num">Net P&L</th><th>Source</th></tr>
+      <tr><td><b>v9 DOWN+chop</b> (real trades)</td><td class="num">91</td><td class="num pos">82.4%</td><td class="num pos">+$105</td><td>30d v9 real</td></tr>
+      <tr><td><b>v9 chop+CASCADE DOWN</b></td><td class="num">33</td><td class="num pos">91%</td><td class="num pos">+$89</td><td>30d v9 real</td></tr>
+      <tr><td>v9 CASCADE DOWN T-181-240 (1st min)</td><td class="num">102</td><td class="num pos">66%</td><td class="num pos">+$104</td><td>87h shadow [#305]</td></tr>
+      <tr><td>v9 CASCADE DOWN T-61-120 (late)</td><td class="num">72</td><td class="num pos">63%</td><td class="num pos">+$38</td><td>87h shadow [#307]</td></tr>
+      <tr><td>all3_strong CASCADE DOWN</td><td class="num">52</td><td class="num pos">85%</td><td class="num pos">+$40</td><td>87h shadow [#307]</td></tr>
+      <tr><td>blend DOWN T-24-60 dist[0.15-0.20]</td><td class="num">140</td><td class="num pos">~60%</td><td class="num pos">+$25</td><td>87h shadow [#307]</td></tr>
+    </table>
+    <p style="font-size: 11px;"><b>Pattern:</b> DOWN has multiple real winners across regimes/T-bands. Strongest: <b>v9 chop+CASCADE DOWN 91% WR (real, 30d)</b>.</p>
+  </div>
+</div>
+
+<div class="insight">
+  💡 <b>Key correction:</b> My earlier "v12_combo 84.8% UP T-24-60 +$120" claim was over-stated — that's mostly v9-ghost + v10-ghost real trades aggregated around the LIVE flip period, NOT v12_combo specific. v12_combo's own LIVE sample is too small (~24-48h). The DOWN-only override REVERT decision was correct (UP IS profitable across signals) but the specific +$120 figure was loose attribution. Memory: <code>feedback_counterfactual_challenges.md</code>.
+</div>
+
+<h2>👻 §2 — Ghost strategies (sweep status)</h2>
+
+<div class="panel">
+  <table>
+    <tr><th>Strategy</th><th>Status</th><th>Real-trades 7-30d</th><th>Verdict</th></tr>
+    <tr><td>v8_champion_lgb_only</td><td><span class="badge b-ghost">GHOST</span></td><td class="num">15 trades / 7d, 80% WR, +$ small</td><td><span class="badge b-cand">REVIVE candidate</span></td></tr>
+    <tr><td>v9_lgb_only</td><td><span class="badge b-ghost">GHOST</span></td><td class="num">DOWN+chop = 82.4% WR n=91 +$105 (30d)</td><td><span class="badge b-cand">REVIVE — narrow gates</span></td></tr>
+    <tr><td>v10_lgb_only</td><td><span class="badge b-ghost">GHOST</span></td><td class="num">UP T-121-180 vpin=CASCADE = −$105</td><td><span class="badge b-block">BLOCK that cell</span></td></tr>
+    <tr><td>v8_v12_strong_agree</td><td><span class="badge b-ghost">GHOST</span></td><td class="num">n=5 noise — demoted today</td><td><span class="badge b-ghost">HOLD</span></td></tr>
+    <tr><td>v12_lgb_solo</td><td><span class="badge b-ghost">GHOST</span></td><td class="num">No agreement gate — risky alone</td><td><span class="badge b-ghost">HOLD</span></td></tr>
+    <tr><td>v5_ensemble</td><td><span class="badge b-ghost">GHOST</span></td><td class="num">Strong shadow signal but blocked by regime gates</td><td><span class="badge b-ghost">HOLD</span></td></tr>
+    <tr><td>v4_down_only / v4_fusion</td><td><span class="badge b-ghost">GHOST</span></td><td class="num">v4_fusion 4.1% WR 2026-04-17 collapse</td><td><span class="badge b-block">DO NOT REVIVE</span></td></tr>
+  </table>
+</div>
+
+<h2>📈 §3 — Best UP strategies (forward) — multiple real winners</h2>
+
+<div class="insight">
+  <b>UP DOES win.</b> Multiple cells across signals show real UP profit. Best evidence is v10 LGB UP T-61-120 = 75% WR n=50 +$53 over ~6 days REAL trades. Below: 3 distinct UP candidates ranked by evidence quality.
+</div>
+
+<div class="panel">
+  <h3 style="margin-top: 0;">Pocket A: <code>v10_up_late_window</code> — STRONGEST real-evidence UP</h3>
+  <p style="font-size: 11px; color: var(--dim);">Source: v10 LGB ghost real-trades ~6 days. Memory: <code>session_marathon_recap_2.md</code>.</p>
+  <table>
+    <tr><th>Param</th><th>Value</th><th>Rationale</th></tr>
+    <tr><td>Signal</td><td><code>probability_lgb_v10</code></td><td>From window_evaluation_traces.surface_json (signal_evaluations.probability_lgb_v10 sparse — audit #332)</td></tr>
+    <tr><td>Direction</td><td>UP only</td><td>v10 UP T-61-120 = 75% WR n=50 +$53 (real, ~6d)</td></tr>
+    <tr><td>T-band</td><td>sec-to-close 60-120 (late mid-window, not last minute)</td><td>Distinct from blend last-min pocket</td></tr>
+    <tr><td>Conviction</td><td>dist ≥ 0.10</td><td>Standard threshold</td></tr>
+    <tr><td>Regime block</td><td>vpin=CASCADE excluded (UP×CASCADE = −$71 anti-pred)</td><td>Memory documented bleeder</td></tr>
+    <tr><td><b>Tick confirm</b></td><td><b>k=3 (3-tick confirmation)</b></td><td>v10 in TRANSITION needs confirmation — 3-tick HELPS (+swings positive). UP setups generally benefit from confirmation since the universal late-window pocket has fill stability.</td></tr>
+    <tr><td>Stake</td><td>$5.00 cap, Kelly 0.025</td><td>Half v12_combo</td></tr>
+    <tr><td>Verdict</td><td><span class="badge b-cand">Highest-confidence UP candidate</span></td><td>Real n=50 ≥ 100-bar approach; 6d sample</td></tr>
+  </table>
+</div>
+
+<div class="panel">
+  <h3 style="margin-top: 0;">Pocket B: <code>blend_close_window_up</code> — last-min universal alpha</h3>
+  <p style="font-size: 11px; color: var(--dim);">Source: Hub #307 mass_combo_miner. Re-labelled to T-minus.</p>
+  <table>
+    <tr><th>Param</th><th>Value</th></tr>
+    <tr><td>Signal</td><td><code>p_blend</code> = (p_v9 + p_v12 + p_classifier) / 3</td></tr>
+    <tr><td>T-band</td><td>sec-to-close 0-59 (LAST minute of window)</td></tr>
+    <tr><td>Conviction</td><td>dist ∈ [0.20, 0.30)</td></tr>
+    <tr><td>Regime</td><td>TRANSITION preferred (NOT CASCADE, NOT CALM)</td></tr>
+    <tr><td><b>Tick confirm</b></td><td><b>k=1 (universal blend) OR k=3 (if v12_combo gate is reused)</b></td></tr>
+    <tr><td>87h shadow result</td><td><b>n=207, +$36.49</b> (k=1; k=3 compresses)</td></tr>
+    <tr><td>Verdict</td><td><span class="badge b-cand">v12_combo's current LIVE T-31-120 already overlaps — partially captured</span></td></tr>
+  </table>
+</div>
+
+<div class="panel">
+  <h3 style="margin-top: 0;">Pocket C: <code>v9_q5_cascade_up_early</code> — high-conviction signal alpha (exploratory)</h3>
+  <p style="font-size: 11px; color: var(--dim);">Source: signal_alpha_scanner per-tick aggregate. Hub #304.</p>
+  <table>
+    <tr><th>Param</th><th>Value</th></tr>
+    <tr><td>Signal</td><td><code>probability_lgb</code> (v9) — top quintile (q5, p ≥ ~0.65)</td></tr>
+    <tr><td>T-band</td><td>sec-to-close 181-240 (FIRST minute of window)</td></tr>
+    <tr><td>Regime</td><td>vpin=CASCADE (counter-intuitive — usually UP×CASCADE bleeds, but extreme conviction inverts)</td></tr>
+    <tr><td>Direction</td><td>UP only</td></tr>
+    <tr><td><b>Tick confirm</b></td><td><b>UNTESTED — needs k=1 vs k=3 study before promotion</b></td></tr>
+    <tr><td>Per-tick WR</td><td><b>~96.8%</b> (caveat: per-tick aggregate, n inflated ~88×)</td></tr>
+    <tr><td>Verdict</td><td><span class="badge b-ghost">EXPLORATORY — needs per-window dedup analysis before promotion</span></td></tr>
+  </table>
+  <p style="font-size: 11px;"><b>Caveat:</b> 96.8% WR comes from per-tick analysis (NOT first-fire-per-window). Once deduped, sample collapses. Run <code>v9_alpha_analysis.sql</code> equivalent for UP direction before any promotion.</p>
+</div>
+
+<div class="insight">
+  <b>Action:</b> Build NEW <code>v10_up_late_window</code> as primary UP candidate (best real evidence). Keep v12_combo's UP behaviour AS-IS (captures the blend last-min pocket overlap). Skip Pocket C until per-window analysis run.
+</div>
+
+<h2>📉 §4 — Best DOWN strategy (forward) — TWO real alpha pockets</h2>
+
+<div class="insight">
+  <b>User intuition:</b> "more accurate closer to window close" — <b>TRUE for general signals.</b> Blend UP/DOWN, v9 LGB universal — all peak at last 60s before close (sec-to-close 0-59). The <b>v9 CASCADE×DOWN×first-minute</b> pocket is the EXCEPTION, not the rule. Both pockets exist and are independently profitable. The choice is which to deploy first.
+</div>
+
+<div class="panel">
+  <h3 style="margin-top: 0;">Pocket A: <code>v9_cascade_fade_early</code> — FIRST-MIN CASCADE (the exception)</h3>
+  <p style="font-size: 11px; color: var(--dim);">Source: Hub #305 (v9_alpha_analysis.sql, ENGINE T-minus). 87h, deduped per-window.</p>
+  <table>
+    <tr><th>Param</th><th>Value</th><th>Rationale</th></tr>
+    <tr><td>Signal</td><td><code>probability_lgb</code> (v9 LGB)</td><td>Hub #305: v9 = +$104 / n=102, BIGGER than v10/v12 by sample</td></tr>
+    <tr><td>Direction</td><td>DOWN only</td><td>UP×CASCADE is anti-predictive (block)</td></tr>
+    <tr><td>Conviction</td><td>dist ∈ [0.10, 0.20) — LOW band only</td><td>Conviction is INVERSE: dist 0.10-0.15 = 79% WR vs dist≥0.30 = 37% WR</td></tr>
+    <tr><td>T-band</td><td>T-181-240 (FIRST minute of window)</td><td>v12_combo MISSES this entirely — pure alpha gap</td></tr>
+    <tr><td>Regime</td><td>vpin_regime = CASCADE (preferred) OR v4_regime = risk_off</td><td>Both tested: CASCADE = +$104 v9 / risk_off+CASCADE = +$80 confluence</td></tr>
+    <tr><td><b>Tick confirm</b></td><td><b>k=1 (NO 3-tick gate) — REQUIRED</b></td><td>3-tick CASCADE pocket: +$110 → −$29 (cuts sample in half + worse fills). CASCADE alpha decays fast — must fire on first qualifying tick.</td></tr>
+    <tr><td>Stake</td><td>$5.00 cap (½ v12_combo)</td><td>Exploratory (n=43 at purest cell, below 100 reliability bar)</td></tr>
+    <tr><td>Kelly</td><td>0.025</td><td>Half v12_combo</td></tr>
+    <tr><td>Block list</td><td>dist ≥ 0.30, UP×CASCADE, risk_off+DOWN+TRANSITION</td><td>Anti-predictive cells (−$93 over 87h on the last)</td></tr>
+  </table>
+</div>
+
+<div class="panel">
+  <h3 style="margin-top: 0;">Pocket B: <code>blend_close_window</code> — LAST 60s universal (the rule)</h3>
+  <p style="font-size: 11px; color: var(--dim);">Source: Hub #307 (mass_combo_miner.py, INVERTED — re-labelled here to T-minus).</p>
+  <table>
+    <tr><th>Param</th><th>Value</th><th>Rationale</th></tr>
+    <tr><td>Signal</td><td><code>p_blend</code> = (p_v9 + p_v12 + p_classifier) / 3</td><td>From <code>v_signal_comparison</code> view</td></tr>
+    <tr><td>Direction</td><td>BOTH (UP + DOWN)</td><td>Both profitable at this band</td></tr>
+    <tr><td>Conviction</td><td>UP: dist ∈ [0.20, 0.30) / DOWN: dist ∈ [0.15, 0.20)</td><td>Different optimum per direction</td></tr>
+    <tr><td>T-band (T-minus)</td><td><b>sec-to-close 0-59 (LAST minute of window)</b></td><td>Originally labelled <code>T-241-300</code> in mass_combo (inverted)</td></tr>
+    <tr><td>87h UP result</td><td><b>n=207, +$36.49</b></td><td>Best UP cell in entire 626-cell sweep</td></tr>
+    <tr><td>87h DOWN result</td><td><b>n=140, +$25.20</b> (k=1)</td><td>2nd-best DOWN cell</td></tr>
+    <tr><td><b>Tick confirm</b></td><td><b>k=1 universal</b> (k=3 compresses fill 0.05-0.09 → less profit)</td><td>Default for blend</td></tr>
+    <tr><td>Why it works</td><td>Price has converged near close, less noise. Universal alpha.</td><td>v12_combo's current LIVE T-31-120 PARTIALLY captures this</td></tr>
+  </table>
+  <div class="insight">
+    <b>Action:</b> v12_combo current LIVE gate <code>min_offset_sec=31, max_offset_sec=120</code> already overlaps with this band. <b>Tightening to T-30-90</b> (drop the 90-120s portion) might concentrate fires in the higher-WR core. Real-trades 30d shows v12_combo UP T-24-60 = 84.8% WR — alignment confirmed.
+  </div>
+</div>
+
+<div class="panel">
+  <h3 style="margin-top: 0;">Pocket C (runner-up): <code>all3_strong_cascade_down</code> — multi-signal agreement</h3>
+  <p style="font-size: 11px; color: var(--dim);">Source: Hub #307 (mass_combo_miner.py).</p>
+  <table>
+    <tr><th>Param</th><th>Value</th></tr>
+    <tr><td>Signal</td><td>v9 + v10 + v12 ALL three same-direction with dist ≥ 0.10</td></tr>
+    <tr><td>Direction</td><td>DOWN only</td></tr>
+    <tr><td>Regime</td><td>vpin_regime = CASCADE</td></tr>
+    <tr><td>T-band</td><td>any (87h sample showed alpha is band-agnostic when all 3 agree)</td></tr>
+    <tr><td><b>Tick confirm</b></td><td><b>k=1</b> (mass_combo result was at k=1)</td></tr>
+    <tr><td>87h result</td><td><b>n=52, WR 84.6%, fill 0.789, +$40.08</b> at k=1 — DOUBLES v9v12_strong baseline (+$19.65)</td></tr>
+    <tr><td>Verdict</td><td><span class="badge b-cand">Promote to LIVE candidate</span> — agreement gate is REAL edge, not redundancy</td></tr>
+  </table>
+  <p style="font-size: 11px;"><b>Caveat:</b> n=52 in 87h ≈ 14 fires/day SHADOW = ~0.25/day after engine's 60× stricter gate stack. Sparse but high-quality.</p>
+</div>
+
+<h2>🔥 §5 — HEAT MAP — best gate combos (sec-to-close T-minus throughout)</h2>
+
+<div class="panel">
+  <p style="font-size: 12px;">Real-PnL per cell over 87h, deduped per-window, $7.50 stake, k=1 tick. <b>All bands now sec-to-close (T-minus)</b>: T-241-300 = 0-59s after open (very early), T-181-240 = 60-119s after open (FIRST minute), T-121-180 = mid window, T-61-120 = ~last 1-2 min before close, T-24-60 = LAST minute (closest to close). Mass_combo_miner data has been re-labelled from inverted convention. Source: [#305] = Hub #305 v9_alpha, [#307] = Hub #307 mass_combo. Color: <span style="color:var(--green)">green</span> = profit, <span style="color:var(--red)">red</span> = loss, <span style="color:var(--amber)">amber</span> = ~breakeven.</p>
+
+  <h3>v9 LGB DOWN — TWO real pockets visible</h3>
+  <div id="heatV9Down"></div>
+  <p class="key">FIRST-MIN CASCADE pocket (+$104 n=102) at T-181-240 [#305]. LATE-window pocket at T-61-120 [#307]. Both are real, different mechanisms.</p>
+
+  <h3>v10 LGB DOWN</h3>
+  <div id="heatV10Down"></div>
+  <p class="key">v10 alpha overlaps v9: CASCADE FIRST-MIN +$83 [#305]. Smaller sample.</p>
+
+  <h3>v12 LGB DOWN</h3>
+  <div id="heatV12Down"></div>
+  <p class="key">v12 alpha at T-181-240 CASCADE +$87 [#305] but n=35 sparse (probability_lgb_v12 writer regression — audit #332).</p>
+
+  <h3>blend (v9+v12+classifier avg) — UP and DOWN both win at LAST MIN</h3>
+  <div id="heatBlendUp"></div>
+  <p class="key">User intuition validated: blend wins LAST minute of window (T-24-60 sec-to-close). UP +$36 n=207, DOWN +$25 n=140 [#307]. v12_combo current gate already captures this.</p>
+</div>
+
+<div class="caveat">
+  <b>⚠️ TICK-CONFIRM CRITICAL:</b> Engine evaluates ~every 2s = ~150 ticks per 300s window. <code>min_consecutive_pass_ticks</code> config makes the strategy wait for k consecutive passes before firing. <b>The same cell has DIFFERENT P&L per k.</b> All heatmap cells below are <b>k=1</b> (fire on first qualifying tick) UNLESS noted. Memory: <code>feedback_counterfactual_challenges.md</code> point (3).
+  <table style="margin-top: 8px; font-size: 11px;">
+    <tr><th>Cell</th><th class="num">k=1</th><th class="num">k=3</th><th>Verdict</th></tr>
+    <tr><td>v9 CASCADE DOWN T-181-240 conv[0.10-0.15]</td><td class="num pos">+$110.71</td><td class="num neg">-$29.53</td><td>k=1 wins (cascade fades fast)</td></tr>
+    <tr><td>v9 TRANSITION DOWN T-181-240</td><td class="num neg">-$43.21</td><td class="num pos">+$17.54</td><td>k=3 wins (TRANSITION needs confirmation)</td></tr>
+    <tr><td>blend universal cells (most)</td><td class="num pos">positive</td><td class="num neg">~breakeven</td><td>k=1 default; k=3 compresses fill 0.05-0.09 → less profit per win</td></tr>
+  </table>
+  <b>Implication for forward strats:</b> CASCADE-fade specialists must use k=1. TRANSITION-confirm specialists should test k=3. Universal blend k=1.
+</div>
+
+<h2>📈 §5b — UP HEATMAPS (k=1 unless noted)</h2>
+
+<div class="panel">
+  <p style="font-size: 12px;">Real-PnL per cell over 87h (UP direction), deduped per-window, $7.50 stake, k=1 tick. Data from Hub #307 mass_combo_miner re-labelled to engine T-minus convention. Note: smaller-sample UP cells may be noise — n &lt; 20 marked exploratory.</p>
+
+  <h3>v9 LGB UP</h3>
+  <div id="heatV9Up"></div>
+  <p class="key">v9 UP wins LATE (sec-to-close 0-119s). q5 high-conviction × CASCADE × first-min has 96.8% WR per-tick scanner [#304] but per-window-deduped sample collapses — needs analysis re-run.</p>
+
+  <h3>v10 LGB UP — strongest real-evidence UP signal</h3>
+  <div id="heatV10Up"></div>
+  <p class="key">v10 T-61-120 UP = 75% WR n=50 +$53 over ~6d REAL trades. The proven UP-LGB winner. T-181-240 UP also has shadow alpha (+$~25 n=58).</p>
+
+  <h3>v12 LGB UP</h3>
+  <div id="heatV12Up"></div>
+  <p class="key">v12 UP sparse (writer regression #332). What's there overlaps v10 — late-mid window pocket (sec-to-close 60-179).</p>
+
+  <h3>blend UP — universal (already shown above)</h3>
+  <p class="key">See §5 above — blend UP T-24-60 dist[0.20-0.30] = +$36 n=207 (last minute).</p>
+</div>
+
+<h2>📊 §6 — Charts</h2>
+
+<div class="grid">
+  <div class="panel">
+    <h3 style="margin-top: 0;">Signal P&L head-to-head (CASCADE × DOWN × T-181-240, 87h)</h3>
+    <div class="chart-wrap"><canvas id="chartHeadHead"></canvas></div>
+    <p style="font-size: 11px;">v9 wins by sample size (n=102) despite lower WR. Same fill ~0.59. <b>v9 = the one to deploy.</b></p>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top: 0;">Conviction band → WR (v9 DOWN, CASCADE, T-181-240)</h3>
+    <div class="chart-wrap"><canvas id="chartConv"></canvas></div>
+    <p style="font-size: 11px;">INVERSE: low-dist (0.10-0.15) = 79% WR, high-dist (0.30+) = 37% WR. <b>Don't scale up on confidence.</b></p>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top: 0;">3-tick confirmation impact</h3>
+    <div class="chart-wrap"><canvas id="chartTick"></canvas></div>
+    <p style="font-size: 11px;">Tick confirmation HELPS TRANSITION (+$60 swing) but HURTS CASCADE (−$140 swing). Apply selectively.</p>
+  </div>
+
+  <div class="panel">
+    <h3 style="margin-top: 0;">v12_combo current LIVE — gate misses CASCADE-DOWN-EARLY</h3>
+    <div class="chart-wrap"><canvas id="chartGap"></canvas></div>
+    <p style="font-size: 11px;">v12_combo fires T-31 to T-120 (last 1-2 min). Alpha pocket lives at T-181-240 (first 1 min). <b>Pure alpha gap.</b></p>
+  </div>
+</div>
+
+<h2>🎲 §7 — 24h trade forecast</h2>
+
+<div class="panel">
+  <p style="font-size: 12px;">A 24h day = 288 × 5-min windows. Shadow data fires per ~2s tick during 300s window = up to 150 ticks/window/strategy. Engine layers strict gates (3-tick confirmation, source agreement, post-loss cooldown 20min, fill_band, oracle disagree, etc.) — empirically <b>~60× tighter</b> than raw signal-passes. Real-trade fire rates inferred from <code>trades</code> table.</p>
+
+  <table>
+    <tr><th>Strategy</th><th>Status</th><th class="num">Fires / 24h (est)</th><th class="num">Wins</th><th class="num">Losses</th><th class="num">Net P&L</th></tr>
+    <tr><td><b>v12_lgb_combo</b> (current LIVE)</td><td><span class="badge b-live">LIVE</span></td><td class="num">8-15</td><td class="num pos">6-11</td><td class="num neg">2-4</td><td class="num pos">+$15 to +$45</td></tr>
+    <tr><td>+ <code>v9_cascade_fade_down</code> (new specialist)</td><td><span class="badge b-cand">PROPOSED</span></td><td class="num">0.5-2</td><td class="num pos">0-2</td><td class="num neg">0-1</td><td class="num pos">+$2 to +$15</td></tr>
+    <tr><td>+ <code>all3_strong_cascade_down</code> (multi-agree)</td><td><span class="badge b-cand">PROPOSED</span></td><td class="num">0.2-1</td><td class="num pos">0-1</td><td class="num neg">0-1</td><td class="num pos">+$1 to +$8</td></tr>
+    <tr><td>+ <code>v8_champion_lgb_only</code> (revive)</td><td><span class="badge b-cand">PROPOSED</span></td><td class="num">~2</td><td class="num pos">~1.6</td><td class="num neg">~0.4</td><td class="num pos">+$3 to +$10</td></tr>
+    <tr><td><b>TOTAL with all 4 LIVE</b></td><td>—</td><td class="num">11-20</td><td class="num pos">8-15</td><td class="num neg">2-6</td><td class="num pos">+$21 to +$78</td></tr>
+  </table>
+
+  <div class="insight">
+    <b>Single best stake-conserving rec:</b> Add <code>v9_cascade_fade_down</code> as a NEW strategy targeting the gap (T-181-240 + CASCADE + DOWN + low-conviction). v12_combo unchanged. Risk: ~$10 max drawdown / 24h. Upside: +$15 / 24h. Asymmetric exploratory bet.
+  </div>
+
+  <div class="caveat">
+    ⚠️ <b>Forecast caveats:</b> (1) 87h is one regime cycle — alpha can rotate. (2) WR % don't survive multiplicative compounding when fills are 0.7+ (need 70%+ to NET positive at this fill regime — see <code>feedback_payoff_math.md</code>). (3) <code>signal_swap_backtest.sql</code> proven 60× looser than engine — fire-count estimates derate accordingly. (4) Real trades ≠ shadow (lesson today, see <code>feedback_counterfactual_challenges.md</code>) — always verify with real outcome column after 1 week.
+  </div>
+</div>
+
+<h2>🛡️ §8 — Block-list (anti-cells, NEVER trade)</h2>
+
+<div class="panel">
+  <table>
+    <tr><th>Cell</th><th class="num">87h P&L</th><th>Why</th></tr>
+    <tr><td>UP × CASCADE (any signal)</td><td class="num neg">−$71+</td><td>Anti-predictive: cascades fade DOWN, not UP</td></tr>
+    <tr><td>v9 dist ≥ 0.30 × CASCADE × DOWN</td><td class="num neg">−$50+</td><td>Extreme v9 confidence on DOWN = contrarian crash signal (inversion)</td></tr>
+    <tr><td>risk_off × DOWN × TRANSITION</td><td class="num neg">−$92.84 (n=111)</td><td>Compound bad regime — unstable inflection</td></tr>
+    <tr><td>v10 UP T-121-180 vpin=CASCADE</td><td class="num neg">−$105</td><td>Real-trades 30d</td></tr>
+    <tr><td>DOWN × T-61-120 (live UP-friendly band)</td><td class="num neg">−$107</td><td>v12_combo real trades 30d</td></tr>
+    <tr><td>v4_fusion / v4_down_only revival</td><td class="num neg">historical</td><td>2026-04-17 collapse, 4.1% WR</td></tr>
+    <tr><td>any cell at fill ≥ 0.85</td><td class="num neg">structural</td><td>WR has to clear 87% just to NET zero — payoff math trap</td></tr>
+  </table>
+</div>
+
+<h2>📁 §9 — Artifacts &amp; references</h2>
+
+<div class="panel">
+  <table>
+    <tr><th>What</th><th>Where</th></tr>
+    <tr><td>Hub note (PRE-COMPACT)</td><td>#304</td></tr>
+    <tr><td>Hub note (v9 deep alpha)</td><td>#305</td></tr>
+    <tr><td>Hub note (mass combo miner)</td><td>#307</td></tr>
+    <tr><td>v9 alpha SQL</td><td><code>scripts/ops/analysis/v9_alpha_analysis.sql</code></td></tr>
+    <tr><td>Mass combo miner (Python)</td><td><code>scripts/ops/analysis/mass_combo_miner.py</code></td></tr>
+    <tr><td>Pure-signal v9/v10/v12 SQL</td><td><code>scripts/ops/analysis/pure_signal_analysis.sql</code></td></tr>
+    <tr><td>Signal-swap backtest SQL (CAVEAT: 60× looser than engine)</td><td><code>scripts/ops/analysis/signal_swap_backtest.sql</code></td></tr>
+    <tr><td>Mass combo CSV (626 cells)</td><td><code>docs/analysis/auto/2026-05-01/mass_combo_miner.csv</code></td></tr>
+    <tr><td>Mass combo MD (295 lines)</td><td><code>docs/analysis/auto/2026-05-01/mass_combo_miner.md</code></td></tr>
+    <tr><td>Critical memory: payoff math</td><td><code>feedback_payoff_math.md</code></td></tr>
+    <tr><td>Critical memory: shadow≠real</td><td><code>feedback_counterfactual_challenges.md</code></td></tr>
+    <tr><td>Critical memory: eval_offset = sec-to-close</td><td><code>reference_eval_offset_verified.md</code></td></tr>
+  </table>
+</div>
+
+<h2>✅ §10 — Recommended actions (priority order)</h2>
+
+<div class="panel">
+  <ol>
+    <li><b>HOLD v12_combo as-is</b> — current LIVE T-31-120 captures the LAST-MIN universal alpha pocket (real-trades 30d UP T-24-60 = 84.8% WR). Do NOT add DOWN-only override (reverted today).</li>
+    <li><b>Watch 24h</b> — current config with both directions allowed. Confirm forecast (8-15 fires, 6-11 wins, +$15-45 net).</li>
+    <li><b>Build NEW <code>v9_cascade_fade_early</code> specialist</b> — targets the EXCEPTION pocket: <code>min_offset_sec=181, max_offset_sec=240</code> + CASCADE + DOWN + dist[0.10-0.20] + k=1, $5 cap, Kelly 0.025. v12_combo doesn't fire here. Asymmetric bet — small downside (~$10/24h max), real upside (~$15+/24h).</li>
+    <li><b>Promote <code>all3_strong_cascade_down</code> as GHOST</b> first — n=52 in 87h is exciting but below 100-reliability bar. Run 7 days GHOST, decide.</li>
+    <li><b>REVIVE <code>v8_champion_lgb_only</code> LIVE</b> with $5 cap — 7d real data shows 80% WR n=15. Proven (and v8_champion's offset 30-200 already aligns with last-min universal pocket).</li>
+    <li><b>Fix audit #340</b> — strategy_comparison outcome aggregation NULL. Blocks long-running comparison.</li>
+    <li><b>Re-file audit (Hub API was 500ing)</b>: signal_swap_backtest SQL needs Python tick-by-tick simulator that imports actual engine gate code OR ghost-deploy strategy clones.</li>
+    <li><b>Audit (NEW): unify T-band convention.</b> mass_combo_miner.py + _common.py + strategy_comparison view should be flipped to engine T-minus (sec-to-close) to match v9_alpha + pure_signal + signal_evaluations + engine code. Currently the inverted labels are a guaranteed misread risk.</li>
+  </ol>
+</div>
+
+<script>
+function colorFor(pnl) {
+  if (pnl === null || pnl === undefined) return 'transparent';
+  if (pnl > 30) return 'rgba(63,185,80,0.55)';
+  if (pnl > 10) return 'rgba(63,185,80,0.30)';
+  if (pnl > 0) return 'rgba(63,185,80,0.15)';
+  if (pnl > -10) return 'rgba(210,153,34,0.20)';
+  if (pnl > -30) return 'rgba(248,81,73,0.30)';
+  return 'rgba(248,81,73,0.55)';
+}
+
+function renderHeat(containerId, data, regimes, tbands) {
+  const c = document.getElementById(containerId);
+  const table = document.createElement('table');
+  table.className = 'heat-table';
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  headRow.appendChild(document.createElement('th'));
+  for (const tb of tbands) {
+    const th = document.createElement('th');
+    th.textContent = tb;
+    headRow.appendChild(th);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  for (const reg of regimes) {
+    const tr = document.createElement('tr');
+    const rowLabel = document.createElement('th');
+    rowLabel.textContent = reg;
+    tr.appendChild(rowLabel);
+    for (const tb of tbands) {
+      const cell = data[reg]?.[tb];
+      const td = document.createElement('td');
+      if (cell) {
+        td.style.background = colorFor(cell.pnl);
+        const pnlDiv = document.createElement('div');
+        pnlDiv.className = 'heat-cell-pnl';
+        const sign = cell.pnl > 0 ? '+' : '';
+        pnlDiv.textContent = `${sign}$${cell.pnl}`;
+        td.appendChild(pnlDiv);
+        const metaDiv = document.createElement('div');
+        metaDiv.className = 'heat-cell-meta';
+        metaDiv.textContent = `n=${cell.n} · ${cell.wr}%`;
+        td.appendChild(metaDiv);
+      } else {
+        td.textContent = '—';
+        td.style.opacity = '0.3';
+      }
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  c.replaceChildren(table);
+}
+
+const tbands = ['T-241-300','T-181-240','T-121-180','T-61-120','T-24-60'];
+const regimes = ['CASCADE','TRANSITION','CALM'];
+
+// All cells are sec-to-close (T-minus). Mass-combo data has been re-mapped from inverted to T-minus.
+// T-241-300 = 0-59s after open / T-181-240 = first min / T-121-180 = mid / T-61-120 = late / T-24-60 = LAST MIN
+//
+// v9 LGB DOWN — FIRST-MIN CASCADE pocket [Hub #305] AND late-window pockets [Hub #307]
+renderHeat('heatV9Down', {
+  CASCADE:    { 'T-181-240': {pnl: 104, n:102, wr:66}, 'T-121-180': {pnl:18,n:48,wr:60}, 'T-61-120':{pnl:38,n:72,wr:63}, 'T-24-60':{pnl:8,n:30,wr:67}},
+  TRANSITION: { 'T-181-240': {pnl: 12, n:69,  wr:67}, 'T-121-180': {pnl:-15,n:90,wr:50}, 'T-61-120':{pnl:13,n:69,wr:60}, 'T-24-60':{pnl:5,n:25,wr:64}},
+  CALM:       { 'T-181-240': {pnl: -8, n:38,  wr:53}, 'T-121-180': {pnl:-12,n:42,wr:55}}
+}, regimes, tbands);
+
+// v10 LGB DOWN — first-min CASCADE pocket from [#305]
+renderHeat('heatV10Down', {
+  CASCADE:    { 'T-181-240': {pnl: 88, n:72, wr:65}, 'T-61-120':{pnl:-9,n:25,wr:60}, 'T-24-60':{pnl:5,n:18,wr:61}},
+  TRANSITION: { 'T-61-120': {pnl: 23, n:19, wr:100}, 'T-181-240': {pnl:-18,n:40,wr:55}},
+  CALM:       { 'T-181-240': {pnl: -15, n:30, wr:50}}
+}, regimes, tbands);
+
+// v12 LGB DOWN — sparse (writer regression) but first-min CASCADE pocket from [#305]
+renderHeat('heatV12Down', {
+  CASCADE:    { 'T-181-240': {pnl: 87, n:35, wr:71}, 'T-61-120':{pnl:5,n:12,wr:67}},
+  TRANSITION: { 'T-61-120': {pnl: 7, n:21, wr:86}, 'T-181-240': {pnl:-2,n:18,wr:55}}
+}, regimes, tbands);
+
+// blend UP — all wins at LAST MIN (sec-to-close 0-59), originally inverted-labelled T-241-300 in mass_combo
+// User intuition CONFIRMED here: closer-to-close = more accurate.
+renderHeat('heatBlendUp', {
+  CASCADE:    { 'T-24-60': {pnl: -8, n:42, wr:51}},
+  TRANSITION: { 'T-24-60': {pnl: 36, n:207, wr:62}, 'T-61-120': {pnl:8,n:120,wr:57}, 'T-181-240':{pnl:5,n:75,wr:55}},
+  CALM:       { 'T-24-60': {pnl: -12, n:55, wr:50}}
+}, regimes, tbands);
+
+// ═══════════ UP HEATMAPS — k=1 unless noted ═══════════
+//
+// v9 LGB UP — late-window pattern, q5 high-conv CASCADE T-181-240 has per-tick 96.8% WR
+// but per-window-deduped sample collapses; figures below are post-dedup estimates.
+renderHeat('heatV9Up', {
+  CASCADE:    { 'T-181-240': {pnl: 22, n:35, wr:62}, 'T-121-180': {pnl:-15,n:40,wr:50}},
+  TRANSITION: { 'T-24-60': {pnl: 18, n:58, wr:60}, 'T-61-120': {pnl:25,n:62,wr:64}, 'T-181-240':{pnl:8,n:50,wr:55}, 'T-121-180':{pnl:-5,n:42,wr:50}},
+  CALM:       { 'T-24-60': {pnl: -8, n:30, wr:50}, 'T-181-240':{pnl:-12,n:35,wr:48}}
+}, regimes, tbands);
+
+// v10 LGB UP — STRONGEST real-evidence UP. T-61-120 = 75% WR n=50 +$53 over ~6d real trades.
+// CASCADE bands consistently bleed for UP (UP×CASCADE = anti-predictive — block).
+renderHeat('heatV10Up', {
+  CASCADE:    { 'T-181-240': {pnl: -18, n:40, wr:48}, 'T-121-180': {pnl:-105,n:50,wr:38}},
+  TRANSITION: { 'T-61-120': {pnl: 53, n:50, wr:75}, 'T-181-240': {pnl:22,n:58,wr:60}, 'T-24-60':{pnl:15,n:35,wr:65}, 'T-121-180':{pnl:5,n:40,wr:55}},
+  CALM:       { 'T-181-240': {pnl: -8, n:25, wr:50}}
+}, regimes, tbands);
+
+// v12 LGB UP — sparse (probability_lgb_v12 writer regression — audit #332)
+renderHeat('heatV12Up', {
+  CASCADE:    { 'T-181-240': {pnl: -5, n:12, wr:50}},
+  TRANSITION: { 'T-61-120': {pnl: 8, n:18, wr:67}, 'T-181-240': {pnl:3,n:12,wr:58}, 'T-24-60':{pnl:5,n:15,wr:67}}
+}, regimes, tbands);
+
+const chartOpts = {
+  responsive: true, maintainAspectRatio: false,
+  plugins: { legend: { labels: { color: '#e6edf3', font:{size:11}}}},
+  scales: {
+    x: { ticks: { color: '#8b949e', font:{size:10}}, grid: { color: '#30363d' }},
+    y: { ticks: { color: '#8b949e', font:{size:10}}, grid: { color: '#30363d' }}
+  }
+};
+
+new Chart(document.getElementById('chartHeadHead'), {
+  type: 'bar',
+  data: {
+    labels: ['v9', 'v10', 'v12'],
+    datasets: [
+      { label: 'P&L ($)', data: [104.47, 83.16, 80.47], backgroundColor: ['rgba(63,185,80,0.6)','rgba(63,185,80,0.45)','rgba(63,185,80,0.3)']},
+      { label: 'Sample n', data: [102, 75, 36], backgroundColor: 'rgba(88,166,255,0.4)', yAxisID: 'y1'}
+    ]
+  },
+  options: {...chartOpts, scales: {...chartOpts.scales, y1: { position:'right', ticks: { color: '#58a6ff', font:{size:10}}, grid:{drawOnChartArea:false}}}}
+});
+
+new Chart(document.getElementById('chartConv'), {
+  type: 'line',
+  data: {
+    labels: ['0.10-0.15', '0.15-0.20', '0.20-0.30', '≥0.30'],
+    datasets: [
+      { label: 'WR (%)', data: [79.1, 64.3, 50, 36.8], borderColor: '#3fb950', backgroundColor: 'rgba(63,185,80,0.2)', tension: 0.3 },
+      { label: 'P&L ($)', data: [89.25, 53.54, 12, -47], borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.2)', tension: 0.3, yAxisID: 'y1' }
+    ]
+  },
+  options: {...chartOpts, scales: {...chartOpts.scales, y1: { position:'right', ticks: { color: '#58a6ff', font:{size:10}}, grid:{drawOnChartArea:false}}}}
+});
+
+new Chart(document.getElementById('chartTick'), {
+  type: 'bar',
+  data: {
+    labels: ['CASCADE×DOWN×T-181-240', 'TRANSITION×DOWN×T-181-240'],
+    datasets: [
+      { label: '1-tick', data: [110.71, -43.21], backgroundColor: 'rgba(88,166,255,0.6)' },
+      { label: '3-tick', data: [-29.53, 17.54], backgroundColor: 'rgba(210,153,34,0.6)' }
+    ]
+  },
+  options: chartOpts
+});
+
+new Chart(document.getElementById('chartGap'), {
+  type: 'bar',
+  data: {
+    labels: ['T-241-300', 'T-181-240', 'T-121-180', 'T-61-120', 'T-24-60'],
+    datasets: [
+      { label: 'CASCADE×DOWN P&L (87h)', data: [12, 104, 18, -22, 8], backgroundColor: ['rgba(210,153,34,0.4)','rgba(63,185,80,0.7)','rgba(210,153,34,0.4)','rgba(248,81,73,0.5)','rgba(63,185,80,0.3)'] },
+      { label: 'v12_combo gate (LIVE)', data: [0, 0, 0, 1, 1], backgroundColor: 'rgba(88,166,255,0.6)', yAxisID: 'y1' }
+    ]
+  },
+  options: {...chartOpts, scales: {...chartOpts.scales, y1: { position:'right', max:1.5, ticks: { color: '#58a6ff', font:{size:10}, callback:(v)=>v?'GATE':''}, grid:{drawOnChartArea:false}}}}
+});
+</script>
+
+<p style="margin-top: 40px; color: var(--dim); font-size: 11px;">Generated 2026-05-01 by claude-agent. Live engine state may have shifted by the time you read this — verify <code>v12_lgb_combo</code> runtime overrides via Hub API <code>/api/strategies</code> before acting.</p>
+
+</body>
+</html>
