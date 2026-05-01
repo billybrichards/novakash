@@ -480,14 +480,36 @@ class OrderManager:
                     window_ts = meta.get("window_ts")
                     asset = meta.get("market_slug", "").split("-")[0].upper() or "BTC"
                     tf = meta.get("timeframe", "5m")
-                    # poly_winner: "Up" or "Down" depending on resolved direction
+                    # poly_winner: "Up" or "Down" — the side that the Polymarket
+                    # market actually resolved to. Derived from this trade's
+                    # direction × WIN/LOSS outcome.
                     if resolved.outcome == "WIN":
                         poly_winner = "Up" if resolved.direction == "YES" else "Down"
                     else:
                         poly_winner = "Down" if resolved.direction == "YES" else "Up"
+                    # window_snapshots.outcome is the directional UP/DOWN/FLAT
+                    # label (NOT the trade WIN/LOSS — that pollutes the column
+                    # and was the 2026-04-08 → 2026-04-30 regression). The
+                    # writer's coercion logic now derives UP/DOWN from
+                    # poly_winner regardless of what the legacy first arg is.
                     await self._db.update_window_outcome(
-                        window_ts, asset, tf, resolved.outcome, resolved.pnl_usd or 0.0, poly_winner
+                        window_ts, asset, tf,
+                        resolved.outcome,           # legacy (ignored for outcome col)
+                        resolved.pnl_usd or 0.0,
+                        poly_winner,                # source of truth for direction
                     )
+                    # Forward writer (added 2026-04-30, hub note 297): also
+                    # populate signal_evaluations.outcome for *every* row tied
+                    # to this window — was 100% NULL post-Apr-8.
+                    try:
+                        directional = poly_winner.upper() if poly_winner else None
+                        if directional in ("UP", "DOWN", "FLAT"):
+                            await self._db.update_signal_evaluations_outcome(
+                                window_ts, asset, tf, directional
+                            )
+                    except Exception:
+                        # Surfaced inside the helper; keep the resolution loop alive.
+                        pass
                     # v8.1.2: Update window_predictions with oracle result
                     try:
                         await self._db.update_window_prediction_outcome(

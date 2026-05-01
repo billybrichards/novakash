@@ -33,6 +33,22 @@ _GAMMA_BASE = "https://gamma-api.polymarket.com"
 _SLUG_PREFIX = "btc-updown-5m-"
 
 
+def _coerce_directional_outcome(outcome, poly_winner) -> Optional[str]:
+    """Return UP/DOWN/FLAT or None — same semantics as
+    ``DBClient._coerce_directional_outcome``. Module-level so the parity
+    helper here uses the same logic without depending on DBClient.
+    """
+    if isinstance(poly_winner, str):
+        up = poly_winner.strip().upper()
+        if up in ("UP", "DOWN", "FLAT"):
+            return up
+    if isinstance(outcome, str):
+        up = outcome.strip().upper()
+        if up in ("UP", "DOWN", "FLAT"):
+            return up
+    return None
+
+
 class PgWindowRepository(WindowStateRepository):
     """asyncpg-backed window snapshot repository.
 
@@ -196,19 +212,26 @@ class PgWindowRepository(WindowStateRepository):
     ) -> None:
         """Update a window_snapshot with resolution data.
 
-        Verbatim SQL from ``DBClient.update_window_outcome``.
+        Mirrors ``DBClient.update_window_outcome`` (2026-04-30 forward-writer
+        regression fix): coerces ``outcome`` to UP/DOWN/FLAT using
+        ``poly_winner`` as source of truth, never overwrites a non-NULL
+        value, and surfaces failures in the log.
         """
         if not self._pool:
             return
+
+        directional = _coerce_directional_outcome(outcome, poly_winner)
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     """
                     UPDATE window_snapshots
-                    SET outcome = $1, pnl_usd = $2, poly_winner = $3
+                       SET outcome     = COALESCE(outcome, $1),
+                           pnl_usd     = COALESCE(pnl_usd, $2),
+                           poly_winner = COALESCE(poly_winner, $3)
                     WHERE window_ts = $4 AND asset = $5 AND timeframe = $6
                     """,
-                    outcome,
+                    directional,
                     pnl_usd,
                     poly_winner,
                     window_ts,
@@ -220,11 +243,72 @@ class PgWindowRepository(WindowStateRepository):
                 window_ts=window_ts,
                 asset=asset,
                 timeframe=timeframe,
-                outcome=outcome,
+                outcome=directional,
                 pnl_usd=pnl_usd,
+                poly_winner=poly_winner,
+                input_outcome=outcome,
             )
         except Exception as exc:
-            log.error("db.update_window_outcome_failed", error=str(exc))
+            log.error(
+                "db.update_window_outcome_failed",
+                error=str(exc),
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+            )
+
+    async def update_signal_evaluations_outcome(
+        self,
+        window_ts,
+        asset: str,
+        timeframe: str,
+        outcome: str,
+    ) -> int:
+        """Bulk-update every ``signal_evaluations`` row for a window with the
+        resolved direction. Mirrors ``DBClient.update_signal_evaluations_outcome``.
+
+        Added 2026-04-30 forward-writer regression fix: previously no engine
+        path ever populated this column. Returns rows affected. Idempotent.
+        """
+        if not self._pool:
+            return 0
+
+        directional = _coerce_directional_outcome(outcome, None)
+        if directional is None:
+            return 0
+
+        try:
+            async with self._pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    UPDATE signal_evaluations
+                       SET outcome = $1
+                    WHERE window_ts = $2 AND asset = $3 AND timeframe = $4
+                      AND outcome IS NULL
+                    """,
+                    directional,
+                    window_ts,
+                    asset,
+                    timeframe,
+                )
+            n = int(result.split()[-1]) if result else 0
+            log.debug(
+                "db.signal_evaluations_outcome_updated",
+                window_ts=window_ts,
+                asset=asset,
+                timeframe=timeframe,
+                outcome=directional,
+                rows=n,
+            )
+            return n
+        except Exception as exc:
+            log.error(
+                "db.update_signal_evaluations_outcome_failed",
+                error=str(exc),
+                window_ts=window_ts,
+                asset=asset,
+            )
+            return 0
 
     async def update_window_prices(
         self,
@@ -516,23 +600,27 @@ class PgWindowRepository(WindowStateRepository):
     ) -> None:
         """Update a skipped window with oracle resolution for shadow trade analysis.
 
-        Verbatim SQL from ``DBClient.update_shadow_resolution``.
+        Mirrors ``DBClient.update_shadow_resolution`` (2026-04-30 forward-writer
+        fix): also populates the canonical ``outcome`` column.
         """
         if not self._pool:
             return
+        directional = _coerce_directional_outcome(oracle_outcome, None)
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
                     """
                     UPDATE window_snapshots
-                    SET oracle_outcome  = $1,
-                        shadow_pnl      = $2,
-                        shadow_would_win = $3
-                    WHERE window_ts = $4 AND asset = $5 AND timeframe = $6
+                       SET oracle_outcome   = COALESCE(oracle_outcome, $1),
+                           outcome          = COALESCE(outcome, $4),
+                           shadow_pnl       = COALESCE(shadow_pnl, $2),
+                           shadow_would_win = COALESCE(shadow_would_win, $3)
+                    WHERE window_ts = $5 AND asset = $6 AND timeframe = $7
                     """,
                     oracle_outcome,
                     shadow_pnl,
                     shadow_would_win,
+                    directional,
                     window_ts,
                     asset,
                     timeframe,
@@ -542,11 +630,17 @@ class PgWindowRepository(WindowStateRepository):
                 window_ts=window_ts,
                 asset=asset,
                 oracle_outcome=oracle_outcome,
+                outcome=directional,
                 shadow_pnl=f"{shadow_pnl:+.2f}",
                 shadow_would_win=shadow_would_win,
             )
         except Exception as exc:
-            log.error("db.update_shadow_resolution_failed", error=str(exc))
+            log.error(
+                "db.update_shadow_resolution_failed",
+                error=str(exc),
+                window_ts=window_ts,
+                asset=asset,
+            )
 
     # -- Post-Resolution AI Analysis -----------------------------------------
 
