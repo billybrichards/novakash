@@ -1531,11 +1531,13 @@ async def post_manual_trade(
         INSERT INTO manual_trades
             (trade_id, window_ts, asset, direction, mode,
              entry_price, gamma_up_price, gamma_down_price,
-             stake_usd, status, order_type, created_at)
+             stake_usd, status, order_type, created_at,
+             operator_user_id, operator_username)
         VALUES
             (:trade_id, :window_ts, :asset, :direction, :mode,
              :entry_price, :gamma_up_price, :gamma_down_price,
-             :stake_usd, :status, :order_type, NOW())
+             :stake_usd, :status, :order_type, NOW(),
+             :operator_user_id, :operator_username)
     """), {
         "trade_id": trade_id,
         "window_ts": body.window_ts,
@@ -1548,6 +1550,8 @@ async def post_manual_trade(
         "stake_usd": stake,
         "status": status,
         "order_type": order_type,
+        "operator_user_id": user.user_id,
+        "operator_username": user.username,
     })
     await session.commit()
 

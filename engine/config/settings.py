@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     # Telegram
     telegram_bot_token: str = Field(default="", description="Telegram bot token")
     telegram_chat_id: str = Field(default="", description="Telegram chat ID for alerts")
+    manual_trade_telegram_chat_id: str = Field(
+        default="",
+        description=(
+            "Separate Telegram chat_id for manual-trade alerts. "
+            "If unset, falls back to telegram_chat_id."
+        ),
+    )
     telegram_alerts_paper: bool = Field(
         default=True, description="Send Telegram alerts for paper trades"
     )

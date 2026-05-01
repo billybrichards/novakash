@@ -1,6 +1,11 @@
 """Unit tests for ExecuteManualTradeUseCase.
 
 All ports are mocked.  No DB, no network, no Polymarket.
+
+Covers:
+  - Existing happy path / error paths (pre-Track B)
+  - B2: Risk-gate rejection → status='failed_risk_gate' + Telegram alert
+  - B3: Manual-trade alerter routes to MANUAL_TRADE_TELEGRAM_CHAT_ID when set
 """
 from __future__ import annotations
 
@@ -33,6 +38,20 @@ def _market(up="tok-up-abc", down="tok-down-xyz"):
     )
 
 
+def _approving_risk_manager():
+    """Returns a mock RiskManager that approves all trades."""
+    rm = AsyncMock()
+    rm.approve.return_value = (True, "ok")
+    return rm
+
+
+def _rejecting_risk_manager(reason: str = "kill_switch: active"):
+    """Returns a mock RiskManager that rejects all trades."""
+    rm = AsyncMock()
+    rm.approve.return_value = (False, reason)
+    return rm
+
+
 class Ports:
     def __init__(self):
         self.polymarket = AsyncMock()
@@ -42,13 +61,14 @@ class Ports:
         self.clock = MagicMock()
         self.clock.now.return_value = 1700000100.0
 
-    def uc(self, paper_mode=True):
+    def uc(self, paper_mode=True, risk_manager=None):
         return ExecuteManualTradeUseCase(
             polymarket=self.polymarket,
             manual_trade_repo=self.manual_trade_repo,
             window_state=self.window_state,
             alerts=self.alerts,
             clock=self.clock,
+            risk_manager=risk_manager,
             paper_mode=paper_mode,
         )
 
@@ -194,4 +214,160 @@ async def test_alert_failure_does_not_break_use_case():
 
     results = await p.uc().drain_once()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# B2: Risk-gate tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_risk_gate_approval_allows_trade():
+    """When RiskManager approves, trade proceeds to 'open'."""
+    p = Ports()
+    p.polymarket.poll_pending_trades.return_value = [_pending()]
+    p.polymarket.get_window_market.return_value = _market()
+    rm = _approving_risk_manager()
+
+    results = await p.uc(paper_mode=True, risk_manager=rm).drain_once()
+
+    assert results[0].status == "open"
+    rm.approve.assert_called_once_with(4.0, strategy="manual_trade")
+    # place_order NOT called in paper mode, but status must be open
+    p.manual_trade_repo.update_status.assert_any_call("tid-001", "open", clob_order_id=results[0].clob_order_id)
+
+
+@pytest.mark.asyncio
+async def test_risk_gate_rejection_marks_failed_risk_gate():
+    """When RiskManager rejects, trade status becomes 'failed_risk_gate'."""
+    p = Ports()
+    p.polymarket.poll_pending_trades.return_value = [_pending()]
+    p.polymarket.get_window_market.return_value = _market()
+    rm = _rejecting_risk_manager("kill_switch: active (drawdown 50.0%)")
+
+    results = await p.uc(paper_mode=True, risk_manager=rm).drain_once()
+
+    assert results[0].status == "failed_risk_gate"
+    assert results[0].clob_order_id is None
+    p.manual_trade_repo.update_status.assert_any_call("tid-001", "failed_risk_gate")
+
+
+@pytest.mark.asyncio
+async def test_risk_gate_rejection_sends_telegram_alert():
+    """Risk-gate rejection triggers a Telegram alert containing the reason."""
+    p = Ports()
+    p.polymarket.poll_pending_trades.return_value = [_pending(stake_usd=10.0)]
+    p.polymarket.get_window_market.return_value = _market()
+    rejection_reason = "daily_loss_limit: down $50.00 today"
+    rm = _rejecting_risk_manager(rejection_reason)
+
+    await p.uc(paper_mode=False, risk_manager=rm).drain_once()
+
+    p.alerts.send_system_alert.assert_called_once()
+    alert_text = p.alerts.send_system_alert.call_args.args[0]
+    assert "Rejected" in alert_text or "Risk Gate" in alert_text
+    assert rejection_reason in alert_text
+
+
+@pytest.mark.asyncio
+async def test_risk_gate_rejection_does_not_call_place_order():
+    """After risk gate rejection, place_order must never be called."""
+    p = Ports()
+    p.polymarket.poll_pending_trades.return_value = [_pending()]
+    p.polymarket.get_window_market.return_value = _market()
+    rm = _rejecting_risk_manager("exposure_limit: $60.00 > $50.00")
+
+    await p.uc(paper_mode=False, risk_manager=rm).drain_once()
+
+    p.polymarket.place_order.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_no_risk_manager_skips_gate():
+    """When risk_manager is None (default), the gate is bypassed and trade proceeds."""
+    p = Ports()
+    p.polymarket.poll_pending_trades.return_value = [_pending()]
+    p.polymarket.get_window_market.return_value = _market()
+
+    results = await p.uc(paper_mode=True, risk_manager=None).drain_once()
+
+    assert results[0].status == "open"
+
+
+@pytest.mark.asyncio
+async def test_risk_gate_checked_after_token_resolution():
+    """Risk gate should only fire after the token is resolved (not on failed_no_token)."""
+    p = Ports()
+    p.polymarket.poll_pending_trades.return_value = [_pending()]
+    p.polymarket.get_window_market.return_value = None
+    p.manual_trade_repo.get_token_ids.return_value = None
+    # Even with a rejecting risk manager, the status should be failed_no_token
+    # because token resolution failed first.
+    rm = _rejecting_risk_manager()
+
+    results = await p.uc(paper_mode=True, risk_manager=rm).drain_once()
+
     assert results[0].status == "failed_no_token"
+    # Risk manager was NOT consulted (token resolution failed first)
+    rm.approve.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# B3: ManualTradeAlerter routing tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_manual_trade_alerter_routes_to_override_chat():
+    """When override_chat_id is set, send_raw_message_to is called (not send_raw_message)."""
+    from adapters.alert.manual_trade_alerter import ManualTradeAlerter
+
+    base_alerter = AsyncMock()
+    base_alerter.send_raw_message_to = AsyncMock()
+    base_alerter.send_raw_message = AsyncMock()
+
+    manual_alerter = ManualTradeAlerter(
+        alerter=base_alerter,
+        override_chat_id="-100123456789",
+    )
+
+    await manual_alerter.send_system_alert("Test manual trade alert")
+
+    base_alerter.send_raw_message_to.assert_called_once_with(
+        text="Test manual trade alert",
+        chat_id="-100123456789",
+    )
+    base_alerter.send_raw_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_manual_trade_alerter_falls_back_when_no_override():
+    """When override_chat_id is unset, send_raw_message is called on the primary alerter."""
+    from adapters.alert.manual_trade_alerter import ManualTradeAlerter
+
+    base_alerter = AsyncMock()
+    base_alerter.send_raw_message = AsyncMock()
+    base_alerter.send_raw_message_to = AsyncMock()
+
+    manual_alerter = ManualTradeAlerter(alerter=base_alerter, override_chat_id=None)
+
+    await manual_alerter.send_system_alert("Fallback alert")
+
+    base_alerter.send_raw_message.assert_called_once_with("Fallback alert")
+    base_alerter.send_raw_message_to.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_manual_trade_alerter_empty_string_treated_as_no_override():
+    """Empty-string override_chat_id falls back to primary path (not override)."""
+    from adapters.alert.manual_trade_alerter import ManualTradeAlerter
+
+    base_alerter = AsyncMock()
+    base_alerter.send_raw_message = AsyncMock()
+    base_alerter.send_raw_message_to = AsyncMock()
+
+    manual_alerter = ManualTradeAlerter(alerter=base_alerter, override_chat_id="")
+
+    await manual_alerter.send_system_alert("Empty override test")
+
+    base_alerter.send_raw_message.assert_called_once_with("Empty override test")
+    base_alerter.send_raw_message_to.assert_not_called()

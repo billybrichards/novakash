@@ -762,6 +762,67 @@ class CompositionRoot:
             settings=settings,
         )
 
+        # ── B1/B2/B3/B4: Manual Trade Use Case + Poller ───────────────────────
+        # Wired here so EngineRuntime can pull the poller out and spawn it
+        # as an asyncio.Task alongside the main strategy loop.
+        self._execute_manual_trade_uc = self._build_execute_manual_trade_uc(settings)
+        self._manual_trade_poller = self._build_manual_trade_poller()
+
+    def _build_execute_manual_trade_uc(self, settings):
+        """Construct ExecuteManualTradeUseCase with all dependencies wired.
+
+        B4 deliverable — single wiring point. EngineRuntime reads this from
+        ``root._execute_manual_trade_uc`` rather than building its own.
+        """
+        from adapters.alert.manual_trade_alerter import ManualTradeAlerter
+        from adapters.clock.system_clock import SystemClock
+        from use_cases.execute_manual_trade import ExecuteManualTradeUseCase
+
+        # B3: Use a dedicated chat_id for manual-trade alerts when configured.
+        override_chat_id = getattr(settings, "manual_trade_telegram_chat_id", "") or ""
+        manual_alerter = ManualTradeAlerter(
+            alerter=self._alerter,
+            override_chat_id=override_chat_id or None,
+        )
+        log.info(
+            "composition.manual_trade_alerter",
+            has_override_chat=bool(override_chat_id),
+        )
+
+        # PolymarketClientPort: the existing PolymarketClient implements
+        # poll_pending_trades / place_order / get_window_market / get_book
+        # via the port interface (duck-typed).  ManualTradeRepository is also
+        # duck-typed via the DBClient shim which already has update_status /
+        # get_token_ids_from_market_data.
+        #
+        # WindowStateRepository: the use case uses it only for token-id ring-buffer
+        # fallback in the original design; the current implementation delegates to
+        # the PolymarketClientPort.get_window_market() and ManualTradeRepository.
+        # We pass None here — _resolve_token_id() only calls window_state when the
+        # primary miss — and the existing DBClient fallback path still works via
+        # manual_trade_repo.get_token_ids().
+        return ExecuteManualTradeUseCase(
+            polymarket=self._poly_client,
+            manual_trade_repo=self._db,  # DBClientLegacyShim implements the repo interface
+            window_state=None,            # not required by current implementation
+            alerts=manual_alerter,
+            clock=SystemClock(),
+            risk_manager=self._risk_manager,
+            paper_mode=settings.paper_mode,
+        )
+
+    def _build_manual_trade_poller(self):
+        """Construct ManualTradePoller pointing at the pre-built use case.
+
+        B1 deliverable.
+        """
+        from tasks.manual_trade_poller import ManualTradePoller
+
+        return ManualTradePoller(
+            db=self._db,
+            use_case=self._execute_manual_trade_uc,
+        )
+
     # =================================================================
     # TG Narrative V2 wiring (Phase E)
     # See plans/serialized-drifting-clover.md.
