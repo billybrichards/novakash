@@ -7,10 +7,15 @@
 //   NORMAL    → gray   (#94a3b8)
 //   HIGH_VOL  → amber  (T.warn)
 //   TRENDING  → green  (T.profit)
+//
+// Phase 3 (#365): when the countdown is inside the v9 exit-window
+// (T-48s → T-30s) we colour the WINDOW block to make the engine's
+// active sell-decision range visible to the operator.
 
 import React from 'react';
 import { T } from '../../../theme/tokens.js';
 import { fmtTRemaining } from '../hooks/useWindow.js';
+import { inExitWindow } from '../lib/exitWindow.js';
 
 const REGIME_COLOURS = {
   LOW_VOL:   '#60a5fa',
@@ -57,9 +62,20 @@ export default function Header({
         </div>
       </Block>
 
-      <Block label="WINDOW">
-        <span style={{ fontSize: 18, fontWeight: 500, letterSpacing: '0.05em' }}>
+      <Block label={inExitWindow(secondsRemaining) ? 'WINDOW · EXIT' : 'WINDOW'}>
+        <span style={{
+          fontSize: 18,
+          fontWeight: 500,
+          letterSpacing: '0.05em',
+          color: inExitWindow(secondsRemaining) ? T.warn : undefined,
+        }}>
           {fmtTRemaining(secondsRemaining)}
+          {inExitWindow(secondsRemaining) ? (
+            <span title="Engine sell window — T-48 to T-30 (#365). If a position is open it may be filled in this range."
+                  style={{ marginLeft: 6, fontSize: 10, color: T.warn, letterSpacing: '0.1em' }}>
+              ◆ SELL
+            </span>
+          ) : null}
         </span>
       </Block>
 

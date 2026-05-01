@@ -1,15 +1,16 @@
 // /desk — current-window strategy decisions panel.
 //
 // Pulls GET /api/v58/strategy-decisions?timeframe=5m and filters down to
-// the strategies tracked in spec #218 (v6_sniper is the sole LIVE per
-// commit 8289e91; others shadow). Each row shows direction + stake +
-// conviction. Skip reasons are shown on hover via `title=`.
+// the LIVE strategy + shadow ghosts from constants/strategies.js. Pre-v8
+// ids dropped because the hub returns nothing for them on the current
+// engine and they made the panel look broken.
 
 import React, { useEffect, useState } from 'react';
 import { useApi } from '../../../hooks/useApi.js';
 import { T } from '../../../theme/tokens.js';
+import { DESK_TRACKED_STRATEGY_IDS } from '../../../constants/strategies.js';
 
-const TRACKED = ['v6_sniper', 'v4_fusion', 'v5_ensemble', 'v5_fresh'];
+const TRACKED = DESK_TRACKED_STRATEGY_IDS;
 
 export default function StrategyDecisions({ windowEpoch, pollMs = 4_000 }) {
   const api = useApi();

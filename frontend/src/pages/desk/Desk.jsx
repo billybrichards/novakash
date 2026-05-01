@@ -28,6 +28,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import PageHeader from '../../components/shared/PageHeader.jsx';
 import { T } from '../../theme/tokens.js';
 import { useApi } from '../../hooks/useApi.js';
+import { DESK_TRACKED_STRATEGY_IDS } from '../../constants/strategies.js';
 
 import Header from './components/Header.jsx';
 import PriceChart from './components/PriceChart.jsx';
@@ -46,12 +47,19 @@ import RegimeRibbon from './components/RegimeRibbon.jsx';
 import LiquidationFlow from './components/LiquidationFlow.jsx';
 import { useClobBook } from './hooks/useClobBook.js';
 
+// Phase 3 components (audit #291: surface untapped window_snapshots fields)
+import ConvictionStrip from './components/ConvictionStrip.jsx';
+import SubSignalsPanel from './components/SubSignalsPanel.jsx';
+import CGPositioningTile from './components/CGPositioningTile.jsx';
+import ConsensusBadge from './components/ConsensusBadge.jsx';
+import AlertBanners from './components/AlertBanners.jsx';
+
 import { useWindow } from './hooks/useWindow.js';
 import { useSnapshot, pickProbs } from './hooks/useSnapshot.js';
 import { usePicks } from './hooks/usePicks.js';
 import { useResolvedDecisions } from './hooks/useResolvedDecisions.js';
 
-const TRACKED_STRATEGIES = ['v6_sniper', 'v4_fusion', 'v5_ensemble', 'v5_fresh'];
+const TRACKED_STRATEGIES = DESK_TRACKED_STRATEGY_IDS;
 
 export default function Desk() {
   const api = useApi();
@@ -63,12 +71,9 @@ export default function Desk() {
   const snap = useSnapshot('BTC', 2_000);
   const { pu, pc, pl } = pickProbs(snap.fiveMin);
 
-  // System status — engine status string for the header chip.
-  //
-  // TODO: Hub /api/system/status does not expose LIVE/PAPER/KILLED yet —
-  // follow-up audit needed to extend endpoint. Today it returns
-  // { status: "online", data: { status: "active", bankroll: ... } } with
-  // no mode/kill-switch field. We surface data.status as-is.
+  // System status — engine mode for the header chip.
+  // Hub now exposes a derived `mode` field (LIVE/PAPER/KILLED) at the top
+  // level of /api/system/status; fall back to data.status for older hubs.
   const [systemStatus, setSystemStatus] = useState(null);
   useEffect(() => {
     let cancelled = false;
@@ -77,11 +82,15 @@ export default function Desk() {
         const r = await api.get('/api/system/status');
         const body = r?.data ?? r;
         if (cancelled) return;
+        const mode = body?.mode;
         const inner = body?.data?.status;
-        setSystemStatus(
-          typeof inner === 'string' && inner ? inner.toUpperCase() : '?',
-        );
-      } catch {
+        const pick = (typeof mode === 'string' && mode) ? mode
+          : (typeof inner === 'string' && inner) ? inner
+          : null;
+        setSystemStatus(pick ? pick.toUpperCase() : '?');
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[desk] system status fetch failed:', e?.message || e);
         if (!cancelled) setSystemStatus('?');
       }
     };
@@ -144,7 +153,7 @@ export default function Desk() {
       <PageHeader
         tag="DESK · /desk"
         title="Live Play-Along Desk"
-        subtitle="Operator HUD for 5m BTC Polymarket windows. Make a call, then compare against v6_sniper / fusion / ensemble. Phase 1 — CLOB ladder + TimesFM fan arrive later."
+        subtitle="Operator HUD for 5m BTC Polymarket windows. Make a call, then compare against v9_ensemble (LIVE) / v8_champion_lgb_only (GHOST). Phase 3 — conviction + sub-signals + CG positioning + consensus + exit-window indicator."
       />
 
       <Header
@@ -169,6 +178,16 @@ export default function Desk() {
           pl={pl}
           impliedPUp={impliedPUp}
         />
+      </ErrBoundary>
+
+      {/* Phase 3: VHC bypass + M2M stop-loss alert banners. */}
+      <ErrBoundary label="Alert banners">
+        <AlertBanners fiveMin={snap.fiveMin} pc={pc} pl={pl} />
+      </ErrBoundary>
+
+      {/* Phase 3: cross-source consensus chip strip. */}
+      <ErrBoundary label="Consensus badge">
+        <ConsensusBadge snapshot={snap.data} />
       </ErrBoundary>
 
       <div style={gridStyle}>
@@ -203,6 +222,15 @@ export default function Desk() {
               pl={pl}
               windowDelta={windowDelta}
             />
+          </ErrBoundary>
+          <ErrBoundary label="Conviction strip">
+            <ConvictionStrip fiveMin={snap.fiveMin} />
+          </ErrBoundary>
+          <ErrBoundary label="Sub-signals">
+            <SubSignalsPanel fiveMin={snap.fiveMin} />
+          </ErrBoundary>
+          <ErrBoundary label="CG positioning">
+            <CGPositioningTile snapshot={snap.data} fiveMin={snap.fiveMin} />
           </ErrBoundary>
           <ErrBoundary label="Regime ribbon">
             <RegimeRibbon fiveMin={snap.fiveMin} />

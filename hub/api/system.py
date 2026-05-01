@@ -30,6 +30,78 @@ class RedeemRequest(BaseModel):
     redeem_type: str = "all"
 
 
+def _safe_dict(value) -> dict:
+    """Return ``value`` if it is a dict, else an empty dict — defensive
+    against malformed jsonb that comes back as a string / list / None."""
+    return value if isinstance(value, dict) else {}
+
+
+def _derive_mode(state_row: SystemState | None) -> str:
+    """
+    Collapse the multi-writer system_state row into a single
+    operator-facing mode string the FE can render directly.
+
+    Two writers feed this row:
+      - hub `/api/system/*` mutates the ``state`` jsonb. Sets
+        ``kill_switch_manual`` (manual kill) and ``paper_mode``
+        (mode toggle).
+      - engine ``publish_heartbeat`` writes ``engine_status`` ("running"
+        on every heartbeat) and ``config`` jsonb (carries
+        ``kill_switch_active`` from the auto-drawdown kill, plus
+        ``paper_mode`` from the engine's runtime config).
+
+    Precedence (highest first):
+      KILLED    any kill flag tripped (manual hub kill, engine
+                kill_switch_active, or legacy kill_switch_auto)
+      PAPER     paper-mode flag set in either hub-state or engine-config
+                jsonb, or the dedicated ``paper_enabled`` column
+      LIVE      engine_status == "running" / "active" (engine alive,
+                not paper, not killed)
+      UNKNOWN   no row, stale heartbeat, or unknown engine_status string
+    """
+    if state_row is None:
+        return "UNKNOWN"
+
+    hub_state = _safe_dict(state_row.state)
+    engine_config = _safe_dict(state_row.config)
+
+    # KILLED — any kill flag from either writer.
+    if (
+        hub_state.get("kill_switch_manual")
+        or hub_state.get("kill_switch_auto")
+        or hub_state.get("kill_switch_active")
+        or engine_config.get("kill_switch_active")
+    ):
+        return "KILLED"
+
+    # PAPER — three sources, in order of trust:
+    #   1. hub state (operator just toggled via /api/system/paper-mode)
+    #   2. engine config (engine's own runtime view)
+    #   3. paper_enabled column (legacy fallback for hubs that haven't
+    #      mapped the column yet — see SystemState model docstring)
+    paper_flag = hub_state.get("paper_mode")
+    if paper_flag is None:
+        paper_flag = engine_config.get("paper_mode")
+    if paper_flag is None:
+        col = getattr(state_row, "paper_enabled", None)
+        if col is not None:
+            paper_flag = bool(col)
+    if paper_flag:
+        return "PAPER"
+
+    # LIVE — engine_status is the canonical "engine alive" signal.
+    # Accept both "running" (current) and "active" (legacy heartbeat).
+    raw_status = (
+        getattr(state_row, "engine_status", None)
+        or hub_state.get("status")
+        or hub_state.get("engine_status")
+    )
+    if isinstance(raw_status, str) and raw_status.strip().lower() in ("running", "active"):
+        return "LIVE"
+
+    return "UNKNOWN"
+
+
 @router.get("/system/status")
 async def get_system_status(
     session: AsyncSession = Depends(get_session),
@@ -43,16 +115,30 @@ async def get_system_status(
       - Venue connectivity (Polymarket, Opinion)
       - Current bankroll and drawdown
       - Last heartbeat timestamp
+
+    `mode` is a derived string the FE renders as a single chip — one of
+    LIVE / PAPER / KILLED / UNKNOWN. See `_derive_mode` for precedence.
+    `engine_status` is the raw heartbeat string ("running" / "active" /
+    "starting" / etc.) — exposed alongside `mode` so the FE tooltip can
+    show diagnostic detail when `mode == "UNKNOWN"`.
     """
     result = await session.execute(select(SystemState).where(SystemState.id == 1))
     state = result.scalar_one_or_none()
 
     if state is None:
-        return {"status": "offline", "detail": "Engine has not reported state yet"}
+        return {
+            "status": "offline",
+            "mode": "UNKNOWN",
+            "engine_status": None,
+            "detail": "Engine has not reported state yet",
+        }
 
     return {
         "status": "online",
+        "mode": _derive_mode(state),
+        "engine_status": getattr(state, "engine_status", None),
         "data": state.state,
+        "config": getattr(state, "config", None),
         "updated_at": state.updated_at.isoformat() if state.updated_at else None,
     }
 
