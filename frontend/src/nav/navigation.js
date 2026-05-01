@@ -33,6 +33,7 @@ export const NAV_SECTIONS = [
       { path: '/analysis',      label: 'Analysis · 30d',  icon: '📈' },
       { path: '/strategies',    label: 'Strategies',      icon: '🧬' },
       { path: '/compare',       label: 'Compare',         icon: '⚖️' },
+      { path: '/model-genealogy', label: 'Model Genealogy', icon: '🧠' },
     ],
   },
   {
