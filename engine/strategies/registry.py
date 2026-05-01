@@ -55,6 +55,9 @@ def _register_gates() -> None:
     from strategies.gates.conviction import ConvictionGate
     from strategies.gates.vpin_gate import VPINGate
     from strategies.gates.regime_v4 import RegimeV4Gate
+    # 2026-05-01 — N-tick confirmation gate for declarative-gate strategies
+    # (parity with v8/v9 inline check_confirmation logic).
+    from strategies.gates.consecutive_pass_ticks import ConsecutivePassTicksGate
 
     _GATE_REGISTRY.update(
         {
@@ -77,6 +80,8 @@ def _register_gates() -> None:
             "conviction_gate": ConvictionGate,
             "vpin_gate": VPINGate,
             "regime_v4": RegimeV4Gate,
+            # 2026-05-01 — N-tick confirmation
+            "consecutive_pass_ticks": ConsecutivePassTicksGate,
         }
     )
 

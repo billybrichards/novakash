@@ -1,14 +1,29 @@
 name: v15m_up_basic
-version: "1.1.0"
+version: "1.2.0"
 mode: GHOST
 asset: BTC
 timescale: 15m
 
+# v1.2.0 — 2026-05-01 — Add 12-tick (24s) consecutive-pass confirmation gate
+#                       for parity with 5m (v8_champion, v9_ensemble) hardening.
 # v1.1.0 — 2026-05-01 — Add session_hours blocklist for US session (16-21 UTC).
 #
 # Ghost analysis (14d, n=132 unique windows): per-window deduped WR 73%, but
 # UTC hours 16, 17, 18, 21 ranged 25-57% (US AM session = high vol / news).
 # Blocking UTC 16-21 lifts the deduped WR to 78.4% and sim PnL +42% (+$60→+$85).
+#
+# v1.2.0 adds 12-tick (24s) confirmation: with engine evaluating every ~2s,
+# the strategy must see 12 consecutive ticks of all-gates-pass + same UP
+# direction before firing. Filters single-tick blips from probability_up
+# (LGB blend), matching the 3-tick discipline used by v8_champion_lgb_only
+# and v9_ensemble at 5m. We use 12 (not 3) because 15m's entry band is
+# T-540 to T-180 = 360s wide, so 24s of confirmation only spends ~7% of
+# the window.
+#
+# Window timing semantics: 15m windows are 900s. eval_offset = seconds_to_close.
+# min_offset=180, max_offset=540 means entry between T-540 (6 min into
+# window) and T-180 (12 min into window). Same band the 14d ghost data
+# was collected against.
 #
 # Mode stays GHOST in YAML; LIVE flip happens via DB override on
 # strategy_runtime_overrides (RDS) — see audit task #343, hub note #311,
@@ -25,6 +40,8 @@ gates:
     params: { min_dist: 0.15 }
   - type: session_hours
     params: { block_hours_utc: [16, 17, 18, 19, 20, 21] }
+  - type: consecutive_pass_ticks
+    params: { min_ticks: 12 }
 
 sizing:
   type: fixed_kelly
