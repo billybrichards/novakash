@@ -61,6 +61,9 @@ import MultiSourceDelta from './components/MultiSourceDelta.jsx';
 import ClassifierScorecard from './components/ClassifierScorecard.jsx';
 import GateContextTile from './components/GateContextTile.jsx';
 
+// Manual trade bar (Track C)
+import ManualTradeBar from './components/ManualTradeBar.jsx';
+
 import { useWindow } from './hooks/useWindow.js';
 import { useSnapshot, pickProbs } from './hooks/useSnapshot.js';
 import { usePicks } from './hooks/usePicks.js';
@@ -157,6 +160,13 @@ export default function Desk() {
 
   return (
     <div>
+      <ErrBoundary label="Manual trade bar">
+        <ManualTradeBar
+          windowEpoch={win.windowEpoch}
+          systemStatus={systemStatus}
+        />
+      </ErrBoundary>
+
       <PageHeader
         tag="DESK · /desk"
         title="Live Play-Along Desk"
