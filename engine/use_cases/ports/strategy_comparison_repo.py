@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Protocol, Sequence
 
-from engine.domain.strategy_comparison.entities import StrategyComparison
+from domain.strategy_comparison.entities import StrategyComparison
 
 
 class StrategyComparisonRepoPort(Protocol):
