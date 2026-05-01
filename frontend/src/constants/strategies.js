@@ -24,6 +24,7 @@ export const STRATEGIES = {
     timescale: '5m',
     asset: 'BTC',
     gateLabel: 'LGB + Path1 consensus · entry_cap 0.85',
+    family: 'ensemble',
     thresholds: {},
     // UI hint: strategies exposed in per-window "current lineup" filter.
     inCurrentLineup: true,
@@ -170,6 +171,7 @@ export const STRATEGIES = {
     timescale: '5m',
     asset: 'BTC',
     gateLabel: 'LGB-only · cooldown 20m · fill [0.00,0.82]',
+    family: 'lgb_only',
     thresholds: {
       lgbDistMinDown: 0.10,
       lgbDistMinUp: 0.15,
@@ -190,18 +192,18 @@ export const STRATEGIES = {
     description:
       'Reinforced-Agreement LGB + v2-classifier ensemble. Disagreement veto '
       + '(|pc-pl|>0.25), direction agreement, T-minus-aware blend weights, '
-      + 'VHC reinforcement tier (2.0x Kelly, bypasses TRANSITION + UP dist). '
-      + 'Falls back to v8_lgb_only when pc=None. GHOST until classifier '
-      + 'wiring + 7d shadow — see Hub notes #221, #222, #226.',
+      + 'VHC reinforcement tier (2.5x Kelly, bypasses TRANSITION + UP dist). '
+      + 'Falls back to v8_lgb_only when pc=None. See Hub notes #221, #222, #226.',
     configKey: 'V9_ENSEMBLE_MODE',
-    defaultMode: 'GHOST',
+    defaultMode: 'LIVE',
     timescale: '5m',
     asset: 'BTC',
     gateLabel: 'LGB+pc ensemble · VHC reinforced · disagreement veto',
+    family: 'ensemble',
     thresholds: {
       ensembleDisagreementThreshold: 0.25,
       vhcThreshold: 0.25,
-      vhcKellyMultiplier: 2.0,
+      vhcKellyMultiplier: 2.5,
       lgbDistMinDown: 0.10,
       lgbDistMinUp: 0.15,
       fillBandMin: 0.00,
@@ -210,6 +212,133 @@ export const STRATEGIES = {
       postLossCooldownMin: 20,
     },
     inCurrentLineup: true,
+  },
+  v8_champion: {
+    id: 'v8_champion',
+    label: 'V8 CHAMPION',
+    shortLabel: 'V8C',
+    color: '#f97316',
+    colorDim: 'rgba(249,115,22,0.14)',
+    direction: 'ANY',
+    description:
+      'v8.0.0 ensemble champion — LGB + v2 classifier blend. Predecessor of v9 '
+      + 'ensemble. GHOST shadow for v9 benchmarking.',
+    configKey: 'V8_CHAMPION_MODE',
+    defaultMode: 'GHOST',
+    timescale: '5m',
+    asset: 'BTC',
+    gateLabel: 'Ensemble · 4-tier conviction · entry_cap 0.85',
+    family: 'ensemble',
+    thresholds: {},
+  },
+  v9_lgb_only: {
+    id: 'v9_lgb_only',
+    label: 'V9 LGB-ONLY',
+    shortLabel: 'V9_LGB',
+    color: '#f43f5e',
+    colorDim: 'rgba(244,63,94,0.14)',
+    direction: 'ANY',
+    description:
+      'v9.1.0 LGB-only — classifier disabled, 3-tier T-minus-aware aggression '
+      + '(early 50%, mid 55%, aggressive 70%). VHC bypasses TRANSITION + UP dist.',
+    configKey: 'V9_LGB_ONLY_MODE',
+    defaultMode: 'GHOST',
+    timescale: '5m',
+    asset: 'BTC',
+    gateLabel: 'LGB-only · 3-tier mark · VHC reinforced',
+    family: 'lgb_only',
+    thresholds: {
+      lgbDistMinDown: 0.10,
+      lgbDistMinUp: 0.15,
+      vhcThreshold: 0.25,
+    },
+  },
+  v10_lgb_only: {
+    id: 'v10_lgb_only',
+    label: 'V10 LGB-ONLY',
+    shortLabel: 'V10_LGB',
+    color: '#8b5cf6',
+    colorDim: 'rgba(139,92,246,0.14)',
+    direction: 'ANY',
+    description:
+      'v10.0.0 LGB — wider dist tiers (0.10–0.25) calibrated to v10 LGB '
+      + 'distribution: 90.8% acc at dist≥0.25, 81.0% at dist≥0.10.',
+    configKey: 'V10_LGB_ONLY_MODE',
+    defaultMode: 'GHOST',
+    timescale: '5m',
+    asset: 'BTC',
+    gateLabel: 'LGB-only · v10 model · 4-tier dist',
+    family: 'lgb_only',
+    thresholds: {
+      tier1Dist: 0.10,
+      tier2Dist: 0.15,
+      tier3Dist: 0.20,
+      vhcDist: 0.25,
+    },
+  },
+  v12_lgb_solo: {
+    id: 'v12_lgb_solo',
+    label: 'V12 LGB-SOLO',
+    shortLabel: 'V12_SOLO',
+    color: '#14b8a6',
+    colorDim: 'rgba(20,184,166,0.14)',
+    direction: 'ANY',
+    description:
+      'v12 LGB solo — single-model LGB on v12 feature set. Same dist tiers as '
+      + 'v10_lgb_only (0.10/0.15/0.20/0.25) for like-for-like comparison.',
+    configKey: 'V12_LGB_SOLO_MODE',
+    defaultMode: 'GHOST',
+    timescale: '5m',
+    asset: 'BTC',
+    gateLabel: 'LGB solo · v12 features · 4-tier dist',
+    family: 'lgb_only',
+    thresholds: {
+      tier1Dist: 0.10,
+      tier2Dist: 0.15,
+      tier3Dist: 0.20,
+      vhcDist: 0.25,
+    },
+  },
+  v12_lgb_combo: {
+    id: 'v12_lgb_combo',
+    label: 'V12 LGB-COMBO',
+    shortLabel: 'V12_CMB',
+    color: '#0ea5e9',
+    colorDim: 'rgba(14,165,233,0.14)',
+    direction: 'ANY',
+    description:
+      'v12 LGB combo — combines v10 + v12 LGB outputs by averaged distance. '
+      + 'Fires only on combo_dist tiers (≥0.10), reducing model-specific noise.',
+    configKey: 'V12_LGB_COMBO_MODE',
+    defaultMode: 'GHOST',
+    timescale: '5m',
+    asset: 'BTC',
+    gateLabel: 'Combo LGB · v10⊕v12 · combo_dist tiers',
+    family: 'combo',
+    thresholds: {
+      tier1ComboDist: 0.10,
+      tier2ComboDist: 0.15,
+      tier3ComboDist: 0.20,
+      vhcComboDist: 0.25,
+    },
+  },
+  v8_v12_strong_agree: {
+    id: 'v8_v12_strong_agree',
+    label: 'V8⊕V12 STRONG-AGREE',
+    shortLabel: 'V8V12',
+    color: '#84cc16',
+    colorDim: 'rgba(132,204,22,0.14)',
+    direction: 'ANY',
+    description:
+      'Trades only when v8_champion and v12_lgb agree directionally with strong '
+      + 'conviction. High-precision low-recall combo strategy.',
+    configKey: 'V8_V12_STRONG_AGREE_MODE',
+    defaultMode: 'GHOST',
+    timescale: '5m',
+    asset: 'BTC',
+    gateLabel: 'Combo · v8 ∧ v12 strong agreement',
+    family: 'combo',
+    thresholds: {},
   },
 };
 
@@ -252,6 +381,35 @@ export const DESK_TRACKED_STRATEGY_IDS = [
   'v9_ensemble',
   'v8_champion_lgb_only',
 ];
+
+// Family-grouped lineup for /desk's StrategyDecisions panel — lets the page
+// show the full BTC 5m field at a glance, grouped so the operator can compare
+// like-for-like (ensemble vs LGB-only vs combo) without 12 unsorted rows.
+// Order within each family puts the LIVE / most-trusted variant first.
+export const DESK_TRACKED_FAMILIES = [
+  {
+    family: 'ensemble',
+    label: 'Ensemble',
+    description: 'LGB ⊕ classifier blend',
+    ids: ['v9_ensemble', 'v8_champion', 'v6_sniper'],
+  },
+  {
+    family: 'lgb_only',
+    label: 'LGB-only',
+    description: 'Classifier disabled — distance tiers',
+    ids: ['v8_champion_lgb_only', 'v9_lgb_only', 'v10_lgb_only', 'v12_lgb_solo'],
+  },
+  {
+    family: 'combo',
+    label: 'Combo',
+    description: 'Multi-model agreement',
+    ids: ['v12_lgb_combo', 'v8_v12_strong_agree'],
+  },
+];
+
+// Flat id list derived from the family layout — preferred over hand-edited
+// arrays for places that just need "every strategy /desk shows".
+export const DESK_ALL_STRATEGY_IDS = DESK_TRACKED_FAMILIES.flatMap(f => f.ids);
 
 /** Look up strategy metadata by id. Falls back to a generated entry for unknown ids. */
 export function getStrategyMeta(id, index) {
