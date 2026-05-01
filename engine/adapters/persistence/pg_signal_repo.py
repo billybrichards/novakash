@@ -55,6 +55,8 @@ class PgSignalRepository(SignalRepository):
                         binance_price, tiingo_open, tiingo_close, chainlink_price,
                         delta_pct, delta_tiingo, delta_binance, delta_chainlink, delta_source,
                         vpin, regime, clob_spread, clob_mid,
+                        cg_oi_delta_pct, cg_liq_long_usd, cg_liq_short_usd,
+                        cg_taker_buy_usd, cg_taker_sell_usd, cg_funding_rate,
                         v2_probability_up, v2_direction, v2_agrees, v2_high_conf,
                         v2_model_version, v2_quantiles, v2_quantiles_at_close,
                         gate_vpin_passed, gate_delta_passed, gate_cg_passed,
@@ -67,11 +69,13 @@ class PgSignalRepository(SignalRepository):
                         $9, $10, $11, $12,
                         $13, $14, $15, $16, $17,
                         $18, $19, $20, $21,
-                        $22, $23, $24, $25,
-                        $26, $27, $28,
-                        $29, $30, $31,
-                        $32, $33, $34, $35,
-                        $36, $37, $38, $39
+                        $22, $23, $24,
+                        $25, $26, $27,
+                        $28, $29, $30, $31,
+                        $32, $33, $34,
+                        $35, $36, $37,
+                        $38, $39, $40, $41,
+                        $42, $43, $44, $45
                     )
                     ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
                         clob_up_bid           = EXCLUDED.clob_up_bid,
@@ -91,6 +95,12 @@ class PgSignalRepository(SignalRepository):
                         regime                = EXCLUDED.regime,
                         clob_spread           = EXCLUDED.clob_spread,
                         clob_mid              = EXCLUDED.clob_mid,
+                        cg_oi_delta_pct       = EXCLUDED.cg_oi_delta_pct,
+                        cg_liq_long_usd       = EXCLUDED.cg_liq_long_usd,
+                        cg_liq_short_usd      = EXCLUDED.cg_liq_short_usd,
+                        cg_taker_buy_usd      = EXCLUDED.cg_taker_buy_usd,
+                        cg_taker_sell_usd     = EXCLUDED.cg_taker_sell_usd,
+                        cg_funding_rate       = EXCLUDED.cg_funding_rate,
                         v2_probability_up     = EXCLUDED.v2_probability_up,
                         v2_direction          = EXCLUDED.v2_direction,
                         v2_agrees             = EXCLUDED.v2_agrees,
@@ -132,6 +142,13 @@ class PgSignalRepository(SignalRepository):
                     data.get("regime"),
                     float(data["clob_spread"]) if data.get("clob_spread") is not None else None,
                     float(data["clob_mid"]) if data.get("clob_mid") is not None else None,
+                    # CG columns (audit #337)
+                    float(data["cg_oi_delta_pct"]) if data.get("cg_oi_delta_pct") is not None else None,
+                    float(data["cg_liq_long_usd"]) if data.get("cg_liq_long_usd") is not None else None,
+                    float(data["cg_liq_short_usd"]) if data.get("cg_liq_short_usd") is not None else None,
+                    float(data["cg_taker_buy_usd"]) if data.get("cg_taker_buy_usd") is not None else None,
+                    float(data["cg_taker_sell_usd"]) if data.get("cg_taker_sell_usd") is not None else None,
+                    float(data["cg_funding_rate"]) if data.get("cg_funding_rate") is not None else None,
                     float(data["v2_probability_up"]) if data.get("v2_probability_up") is not None else None,
                     data.get("v2_direction"),
                     bool(data["v2_agrees"]) if data.get("v2_agrees") is not None else None,
@@ -270,7 +287,9 @@ class PgSignalRepository(SignalRepository):
                         strategy_conviction, strategy_conviction_score,
                         consensus_safe_to_trade, consensus_agreement_score,
                         consensus_divergence_bps,
-                        macro_bias, macro_direction_gate, macro_size_modifier
+                        macro_bias, macro_direction_gate, macro_size_modifier,
+                        clob_up_bid, clob_up_ask, clob_down_bid, clob_down_ask,
+                        clob_imbalance, clob_implied_up, clob_fill_price
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,
                         $9,$10,$11,$12,$13,$14,$15,$16,$17,
@@ -294,7 +313,9 @@ class PgSignalRepository(SignalRepository):
                         $92,$93,
                         $94,$95,
                         $96,
-                        $97,$98,$99
+                        $97,$98,$99,
+                        $100,$101,$102,$103,
+                        $104,$105,$106
                     )
                     ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
                         gamma_up_price         = COALESCE(EXCLUDED.gamma_up_price, window_snapshots.gamma_up_price),
@@ -333,7 +354,14 @@ class PgSignalRepository(SignalRepository):
                         consensus_divergence_bps = COALESCE(EXCLUDED.consensus_divergence_bps, window_snapshots.consensus_divergence_bps),
                         macro_bias             = COALESCE(EXCLUDED.macro_bias, window_snapshots.macro_bias),
                         macro_direction_gate   = COALESCE(EXCLUDED.macro_direction_gate, window_snapshots.macro_direction_gate),
-                        macro_size_modifier    = COALESCE(EXCLUDED.macro_size_modifier, window_snapshots.macro_size_modifier)
+                        macro_size_modifier    = COALESCE(EXCLUDED.macro_size_modifier, window_snapshots.macro_size_modifier),
+                        clob_up_bid            = COALESCE(EXCLUDED.clob_up_bid, window_snapshots.clob_up_bid),
+                        clob_up_ask            = COALESCE(EXCLUDED.clob_up_ask, window_snapshots.clob_up_ask),
+                        clob_down_bid          = COALESCE(EXCLUDED.clob_down_bid, window_snapshots.clob_down_bid),
+                        clob_down_ask          = COALESCE(EXCLUDED.clob_down_ask, window_snapshots.clob_down_ask),
+                        clob_imbalance         = COALESCE(EXCLUDED.clob_imbalance, window_snapshots.clob_imbalance),
+                        clob_implied_up        = COALESCE(EXCLUDED.clob_implied_up, window_snapshots.clob_implied_up),
+                        clob_fill_price        = COALESCE(EXCLUDED.clob_fill_price, window_snapshots.clob_fill_price)
                     """,
                     snapshot.get("window_ts"),
                     snapshot.get("asset", "BTC"),
@@ -442,6 +470,14 @@ class PgSignalRepository(SignalRepository):
                     snapshot.get("macro_bias"),
                     snapshot.get("macro_direction_gate"),
                     snapshot.get("macro_size_modifier"),
+                    # CLOB columns (audit #338)
+                    snapshot.get("clob_up_bid"),
+                    snapshot.get("clob_up_ask"),
+                    snapshot.get("clob_down_bid"),
+                    snapshot.get("clob_down_ask"),
+                    snapshot.get("clob_imbalance"),
+                    snapshot.get("clob_implied_up"),
+                    snapshot.get("clob_fill_price"),
                 )
             log.debug(
                 "db.window_snapshot_written",

@@ -1116,7 +1116,9 @@ class DBClient:
                         shadow_trade_direction, shadow_trade_entry_price,
                         v2_probability_up, v2_direction, v2_agrees,
                         v2_model_version, eval_offset,
-                        v2_quantiles, v2_quantiles_at_close
+                        v2_quantiles, v2_quantiles_at_close,
+                        clob_up_bid, clob_up_ask, clob_down_bid, clob_down_ask,
+                        clob_imbalance, clob_implied_up, clob_fill_price
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,
                         $9,$10,$11,$12,$13,$14,$15,$16,$17,
@@ -1133,7 +1135,9 @@ class DBClient:
                         $69,$70,$71,
                         $72,$73,
                         $74,$75,$76,$77,$78,
-                        $79,$80,$81,$82
+                        $79,$80,$81,$82,
+                        $83,$84,$85,$86,
+                        $87,$88,$89
                     )
                     ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
                         gamma_up_price         = COALESCE(EXCLUDED.gamma_up_price, window_snapshots.gamma_up_price),
@@ -1155,7 +1159,14 @@ class DBClient:
                         v2_model_version       = COALESCE(EXCLUDED.v2_model_version, window_snapshots.v2_model_version),
                         eval_offset            = COALESCE(EXCLUDED.eval_offset, window_snapshots.eval_offset),
                         v2_quantiles           = COALESCE(EXCLUDED.v2_quantiles, window_snapshots.v2_quantiles),
-                        v2_quantiles_at_close  = COALESCE(EXCLUDED.v2_quantiles_at_close, window_snapshots.v2_quantiles_at_close)
+                        v2_quantiles_at_close  = COALESCE(EXCLUDED.v2_quantiles_at_close, window_snapshots.v2_quantiles_at_close),
+                        clob_up_bid            = COALESCE(EXCLUDED.clob_up_bid, window_snapshots.clob_up_bid),
+                        clob_up_ask            = COALESCE(EXCLUDED.clob_up_ask, window_snapshots.clob_up_ask),
+                        clob_down_bid          = COALESCE(EXCLUDED.clob_down_bid, window_snapshots.clob_down_bid),
+                        clob_down_ask          = COALESCE(EXCLUDED.clob_down_ask, window_snapshots.clob_down_ask),
+                        clob_imbalance         = COALESCE(EXCLUDED.clob_imbalance, window_snapshots.clob_imbalance),
+                        clob_implied_up        = COALESCE(EXCLUDED.clob_implied_up, window_snapshots.clob_implied_up),
+                        clob_fill_price        = COALESCE(EXCLUDED.clob_fill_price, window_snapshots.clob_fill_price)
                     """,
                     snapshot.get("window_ts"),
                     snapshot.get("asset", "BTC"),
@@ -1246,6 +1257,14 @@ class DBClient:
                     snapshot.get("eval_offset"),
                     snapshot.get("v2_quantiles"),
                     snapshot.get("v2_quantiles_at_close"),
+                    # CLOB columns (audit #338)
+                    snapshot.get("clob_up_bid"),
+                    snapshot.get("clob_up_ask"),
+                    snapshot.get("clob_down_bid"),
+                    snapshot.get("clob_down_ask"),
+                    snapshot.get("clob_imbalance"),
+                    snapshot.get("clob_implied_up"),
+                    snapshot.get("clob_fill_price"),
                 )
             log.debug(
                 "db.window_snapshot_written",
@@ -2847,6 +2866,8 @@ class DBClient:
                         binance_price, tiingo_open, tiingo_close, chainlink_price,
                         delta_pct, delta_tiingo, delta_binance, delta_chainlink, delta_source,
                         vpin, regime, clob_spread, clob_mid,
+                        cg_oi_delta_pct, cg_liq_long_usd, cg_liq_short_usd,
+                        cg_taker_buy_usd, cg_taker_sell_usd, cg_funding_rate,
                         v2_probability_up, v2_direction, v2_agrees, v2_high_conf,
                         v2_model_version, v2_quantiles, v2_quantiles_at_close,
                         gate_vpin_passed, gate_delta_passed, gate_cg_passed,
@@ -2859,11 +2880,13 @@ class DBClient:
                         $9, $10, $11, $12,
                         $13, $14, $15, $16, $17,
                         $18, $19, $20, $21,
-                        $22, $23, $24, $25,
-                        $26, $27, $28,
-                        $29, $30, $31,
-                        $32, $33, $34, $35,
-                        $36, $37, $38, $39
+                        $22, $23, $24,
+                        $25, $26, $27,
+                        $28, $29, $30, $31,
+                        $32, $33, $34,
+                        $35, $36, $37,
+                        $38, $39, $40, $41,
+                        $42, $43, $44, $45
                     )
                     ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
                         clob_up_bid           = EXCLUDED.clob_up_bid,
@@ -2883,6 +2906,12 @@ class DBClient:
                         regime                = EXCLUDED.regime,
                         clob_spread           = EXCLUDED.clob_spread,
                         clob_mid              = EXCLUDED.clob_mid,
+                        cg_oi_delta_pct       = EXCLUDED.cg_oi_delta_pct,
+                        cg_liq_long_usd       = EXCLUDED.cg_liq_long_usd,
+                        cg_liq_short_usd      = EXCLUDED.cg_liq_short_usd,
+                        cg_taker_buy_usd      = EXCLUDED.cg_taker_buy_usd,
+                        cg_taker_sell_usd     = EXCLUDED.cg_taker_sell_usd,
+                        cg_funding_rate       = EXCLUDED.cg_funding_rate,
                         v2_probability_up     = EXCLUDED.v2_probability_up,
                         v2_direction          = EXCLUDED.v2_direction,
                         v2_agrees             = EXCLUDED.v2_agrees,
@@ -2951,6 +2980,25 @@ class DBClient:
                     else None,
                     float(data["clob_mid"])
                     if data.get("clob_mid") is not None
+                    else None,
+                    # CG columns (audit #337)
+                    float(data["cg_oi_delta_pct"])
+                    if data.get("cg_oi_delta_pct") is not None
+                    else None,
+                    float(data["cg_liq_long_usd"])
+                    if data.get("cg_liq_long_usd") is not None
+                    else None,
+                    float(data["cg_liq_short_usd"])
+                    if data.get("cg_liq_short_usd") is not None
+                    else None,
+                    float(data["cg_taker_buy_usd"])
+                    if data.get("cg_taker_buy_usd") is not None
+                    else None,
+                    float(data["cg_taker_sell_usd"])
+                    if data.get("cg_taker_sell_usd") is not None
+                    else None,
+                    float(data["cg_funding_rate"])
+                    if data.get("cg_funding_rate") is not None
                     else None,
                     float(data["v2_probability_up"])
                     if data.get("v2_probability_up") is not None

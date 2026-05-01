@@ -362,6 +362,13 @@ class EvaluateWindowUseCase:
                         "clob_down_ask",
                     ):
                         ws[k] = c.get(k)
+                    # Derived CLOB fields (audit #338)
+                    ws["clob_implied_up"] = c.get("clob_up_bid")
+                    _up_ask = c.get("clob_up_ask")
+                    _down_ask = c.get("clob_down_ask")
+                    if _up_ask is not None and _down_ask is not None:
+                        ws["clob_fill_price"] = (_up_ask + _down_ask) / 2
+                    ws["clob_imbalance"] = None  # requires size data not available here
             except Exception:
                 pass
             try:
