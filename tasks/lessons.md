@@ -207,3 +207,41 @@ for cond_id, items in sorted(by_market.items(), key=lambda x: min(i['timestamp']
 **CLOB balance note:** `/balance` endpoint doesn't exist. Trust `data-api.polymarket.com/positions` + Hub's system_state.current_balance field.
 
 **Rule:** When investigating wallet drawdown, ALWAYS check Polymarket CLOB activity API first. The DB reconciler has known bugs where resolved positions stay OPEN/EXPIRED status.
+
+### Montreal IP changed — `15.223.247.178` → `15.222.138.228` — 2026-05-01
+**What happened:** Local SSH to `novakash@15.223.247.178` started timing out. The Montreal engine instance `i-0785ed930423ae9fd` had been re-IP'd at some point — current public IP is `15.222.138.228`. The instance NAME also changed from "engine" to `novakash-montreal-vnc`.
+**Root cause:** Probably a stop/start cycle (which gives a new public IP for non-EIP instances).
+**Rule:**
+1. Always re-resolve Montreal IP via AWS CLI before SSH:
+   ```bash
+   aws ec2 describe-instances --region ca-central-1 \
+     --instance-ids i-0785ed930423ae9fd \
+     --query 'Reservations[].Instances[].PublicIpAddress' --output text
+   ```
+2. EC2 Instance Connect still works the same way (instance ID is stable, IP is not).
+3. Hub box (`16.54.141.121`) and ML box (`16.52.14.182`) and GPU classifier box (`3.96.151.28`) all use elastic IPs — those don't change.
+
+### Investigate retrains via S3 inventory + git log, not just memory — 2026-05-01
+**What happened:** User asked "did we promote a new 15m classifier — I can't recall." The fastest way to confirm was NOT chat history or notes, but `aws s3 ls s3://bbrnovakash-models-do-not-delete/` + `git log --all --since=...`. Found the answer in 2 commands: `15m_head_v1` was trained 2026-04-20 19:05 UTC and integrated via PRs #111/#113/#116/#117/#118 on Apr 20-21.
+**Root cause:** Hub notes are great for narrative summaries but they don't index every PR. The S3 bucket (with timestamped paths) and the git log (with commit messages) are both authoritative single-sources.
+**Rule:** When asked "what model is deployed / when was X trained", use this triage:
+1. `aws s3 ls s3://bbrnovakash-models-do-not-delete/<path>/` — sorted by date prefix
+2. SSH to the serving box, `docker exec timesfm-api env | grep -i HEAD_URI` — what's currently configured
+3. `git log --all --grep=<keyword> --pretty="%h %ai %s"` in `novakash-timesfm-repo`
+4. THEN check hub notes for context/decisions
+This order resolves "when was it trained" deterministically before reading anyone's narrative.
+
+### Per-timescale classifier dispatch can silently break — 2026-05-01
+**What happened:** `15m_head_v1` was trained Apr 20, configured on GPU box via `TIMESFM_CLASSIFIER_HEAD_URI_15M` env var, and PR #116 (Apr 20) wired per-timescale dispatch. But `/v4/snapshot?asset=BTC` returns IDENTICAL `probability_classifier` value for both 5m and 15m timescales (`0.38608115911483765` to 17 decimals). The 15m head env var is parsed but the runtime is using the 5m head's output for the 15m timescale.
+**Root cause:** Per-timescale dispatch was added in PR #116 but no integration test verifies that 5m and 15m return DISTINCT classifier values per asset/window. Easy to silently regress.
+**Rule:** For any per-timescale model dispatch, add a runtime smoke check at startup OR a once-per-hour synthetic probe that verifies `p_classifier_5m != p_classifier_15m` for the same asset/window. If they're bit-identical to many decimal places, fail health check.
+
+### Container restart policy is non-optional for production boxes — 2026-05-01
+**What happened:** GPU classifier box (`3.96.151.28`) auto-rebooted Apr 30 15:39 UTC for an Ubuntu kernel update. The `timesfm-api` container exited with code 255. Without a `restart: unless-stopped` policy in `docker-compose.gpu.yml`, the container did NOT come back up. Sat there for 26 hours doing nothing — discovered only when this analysis SSH'd into the box.
+**Root cause:** Container compose was written for development workflow (start manually, observe). Production-ready compose needs `restart: unless-stopped` AND a periodic health check (preferably outside the container — Telegram alert on 5xx or no-pulse for 5min).
+**Rule:** All production docker-compose files must include `restart: unless-stopped`. For services with HTTP endpoints, also add a healthcheck. Audit all `docker-compose*.yml` files in the repo monthly to confirm.
+
+### Inflated per-eval WR vs deduped per-window WR — 2026-05-01
+**What happened:** `v15m_gate` shows 22,197 ghost decisions over 14d at 66.21% WR. Looked impressive. Per-window dedup → 756 unique windows at 58.6% WR — much closer to the 50% baseline. The extra 21k+ decisions were redundant evals on the same window during the active T-540→T-180 entry band (one decision every few seconds).
+**Root cause:** The strategy evaluates many times per window. Each evaluation produces a `strategy_decisions` row. WR computed naively as `correct/total` doesn't account for the multi-eval redundancy.
+**Rule:** When reporting strategy WR for promotion decisions, ALWAYS report the per-window deduped number (one row per `(strategy, asset, window_ts)`), NOT the total decision count. The per-eval number is fine for "did we evaluate this strategy", but the per-window number is what matches actual realised WR if the strategy traded once per window.

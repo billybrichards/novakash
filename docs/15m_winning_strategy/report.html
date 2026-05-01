@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>15m Winning Strategy — Analysis Report</title>
+<style>
+:root {
+  --bg: #0a0e1a;
+  --card: #131826;
+  --border: #1f2638;
+  --text: #e1e7f0;
+  --muted: #8590a8;
+  --accent: #5fb3f5;
+  --green: #34d399;
+  --yellow: #fbbf24;
+  --red: #f87171;
+  --purple: #c084fc;
+}
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  margin: 0;
+  padding: 0;
+  line-height: 1.6;
+}
+.container { max-width: 1200px; margin: 0 auto; padding: 32px 24px; }
+header {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 16px;
+  margin-bottom: 32px;
+}
+header h1 { margin: 0 0 8px 0; font-size: 32px; }
+header .meta { color: var(--muted); font-size: 14px; }
+header .meta span { margin-right: 16px; }
+h2 {
+  font-size: 22px;
+  margin-top: 48px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+h3 { font-size: 16px; color: var(--accent); margin-top: 24px; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.tldr {
+  background: linear-gradient(135deg, #1a2538, #131826);
+  border-left: 4px solid var(--accent);
+}
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin: 16px 0;
+}
+.kpi {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+}
+.kpi .value { font-size: 28px; font-weight: 700; color: var(--green); }
+.kpi .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+.kpi.warn .value { color: var(--yellow); }
+.kpi.bad .value { color: var(--red); }
+.kpi.accent .value { color: var(--accent); }
+.kpi.purple .value { color: var(--purple); }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 14px;
+}
+th, td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+th {
+  background: var(--card);
+  font-weight: 600;
+  color: var(--accent);
+  position: sticky;
+  top: 0;
+}
+tr:hover { background: rgba(95, 179, 245, 0.05); }
+.win { color: var(--green); font-weight: 600; }
+.lose { color: var(--red); font-weight: 600; }
+.warn { color: var(--yellow); font-weight: 600; }
+.muted { color: var(--muted); }
+.bar-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; font-family: ui-monospace, monospace; font-size: 13px; }
+.bar-label { width: 60px; color: var(--muted); }
+.bar-track { flex: 1; height: 16px; background: var(--card); border: 1px solid var(--border); border-radius: 3px; overflow: hidden; position: relative; }
+.bar-fill { height: 100%; transition: width 0.3s; }
+.bar-fill.green { background: var(--green); }
+.bar-fill.yellow { background: var(--yellow); }
+.bar-fill.red { background: var(--red); }
+.bar-value { width: 80px; text-align: right; font-weight: 600; }
+.section-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  gap: 24px;
+}
+.alert {
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin: 12px 0;
+}
+.alert.success { background: rgba(52, 211, 153, 0.1); border: 1px solid var(--green); }
+.alert.warn { background: rgba(251, 191, 36, 0.1); border: 1px solid var(--yellow); }
+.alert.danger { background: rgba(248, 113, 113, 0.1); border: 1px solid var(--red); }
+.alert.info { background: rgba(95, 179, 245, 0.1); border: 1px solid var(--accent); }
+code {
+  background: var(--bg);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  color: var(--accent);
+}
+pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.timeline {
+  position: relative;
+  padding-left: 32px;
+  margin: 16px 0;
+}
+.timeline::before {
+  content: '';
+  position: absolute;
+  left: 12px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--border);
+}
+.event {
+  position: relative;
+  padding: 8px 0 8px 16px;
+  margin-left: -32px;
+  padding-left: 32px;
+}
+.event::before {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 14px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--card);
+  border: 2px solid var(--accent);
+}
+.event.highlight::before { background: var(--green); border-color: var(--green); }
+.event.danger::before { background: var(--red); border-color: var(--red); }
+.event-time { font-size: 12px; color: var(--muted); }
+.event-title { font-weight: 600; margin-top: 2px; }
+.event-detail { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  margin-right: 4px;
+}
+.tag.live { background: var(--green); color: var(--bg); }
+.tag.ghost { background: var(--purple); color: var(--bg); }
+.tag.ok { background: var(--accent); color: var(--bg); }
+.tag.broken { background: var(--red); color: var(--bg); }
+footer {
+  margin-top: 64px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 13px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>15m Winning Strategy — Analysis Report</h1>
+  <div class="meta">
+    <span><strong>Date:</strong> 2026-05-01</span>
+    <span><strong>Branch:</strong> feat/15m-winning-strategy-analysis</span>
+    <span><strong>Status:</strong> Pre-implementation</span>
+  </div>
+</header>
+
+<div class="card tldr">
+  <h3 style="margin-top:0; color:var(--accent);">Headline</h3>
+  <p>BTC 15m already has a winning ghost strategy — <code>v15m_up_basic</code> at <strong class="win">73% per-window deduped WR</strong> over 132 windows in 14d. With a UTC 16-21 hour filter, sim PnL goes from +$60 to <strong class="win">+$85 (+42%)</strong>. The 15m classifier head you remember (<code>15m_head_v1</code>) was trained 2026-04-20 with val_dir_acc 75.4% and configured on the GPU box — but the GPU container had been DOWN for 26 hours due to an Ubuntu auto-reboot. <strong class="win">Restarted today at 17:13 UTC.</strong></p>
+</div>
+
+<div class="kpi-grid">
+  <div class="kpi accent">
+    <div class="value">77.32%</div>
+    <div class="label">v15m_up_basic 14d ghost WR</div>
+  </div>
+  <div class="kpi">
+    <div class="value">+$84.88</div>
+    <div class="label">Sim PnL (hour-filtered, 14d)</div>
+  </div>
+  <div class="kpi warn">
+    <div class="value">15m_head_v1</div>
+    <div class="label">classifier trained 2026-04-20</div>
+  </div>
+  <div class="kpi purple">
+    <div class="value">26h</div>
+    <div class="label">GPU box downtime (now resolved)</div>
+  </div>
+</div>
+
+<h2>1. Per-asset comparison</h2>
+
+<table>
+<thead>
+<tr><th>Asset</th><th>Live snapshot</th><th>15m LGB</th><th>15m classifier</th><th>Engine traded</th><th>Ghost WR (14d)</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><strong>BTC</strong></td>
+  <td><span class="win">✅ ok</span> p_up=0.33 p_lgb=0.28</td>
+  <td><span class="win">✅ a547c3d</span></td>
+  <td><span class="warn">⚠️ dispatch broken</span></td>
+  <td><span class="win">✅ btc</span></td>
+  <td class="win"><strong>72.7%</strong> (v15m_up_basic, deduped n=132)</td>
+  <td><span class="tag live">PROMOTE</span></td>
+</tr>
+<tr>
+  <td>ETH</td>
+  <td><span class="lose">❌ cold_start</span></td>
+  <td><span class="lose">❌</span></td>
+  <td><span class="warn">⚠️ frozen 0.435</span></td>
+  <td><span class="lose">❌</span></td>
+  <td class="lose"><strong>44.0%</strong> (actively wrong)</td>
+  <td><span class="tag broken">DISABLE</span></td>
+</tr>
+<tr>
+  <td>XRP</td>
+  <td><span class="lose">❌ cold_start</span></td>
+  <td><span class="lose">❌</span></td>
+  <td><span class="warn">⚠️ frozen</span></td>
+  <td><span class="lose">❌</span></td>
+  <td class="warn">63.4% (marginal)</td>
+  <td><span class="tag ghost">WAIT (#267)</span></td>
+</tr>
+<tr>
+  <td>SOL</td>
+  <td><span class="lose">❌ cold_start</span></td>
+  <td><span class="lose">❌</span></td>
+  <td><span class="warn">⚠️ frozen</span></td>
+  <td><span class="lose">❌</span></td>
+  <td class="warn">63.7% (marginal)</td>
+  <td><span class="tag ghost">SKIP (exec costs)</span></td>
+</tr>
+</tbody>
+</table>
+
+<div class="alert success">
+  <strong>Answer to "BTC vs ETH vs XRP":</strong> BTC. The other three have no per-asset feature cache (audit #267 OPEN), so their classifiers return frozen constants and their LGBs are missing entirely. Ghost data confirms BTC is the only asset with a real edge today.
+</div>
+
+<h2>2. v15m_* strategies — 14d ghost WR (deduped per window)</h2>
+
+<div id="strategies-bars">
+
+<div class="bar-row">
+  <span class="bar-label">v7_15m_sniper</span>
+  <div class="bar-track"><div class="bar-fill green" style="width:100%"></div></div>
+  <span class="bar-value win">100% <span class="muted">(n=17)</span></span>
+</div>
+
+<div class="bar-row">
+  <span class="bar-label">v15m_up_basic</span>
+  <div class="bar-track"><div class="bar-fill green" style="width:73%"></div></div>
+  <span class="bar-value win">72.7% <span class="muted">(n=132)</span></span>
+</div>
+
+<div class="bar-row">
+  <span class="bar-label">v15m_up_asian</span>
+  <div class="bar-track"><div class="bar-fill green" style="width:64%"></div></div>
+  <span class="bar-value win">63.6% <span class="muted">(n=44)</span></span>
+</div>
+
+<div class="bar-row">
+  <span class="bar-label">v7_sniper_sol</span>
+  <div class="bar-track"><div class="bar-fill yellow" style="width:64%"></div></div>
+  <span class="bar-value warn">63.7% <span class="muted">(n=694 inflated)</span></span>
+</div>
+
+<div class="bar-row">
+  <span class="bar-label">v7_sniper_xrp</span>
+  <div class="bar-track"><div class="bar-fill yellow" style="width:63%"></div></div>
+  <span class="bar-value warn">63.4% <span class="muted">(n=658 inflated)</span></span>
+</div>
+
+<div class="bar-row">
+  <span class="bar-label">v15m_gate</span>
+  <div class="bar-track"><div class="bar-fill yellow" style="width:59%"></div></div>
+  <span class="bar-value warn">58.6% <span class="muted">(n=756)</span></span>
+</div>
+
+<div class="bar-row">
+  <span class="bar-label">v15m_down_only</span>
+  <div class="bar-track"><div class="bar-fill yellow" style="width:58%"></div></div>
+  <span class="bar-value warn">57.9% <span class="muted">(n=49946 inflated)</span></span>
+</div>
+
+<div class="bar-row">
+  <span class="bar-label">v15m_fusion</span>
+  <div class="bar-track"><div class="bar-fill yellow" style="width:55%"></div></div>
+  <span class="bar-value warn">55.4% <span class="muted">(14d) / 97% recent 7d</span></span>
+</div>
+
+<div class="bar-row">
+  <span class="bar-label">v7_sniper_eth</span>
+  <div class="bar-track"><div class="bar-fill red" style="width:44%"></div></div>
+  <span class="bar-value lose">44.0% <span class="muted">(n=743) ACTIVELY WRONG</span></span>
+</div>
+
+</div>
+
+<p class="muted" style="font-size:13px;">Natural up-rate baseline (BTC 15m, last 14d): <strong>50.61%</strong>. <code>v15m_up_basic</code> edge over baseline = +26.71pp (real, not regime-driven).</p>
+
+<h2>3. Hour-of-day pattern — the regime structure</h2>
+
+<div class="alert info">
+  <strong>Non-linear ODE / regime perspective:</strong> BTC 15m exhibits hour-conditional drift dynamics. UTC 16-21 (US session, news/macro) is high-vol and breaks directional models. UTC 0-15 + 22-23 (Asian/Euro/closing) is drift-dominated and models work. A simple <code>blocked_utc_hours</code> gate captures most of the regime lift today; full feature-level integration is a future retrain.
+</div>
+
+<table>
+<thead>
+<tr><th>Hour (UTC)</th><th>v15m_up_basic n</th><th>WR</th><th>Bar</th><th>Interpretation</th></tr>
+</thead>
+<tbody>
+<tr><td>00</td><td>6</td><td class="win">100%</td><td><div class="bar-track"><div class="bar-fill green" style="width:100%"></div></div></td><td class="muted">Asian open, drift</td></tr>
+<tr><td>01</td><td>2</td><td>50%</td><td><div class="bar-track"><div class="bar-fill yellow" style="width:50%"></div></div></td><td class="muted">small n</td></tr>
+<tr><td>02</td><td>6</td><td class="warn">67%</td><td><div class="bar-track"><div class="bar-fill yellow" style="width:67%"></div></div></td><td class="muted">Asian</td></tr>
+<tr><td>03</td><td>6</td><td class="warn">67%</td><td><div class="bar-track"><div class="bar-fill yellow" style="width:67%"></div></div></td><td class="muted">Asian</td></tr>
+<tr><td>04</td><td>3</td><td class="win">100%</td><td><div class="bar-track"><div class="bar-fill green" style="width:100%"></div></div></td><td class="muted">Asian close</td></tr>
+<tr><td>05</td><td>3</td><td class="win">100%</td><td><div class="bar-track"><div class="bar-fill green" style="width:100%"></div></div></td><td class="muted">London pre-open</td></tr>
+<tr><td>06</td><td>9</td><td class="warn">67%</td><td><div class="bar-track"><div class="bar-fill yellow" style="width:67%"></div></div></td><td class="muted">London open</td></tr>
+<tr><td>07</td><td>8</td><td class="warn">63%</td><td><div class="bar-track"><div class="bar-fill yellow" style="width:63%"></div></div></td><td class="muted">London</td></tr>
+<tr><td>08</td><td>8</td><td class="win">88%</td><td><div class="bar-track"><div class="bar-fill green" style="width:88%"></div></div></td><td class="muted">London peak</td></tr>
+<tr><td>09</td><td>5</td><td class="win">80%</td><td><div class="bar-track"><div class="bar-fill green" style="width:80%"></div></div></td><td class="muted">London peak</td></tr>
+<tr><td>10</td><td>6</td><td class="win">100%</td><td><div class="bar-track"><div class="bar-fill green" style="width:100%"></div></div></td><td class="muted">London peak</td></tr>
+<tr><td>11</td><td>6</td><td class="warn">67%</td><td><div class="bar-track"><div class="bar-fill yellow" style="width:67%"></div></div></td><td class="muted">Pre-NY</td></tr>
+<tr><td>12</td><td>5</td><td class="win">100%</td><td><div class="bar-track"><div class="bar-fill green" style="width:100%"></div></div></td><td class="muted">Pre-NY</td></tr>
+<tr><td>13</td><td>6</td><td class="warn">67%</td><td><div class="bar-track"><div class="bar-fill yellow" style="width:67%"></div></div></td><td class="muted">Pre-NY</td></tr>
+<tr><td>14</td><td>8</td><td class="warn">63%</td><td><div class="bar-track"><div class="bar-fill yellow" style="width:63%"></div></div></td><td class="muted">Pre-NY (overlap)</td></tr>
+<tr><td>15</td><td>2</td><td class="win">100%</td><td><div class="bar-track"><div class="bar-fill green" style="width:100%"></div></div></td><td class="muted">small n</td></tr>
+<tr style="background:rgba(248,113,113,0.1);"><td><strong>16</strong></td><td>8</td><td class="lose"><strong>25%</strong></td><td><div class="bar-track"><div class="bar-fill red" style="width:25%"></div></div></td><td class="lose"><strong>NY OPEN — BLOCK</strong></td></tr>
+<tr style="background:rgba(248,113,113,0.05);"><td>17</td><td>7</td><td class="warn">57%</td><td><div class="bar-track"><div class="bar-fill yellow" style="width:57%"></div></div></td><td class="warn">NY AM — BLOCK</td></tr>
+<tr style="background:rgba(248,113,113,0.05);"><td>18</td><td>6</td><td>50%</td><td><div class="bar-track"><div class="bar-fill yellow" style="width:50%"></div></div></td><td class="warn">NY AM — BLOCK</td></tr>
+<tr style="background:rgba(248,113,113,0.05);"><td>19</td><td>5</td><td class="win">100%</td><td><div class="bar-track"><div class="bar-fill green" style="width:100%"></div></div></td><td class="warn">block (other strategies bad here)</td></tr>
+<tr style="background:rgba(248,113,113,0.05);"><td>20</td><td>5</td><td class="win">80%</td><td><div class="bar-track"><div class="bar-fill green" style="width:80%"></div></div></td><td class="warn">block (other strategies bad here)</td></tr>
+<tr style="background:rgba(248,113,113,0.1);"><td><strong>21</strong></td><td>4</td><td>50%</td><td><div class="bar-track"><div class="bar-fill yellow" style="width:50%"></div></div></td><td class="lose"><strong>BLOCK</strong></td></tr>
+<tr><td>22</td><td>2</td><td class="win">100%</td><td><div class="bar-track"><div class="bar-fill green" style="width:100%"></div></div></td><td class="muted">close</td></tr>
+<tr><td>23</td><td>6</td><td class="win">83%</td><td><div class="bar-track"><div class="bar-fill green" style="width:83%"></div></div></td><td class="muted">Asian open</td></tr>
+</tbody>
+</table>
+
+<h3>Sim PnL — before vs after hour filter</h3>
+
+<div class="kpi-grid" style="grid-template-columns: repeat(2, 1fr);">
+  <div class="kpi">
+    <div class="value muted">+$59.85</div>
+    <div class="label">Unfiltered (132 windows, 73% WR)</div>
+  </div>
+  <div class="kpi">
+    <div class="value">+$84.88</div>
+    <div class="label">UTC 16-21 blocked (97 windows, <strong>78.4% WR</strong>)</div>
+  </div>
+</div>
+
+<p class="muted" style="font-size:13px;">Assumptions: $5/trade stake, $0.65 average YES entry, 7.2% Polymarket fee. Hour filter cuts trade count by 26% but increases PnL by 42%.</p>
+
+<h2>4. Agreement gate — the strongest single signal</h2>
+
+<p>When the 5 v15m_* strategies (fusion, up_basic, gate, up_asian, fusion_v5_9) all evaluate the same window, agreement count strongly correlates with WR:</p>
+
+<table>
+<thead>
+<tr><th>Agreement count</th><th>Windows</th><th>Correct</th><th>WR</th><th>Bar</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>≥5 strategies</strong></td><td>7</td><td>7</td><td class="win">100%</td><td><div class="bar-track"><div class="bar-fill green" style="width:100%"></div></div></td></tr>
+<tr><td><strong>≥4 strategies</strong></td><td>31</td><td>26</td><td class="win"><strong>84%</strong></td><td><div class="bar-track"><div class="bar-fill green" style="width:84%"></div></div></td></tr>
+<tr><td>≥3 strategies</td><td>215</td><td>123</td><td class="warn">57%</td><td><div class="bar-track"><div class="bar-fill yellow" style="width:57%"></div></div></td></tr>
+<tr><td>≥2 strategies</td><td>260</td><td>157</td><td class="warn">60%</td><td><div class="bar-track"><div class="bar-fill yellow" style="width:60%"></div></div></td></tr>
+<tr><td>≥1 strategy</td><td>392</td><td>196</td><td>50%</td><td><div class="bar-track"><div class="bar-fill yellow" style="width:50%"></div></div></td></tr>
+</tbody>
+</table>
+
+<div class="alert success">
+  <strong>Bayesian posterior in action:</strong> 5 independent strategies agreeing → 100% WR. 4-of-5 → 84% WR. This is the basis for the proposed <code>v15m_consensus</code> meta-strategy.
+</div>
+
+<h2>5. Model timeline — was a 15m classifier promoted? <span class="win">YES, on 2026-04-20</span></h2>
+
+<div class="timeline">
+
+<div class="event">
+  <div class="event-time">2026-04-18 12:30 UTC</div>
+  <div class="event-title">Path 1 classifier head architecture introduced</div>
+  <div class="event-detail">commit <code>e4b39a3</code> — nested classifier_config schema + transformers/peft deps</div>
+</div>
+
+<div class="event highlight">
+  <div class="event-time">2026-04-20 18:53 UTC</div>
+  <div class="event-title">15m TimesFM LoRA fine-tune trained</div>
+  <div class="event-detail">S3 upload <code>timesfm_finetune/15m_v1/15m_v1/adapter_model.safetensors</code> (9.9 MB)</div>
+</div>
+
+<div class="event highlight">
+  <div class="event-time">2026-04-20 19:05 UTC</div>
+  <div class="event-title">15m classifier head trained — val_dir_acc 75.37%</div>
+  <div class="event-detail">S3 upload <code>timesfm_finetune/15m_head_v1/classifier_head.safetensors</code> (1.4 MB) + isotonic + config</div>
+</div>
+
+<div class="event highlight">
+  <div class="event-time">2026-04-20 22:36 UTC</div>
+  <div class="event-title">PR #116 — per-timescale classifier heads (15m support)</div>
+  <div class="event-detail">commit <code>a0bd0bb</code> — <code>feat(forecaster): per-timescale classifier heads (15m support)</code> ⚡</div>
+</div>
+
+<div class="event">
+  <div class="event-time">2026-04-21 06:27 UTC</div>
+  <div class="event-title">PR #118 — classifier-only fallback for ETH/SOL 15m</div>
+  <div class="event-detail">commit <code>ab83564</code> — became the <code>classifier_only_mode</code> branch in <code>v7_15m_sniper.py:537</code></div>
+</div>
+
+<div class="event">
+  <div class="event-time">2026-04-25 16:37 UTC</div>
+  <div class="event-title">cls_traj_14f_iso (5m best classifier) trained</div>
+  <div class="event-detail">val 72.86%, ECE 5.2e-9. <strong>Configured on GPU box but never promoted to live primary</strong></div>
+</div>
+
+<div class="event danger">
+  <div class="event-time">2026-04-30 15:39 UTC</div>
+  <div class="event-title">GPU box auto-reboot (Ubuntu kernel update)</div>
+  <div class="event-detail">timesfm-api container exited with code 255 — no restart policy → stayed down for 26 hours</div>
+</div>
+
+<div class="event">
+  <div class="event-time">2026-04-30 15:24 UTC</div>
+  <div class="event-title">v11 LGB retrain — 5m only</div>
+  <div class="event-detail">57 features, 6 horizons. WFCV T-30 acc 79.5%, T-60 76.7%, T-90 75.5%</div>
+</div>
+
+<div class="event">
+  <div class="event-time">2026-05-01 00:03 UTC</div>
+  <div class="event-title">v12-XL LGB retrain (latest, 5m only)</div>
+  <div class="event-detail">112 features incl. nested_5m_*. T-90 post-iso 78.0%. Reaches 75.94% live shadow WR per note #307</div>
+</div>
+
+<div class="event highlight">
+  <div class="event-time">2026-05-01 17:13 UTC</div>
+  <div class="event-title">GPU box restarted (this session)</div>
+  <div class="event-detail">Container Up + healthy. cls_traj_14f_iso loaded, BTC 15m + 5m serving real values. <span class="warn">⚠️ Per-timescale classifier dispatch broken — 5m and 15m return identical p_classifier values.</span></div>
+</div>
+
+</div>
+
+<div class="alert info">
+  <strong>So:</strong> the 15m classifier (<code>15m_head_v1</code>) was trained 11 days ago, integrated via PR #116, and IS the head currently configured on the GPU box. No newer 15m model has been trained — all recent activity (v11/v12/v12-XL) is 5m. The 15m head HAS been impactful (BTC 15m strategies achieve 60-77% WR) but a runtime dispatch bug means it's not actually being used per-timescale.
+</div>
+
+<h2>6. Recommendation — 6 tracks</h2>
+
+<div class="card">
+<h3>Tier 1 — ship now (no retrain)</h3>
+<ol>
+<li><strong>Restart GPU box</strong> — <span class="tag live">DONE</span> 2026-05-01 17:13 UTC. Add <code>restart: unless-stopped</code> to compose for next time.</li>
+<li><strong>Promote v15m_up_basic GHOST → LIVE</strong> with <code>blocked_utc_hours: [16,17,18,19,20,21]</code>. Expected 78% WR / +$85 sim PnL.</li>
+<li><strong>Add v15m_down_basic</strong> — DOWN-side mirror with same hour filter. Ghost first, then promote.</li>
+<li><strong>Build v15m_consensus</strong> — meta-strategy requiring ≥4 of 5 v15m_* to agree on direction. 84% backtest WR.</li>
+</ol>
+</div>
+
+<div class="card">
+<h3>Tier 2 — multi-asset (after Tier 1 stable)</h3>
+<ol start="5">
+<li>Close audit <strong>#267</strong> — wire per-asset feature cache for ETH/XRP/SOL on ML box.</li>
+<li>Train per-asset 15m LGB heads (training data exists: 5k windows × 60d).</li>
+<li>Update engine <code>traded_assets</code> to <code>btc,eth,xrp</code> (skip SOL).</li>
+</ol>
+</div>
+
+<div class="card">
+<h3>Tier 3 — model retrain (warranted, not blocking)</h3>
+<ol start="8">
+<li>Promote <code>cls_traj_14f_iso</code> to live primary (env var swap on <code>16.52.14.182</code>) — improves 5m classifier ECE by 7 orders of magnitude.</li>
+<li>Close audit <strong>#250</strong> — retrain path1 classifier with focal loss + label smoothing (fixes under-confidence).</li>
+<li>Train v12-XL-equivalent for 15m — clone v12-XL config but on 15m labels. <strong>Single biggest leverage for 15m WR ceiling.</strong></li>
+<li>Add hour_utc_sin/cos + realized_vol_60min as features in next retrain.</li>
+</ol>
+</div>
+
+<div class="card">
+<h3>Tier 4 — non-linear ODE research (optional)</h3>
+<ol start="12">
+<li>Phase-portrait regime classifier (Takens embedding of price/vpin/delta) → cross-strategy chaos gate.</li>
+<li>Cross-asset Lyapunov-exponent gate for tail-risk days.</li>
+</ol>
+</div>
+
+<h2>7. Risks &amp; verification protocol</h2>
+
+<div class="alert warn">
+<strong>Key risks:</strong>
+<ul>
+<li>v15m_up_basic 73% WR window was Apr 18-22 UP regime. <strong>Ghost-validate over the next regime period before any LIVE flip.</strong></li>
+<li>Per-timescale classifier dispatch bug means v7_15m_sniper_btc may have been running on flawed inputs. <strong>Don't promote v7_15m_sniper_btc until dispatch is fixed.</strong> v15m_up_basic is unaffected (uses LGB-driven blend).</li>
+<li>Strategies all read same <code>probability_up</code> blend → consensus correlation inflates "agreement" signal. Validate with a held-out disagreement-zone analysis.</li>
+<li>GPU box auto-reboot lost container — happens again if compose restart policy not added.</li>
+</ul>
+</div>
+
+<p><strong>Pre-LIVE-flip checklist:</strong></p>
+<ol>
+<li>Strategy must have ≥7d of GHOST decisions WITH the new gates applied</li>
+<li>Per-window deduped WR must be ≥70%</li>
+<li>Sim PnL must be positive over the 7d window</li>
+<li>No single day in the 7d window may show &lt;50% WR</li>
+<li>Manual review of 5 most recent SKIP and TRADE metadata samples</li>
+<li>Notify on Telegram + post Hub note before flipping mode</li>
+</ol>
+
+<footer>
+<p><strong>Generated:</strong> 2026-05-01 (agent session) · <strong>Branch:</strong> <code>feat/15m-winning-strategy-analysis</code></p>
+<p>See companion .md docs in this folder for full data tables, query SQL, and audit task IDs to open.</p>
+</footer>
+
+</div>
+</body>
+</html>

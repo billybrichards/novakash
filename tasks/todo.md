@@ -1,5 +1,100 @@
 # tasks/todo.md — BTC Trader Hub
 
+## WINNING 15m Strategy — Asset Selection & Implementation — 2026-05-01
+
+### Question
+Which asset (BTC / ETH / XRP / SOL) is the right home for our first **LIVE-promotable 15m strategy**, and what is the smallest-surface implementation that has a credible edge?
+
+### Constraints / Context I'm carrying in
+- 15m fusion family already burned: `v15m_fusion` 1W/10L (-$30.61), `v15m_fusion_v5_9` 0W/3L. Both GHOST. Don't resurrect.
+- Newer family `v7_15m_sniper_{btc,eth,sol,xrp}` exists: **classifier-only** (no 15m LGB), T-400→T-300 entry, `|p_classifier-0.5| ≥ 0.30`. Need to check if it's actually trading or if it's gated to death.
+- Lesson 2026-04-10: "v3 composite is noise at 5m/15m horizons" — `passively record signal first`, check `autocorrelation` + `forward-return` + `sign-persistence`. Don't trust backtest WR.
+- Lesson 2026-04-10: For binary markets, breakeven WR at 0.68 entry / 1.60 payout = ~62.5%. Need ≥500 live samples to claim edge over breakeven.
+- Sister repo `novakash-timesfm-repo` has active 15m work: `claude/15m-parquet-data-source`, `claude/15m-phase3-{5-filter-sparse,nested-features}`, `claude/feat/macro-v2-classifier{,-v2}`.
+- Non-linear-ODE angle: regime/drift dynamics differ between assets. ETH/XRP can have stronger directional persistence in Asian/EU sessions vs BTC's mean-reverting micro-structure. Non-linear models (LGB classifier, regime gating) are exactly what should win at 15m where TimesFM v2 alone is noisy.
+
+### Plan — Phase 1: Diagnostic (read-only, no changes)
+
+- [ ] **Hub state pull**
+  - [ ] Notes: list latest 50, filter for `15m`, `classifier`, `v7`, `sniper`, `macro-v2`. Identify open hub-notes that document the design intent + open issues.
+  - [ ] Audit tasks: pull `task_type=model_eval` and `category=15m` (or unfiltered, scan titles) — find any `OPEN`/`IN_PROGRESS` items.
+  - [ ] `/api/v58/strategy-decisions?timeframe=15m&limit=2000` — group by `strategy_id`, count actions (TRADE/SKIP), top skip_reasons, by asset.
+  - [ ] `/api/v58/accuracy?limit=500` — per-strategy 15m accuracy + sample sizes per asset.
+  - [ ] `/api/trades?limit=500` filtered to 15m strategies — per-asset realised PnL + WR (resolved only).
+  - [ ] `/api/system/status` — confirm engine state, paper mode, current balance.
+
+- [ ] **Sister repo (`novakash-timesfm-repo`) inspection**
+  - [ ] `claude/feat/macro-v2-classifier-v2` — what does the macro-v2 classifier output? Per-asset? What features? Holdout accuracy?
+  - [ ] `claude/15m-parquet-data-source` — is the 15m training data actually wired up? Coverage by asset?
+  - [ ] `claude/15m-phase3-nested-features` — what features did Phase 3 add? Is there a 15m LGB candidate yet?
+  - [ ] Confirm whether classifier serves predictions per-asset on the running Montreal TimesFM service. If yes — at what URL/port?
+
+- [ ] **Local code map**
+  - [ ] Read `engine/strategies/configs/v7_15m_sniper.{py,yaml}` end-to-end (hook + config). Map every gate; identify the ones most likely to silently kill the strategy.
+  - [ ] Read `data_surface.py` 15m branch: confirm `probability_classifier` is populated for 15m windows on all 4 assets (BTC/ETH/XRP/SOL).
+  - [ ] Verify Polymarket markets exist + have liquidity for 15m on ETH/XRP/SOL (BTC obviously does).
+
+- [ ] **Montreal log pull (read-only)**
+  - [ ] Last ~6 hours of `engine.log` filtered to `15m` and `v7_15m_sniper` — count TRADE vs SKIP, top 5 skip_reasons, classifier coverage rate.
+
+### Phase 2: Per-asset comparison (deliverable: one decision table)
+
+- [ ] Build a single comparison table: rows = `{BTC, ETH, XRP, SOL}`, columns:
+  - 15m windows/day available on Polymarket
+  - Median CLOB spread at T-400
+  - Classifier coverage (% windows with valid `probability_classifier`)
+  - Classifier holdout accuracy at `|p-0.5|≥0.30` (from sister repo backtest)
+  - Live ghost decision count (last 7d)
+  - Live ghost would-have WR if any
+  - Breakeven WR at typical YES/NO entry price
+  - Edge buffer = (holdout accuracy) − (breakeven WR)
+  - **Verdict**: LIVE / GHOST-extend / DROP
+
+- [ ] Apply non-linear-ODE perspective: per-asset 15m return distribution — drift vs mean-reversion regime fraction. The asset where drift dominates at 15m is structurally easier for a directional binary classifier.
+
+### Phase 3: Implementation (only after Phase 2 picks a winner)
+
+- [ ] Promote the winning asset's `v7_15m_sniper_<asset>` from GHOST → LIVE in YAML *only if* the edge buffer is ≥3 percentage points and classifier coverage ≥80% live.
+- [ ] If edge buffer is marginal, **don't** promote — instead:
+  - Tighten the threshold (e.g. `|p_classifier-0.5| ≥ 0.35`) and add a regime gate (only trade when 15m realised vol is in the trending bucket).
+  - Keep GHOST and accumulate ≥200 more samples.
+- [ ] If no asset clears: open audit_tasks describing what needs to ship in `novakash-timesfm-repo` (e.g. 15m LGB head, per-asset calibration, macro-v2 features) before any 15m LIVE attempt.
+
+### Phase 4: Verification before "done"
+
+- [ ] Diff the proposed YAML vs the current LIVE 5m strategy (`v4_fusion`) — call out every gate change explicitly.
+- [ ] Paper-trade for ≥48h on Montreal in GHOST + LIVE-shadow before flipping mode to LIVE.
+- [ ] Post hub note + open audit_task tracking the experiment with explicit kill criteria (drawdown / sample-WR-below-breakeven trigger).
+- [ ] Update `tasks/lessons.md` with anything that surprised us during diagnostic.
+
+### Retrain branch (added per user steer 2026-05-01)
+The diagnostic must answer not just "which asset wins on the current model" but **"does the current model have any edge at 15m at all"**. If not, the answer is upstream — `novakash-timesfm-repo` retrain — not a YAML tweak. Specific retrain triggers I'll watch for:
+- [ ] Classifier holdout accuracy at `|p-0.5|≥0.30` is below breakeven WR (~62.5%) on ANY asset → retrain needed.
+- [ ] Calibration mismatch: classifier-claimed-prob vs realized-rate diverges by >5pp → recalibrate (isotonic re-fit, no full retrain) before anything else.
+- [ ] Per-asset coverage <50% live → either training data gap (retrain w/ asset-specific data) or feature gap (the 15m parquet / macro-v2 features haven't reached production).
+- [ ] Holdout accuracy is ≥breakeven on backtest but live ghost WR <55% over n>100 → distribution shift since training, retrain with recent data.
+- [ ] No 15m LGB head exists (per `v7_15m_sniper.yaml` comment "There is NO 15m LGB model yet") → train one. This is the single biggest lever — 5m has both classifier + LGB ensemble; 15m is classifier-only and that's why it's noisy.
+
+If retrain is the answer, the deliverable becomes a **retrain spec** for the timesfm-repo:
+- Which model (classifier recalibration / 15m LGB head / macro-v2 feature drop-in)
+- Which asset(s) to prioritize (data abundance + edge ceiling)
+- Training data window + features + holdout strategy
+- Acceptance criteria: holdout accuracy ≥ breakeven + 5pp at the entry threshold
+
+### What I will NOT do in this session
+- Push code or flip any strategy to LIVE without an explicit "go".
+- Run local tests (Montreal-only verification rule).
+- Touch `v15m_fusion*` family — burned, leave GHOST.
+- Tune `v3` / TimesFM-only signals at 15m — the lesson explicitly says these are noise.
+- Kick off a retrain without first proving (with data) that retrain is the actual blocker — retrains are expensive, and the answer might be "calibration only" or "feature wiring".
+
+### Decision points I will surface back
+1. Whether the classifier is actually serving 15m per-asset predictions on Montreal right now (yes/no — gates everything else).
+2. Which asset has the largest edge buffer over breakeven, with sample sizes.
+3. Whether to promote-now / tighten-and-wait / drop / **retrain** (and if retrain: which artifact + scope + data window).
+
+---
+
 ## Gate Audit + Window Decision Trace Plan — 2026-04-15
 
 ### Plan
