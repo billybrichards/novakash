@@ -1,0 +1,122 @@
+name: v8_v12_strong_agree
+version: "1.0.0"
+# v8_v12_strong_agree — 2026-05-01 — v8_champion gate stack + strong v9/v12 LGB agreement.
+#
+# Thesis (Hub note #298, signal-health analysis 2026-05-01):
+#   v8_champion_lgb_only + v12 strong-agreement gate: 64% -> 98.7% WR (n=1,182).
+#
+# v8_champion's gate stack (T-band, post-loss cooldown, fill band, regime
+# allowlist, oracle agreement) is strong, but its conviction signal alone is
+# mediocre. By REQUIRING that BOTH v9 LGB (probability_lgb) AND v12 LGB
+# (probability_lgb_v12) sit in strong-conviction zones (UP both >= 0.65; DOWN
+# both <= 0.35), the strategy fires far less often but on much higher-quality
+# signals.
+#
+# This is GHOST mode shadow validation. The 98.7% WR claim was derived from
+# a backward-looking signal-health study and needs out-of-sample confirmation
+# before any LIVE consideration. DO NOT promote to LIVE without:
+#   1. >=200 GHOST decisions accumulated
+#   2. Per-direction WR breakdown holding above ~85%
+#   3. Resolved-trade audit (window_snapshots + outcomes)
+#   4. Billy's explicit sign-off
+#
+# Implementation: hook reads probability_lgb (v9) and probability_lgb_v12,
+# enforces direction agreement + strong-conviction thresholds, then swaps the
+# averaged probability onto the surface and delegates to v9_ensemble (same
+# pattern as v12_lgb_combo's agreement path). All v8_champion gate-params
+# inherited verbatim — no loosening.
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+gates: []
+
+gate_params:
+  # ── Entry window ─────────────────────────────────────────────────────
+  min_offset_sec: 24                   # was 30; lowered for 3-tick confirmation room
+  max_offset_sec: 200
+
+  # ── Regime allowlist (inherits v8_champion_lgb_only verbatim) ────────
+  tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
+
+  # ── Per-direction vpin-regime exclusions (inherits v8) ───────────────
+  block_down_vpin_regimes: [TRANSITION]
+  block_up_vpin_regimes: [TRANSITION]
+
+  # ── Conviction (LGB-only — NO classifier bucket) ──────────────────────
+  use_classifier_bucket: false
+  lgb_dist_min_down: 0.10
+  lgb_dist_min_up: 0.15
+
+  # ── Fill-band bounds (inherits v8 R3) ────────────────────────────────
+  fill_band_min: 0.00
+  fill_band_max: 0.82
+
+  # ── UP asymmetric ────────────────────────────────────────────────────
+  up_min_fill_price: 0.55
+  up_require_both_buckets: false
+
+  # ── DOWN floor ───────────────────────────────────────────────────────
+  down_min_fill_price: 0.15
+
+  # ── Hour-of-day block ────────────────────────────────────────────────
+  blocked_utc_hours: [0, 1, 2, 3, 4, 5]
+
+  # ── Source agreement + oracle direction ──────────────────────────────
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  skip_on_oracle_disagree: true
+
+  # ── VPIN guard ───────────────────────────────────────────────────────
+  vpin_min: 0.40
+  vpin_max: 1.0
+
+  # ── Post-loss cooldown ────────────────────────────────────────────────
+  post_loss_cooldown_min: 20
+
+  # ── TRANSITION strong-oracle bypass ──────────────────────────────────
+  transition_strong_bypass_enabled: true
+  transition_bypass_min_avg_pct_delta: 0.05
+  transition_bypass_min_lgb_dist: 0.20
+
+  # ── Delta alignment gate ──────────────────────────────────────────────
+  delta_gate_enabled: true
+  min_alignment_bps: 1.0
+
+  # ── 3-tick entry confirmation ─────────────────────────────────────────
+  min_consecutive_pass_ticks: 3
+
+  # ── Post-fill exit monitoring (shadow only — never sell) ──────────────
+  exit_monitor_enabled: true
+  exit_shadow_mode: true
+  exit_eval_start_offset: 48
+  exit_eval_end_offset: 30
+  exit_max_retries: 1
+  exit_retry_timeout_seconds: 5
+  exit_mark_min_pct: 0.3145
+  exit_mark_ticks: 6
+
+  # ── Primary signal source ─────────────────────────────────────────────
+  primary_signal_source: lgb_v9_v12_strong_agree
+  prefer_raw_probability: true
+
+  # ── v8_v12_strong_agree gate (NEW) ────────────────────────────────────
+  # Both v9 and v12 LGB must be in strong-conviction zone for the chosen
+  # direction. Agreement on direction is implicit: UP requires BOTH probs
+  # >= up_min; DOWN requires BOTH probs <= down_max. Anything else SKIPs.
+  combo_strong_agree_up_min: 0.65
+  combo_strong_agree_down_max: 0.35
+
+sizing:
+  type: custom
+  custom_hook: clob_sizing
+  fraction: 0.025
+  max_collateral_pct: 0.058
+  schedule:
+    - { threshold: 0.55, modifier: 2.0, label: "high_conv_full" }
+    - { threshold: 0.35, modifier: 1.2, label: "mid" }
+    - { threshold: 0.25, modifier: 1.0, label: "low" }
+    - { threshold: 0.0,  modifier: 0.0, label: "skip" }
+
+hooks_file: v8_v12_strong_agree.py
+pre_gate_hook: evaluate_v8_v12_strong_agree
