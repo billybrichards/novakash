@@ -334,6 +334,33 @@ class PositionRedeemer:
                             )
                         except Exception:
                             pass
+                    # Mark matching WIN trade rows as redeemed in the canonical
+                    # trades table. Best-effort: the on-chain sweep already
+                    # confirmed (status==1, payout received) so a DB hiccup
+                    # must not flip success to False — accounting is forward-only.
+                    # Mirrors the writeback in redeem_position() (relayer path).
+                    # Without this the onchain path — primary on Montreal since
+                    # 2026-04-16 — silently leaves trades.redeemed=false forever.
+                    if self._trades_repo is not None:
+                        try:
+                            updated = await self._trades_repo.mark_redeemed(
+                                condition_id=condition_id,
+                                tx_hash=result.tx_hash,
+                            )
+                            self._log.info(
+                                "redeemer.trades_marked_redeemed",
+                                condition=condition_id[:20] + "...",
+                                rows_updated=updated,
+                                tx_hash=result.tx_hash,
+                                method="onchain",
+                            )
+                        except Exception as exc:
+                            self._log.warning(
+                                "redeemer.trades_mark_redeemed_error",
+                                condition=condition_id[:20] + "...",
+                                error=str(exc)[:200],
+                                method="onchain",
+                            )
                     return {
                         "success": True,
                         "tx_hash": result.tx_hash,
