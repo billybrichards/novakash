@@ -5284,7 +5284,9 @@ class EngineRuntime:
                             # Loss: -entry_price * stake
                             shadow_pnl = -float(entry_price) * STAKE_USD
 
-                        # Persist to DB
+                        # Persist to DB. update_shadow_resolution also fills
+                        # window_snapshots.outcome (forward-writer fix
+                        # 2026-04-30, hub note 297).
                         await self._db.update_shadow_resolution(
                             window_ts=window_ts,
                             asset=asset,
@@ -5293,6 +5295,15 @@ class EngineRuntime:
                             shadow_pnl=round(shadow_pnl, 2),
                             shadow_would_win=shadow_would_win,
                         )
+                        # Forward writer: populate signal_evaluations.outcome
+                        # for every row tied to this window. Previously no
+                        # engine path ever wrote this column.
+                        try:
+                            await self._db.update_signal_evaluations_outcome(
+                                window_ts, asset, timeframe, oracle_direction
+                            )
+                        except Exception:
+                            pass
                         # v8.1.2: Also update window_predictions with oracle result
                         try:
                             await self._db.update_window_prediction_outcome(
@@ -5440,17 +5451,32 @@ class EngineRuntime:
                                                         _wts, _asset, _winner
                                                     )
                                                     # Also update window_snapshots.poly_winner
+                                                    # AND the canonical outcome column
+                                                    # (forward-writer fix, hub note 297).
                                                     try:
                                                         async with (
                                                             self._db._pool.acquire() as _c2
                                                         ):
                                                             await _c2.execute(
-                                                                "UPDATE window_snapshots SET poly_winner=$1 "
-                                                                "WHERE window_ts=$2 AND asset=$3 AND poly_winner IS NULL",
+                                                                """
+                                                                UPDATE window_snapshots
+                                                                   SET poly_winner = COALESCE(poly_winner, $1),
+                                                                       outcome     = COALESCE(outcome, $4)
+                                                                 WHERE window_ts = $2 AND asset = $3
+                                                                """,
                                                                 _winner.capitalize(),
                                                                 _wts,
                                                                 _asset,
+                                                                _winner,
                                                             )
+                                                    except Exception:
+                                                        pass
+                                                    # Backfill signal_evaluations.outcome
+                                                    # for this window across all rows.
+                                                    try:
+                                                        await self._db.update_signal_evaluations_outcome(
+                                                            _wts, _asset, "5m", _winner
+                                                        )
                                                     except Exception:
                                                         pass
                                                     log.info(
