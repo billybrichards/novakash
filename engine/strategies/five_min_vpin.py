@@ -1823,6 +1823,13 @@ class FiveMinVPINStrategy(BaseStrategy):
                     window_snapshot["clob_up_ask"] = _clob.get("clob_up_ask")
                     window_snapshot["clob_down_bid"] = _clob.get("clob_down_bid")
                     window_snapshot["clob_down_ask"] = _clob.get("clob_down_ask")
+                    # Derived CLOB fields (audit #338)
+                    window_snapshot["clob_implied_up"] = _clob.get("clob_up_bid")
+                    _ua = _clob.get("clob_up_ask")
+                    _da = _clob.get("clob_down_ask")
+                    if _ua is not None and _da is not None:
+                        window_snapshot["clob_fill_price"] = (_ua + _da) / 2
+                    window_snapshot["clob_imbalance"] = None  # requires size data not available here
             except Exception:
                 pass
 

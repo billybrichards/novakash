@@ -369,6 +369,7 @@ class EvaluateStrategiesUseCase:
             else:
                 direction = None
 
+            cg = getattr(ctx, "cg_snapshot", None)
             await self._db.write_signal_evaluation({
                 # Window identification
                 "window_ts": window_ts,
@@ -387,6 +388,14 @@ class EvaluateStrategiesUseCase:
                 # Market microstructure
                 "vpin": ctx.vpin,
                 "regime": ctx.regime if hasattr(ctx, "regime") else None,
+
+                # CoinGlass snapshot fields (audit #337 — previously always NULL)
+                "cg_oi_delta_pct": getattr(cg, "oi_delta_pct_1m", None),
+                "cg_liq_long_usd": getattr(cg, "liq_long_usd_1m", None),
+                "cg_liq_short_usd": getattr(cg, "liq_short_usd_1m", None),
+                "cg_taker_buy_usd": getattr(cg, "taker_buy_volume_1m", None),
+                "cg_taker_sell_usd": getattr(cg, "taker_sell_volume_1m", None),
+                "cg_funding_rate": getattr(cg, "funding_rate", None),
 
                 # V10 decision (this write is for the V10 strategy's result)
                 "decision": decision.action,
