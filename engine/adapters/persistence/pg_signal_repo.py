@@ -708,15 +708,18 @@ class PgSignalRepository(SignalRepository):
     ) -> None:
         """Persist a signal snapshot to the ``signals`` table.
 
-        Verbatim SQL from ``DBClient.write_signal``.
+        Verbatim SQL from ``DBClient.write_signal``. Schema is
+        ``signals(id, signal_type, payload JSONB, created_at)`` —
+        ``value`` is folded into the payload alongside metadata.
         """
         if not self._pool:
             return
 
         ts = timestamp or datetime.utcnow()
+        payload = {"value": float(value), **(metadata or {})}
         query = """
-            INSERT INTO signals (signal_type, value, metadata, created_at)
-            VALUES ($1, $2, $3::jsonb, $4)
+            INSERT INTO signals (signal_type, payload, created_at)
+            VALUES ($1, $2::jsonb, $3)
         """
 
         try:
@@ -724,8 +727,7 @@ class PgSignalRepository(SignalRepository):
                 await conn.execute(
                     query,
                     signal_type,
-                    float(value),
-                    json.dumps(metadata or {}),
+                    json.dumps(payload),
                     ts,
                 )
             log.debug("db.signal_written", type=signal_type, value=value)
