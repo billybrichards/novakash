@@ -20,7 +20,6 @@ import {
   isClassifierHighConviction,
   isSourceConflict,
   probDisagreement,
-  directionFromProbUp,
 } from '../lib/conviction.js';
 
 const TIER_COLOURS = {
@@ -33,7 +32,6 @@ const TIER_COLOURS = {
 
 export default function SignalStack({ fiveMin, pu, pc, pl, windowDelta }) {
   const tier = convictionTier(pu);
-  const dir = directionFromProbUp(pu);
   const vhc = isClassifierHighConviction(pc);
 
   // Prefer server flag; fall back to client math when ensemble_config absent.
@@ -69,19 +67,10 @@ export default function SignalStack({ fiveMin, pu, pc, pl, windowDelta }) {
         <Banner colour={T.warn}>⚠ SOURCE CONFLICT — |pc − pl| = {disagree?.toFixed(3) || '—'}</Banner>
       ) : null}
 
+      {/* Probability scorecard now lives in <ClassifierScorecard/> — kept
+          here only as an at-a-glance numeric summary; the bars + tier
+          badges + thresholds live in the dedicated panel above. */}
       <Grid>
-        <Row label="Consensus (pu)"
-             value={fmtProb(pu)}
-             right={dir ? <Pill colour={dir === 'UP' ? T.profit : T.loss}>{dir}</Pill> : null} />
-        <Row label="Classifier (pc)"
-             value={pc == null
-               ? <span title="classifier warming up" style={{ color: T.label }}>—</span>
-               : fmtProb(pc)} />
-        <Row label="LGB (pl)" value={fmtProb(pl)} />
-        <Row label="|pc − pl|"
-             value={disagree == null ? '—' : disagree.toFixed(3)}
-             right={conflict ? <Pill colour={T.warn}>CONFLICT</Pill> : null} />
-        <Divider />
         <Row label="Conviction"
              value={<span style={{ color: TIER_COLOURS[tier] }}>{tier}</span>}
              right={pu == null ? null
@@ -120,12 +109,6 @@ function Row({ label, value, right }) {
   );
 }
 
-function Divider() {
-  return (
-    <div style={{ gridColumn: '1 / span 3', borderTop: `1px solid ${T.border}`, margin: '4px 0' }} />
-  );
-}
-
 function Banner({ colour, children }) {
   return (
     <div style={{
@@ -159,10 +142,6 @@ function VpinBadge({ v }) {
   return <Pill colour={T.label}>CALM</Pill>;
 }
 
-function fmtProb(p) {
-  if (p == null) return '—';
-  return p.toFixed(3);
-}
 function fmtPct(d) {
   if (d == null) return '—';
   return `${d >= 0 ? '+' : ''}${(d * 100).toFixed(2)}%`;

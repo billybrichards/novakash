@@ -28,7 +28,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import PageHeader from '../../components/shared/PageHeader.jsx';
 import { T } from '../../theme/tokens.js';
 import { useApi } from '../../hooks/useApi.js';
-import { DESK_TRACKED_STRATEGY_IDS } from '../../constants/strategies.js';
+import { DESK_ALL_STRATEGY_IDS } from '../../constants/strategies.js';
 
 import Header from './components/Header.jsx';
 import PriceChart from './components/PriceChart.jsx';
@@ -54,12 +54,19 @@ import CGPositioningTile from './components/CGPositioningTile.jsx';
 import ConsensusBadge from './components/ConsensusBadge.jsx';
 import AlertBanners from './components/AlertBanners.jsx';
 
+// Desk-rich-signals refactor (2026-05-01): full BTC 5m strategy lineup,
+// anchor-clear quantile fan, multi-source delta, classifier scorecard,
+// live gate context.
+import MultiSourceDelta from './components/MultiSourceDelta.jsx';
+import ClassifierScorecard from './components/ClassifierScorecard.jsx';
+import GateContextTile from './components/GateContextTile.jsx';
+
 import { useWindow } from './hooks/useWindow.js';
 import { useSnapshot, pickProbs } from './hooks/useSnapshot.js';
 import { usePicks } from './hooks/usePicks.js';
 import { useResolvedDecisions } from './hooks/useResolvedDecisions.js';
 
-const TRACKED_STRATEGIES = DESK_TRACKED_STRATEGY_IDS;
+const TRACKED_STRATEGIES = DESK_ALL_STRATEGY_IDS;
 
 export default function Desk() {
   const api = useApi();
@@ -153,7 +160,7 @@ export default function Desk() {
       <PageHeader
         tag="DESK · /desk"
         title="Live Play-Along Desk"
-        subtitle="Operator HUD for 5m BTC Polymarket windows. Make a call, then compare against v9_ensemble (LIVE) / v8_champion_lgb_only (GHOST). Phase 3 — conviction + sub-signals + CG positioning + consensus + exit-window indicator."
+        subtitle="Operator HUD for 5m BTC Polymarket windows. Anchor-clear TimesFM fan, multi-source price delta (Chainlink/Binance/Tiingo), classifier scorecard, live gate context, and the full v6/v8/v9/v10/v12 strategy lineup grouped by family."
       />
 
       <Header
@@ -192,14 +199,22 @@ export default function Desk() {
 
       <div style={gridStyle}>
         <div>
-          <ErrBoundary label="Price chart">
-            <PriceChart asset="BTC" windowEpoch={win.windowEpoch} pollMs={4_000} />
-          </ErrBoundary>
           <ErrBoundary label="Quantile fan">
             <QuantileFan
               fiveMin={snap.fiveMin}
               targetPrice={win.targetPriceChainlink}
+              currentPrice={btcPrice}
             />
+          </ErrBoundary>
+          <ErrBoundary label="Multi-source delta">
+            <MultiSourceDelta
+              asset="BTC"
+              targetPrice={win.targetPriceChainlink}
+              pollMs={5_000}
+            />
+          </ErrBoundary>
+          <ErrBoundary label="Price chart">
+            <PriceChart asset="BTC" windowEpoch={win.windowEpoch} pollMs={4_000} />
           </ErrBoundary>
           <ErrBoundary label="Cross-asset sparks">
             <CrossAssetSparks pollMs={10_000} />
@@ -214,6 +229,14 @@ export default function Desk() {
           </ErrBoundary>
         </div>
         <div>
+          <ErrBoundary label="Classifier scorecard">
+            <ClassifierScorecard
+              pu={pu}
+              pc={pc}
+              pl={pl}
+              conflict={Boolean(snap.fiveMin?.ensemble_config?.disagreement_detected)}
+            />
+          </ErrBoundary>
           <ErrBoundary label="Signal stack">
             <SignalStack
               fiveMin={snap.fiveMin}
@@ -222,6 +245,9 @@ export default function Desk() {
               pl={pl}
               windowDelta={windowDelta}
             />
+          </ErrBoundary>
+          <ErrBoundary label="Gate context">
+            <GateContextTile pollMs={8_000} />
           </ErrBoundary>
           <ErrBoundary label="Conviction strip">
             <ConvictionStrip fiveMin={snap.fiveMin} />

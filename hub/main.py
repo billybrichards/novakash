@@ -48,6 +48,7 @@ from api.agent_ops import router as agent_ops_router
 from api.strategy_decisions import router as strategy_decisions_router
 from api.desk import router as desk_router
 from api.clob import router as clob_router
+from api.ticks import router as ticks_router
 from api.strategies import router as strategies_router
 from api.strategies_override import router as strategies_override_router
 from api.window_traces import router as window_traces_router
@@ -880,6 +881,10 @@ app.include_router(desk_router, prefix="/api", tags=["desk"])
 # Gated by HUB_ALLOW_CLOB_FETCH — default-off on AWS hub, on-only on deployments
 # permitted to hit clob.polymarket.com / gamma-api.polymarket.com.
 app.include_router(clob_router, prefix="/api", tags=["clob"])
+# DESK: /api/ticks/{chainlink,binance,tiingo} — read endpoints over the
+# tick tables already populated by engine feeds. Required by /desk
+# PriceChart, CrossAssetSparks, and the multi-source delta panel.
+app.include_router(ticks_router, prefix="/api", tags=["ticks"])
 
 
 @app.get("/health", tags=["health"])
