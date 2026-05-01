@@ -585,10 +585,11 @@ class PgSignalRepository(SignalRepository):
                     INSERT INTO window_snapshots (
                         window_ts, asset, timeframe, eval_offset,
                         ensemble_p_up, ensemble_p_lgb, ensemble_p_classifier,
-                        ensemble_mode, ensemble_disagreement, ensemble_model_version
+                        ensemble_mode, ensemble_disagreement, ensemble_model_version,
+                        probability_lgb_v12
                     ) VALUES (
                         $1,$2,$3,$4,
-                        $5,$6,$7,$8,$9,$10
+                        $5,$6,$7,$8,$9,$10,$11
                     )
                     ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
                         ensemble_p_up          = COALESCE(EXCLUDED.ensemble_p_up, window_snapshots.ensemble_p_up),
@@ -596,7 +597,8 @@ class PgSignalRepository(SignalRepository):
                         ensemble_p_classifier  = COALESCE(EXCLUDED.ensemble_p_classifier, window_snapshots.ensemble_p_classifier),
                         ensemble_mode          = COALESCE(EXCLUDED.ensemble_mode, window_snapshots.ensemble_mode),
                         ensemble_disagreement  = COALESCE(EXCLUDED.ensemble_disagreement, window_snapshots.ensemble_disagreement),
-                        ensemble_model_version = COALESCE(EXCLUDED.ensemble_model_version, window_snapshots.ensemble_model_version)
+                        ensemble_model_version = COALESCE(EXCLUDED.ensemble_model_version, window_snapshots.ensemble_model_version),
+                        probability_lgb_v12    = COALESCE(EXCLUDED.probability_lgb_v12, window_snapshots.probability_lgb_v12)
                     """,
                     int(window_ts),
                     asset,
@@ -608,6 +610,7 @@ class PgSignalRepository(SignalRepository):
                     ensemble_fields.get("ensemble_mode"),
                     ensemble_fields.get("ensemble_disagreement"),
                     ensemble_fields.get("ensemble_model_version"),
+                    ensemble_fields.get("probability_lgb_v12"),
                 )
         except Exception as exc:
             log.warning(

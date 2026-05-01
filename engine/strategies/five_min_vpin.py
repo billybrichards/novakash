@@ -155,6 +155,7 @@ def _ensemble_surface_fields(surface) -> dict:
                                  config omits it but both components are present
         ensemble_model_version = ensemble_config.model_version
                                  (classifier head version string)
+        probability_lgb_v12    = surface.probability_lgb_v12        (v12 shadow LGB)
 
     Fallback behaviours (documented in engine/strategies/configs/v5_ensemble.md):
       * ensemble_config None  → mode/disagreement/components all NULL,
@@ -203,6 +204,12 @@ def _ensemble_surface_fields(surface) -> dict:
         "ensemble_mode": mode,
         "ensemble_disagreement": disagreement,
         "ensemble_model_version": model_version,
+        # 2026-04-30: v12 LGB shadow probability — sourced from
+        # /v4/snapshot.timescales.5m.probability_lgb_v12 (timesfm PR #137,
+        # column added in engine PR #436). Mirrors ensemble_p_lgb wiring
+        # so SQL-based v9-vs-v12 comparison (v_signal_comparison view)
+        # works without a separate writer call.
+        "probability_lgb_v12": getattr(surface, "probability_lgb_v12", None),
     }
 
 
