@@ -60,11 +60,22 @@ class PgTradeRepository:
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
                       $18,$19,$20,$21,$22,$23,$24)
             ON CONFLICT (order_id) DO UPDATE SET
+                -- Forward transitions (OPEN -> FILLED -> RESOLVED_*) are
+                -- always allowed for status. EXCLUDED.outcome can promote
+                -- a NULL outcome to WIN/LOSS but must never overwrite an
+                -- existing one (audit-task #331 — late re-deliveries from
+                -- replay/recovery were silently re-stamping pnl on already
+                -- resolved rows).
                 status           = EXCLUDED.status,
-                outcome          = EXCLUDED.outcome,
-                payout_usd       = EXCLUDED.payout_usd,
-                pnl_usd          = EXCLUDED.pnl_usd,
-                resolved_at      = EXCLUDED.resolved_at,
+                outcome          = COALESCE(trades.outcome, EXCLUDED.outcome),
+                -- Resolution-state fields: lock once written. The reconciler
+                -- has its own outcome-IS-NULL-guarded update path for the
+                -- legitimate "first resolution" case; a generic write_trade
+                -- replay must never clobber a row that has already settled.
+                payout_usd       = COALESCE(trades.payout_usd, EXCLUDED.payout_usd),
+                pnl_usd          = COALESCE(trades.pnl_usd, EXCLUDED.pnl_usd),
+                resolved_at      = COALESCE(trades.resolved_at, EXCLUDED.resolved_at),
+                -- Provenance / live-flag / static metadata may be re-stamped.
                 is_live          = EXCLUDED.is_live,
                 entry_price      = EXCLUDED.entry_price,
                 stake_usd        = EXCLUDED.stake_usd,

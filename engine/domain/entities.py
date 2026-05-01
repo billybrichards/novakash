@@ -41,7 +41,16 @@ class Order:
         venue: "polymarket" or "opinion".
         strategy: Strategy that placed the order, e.g. "arb", "vpin_cascade".
         direction: "YES" or "NO".
-        price: Fill price as a decimal string (e.g. "0.5123").
+        price: Submission/limit price as a decimal string (e.g. "0.5123").
+            For FAK ladder strategies this is the FIRST rung price, NOT the
+            volume-weighted average fill — see ``fill_price`` for the realised
+            avg. For single-fill strategies (paper, RFQ, single-rung FAK) the
+            two values agree.
+        fill_price: Realised volume-weighted average fill price (float).
+            Set by the live execution path (FAK ladder / RFQ) and used by the
+            resolver to compute payout = stake / fill_price. ``None`` for
+            paper trades and any path that did not record an explicit fill —
+            callers should fall back to ``float(price)`` in that case.
         stake_usd: USD risked.
         status: Current lifecycle state.
         created_at: Unix timestamp of order creation.
@@ -58,6 +67,7 @@ class Order:
     direction: str                   # "YES" | "NO"
     price: str
     stake_usd: float
+    fill_price: Optional[float] = None
     status: OrderStatus = OrderStatus.OPEN
     created_at: float = field(default_factory=_time.time)
     resolved_at: Optional[float] = None
