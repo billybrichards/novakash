@@ -247,3 +247,167 @@ async def test_shadow_resolution_writes_outcome():
     assert args[4] == 1777617300
     assert args[5] == "BTC"
     assert args[6] == "5m"
+
+
+# ─── populate_oracle_outcomes — bulk-path forward writer ──────────────────
+#
+# Follow-up to the original PR #439 fix (hub note 297, 2026-05-01):
+# PR #439 patched the per-trade and shadow-loop paths but on Montreal
+# they almost never fire. The bulk path that runs every ~2 min from
+# reconcile_uc is ``PgWindowRepository.populate_oracle_outcomes`` — and
+# that one was *not* patched, so ``window_snapshots.outcome`` still
+# stayed NULL on 65% of rows for 16h post-deploy. These tests pin the
+# bulk path's writer contract.
+
+
+class _RecordingConn:
+    """Like _FakeConn but threads each call through a per-window list and
+    can stub asyncpg.Pool.fetch (rows from the 'find unresolved windows'
+    query).
+    """
+
+    def __init__(self, fetch_rows: list) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._fetch_rows = fetch_rows
+
+    async def execute(self, sql: str, *args, **kwargs):
+        self.calls.append({"sql": sql, "args": args, "kwargs": kwargs})
+        return "UPDATE 1"
+
+    async def fetch(self, sql: str, *args, **kwargs):
+        return self._fetch_rows
+
+
+class _RecordingPool:
+    def __init__(self, fetch_rows: list) -> None:
+        self.conn = _RecordingConn(fetch_rows)
+
+    def acquire(self):
+        outer = self
+
+        class _CM:
+            async def __aenter__(self_inner):
+                return outer.conn
+
+            async def __aexit__(self_inner, *exc):
+                return None
+
+        return _CM()
+
+
+class _StubGammaResp:
+    """Stubbed httpx response object — exposes ``status_code`` and ``json()``."""
+
+    def __init__(self, status_code: int, payload):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _StubHttpxClient:
+    """Async-context-manager replacing ``httpx.AsyncClient`` with deterministic
+    Gamma responses. Each window_ts → a payload from ``responses``.
+    """
+
+    def __init__(self, responses):
+        self._responses = responses
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return None
+
+    async def get(self, url: str, params=None, **_):
+        slug = (params or {}).get("slug", "")
+        return _StubGammaResp(200, self._responses.get(slug, []))
+
+
+def _gamma_resolved_payload(slug: str, winner: str):
+    """Build the Gamma /events shape that ``_fetch`` expects: list of events
+    each with markets[]; closed=True; outcomes & outcomePrices arrays.
+    """
+    if winner == "UP":
+        prices = ["1.0", "0.0"]
+    else:
+        prices = ["0.0", "1.0"]
+    return [
+        {
+            "markets": [
+                {
+                    "slug": slug,
+                    "closed": True,
+                    "umaResolutionStatus": "resolved",
+                    "outcomes": '["Up", "Down"]',
+                    "outcomePrices": str(prices).replace("'", '"'),
+                }
+            ]
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_populate_oracle_outcomes_writes_outcome_column(monkeypatch):
+    """Bulk oracle poll must stamp ``window_snapshots.outcome`` (not just
+    oracle_outcome / poly_winner). This is the path that resolves ~99%
+    of windows on Montreal — the per-trade and shadow paths cover <1%.
+
+    Regression: 2026-05-01 — 65% of rows post-PR-#439 stayed NULL because
+    PR #439 patched the per-trade and shadow paths only.
+    """
+    from adapters.persistence import pg_window_repo as repo_mod
+
+    pool = _RecordingPool(fetch_rows=[{"window_ts": 1777617300}])
+    repo = repo_mod.PgWindowRepository(pool)
+
+    slug = f"{repo_mod._SLUG_PREFIX}1777617300"
+    monkeypatch.setattr(
+        repo_mod.httpx,
+        "AsyncClient",
+        lambda **_kw: _StubHttpxClient({slug: _gamma_resolved_payload(slug, "UP")}),
+    )
+
+    n = await repo.populate_oracle_outcomes()
+    assert n == 1
+
+    update_calls = [c for c in pool.conn.calls if c["sql"].lstrip().startswith("UPDATE")]
+    snap_calls = [c for c in update_calls if "window_snapshots" in c["sql"]]
+    se_calls = [c for c in update_calls if "signal_evaluations" in c["sql"]]
+
+    assert len(snap_calls) == 1, "must update window_snapshots once per resolved window"
+    snap_sql = snap_calls[0]["sql"]
+    assert "outcome               = COALESCE(outcome" in snap_sql or \
+           "outcome = COALESCE(outcome" in snap_sql, \
+           "must stamp canonical outcome column with COALESCE"
+    assert "oracle_outcome" in snap_sql
+    assert "poly_winner" in snap_sql
+
+    assert len(se_calls) == 1, (
+        "must bulk-fill signal_evaluations.outcome — was 100% NULL pre-fix"
+    )
+    se_sql = se_calls[0]["sql"]
+    assert "outcome IS NULL" in se_sql, "signal_evaluations writer must be idempotent"
+    assert se_calls[0]["args"][0] == "UP"
+    assert se_calls[0]["args"][1] == 1777617300
+
+
+@pytest.mark.asyncio
+async def test_populate_oracle_outcomes_no_resolutions_no_writes(monkeypatch):
+    """If Gamma returns no resolved markets, no UPDATE statements should fire."""
+    from adapters.persistence import pg_window_repo as repo_mod
+
+    pool = _RecordingPool(fetch_rows=[{"window_ts": 1777617300}])
+    repo = repo_mod.PgWindowRepository(pool)
+
+    monkeypatch.setattr(
+        repo_mod.httpx,
+        "AsyncClient",
+        lambda **_kw: _StubHttpxClient({}),  # no responses → returns []
+    )
+
+    n = await repo.populate_oracle_outcomes()
+    assert n == 0
+    update_calls = [c for c in pool.conn.calls if c["sql"].lstrip().startswith("UPDATE")]
+    assert update_calls == []
