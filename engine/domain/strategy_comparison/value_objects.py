@@ -50,8 +50,21 @@ class RegimeFilter(str, Enum):
 
 
 def t_band_from_offset(offset_seconds: int) -> TBand:
-    """Bucket a window offset (seconds-from-window-open) into a TBand.
+    """Bucket seconds-to-window-close into a TBand.
 
-    NOT IMPLEMENTED — this is a design skeleton.
+    offset_seconds is the T-minus value: seconds remaining before window close.
     """
-    raise NotImplementedError("design skeleton — see docs/architecture/")
+    s = offset_seconds
+    if 24 <= s <= 30:
+        return TBand.T_24_30
+    if 31 <= s <= 60:
+        return TBand.T_31_60
+    if 61 <= s <= 90:
+        return TBand.T_61_90
+    if 91 <= s <= 120:
+        return TBand.T_91_120
+    if 121 <= s <= 180:
+        return TBand.T_121_180
+    if 181 <= s <= 240:
+        return TBand.T_181_240
+    return TBand.ALL

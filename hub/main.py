@@ -52,6 +52,7 @@ from api.strategies import router as strategies_router
 from api.strategies_override import router as strategies_override_router
 from api.window_traces import router as window_traces_router
 from api.gate_traces import router as gate_traces_router
+from api.strategy_comparison import router as strategy_comparison_router
 
 log = structlog.get_logger(__name__)
 
@@ -871,6 +872,8 @@ app.include_router(
 app.include_router(window_traces_router, prefix="/api", tags=["window-traces"])
 # GATE-TRACES: per-gate pass/fail heatmap from gate_check_traces (audit #188)
 app.include_router(gate_traces_router, prefix="/api", tags=["gate-traces"])
+# Strategy comparison: persistent rollup table + rich API (design doc 2026-05-01)
+app.include_router(strategy_comparison_router, prefix="/api", tags=["strategy-comparison"])
 # DESK: /desk Phase 1 — window clock + operator manual-pick journal (note #218)
 app.include_router(desk_router, prefix="/api", tags=["desk"])
 # DESK Phase 2 — CLOB book proxy + condition_id resolver (note #218 §3, S-tier).

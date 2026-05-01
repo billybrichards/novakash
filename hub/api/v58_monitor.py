@@ -3951,6 +3951,15 @@ async def strategy_decisions(
         return {"decisions": [], "error": str(exc)[:200]}
 
 
+def _days_to_window_period(days: int) -> str:
+    """Map a `days` query param to the closest strategy_comparison window_period."""
+    if days <= 1:
+        return "24h"
+    if days <= 7:
+        return "7d"
+    return "30d"
+
+
 @router.get("/v58/strategy-comparison")
 async def strategy_comparison(
     days: int = Query(default=7, ge=1, le=90),
@@ -3959,9 +3968,73 @@ async def strategy_comparison(
 ):
     """Per-strategy aggregated comparison over the last N days.
 
-    Joins strategy_decisions with window_snapshots to determine actual
-    outcome, then computes W/L/accuracy/cumulative would-be PnL per strategy.
+    Reads from the strategy_comparison table (populated by the engine scheduler
+    every 5 min) when available, falling back to the legacy strategy_decisions
+    join for backward compatibility when the table is empty or missing.
+
+    Response shape is preserved for all existing FE consumers:
+      {"strategies": [...], "days": days}
+    with each strategy entry containing:
+      strategy_id, strategy_name, id, name, mode,
+      total_evals, trades, skips, errors, wins, losses, unresolved,
+      cum_pnl, accuracy, daily (list of {date, wins, losses, pnl})
     """
+    # ── Try new strategy_comparison table first ───────────────────────────────
+    try:
+        window_period = _days_to_window_period(days)
+        sc_rows = (
+            await db.execute(
+                text("""
+                    SELECT strategy_id, n_fires, n_wins, n_losses, n_pending,
+                           wr_pct, real_net_pnl_usd
+                    FROM strategy_comparison
+                    WHERE snapshot_at = (SELECT MAX(snapshot_at) FROM strategy_comparison)
+                      AND window_period    = :window_period
+                      AND t_band          = 'all'
+                      AND direction_filter = 'all'
+                      AND regime_filter   = 'all'
+                    ORDER BY strategy_id
+                """),
+                {"window_period": window_period},
+            )
+        ).mappings().all()
+
+        if sc_rows:
+            strategies = []
+            for r in sc_rows:
+                sid = r["strategy_id"]
+                n_wins = int(r["n_wins"] or 0)
+                n_losses = int(r["n_losses"] or 0)
+                n_fires = int(r["n_fires"] or 0)
+                n_pending = int(r["n_pending"] or 0)
+                total_resolved = n_wins + n_losses
+                accuracy = (
+                    round(n_wins / total_resolved * 100, 1) if total_resolved > 0 else None
+                )
+                strategies.append({
+                    "strategy_id": sid,
+                    "strategy_name": sid,
+                    "id": sid,
+                    "name": sid,
+                    "mode": "live",
+                    "total_evals": n_fires,
+                    "trades": n_fires,
+                    "skips": 0,
+                    "errors": 0,
+                    "wins": n_wins,
+                    "losses": n_losses,
+                    "unresolved": n_pending,
+                    "cum_pnl": round(float(r["real_net_pnl_usd"] or 0.0), 2),
+                    "accuracy": accuracy,
+                    "daily": [],  # not available in aggregated table
+                })
+            log.info("v58.strategy_comparison.from_table", n=len(strategies), window_period=window_period)
+            return {"strategies": strategies, "days": days}
+    except Exception as exc:
+        log.warning("v58.strategy_comparison.table_read_failed", error=str(exc)[:200])
+        # Fall through to legacy computation
+
+    # ── Legacy computation: join strategy_decisions + window_snapshots ────────
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         rows = (

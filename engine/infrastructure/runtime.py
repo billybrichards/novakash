@@ -761,6 +761,37 @@ class EngineRuntime:
                 funder=self._settings.poly_funder_address,
             )
 
+        # 5. Strategy comparison aggregation (every 5 min, crash-isolated)
+        if self._db and self._db._pool:
+            from infrastructure.schedulers.strategy_comparison_scheduler import (
+                strategy_comparison_loop,
+            )
+            from adapters.persistence.pg_strategy_comparison_repo import (
+                PgStrategyComparisonRepo,
+            )
+            from adapters.persistence.pg_decisions_query_repo import (
+                PgDecisionsQueryRepo,
+            )
+            from use_cases.compute_strategy_comparison import (
+                ComputeStrategyComparison,
+            )
+
+            _sc_query_repo = PgDecisionsQueryRepo(db_client=self._db)
+            _sc_write_repo = PgStrategyComparisonRepo(db_client=self._db)
+            _sc_use_case = ComputeStrategyComparison(
+                decisions_query_repo=_sc_query_repo
+            )
+            self._tasks.append(
+                asyncio.create_task(
+                    strategy_comparison_loop(
+                        use_case=_sc_use_case,
+                        repo=_sc_write_repo,
+                    ),
+                    name="strategy_comparison",
+                )
+            )
+            log.info("orchestrator.strategy_comparison_started")
+
         # 5. Heartbeat task (every 10s)
         self._tasks.append(
             asyncio.create_task(self._heartbeat_loop(), name="heartbeat")
