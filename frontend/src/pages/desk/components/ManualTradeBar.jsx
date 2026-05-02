@@ -57,9 +57,15 @@ export default function ManualTradeBar({ windowEpoch, systemStatus }) {
   });
 
   // CLOB book for UP/DOWN ask prices.
+  // Primary path: /api/clob/book (5-level, requires HUB_ALLOW_CLOB_FETCH).
+  // Fallback path: /api/desk/clob-book (1-deep from window_snapshots, always
+  //   available). The hook handles the fallback transparently.
   const clob = useClobBook({ windowEpoch, asset: 'BTC', pollMs: 10_000 });
-  const upAsk = clob.book?.asks_yes?.[0]?.price ?? clob.book?.yes_ask ?? null;
-  const downAsk = clob.book?.asks_no?.[0]?.price ?? clob.book?.no_ask ?? null;
+  // Support both the 5-level shape (yes.asks[0].price) and the flat alias
+  // (yes_ask) added by the fallback normalisation in useClobBook.
+  const upAsk = clob.book?.yes?.asks?.[0]?.price ?? clob.book?.yes_ask ?? null;
+  const downAsk = clob.book?.no?.asks?.[0]?.price ?? clob.book?.no_ask ?? null;
+  const bookStale = clob.book?.stale === true;
 
   // Active window pending trade.
   const windowTrade = latestForWindow(windowEpoch);
@@ -191,8 +197,9 @@ export default function ManualTradeBar({ windowEpoch, systemStatus }) {
 
         {/* Live preview */}
         {previewAsk != null && previewShares != null && stakeValid ? (
-          <span style={{ color: T.label, whiteSpace: 'nowrap', flexShrink: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          <span style={{ color: bookStale ? '#f59e0b' : T.label, whiteSpace: 'nowrap', flexShrink: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
             → buy {previewShares} sh @ ${previewAsk.toFixed(4)} = ${previewPayout} if win
+            {bookStale && <span style={{ marginLeft: 4, color: '#f59e0b', fontWeight: 700 }} title="CLOB snapshot is >60s old — price may be stale">⚠ stale</span>}
           </span>
         ) : (
           <span style={{ color: T.label, opacity: 0.4, flexShrink: 1 }}>

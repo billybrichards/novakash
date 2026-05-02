@@ -26,11 +26,23 @@ Endpoints (all JWT-protected except where noted):
         Recent picks joined against strategy_decisions_resolved so the
         last-20-windows table on /desk can colour each pick by outcome.
 
+  GET  /api/desk/clob-book?window_epoch=<int>&asset=BTC
+        → 1-deep reconstructed book from window_snapshots CLOB columns.
+        Used as a fallback when /api/clob/book is unavailable (HUB_ALLOW_CLOB_FETCH
+        not set on this deployment). The engine writes clob_up_bid, clob_up_ask,
+        clob_down_bid, clob_down_ask, clob_implied_up to window_snapshots so this
+        works without hitting polymarket.com from the hub.
+        Shape is compatible with /api/clob/book (yes.asks[0].price, etc.) plus
+        extra fields: source="window_snapshots", age_s=<int>.
+        Degrades to empty book (200) if no snapshot row exists for the window.
+
 Degraded shapes:
   - ticks_chainlink may be cold / empty for an asset
     → target_price_chainlink = null, no 500.
   - strategy_decisions_resolved view may be dropped during a rebuild
     → the GET /desk/picks join falls back to an outcome-less response.
+  - window_snapshots missing / CLOB columns NULL
+    → /desk/clob-book returns {yes:{asks:[],bids:[]},no:{asks:[],bids:[]}} 200.
 """
 
 from __future__ import annotations
@@ -48,6 +60,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth.jwt import TokenData
 from auth.middleware import get_current_user
 from db.database import get_session
+
+# Staleness threshold for /desk/clob-book — if the most-recent window_snapshots
+# row is older than this many seconds we include a stale=True flag so the FE
+# can show a warning badge. 60s = 1/5th of a window is a reasonable cutoff.
+_CLOB_STALE_THRESHOLD_S = 60
 
 log = structlog.get_logger(__name__)
 
@@ -333,3 +350,142 @@ async def list_picks(
         rows.append(d)
 
     return {"rows": rows}
+
+
+# ── /desk/clob-book — window_snapshots fallback ───────────────────────────────
+
+def _make_empty_book() -> dict:
+    """Empty book shape compatible with /api/clob/book."""
+    return {
+        "yes": {"bids": [], "asks": []},
+        "no": {"bids": [], "asks": []},
+        "implied_p_up": None,
+        "spread": None,
+        "imbalance": None,
+        "source": "window_snapshots",
+        "age_s": None,
+        "stale": False,
+    }
+
+
+def _one_level(price: Optional[float], size_placeholder: float = 0.0) -> list:
+    """Build a 1-deep level list from a scalar price, or [] if price is None."""
+    if price is None or not (0.0 <= price <= 1.0):
+        return []
+    return [{"price": float(price), "size": size_placeholder}]
+
+
+@router.get("/desk/clob-book")
+async def desk_clob_book(
+    window_epoch: int = Query(..., ge=0, description="5-minute window start timestamp"),
+    asset: str = Query("BTC", max_length=16),
+    session: AsyncSession = Depends(get_session),
+    user: TokenData = Depends(get_current_user),
+) -> dict:
+    """
+    1-deep CLOB book reconstructed from window_snapshots CLOB columns.
+
+    This is the fallback path for /desk when HUB_ALLOW_CLOB_FETCH is not set
+    on this hub deployment (default on AWS hub). The engine writes
+    clob_up_bid, clob_up_ask, clob_down_bid, clob_down_ask, clob_implied_up
+    to window_snapshots every eval cycle so this endpoint works without any
+    outbound call to polymarket.com.
+
+    Shape is intentionally compatible with /api/clob/book so callers can
+    use the same `book.yes.asks[0].price` access pattern. Extra fields:
+      - source: "window_snapshots"
+      - age_s:  seconds since the snapshot row was written (int or null)
+      - stale:  true if age_s > 60 (1/5th of a window)
+
+    Degrades to empty book (200) if window_snapshots is missing or has no
+    CLOB data for this window — never returns 500 for a missing row.
+    """
+    empty = _make_empty_book()
+
+    try:
+        q = text(
+            """
+            SELECT
+                clob_up_bid,
+                clob_up_ask,
+                clob_down_bid,
+                clob_down_ask,
+                clob_implied_up,
+                created_at
+            FROM window_snapshots
+            WHERE window_ts = :window_ts
+              AND asset     = :asset
+              AND (clob_up_ask IS NOT NULL OR clob_down_ask IS NOT NULL)
+            ORDER BY eval_offset DESC NULLS LAST, created_at DESC
+            LIMIT 1
+            """
+        )
+        res = await session.execute(q, {"window_ts": window_epoch, "asset": asset.upper()})
+        row = res.mappings().first()
+    except ProgrammingError as exc:
+        if _is_missing_table(exc):
+            log.info("desk.clob_book.window_snapshots_missing")
+            return empty
+        log.warning("desk.clob_book.query_err", error=str(exc)[:200])
+        return empty
+    except Exception as exc:
+        log.warning("desk.clob_book.unexpected_err", error=str(exc)[:200])
+        return empty
+
+    if not row:
+        return empty
+
+    # Age calculation
+    age_s: Optional[int] = None
+    stale = False
+    created_at = row.get("created_at")
+    if created_at is not None:
+        try:
+            import datetime as _dt
+            if hasattr(created_at, "timestamp"):
+                age_s = max(0, int(time.time() - created_at.timestamp()))
+            else:
+                age_s = None
+        except Exception:
+            age_s = None
+        if age_s is not None and age_s > _CLOB_STALE_THRESHOLD_S:
+            stale = True
+
+    up_bid = row.get("clob_up_bid")
+    up_ask = row.get("clob_up_ask")
+    down_bid = row.get("clob_down_bid")
+    down_ask = row.get("clob_down_ask")
+    implied_p_up = row.get("clob_implied_up")
+
+    # Compute spread from YES side if both sides present
+    spread: Optional[float] = None
+    if up_bid is not None and up_ask is not None:
+        try:
+            spread = round(float(up_ask) - float(up_bid), 6)
+        except (TypeError, ValueError):
+            pass
+
+    # Convert implied_p_up to float safely
+    implied_p_up_f: Optional[float] = None
+    if implied_p_up is not None:
+        try:
+            implied_p_up_f = float(implied_p_up)
+        except (TypeError, ValueError):
+            pass
+
+    return {
+        "yes": {
+            "bids": _one_level(up_bid),
+            "asks": _one_level(up_ask),
+        },
+        "no": {
+            "bids": _one_level(down_bid),
+            "asks": _one_level(down_ask),
+        },
+        "implied_p_up": implied_p_up_f,
+        "spread": spread,
+        "imbalance": None,   # not stored in window_snapshots
+        "source": "window_snapshots",
+        "age_s": age_s,
+        "stale": stale,
+    }
