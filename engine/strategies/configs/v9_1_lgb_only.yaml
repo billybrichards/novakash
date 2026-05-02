@@ -1,0 +1,132 @@
+name: v9_1_lgb_only
+version: "9.1.0"
+# v9_1_lgb_only — 2026-05-02 — Sequoia v5 with priceToBeat-aligned delta_* features.
+#
+# Same architecture as v9_lgb_only (v9 PROD candidate_ab83564): 78 features,
+# 63 leaves / 0.03 lr / depth=-1, per-delta heads (030/060/090/120/180/240).
+# Sole difference: delta_* family + ret_since_open recomputed against
+# Polymarket priceToBeat (Chainlink Streams off-chain feed = actual
+# resolution oracle) instead of chainlink_polygon (on-chain Aggregator V3,
+# the legacy approximation that drifts ~$14.68/window mean abs).
+#
+# Hub note #313 — full retrain context + honest forward-pass results.
+# Hub note #295 — v9 must keep running as feature provider for v12.
+# v9_1_PROVENANCE.md — full lineage doc.
+#
+# Honest forward-pass on 7d truly out-of-sample holdout (n=73,336):
+#   d=060: 76.0% → 80.8% (+4.81pp ± 1.18 95%CI)
+#   d=090: 74.2% → 76.4% (+2.25pp ± 1.07)
+#   d=120: 71.6% → 77.7% (+6.14pp ± 0.85)
+#   d=180: 68.5% → 75.7% (+7.15pp ± 0.74)
+#   d=240: 66.0% → 73.1% (+7.12pp ± 1.04)
+#   weighted: +5.92pp; ECE improved at 4/5 deltas.
+#
+# d=030 not retrained (chrono split structure). Falls back to v9 PROD via
+# manifest. Same fallback pattern v12 uses for d=030/060.
+#
+# DEPENDENCIES (all required before mode flips to LIVE):
+#   1. Engine PR #464 amended to add `priceToBeat` to consensus_payload +
+#      OPEN_PRICE_USE_PRICE_TO_BEAT flag
+#   2. timesfm-repo sister PR loads v9.1 boosters and emits
+#      `probability_lgb_v9_1` on FullDataSurface (behind V9_1_ENABLED flag)
+#   3. registry.py registration entry for v9_1_lgb_only
+#   4. Hook v9_1_lgb_only.py wired
+#
+# Strategy SKIPs gracefully (skip_reason="v9_1_model_not_loaded") if
+# probability_lgb_v9_1 is None on the surface.
+#
+# Promotion criteria (gate before LIVE flip):
+#   - n_decisions >= 5,000 across 7+ days shadow
+#   - shadow Δ_WR >= +2.0pp vs v9_lgb_only LIVE (within noise of +5.92pp)
+#   - shadow ECE_max not worse by > 0.02 vs LIVE
+#   - no regime where Δ_WR CI_lower < -1pp
+#   - zero infra incidents (no skipped windows due to model load fail)
+#
+# Defaults to GHOST. Billy enables LIVE by hand via runtime config (no
+# auto-promote per post-2026-04-17 rule).
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+hooks_file: v9_1_lgb_only.py
+pre_gate_hook: evaluate_v9_1_lgb_only
+
+gates: []
+
+gate_params:
+  # Inherit all v9_lgb_only gate_params verbatim. The ONLY difference is
+  # the model artifact source (v9.1 boosters loaded server-side via
+  # V9_1_ENABLED flag in timesfm-service).
+  #
+  # 2026-04-26 (audit #319): bumped from 24 → 45.
+  min_offset_sec: 45
+  max_offset_sec: 200
+  tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
+
+  block_down_vpin_regimes: []
+  block_up_vpin_regimes: []
+
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  skip_on_oracle_disagree: true
+
+  vpin_min: 0.40
+  vpin_max: 1.0
+
+  fill_band_min: 0.00
+  fill_band_max: 0.82
+
+  up_min_fill_price: 0.20
+  down_min_fill_price: 0.15
+
+  blocked_utc_hours: []
+  post_loss_cooldown_min: 20
+
+  # ── LGB safety floor ────────────────────────────────────────────────
+  lgb_dist_min_up: 0.15
+  lgb_dist_min_down: 0.10
+  lgb_dist_min_up_with_hc_agree: 0.05
+  lgb_dist_min_down_with_hc_agree: 0.05
+
+  # ── v9 ensemble params (kept for compatibility, classifier always None) ──
+  ensemble_disagreement_threshold: 0.35
+  require_direction_agreement: true
+
+  pc_weight_t_60: 0.70
+  pc_weight_t_120: 0.55
+  pc_weight_t_180: 0.40
+  pc_weight_t_200: 0.25
+
+  vhc_threshold: 0.25
+  vhc_bypass_transition: true
+  vhc_bypass_up_dist: true
+  vhc_bypass_disagreement: true
+  vhc_bypass_lgb_safety_floor: true
+  vhc_bypass_oracle_direction: true
+  vhc_kelly_multiplier: 2.0
+
+  # ── PL VHC bypass ───────────────────────────────────────────────────
+  pl_vhc_bypass_enabled: true
+  pl_vhc_threshold: 0.25
+  pl_vhc_require_pc_agreement: true
+
+  # ── TRANSITION strong-oracle bypass ─────────────────────────────────
+  transition_strong_bypass_enabled: true
+  transition_bypass_min_avg_pct_delta: 0.05
+  transition_bypass_min_lgb_dist: 0.20
+
+  # Conviction tiers
+  conviction_high_dist: 0.20
+  conviction_medium_dist: 0.12
+  conviction_low_dist: 0.05
+
+  # ── Delta alignment gate ────────────────────────────────────────────
+  delta_gate_enabled: true
+  min_alignment_bps: 1.0
+
+  # ── 3-tick entry confirmation ───────────────────────────────────────
+  min_consecutive_pass_ticks: 3
+
+  # ── Post-fill exit monitoring (DISABLED — same as v9_lgb_only) ──────
+  exit_monitor_enabled: false
+  exit_shadow_mode: false
