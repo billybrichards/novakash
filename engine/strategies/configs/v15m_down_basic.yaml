@@ -1,0 +1,58 @@
+name: v15m_down_basic
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 15m
+
+# v1.0.0 — 2026-05-02 — DOWN-side mirror of v15m_up_basic v1.2.0.
+#
+# Why this strategy exists:
+#   v15m_up_basic is direction-conditional UP-only. When the regime is
+#   DOWN-leaning, it skips every window — leaving DOWN signals
+#   uncaught.
+#
+# Overnight evidence (2026-05-01 19:13 → 2026-05-02 12:49 UTC):
+#   - v15m_up_basic LIVE produced 0 TRADE actions (regime stuck DOWN)
+#   - v15m_gate (sister, direction-agnostic) fired 10 high-conviction
+#     DOWN bets with cs >= 0.30 + hour-filter passing
+#   - All 10 won (WR 100%) per ticks_chainlink-derived outcomes
+#   - Sim PnL = +$23.20 we missed by not having a DOWN-side strategy
+#
+# This strategy = exact mirror of v15m_up_basic.yaml v1.2.0:
+#   - SAME 5 gates (timing, direction, confidence, session_hours,
+#     consecutive_pass_ticks)
+#   - SAME parameters
+#   - ONLY direction flipped: UP -> DOWN
+#
+# Mode stays GHOST in YAML. After 24-48h ghost validation (>=20 windows
+# with WR >= 65%), promote LIVE via RDS override:
+#
+#   INSERT INTO strategy_runtime_overrides (strategy_id, mode, ...)
+#   VALUES ('v15m_down_basic', 'LIVE', ...) ON CONFLICT ...
+#
+# Revert: DELETE the override row -> strategy back to YAML's GHOST mode.
+#
+# Refs:
+#   - hub note #311 (15m winning strategy synthesis)
+#   - hub note #308 (full session summary)
+#   - hub note #317 (data coverage audit — outcome resolver lag)
+#   - audit task #344 (this strategy)
+#   - PR for v15m_up_basic (engine repo, merged 2026-05-01)
+#   - docs/15m_winning_strategy/recommendation.md
+
+gates:
+  - type: timing
+    params: { min_offset: 180, max_offset: 540 }
+  - type: direction
+    params: { direction: DOWN }
+  - type: confidence
+    params: { min_dist: 0.15 }
+  - type: session_hours
+    params: { block_hours_utc: [16, 17, 18, 19, 20, 21] }
+  - type: consecutive_pass_ticks
+    params: { min_ticks: 12 }
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.05
