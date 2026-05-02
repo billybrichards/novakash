@@ -74,7 +74,7 @@ function extractTimescale(snap, tf) {
 // or null. Hub + ML-box use both snake and camel case at different
 // layers so we accept both.
 export function pickProbs(tsBlock) {
-  if (!tsBlock) return { pu: null, pc: null, pl: null, plV91: null };
+  if (!tsBlock) return { pu: null, pc: null, pl: null };
   const num = v => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   return {
     pu: num(tsBlock.probability_up ?? tsBlock.probabilityUp ?? tsBlock.p_up),
@@ -87,14 +87,6 @@ export function pickProbs(tsBlock) {
       tsBlock.probability_lgb
         ?? tsBlock.probabilityLgb
         ?? tsBlock.p_lgb,
-    ),
-    // v9.1 retrained LGB head — emitted by timesfm-service when
-    // V9_1_ENABLED=true (PR #466). Null when the v9.1 model isn't loaded
-    // server-side; ClassifierScorecard hides the v9.1 tile in that case.
-    plV91: num(
-      tsBlock.probability_lgb_v9_1
-        ?? tsBlock.probabilityLgbV91
-        ?? tsBlock.probability_lgb_v91,
     ),
   };
 }

@@ -1,11 +1,13 @@
-// /desk — pu / pc / pl / pl_v9_1 classifier scorecard.
+// /desk — pu / pc / pl classifier scorecard.
 //
-// Mini-tiles for each probability plotted as a 0..1 bar with reference
-// ticks at 0.50 (direction split) and the v8/v9 fill-band edges (0.00,
-// 0.82). Below them: |pc − pl| disagreement vs the v9 veto threshold,
-// and (when /v4/snapshot publishes it) the v9.1 retrained LGB head
-// alongside the v9 PROD LGB so the operator can eyeball the head-to-head
-// agreement before promoting v9.1 from GHOST.
+// Replaces the four anonymous decimals in SignalStack with four mini-tiles
+// where each probability is plotted as a 0..1 bar, with reference ticks at
+//   • 0.50 — direction split
+//   • the strategy fill-band edges (0.00, 0.82) — where v8/v9 actually trade
+//
+// The fourth tile is |pc − pl|, shaded against the v9 disagreement-veto
+// threshold (0.25). When the gap exceeds the veto, the tile turns red and
+// the row carries a CONFLICT badge — matches the server-side flag.
 //
 // Each tile carries a tiny direction-tier pill (DOWN / NEUTRAL / UP)
 // derived from the bar's distance from 0.5.
@@ -18,16 +20,12 @@ const FILL_BAND_HIGH = 0.82;
 const VETO_THRESHOLD = 0.25;
 const NEUTRAL_BAND = 0.05; // ±0.05 around 0.5
 
-export default function ClassifierScorecard({ pu, pc, pl, plV91, conflict }) {
+export default function ClassifierScorecard({ pu, pc, pl, conflict }) {
   const gap = (pc != null && pl != null) ? Math.abs(pc - pl) : null;
-  const v91Gap = (pl != null && plV91 != null) ? Math.abs(plV91 - pl) : null;
-  const showV91 = plV91 != null && Number.isFinite(plV91);
 
   return (
     <div style={panelStyle}>
-      <div style={headerStyle}>
-        CLASSIFIER · pu / pc / pl{showV91 ? ' / pl(v9.1)' : ''} · |pc−pl|
-      </div>
+      <div style={headerStyle}>CLASSIFIER · pu / pc / pl · |pc−pl|</div>
       <div style={{
         display: 'grid',
         gridTemplateColumns: 'repeat(2, 1fr)',
@@ -44,32 +42,21 @@ export default function ClassifierScorecard({ pu, pc, pl, plV91, conflict }) {
           value={pc}
         />
         <ProbTile
-          label="LGB v9 (pl)"
-          hint="v9 PROD LightGBM head"
+          label="LGB (pl)"
+          hint="LightGBM head"
           value={pl}
         />
         <GapTile gap={gap} conflict={conflict} />
-        {showV91 ? (
-          <>
-            <ProbTile
-              label="LGB v9.1 (pl_v9_1)"
-              hint="v9.1 retrain · priceToBeat-aligned · GHOST"
-              value={plV91}
-              accent="#fb7185"
-            />
-            <V91DiffTile diff={v91Gap} v9={pl} v91={plV91} />
-          </>
-        ) : null}
       </div>
     </div>
   );
 }
 
-function ProbTile({ label, hint, value, accent }) {
+function ProbTile({ label, hint, value }) {
   const v = Number.isFinite(value) ? value : null;
   const tier = tierFor(v);
   return (
-    <div style={accent ? { ...tileStyle, borderColor: accent } : tileStyle}>
+    <div style={tileStyle}>
       <div style={tileHeaderRow}>
         <span style={{ color: T.label2, fontSize: 10 }}>{label}</span>
         <DirectionPill tier={tier} />
@@ -86,40 +73,6 @@ function ProbTile({ label, hint, value, accent }) {
         <span style={{ color: T.label2, fontSize: 9 }}>{hint}</span>
       </div>
       <ProbBar value={v} />
-    </div>
-  );
-}
-
-// Compares v9 PROD LGB vs v9.1 retrain — operator's confidence-in-promotion
-// signal. Disagree direction = pause; agree direction = green for go.
-function V91DiffTile({ diff, v9, v91 }) {
-  const sameDir = (v9 != null && v91 != null)
-    ? ((v9 - 0.5) * (v91 - 0.5) > 0)
-    : null;
-  const dirColor = sameDir === true ? T.profit : sameDir === false ? T.loss : T.label2;
-  return (
-    <div style={{ ...tileStyle, borderColor: '#fb7185' }}>
-      <div style={tileHeaderRow}>
-        <span style={{ color: T.label2, fontSize: 10 }}>v9 vs v9.1 agreement</span>
-        <span style={pillStyle(dirColor)}>
-          {sameDir === true ? 'AGREE' : sameDir === false ? 'DISAGREE' : '—'}
-        </span>
-      </div>
-      <div style={tileValueRow}>
-        <span style={{
-          fontSize: 18,
-          fontWeight: 600,
-          color: dirColor,
-          fontVariantNumeric: 'tabular-nums',
-        }}>
-          {diff == null ? '—' : `Δ ${diff.toFixed(3)}`}
-        </span>
-        <span style={{ color: T.label2, fontSize: 9 }}>
-          {v9 != null && v91 != null
-            ? `v9 ${v9.toFixed(2)} → v9.1 ${v91.toFixed(2)}`
-            : 'v9.1 model not loaded'}
-        </span>
-      </div>
     </div>
   );
 }
