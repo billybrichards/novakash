@@ -59,6 +59,11 @@ def _register_gates() -> None:
     # 2026-05-01 — N-tick confirmation gate for declarative-gate strategies
     # (parity with v8/v9 inline check_confirmation logic).
     from strategies.gates.consecutive_pass_ticks import ConsecutivePassTicksGate
+    # 2026-05-02 — data-backed strategy gates (see
+    # docs/data-backed-strategy-plan-2026-05-02/02-key-findings.md).
+    from strategies.gates.multi_model_consensus import MultiModelConsensusGate
+    from strategies.gates.model_disagreement_veto import ModelDisagreementVetoGate
+    from strategies.gates.confidence_band_skip import ConfidenceBandSkipGate
 
     _GATE_REGISTRY.update(
         {
@@ -83,6 +88,10 @@ def _register_gates() -> None:
             "regime_v4": RegimeV4Gate,
             # 2026-05-01 — N-tick confirmation
             "consecutive_pass_ticks": ConsecutivePassTicksGate,
+            # 2026-05-02 — data-backed strategy gates
+            "multi_model_consensus": MultiModelConsensusGate,
+            "model_disagreement_veto": ModelDisagreementVetoGate,
+            "confidence_band_skip": ConfidenceBandSkipGate,
         }
     )
 

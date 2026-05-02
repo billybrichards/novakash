@@ -1,0 +1,27 @@
+name: v_eth_15m_classifier_top10
+version: "1.0.0"
+mode: GHOST
+asset: ETH
+timescale: 15m
+
+# Top-10% conviction filter → 88.2% accuracy (training metrics).
+# min_dist=0.18 → p_classifier outside [0.32, 0.68] = top 10% by conviction.
+
+gates:
+  - type: timing
+    params: { min_offset: 180, max_offset: 540 }
+  - type: direction
+    params: { direction: ANY }
+  - type: confidence
+    params: { min_dist: 0.18 }
+  - type: session_hours
+    params: { block_hours_utc: [0, 1, 4, 10, 12, 16, 18, 22] }
+  - type: regime_v4
+    params: { allow: [volatile_trend, chop, risk_off] }
+  - type: consecutive_pass_ticks
+    params: { min_ticks: 12 }
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.05

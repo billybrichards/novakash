@@ -1,0 +1,32 @@
+name: v_consensus_3of5_up_btc_15m
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 15m
+
+# 15m equivalent of 5m consensus. Hour blocklist data-backed by sweep 2b
+# (per-window deduped): hours [0,1,4,10,12,16,18,22] all <50% WR.
+# Premium hours [3,5,15,17,19,21] are the 65%+ WR pockets.
+
+gates:
+  - type: timing
+    params: { min_offset: 180, max_offset: 360 }
+  - type: direction
+    params: { direction: UP }
+  - type: multi_model_consensus
+    params:
+      models: [v9, v9_1, v10, v12, classifier]
+      direction: UP
+      min_votes: 3
+      vote_threshold_up: 0.55
+  - type: session_hours
+    params: { block_hours_utc: [0, 1, 4, 10, 12, 16, 18, 22] }
+  - type: regime_v4
+    params: { allow: [volatile_trend, chop, risk_off] }
+  - type: consecutive_pass_ticks
+    params: { min_ticks: 12 }
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.05

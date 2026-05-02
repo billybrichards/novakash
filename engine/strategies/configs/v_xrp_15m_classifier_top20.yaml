@@ -1,0 +1,29 @@
+name: v_xrp_15m_classifier_top20
+version: "1.0.0"
+mode: GHOST
+asset: XRP
+timescale: 15m
+
+# XRP 15m mirror of v_eth_15m_classifier_top20.
+# XRP base rate is 48.9% UP (1.1pp DOWN-bias) — track per-direction WR
+# in 7d ghost data; if DOWN-side significantly outperforms, consider
+# asymmetric thresholds (UP min_dist=0.13, DOWN=0.11).
+
+gates:
+  - type: timing
+    params: { min_offset: 180, max_offset: 540 }
+  - type: direction
+    params: { direction: ANY }
+  - type: confidence
+    params: { min_dist: 0.12 }
+  - type: session_hours
+    params: { block_hours_utc: [0, 1, 4, 10, 12, 16, 18, 22] }
+  - type: regime_v4
+    params: { allow: [volatile_trend, chop, risk_off] }
+  - type: consecutive_pass_ticks
+    params: { min_ticks: 12 }
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.020
+  max_collateral_pct: 0.04

@@ -1,0 +1,31 @@
+name: v_v9_strong_up_btc_5m
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+# Data-backed: sweep 4-v9 — p_v9 >= 0.65 → 69.9% WR (n=83); >= 0.70 → 79.5%
+# (n=200); >= 0.80 → 91.5% (n=129). Cliff is at 0.65.
+
+gates:
+  - type: timing
+    params: { min_offset: 30, max_offset: 120 }
+  - type: direction
+    params: { direction: UP }
+  - type: multi_model_consensus
+    params:
+      models: [v9]
+      direction: UP
+      min_votes: 1
+      vote_threshold_up: 0.65
+  - type: regime_v4
+    params: { allow: [volatile_trend, chop, risk_off] }
+  - type: model_disagreement_veto
+    params: { primary: v9, secondary: v12, max_abs_diff: 0.20 }
+  - type: consecutive_pass_ticks
+    params: { min_ticks: 10 }
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.05

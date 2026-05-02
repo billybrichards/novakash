@@ -1,0 +1,31 @@
+name: v_v12_extreme_up_btc_5m
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+# Data-backed: sweep 4-v12 — p_v12 >= 0.70 → 83.1% UP WR (n=59); >= 0.80 → 100% (n=15).
+# Skip the wide [0.30, 0.70] noise zone via confidence_band_skip.
+
+gates:
+  - type: timing
+    params: { min_offset: 30, max_offset: 120 }
+  - type: direction
+    params: { direction: UP }
+  - type: confidence_band_skip
+    params: { model: v12, skip_band: [0.30, 0.70] }
+  - type: multi_model_consensus
+    params:
+      models: [v12]
+      direction: UP
+      min_votes: 1
+      vote_threshold_up: 0.70
+  - type: regime_v4
+    params: { allow: [volatile_trend, chop, risk_off] }
+  - type: consecutive_pass_ticks
+    params: { min_ticks: 10 }
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.05

@@ -1,0 +1,33 @@
+name: v_15m_premium_hours_up_btc
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 15m
+
+# Trades only in BTC 15m premium hours (sweep 2b: hours 3, 5, 15, 17, 19, 21
+# have >=65% WR). Single-model conviction via consensus(min_votes=1).
+# Lighter gate stack — designed to capture the high-WR hours with
+# moderate conviction.
+
+gates:
+  - type: timing
+    params: { min_offset: 180, max_offset: 540 }
+  - type: direction
+    params: { direction: UP }
+  - type: session_hours
+    params: { hours_utc: [3, 5, 15, 17, 19, 21] }
+  - type: multi_model_consensus
+    params:
+      models: [v9_1, v9, v12]
+      direction: UP
+      min_votes: 1
+      vote_threshold_up: 0.60
+  - type: regime_v4
+    params: { allow: [volatile_trend, chop, risk_off] }
+  - type: consecutive_pass_ticks
+    params: { min_ticks: 12 }
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.05
