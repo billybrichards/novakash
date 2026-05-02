@@ -116,7 +116,11 @@ class ModelDisagreementVetoGate(Gate):
             "max_abs_diff": self._max_diff,
         }
 
-        if diff >= self._max_diff:
+        # Tolerance for float-equality at the threshold boundary.  Without
+        # this, ``0.70 - 0.50`` evaluates to ``0.19999999999999996`` and
+        # would slip past a strict ``diff >= 0.20`` veto check.
+        EPS = 1e-9
+        if diff + EPS >= self._max_diff:
             return GateResult(
                 passed=False,
                 gate_name=self.name,

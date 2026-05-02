@@ -143,6 +143,14 @@ class MultiModelConsensusGate(Gate):
         available = 0
         per_model: dict[str, Optional[float]] = {}
 
+        # Tolerance for float-equality at threshold boundaries — the
+        # symmetric ``vote_threshold=0.55`` shorthand computes
+        # ``vote_threshold_dn = 1.0 - 0.55 = 0.44999999999999996`` due to
+        # IEEE-754, so a strict ``p <= 0.4499999...`` comparison would
+        # exclude an exact ``p = 0.45``.  ``EPS = 1e-9`` is large enough to
+        # absorb that FP noise but small enough to never misclassify a
+        # genuine vote (probabilities are floats with ~5-decimal precision).
+        EPS = 1e-9
         for m in self._models:
             field = _MODEL_FIELD_MAP[m]
             p = getattr(surface, field, None)
@@ -150,9 +158,9 @@ class MultiModelConsensusGate(Gate):
             if p is None:
                 continue
             available += 1
-            if p >= self._thr_up:
+            if p >= self._thr_up - EPS:
                 votes_up += 1
-            elif p <= self._thr_dn:
+            elif p <= self._thr_dn + EPS:
                 votes_dn += 1
 
         data = {
