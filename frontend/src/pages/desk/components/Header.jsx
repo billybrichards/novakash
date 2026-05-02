@@ -30,12 +30,18 @@ export default function Header({
   priceDelta2s,
   secondsRemaining,
   targetPriceChainlink,
+  targetPrice,                 // canonical priceToBeat (post-PR #464)
+  targetPriceSource,           // 'polymarket_canonical' | 'chainlink_polygon_fallback' | 'unknown'
   yesMid,
   noMid,
   systemStatus, // 'LIVE' | 'PAPER' | 'KILLED' | null
   regime,
   vol,
 }) {
+  // Prefer canonical Polymarket priceToBeat. Falls back to legacy chainlink
+  // value when the snapshot is cold or the prop is unset by older callers.
+  const displayTarget = targetPrice ?? targetPriceChainlink;
+  const isCanonical = targetPriceSource === 'polymarket_canonical';
   const engineChip = systemStatus
     ? <StatusChip mode={systemStatus} />
     : <StatusChip mode="?" />;
@@ -80,8 +86,34 @@ export default function Header({
       </Block>
 
       <Block label="TARGET @ OPEN">
-        <span style={{ fontSize: 13 }}>
-          {targetPriceChainlink == null ? '—' : fmtUsd(targetPriceChainlink)}
+        <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6, fontSize: 13 }}>
+          <span title={
+            isCanonical
+              ? 'Polymarket eventMetadata.priceToBeat — canonical resolution price (post-PR #464).'
+              : targetPriceSource === 'chainlink_polygon_fallback'
+                ? 'Chainlink Polygon Aggregator (legacy). Diverges from Polymarket priceToBeat by $3-32 per window — engine still warming up?'
+                : 'Window open price — source unknown.'
+          }>
+            {displayTarget == null ? '—' : fmtUsd(displayTarget)}
+          </span>
+          <span
+            title={
+              isCanonical
+                ? 'Source: Polymarket priceToBeat (engine wrote canonical). Matches the resolution price to the cent.'
+                : targetPriceSource === 'chainlink_polygon_fallback'
+                  ? 'Source: Chainlink fallback. Engine has not written canonical yet for this window.'
+                  : 'Source unknown.'
+            }
+            style={{
+              fontSize: 9,
+              padding: '1px 5px',
+              border: `1px solid ${isCanonical ? T.profit : T.warn}55`,
+              color: isCanonical ? T.profit : T.warn,
+              borderRadius: 2,
+              letterSpacing: '0.08em',
+            }}>
+            {isCanonical ? 'CANONICAL' : 'APPROX'}
+          </span>
         </span>
       </Block>
 
