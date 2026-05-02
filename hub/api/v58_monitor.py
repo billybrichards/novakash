@@ -3815,6 +3815,18 @@ async def strategy_decisions(
             "tractable."
         ),
     ),
+    resolved: Optional[bool] = Query(
+        default=None,
+        description=(
+            "Filter by resolution status: true=only decisions whose order "
+            "has resolved (outcome IS NOT NULL), false=only unresolved. "
+            "Omit for all rows. Used by FE WR matrix (task #222). "
+            "Restored 2026-05-02 after audit #329 — PR #434 dropped this "
+            "param from the signature but kept the body references, so "
+            "every call raised NameError('resolved') and returned "
+            "{decisions:[], error:\"name 'resolved' is not defined\"}."
+        ),
+    ),
     db: AsyncSession = Depends(get_session),
     user: TokenData = Depends(get_current_user),
 ):
