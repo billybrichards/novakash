@@ -9,6 +9,7 @@ PostgreSQL (reads) and a shared system_state table.
 from __future__ import annotations
 
 import asyncio
+import os
 import structlog
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
@@ -98,15 +99,60 @@ async def _refresh_skip_bucket_matview_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Startup/shutdown lifecycle."""
+    """Startup/shutdown lifecycle.
+
+    Migrations: ~30 idempotent ALTER/CREATE statements run on every boot.
+    This used to hang the whole container indefinitely when any of them
+    blocked behind a long-running RDS query (incident 2026-05-02 — three
+    consecutive deploys stuck for 5+ min until RDS was unblocked manually).
+
+    Hardening:
+      - HUB_SKIP_STARTUP_MIGRATIONS=1 — bypass migrations entirely so the
+        app boots even if RDS is locked. Kept available for emergency
+        recovery deploys.
+      - HUB_STARTUP_MIGRATION_TIMEOUT_S — per-statement statement_timeout
+        (default 30s) so a single locked ALTER no longer blocks startup
+        forever. Migration block fails fast and the app keeps booting.
+      - HUB_STARTUP_LOCK_TIMEOUT_S — per-statement lock_timeout (default
+        15s) so we don't wait on row/table locks; we just bail and try
+        again next boot. Idempotent migrations are safe to retry.
+    """
     log.info("hub.starting")
     await init_db()
+
+    skip_migrations = os.environ.get("HUB_SKIP_STARTUP_MIGRATIONS", "").lower() in (
+        "1", "true", "yes"
+    )
+    if skip_migrations:
+        log.warning("hub.startup_migrations_skipped",
+                    reason="HUB_SKIP_STARTUP_MIGRATIONS env set")
+
     # Auto-run migrations on startup
     try:
+        if skip_migrations:
+            raise RuntimeError("startup migrations skipped via env flag")
         from sqlalchemy import text
         from db.database import get_session
 
+        # Cap how long any single ALTER / CREATE waits on a relation lock
+        # before failing. Without this, a long-running client transaction
+        # against e.g. trades pins us indefinitely (incident 2026-05-02:
+        # 21-min stuck SELECT blocked every hub deploy for hours).
+        # Idempotent migrations are safe to retry on next deploy.
+        lock_timeout_s = int(
+            os.environ.get("HUB_STARTUP_LOCK_TIMEOUT_S", "15")
+        )
+
         async for session in get_session():
+            # Session-level lock_timeout — any ALTER that waits >cap for
+            # a relation lock fails fast and the outer except below
+            # logs + lets the app finish booting against the existing
+            # schema. Per-table try/except blocks further down catch
+            # individual table failures so one locked table doesn't
+            # skip the rest.
+            await session.execute(
+                text(f"SET lock_timeout = '{lock_timeout_s}s'")
+            )
             await session.execute(
                 text("""
                 CREATE TABLE IF NOT EXISTS trading_configs (
@@ -787,7 +833,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
             break
     except Exception as exc:
-        log.warning("hub.migration_error", error=str(exc))
+        # ALTER/CREATE blocked beyond lock_timeout → "canceling statement
+        # due to lock timeout" lands here. App keeps booting against the
+        # existing schema. Next deploy retries idempotently. Without
+        # this, a 21-min stuck client query (incident 2026-05-02) pinned
+        # every hub deploy for hours.
+        log.error("hub.migration_error", error=str(exc)[:300])
 
     # Audit #255 F1: spin up the background matview refresh loop.
     global _matview_refresh_task
