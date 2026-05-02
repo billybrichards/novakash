@@ -69,7 +69,7 @@ class TestV12LgbCombo:
         from strategies.configs.v12_lgb_combo import evaluate_v12_lgb_combo
 
         surface = _make_surface(
-            probability_lgb=0.70,
+            probability_lgb_v9_1=0.70,
             probability_lgb_v12=None,
         )
         decision = evaluate_v12_lgb_combo(surface)
@@ -77,29 +77,32 @@ class TestV12LgbCombo:
         assert decision.action == "SKIP"
         assert decision.skip_reason == "probability_lgb_v12 unavailable"
         assert decision.strategy_id == "v12_lgb_combo"
-        assert decision.strategy_version == "12.0.0-combo"
+        assert decision.strategy_version == "12.0.0-combo-v9_1"
         assert decision.metadata["probability_lgb_v12"] is None
-        assert decision.metadata["probability_lgb"] == 0.70
+        assert decision.metadata["probability_lgb_v9_1"] == 0.70
 
-    def test_skip_when_v9_unavailable(self):
-        """SKIP when probability_lgb (v9) is None."""
+    def test_skip_when_v9_1_unavailable(self):
+        """SKIP when probability_lgb_v9_1 is None (timesfm V9_1_ENABLED=false
+        or v9.1 model load failed). Does NOT fall back to v9 PROD —
+        clean cutover."""
         from strategies.configs.v12_lgb_combo import evaluate_v12_lgb_combo
 
         surface = _make_surface(
-            probability_lgb=None,
+            probability_lgb_v9_1=None,
             probability_lgb_v12=0.65,
+            probability_lgb=0.70,  # set but should be IGNORED
         )
         decision = evaluate_v12_lgb_combo(surface)
 
         assert decision.action == "SKIP"
-        assert decision.skip_reason == "probability_lgb unavailable"
+        assert decision.skip_reason == "probability_lgb_v9_1 unavailable"
         assert decision.strategy_id == "v12_lgb_combo"
-        assert decision.metadata["probability_lgb"] is None
+        assert decision.metadata["probability_lgb_v9_1"] is None
         assert decision.metadata["probability_lgb_v12"] == 0.65
 
     def test_skip_when_directions_disagree(self):
         """With v12_contrarian_enabled=False (canary-disable Option C),
-        v9/v12 directional disagreement still SKIPs (Option A only).
+        v9.1/v12 directional disagreement still SKIPs (Option A only).
 
         With the flag ON (default), Option C trades the disagreement —
         see test_disagreement_trades_v12_at_half_kelly below.
@@ -107,9 +110,9 @@ class TestV12LgbCombo:
         from strategies import gate_params as _gp
         from strategies.configs.v12_lgb_combo import evaluate_v12_lgb_combo
 
-        # v9 says UP (0.75), v12 says DOWN (0.30)
+        # v9.1 says UP (0.75), v12 says DOWN (0.30)
         surface = _make_surface(
-            probability_lgb=0.75,
+            probability_lgb_v9_1=0.75,
             probability_lgb_v12=0.30,
         )
         token = _gp.set_active({"v12_contrarian_enabled": False})
@@ -122,18 +125,18 @@ class TestV12LgbCombo:
         assert decision.skip_reason == (
             "v9_v12_direction_disagreement_contrarian_disabled"
         )
-        assert decision.metadata["dir_v9"] == "UP"
+        assert decision.metadata["dir_v9_1"] == "UP"
         assert decision.metadata["dir_v12"] == "DOWN"
         assert decision.metadata["direction_agree"] is False
 
     def test_skip_when_combo_dist_below_floor(self):
-        """SKIP when min(dist_v9, dist_v12) < 0.10 conviction floor."""
+        """SKIP when min(dist_v9_1, dist_v12) < 0.10 conviction floor."""
         from strategies.configs.v12_lgb_combo import evaluate_v12_lgb_combo
 
         # Both agree DOWN but v12 is barely below 0.5 (dist=0.05)
         surface = _make_surface(
-            probability_lgb=0.30,       # dist_v9 = 0.20
-            probability_lgb_v12=0.45,   # dist_v12 = 0.05 < 0.10 floor
+            probability_lgb_v9_1=0.30,    # dist_v9_1 = 0.20
+            probability_lgb_v12=0.45,     # dist_v12  = 0.05 < 0.10 floor
         )
         decision = evaluate_v12_lgb_combo(surface)
 
@@ -157,8 +160,8 @@ class TestV12LgbCombo:
 
         # Both agree DOWN with strong conviction
         surface = _make_surface(
-            probability_lgb=0.25,       # dist_v9 = 0.25
-            probability_lgb_v12=0.20,   # dist_v12 = 0.30
+            probability_lgb_v9_1=0.25,    # dist_v9_1 = 0.25
+            probability_lgb_v12=0.20,     # dist_v12  = 0.30
             # Set up surface so v9_ensemble gate stack can pass:
             poly_direction="DOWN",
             poly_trade_advised=True,
@@ -171,15 +174,16 @@ class TestV12LgbCombo:
 
         # Strategy identity is v12_lgb_combo regardless of delegate outcome
         assert decision.strategy_id == "v12_lgb_combo"
-        assert decision.strategy_version == "12.0.0-combo"
+        assert decision.strategy_version == "12.0.0-combo-v9_1"
 
         # Metadata includes combo fields
-        assert decision.metadata["probability_lgb"] == 0.25
+        assert decision.metadata["probability_lgb_v9_1"] == 0.25
         assert decision.metadata["probability_lgb_v12"] == 0.20
         assert abs(decision.metadata["p_combo"] - 0.225) < 1e-6
         assert decision.metadata["combo_dist"] == 0.25
         assert decision.metadata["direction_agree"] is True
         assert decision.metadata["v12_combo_model"] is True
+        assert decision.metadata["v12_combo_v9_1_source"] is True
         assert decision.metadata["lgb_only_forced"] is True
 
         # confidence_score = min(combo_dist * 2, 1.0) = min(0.25*2, 1) = 0.5
@@ -190,30 +194,40 @@ class TestV12LgbCombo:
         from strategies.configs.v12_lgb_combo import evaluate_v12_lgb_combo
 
         # Case 1: v12 unavailable
-        surface = _make_surface(probability_lgb=0.6, probability_lgb_v12=None)
+        surface = _make_surface(
+            probability_lgb_v9_1=0.6, probability_lgb_v12=None,
+        )
         decision = evaluate_v12_lgb_combo(surface)
-        assert "probability_lgb" in decision.metadata
+        assert "probability_lgb_v9_1" in decision.metadata
         assert "probability_lgb_v12" in decision.metadata
 
         # Case 2: direction disagreement
-        surface = _make_surface(probability_lgb=0.7, probability_lgb_v12=0.3)
+        surface = _make_surface(
+            probability_lgb_v9_1=0.7, probability_lgb_v12=0.3,
+        )
         decision = evaluate_v12_lgb_combo(surface)
-        assert decision.metadata["probability_lgb"] == 0.7
+        assert decision.metadata["probability_lgb_v9_1"] == 0.7
         assert decision.metadata["probability_lgb_v12"] == 0.3
 
         # Case 3: below conviction floor
-        surface = _make_surface(probability_lgb=0.45, probability_lgb_v12=0.47)
+        surface = _make_surface(
+            probability_lgb_v9_1=0.45, probability_lgb_v12=0.47,
+        )
         decision = evaluate_v12_lgb_combo(surface)
-        assert decision.metadata["probability_lgb"] == 0.45
+        assert decision.metadata["probability_lgb_v9_1"] == 0.45
         assert decision.metadata["probability_lgb_v12"] == 0.47
 
     def test_surface_restored_after_delegation(self):
-        """Verify the surface's probability_lgb is restored after delegation."""
+        """Verify the surface's probability_lgb is restored after delegation
+        (the hook still uses probability_lgb as the swap target since the
+        v9_ensemble gate stack reads that field — only the SOURCE changed
+        from v9 PROD to v9.1)."""
         from strategies.configs.v12_lgb_combo import evaluate_v12_lgb_combo
 
-        original_lgb = 0.25
+        original_lgb = 0.55
         surface = _make_surface(
-            probability_lgb=original_lgb,
+            probability_lgb=original_lgb,    # base for stack to read
+            probability_lgb_v9_1=0.25,       # v9.1 source
             probability_lgb_v12=0.20,
             poly_direction="DOWN",
             poly_trade_advised=True,
@@ -224,7 +238,8 @@ class TestV12LgbCombo:
         )
         evaluate_v12_lgb_combo(surface)
 
-        # Surface should be restored to original values
+        # probability_lgb on the surface is restored to its pre-call value
+        # so other strategies sharing the surface see no side-effect.
         assert surface.probability_lgb == original_lgb
         assert surface.probability_classifier is None  # was None in _make_surface
 

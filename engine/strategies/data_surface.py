@@ -217,6 +217,12 @@ class FullDataSurface:
     # on /v4/snapshot. The engine's v12_lgb_combo strategy reads this field.
     probability_lgb_v12: Optional[float] = None
 
+    # v9.1 LGB retrain — priceToBeat-aligned, served alongside v9 PROD via
+    # probability_lgb_v9_1 on /v4/snapshot when timesfm V9_1_ENABLED=true.
+    # The engine's v9_1_lgb_only (PR #466) and v12_lgb_combo (post-2026-05-02
+    # swap) strategies read this field. Hub note #313 + docs/v9_1_PROVENANCE.md.
+    probability_lgb_v9_1: Optional[float] = None
+
 
 class DataSurfaceManager:
     """Keeps FullDataSurface fresh in memory. No blocking I/O at decision time.
@@ -1221,6 +1227,11 @@ class DataSurfaceManager:
             probability_lgb_v12=(
                 float(ts_data["probability_lgb_v12"])
                 if ts_data.get("probability_lgb_v12") is not None
+                else None
+            ),
+            probability_lgb_v9_1=(
+                float(ts_data["probability_lgb_v9_1"])
+                if ts_data.get("probability_lgb_v9_1") is not None
                 else None
             ),
             probability_classifier=(
