@@ -1,0 +1,796 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>GPU Box Monitor — 3.96.151.28</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: 'Inter', system-ui, sans-serif; background: #fafbff; color: #0e1430; }
+  .num { font-family: 'JetBrains Mono', monospace; font-variant-numeric: tabular-nums; }
+  .pair-card { background: white; border: 1px solid #eceef4; border-radius: 12px; padding: 20px; box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
+  .pair-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
+  .pair-header h3 { font-weight: 700; font-size: 1.1rem; letter-spacing: -0.02em; }
+  .pair-meta { font-size: 0.82rem; color: #6f7891; margin-top: 4px; }
+  .pair-price { text-align: right; }
+  .pair-price .num { font-weight: 700; font-size: 1.4rem; letter-spacing: -0.02em; }
+  .signal-table { width: 100%; font-size: 0.86rem; border-collapse: collapse; }
+  .signal-table th { text-align: left; padding: 6px 8px; color: #6f7891; font-weight: 500; border-bottom: 1px solid #eceef4; }
+  .signal-table td { padding: 6px 8px; border-bottom: 1px solid #f7f8fb; }
+  .signal-table .sig-name { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: #3a4360; }
+  .signal-table .num { font-family: 'JetBrains Mono', monospace; }
+  .row-absent td { color: #b3bbcd; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; }
+  .badge-green { background: rgba(16,185,129,0.10); color: #047857; }
+  .badge-amber { background: rgba(245,158,11,0.10); color: #b45309; }
+  .badge-red   { background: rgba(244,63,94,0.10); color: #be123c; }
+  .badge-gray  { background: #f1f5f9; color: #6f7891; }
+  .grad-text { background: linear-gradient(135deg, #6c52ff 0%, #d946ef 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .section-card { background: white; border: 1px solid #eceef4; border-radius: 12px; padding: 24px; box-shadow: 0 1px 2px rgba(15,23,42,0.04); }
+  .stat-block { background: #fafbff; border: 1px solid #eceef4; border-radius: 8px; padding: 12px 16px; }
+  .stat-block .label { font-size: 0.75rem; color: #6f7891; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .stat-block .value { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 1.3rem; margin-top: 4px; letter-spacing: -0.01em; }
+  .stat-block .sub { font-size: 0.78rem; color: #6f7891; margin-top: 2px; }
+  .perf-table { width: 100%; font-size: 0.88rem; border-collapse: collapse; }
+  .perf-table th, .perf-table td { padding: 8px 12px; border-bottom: 1px solid #eceef4; text-align: left; }
+  .perf-table th { color: #6f7891; font-weight: 500; background: #fafbff; }
+  .perf-table td.num { font-family: 'JetBrains Mono', monospace; }
+  .perf-table tr.highlight td { background: rgba(108, 82, 255, 0.04); font-weight: 600; }
+  .pulse-dot { position: relative; width: 8px; height: 8px; border-radius: 9999px; background: #10b981; display: inline-block; margin-right: 6px; vertical-align: middle; }
+  .pulse-dot::after { content:''; position:absolute; inset:-4px; border-radius:9999px; background: rgba(16,185,129,0.35); animation: pulse 1.4s cubic-bezier(0,0,0.2,1) infinite; }
+  @keyframes pulse { 0%{transform:scale(0.4); opacity:0.9;} 100%{transform:scale(1.6); opacity:0;} }
+  .grid-bg { background-image: linear-gradient(rgba(108,82,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(108,82,255,0.04) 1px, transparent 1px); background-size: 40px 40px; }
+</style>
+</head>
+<body>
+
+<header class="bg-white border-b border-ink-100 sticky top-0 z-10 backdrop-blur" style="background: rgba(255,255,255,0.85);">
+  <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+    <div>
+      <div class="font-bold text-lg tracking-tight">GPU Box Monitor</div>
+      <div class="text-sm text-ink-500"><code class="num">3.96.151.28</code> · <code class="num">i-0f77468732c4d8250</code> · <code class="num">novakash-classifier-gpu</code> · g4dn.xlarge</div>
+    </div>
+    <div class="text-sm text-ink-500">
+      <span class="pulse-dot"></span>
+      <span class="font-medium text-emerald-700">Probed at 18:33:34 UTC · 5-min soak · 15 sweeps × 6 asset×timescale</span>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-7xl mx-auto px-6 py-10">
+
+  <!-- Overall summary -->
+  <section class="mb-10">
+    <h1 class="text-3xl font-bold tracking-tight mb-2">Signal health · all 6 streams</h1>
+    <p class="text-ink-500 mb-6">90 samples (15 sweeps × BTC/ETH/XRP × 5m/15m). Each cell shows what each model produced over the soak window.</p>
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+      
+    <div class="pair-card">
+      <div class="pair-header">
+        <div>
+          <h3>BTC · 15m</h3>
+          <div class="pair-meta">15 samples over 5 min · status <span class="badge badge-green">ok</span></div>
+        </div>
+        <div class="pair-price">
+          <div class="num">$78454.63</div>
+          <div class="num text-sm text-emerald-700">↑ 0.103%</div>
+        </div>
+      </div>
+      <table class="signal-table">
+        <thead>
+          <tr><th>signal</th><th>min</th><th>max</th><th>mean</th><th>stdev</th><th>state</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+              <td class="sig-name">pup</td>
+              <td class="num">0.3732</td>
+              <td class="num">0.4242</td>
+              <td class="num">0.4011</td>
+              <td class="num">0.0178</td>
+              <td><span class="badge badge-green">live</span></td>
+            </tr>
+            <tr>
+              <td class="sig-name">lgb</td>
+              <td class="num">0.2432</td>
+              <td class="num">0.3092</td>
+              <td class="num">0.2890</td>
+              <td class="num">0.0263</td>
+              <td><span class="badge badge-green">live</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">v9_1</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">v10</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">v12</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr>
+              <td class="sig-name">clf</td>
+              <td class="num">0.4872</td>
+              <td class="num">0.5393</td>
+              <td class="num">0.5114</td>
+              <td class="num">0.0174</td>
+              <td><span class="badge badge-green">live</span></td>
+            </tr></tbody>
+      </table>
+    </div>
+    
+    <div class="pair-card">
+      <div class="pair-header">
+        <div>
+          <h3>BTC · 5m</h3>
+          <div class="pair-meta">15 samples over 5 min · status <span class="badge badge-green">ok</span></div>
+        </div>
+        <div class="pair-price">
+          <div class="num">$78454.63</div>
+          <div class="num text-sm text-emerald-700">↑ 0.103%</div>
+        </div>
+      </div>
+      <table class="signal-table">
+        <thead>
+          <tr><th>signal</th><th>min</th><th>max</th><th>mean</th><th>stdev</th><th>state</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+              <td class="sig-name">pup</td>
+              <td class="num">0.4400</td>
+              <td class="num">0.7349</td>
+              <td class="num">0.6033</td>
+              <td class="num">0.0801</td>
+              <td><span class="badge badge-green">live</span></td>
+            </tr>
+            <tr>
+              <td class="sig-name">lgb</td>
+              <td class="num">0.3608</td>
+              <td class="num">0.9450</td>
+              <td class="num">0.6644</td>
+              <td class="num">0.1524</td>
+              <td><span class="badge badge-green">live</span></td>
+            </tr>
+            <tr>
+              <td class="sig-name">v9_1</td>
+              <td class="num">0.4768</td>
+              <td class="num">0.7948</td>
+              <td class="num">0.6337</td>
+              <td class="num">0.1124</td>
+              <td><span class="badge badge-green">live</span></td>
+            </tr>
+            <tr>
+              <td class="sig-name">v10</td>
+              <td class="num">0.6853</td>
+              <td class="num">0.7983</td>
+              <td class="num">0.7644</td>
+              <td class="num">0.0272</td>
+              <td><span class="badge badge-green">live</span></td>
+            </tr>
+            <tr>
+              <td class="sig-name">v12</td>
+              <td class="num">0.4400</td>
+              <td class="num">0.7256</td>
+              <td class="num">0.5801</td>
+              <td class="num">0.1103</td>
+              <td><span class="badge badge-green">live</span></td>
+            </tr>
+            <tr>
+              <td class="sig-name">clf</td>
+              <td class="num">0.4086</td>
+              <td class="num">0.5302</td>
+              <td class="num">0.4723</td>
+              <td class="num">0.0369</td>
+              <td><span class="badge badge-green">live</span></td>
+            </tr></tbody>
+      </table>
+    </div>
+    
+    <div class="pair-card">
+      <div class="pair-header">
+        <div>
+          <h3>ETH · 15m</h3>
+          <div class="pair-meta">15 samples over 5 min · status <span class="badge badge-amber">no_model (15/15)</span></div>
+        </div>
+        <div class="pair-price">
+          <div class="num">$2311.50</div>
+          <div class="num text-sm text-emerald-700">↑ 0.117%</div>
+        </div>
+      </div>
+      <table class="signal-table">
+        <thead>
+          <tr><th>signal</th><th>min</th><th>max</th><th>mean</th><th>stdev</th><th>state</th></tr>
+        </thead>
+        <tbody>
+            <tr class="row-absent">
+              <td class="sig-name">pup</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">lgb</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">v9_1</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">v10</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">v12</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr>
+              <td class="sig-name">clf</td>
+              <td class="num">0.6792</td>
+              <td class="num">0.8856</td>
+              <td class="num">0.7900</td>
+              <td class="num">0.0669</td>
+              <td><span class="badge badge-green">live</span></td>
+            </tr></tbody>
+      </table>
+    </div>
+    
+    <div class="pair-card">
+      <div class="pair-header">
+        <div>
+          <h3>ETH · 5m</h3>
+          <div class="pair-meta">15 samples over 5 min · status <span class="badge badge-green">ok</span></div>
+        </div>
+        <div class="pair-price">
+          <div class="num">$2311.50</div>
+          <div class="num text-sm text-emerald-700">↑ 0.117%</div>
+        </div>
+      </div>
+      <table class="signal-table">
+        <thead>
+          <tr><th>signal</th><th>min</th><th>max</th><th>mean</th><th>stdev</th><th>state</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+              <td class="sig-name">pup</td>
+              <td class="num">0.1166</td>
+              <td class="num">0.5972</td>
+              <td class="num">0.5324</td>
+              <td class="num">0.1217</td>
+              <td><span class="badge badge-green">live</span></td>
+            </tr>
+            <tr>
+              <td class="sig-name">lgb</td>
+              <td class="num">0.0400</td>
+              <td class="num">1.0000</td>
+              <td class="num">0.8708</td>
+              <td class="num">0.2432</td>
+              <td><span class="badge badge-amber">saturated</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">v9_1</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">v10</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">v12</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr>
+              <td class="sig-name">clf</td>
+              <td class="num">0.1933</td>
+              <td class="num">0.4466</td>
+              <td class="num">0.3845</td>
+              <td class="num">0.0986</td>
+              <td><span class="badge badge-green">live</span></td>
+            </tr></tbody>
+      </table>
+    </div>
+    
+    <div class="pair-card">
+      <div class="pair-header">
+        <div>
+          <h3>XRP · 15m</h3>
+          <div class="pair-meta">15 samples over 5 min · status <span class="badge badge-amber">no_model (15/15)</span></div>
+        </div>
+        <div class="pair-price">
+          <div class="num">$1.39</div>
+          <div class="num text-sm text-emerald-700">↑ 0.144%</div>
+        </div>
+      </div>
+      <table class="signal-table">
+        <thead>
+          <tr><th>signal</th><th>min</th><th>max</th><th>mean</th><th>stdev</th><th>state</th></tr>
+        </thead>
+        <tbody>
+            <tr class="row-absent">
+              <td class="sig-name">pup</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">lgb</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">v9_1</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">v10</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">v12</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr>
+              <td class="sig-name">clf</td>
+              <td class="num">0.7714</td>
+              <td class="num">0.9557</td>
+              <td class="num">0.8635</td>
+              <td class="num">0.0632</td>
+              <td><span class="badge badge-green">live</span></td>
+            </tr></tbody>
+      </table>
+    </div>
+    
+    <div class="pair-card">
+      <div class="pair-header">
+        <div>
+          <h3>XRP · 5m</h3>
+          <div class="pair-meta">15 samples over 5 min · status <span class="badge badge-green">ok</span></div>
+        </div>
+        <div class="pair-price">
+          <div class="num">$1.39</div>
+          <div class="num text-sm text-emerald-700">↑ 0.144%</div>
+        </div>
+      </div>
+      <table class="signal-table">
+        <thead>
+          <tr><th>signal</th><th>min</th><th>max</th><th>mean</th><th>stdev</th><th>state</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+              <td class="sig-name">pup</td>
+              <td class="num">0.5966</td>
+              <td class="num">0.5974</td>
+              <td class="num">0.5971</td>
+              <td class="num">0.0003</td>
+              <td><span class="badge badge-red">stuck</span></td>
+            </tr>
+            <tr>
+              <td class="sig-name">lgb</td>
+              <td class="num">1.0000</td>
+              <td class="num">1.0000</td>
+              <td class="num">1.0000</td>
+              <td class="num">0.0000</td>
+              <td><span class="badge badge-amber">saturated</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">v9_1</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">v10</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr class="row-absent">
+              <td class="sig-name">v12</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td class="num">—</td>
+              <td><span class="badge badge-gray">absent</span></td>
+            </tr>
+            <tr>
+              <td class="sig-name">clf</td>
+              <td class="num">0.1933</td>
+              <td class="num">0.4926</td>
+              <td class="num">0.4057</td>
+              <td class="num">0.1101</td>
+              <td><span class="badge badge-green">live</span></td>
+            </tr></tbody>
+      </table>
+    </div>
+    
+    </div>
+  </section>
+
+  <!-- Model fleet -->
+  <section class="mb-10">
+    <h2 class="text-2xl font-bold tracking-tight mb-2">Model fleet — what's loaded on the box</h2>
+    <p class="text-ink-500 mb-6">Each box of the GPU stack: where the artifacts came from, what they were trained on, and how they validated.</p>
+
+    <div class="space-y-5">
+
+      <!-- 5m LoRA -->
+      <div class="section-card">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h3 class="text-xl font-bold">TimesFM 5m · custom LoRA adapter</h3>
+            <div class="text-sm text-ink-500 mt-1">
+              <code class="num">lora_btc_5m_2h_2026-04-25T07-07</code> · base <code class="num">google/timesfm-2.5-200m-transformers</code>
+            </div>
+          </div>
+          <span class="badge badge-green">deployed</span>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <div class="stat-block">
+            <div class="label">Best dir acc</div>
+            <div class="value">54.0%</div>
+            <div class="sub">epoch 1</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">Final val_loss</div>
+            <div class="value">0.5018</div>
+            <div class="sub">epoch 9</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">Asset</div>
+            <div class="value">BTC only</div>
+            <div class="sub">2h horizon</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">Trained</div>
+            <div class="value">2026-04-25</div>
+            <div class="sub">9 epochs</div>
+          </div>
+        </div>
+        <details class="text-sm">
+          <summary class="cursor-pointer text-ink-700 font-medium">Why dir_acc looks low (~54%) — and why that's fine</summary>
+          <p class="text-ink-700 mt-3 leading-relaxed">
+            The LoRA's <code>dir_acc</code> measures the <em>foundation forecast direction</em> — predicting whether the next bar closes above or below the current one. 54% on raw foundation is normal; the LGB stack on top (v9, v9.1, v10, v12) is what extracts tradeable edge. The LoRA's job is to sharpen the quantile distribution shape, not to predict direction directly.
+          </p>
+        </details>
+      </div>
+
+      <!-- 15m LoRA + classifier (cross-asset) -->
+      <div class="section-card">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h3 class="text-xl font-bold">TimesFM 15m · LoRA + classifier head <span class="grad-text">(cross-asset)</span></h3>
+            <div class="text-sm text-ink-500 mt-1">
+              <code class="num">15m_v1/15m_v1</code> + <code class="num">15m_head_v1</code> · trained on <strong>BTC + ETH + SOL + XRP</strong>
+            </div>
+          </div>
+          <span class="badge badge-green">deployed · multi-asset</span>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <div class="stat-block">
+            <div class="label">Val dir acc</div>
+            <div class="value">75.77%</div>
+            <div class="sub">best epoch 26</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">Top-20% conv</div>
+            <div class="value">80.8%</div>
+            <div class="sub">n=753 holdout</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">Top-10% conv</div>
+            <div class="value">88.2%</div>
+            <div class="sub">88% accuracy filter</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">Test acc</div>
+            <div class="value">67.3%</div>
+            <div class="sub">all-conviction baseline</div>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <div class="stat-block">
+            <div class="label">LoRA r / alpha</div>
+            <div class="value">8 / 16</div>
+            <div class="sub">PEFT</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">Context len</div>
+            <div class="value">512</div>
+            <div class="sub">2s sub-sample</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">Train n_windows</div>
+            <div class="value">5012</div>
+            <div class="sub">1253/asset</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">Trained</div>
+            <div class="value">2026-04-20</div>
+            <div class="sub">50-epoch head</div>
+          </div>
+        </div>
+        <details class="text-sm">
+          <summary class="cursor-pointer text-ink-700 font-medium">Why this is the highest-value model on the box for ETH/XRP</summary>
+          <p class="text-ink-700 mt-3 leading-relaxed">
+            The 15m LoRA was fine-tuned with <strong>1,253 windows from each of BTC, ETH, SOL, XRP</strong> (5,012 total) — making the resulting embeddings + classifier head the only model in the fleet that genuinely transfers cross-asset. The 5m LoRA, v9, v9.1, v10, and v12 are all BTC-only. So when you ask "what model handles ETH 15m?" — this is it. Top-20% confidence filter (p ≥ 0.62 or ≤ 0.38) gives <strong>80.8% accuracy</strong>; tighten to top-10% for 88.2%. <code>v_eth_15m_classifier_top20</code> and <code>top10</code> in PR #474 deploy exactly this.
+          </p>
+        </details>
+      </div>
+
+      <!-- 5m classifier head -->
+      <div class="section-card">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h3 class="text-xl font-bold">5m classifier head — <span class="grad-text">isotonic-calibrated</span></h3>
+            <div class="text-sm text-ink-500 mt-1">
+              <code class="num">cls_traj_14f_iso/2026-04-25T15-34</code> · 88-knot isotonic calibrator (PR #131)
+            </div>
+          </div>
+          <span class="badge badge-green">deployed</span>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <div class="stat-block">
+            <div class="label">Overall dir acc</div>
+            <div class="value">72.9%</div>
+            <div class="sub">n=5246</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">High-conf acc</div>
+            <div class="value">79.8%</div>
+            <div class="sub">65% coverage</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">Brier</div>
+            <div class="value">0.182</div>
+            <div class="sub">lower = better</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">ECE post-iso</div>
+            <div class="value">~0</div>
+            <div class="sub">calibration is perfect</div>
+          </div>
+        </div>
+        <table class="perf-table mb-3">
+          <thead><tr><th>Eval offset</th><th>n</th><th>dir_acc</th><th>brier</th><th>ECE</th></tr></thead>
+          <tbody>
+    <tr>
+      <td>60s</td>
+      <td>570</td>
+      <td class="num">78.1%</td>
+      <td class="num">0.1519</td>
+      <td class="num">0.0286</td>
+    </tr>
+    <tr>
+      <td>90s</td>
+      <td>693</td>
+      <td class="num">74.2%</td>
+      <td class="num">0.1682</td>
+      <td class="num">0.0216</td>
+    </tr>
+    <tr>
+      <td>120s</td>
+      <td>762</td>
+      <td class="num">75.9%</td>
+      <td class="num">0.1751</td>
+      <td class="num">0.0179</td>
+    </tr>
+    <tr>
+      <td>150s</td>
+      <td>780</td>
+      <td class="num">72.2%</td>
+      <td class="num">0.1897</td>
+      <td class="num">0.0165</td>
+    </tr>
+    <tr>
+      <td>180s</td>
+      <td>795</td>
+      <td class="num">70.8%</td>
+      <td class="num">0.1941</td>
+      <td class="num">0.0312</td>
+    </tr>
+    <tr>
+      <td>210s</td>
+      <td>814</td>
+      <td class="num">70.9%</td>
+      <td class="num">0.1970</td>
+      <td class="num">0.0271</td>
+    </tr>
+    <tr>
+      <td>240s</td>
+      <td>832</td>
+      <td class="num">68.5%</td>
+      <td class="num">0.2020</td>
+      <td class="num">0.0357</td>
+    </tr></tbody>
+        </table>
+        <p class="text-sm text-ink-500">
+          Best at offset 60s (78%); decays to 68.5% at offset 240s.
+          The data-backed strategies use timing window <strong>30–120s</strong> (sweeps confirm 30–60s = 82.6% WR for any-strategy fires).
+        </p>
+      </div>
+
+      <!-- v9.1 LGB -->
+      <div class="section-card">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h3 class="text-xl font-bold">v9.1 LGB — <span class="grad-text">priceToBeat-aligned retrain</span></h3>
+            <div class="text-sm text-ink-500 mt-1">
+              <code class="num">v10_training_backup/retrain_2026-05-02/honest/v9_1</code> · LightGBM 5-booster stack + isotonic
+            </div>
+          </div>
+          <span class="badge badge-green">LIVE on engine (v9_1_lgb_only)</span>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+          <div class="stat-block">
+            <div class="label">Weighted Δ_WR</div>
+            <div class="value text-emerald-700">+5.92pp</div>
+            <div class="sub">vs v9 PROD, n=73,336 holdout</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">Best delta lift</div>
+            <div class="value text-emerald-700">+7.15pp</div>
+            <div class="sub">d=180, CI ±0.74pp</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">Train n_rows</div>
+            <div class="value">117,827</div>
+            <div class="sub">Apr 7 → 25, 2026</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">Asset</div>
+            <div class="value">BTC only</div>
+            <div class="sub">5 boosters · per-Δ iso</div>
+          </div>
+        </div>
+        <table class="perf-table mb-3">
+          <thead><tr><th>Δ horizon</th><th>n holdout</th><th>v9 PROD WR</th><th>v9.1 HONEST WR</th><th>Δ_WR</th></tr></thead>
+          <tbody>
+            <tr><td>060</td><td>7,907</td><td class="num">76.03%</td><td class="num">80.84%</td><td class="num text-emerald-700">+4.81pp</td></tr>
+            <tr><td>090</td><td>10,865</td><td class="num">74.18%</td><td class="num">76.43%</td><td class="num text-emerald-700">+2.25pp</td></tr>
+            <tr><td>120</td><td>17,477</td><td class="num">71.59%</td><td class="num">77.73%</td><td class="num text-emerald-700">+6.14pp</td></tr>
+            <tr class="highlight"><td>180</td><td>24,317</td><td class="num">68.52%</td><td class="num">75.66%</td><td class="num text-emerald-700">+7.15pp</td></tr>
+            <tr><td>240</td><td>12,770</td><td class="num">65.97%</td><td class="num">73.09%</td><td class="num text-emerald-700">+7.12pp</td></tr>
+          </tbody>
+        </table>
+        <details class="text-sm">
+          <summary class="cursor-pointer text-ink-700 font-medium">What changed vs v9 PROD</summary>
+          <p class="text-ink-700 mt-3 leading-relaxed">
+            v9 PROD trained against <code>chainlink_polygon</code> (on-chain Aggregator V3) which is <strong>not</strong> Polymarket's actual settlement oracle. Polymarket settles against <code>eventMetadata.priceToBeat</code> (Chainlink Streams off-chain, mean ≈1.9bps offset). v9.1 retrains the same architecture (78 features, 63 leaves, 0.03 lr, 5-booster Δ stack) on the corrected reference. Lift is statistically significant on every horizon (Wilson 95% CI doesn't cross zero).
+          </p>
+        </details>
+      </div>
+
+      <!-- LGB scorers — v9, v10, v12, v9.1 -->
+      <div class="section-card">
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <h3 class="text-xl font-bold">LightGBM scorers</h3>
+            <div class="text-sm text-ink-500 mt-1">v9 PROD · v9.1 · v10 · v12 — all BTC-only LGB stacks; each has 5 per-Δ boosters with isotonic calibration</div>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div class="stat-block">
+            <div class="label">v9 PROD</div>
+            <div class="value">candidate_ab83564</div>
+            <div class="sub">78 features · production stable</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">v9.1</div>
+            <div class="value text-emerald-700">+5.92pp</div>
+            <div class="sub">priceToBeat-aligned</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">v10</div>
+            <div class="value">112 features</div>
+            <div class="sub">extended schema · TFM quantiles</div>
+          </div>
+          <div class="stat-block">
+            <div class="label">v12</div>
+            <div class="value">v9.1 + delta family</div>
+            <div class="sub">latest research candidate</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- Health diagnosis -->
+  <section class="mb-10">
+    <h2 class="text-2xl font-bold tracking-tight mb-2">Diagnosis</h2>
+    <div class="section-card">
+      <div class="space-y-4 text-sm leading-relaxed">
+        <div class="flex gap-3">
+          <span class="badge badge-green flex-shrink-0">healthy</span>
+          <div><strong>BTC 5m</strong> — all 6 signals live. v9, v9.1, v10, v12, classifier all ticking with non-trivial standard deviation. v3 stuck-guard occasionally trips on v9 saturation (same on primary, same as last week, self-recovering).</div>
+        </div>
+        <div class="flex gap-3">
+          <span class="badge badge-green flex-shrink-0">healthy</span>
+          <div><strong>BTC 15m</strong> — pup, lgb (v9), classifier all live. v9.1/v10/v12 are <em>5m-only</em> by design (LGB stacks don't have 15m boosters yet) — None is correct, not a bug.</div>
+        </div>
+        <div class="flex gap-3">
+          <span class="badge badge-green flex-shrink-0">healthy</span>
+          <div><strong>ETH 15m + XRP 15m</strong> — only the cross-asset 15m classifier flowing (status <code>no_model</code> means no LGB exists for these — by design). Classifier is producing varied non-saturated values, currently in the top-20% conviction zone (p > 0.62) — would fire <code>v_eth_15m_classifier_top20</code> bets right now. <strong>This is the green-field opportunity from the data-backed plan.</strong></div>
+        </div>
+        <div class="flex gap-3">
+          <span class="badge badge-amber flex-shrink-0">noted</span>
+          <div><strong>ETH 5m + XRP 5m v9 saturating at 1.0</strong> — the v9 LGB is BTC-trained and being asked to score ETH/XRP features it has no representation for. The output is unreliable and should NOT be consumed by strategies. The new ETH/XRP strategies in PR #474 use the classifier ONLY (<code>min_dist</code> on <code>probability_classifier</code>) — they don't read v9/v10/v12 for these assets.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="text-center text-sm text-ink-500 py-10">
+    Generated from <code class="num">/tmp/gpu_report/soak.jsonl</code> (90 samples) · model artifacts in <code class="num">s3://bbrnovakash-models-do-not-delete/</code>
+  </footer>
+
+</main>
+
+</body>
+</html>

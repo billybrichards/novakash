@@ -1,0 +1,98 @@
+{
+  "config": {
+    "lora_r": 8,
+    "lora_alpha": 16,
+    "context_len": 512,
+    "horizon_len": 128,
+    "epochs": 10,
+    "batch_size": 32,
+    "lr": 5e-05
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 2.065596939226903,
+      "val_loss": 0.9291199060777823,
+      "val_dir_accuracy": 0.7496671105193076,
+      "lr": 4.878864877830503e-05,
+      "epoch_time_s": 35.93725800514221
+    },
+    {
+      "epoch": 2,
+      "train_loss": 1.567315244073168,
+      "val_loss": 0.8191412116090456,
+      "val_dir_accuracy": 0.7456724367509987,
+      "lr": 4.527317061077995e-05,
+      "epoch_time_s": 35.878392696380615
+    },
+    {
+      "epoch": 3,
+      "train_loss": 1.4757590586439184,
+      "val_loss": 0.8006542113920053,
+      "val_dir_accuracy": 0.7430093209054593,
+      "lr": 3.979768499423872e-05,
+      "epoch_time_s": 34.39097881317139
+    },
+    {
+      "epoch": 4,
+      "train_loss": 1.4271280273385005,
+      "val_loss": 0.7947322148829699,
+      "val_dir_accuracy": 0.7430093209054593,
+      "lr": 3.289817061077997e-05,
+      "epoch_time_s": 34.65596032142639
+    },
+    {
+      "epoch": 5,
+      "train_loss": 1.387117676505255,
+      "val_loss": 0.8038658928126097,
+      "val_dir_accuracy": 0.7443408788282291,
+      "lr": 2.525000000000002e-05,
+      "epoch_time_s": 35.37488007545471
+    },
+    {
+      "epoch": 6,
+      "train_loss": 1.3529428612748418,
+      "val_loss": 0.8127499980231127,
+      "val_dir_accuracy": 0.7456724367509987,
+      "lr": 1.7601829389220076e-05,
+      "epoch_time_s": 35.33794593811035
+    },
+    {
+      "epoch": 7,
+      "train_loss": 1.3215992929191764,
+      "val_loss": 0.8170859745393196,
+      "val_dir_accuracy": 0.7443408788282291,
+      "lr": 1.0702315005761303e-05,
+      "epoch_time_s": 35.7875759601593
+    }
+  ],
+  "test_direction_accuracy": 0.6746347941567065,
+  "dataset": {
+    "timeframe": "15m",
+    "assets": [
+      "BTC",
+      "ETH",
+      "SOL",
+      "XRP"
+    ],
+    "n_windows": 5012,
+    "n_up": 2540,
+    "n_down": 2472,
+    "per_asset": {
+      "BTC": 1253,
+      "ETH": 1253,
+      "SOL": 1253,
+      "XRP": 1253
+    },
+    "context_len": 512,
+    "horizon_len": 180,
+    "include_covariates": true,
+    "fetch_time_s": 82.2,
+    "created_at": "2026-04-20T16:59:37.006477+00:00",
+    "window_ts_range": [
+      1775498400,
+      1776702600
+    ]
+  },
+  "saved_at": "2026-04-20T17:50:26.981634+00:00"
+}
