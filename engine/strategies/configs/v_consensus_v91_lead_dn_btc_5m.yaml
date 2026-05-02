@@ -1,0 +1,28 @@
+name: v_consensus_v91_lead_dn_btc_5m
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+# DOWN mirror of v_consensus_v91_lead_up_btc_5m.
+
+gates:
+  - type: timing
+    params: { min_offset: 30, max_offset: 120 }
+  - type: direction
+    params: { direction: DOWN }
+  - type: multi_model_consensus
+    params:
+      models: [v9_1, v10, v12, classifier]
+      direction: DOWN
+      min_votes: 3
+      vote_threshold_dn: 0.45
+  - type: regime_v4
+    params: { allow: [volatile_trend, chop, risk_off] }
+  - type: consecutive_pass_ticks
+    params: { min_ticks: 10 }
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.05

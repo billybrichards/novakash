@@ -1,0 +1,28 @@
+name: v_consensus_all6_dn_btc_5m
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+# DOWN mirror of v_consensus_all6_up_btc_5m. Sweep 11 4-of-5 DOWN → 91.7% WR.
+
+gates:
+  - type: timing
+    params: { min_offset: 30, max_offset: 120 }
+  - type: direction
+    params: { direction: DOWN }
+  - type: multi_model_consensus
+    params:
+      models: [v9, v9_1, v10, v12, classifier]
+      direction: DOWN
+      min_votes: 4
+      vote_threshold_dn: 0.45
+  - type: regime_v4
+    params: { allow: [volatile_trend, chop, risk_off] }
+  - type: consecutive_pass_ticks
+    params: { min_ticks: 12 }
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.030
+  max_collateral_pct: 0.05

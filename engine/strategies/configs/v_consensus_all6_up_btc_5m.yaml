@@ -1,0 +1,33 @@
+name: v_consensus_all6_up_btc_5m
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+# Tighter consensus: 4-of-5 with both v9 and v9.1 in the vote. Both must
+# agree (correlated by design) plus 2 of {v10, v12, classifier}. Sweep 11
+# 4-of-5 UP rows show 75.6% WR (n=41) — slightly LOWER than 3-of-5
+# (80.7%) due to sample size noise at the tighter threshold; we expect
+# this to invert with more data given the conviction is higher.
+# Tighter ticks (12) given the higher stake.
+
+gates:
+  - type: timing
+    params: { min_offset: 30, max_offset: 120 }
+  - type: direction
+    params: { direction: UP }
+  - type: multi_model_consensus
+    params:
+      models: [v9, v9_1, v10, v12, classifier]
+      direction: UP
+      min_votes: 4
+      vote_threshold_up: 0.55
+  - type: regime_v4
+    params: { allow: [volatile_trend, chop, risk_off] }
+  - type: consecutive_pass_ticks
+    params: { min_ticks: 12 }
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.030
+  max_collateral_pct: 0.05

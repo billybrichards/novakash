@@ -1,0 +1,28 @@
+name: v_consensus_3of5_dn_btc_15m
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 15m
+
+gates:
+  - type: timing
+    params: { min_offset: 180, max_offset: 360 }
+  - type: direction
+    params: { direction: DOWN }
+  - type: multi_model_consensus
+    params:
+      models: [v9, v9_1, v10, v12, classifier]
+      direction: DOWN
+      min_votes: 3
+      vote_threshold_dn: 0.45
+  - type: session_hours
+    params: { block_hours_utc: [0, 1, 4, 10, 12, 16, 18, 22] }
+  - type: regime_v4
+    params: { allow: [volatile_trend, chop, risk_off] }
+  - type: consecutive_pass_ticks
+    params: { min_ticks: 12 }
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.05

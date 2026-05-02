@@ -1,0 +1,30 @@
+name: v_v9_1_strong_dn_btc_5m
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+# Mirror of v_v9_strong_dn_btc_5m, anchored on v9.1.
+
+gates:
+  - type: timing
+    params: { min_offset: 30, max_offset: 120 }
+  - type: direction
+    params: { direction: DOWN }
+  - type: multi_model_consensus
+    params:
+      models: [v9_1]
+      direction: DOWN
+      min_votes: 1
+      vote_threshold_dn: 0.40
+  - type: regime_v4
+    params: { allow: [volatile_trend, chop, risk_off] }
+  - type: model_disagreement_veto
+    params: { primary: v9_1, secondary: v12, max_abs_diff: 0.20 }
+  - type: consecutive_pass_ticks
+    params: { min_ticks: 10 }
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.05

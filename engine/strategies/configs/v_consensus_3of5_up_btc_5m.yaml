@@ -1,0 +1,35 @@
+name: v_consensus_3of5_up_btc_5m
+version: "1.0.0"
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+# Data-backed: docs/data-backed-strategy-plan-2026-05-02/sweeps/11_consensus_simulation_5m.tsv
+# 3-of-5 UP-vote (each model >= 0.55) → 80.7% WR (n=135, 14d).
+# Plus sweep 8 (offset cliff): early eval_offset wins — <60s = 82.6% WR.
+# Plus sweep 9: exclude calm_trend (5pp WR penalty on 5m).
+# Plus sweep 19: 10+ confirmation ticks lifts WR from 75% to 83%+.
+# Plus sweep 6: veto on |v12-v9| >= 0.20 — moderate v12 disagreement is regime drift.
+
+gates:
+  - type: timing
+    params: { min_offset: 30, max_offset: 120 }
+  - type: direction
+    params: { direction: UP }
+  - type: multi_model_consensus
+    params:
+      models: [v9, v9_1, v10, v12, classifier]
+      direction: UP
+      min_votes: 3
+      vote_threshold_up: 0.55
+  - type: regime_v4
+    params: { allow: [volatile_trend, chop, risk_off] }
+  - type: model_disagreement_veto
+    params: { primary: v9, secondary: v12, max_abs_diff: 0.20 }
+  - type: consecutive_pass_ticks
+    params: { min_ticks: 10 }
+
+sizing:
+  type: fixed_kelly
+  fraction: 0.025
+  max_collateral_pct: 0.05
