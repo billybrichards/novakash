@@ -47,6 +47,38 @@ python3 /Users/billyrichards/Code/novakash/scripts/build_gpu_report.py
 
 The build script (`scripts/build_gpu_report.py`) is the single source of truth for what goes into the report. ~430 lines, no external deps beyond Python stdlib.
 
+## Context-length verification (2026-05-02)
+
+Cross-checked head configs against runtime + LoRA training to confirm no silent dimension mismatches:
+
+| Aspect | 5m head (`cls_traj_14f_iso`) | 15m head (`15m_head_v1`) |
+|---|---|---|
+| Head `input_dim` | 1304 = 1280 (TFM hidden) + 14 (ctx feat) + 10 (quantile) | 1280 (TFM hidden only) |
+| Head `context_len` | 512 (explicit in head config) | not in config → falls back to `_V2_DEFAULT_CONTEXT_LEN=512` |
+| `subsample_rate` | 2 (explicit in head config) | falls back to env `V2_SUBSAMPLE_RATE=2` |
+| Has isotonic | yes (88 knots, post-PR #131) | no (raw sigmoid, by design) |
+| LoRA training context | matches (5m LoRA trained at 2h horizon) | matches (15m LoRA `context_len=512` per `lora_15m_ft.json`) |
+| Forecaster runtime path | `forecaster.py:717` reads `cfg["context_len"]` ✅ | falls back to 512 default ✅ |
+| Per-ts dispatch | PR #138 diag pre-seed at line 676; explicit horizon-skip warning at line 662 | same |
+
+Container startup logs confirm both heads loaded:
+```
+Isotonic calibrator loaded for timescale=5m (88 knots)
+Classifier head loaded for timescale=5m  from /var/lib/novakash/timesfm_classifier/cls_traj_14f_iso (input_dim=1304)
+Classifier head loaded for timescale=15m from /var/lib/novakash/timesfm_classifier/15m_head_v1     (input_dim=1280)
+```
+
+Live output shows distinct, varied values per timescale (no collisions, no saturation):
+- BTC 5m clf range: 0.40–0.51
+- BTC 15m clf range: 0.24–0.51
+- ETH 15m clf range: 0.69–0.87 (currently top-20% UP conviction)
+- XRP 15m clf range: 0.78–0.96 (currently top-20% UP conviction)
+
+The previously documented bug (15m_head_v1 input_dim=1280 → head_horizon=128 > model_max_horizon=60 → silent skip) is **fixed** in PR #138 already deployed:
+1. Pre-seed `per_ts_diag` per timescale (so a head that's loaded but skipped surfaces in `/v4/health` instead of being invisible)
+2. Explicit logged warning when `head_horizon > model_max_horizon`
+3. Per-timescale dispatch — 5m and 15m use independent classifier paths, no leakage
+
 ## Next refresh trigger points
 
 Refresh this report when:
