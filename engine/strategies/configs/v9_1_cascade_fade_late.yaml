@@ -1,0 +1,95 @@
+name: v9_1_cascade_fade_late
+version: "9.1.0-cascade-fade-late"
+# v9_1_cascade_fade_late — 2026-05-02 — v9.1 retrain MIRROR of v9_cascade_fade_late.
+#
+# Identical gate stack to v9_cascade_fade_late but uses `probability_lgb_v9_1`
+# (v9.1 priceToBeat-aligned retrain — Hub note #313, +5.92pp forward-pass
+# lift vs v9 PROD) instead of `probability_lgb` (v9 PROD candidate_ab83564).
+#
+# Purpose: direct A/B comparison of v9 vs v9.1 on the same walk-forward-validated
+# CASCADE × DOWN × eval_offset 0-60 (LAST minute) alpha pocket. Does v9.1
+# actually convert its forward-pass lift into WR on the validated pocket?
+#
+# SKIPs gracefully with reason=v9_1_model_not_loaded if surface.probability_lgb_v9_1
+# is None (timesfm-service has V9_1_ENABLED=false or model failed to load).
+# Pattern from v9_1_lgb_only.py (PR #466).
+#
+# Default mode GHOST. Stays GHOST until:
+#   1. timesfm-repo wires probability_lgb_v9_1 onto FullDataSurface (Hub note #316
+#      blocker 1 + 2 — V9_1_ENABLED=true + booster loading).
+#   2. ≥7d shadow A/B vs v9_cascade_fade_late.
+#   3. Real-trade WR > 70% AND n > 30 AND net positive via fill_price math.
+#   4. Billy explicit sign-off.
+#
+# Ref: feedback_no_auto_model_promotion.md, project_alpha_extraction_results_2026_05_02.md.
+
+mode: GHOST
+asset: BTC
+timescale: 5m
+
+gates: []
+pre_gate_hook: evaluate_v9_1_cascade_fade_late
+
+gate_params:
+  # T-band — LAST minute of window (validated by walk-forward 3/4)
+  min_offset_sec: 24
+  max_offset_sec: 60
+
+  # Direction lock — DOWN only
+  up_min_fill_price: 1.01
+  down_min_fill_price: 0.15
+
+  # vpin gate — CASCADE only
+  block_down_vpin_regimes: [TRANSITION, CALM, NORMAL, NORMAL_TREND, LOW_VOL]
+  block_up_vpin_regimes: [CASCADE, TRANSITION, CALM, NORMAL, NORMAL_TREND, LOW_VOL]
+
+  # Conviction — LOW band (inverse-conviction confirmed in CASCADE×DOWN)
+  lgb_dist_min_down: 0.10
+  lgb_dist_min_up: 1.01
+
+  # Tick confirm — k=1 (CASCADE alpha decays fast)
+  min_consecutive_pass_ticks: 1
+
+  # Time-of-day defensive
+  blocked_utc_hours: [2, 3, 4, 5, 6, 7, 8, 15, 16]
+
+  # Regime allowlist
+  tradeable_v4_regimes: [risk_off, volatile_trend]
+
+  # Source agreement (per v8_champion proven pattern)
+  source_agreement_require_chainlink: true
+  source_agreement_require_tiingo: true
+  skip_on_oracle_disagree: true
+
+  # VPIN guard
+  vpin_min: 0.40
+  vpin_max: 1.0
+
+  # Fill band
+  fill_band_min: 0.05
+  fill_band_max: 0.78
+
+  # Cooldown
+  post_loss_cooldown_min: 30
+
+  # LGB safety floor
+  lgb_dist_min_down_with_hc_agree: 0.08
+  lgb_dist_min_up_with_hc_agree: 1.01
+
+  # Ensemble params (delegation compatibility)
+  ensemble_disagreement_threshold: 0.35
+  require_direction_agreement: false   # single-signal v9.1, no agreement required
+
+  # VHC threshold (don't bypass DOWN-only direction lock)
+  vhc_threshold: 0.25
+  vhc_bypass_transition: false
+  vhc_bypass_up_dist: false
+  vhc_bypass_disagreement: false
+  vhc_bypass_lgb_safety_floor: false
+  vhc_bypass_oracle_direction: false
+  vhc_kelly_multiplier: 1.0
+
+sizing:
+  type: kelly
+  fraction: 0.025
+  max_collateral_pct: 0.025
