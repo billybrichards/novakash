@@ -242,6 +242,24 @@ class V5FeatureBody:
     # ── v2 as a prior (logit of previous scorer output) ─────────────
     v2_logit: Optional[float] = None
 
+    # ── Polymarket canonical reference price (sister to PR #464) ────
+    # When present, this is `eventMetadata.priceToBeat` from Polymarket
+    # Gamma — the canonical reference that Polymarket uses to resolve
+    # the window. Set when `WindowInfo.open_price_source ==
+    # "polymarket_priceToBeat"`. Stays None if Gamma metadata had not
+    # published yet at evaluation time and the engine fell back to
+    # chainlink_polygon / binance.
+    #
+    # Coordinated rollout: the engine ALWAYS populates this when the
+    # canonical value is available (from PR #464). The downstream
+    # consumer (timesfm-service) gates on its own
+    # OPEN_PRICE_USE_PRICE_TO_BEAT env flag (default false) — when off,
+    # this field is pure telemetry and timesfm continues computing
+    # delta_* against chainlink_polygon (current behaviour). When on,
+    # timesfm recomputes delta_* against priceToBeat. Flipping the
+    # flag is the cutover.
+    polymarket_price_to_beat: Optional[float] = None
+
     def to_json_dict(self) -> dict[str, Optional[float]]:
         """
         Serialise to a dict suitable for JSON encoding.
@@ -281,6 +299,7 @@ class V5FeatureBody:
             "regime_num": self.regime_num,
             "delta_source_num": self.delta_source_num,
             "v2_logit": self.v2_logit,
+            "polymarket_price_to_beat": self.polymarket_price_to_beat,
         }
 
     def coverage(self) -> float:
@@ -331,6 +350,7 @@ def build_v5_feature_body(
     regime: Optional[str] = None,             # raw string, encoded internally
     delta_source: Optional[str] = None,       # raw string, encoded internally
     prev_v2_probability_up: Optional[float] = None,  # for v2_logit
+    polymarket_price_to_beat: Optional[float] = None,  # Polymarket canonical reference (PR #464 sister)
 ) -> V5FeatureBody:
     """
     Single source of truth for building a V5FeatureBody from engine state.
@@ -366,6 +386,17 @@ def build_v5_feature_body(
     `v2_logit`. First tick in a window has no prior: pass None and the
     field stays None. Out-of-range priors (p ≤ 0 or p ≥ 1) also become
     None because logit is undefined there.
+
+    The `polymarket_price_to_beat` kwarg is the Polymarket-published
+    canonical reference price for the window's resolution
+    (`eventMetadata.priceToBeat` from Gamma). Pair with PR #464 which
+    captures it on `WindowInfo.open_price` when
+    `open_price_source == "polymarket_priceToBeat"`. Stays None when
+    Gamma metadata had not published yet at evaluation time and the
+    engine fell back to chainlink_polygon. The scorer-side
+    `OPEN_PRICE_USE_PRICE_TO_BEAT` flag (default false) decides whether
+    the consumer recomputes its delta_* family against this value or
+    keeps using `chainlink_price`.
     """
     _clob_mid: Optional[float] = None
     _clob_spread: Optional[float] = None
@@ -405,6 +436,7 @@ def build_v5_feature_body(
         regime_num=encode_regime(regime),
         delta_source_num=encode_delta_source(delta_source),
         v2_logit=prob_to_logit(prev_v2_probability_up),
+        polymarket_price_to_beat=coerce_float(polymarket_price_to_beat),
     )
 
 

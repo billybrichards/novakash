@@ -59,7 +59,7 @@ class WindowInfo:
     asset: str  # e.g. "BTC", "ETH"
     duration_secs: int  # 300 for 5m, 900 for 15m
     state: WindowState = WindowState.WAITING
-    open_price: Optional[float] = None  # Opening price (Chainlink oracle)
+    open_price: Optional[float] = None  # Opening price (Polymarket priceToBeat, Chainlink fallback)
     current_price: Optional[float] = None  # Current price
     up_token_id: Optional[str] = None  # "Up" outcome token ID
     down_token_id: Optional[str] = None  # "Down" outcome token ID
@@ -67,6 +67,10 @@ class WindowInfo:
     down_price: Optional[float] = None  # Current Down token price
     price_source: str = "unknown"  # "gamma_api", "synthetic", "stale_gamma"
     eval_offset: Optional[int] = None  # Current T-minus evaluation offset, if any
+    gamma_price_to_beat: Optional[float] = None  # Polymarket-published reference price (canonical)
+    open_price_source: str = "unknown"  # "polymarket_priceToBeat", "chainlink_polygon", "binance_fallback"
+    _gamma_metadata_synced: bool = False  # True once eventMetadata.priceToBeat captured
+    _gamma_resync_attempts: int = 0  # # of post-open Gamma re-polls attempted
 
     @property
     def timeframe(self) -> str:
@@ -299,6 +303,34 @@ class Polymarket5MinFeed:
                 await self._emit_window_signal(window)
 
         elif window.state in (WindowState.ACTIVE, WindowState.CLOSING):
+            # ── Sync open_price from Polymarket priceToBeat (canonical) ───────
+            # Polymarket samples Chainlink Data Streams at each window boundary.
+            # That sample becomes available via Gamma's eventMetadata as
+            # finalPrice[N-1] = priceToBeat[N] ~50-90s after window N-1 closes
+            # (i.e. ~50-90s into window N). Poll the PREVIOUS window's Gamma
+            # event at +60s, +90s, +120s, +180s elapsed-into-window until we
+            # capture it. This produces an open_price that matches the UI
+            # "Price To Beat" exactly, replacing the Chainlink Polygon
+            # approximation we used at window creation (off by $3-30/window).
+            if not window._gamma_metadata_synced:
+                resync_offsets = [60, 90, 120, 180, 240, 270]
+                for _idx, _ofs in enumerate(resync_offsets):
+                    if (
+                        elapsed >= _ofs
+                        and window._gamma_resync_attempts < (_idx + 1)
+                    ):
+                        window._gamma_resync_attempts = _idx + 1
+                        try:
+                            await self._sync_open_price_from_prev_window_final(window)
+                        except Exception as exc:
+                            self._log.warning(
+                                "open_price.resync_failed",
+                                window_ts=window.window_ts,
+                                elapsed=elapsed,
+                                error=str(exc),
+                            )
+                        break  # one resync per tick
+
             # ── Countdown re-emissions at T-180, T-120, T-90 ─────────────
             # Re-emit window signal at countdown milestones so orchestrator can send alerts
             if window.state == WindowState.ACTIVE:
@@ -479,6 +511,42 @@ class Polymarket5MinFeed:
 
             event = data[0]
 
+            # ── Capture priceToBeat (canonical Polymarket reference) if present ──
+            # Polymarket publishes `eventMetadata.priceToBeat` for THIS window, but
+            # only AFTER it closes (~50-90s after close). For an actively-trading
+            # window, this field is None. The companion routine
+            # `_sync_open_price_from_prev_window_final` polls the PREVIOUS window's
+            # `finalPrice` (which Polymarket guarantees equals THIS window's
+            # `priceToBeat`) — that becomes available shortly after the previous
+            # window closes, i.e. within the first ~60-90s of THIS window. So this
+            # block here just opportunistically captures the value if Gamma has
+            # back-filled it (e.g. on a late strategy fire or post-resolution).
+            event_meta = event.get("eventMetadata") or {}
+            ptb_raw = event_meta.get("priceToBeat") if isinstance(event_meta, dict) else None
+            if ptb_raw is not None:
+                try:
+                    ptb_val = float(ptb_raw)
+                    if ptb_val > 0:
+                        window.gamma_price_to_beat = ptb_val
+                        window._gamma_metadata_synced = True
+                        # Authoritative — override any prior Chainlink-derived open_price
+                        prev_open = window.open_price
+                        prev_source = window.open_price_source
+                        window.open_price = ptb_val
+                        window.open_price_source = "polymarket_priceToBeat"
+                        if prev_open is not None and abs(prev_open - ptb_val) > 0.01:
+                            self._log.info(
+                                "open_price.priceToBeat_override",
+                                window_ts=window.window_ts,
+                                asset=window.asset,
+                                prev_open=prev_open,
+                                prev_source=prev_source,
+                                new_open=ptb_val,
+                                delta=round(prev_open - ptb_val, 4),
+                            )
+                except (TypeError, ValueError):
+                    pass
+
             # The event may carry markets as a nested list
             markets = event.get("markets", [])
             if not markets:
@@ -543,23 +611,48 @@ class Polymarket5MinFeed:
             self._log.error("gamma_api_error", error=str(exc))
 
     async def _fetch_open_price(self, window: WindowInfo) -> None:
-        """Fetch the window open price, preferring Chainlink oracle (Polymarket resolution source).
+        """Fetch the window open price.
 
-        Priority: Chainlink in-memory cache -> Binance REST (fallback).
-        Polymarket 5m markets resolve using Chainlink oracle on Polygon,
-        so using the same source for open_price aligns our delta with resolution.
+        Priority order:
+          1. Polymarket eventMetadata.priceToBeat (set by _fetch_live_data when
+             available — this is the canonical UI/resolution reference).
+          2. Chainlink Polygon in-memory cache (approximation; ~$3-30 skew vs
+             Polymarket's Chainlink Data Streams sample. Used pre-open or if
+             Gamma metadata hasn't published yet.)
+          3. Binance REST (fallback).
+
+        Polymarket 5m markets resolve via Chainlink Data Streams (off-chain,
+        low-latency feed at data.chain.link/streams/btc-usd) — NOT the on-chain
+        Aggregator V3 contract on Polygon. The two diverge by tens of dollars
+        per window. Once `eventMetadata.priceToBeat` becomes available (a few
+        seconds after window open), `_fetch_live_data` overwrites the
+        Chainlink-derived approximation with the canonical value.
         """
-        # ── PRIMARY: Chainlink oracle (same source Polymarket resolves on) ──
+        # ── PRIMARY: Polymarket priceToBeat already captured ──
+        if window.gamma_price_to_beat and window.gamma_price_to_beat > 0:
+            window.open_price = float(window.gamma_price_to_beat)
+            window.open_price_source = "polymarket_priceToBeat"
+            self._log.info(
+                "live.open_price_fetched",
+                asset=window.asset,
+                price=window.open_price,
+                source="polymarket_priceToBeat",
+            )
+            return
+
+        # ── FALLBACK 1: Chainlink Polygon (approximation; will be overridden
+        #               by _fetch_live_data once eventMetadata publishes) ──
         if self._chainlink_feed:
             cl_prices = getattr(self._chainlink_feed, "latest_prices", {})
             cl_price = cl_prices.get(window.asset)
             if cl_price and cl_price > 0:
                 window.open_price = float(cl_price)
+                window.open_price_source = "chainlink_polygon_pending"
                 self._log.info(
                     "live.open_price_fetched",
                     asset=window.asset,
                     price=window.open_price,
-                    source="chainlink_oracle",
+                    source="chainlink_polygon_pending",
                 )
                 return
 
@@ -601,6 +694,7 @@ class Polymarket5MinFeed:
                         data = await resp.json()
                         if isinstance(data, dict) and "price" in data:
                             window.open_price = float(data["price"])
+                            window.open_price_source = "binance_fallback"
                             self._log.info(
                                 "live.open_price_fetched",
                                 asset=window.asset,
@@ -612,6 +706,93 @@ class Polymarket5MinFeed:
                 continue
 
         self._log.warning("live.open_price_all_failed", asset=window.asset)
+
+    async def _sync_open_price_from_prev_window_final(
+        self, window: WindowInfo
+    ) -> bool:
+        """Fetch the previous window's `finalPrice` from Gamma and use it as the
+        canonical open_price for `window`.
+
+        Polymarket samples Chainlink Data Streams (off-chain low-latency feed at
+        data.chain.link/streams/btc-usd) once at every 5-minute window boundary.
+        That single sample serves as both `finalPrice[N-1]` and `priceToBeat[N]`.
+        Verified empirically across 5 sequential windows (2026-05-01 22:00-22:25
+        UTC) with 100% match.
+
+        Polymarket publishes `eventMetadata.finalPrice` ~50-90s after window N-1
+        closes, which is ~50-90s into window N. Calling this method during
+        window N's ACTIVE state once the previous window has resolved yields
+        the canonical reference price (matches the UI "Price To Beat" exactly,
+        modulo float precision).
+
+        Returns True if the open_price was successfully overridden from Gamma.
+        """
+        if window._gamma_metadata_synced:
+            return True
+        if not self._http_client:
+            return False
+
+        prev_ts = window.window_ts - window.duration_secs
+        prev_slug = (
+            f"{window.asset.lower()}-updown-"
+            f"{'15m' if window.duration_secs == 900 else '5m'}-{prev_ts}"
+        )
+        try:
+            resp = await self._http_client.get(
+                "https://gamma-api.polymarket.com/events",
+                params={"slug": prev_slug},
+                timeout=5.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if not data or not isinstance(data, list):
+                return False
+            prev_event = data[0]
+            prev_meta = prev_event.get("eventMetadata") or {}
+            if not isinstance(prev_meta, dict):
+                return False
+            final_raw = prev_meta.get("finalPrice")
+            if final_raw is None:
+                return False
+            final_val = float(final_raw)
+            if final_val <= 0:
+                return False
+
+            prev_open = window.open_price
+            prev_source = window.open_price_source
+            window.gamma_price_to_beat = final_val
+            window.open_price = final_val
+            window.open_price_source = "polymarket_priceToBeat"
+            window._gamma_metadata_synced = True
+
+            if prev_open is not None and abs(prev_open - final_val) > 0.01:
+                self._log.info(
+                    "open_price.priceToBeat_synced_from_prev_window",
+                    window_ts=window.window_ts,
+                    asset=window.asset,
+                    prev_open=prev_open,
+                    prev_source=prev_source,
+                    new_open=final_val,
+                    delta=round(prev_open - final_val, 4),
+                    prev_window_ts=prev_ts,
+                )
+            else:
+                self._log.info(
+                    "open_price.priceToBeat_synced_from_prev_window",
+                    window_ts=window.window_ts,
+                    asset=window.asset,
+                    new_open=final_val,
+                    prev_window_ts=prev_ts,
+                )
+            return True
+        except Exception as exc:
+            self._log.debug(
+                "open_price.prev_window_sync_failed",
+                window_ts=window.window_ts,
+                prev_slug=prev_slug,
+                error=str(exc),
+            )
+            return False
 
     async def _fetch_paper_data(self, window: WindowInfo) -> None:
         """Set paper token IDs and open price. Preserves real Gamma prices if already fetched."""

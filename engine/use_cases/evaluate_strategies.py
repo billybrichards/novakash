@@ -563,6 +563,16 @@ class EvaluateStrategiesUseCase:
             except Exception as exc:
                 log.warning("strategy.v4_fetch_error", error=str(exc)[:200])
 
+        # Polymarket canonical reference price (sister to PR #464). Populated
+        # when WindowInfo.open_price was sourced from `eventMetadata.priceToBeat`.
+        # Always populated when available — downstream consumers gate behaviour
+        # on the OPEN_PRICE_USE_PRICE_TO_BEAT flag, not on field presence.
+        polymarket_price_to_beat = None
+        if getattr(window, "open_price_source", None) == "polymarket_priceToBeat":
+            ptb = getattr(window, "open_price", None)
+            if ptb is not None and ptb > 0:
+                polymarket_price_to_beat = float(ptb)
+
         return StrategyContext(
             asset=asset,
             window_ts=window_ts,
@@ -587,4 +597,5 @@ class EvaluateStrategiesUseCase:
             clob_down_bid=clob_down_bid,
             clob_down_ask=clob_down_ask,
             v4_snapshot=v4_snapshot,
+            polymarket_price_to_beat=polymarket_price_to_beat,
         )
