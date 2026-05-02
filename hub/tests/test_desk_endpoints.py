@@ -100,8 +100,12 @@ def test_window_floor_rounds_down_to_5min():
 # ── GET /api/windows/current ────────────────────────────────────────────────
 
 def test_current_window_returns_shape_with_price():
-    # chainlink query returns one row
-    session = _mk_session([_mk_result([(67_500.42,)])])
+    # 1st query: window_snapshots (canonical) — empty so we exercise fallback.
+    # 2nd query: ticks_chainlink — returns one row.
+    session = _mk_session([
+        _mk_result([]),                          # window_snapshots empty
+        _mk_result([(67_500.42,)]),              # ticks_chainlink
+    ])
     app = _build_app(session)
     client = TestClient(app)
 
@@ -112,32 +116,65 @@ def test_current_window_returns_shape_with_price():
     assert data["window_epoch"] % 300 == 0
     assert data["t_close_ts"] == data["t_open_ts"] + 300
     assert 0 <= data["seconds_remaining"] <= 300
+    # Legacy field still populated for back-compat.
     assert data["target_price_chainlink"] == 67_500.42
+    # Canonical falls back to chainlink when window_snapshots is empty.
+    assert data["target_price"] == 67_500.42
+    assert data["target_price_source"] == "chainlink_polygon_fallback"
     assert data["asset"] == "BTC"
     assert data["timeframe"] == "5m"
 
 
-def test_current_window_degrades_when_ticks_chainlink_missing():
-    session = _mk_session([_missing_table_error("ticks_chainlink")])
+def test_current_window_prefers_canonical_open_price():
+    # Both sources present — canonical (window_snapshots.open_price) wins.
+    session = _mk_session([
+        _mk_result([(67_580.99,)]),              # window_snapshots canonical
+        _mk_result([(67_500.42,)]),              # ticks_chainlink (legacy)
+    ])
     app = _build_app(session)
     client = TestClient(app)
 
     resp = client.get("/api/windows/current?asset=BTC")
     assert resp.status_code == 200
     data = resp.json()
+    assert data["target_price"] == 67_580.99
+    assert data["target_price_source"] == "polymarket_canonical"
+    assert data["target_price_chainlink"] == 67_500.42
+
+
+def test_current_window_degrades_when_ticks_chainlink_missing():
+    # window_snapshots empty, ticks_chainlink table missing entirely.
+    session = _mk_session([
+        _mk_result([]),                          # window_snapshots empty
+        _missing_table_error("ticks_chainlink"),
+    ])
+    app = _build_app(session)
+    client = TestClient(app)
+
+    resp = client.get("/api/windows/current?asset=BTC")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["target_price"] is None
     assert data["target_price_chainlink"] is None
+    assert data["target_price_source"] == "unknown"
     # Still returns window clock fields.
     assert data["window_epoch"] % 300 == 0
 
 
 def test_current_window_degrades_when_chainlink_empty():
-    session = _mk_session([_mk_result([])])
+    session = _mk_session([
+        _mk_result([]),                          # window_snapshots empty
+        _mk_result([]),                          # ticks_chainlink empty
+    ])
     app = _build_app(session)
     client = TestClient(app)
 
     resp = client.get("/api/windows/current")
     assert resp.status_code == 200
-    assert resp.json()["target_price_chainlink"] is None
+    body = resp.json()
+    assert body["target_price"] is None
+    assert body["target_price_chainlink"] is None
+    assert body["target_price_source"] == "unknown"
 
 
 # ── POST /api/desk/picks ────────────────────────────────────────────────────

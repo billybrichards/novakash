@@ -16,7 +16,8 @@ name: Deploy Data Collector to AWS
 #
 # The service is a pure DB writer: reads from Polymarket Gamma (public,
 # no key) and writes `market_data` + `market_snapshots` rows to the
-# shared Railway Postgres. Only one runtime secret: DATABASE_URL.
+# shared Postgres (AWS RDS as of 2026-05). Only one runtime secret:
+# DATABASE_URL.
 #
 # The deploy is gated to push events on `develop` (matching the rest of
 # the novakash repo's deploy convention — main is the audit/release

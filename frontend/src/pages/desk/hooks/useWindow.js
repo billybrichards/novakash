@@ -1,8 +1,13 @@
 // /desk — window clock hook.
 //
-// Hits GET /api/windows/current on a 10s cadence (cheap; just the Chainlink
-// target price), and ticks a client-side countdown every 1s so the UI
-// doesn't depend on the network for T-MM:SS updates.
+// Hits GET /api/windows/current on a 10s cadence and ticks a client-side
+// countdown every 1s so the UI doesn't depend on the network for T-MM:SS.
+//
+// Post-PR #464 the hub returns `target_price` (canonical Polymarket
+// priceToBeat from window_snapshots.open_price) plus a `target_price_source`
+// tag — "polymarket_canonical" or "chainlink_polygon_fallback". The legacy
+// `target_price_chainlink` is kept for back-compat. We expose all three
+// so the Header can show a source badge ("canonical" green, "approx" amber).
 //
 // When /api/windows/current hasn't responded yet we fall back to computing
 // the window from local UTC. That way the FE clock runs even when the hub
@@ -53,12 +58,18 @@ export function useWindow(asset = 'BTC') {
   const tClose = server?.t_close_ts ?? tOpen + WINDOW_SECONDS;
   const secondsRemaining = Math.max(0, tClose - now);
   const targetPriceChainlink = server?.target_price_chainlink ?? null;
+  // Canonical Polymarket priceToBeat (post-PR #464). Falls back to
+  // chainlink-only when window_snapshots cold; tag tracks which path served.
+  const targetPrice = server?.target_price ?? targetPriceChainlink;
+  const targetPriceSource = server?.target_price_source ?? null;
 
   return {
     windowEpoch: server?.window_epoch ?? tOpen,
     tOpen,
     tClose,
     secondsRemaining,
+    targetPrice,
+    targetPriceSource,
     targetPriceChainlink,
     asset,
     error: serverError,
