@@ -36,12 +36,18 @@ timescale: 5m
 gates: []
 
 gate_params:
-  # ── Entry window (same as v10_lgb_only) ────────────────────────────
-  min_offset_sec: 24
-  max_offset_sec: 240
+  # ── Entry window ────────────────────────────────────────────────────
+  # 2026-05-02 (calibration recce): 24→30 / 240→105. UP cliff past
+  # offset 105: 67% → 53%@120 → 50%@135 → 47%@150 → 42%@165. Tightening
+  # to 30-105 captures the offset-90 sweet spot (UP 67%, DOWN 67%) and
+  # excludes the bleed tail.
+  min_offset_sec: 30
+  max_offset_sec: 105
 
   # ── Regime allowlist ────────────────────────────────────────────────
-  tradeable_v4_regimes: [volatile_trend, chop, risk_off, calm_trend]
+  # 2026-05-02 (calibration recce): drop calm_trend (UP 8.89% WR n=45 —
+  # dead) AND chop (UP 51.6% / DOWN 58.7% — fee-marginal both directions).
+  tradeable_v4_regimes: [volatile_trend, risk_off]
 
   # ── TRANSITION not blocked ─────────────────────────────────────────
   block_down_vpin_regimes: []
@@ -66,8 +72,16 @@ gate_params:
   blocked_utc_hours: []
   post_loss_cooldown_min: 20
 
-  # ── LGB safety floor (same as v10_lgb_only) ────────────────────────
-  lgb_dist_min_up: 0.13
+  # ── LGB safety floor ────────────────────────────────────────────────
+  # 2026-05-02 (calibration recce): UP 0.13→0.20 to skip the dist_v12
+  # [0.15,0.20) U-shape where UP WR collapses to 39.87% (n=158). Above
+  # 0.20 cleanly rebounds to 79-100% WR. Likely v12 UP isotonic
+  # miscalibration in mid-band — investigate as separate follow-up.
+  # DOWN kept at 0.10 (clean profile 60-94% WR across band).
+  # NOTE: lgb_dist gate fires post-average on combo prob via v9_ensemble
+  # delegation. combo_min_dist (line 124) still gates pre-swap on
+  # min(dist_v9, dist_v12) — split direction floor would need code change.
+  lgb_dist_min_up: 0.20
   lgb_dist_min_down: 0.10
   lgb_dist_min_up_with_hc_agree: 0.08
   lgb_dist_min_down_with_hc_agree: 0.08
