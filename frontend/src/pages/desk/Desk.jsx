@@ -79,7 +79,7 @@ export default function Desk() {
 
   // /v4/snapshot — 2s (header fields + signal stack).
   const snap = useSnapshot('BTC', 2_000);
-  const { pu, pc, pl, plV91 } = pickProbs(snap.fiveMin);
+  const { pu, pc, pl } = pickProbs(snap.fiveMin);
 
   // System status — engine mode for the header chip.
   // Hub now exposes a derived `mode` field (LIVE/PAPER/KILLED) at the top
@@ -135,13 +135,11 @@ export default function Desk() {
   const priceDelta2s = btcPrice != null && prevBtcPrice != null
     ? btcPrice - prevBtcPrice : null;
 
-  // Window Δ% vs target — prefer canonical Polymarket priceToBeat
-  // (post-PR #464 via window_snapshots.open_price), fall back to chainlink.
-  const targetForDelta = win.targetPrice ?? win.targetPriceChainlink;
+  // Window Δ% vs target (same math as the chart uses).
   const windowDelta = useMemo(() => {
-    if (btcPrice == null || targetForDelta == null) return null;
-    return (btcPrice - targetForDelta) / targetForDelta;
-  }, [btcPrice, targetForDelta]);
+    if (btcPrice == null || win.targetPriceChainlink == null) return null;
+    return (btcPrice - win.targetPriceChainlink) / win.targetPriceChainlink;
+  }, [btcPrice, win.targetPriceChainlink]);
 
   // Latest pick (for showing "logged: you → UP @ ..." on YourPlay).
   const latestPick = picks.rows[0] || null;
@@ -172,15 +170,13 @@ export default function Desk() {
       <PageHeader
         tag="DESK · /desk"
         title="Live Play-Along Desk"
-        subtitle="Operator HUD for 5m BTC Polymarket windows. Canonical priceToBeat target (PR #464), v9.1 LGB-only retrain on the scorecard (PR #466), full v6/v8/v9/v9.1/v10/v12 strategy lineup family-grouped, multi-source delta + classifier + gate context + manual-trade bar."
+        subtitle="Operator HUD for 5m BTC Polymarket windows. Anchor-clear TimesFM fan, multi-source price delta (Chainlink/Binance/Tiingo), classifier scorecard, live gate context, and the full v6/v8/v9/v10/v12 strategy lineup grouped by family."
       />
 
       <Header
         price={btcPrice}
         priceDelta2s={priceDelta2s}
         secondsRemaining={win.secondsRemaining}
-        targetPrice={win.targetPrice}
-        targetPriceSource={win.targetPriceSource}
         targetPriceChainlink={win.targetPriceChainlink}
         yesMid={yesMid}
         noMid={noMid}
@@ -216,14 +212,14 @@ export default function Desk() {
           <ErrBoundary label="Quantile fan">
             <QuantileFan
               fiveMin={snap.fiveMin}
-              targetPrice={targetForDelta}
+              targetPrice={win.targetPriceChainlink}
               currentPrice={btcPrice}
             />
           </ErrBoundary>
           <ErrBoundary label="Multi-source delta">
             <MultiSourceDelta
               asset="BTC"
-              targetPrice={targetForDelta}
+              targetPrice={win.targetPriceChainlink}
               pollMs={5_000}
             />
           </ErrBoundary>
@@ -248,7 +244,6 @@ export default function Desk() {
               pu={pu}
               pc={pc}
               pl={pl}
-              plV91={plV91}
               conflict={Boolean(snap.fiveMin?.ensemble_config?.disagreement_detected)}
             />
           </ErrBoundary>

@@ -253,35 +253,6 @@ export const STRATEGIES = {
       vhcThreshold: 0.25,
     },
   },
-  v9_1_lgb_only: {
-    id: 'v9_1_lgb_only',
-    label: 'V9.1 LGB-ONLY',
-    shortLabel: 'V9.1',
-    color: '#fb7185',
-    colorDim: 'rgba(251,113,133,0.14)',
-    direction: 'ANY',
-    description:
-      'v9.1 retrain — same Sequoia v5 architecture as v9 PROD, retrained on '
-      + 'priceToBeat-aligned delta_* features (Polymarket\'s actual resolution '
-      + 'oracle, see PR #464). 7d out-of-sample holdout n=73336 shows '
-      + '+5.92pp weighted vs v9: d060 76.0→80.8%, d090 74.2→76.4%, '
-      + 'd120 71.6→77.7%, d180 68.5→75.7%, d240 66.0→73.1%. ECE improved '
-      + 'at 4/5 deltas. Ghost shadow only — promote by hand only after '
-      + 'live shadow soak. Reads probability_lgb_v9_1 from /v4/snapshot '
-      + '(timesfm V9_1_ENABLED=true). See hub note #313.',
-    configKey: 'V9_1_LGB_ONLY_MODE',
-    defaultMode: 'GHOST',
-    timescale: '5m',
-    asset: 'BTC',
-    gateLabel: 'v9.1 LGB-only · priceToBeat-aligned · GHOST shadow',
-    family: 'lgb_only',
-    thresholds: {
-      lgbDistMinDown: 0.10,
-      lgbDistMinUp: 0.15,
-      vhcThreshold: 0.25,
-    },
-    inCurrentLineup: true,
-  },
   v10_lgb_only: {
     id: 'v10_lgb_only',
     label: 'V10 LGB-ONLY',
@@ -426,8 +397,7 @@ export const DESK_TRACKED_FAMILIES = [
     family: 'lgb_only',
     label: 'LGB-only',
     description: 'Classifier disabled — distance tiers',
-    // v9_1 sits next to v9 for direct head-to-head on the desk.
-    ids: ['v8_champion_lgb_only', 'v9_lgb_only', 'v9_1_lgb_only', 'v10_lgb_only', 'v12_lgb_solo'],
+    ids: ['v8_champion_lgb_only', 'v9_lgb_only', 'v10_lgb_only', 'v12_lgb_solo'],
   },
   {
     family: 'combo',

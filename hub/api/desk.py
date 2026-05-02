@@ -92,20 +92,11 @@ async def current_window(
     session: AsyncSession = Depends(get_session),
     user: TokenData = Depends(get_current_user),
 ) -> dict:
-    """Current 5m window clock + canonical Polymarket open price.
+    """Current 5m window clock + Chainlink target price at window-open.
 
-    Resolution lookup, in preference order:
-      1. window_snapshots.open_price — written by the engine post-PR #464.
-         This is Polymarket's eventMetadata.priceToBeat (Chainlink Streams
-         off-chain) when available, else chainlink_polygon, else binance.
-         Matches the number Polymarket resolves against to the cent.
-      2. ticks_chainlink — legacy fallback while engine is cold-starting.
-         Diverges from priceToBeat by $3-32 per window per audit #464.
-
-    Both are exposed: `target_price` is the canonical (preferred) value,
-    `target_price_chainlink` stays for back-compat with older FE builds,
-    and `target_price_source` tags which path served it so the FE can
-    label the badge accordingly.
+    The Chainlink price AT-OR-BEFORE t_open_ts is the number Polymarket
+    resolves UP/DOWN against at close; surfacing it here lets the FE show
+    an honest "above/below target" indicator without guessing.
     """
     now_s = int(time.time())
     t_open = _window_floor(now_s)
@@ -113,35 +104,6 @@ async def current_window(
     seconds_remaining = max(0, t_close - now_s)
 
     target_price: Optional[float] = None
-    target_price_source: str = "unknown"
-
-    # PRIMARY — engine-written canonical price (post-PR #464). Reading the
-    # most-recent eval_offset row for this window so a cold window with no
-    # snapshot yet falls through to ticks_chainlink below.
-    try:
-        q = text(
-            """
-            SELECT open_price
-            FROM window_snapshots
-            WHERE window_ts = :window_ts
-              AND asset = :asset
-              AND open_price IS NOT NULL
-            ORDER BY eval_offset DESC NULLS LAST, created_at DESC
-            LIMIT 1
-            """
-        )
-        res = await session.execute(q, {"asset": asset, "window_ts": t_open})
-        row = res.first()
-        if row and row[0] is not None:
-            target_price = float(row[0])
-            target_price_source = "polymarket_canonical"
-    except Exception as exc:
-        if not _is_missing_table(exc):
-            log.warning("desk.current_window.window_snapshots_err", error=str(exc)[:200])
-
-    # FALLBACK — legacy chainlink_polygon-only path. Always read this so
-    # target_price_chainlink stays populated for old FE builds.
-    chainlink_price: Optional[float] = None
     try:
         q = text(
             """
@@ -155,22 +117,17 @@ async def current_window(
         res = await session.execute(q, {"asset": asset, "t_open": t_open})
         row = res.first()
         if row and row[0] is not None:
-            chainlink_price = float(row[0])
+            target_price = float(row[0])
     except Exception as exc:
         if not _is_missing_table(exc):
             log.warning("desk.current_window.chainlink_err", error=str(exc)[:200])
-
-    if target_price is None and chainlink_price is not None:
-        target_price = chainlink_price
-        target_price_source = "chainlink_polygon_fallback"
+        # degrade silently — target_price stays None
 
     return {
         "window_epoch": t_open,
         "t_open_ts": t_open,
         "t_close_ts": t_close,
-        "target_price": target_price,
-        "target_price_source": target_price_source,
-        "target_price_chainlink": chainlink_price,
+        "target_price_chainlink": target_price,
         "seconds_remaining": seconds_remaining,
         "asset": asset,
         "timeframe": "5m",
