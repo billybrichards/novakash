@@ -5,8 +5,9 @@ for Sequoia v5's push-mode scoring.
 These tests enforce the invariants that v5's serving correctness
 depends on:
 
-  1. Exactly 25 fields, matching FEATURE_COLUMNS_V5 in the timesfm
-     training code (one-to-one, no extras, no drift).
+  1. Exactly 26 fields (25 v5 + 1 PR #464 sister `polymarket_price_to_beat`),
+     matching FEATURE_COLUMNS_V5 in the timesfm training/scoring code
+     (one-to-one, no extras, no drift).
   2. Missing values stay None on the wire (→ JSON null → scorer NaN).
   3. Bool coercion: True/False → 1.0/0.0, never 1/0 int.
   4. Regime and delta_source categorical encodings match training.
@@ -65,6 +66,9 @@ EXPECTED_V5_FIELDS: list[str] = [
     "regime_num",
     "delta_source_num",
     "v2_logit",
+    # PR #464 sister: Polymarket canonical reference (telemetry until
+    # OPEN_PRICE_USE_PRICE_TO_BEAT flips on the scorer side).
+    "polymarket_price_to_beat",
 ]
 
 
@@ -73,12 +77,18 @@ EXPECTED_V5_FIELDS: list[str] = [
 # ────────────────────────────────────────────────────────────────────
 
 
-def test_v5_feature_body_schema_is_exactly_25_fields():
-    """The schema is load-bearing: drift here = v5 silently breaks."""
+def test_v5_feature_body_schema_is_exactly_26_fields():
+    """The schema is load-bearing: drift here = v5 silently breaks.
+
+    Field count grew from 25 → 26 with PR #464 sister change adding
+    `polymarket_price_to_beat` for the Polymarket-canonical-open-price
+    rollout. The scorer-side `FEATURE_COLUMNS_V5` MUST grow in lockstep,
+    or the parity check fails.
+    """
     body = V5FeatureBody()
     d = body.to_json_dict()
     assert list(d.keys()) == EXPECTED_V5_FIELDS
-    assert len(d) == 25
+    assert len(d) == 26
 
 
 def test_empty_body_is_all_none_and_zero_coverage():
@@ -115,13 +125,14 @@ def test_full_body_is_full_coverage():
         regime_num=1.0,
         delta_source_num=0.0,
         v2_logit=0.5,
+        polymarket_price_to_beat=67000.5,
     )
     assert body.coverage() == 1.0
 
 
 def test_partial_body_has_fractional_coverage():
     body = V5FeatureBody(eval_offset=120.0, vpin=0.5, delta_pct=0.01)
-    assert body.coverage() == pytest.approx(3 / 25, rel=1e-9)
+    assert body.coverage() == pytest.approx(3 / 26, rel=1e-9)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -440,8 +451,9 @@ def test_builder_first_tick_no_prior_gives_none_logit():
 
 def test_builder_all_v5_field_names_present_in_output():
     """Make sure the builder populates every field in the schema,
-    even if only with None. The scorer expects exactly 25 keys on
-    every request and an extra or missing key should fail fast."""
+    even if only with None. The scorer expects exactly the
+    `EXPECTED_V5_FIELDS` keys on every request and an extra or missing
+    key should fail fast."""
     body = build_v5_feature_body()
     d = body.to_json_dict()
     for name in EXPECTED_V5_FIELDS:

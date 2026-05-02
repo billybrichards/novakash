@@ -329,6 +329,42 @@ class RuntimeConfig:
             os.environ.get("V4_UP_ASIAN_ENABLED", "false").lower() == "true"
         )
 
+        # ── PR #464 sister: Polymarket canonical priceToBeat rollout ──────
+        # OPEN_PRICE_USE_PRICE_TO_BEAT controls whether downstream consumers
+        # (timesfm-service primarily) recompute their delta_* family against
+        # the Polymarket-published canonical reference price (set by PR #464
+        # on WindowInfo.open_price when source == "polymarket_priceToBeat",
+        # propagated to StrategyContext.polymarket_price_to_beat and the
+        # V5FeatureBody.polymarket_price_to_beat field of the JSON pushed
+        # to /v2/probability).
+        #
+        # Default OFF — populating the field is zero-behaviour-change for
+        # the engine itself: it's pure telemetry on the wire. The flag is
+        # READ by the timesfm-service sister-PR, NOT gated on inside the
+        # engine. The engine always populates the field when available so
+        # the operator can flip the flag on the scorer side without redeploy
+        # of the engine.
+        #
+        # Coordinated rollout:
+        #   1. Engine merges PR #464 + this sister change → wire carries
+        #      polymarket_price_to_beat. timesfm ignores it (flag off
+        #      everywhere). No behaviour change.
+        #   2. timesfm sister-PR merges → it READS the field but only USES
+        #      it when OPEN_PRICE_USE_PRICE_TO_BEAT=true on its env. Flag
+        #      stays default false. No behaviour change.
+        #   3. Operator flips OPEN_PRICE_USE_PRICE_TO_BEAT=true on the
+        #      scorer host. Single env flip, no code change. Cutover.
+        #   4. After bake-in, default flips to true in a follow-up PR and
+        #      the override env var is retired.
+        #
+        # Engine-side reads of this flag should be limited to telemetry /
+        # observability (e.g. tagging which path is "expected" downstream).
+        # Strategies must NOT change behaviour on this flag — the entire
+        # point is to keep the cutover surgical to the scorer's delta math.
+        self.open_price_use_price_to_beat: bool = (
+            os.environ.get("OPEN_PRICE_USE_PRICE_TO_BEAT", "false").lower() == "true"
+        )
+
         # ── Sync metadata ─────────────────────────────────────────────────
         self._active_config_id: Optional[int] = None
         self._active_config_name: Optional[str] = None

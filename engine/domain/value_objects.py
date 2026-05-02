@@ -847,6 +847,16 @@ class StrategyContext:
     # Prior DUNE probability (for v2_logit feature)
     prev_dune_probability_up: Optional[float] = None
 
+    # Polymarket canonical reference price (sister to PR #464). Set when the
+    # source-tagged WindowInfo.open_price came from `eventMetadata.priceToBeat`
+    # (open_price_source == "polymarket_priceToBeat"). Stays None when only
+    # the chainlink_polygon / binance fallback was available at eval time.
+    # Strategies should NOT switch behaviour on this directly — it is propagated
+    # so the V5FeatureBody pushed to timesfm-service carries the canonical
+    # value for the OPEN_PRICE_USE_PRICE_TO_BEAT-gated delta recompute. See
+    # `engine/signals/v2_feature_body.py:V5FeatureBody.polymarket_price_to_beat`.
+    polymarket_price_to_beat: Optional[float] = None
+
 
 @dataclass(frozen=True)
 class StrategyDecision:
