@@ -1,19 +1,32 @@
 name: v12_lgb_combo
-version: "12.0.0-combo"
-# v12_lgb_combo — 2026-04-30 — v9+v12 LGB agreement-required combo strategy.
+version: "12.0.0-combo-v9_1"
+# v12_lgb_combo — 2026-04-30; 2026-05-02 v9.1 swap.
 #
-# Trades only when BOTH v9 LGB (probability_lgb, prod v5) and v12 LGB
+# Now uses v9.1 retrain (priceToBeat-aligned) instead of v9 PROD as the
+# "v9-side" of the agreement combo. See hub note #313 +
+# docs/v9_1_PROVENANCE.md — honest 7d holdout shows +5.92pp weighted lift,
+# ECE improved at 4/5 deltas. SKIPs cleanly when probability_lgb_v9_1 is
+# None (timesfm V9_1_ENABLED=false / model load fail) — does NOT fall
+# back to v9 PROD.
+#
+# Trades only when BOTH v9.1 LGB (probability_lgb_v9_1) and v12 LGB
 # (probability_lgb_v12) agree on direction AND min(dist) >= 0.10. Combo
-# probability = (p_v9 + p_v12) / 2, delegated to v9_ensemble gate stack.
+# probability = (p_v9_1 + p_v12) / 2, delegated to v9_ensemble gate stack.
 #
 # v12 model: retrained on window_snapshots with verified Polymarket labels.
-# 3-day replay: +$398 PnL improvement over v9 alone (228 trades). v12
-# catches v9's big losses while keeping 80% of v9's wins.
+# 3-day replay (vs v9 PROD): +$398 PnL improvement over v9 alone (228
+# trades). v12 catches v9's big losses while keeping 80% of v9's wins.
+# Note: that replay was vs v9 PROD; v9.1 swap may shift the agreement /
+# disagreement distributions — needs 7d shadow re-validation before LIVE.
 #
 # The hook (v12_lgb_combo.py) performs agreement/conviction checks, then
 # swaps probability_lgb with the averaged combo probability before
 # delegating to v9_ensemble's gate stack. Same delegation pattern as
 # v10_lgb_only.py.
+#
+# Promotion gate (per feedback_no_auto_model_promotion): 7d shadow with
+# WR > prior v9+v12 baseline (~73% on 30d real trades, +$104 cum on
+# CASCADE×DOWN slice) before any LIVE flip.
 #
 # Start as GHOST for shadow comparison before LIVE flip.
 mode: GHOST
