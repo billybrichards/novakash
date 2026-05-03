@@ -132,11 +132,15 @@ async def current_window(
     target_price: Optional[float] = None
     target_price_source: str = "unknown"
 
-    # PRIMARY — engine-written canonical price (post-PR #464). Reading the
-    # most-recent eval_offset row for this window so a cold window with no
-    # snapshot yet falls through to ticks_chainlink below.
+    # PRIMARY — engine-written canonical price (post-PR #464). Each window
+    # gets multiple rows (one per eval_offset). Order by created_at DESC
+    # so the most recent write wins — important because the engine's
+    # priceToBeat sync fires ~T+60-180s into the window and overwrites
+    # the early chainlink_polygon_pending stub. Eval_offset DESC would
+    # have ranked the early stub (offset ~240) over the later canonical
+    # (offset ~46). Cold window → no row → fall through to ticks_chainlink.
     #
-    # open_price_source is written by the engine using its own taxonomy:
+    # open_price_source taxonomy (engine):
     #   "polymarket_html_priceToBeat" — HTML-scraped __NEXT_DATA__ (most accurate)
     #   "polymarket_priceToBeat"      — Gamma eventMetadata canonical
     #   "chainlink_polygon"           — Chainlink on-chain (legacy, may diverge $3-32)
@@ -152,7 +156,7 @@ async def current_window(
             WHERE window_ts = :window_ts
               AND asset = :asset
               AND open_price IS NOT NULL
-            ORDER BY eval_offset DESC NULLS LAST, created_at DESC
+            ORDER BY created_at DESC
             LIMIT 1
             """
         )
