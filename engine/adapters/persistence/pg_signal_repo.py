@@ -289,7 +289,8 @@ class PgSignalRepository(SignalRepository):
                         consensus_divergence_bps,
                         macro_bias, macro_direction_gate, macro_size_modifier,
                         clob_up_bid, clob_up_ask, clob_down_bid, clob_down_ask,
-                        clob_imbalance, clob_implied_up, clob_fill_price
+                        clob_imbalance, clob_implied_up, clob_fill_price,
+                        open_price_source
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,
                         $9,$10,$11,$12,$13,$14,$15,$16,$17,
@@ -315,9 +316,12 @@ class PgSignalRepository(SignalRepository):
                         $96,
                         $97,$98,$99,
                         $100,$101,$102,$103,
-                        $104,$105,$106
+                        $104,$105,$106,$107
                     )
-                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                    ON CONFLICT (window_ts, asset, timeframe, COALESCE(eval_offset, -1)) DO UPDATE SET
+                        open_price             = COALESCE(EXCLUDED.open_price, window_snapshots.open_price),
+                        open_price_source      = COALESCE(EXCLUDED.open_price_source, window_snapshots.open_price_source),
+                        close_price            = COALESCE(EXCLUDED.close_price, window_snapshots.close_price),
                         gamma_up_price         = COALESCE(EXCLUDED.gamma_up_price, window_snapshots.gamma_up_price),
                         gamma_down_price       = COALESCE(EXCLUDED.gamma_down_price, window_snapshots.gamma_down_price),
                         delta_chainlink        = COALESCE(EXCLUDED.delta_chainlink, window_snapshots.delta_chainlink),
@@ -478,6 +482,8 @@ class PgSignalRepository(SignalRepository):
                     snapshot.get("clob_imbalance"),
                     snapshot.get("clob_implied_up"),
                     snapshot.get("clob_fill_price"),
+                    # open_price_source — engine taxonomy for open_price value
+                    snapshot.get("open_price_source"),
                 )
             log.debug(
                 "db.window_snapshot_written",
@@ -540,7 +546,7 @@ class PgSignalRepository(SignalRepository):
                         $16,$17,$18,
                         $19,$20,$21
                     )
-                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                    ON CONFLICT (window_ts, asset, timeframe, COALESCE(eval_offset, -1)) DO UPDATE SET
                         sub_signal_elm         = COALESCE(EXCLUDED.sub_signal_elm, window_snapshots.sub_signal_elm),
                         sub_signal_cascade     = COALESCE(EXCLUDED.sub_signal_cascade, window_snapshots.sub_signal_cascade),
                         sub_signal_taker       = COALESCE(EXCLUDED.sub_signal_taker, window_snapshots.sub_signal_taker),
@@ -627,7 +633,7 @@ class PgSignalRepository(SignalRepository):
                         $1,$2,$3,$4,
                         $5,$6,$7,$8,$9,$10,$11
                     )
-                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                    ON CONFLICT (window_ts, asset, timeframe, COALESCE(eval_offset, -1)) DO UPDATE SET
                         ensemble_p_up          = COALESCE(EXCLUDED.ensemble_p_up, window_snapshots.ensemble_p_up),
                         ensemble_p_lgb         = COALESCE(EXCLUDED.ensemble_p_lgb, window_snapshots.ensemble_p_lgb),
                         ensemble_p_classifier  = COALESCE(EXCLUDED.ensemble_p_classifier, window_snapshots.ensemble_p_classifier),

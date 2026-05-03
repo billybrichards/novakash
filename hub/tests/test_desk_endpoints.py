@@ -127,8 +127,28 @@ def test_current_window_returns_shape_with_price():
 
 def test_current_window_prefers_canonical_open_price():
     # Both sources present — canonical (window_snapshots.open_price) wins.
+    # Row is (open_price, open_price_source) — 2 columns after PR #desk-pricetobeat-verify.
     session = _mk_session([
-        _mk_result([(67_580.99,)]),              # window_snapshots canonical
+        _mk_result([(67_580.99, "polymarket_html_priceToBeat")]),  # window_snapshots canonical
+        _mk_result([(67_500.42,)]),                                 # ticks_chainlink (legacy)
+    ])
+    app = _build_app(session)
+    client = TestClient(app)
+
+    resp = client.get("/api/windows/current?asset=BTC")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["target_price"] == 67_580.99
+    # Source is returned verbatim from the DB (engine taxonomy string).
+    assert data["target_price_source"] == "polymarket_html_priceToBeat"
+    assert data["target_price_chainlink"] == 67_500.42
+
+
+def test_current_window_prefers_canonical_no_source_tag():
+    # open_price present but open_price_source is NULL (pre-migration row).
+    # Hub should infer 'polymarket_canonical' as before.
+    session = _mk_session([
+        _mk_result([(67_580.99, None)]),         # window_snapshots — no source tag
         _mk_result([(67_500.42,)]),              # ticks_chainlink (legacy)
     ])
     app = _build_app(session)

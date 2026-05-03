@@ -41,7 +41,16 @@ export default function Header({
   // Prefer canonical Polymarket priceToBeat. Falls back to legacy chainlink
   // value when the snapshot is cold or the prop is unset by older callers.
   const displayTarget = targetPrice ?? targetPriceChainlink;
-  const isCanonical = targetPriceSource === 'polymarket_canonical';
+  // Canonical sources — engine's priceToBeat taxonomy (PR #desk-pricetobeat-verify):
+  //   'polymarket_html_priceToBeat' — HTML-scraped __NEXT_DATA__ (most precise)
+  //   'polymarket_priceToBeat'      — Gamma eventMetadata canonical
+  //   'polymarket_canonical'        — hub inference fallback for pre-migration rows
+  const CANONICAL_SOURCES = new Set([
+    'polymarket_html_priceToBeat',
+    'polymarket_priceToBeat',
+    'polymarket_canonical',
+  ]);
+  const isCanonical = CANONICAL_SOURCES.has(targetPriceSource);
   const engineChip = systemStatus
     ? <StatusChip mode={systemStatus} />
     : <StatusChip mode="?" />;
@@ -89,20 +98,26 @@ export default function Header({
         <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6, fontSize: 13 }}>
           <span title={
             isCanonical
-              ? 'Polymarket eventMetadata.priceToBeat — canonical resolution price (post-PR #464).'
+              ? `Polymarket priceToBeat — canonical resolution price. Source: ${targetPriceSource || 'polymarket_canonical'}.`
               : targetPriceSource === 'chainlink_polygon_fallback'
                 ? 'Chainlink Polygon Aggregator (legacy). Diverges from Polymarket priceToBeat by $3-32 per window — engine still warming up?'
-                : 'Window open price — source unknown.'
+                : targetPriceSource === 'chainlink_polygon_pending'
+                  ? 'Chainlink Polygon — oracle sample pending (engine warming up, canonical will sync within 60-90s).'
+                  : targetPriceSource === 'binance_fallback'
+                    ? 'Binance spot price (last resort fallback). May diverge from Polymarket resolution price.'
+                    : 'Window open price — source unknown.'
           }>
             {displayTarget == null ? '—' : fmtUsd(displayTarget)}
           </span>
           <span
             title={
               isCanonical
-                ? 'Source: Polymarket priceToBeat (engine wrote canonical). Matches the resolution price to the cent.'
+                ? `Source: ${targetPriceSource || 'polymarket_canonical'} — matches resolution price to the cent.`
                 : targetPriceSource === 'chainlink_polygon_fallback'
                   ? 'Source: Chainlink fallback. Engine has not written canonical yet for this window.'
-                  : 'Source unknown.'
+                  : targetPriceSource === 'chainlink_polygon_pending'
+                    ? 'Source: Chainlink (oracle sample pending). Will upgrade to CANONICAL within 60-90s.'
+                    : 'Source unknown.'
             }
             style={{
               fontSize: 9,

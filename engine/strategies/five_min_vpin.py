@@ -1506,6 +1506,10 @@ class FiveMinVPINStrategy(BaseStrategy):
             "asset": window.asset,
             "timeframe": tf,
             "open_price": open_price,
+            # open_price_source: engine's canonical source tag for open_price.
+            # Written to window_snapshots so hub can return the exact source
+            # string rather than inferring "polymarket_canonical" from row presence.
+            "open_price_source": getattr(window, "open_price_source", None),
             "close_price": current_price,
             "delta_pct": delta_pct,  # Primary delta (chainlink if available, else binance)
             # Multi-source deltas (v7.2)
