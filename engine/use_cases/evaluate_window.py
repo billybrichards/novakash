@@ -466,6 +466,17 @@ class EvaluateWindowUseCase:
 
         _cg = self._cg_enhanced.snapshot if self._cg_enhanced is not None else None
         _twap_d = twap_result.twap_delta_pct if twap_result is not None else None
+        # Polymarket canonical priceToBeat — populated when WindowInfo.open_price
+        # came from priceToBeat (HTML scrape or Gamma metadata). v9.1 retrain was
+        # trained on priceToBeat-derived deltas; passing this enables timesfm-service
+        # to recompute deltas on the same distribution.
+        _ptb = (
+            float(window.open_price)
+            if getattr(window, "open_price_source", None) == "polymarket_priceToBeat"
+            and getattr(window, "open_price", None)
+            and window.open_price > 0
+            else None
+        )
         _v5 = build_v5_feature_body(
             eval_offset=eval_offset,
             vpin=current_vpin,
@@ -479,6 +490,7 @@ class EvaluateWindowUseCase:
             delta_tiingo=delta_tiingo,
             regime=_snap_regime,
             delta_source=_psu,
+            polymarket_price_to_beat=_ptb,
         )
         ctx = GateContext(
             delta_chainlink=delta_chainlink,
@@ -829,6 +841,14 @@ class EvaluateWindowUseCase:
         try:
             from signals.v2_feature_body import build_v5_feature_body
 
+            # Polymarket canonical priceToBeat — see comment in primary _v5 build above.
+            _ptb_2 = (
+                float(window.open_price)
+                if getattr(window, "open_price_source", None) == "polymarket_priceToBeat"
+                and getattr(window, "open_price", None)
+                and window.open_price > 0
+                else None
+            )
             f = build_v5_feature_body(
                 eval_offset=float(eval_offset),
                 vpin=current_vpin,
@@ -845,6 +865,7 @@ class EvaluateWindowUseCase:
                 regime=_snap_regime,
                 delta_source=_price_source_used,
                 prev_v2_probability_up=window_snapshot.get("v2_probability_up"),
+                polymarket_price_to_beat=_ptb_2,
             )
             r = await self._timesfm_v2.score_with_features(
                 asset=window.asset, seconds_to_close=eval_offset, features=f
