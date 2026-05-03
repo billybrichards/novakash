@@ -534,6 +534,17 @@ class Polymarket5MinFeed:
                         prev_source = window.open_price_source
                         window.open_price = ptb_val
                         window.open_price_source = "polymarket_priceToBeat"
+                        # Unconditional probe — fires on EVERY priceToBeat capture,
+                        # regardless of whether prev_open existed. Used to prove the
+                        # priceToBeat → open_price plumbing is actually executing.
+                        self._log.info(
+                            "open_price.priceToBeat_captured_in_fetch_live",
+                            window_ts=window.window_ts,
+                            asset=window.asset,
+                            priceToBeat=ptb_val,
+                            prev_open=prev_open,
+                            prev_source=prev_source,
+                        )
                         if prev_open is not None and abs(prev_open - ptb_val) > 0.01:
                             self._log.info(
                                 "open_price.priceToBeat_override",
