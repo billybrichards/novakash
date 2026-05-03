@@ -668,7 +668,10 @@ class Polymarket5MinFeed:
                 ptb_val = None
             if ptb_val and ptb_val > 0:
                 window.open_price = float(ptb_val)
-                window.open_price_source = "polymarket_html_priceToBeat"
+                # Use canonical "polymarket_priceToBeat" so downstream
+                # evaluate_strategies.py:571 picks it up into V5FeatureBody.
+                # The HTML method is recorded in the from_polymarket_html log.
+                window.open_price_source = "polymarket_priceToBeat"
                 self._log.info(
                     "open_price.from_polymarket_html",
                     asset=window.asset,
@@ -679,7 +682,8 @@ class Polymarket5MinFeed:
                     "live.open_price_fetched",
                     asset=window.asset,
                     price=window.open_price,
-                    source="polymarket_html_priceToBeat",
+                    source="polymarket_priceToBeat",
+                    method="html",
                 )
                 return
 
@@ -815,7 +819,9 @@ class Polymarket5MinFeed:
                 prev_source = window.open_price_source
                 window.gamma_price_to_beat = ptb_html  # share field for downstream
                 window.open_price = float(ptb_html)
-                window.open_price_source = "polymarket_html_priceToBeat"
+                # Use canonical "polymarket_priceToBeat" so evaluate_strategies.py
+                # picks it up into V5FeatureBody.polymarket_price_to_beat.
+                window.open_price_source = "polymarket_priceToBeat"
                 window._gamma_metadata_synced = True
                 self._log.info(
                     "open_price.priceToBeat_synced_from_html",
