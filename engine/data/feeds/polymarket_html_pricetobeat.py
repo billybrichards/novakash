@@ -9,27 +9,34 @@ EXACT priceToBeat Polymarket displays in their UI.
 How it works
 ------------
 Polymarket's per-event pages embed a Next.js ``__NEXT_DATA__`` JSON blob that
-contains the canonical ``eventMetadata.priceToBeat`` for the window. The blob
-is server-rendered, so a single anonymous HTTP GET retrieves it without needing
-JS execution.
+contains two sources for the canonical priceToBeat:
+
+1. ``eventMetadata.priceToBeat`` — populated for RESOLVED windows only (older
+   windows whose 5m period has already ended and Polymarket's backend has
+   cached the metadata). For active or just-closed windows this is ``None``.
+
+2. ``past-results.data.results[]`` — an array of recently-resolved windows
+   under the queryKey ``['past-results', '<ASSET>', 'fiveminute' | 'fifteenminute',
+   '<cutoff_iso>']``. Each entry has ``startTime``, ``endTime``, ``openPrice``,
+   ``closePrice``. The entry whose ``endTime`` equals the target window's
+   start has ``closePrice`` = priceToBeat for that target window (Polymarket
+   samples the same Chainlink point for both window N's close and window N+1's
+   priceToBeat).
+
+   This is the source we need for ACTIVE windows: fetch the page for the
+   ACTIVE window itself, and the page's past-results array includes the
+   immediately-prior window whose closePrice is our priceToBeat.
 
 URL pattern: ``https://polymarket.com/event/<asset>-updown-<tf>-<window_ts>``
 e.g. ``polymarket.com/event/btc-updown-5m-1777824300``.
 
-Inside the page::
+Lookup strategy (in order):
 
-    <script id="__NEXT_DATA__" type="application/json">{ ...
-        "props":{"pageProps":{"dehydratedState":{"queries":[
-            ...,
-            { "queryKey": ["/api/event/slug", "btc-updown-5m-1777824300"],
-              "state": { "data": { ...,
-                "eventMetadata": { "priceToBeat": 78675.76203619942, ... }
-              }}}, ...
-        ]}}}
-    }</script>
-
-We extract the JSON, locate the query whose ``queryKey[0] == '/api/event/slug'``
-and ``queryKey[1] == <slug>``, and read ``state.data.eventMetadata.priceToBeat``.
+* Parse ``__NEXT_DATA__`` JSON.
+* If the slug's ``eventMetadata.priceToBeat`` is set → return it.
+* Else scan ``past-results`` queries on the same page; find the entry whose
+  ``endTime`` ISO timestamp == ``window_ts`` epoch seconds; return its
+  ``closePrice``.
 
 Public surface
 --------------
@@ -54,6 +61,7 @@ import asyncio
 import json
 import re
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
@@ -83,6 +91,20 @@ _NEXT_DATA_RE = re.compile(
     r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>',
     re.DOTALL,
 )
+
+
+def _epoch_to_iso_z(epoch_seconds: int) -> Optional[str]:
+    """Convert epoch seconds to Polymarket's ISO format ``YYYY-MM-DDTHH:MM:SS.000Z``.
+
+    Polymarket past-results entries use this exact format with millisecond
+    precision (always ``.000``) and a trailing ``Z`` for UTC.
+    """
+    try:
+        dt = datetime.fromtimestamp(int(epoch_seconds), tz=timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    # Format: 2026-05-03T16:30:00.000Z
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 class PolymarketHTMLPriceToBeatFeed:
@@ -288,7 +310,7 @@ class PolymarketHTMLPriceToBeatFeed:
             )
             return None
 
-        ptb = self._parse_price_to_beat_from_html(html, slug=slug)
+        ptb = self._parse_price_to_beat_from_html(html, slug=slug, window_ts=window_ts)
         if ptb is None:
             self._log.debug(
                 "polymarket_html.priceToBeat_not_in_html",
@@ -307,15 +329,22 @@ class PolymarketHTMLPriceToBeatFeed:
         return ptb
 
     @staticmethod
-    def _parse_price_to_beat_from_html(html: str, slug: str) -> Optional[float]:
-        """Extract ``__NEXT_DATA__`` and locate the event query for ``slug``.
+    def _parse_price_to_beat_from_html(
+        html: str, slug: str, window_ts: Optional[int] = None
+    ) -> Optional[float]:
+        """Extract ``__NEXT_DATA__`` and locate the priceToBeat for ``slug``.
+
+        Two-stage lookup:
+
+        1. Find the query with ``queryKey == ['/api/event/slug', '<slug>']``
+           and read ``state.data.eventMetadata.priceToBeat``. This is set
+           for resolved windows only.
+        2. Fallback: scan ``past-results`` queries on the same page; find
+           the entry whose ``endTime`` ISO timestamp equals ``window_ts``
+           epoch seconds; return its ``closePrice`` (Polymarket samples the
+           same Chainlink point for window N close and window N+1 priceToBeat).
 
         Returns the float ``priceToBeat`` or ``None`` if not present.
-
-        We deliberately scope the lookup to the query whose
-        ``queryKey == ['/api/event/slug', '<slug>']`` so that we don't
-        accidentally pick up a sibling event's priceToBeat (the page also
-        embeds related upcoming/past events under ``/api/series``).
         """
         if not html:
             return None
@@ -336,6 +365,7 @@ class PolymarketHTMLPriceToBeatFeed:
         if not isinstance(queries, list):
             return None
 
+        # ── Stage 1: eventMetadata.priceToBeat (resolved windows) ────────
         for q in queries:
             if not isinstance(q, dict):
                 continue
@@ -347,15 +377,53 @@ class PolymarketHTMLPriceToBeatFeed:
             try:
                 em = q["state"]["data"]["eventMetadata"]
             except (KeyError, TypeError):
-                return None
-            ptb = em.get("priceToBeat") if isinstance(em, dict) else None
-            if ptb is None:
-                return None
+                em = None
+            if isinstance(em, dict):
+                ptb = em.get("priceToBeat")
+                if ptb is not None:
+                    try:
+                        f = float(ptb)
+                        if f > 0:
+                            return f
+                    except (TypeError, ValueError):
+                        pass
+            # Found the slug entry but no usable priceToBeat — fall through to
+            # past-results lookup below.
+            break
+
+        # ── Stage 2: past-results closePrice for prev window ─────────────
+        if window_ts is None:
+            return None
+        target_iso = _epoch_to_iso_z(window_ts)
+        if target_iso is None:
+            return None
+        for q in queries:
+            if not isinstance(q, dict):
+                continue
+            qk = q.get("queryKey")
+            if not isinstance(qk, list) or len(qk) < 1:
+                continue
+            if qk[0] != "past-results":
+                continue
             try:
-                f = float(ptb)
-            except (TypeError, ValueError):
-                return None
-            return f if f > 0 else None
+                results = q["state"]["data"]["data"]["results"]
+            except (KeyError, TypeError):
+                continue
+            if not isinstance(results, list):
+                continue
+            for r in results:
+                if not isinstance(r, dict):
+                    continue
+                # endTime of window W-1 == startTime of window W == target.
+                if r.get("endTime") != target_iso:
+                    continue
+                cp = r.get("closePrice")
+                try:
+                    f = float(cp) if cp is not None else None
+                except (TypeError, ValueError):
+                    f = None
+                if f is not None and f > 0:
+                    return f
         return None
 
     def _store_positive(self, key: tuple[str, str, int], value: float) -> None:
