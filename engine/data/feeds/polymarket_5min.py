@@ -732,6 +732,58 @@ class Polymarket5MinFeed:
         if not self._http_client:
             return False
 
+        # ── PRIMARY PATH: query CURRENT window's slug for priceToBeat ──
+        # Polymarket publishes eventMetadata.priceToBeat[N] much faster than
+        # eventMetadata.finalPrice[N-1] (the prev-window fallback below). Both
+        # values are identical (same Chainlink Streams sample at window boundary)
+        # but priceToBeat publishes within ~60-180s of window N opening, whereas
+        # finalPrice is empirically >270s post-close in many cases.
+        # PR #464's resync was failing silently because finalPrice wasn't there
+        # by the [60,90,120,180,240,270] retry deadlines.
+        cur_slug = (
+            f"{window.asset.lower()}-updown-"
+            f"{'15m' if window.duration_secs == 900 else '5m'}-{window.window_ts}"
+        )
+        try:
+            resp = await self._http_client.get(
+                "https://gamma-api.polymarket.com/events",
+                params={"slug": cur_slug},
+                timeout=5.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data and isinstance(data, list):
+                cur_event = data[0]
+                cur_meta = cur_event.get("eventMetadata") or {}
+                if isinstance(cur_meta, dict):
+                    ptb_raw = cur_meta.get("priceToBeat")
+                    if ptb_raw is not None:
+                        ptb_val = float(ptb_raw)
+                        if ptb_val > 0:
+                            prev_open = window.open_price
+                            prev_source = window.open_price_source
+                            window.gamma_price_to_beat = ptb_val
+                            window.open_price = ptb_val
+                            window.open_price_source = "polymarket_priceToBeat"
+                            window._gamma_metadata_synced = True
+                            self._log.info(
+                                "open_price.priceToBeat_synced_from_current_window",
+                                window_ts=window.window_ts,
+                                asset=window.asset,
+                                prev_open=prev_open,
+                                prev_source=prev_source,
+                                new_open=ptb_val,
+                            )
+                            return True
+        except Exception as exc:
+            self._log.warning(
+                "open_price.current_window_sync_failed",
+                window_ts=window.window_ts,
+                slug=cur_slug,
+                error=str(exc)[:200],
+            )
+
+        # ── FALLBACK: query PREV window's slug for finalPrice (legacy path) ──
         prev_ts = window.window_ts - window.duration_secs
         prev_slug = (
             f"{window.asset.lower()}-updown-"
@@ -786,11 +838,11 @@ class Polymarket5MinFeed:
                 )
             return True
         except Exception as exc:
-            self._log.debug(
+            self._log.info(
                 "open_price.prev_window_sync_failed",
                 window_ts=window.window_ts,
                 prev_slug=prev_slug,
-                error=str(exc),
+                error=str(exc)[:200],
             )
             return False
 
