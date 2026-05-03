@@ -33,7 +33,10 @@ from evaluation.claude_evaluator import ClaudeEvaluator
 from evaluation.post_resolution_evaluator import PostResolutionEvaluator
 from data.feeds.polymarket_ws import PolymarketWebSocketFeed
 from data.feeds.polymarket_5min import Polymarket5MinFeed
-from data.feeds.polymarket_rtds_chainlink import PolymarketRTDSFeed
+# polymarket_rtds_chainlink kept in repo for reference but no longer used —
+# the WebSocket connected + subscribed but received zero messages, timing out
+# every 30s in an endless reconnect loop. Replaced by HTML scrape below.
+from data.feeds.polymarket_html_pricetobeat import PolymarketHTMLPriceToBeatFeed
 from polymarket_browser.service import PlaywrightService
 from data.models import (
     AggTrade,  # noqa: F401
@@ -306,19 +309,23 @@ class CompositionRoot:
         # ── Strategies ─────────────────────────────────────────────────────────
         # Legacy arb/cascade/timesfm strategies retired — registry handles all execution.
 
-        # ── Polymarket RTDS Chainlink Streams Feed ────────────────────────────
-        # Anonymous WebSocket subscription to Polymarket's exact priceToBeat
-        # source. Replaces the on-chain Chainlink Aggregator V3 polling for
-        # WindowInfo.open_price (the on-chain feed lags by $7-$33 per BTC 5m
-        # window, producing train/serve skew vs Polymarket UI).
+        # ── Polymarket HTML priceToBeat Feed ─────────────────────────────────
+        # Anonymous HTTP scrape of polymarket.com/event/<slug> — extracts the
+        # EXACT priceToBeat Polymarket displays in their UI from the Next.js
+        # __NEXT_DATA__ JSON blob. Replaces the broken RTDS WebSocket feed
+        # (which connected + subscribed but received zero messages, timing out
+        # every 30s in an endless reconnect loop). Eliminates train/serve skew
+        # vs Polymarket UI for WindowInfo.open_price.
+        # Legacy attribute name `_rtds_feed` retained = None so existing
+        # `getattr(root, "_rtds_feed", None)` references in runtime.py keep
+        # working without modification.
+        self._rtds_feed = None
         try:
-            self._rtds_feed = PolymarketRTDSFeed(
-                assets=["BTC", "ETH", "SOL", "XRP"],
-            )
-            log.info("orchestrator.rtds_feed_instantiated")
+            self._html_ptb_feed = PolymarketHTMLPriceToBeatFeed()
+            log.info("orchestrator.html_ptb_feed_instantiated")
         except Exception as exc:
-            log.warning("orchestrator.rtds_feed_init_failed", error=str(exc))
-            self._rtds_feed = None
+            log.warning("orchestrator.html_ptb_feed_init_failed", error=str(exc))
+            self._html_ptb_feed = None
 
         # 5-minute Polymarket strategy (optional)
         self._five_min_strategy = None
@@ -328,7 +335,7 @@ class CompositionRoot:
                 signal_offset=FIVE_MIN_ENTRY_OFFSET,
                 on_window_signal=None,
                 paper_mode=settings.paper_mode,
-                rtds_feed=self._rtds_feed,
+                html_ptb_feed=self._html_ptb_feed,
             )
             self._five_min_strategy = FiveMinVPINStrategy(
                 order_manager=self._order_manager,
@@ -690,7 +697,7 @@ class CompositionRoot:
                 eval_offsets=_fifteen_eval_offsets,
                 on_window_signal=None,
                 paper_mode=settings.paper_mode,
-                rtds_feed=self._rtds_feed,
+                html_ptb_feed=self._html_ptb_feed,
             )
             log.info("orchestrator.fifteen_min_enabled", assets=fifteen_min_assets)
 

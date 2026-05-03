@@ -115,6 +115,7 @@ class Polymarket5MinFeed:
         paper_mode: bool = True,
         chainlink_feed: Optional[object] = None,
         rtds_feed: Optional[object] = None,
+        html_ptb_feed: Optional[object] = None,
     ) -> None:
         """
         Initialize the 5-minute market feed.
@@ -128,9 +129,13 @@ class Polymarket5MinFeed:
             paper_mode: If True, simulate market data
             chainlink_feed: ChainlinkFeed instance with latest_prices dict
                 for oracle-aligned open price (fallback source)
-            rtds_feed: PolymarketRTDSFeed instance with window-boundary
-                samples from Polymarket's Chainlink Streams (PRIMARY source —
-                identical to Polymarket UI's priceToBeat)
+            rtds_feed: (DEPRECATED) Legacy RTDS WebSocket feed — broken
+                upstream (zero messages received). Kept for backwards-compat
+                but no longer queried; ``html_ptb_feed`` is the new primary.
+            html_ptb_feed: PolymarketHTMLPriceToBeatFeed instance — scrapes
+                the public Polymarket event page to read the canonical
+                ``priceToBeat`` Polymarket displays in their UI. Replaces
+                ``rtds_feed`` as the PRIMARY open-price source.
         """
         self._assets = assets or ["BTC"]
         self._duration_secs = duration_secs
@@ -140,7 +145,8 @@ class Polymarket5MinFeed:
         self._on_window_state_change = on_window_state_change
         self._paper_mode = paper_mode
         self._chainlink_feed = chainlink_feed
-        self._rtds_feed = rtds_feed
+        self._rtds_feed = rtds_feed  # legacy, unused
+        self._html_ptb_feed = html_ptb_feed
 
         # Track windows by asset -> window_ts -> WindowInfo
         self._windows: Dict[str, Dict[int, WindowInfo]] = {
@@ -630,35 +636,41 @@ class Polymarket5MinFeed:
         """Fetch the window open price.
 
         Priority order:
-          0. Polymarket RTDS Chainlink Streams (canonical — exact source
-             Polymarket samples to set priceToBeat / finalPrice. Available
-             within ~1s of window boundary).
+          0. Polymarket public event HTML (canonical — the EXACT priceToBeat
+             value Polymarket displays in their UI, parsed out of the
+             Next.js ``__NEXT_DATA__`` JSON blob. Available within ~1-3s of
+             the window boundary. Replaces the broken RTDS WebSocket feed.)
           1. Polymarket eventMetadata.priceToBeat (Gamma — same value, but
              only published a few seconds after window open).
           2. Chainlink Polygon in-memory cache (approximation; ~$3-30 skew vs
              Polymarket's Chainlink Data Streams sample. Used pre-open or if
-             RTDS feed is unavailable.)
+             HTML feed is unavailable.)
           3. Binance REST (fallback).
 
         Polymarket 5m markets resolve via Chainlink Data Streams (off-chain,
         low-latency feed) — NOT the on-chain Aggregator V3 contract on Polygon.
-        The two diverge by tens of dollars per window. The RTDS WebSocket gives
-        us the EXACT same stream Polymarket uses, eliminating that skew.
+        The two diverge by tens of dollars per window. The HTML page exposes
+        the EXACT priceToBeat Polymarket already wrote, eliminating that skew
+        without needing to subscribe to the underlying stream ourselves.
         """
-        # ── PRIMARY: Polymarket RTDS Chainlink Streams (boundary sample) ──
-        if self._rtds_feed is not None:
+        # ── PRIMARY: Polymarket HTML priceToBeat scrape ──
+        if self._html_ptb_feed is not None:
             try:
-                ptb_val = self._rtds_feed.get_window_open_price(
-                    window.asset, window.window_ts
+                # Map window duration → timeframe label expected by URL.
+                tf = "5m" if self._duration_secs == 300 else (
+                    "15m" if self._duration_secs == 900 else f"{self._duration_secs // 60}m"
+                )
+                ptb_val = await self._html_ptb_feed.get_price_to_beat(
+                    window.asset, tf, window.window_ts
                 )
             except Exception as exc:
-                self._log.warning("rtds.get_open_price_error", error=str(exc)[:200])
+                self._log.warning("html_ptb.get_open_price_error", error=str(exc)[:200])
                 ptb_val = None
             if ptb_val and ptb_val > 0:
                 window.open_price = float(ptb_val)
-                window.open_price_source = "polymarket_chainlink_streams"
+                window.open_price_source = "polymarket_html_priceToBeat"
                 self._log.info(
-                    "open_price.from_polymarket_rtds",
+                    "open_price.from_polymarket_html",
                     asset=window.asset,
                     window_ts=window.window_ts,
                     price=ptb_val,
@@ -667,7 +679,7 @@ class Polymarket5MinFeed:
                     "live.open_price_fetched",
                     asset=window.asset,
                     price=window.open_price,
-                    source="polymarket_chainlink_streams",
+                    source="polymarket_html_priceToBeat",
                 )
                 return
 
