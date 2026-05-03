@@ -787,7 +787,47 @@ class Polymarket5MinFeed:
         if not self._http_client:
             return False
 
-        # ── PRIMARY PATH: query CURRENT window's slug for priceToBeat ──
+        # ── PRIMARY PATH: HTML scrape for canonical priceToBeat ──
+        # Tries the same source as _fetch_open_price's PRIMARY path. The HTML
+        # feed has its own permanent cache so a successful first fetch is free
+        # on subsequent calls. The reason we re-attempt HERE (in the timed
+        # resync loop, fired at offsets 60/90/120/180/240/270s) is that the
+        # past-results array on Polymarket's page only includes window N once
+        # ~5-30s after N opens — the at-window-open call from _fetch_open_price
+        # may race with that publication and miss it.
+        if self._html_ptb_feed is not None:
+            try:
+                tf = "5m" if self._duration_secs == 300 else (
+                    "15m" if self._duration_secs == 900 else f"{self._duration_secs // 60}m"
+                )
+                ptb_html = await self._html_ptb_feed.get_price_to_beat(
+                    window.asset, tf, window.window_ts
+                )
+            except Exception as exc:
+                self._log.warning(
+                    "open_price.html_resync_failed",
+                    window_ts=window.window_ts,
+                    error=str(exc)[:200],
+                )
+                ptb_html = None
+            if ptb_html and ptb_html > 0:
+                prev_open = window.open_price
+                prev_source = window.open_price_source
+                window.gamma_price_to_beat = ptb_html  # share field for downstream
+                window.open_price = float(ptb_html)
+                window.open_price_source = "polymarket_html_priceToBeat"
+                window._gamma_metadata_synced = True
+                self._log.info(
+                    "open_price.priceToBeat_synced_from_html",
+                    window_ts=window.window_ts,
+                    asset=window.asset,
+                    prev_open=prev_open,
+                    prev_source=prev_source,
+                    new_open=ptb_html,
+                )
+                return True
+
+        # ── SECONDARY PATH: query CURRENT window's slug for priceToBeat ──
         # Polymarket publishes eventMetadata.priceToBeat[N] much faster than
         # eventMetadata.finalPrice[N-1] (the prev-window fallback below). Both
         # values are identical (same Chainlink Streams sample at window boundary)
