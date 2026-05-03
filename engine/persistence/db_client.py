@@ -1114,7 +1114,8 @@ class DBClient:
                         v2_model_version, eval_offset,
                         v2_quantiles, v2_quantiles_at_close,
                         clob_up_bid, clob_up_ask, clob_down_bid, clob_down_ask,
-                        clob_imbalance, clob_implied_up, clob_fill_price
+                        clob_imbalance, clob_implied_up, clob_fill_price,
+                        open_price_source
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,
                         $9,$10,$11,$12,$13,$14,$15,$16,$17,
@@ -1133,9 +1134,16 @@ class DBClient:
                         $74,$75,$76,$77,$78,
                         $79,$80,$81,$82,
                         $83,$84,$85,$86,
-                        $87,$88,$89
+                        $87,$88,$89,$90
                     )
-                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                    ON CONFLICT (window_ts, asset, timeframe, COALESCE(eval_offset, -1)) DO UPDATE SET
+                        -- open_price and open_price_source: always take the incoming value
+                        -- if non-NULL (EXCLUDED wins so a later priceToBeat sync can overwrite
+                        -- the earlier chainlink approximation within the same eval_offset row).
+                        open_price             = COALESCE(EXCLUDED.open_price, window_snapshots.open_price),
+                        open_price_source      = COALESCE(EXCLUDED.open_price_source, window_snapshots.open_price_source),
+                        -- close_price: always update from latest eval (more accurate at T-60 vs T-90)
+                        close_price            = COALESCE(EXCLUDED.close_price, window_snapshots.close_price),
                         gamma_up_price         = COALESCE(EXCLUDED.gamma_up_price, window_snapshots.gamma_up_price),
                         gamma_down_price       = COALESCE(EXCLUDED.gamma_down_price, window_snapshots.gamma_down_price),
                         delta_chainlink        = COALESCE(EXCLUDED.delta_chainlink, window_snapshots.delta_chainlink),
@@ -1261,6 +1269,10 @@ class DBClient:
                     snapshot.get("clob_imbalance"),
                     snapshot.get("clob_implied_up"),
                     snapshot.get("clob_fill_price"),
+                    # open_price_source — engine taxonomy for the open_price value:
+                    # "polymarket_html_priceToBeat", "polymarket_priceToBeat",
+                    # "chainlink_polygon", "chainlink_polygon_pending", "binance_fallback"
+                    snapshot.get("open_price_source"),
                 )
             log.debug(
                 "db.window_snapshot_written",
@@ -1322,7 +1334,7 @@ class DBClient:
                         $16,$17,$18,
                         $19,$20,$21
                     )
-                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                    ON CONFLICT (window_ts, asset, timeframe, COALESCE(eval_offset, -1)) DO UPDATE SET
                         sub_signal_elm         = COALESCE(EXCLUDED.sub_signal_elm, window_snapshots.sub_signal_elm),
                         sub_signal_cascade     = COALESCE(EXCLUDED.sub_signal_cascade, window_snapshots.sub_signal_cascade),
                         sub_signal_taker       = COALESCE(EXCLUDED.sub_signal_taker, window_snapshots.sub_signal_taker),
@@ -1408,7 +1420,7 @@ class DBClient:
                         $1,$2,$3,$4,
                         $5,$6,$7,$8,$9,$10,$11
                     )
-                    ON CONFLICT (window_ts, asset, timeframe, eval_offset) DO UPDATE SET
+                    ON CONFLICT (window_ts, asset, timeframe, COALESCE(eval_offset, -1)) DO UPDATE SET
                         ensemble_p_up          = COALESCE(EXCLUDED.ensemble_p_up, window_snapshots.ensemble_p_up),
                         ensemble_p_lgb         = COALESCE(EXCLUDED.ensemble_p_lgb, window_snapshots.ensemble_p_lgb),
                         ensemble_p_classifier  = COALESCE(EXCLUDED.ensemble_p_classifier, window_snapshots.ensemble_p_classifier),

@@ -135,10 +135,19 @@ async def current_window(
     # PRIMARY — engine-written canonical price (post-PR #464). Reading the
     # most-recent eval_offset row for this window so a cold window with no
     # snapshot yet falls through to ticks_chainlink below.
+    #
+    # open_price_source is written by the engine using its own taxonomy:
+    #   "polymarket_html_priceToBeat" — HTML-scraped __NEXT_DATA__ (most accurate)
+    #   "polymarket_priceToBeat"      — Gamma eventMetadata canonical
+    #   "chainlink_polygon"           — Chainlink on-chain (legacy, may diverge $3-32)
+    #   "chainlink_polygon_pending"   — Chainlink before oracle sample lands
+    #   "binance_fallback"            — Binance spot (last resort)
+    # When open_price_source is NULL (pre-migration rows) we infer
+    # "polymarket_canonical" from the presence of a non-NULL open_price.
     try:
         q = text(
             """
-            SELECT open_price
+            SELECT open_price, open_price_source
             FROM window_snapshots
             WHERE window_ts = :window_ts
               AND asset = :asset
@@ -151,7 +160,10 @@ async def current_window(
         row = res.first()
         if row and row[0] is not None:
             target_price = float(row[0])
-            target_price_source = "polymarket_canonical"
+            # Prefer DB-written source tag; fall back to inferred "polymarket_canonical"
+            # for rows written before the open_price_source column was added.
+            db_source = row[1] if len(row) > 1 else None
+            target_price_source = db_source if db_source else "polymarket_canonical"
     except Exception as exc:
         if not _is_missing_table(exc):
             log.warning("desk.current_window.window_snapshots_err", error=str(exc)[:200])

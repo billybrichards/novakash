@@ -661,6 +661,7 @@ class EvaluateWindowUseCase:
             "asset": window.asset,
             "timeframe": tf,
             "open_price": open_price,
+            "open_price_source": getattr(window, "open_price_source", None),
             "close_price": current_price,
             "delta_pct": delta_pct,
             "delta_chainlink": delta_chainlink,

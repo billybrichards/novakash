@@ -267,6 +267,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     "ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS ensemble_model_version TEXT"
                 )
             )
+            # PR #desk-pricetobeat-verify: open_price_source column so the engine
+            # can tag each open_price write with its data source
+            # ("polymarket_html_priceToBeat", "chainlink_polygon", etc.).
+            # Hub reads this verbatim and returns it as target_price_source so
+            # the FE badge reflects the actual source rather than an inference.
+            await session.execute(
+                text(
+                    "ALTER TABLE window_snapshots ADD COLUMN IF NOT EXISTS open_price_source TEXT"
+                )
+            )
+            # PR #desk-pricetobeat-verify: 4-column unique index on window_snapshots
+            # so ON CONFLICT (window_ts, asset, timeframe, eval_offset) in engine
+            # write paths resolves correctly (previously only 3-column UNIQUE existed,
+            # causing silent write failures when eval_offset differed from NULL).
+            await session.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_window_snapshots_eval_offset "
+                    "ON window_snapshots (window_ts, asset, timeframe, COALESCE(eval_offset, -1))"
+                )
+            )
             # Phase-2 (audit #216 follow-up): strategy_configs registry.
             # Engine upserts YAML into this table at startup; hub reads it
             # in preference to the filesystem (see api/strategies.py). See
