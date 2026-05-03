@@ -124,6 +124,7 @@ class EngineRuntime:
         self._coinglass_feed = root._coinglass_feed
         self._chainlink_feed = root._chainlink_feed
         self._chainlink_multi_feed = root._chainlink_multi_feed
+        self._rtds_feed = getattr(root, "_rtds_feed", None)
         self._tiingo_feed = root._tiingo_feed
         self._clob_feed = root._clob_feed
         self._polymarket_feed = root._polymarket_feed
@@ -678,6 +679,13 @@ class EngineRuntime:
                 )
             )
             log.info("orchestrator.chainlink_multi_feed_started")
+        if self._rtds_feed:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._rtds_feed.start(), name="feed:polymarket_rtds"
+                )
+            )
+            log.info("orchestrator.rtds_feed_started")
         if self._tiingo_feed:
             self._tasks.append(
                 asyncio.create_task(self._tiingo_feed.start(), name="feed:tiingo")

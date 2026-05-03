@@ -33,6 +33,7 @@ from evaluation.claude_evaluator import ClaudeEvaluator
 from evaluation.post_resolution_evaluator import PostResolutionEvaluator
 from data.feeds.polymarket_ws import PolymarketWebSocketFeed
 from data.feeds.polymarket_5min import Polymarket5MinFeed
+from data.feeds.polymarket_rtds_chainlink import PolymarketRTDSFeed
 from polymarket_browser.service import PlaywrightService
 from data.models import (
     AggTrade,  # noqa: F401
@@ -305,6 +306,20 @@ class CompositionRoot:
         # ── Strategies ─────────────────────────────────────────────────────────
         # Legacy arb/cascade/timesfm strategies retired — registry handles all execution.
 
+        # ── Polymarket RTDS Chainlink Streams Feed ────────────────────────────
+        # Anonymous WebSocket subscription to Polymarket's exact priceToBeat
+        # source. Replaces the on-chain Chainlink Aggregator V3 polling for
+        # WindowInfo.open_price (the on-chain feed lags by $7-$33 per BTC 5m
+        # window, producing train/serve skew vs Polymarket UI).
+        try:
+            self._rtds_feed = PolymarketRTDSFeed(
+                assets=["BTC", "ETH", "SOL", "XRP"],
+            )
+            log.info("orchestrator.rtds_feed_instantiated")
+        except Exception as exc:
+            log.warning("orchestrator.rtds_feed_init_failed", error=str(exc))
+            self._rtds_feed = None
+
         # 5-minute Polymarket strategy (optional)
         self._five_min_strategy = None
         if settings.five_min_enabled:
@@ -313,6 +328,7 @@ class CompositionRoot:
                 signal_offset=FIVE_MIN_ENTRY_OFFSET,
                 on_window_signal=None,
                 paper_mode=settings.paper_mode,
+                rtds_feed=self._rtds_feed,
             )
             self._five_min_strategy = FiveMinVPINStrategy(
                 order_manager=self._order_manager,
@@ -674,6 +690,7 @@ class CompositionRoot:
                 eval_offsets=_fifteen_eval_offsets,
                 on_window_signal=None,
                 paper_mode=settings.paper_mode,
+                rtds_feed=self._rtds_feed,
             )
             log.info("orchestrator.fifteen_min_enabled", assets=fifteen_min_assets)
 

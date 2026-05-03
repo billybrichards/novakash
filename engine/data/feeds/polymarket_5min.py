@@ -114,6 +114,7 @@ class Polymarket5MinFeed:
         ] = None,
         paper_mode: bool = True,
         chainlink_feed: Optional[object] = None,
+        rtds_feed: Optional[object] = None,
     ) -> None:
         """
         Initialize the 5-minute market feed.
@@ -126,7 +127,10 @@ class Polymarket5MinFeed:
             on_window_state_change: Async callback on state change
             paper_mode: If True, simulate market data
             chainlink_feed: ChainlinkFeed instance with latest_prices dict
-                for oracle-aligned open price (primary source for Polymarket)
+                for oracle-aligned open price (fallback source)
+            rtds_feed: PolymarketRTDSFeed instance with window-boundary
+                samples from Polymarket's Chainlink Streams (PRIMARY source —
+                identical to Polymarket UI's priceToBeat)
         """
         self._assets = assets or ["BTC"]
         self._duration_secs = duration_secs
@@ -136,6 +140,7 @@ class Polymarket5MinFeed:
         self._on_window_state_change = on_window_state_change
         self._paper_mode = paper_mode
         self._chainlink_feed = chainlink_feed
+        self._rtds_feed = rtds_feed
 
         # Track windows by asset -> window_ts -> WindowInfo
         self._windows: Dict[str, Dict[int, WindowInfo]] = {
@@ -625,21 +630,48 @@ class Polymarket5MinFeed:
         """Fetch the window open price.
 
         Priority order:
-          1. Polymarket eventMetadata.priceToBeat (set by _fetch_live_data when
-             available — this is the canonical UI/resolution reference).
+          0. Polymarket RTDS Chainlink Streams (canonical — exact source
+             Polymarket samples to set priceToBeat / finalPrice. Available
+             within ~1s of window boundary).
+          1. Polymarket eventMetadata.priceToBeat (Gamma — same value, but
+             only published a few seconds after window open).
           2. Chainlink Polygon in-memory cache (approximation; ~$3-30 skew vs
              Polymarket's Chainlink Data Streams sample. Used pre-open or if
-             Gamma metadata hasn't published yet.)
+             RTDS feed is unavailable.)
           3. Binance REST (fallback).
 
         Polymarket 5m markets resolve via Chainlink Data Streams (off-chain,
-        low-latency feed at data.chain.link/streams/btc-usd) — NOT the on-chain
-        Aggregator V3 contract on Polygon. The two diverge by tens of dollars
-        per window. Once `eventMetadata.priceToBeat` becomes available (a few
-        seconds after window open), `_fetch_live_data` overwrites the
-        Chainlink-derived approximation with the canonical value.
+        low-latency feed) — NOT the on-chain Aggregator V3 contract on Polygon.
+        The two diverge by tens of dollars per window. The RTDS WebSocket gives
+        us the EXACT same stream Polymarket uses, eliminating that skew.
         """
-        # ── PRIMARY: Polymarket priceToBeat already captured ──
+        # ── PRIMARY: Polymarket RTDS Chainlink Streams (boundary sample) ──
+        if self._rtds_feed is not None:
+            try:
+                ptb_val = self._rtds_feed.get_window_open_price(
+                    window.asset, window.window_ts
+                )
+            except Exception as exc:
+                self._log.warning("rtds.get_open_price_error", error=str(exc)[:200])
+                ptb_val = None
+            if ptb_val and ptb_val > 0:
+                window.open_price = float(ptb_val)
+                window.open_price_source = "polymarket_chainlink_streams"
+                self._log.info(
+                    "open_price.from_polymarket_rtds",
+                    asset=window.asset,
+                    window_ts=window.window_ts,
+                    price=ptb_val,
+                )
+                self._log.info(
+                    "live.open_price_fetched",
+                    asset=window.asset,
+                    price=window.open_price,
+                    source="polymarket_chainlink_streams",
+                )
+                return
+
+        # ── FALLBACK 1: Polymarket priceToBeat already captured (Gamma) ──
         if window.gamma_price_to_beat and window.gamma_price_to_beat > 0:
             window.open_price = float(window.gamma_price_to_beat)
             window.open_price_source = "polymarket_priceToBeat"
@@ -651,7 +683,7 @@ class Polymarket5MinFeed:
             )
             return
 
-        # ── FALLBACK 1: Chainlink Polygon (approximation; will be overridden
+        # ── FALLBACK 2: Chainlink Polygon (approximation; will be overridden
         #               by _fetch_live_data once eventMetadata publishes) ──
         if self._chainlink_feed:
             cl_prices = getattr(self._chainlink_feed, "latest_prices", {})
