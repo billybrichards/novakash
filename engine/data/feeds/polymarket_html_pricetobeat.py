@@ -256,6 +256,93 @@ class PolymarketHTMLPriceToBeatFeed:
             self._neg_cache[key] = time.monotonic() + NEGATIVE_CACHE_TTL_SECS
         return ptb
 
+    async def get_price_to_beat_with_retry(
+        self,
+        asset: str,
+        timeframe: str,
+        window_ts: int,
+        total_budget_s: float = 10.0,
+    ) -> Optional[float]:
+        """Fetch priceToBeat with bounded retry budget for early-fire at window
+        birth. Polymarket's HTML page typically populates priceToBeat within
+        1-5s of window open; this method retries at 0s, 1s, 2s, 4s, 8s
+        (cumulative cap at total_budget_s, default 10s).
+
+        Returns the FIRST non-None result. Returns None if budget exhausts.
+
+        Bypasses the negative cache between attempts (the cache exists to
+        prevent rapid retry storms, but in a controlled retry loop we WANT
+        to retry).
+        """
+        asset_u = asset.upper()
+        tf = timeframe.lower()
+        try:
+            window_ts = int(window_ts)
+        except (TypeError, ValueError):
+            return None
+
+        key = (asset_u, tf, window_ts)
+
+        # If we already have a positive cache hit, return immediately.
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+
+        delays = [0.0, 1.0, 2.0, 4.0, 8.0]
+        loop_start = time.monotonic()
+
+        for attempt_idx, delay_s in enumerate(delays):
+            if delay_s > 0:
+                await asyncio.sleep(delay_s)
+
+            elapsed_s = time.monotonic() - loop_start
+            if elapsed_s >= total_budget_s:
+                break
+
+            # Clear negative cache so each retry actually hits the network.
+            self._neg_cache.pop(key, None)
+
+            attempt_start = time.monotonic()
+            ptb = await self.get_price_to_beat(asset_u, tf, window_ts)
+            attempt_elapsed_ms = int((time.monotonic() - attempt_start) * 1000)
+
+            self._log.debug(
+                "polymarket_html.fetch_attempt",
+                asset=asset_u,
+                timeframe=tf,
+                window_ts=window_ts,
+                attempt=attempt_idx + 1,
+                attempt_elapsed_ms=attempt_elapsed_ms,
+                cumulative_elapsed_s=round(time.monotonic() - loop_start, 2),
+                hit=(ptb is not None),
+            )
+
+            if ptb is not None and ptb > 0:
+                total_elapsed_ms = int((time.monotonic() - loop_start) * 1000)
+                self._log.info(
+                    "polymarket_html.priceToBeat_landed_in_window_open_t",
+                    asset=asset_u,
+                    timeframe=tf,
+                    window_ts=window_ts,
+                    elapsed_ms=total_elapsed_ms,
+                    attempts=attempt_idx + 1,
+                    price_to_beat=ptb,
+                )
+                return ptb
+
+        # Budget exhausted without success.
+        total_elapsed_ms = int((time.monotonic() - loop_start) * 1000)
+        self._log.warning(
+            "polymarket_html.budget_exhausted",
+            asset=asset_u,
+            timeframe=tf,
+            window_ts=window_ts,
+            budget_s=total_budget_s,
+            elapsed_ms=total_elapsed_ms,
+            attempts=len(delays),
+        )
+        return None
+
     async def get_window_open_price(
         self, asset: str, window_ts: int, timeframe: str = "5m"
     ) -> Optional[float]:

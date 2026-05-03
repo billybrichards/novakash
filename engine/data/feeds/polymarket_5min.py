@@ -295,6 +295,16 @@ class Polymarket5MinFeed:
         # Fetch market data
         await self._fetch_market_data(new_window)
 
+        # ── Early-fire priceToBeat fetch (10s budget) ──
+        # _fetch_market_data above does a single-shot HTML fetch which is
+        # often too early (Polymarket's HTML page takes 1-5s to populate
+        # priceToBeat after window open). This kicks off a background
+        # retry loop with 0/1/2/4/8s exponential delays (10s cap) so
+        # priceToBeat lands in window.open_price BEFORE the first strategy
+        # evaluation, and V5FeatureBody requests carry it to timesfm-service.
+        if self._html_ptb_feed is not None:
+            asyncio.create_task(self._early_fire_pricetobeat(new_window))
+
         # Emit state change
         await self._emit_state_change(asset, new_ts, new_window.state)
 
@@ -454,6 +464,66 @@ class Polymarket5MinFeed:
                 self._log.error("window_signal_dispatch_error", error=str(exc))
 
     # ─── Market Data Fetching ─────────────────────────────────────────────────
+
+    async def _early_fire_pricetobeat(self, window: WindowInfo) -> None:
+        """Background retry loop to land canonical priceToBeat in window.open_price
+        within 10s of window open.
+
+        Polymarket's per-event HTML page populates `priceToBeat` 1-5s after
+        window birth. The single-shot fetch in `_fetch_open_price` (which
+        runs at T+0s during `_fetch_market_data`) usually misses it. The
+        existing resync at +60-270s catches it eventually, but by then
+        strategies have already evaluated with chainlink/binance fallback
+        values and V5FeatureBody requests went out with priceToBeat=None.
+
+        This task retries at 0/1/2/4/8s (10s cumulative budget). On hit:
+        overrides window.open_price + sets canonical source string +
+        marks `_gamma_metadata_synced=True` to short-circuit the late
+        resync. Strategies evaluating at T+10s onwards see the correct
+        canonical value.
+        """
+        if self._html_ptb_feed is None:
+            return
+        try:
+            tf = "5m" if self._duration_secs == 300 else (
+                "15m" if self._duration_secs == 900 else f"{self._duration_secs // 60}m"
+            )
+            ptb = await self._html_ptb_feed.get_price_to_beat_with_retry(
+                asset=window.asset,
+                timeframe=tf,
+                window_ts=window.window_ts,
+                total_budget_s=10.0,
+            )
+        except Exception as exc:
+            self._log.warning(
+                "early_fire_pricetobeat.error",
+                asset=window.asset,
+                window_ts=window.window_ts,
+                error=str(exc)[:200],
+            )
+            return
+
+        if not ptb or ptb <= 0:
+            return
+
+        prev_open = window.open_price
+        prev_source = window.open_price_source
+        if window._gamma_metadata_synced:
+            # Already synced by another path (resync, fetch_live_data); don't override.
+            return
+
+        window.gamma_price_to_beat = ptb
+        window.open_price = float(ptb)
+        window.open_price_source = "polymarket_priceToBeat"
+        window._gamma_metadata_synced = True
+        self._log.info(
+            "open_price.early_fire_landed",
+            asset=window.asset,
+            window_ts=window.window_ts,
+            prev_open=prev_open,
+            prev_source=prev_source,
+            new_open=ptb,
+        )
 
     async def _fetch_market_data(self, window: WindowInfo) -> None:
         """Fetch market data from Polymarket Gamma API.
